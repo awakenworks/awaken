@@ -45,7 +45,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct SessionExecutor {
     roles: SessionExecutionRoles,
-    projection: CommittedSessionProjection,
+    projection: Arc<CommittedSessionProjection>,
 }
 
 /// Required capabilities selected by one composition. The containing
@@ -77,7 +77,12 @@ impl std::ops::Deref for SessionExecutor {
 impl SessionExecutor {
     /// Committed projection facts without execution authority.
     pub fn projection(&self) -> &dyn SessionProjectionSource {
-        &self.projection
+        self.projection.as_ref()
+    }
+
+    /// Share this same selected read projection without exposing execution roles.
+    pub fn projection_handle(&self) -> Arc<dyn SessionProjectionSource> {
+        self.projection.clone()
     }
 
     /// The required `SessionRuntime` selected at construction.
@@ -158,10 +163,10 @@ where
 
 impl From<SessionExecutionRoles> for SessionExecutor {
     fn from(roles: SessionExecutionRoles) -> Self {
-        let projection = CommittedSessionProjection::new(
+        let projection = Arc::new(CommittedSessionProjection::new(
             roles.thread_reads.clone(),
             roles.coordination_reads.clone(),
-        );
+        ));
         Self { roles, projection }
     }
 }
@@ -279,7 +284,8 @@ mod tests {
         // Decision table: cause = the projection read; effect = the selected
         // role that serves it. Thread prefixes and Outcomes are Thread reads;
         // coordinated links are coordination reads. No other role or owner is
-        // reachable through the projection.
+        // reachable through the projection. P1-P4 run through both borrowed and
+        // shared views and cloned executors; all retain the exact selected roles.
         // | Rule | projection read            | served by          |
         // | P1   | latest Thread prefix       | thread_reads       |
         // | P2   | exact-Run Thread prefix    | thread_reads       |
@@ -304,42 +310,49 @@ mod tests {
         let session = crate::SessionId::from("session");
         let run = awaken_agent_contract::agent::run::Id("run".into());
         for executor in [&selected, &selected.clone()] {
-            let projection = executor.projection();
-            assert_eq!(
-                message(
+            let shared = executor.projection_handle();
+            let shared_again = executor.projection_handle();
+            assert!(
+                Arc::ptr_eq(&shared, &shared_again),
+                "the shared view is the same projection"
+            );
+            for projection in [executor.projection(), shared.as_ref()] {
+                assert_eq!(
+                    message(
+                        projection
+                            .projection_thread_snapshot(&session, "session", None)
+                            .await
+                    ),
+                    "thread-reads latest",
+                    "P1"
+                );
+                assert_eq!(
+                    message(
+                        projection
+                            .projection_thread_snapshot(&session, "session", Some(&run))
+                            .await
+                    ),
+                    "thread-reads exact",
+                    "P2"
+                );
+                assert_eq!(
+                    message(projection.projection_outcome("session", "outcome").await),
+                    "thread-reads outcome",
+                    "P3"
+                );
+                assert_eq!(
                     projection
-                        .projection_thread_snapshot(&session, "session", None)
+                        .projection_coordinated_threads(&session, None)
                         .await
-                ),
-                "thread-reads latest",
-                "P1"
-            );
-            assert_eq!(
-                message(
-                    projection
-                        .projection_thread_snapshot(&session, "session", Some(&run))
+                        .unwrap(),
+                    executor
+                        .coordination_reads()
+                        .coordinated_threads(&session, None)
                         .await
-                ),
-                "thread-reads exact",
-                "P2"
-            );
-            assert_eq!(
-                message(projection.projection_outcome("session", "outcome").await),
-                "thread-reads outcome",
-                "P3"
-            );
-            assert_eq!(
-                projection
-                    .projection_coordinated_threads(&session, None)
-                    .await
-                    .unwrap(),
-                executor
-                    .coordination_reads()
-                    .coordinated_threads(&session, None)
-                    .await
-                    .unwrap(),
-                "P4"
-            );
+                        .unwrap(),
+                    "P4"
+                );
+            }
         }
     }
 }

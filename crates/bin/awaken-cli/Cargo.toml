@@ -32,12 +32,14 @@ path = "src/bin/awaken-coordinator.rs"
 # and thin Control/Coordinator executables. Every target calls the same role
 # service lifecycle; the authority-free Worker remains its own package and binary.
 [dependencies]
+awaken-acp-contract = { workspace = true }
+# Deployment policy fields and the broker wire consume their canonical contract.
+awaken-container-contract.workspace = true
 awaken-tool-contract.workspace = true
 awaken-data-governance-contract.workspace = true
 # Assembles the container-tier Session environment the deployment names.
 awaken-execution-composition.workspace = true
 # Deployment-file PVC policy is owned by the existing container substrate.
-awaken-sandbox-container.workspace = true
 # The Kubernetes engine: the control client that authenticates Pod Workers.
 awaken-sandbox-kubernetes = { workspace = true, optional = true }
 awaken-sandbox-memoryd.workspace = true
@@ -193,10 +195,11 @@ serde_json.workspace = true
 sha2 = "0.10"
 
 [dev-dependencies]
+# Runtime codecs/planning are used by CLI fixtures; production uses its composition root.
+awaken-sandbox-container.workspace = true
 awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
 awaken-sqlite-pool.workspace = true
-awaken-container-contract.workspace = true
 sha2 = "0.10"
 awaken-ext-goal.workspace = true
 k8s-openapi = { workspace = true }
@@ -241,7 +244,6 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
-awaken-acp-contract = { workspace = true }
 awaken-session-configuration-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-types.workspace = true

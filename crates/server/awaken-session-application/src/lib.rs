@@ -38,6 +38,8 @@ pub use awaken_session_execution_contract::SessionExecutor;
 
 mod execution_admission;
 pub use execution_admission::SessionExecutionAdmission;
+mod agent_configuration;
+pub use agent_configuration::{SessionRecoveryPurpose, agent_configuration_from_profile};
 mod construction;
 mod tool_compilation;
 pub use construction::{SessionApplicationBuilder, SessionCredentials, SessionResources};
@@ -176,7 +178,7 @@ pub use awaken_session_application_contract::{
     CredentialMaterialRotationCommand, CredentialPlaintext, SessionCredentialAccessRequest,
     SessionCredentialSource, SessionParticipantProvenance,
 };
-pub use mutation::{SessionMutationError, SnapshotCommit};
+pub use mutation::{SessionMutationError, SessionMutations, SnapshotCommit};
 mod event_batch_cutover_validation;
 pub use event_batch_cutover_validation::{
     SessionEventBatchCutoverValidationSnapshot, SessionEventBatchCutoverValidationSource,
@@ -191,6 +193,7 @@ pub use budget::BudgetSettlementOutcome;
 pub use lifecycle_outbox_relay::{
     LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL, LifecycleOutboxRelay, LifecycleOutboxReplay,
 };
+pub use live_inbox::SessionInputs;
 mod continuation;
 mod coordination;
 mod creation;
@@ -213,12 +216,13 @@ mod event_batches;
 pub use event_batches::SessionEventBatchIdempotency;
 mod outcome_reconciliation;
 mod projection;
-mod projection_evidence;
+mod queries;
 pub use awaken_session_execution_contract::{
     CommittedSessionFacts, ProjectionThreadSnapshots, SessionProjectionReadTimings,
 };
 pub use credentials::SessionPreparationError;
 mod lifecycle_supervisor;
+pub use queries::SessionQueries;
 mod mcp;
 mod realization;
 mod resource_reconciliation;
@@ -230,9 +234,7 @@ pub use awaken_session_realization_driver::{
     SessionTerminalCleanupDriveOutcome, drive_session_realization, drive_session_terminal_cleanup,
 };
 pub use mcp::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
-pub use realization::{
-    SessionRealizationError, SessionReconciliation, SessionReconciliationFailure,
-};
+pub use realization::{SessionReconciliation, SessionReconciliationFailure};
 pub use resource_reconciliation::{
     ReplaceSessionResourceManifest, SessionResourceManifestError, SessionResourceManifestOutcome,
     SessionResourcePurgeGuard,

@@ -118,7 +118,7 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
                 &spec(),
                 &environment.lifecycle().handle(),
                 &environment,
-                crate::session_environment::ProviderEffect::Unattached,
+                awaken_provisioning_contract::SandboxEffect::Unattached,
             )
             .await
             .unwrap();

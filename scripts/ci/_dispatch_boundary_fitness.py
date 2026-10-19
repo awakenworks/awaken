@@ -62,8 +62,6 @@ COORDINATOR_WORKER_SIDE_ENTRIES: frozenset[str] = frozenset(
         "awaken-session-executor",
         "awaken-sandbox-container",
         "awaken-sandbox-kubernetes",
-        "awaken-sandbox-memoryd",
-        "awaken-session-mcp",
         "awaken-store-fs",
     }
 )

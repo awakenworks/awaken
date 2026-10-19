@@ -11,9 +11,7 @@
 
 #[cfg(any(test, feature = "test-support"))]
 pub use awaken_session_environment_contract::AgentFilesystemClient;
-pub use awaken_session_environment_contract::{
-    ProviderEffect, SessionEnvironment, SessionEnvironmentProvider,
-};
+pub use awaken_session_environment_contract::{SessionEnvironment, SessionEnvironmentProvider};
 
 use std::sync::Arc;
 

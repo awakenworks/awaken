@@ -5,6 +5,7 @@
 // @formal entrypoint session_runtime_interval.one_nonoverlapping_interval_closes_with_exact_fact
 //! Durable terminal Session transitions.
 
+use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_provisioning_contract::RepositoryPublicationExpectation;
 use awaken_resource_contract::{BindingId, ResourceAccess};
 use awaken_session_configuration_contract::resource::{ResolvedInput, ResolvedInputSource};
@@ -281,13 +282,14 @@ impl SessionApplication {
         SessionArchiveWithRepositoryPublicationOutcome,
         SessionArchiveWithRepositoryPublicationError,
     > {
+        let mutations = &self.mutations;
         let mut transition = None;
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner_scope = self.owner(&command.session_id).await?;
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
+            let owner_scope = mutations.owner(&command.session_id).await?;
             if owner_scope != command.owner_scope {
                 return Err(SessionArchiveWithRepositoryPublicationError::NotFound);
             }
-            let mut session = self
+            let mut session = mutations
                 .session_aggregate(&command.session_id)
                 .await
                 .map_err(repository_failure)?;
@@ -349,7 +351,7 @@ impl SessionApplication {
                 break;
             }
             let facts = vec![command.lifecycle_fact.clone()];
-            match self
+            match mutations
                 .commit_session_snapshot_with_record(&owner_scope, session, idempotency, facts)
                 .await
             {
@@ -357,7 +359,7 @@ impl SessionApplication {
                     transition = Some(SessionDispositionMutation::committed(owner_scope, commit));
                     break;
                 }
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -374,7 +376,7 @@ impl SessionApplication {
             .await
             .err()
             .map(|error| error.to_string());
-        let durable = self
+        let durable = mutations
             .session_aggregate(&command.session_id)
             .await
             .map_err(repository_failure)?;
@@ -586,9 +588,13 @@ impl SessionApplication {
         fact: ManagedLifecycleFact,
         admission: ArchiveAdmission,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner_scope = self.owner(session_id).await.map_err(mutation_failure)?;
-            let mut session = self
+        let mutations = &self.mutations;
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
+            let owner_scope = mutations
+                .owner(session_id)
+                .await
+                .map_err(mutation_failure)?;
+            let mut session = mutations
                 .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
@@ -652,7 +658,7 @@ impl SessionApplication {
                 .archive(archived_at, archive_time)
                 .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?;
             let facts = vec![fact.clone()];
-            match self
+            match mutations
                 .commit_session_snapshot_with_record(
                     &owner_scope,
                     session,
@@ -664,7 +670,7 @@ impl SessionApplication {
                 Ok(commit) => {
                     return Ok(SessionDispositionMutation::committed(owner_scope, commit));
                 }
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
                 Err(error) => return Err(mutation_failure(error)),
@@ -678,13 +684,14 @@ impl SessionApplication {
         &self,
         command: SessionDeleteCommand,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
+        let mutations = &self.mutations;
         let session_id = command.session_id.as_str();
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner_scope = self
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
+            let owner_scope = mutations
                 .owner(&awaken_session_types::SessionId::from(session_id))
                 .await
                 .map_err(mutation_failure)?;
-            let mut session = self
+            let mut session = mutations
                 .session_aggregate(&awaken_session_types::SessionId::from(session_id))
                 .await
                 .map_err(repository_failure)
@@ -715,14 +722,14 @@ impl SessionApplication {
                 return Err(pending_event_batch_error());
             }
             let facts = vec![delete_fact];
-            match self
+            match mutations
                 .commit_session_snapshot_with_outcome(&owner_scope, session, "delete-intent", facts)
                 .await
             {
                 Ok(commit) => {
                     return Ok(SessionDispositionMutation::committed(owner_scope, commit));
                 }
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
                 Err(error) => return Err(mutation_failure(error)),

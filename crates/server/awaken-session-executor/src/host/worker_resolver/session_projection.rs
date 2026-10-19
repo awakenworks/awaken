@@ -1043,7 +1043,11 @@ mod tests {
         )
         .await
         .expect_err("P4 foreign claimed coordinates are rejected");
-        assert_eq!(error.code, "session_runtime_publication_conflict", "P4");
+        assert_eq!(
+            error.run_error().code,
+            "session_runtime_publication_conflict",
+            "P4"
+        );
 
         let mut missing = projection.clone();
         missing.agent_publication = None;
@@ -1063,7 +1067,10 @@ mod tests {
         )
         .await
         .expect_err("a cold pinned Worker projection must carry its publication");
-        assert_eq!(error.code, "session_runtime_publication_missing");
+        assert_eq!(
+            error.run_error().code,
+            "session_runtime_publication_missing"
+        );
 
         for (session_id, mutate) in [
             ("publication-agent-mismatch", 0_u8),
@@ -1106,7 +1113,10 @@ mod tests {
             )
             .await
             .expect_err("mismatched Worker publication must fail closed");
-            assert_eq!(error.code, "session_runtime_publication_conflict");
+            assert_eq!(
+                error.run_error().code,
+                "session_runtime_publication_conflict"
+            );
         }
     }
 

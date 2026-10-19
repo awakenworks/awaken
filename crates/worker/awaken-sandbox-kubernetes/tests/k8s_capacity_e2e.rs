@@ -16,7 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use awaken_provisioning_contract as pc;
-use awaken_sandbox_container::{ContainerEnvironmentProvider, ContainerProvider};
+use awaken_provisioning_contract::SandboxProvider;
+use awaken_sandbox_container::ContainerProvider;
 use awaken_sandbox_kubernetes::K8sRuntime;
 use k8s_common::{effect_fence, fixture_image, spec_with_command};
 use k8s_openapi::api::core::v1::{Namespace, Pod, ResourceQuota};
@@ -96,12 +97,14 @@ async fn create(
     fence_round: u64,
 ) -> Result<(), pc::SandboxError> {
     let fence = effect_fence(&spec.scope, "capacity", "capacity-owner", fence_round);
-    ContainerEnvironmentProvider::create_environment_for_effect(
+    SandboxProvider::claim_for_effect(
         provider,
         spec,
-        &fence,
-        &EffectAuthority::new(&fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &fence,
+            authority: &EffectAuthority::new(&fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .map(|_| ())

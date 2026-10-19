@@ -8,12 +8,11 @@ mod residue;
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::{SandboxFile, SessionSandbox};
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::docker::DockerRuntime;
-use awaken_sandbox_container::{
-    ContainerEnvironment, ContainerProvider, ContainerRuntime, ContainerState, EnvironmentFile,
-};
+use awaken_sandbox_container::{ContainerProvider, ContainerRuntime, ContainerState};
 use awaken_tool_contract::tool::ToolExecutor;
 use tokio::io::AsyncReadExt;
 
@@ -73,10 +72,10 @@ async fn native_acp_and_hand_share_one_production_container() {
         .container_id
         .clone();
     assert_eq!(
-        ContainerEnvironment::read_files(&sandbox, "/workspace/.mnt")
+        SessionSandbox::read_files(&sandbox, "/workspace/.mnt")
             .await
             .unwrap(),
-        vec![EnvironmentFile {
+        vec![SandboxFile {
             path: "seed.txt".into(),
             bytes: b"mounted-seed".to_vec(),
         }]
@@ -151,15 +150,15 @@ async fn native_acp_and_hand_share_one_production_container() {
         Some(0)
     );
     assert_eq!(
-        ContainerEnvironment::read_files(&sandbox, "/workspace/outputs")
+        SessionSandbox::read_files(&sandbox, "/workspace/outputs")
             .await
             .unwrap(),
         vec![
-            EnvironmentFile {
+            SandboxFile {
                 path: "nested/binary".into(),
                 bytes: vec![0, 0xff],
             },
-            EnvironmentFile {
+            SandboxFile {
                 path: "z.txt".into(),
                 bytes: b"text".to_vec(),
             },

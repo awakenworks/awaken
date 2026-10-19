@@ -464,7 +464,8 @@ async fn assert_late_hitl_frontier(
     runtime.lifecycle.lock().unwrap().push(awaiting.clone());
     if legacy_closed_interval {
         let mut persisted = warm
-            .application
+            .roles
+            .roots
             .session(&SessionId::from(id))
             .await
             .unwrap();

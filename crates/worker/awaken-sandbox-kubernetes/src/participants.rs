@@ -134,7 +134,8 @@ pub(super) async fn terminal_observation(
     pod: Option<&Pod>,
     observation: pc::SandboxObservation,
 ) -> Result<pc::SandboxObservation, RuntimeError> {
-    if expectation.purpose != awaken_sandbox_container::ContainerObservationPurpose::TerminalCleanup
+    if expectation.purpose
+        != awaken_provisioning_contract::SandboxObservationPurpose::TerminalCleanup
     {
         return Ok(observation);
     }

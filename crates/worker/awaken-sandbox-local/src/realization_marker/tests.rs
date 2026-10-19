@@ -2245,3 +2245,76 @@ fn legacy_is_marker_free_adoptable_and_never_mints_delete_evidence() {
     );
     assert!(std::fs::read(&root).is_ok(), "L4 foreign file preserved");
 }
+
+#[test]
+fn closed_filesystem_observation_uses_absence_or_the_exact_marker_incarnation() {
+    // Causes: C1 closed kind is absence/terminal/disposal versus live; C2 the
+    // handle has current marker evidence versus legacy; C3 observation names
+    // none/exact/foreign incarnation. Decision rules: F1 absence+none accepts
+    // for either handle (filesystem absence has no live incarnation); F2 any
+    // absence+incarnation refuses; F3 terminal/disposal+current+exact accepts;
+    // F4 terminal/disposal+(foreign|legacy) refuses; F5 live observations refuse.
+    use crate::FilesystemHandleCodec as _;
+    let legacy = pc::SandboxHandle::local(
+        "scope",
+        crate::LocalSandboxHandleV1 {
+            outputs_path: "/outputs".into(),
+            base_env: Vec::new(),
+            continuation_excluded_paths: Vec::new(),
+            deny_tool_egress: false,
+        },
+    );
+    let handle = pc::SandboxHandle::local_v2(
+        "scope",
+        crate::LocalSandboxHandleV2 {
+            previous: legacy.local_payload().unwrap(),
+            realization_fingerprint: pc::SandboxRealizationFingerprint::from_spec(&spec("scope")),
+            effect_fence: fence("create", 1),
+            physical_incarnation: "root-uid".into(),
+            owned_paths: Vec::new(),
+        },
+    );
+    for observation in [
+        pc::SandboxObservation::DefinitivelyUnavailable {
+            physical_incarnation: None,
+        },
+        pc::SandboxObservation::DefinitivelyUnavailable {
+            physical_incarnation: Some("root-uid".into()),
+        },
+        pc::SandboxObservation::Terminal {
+            physical_incarnation: "root-uid".into(),
+        },
+        pc::SandboxObservation::Terminal {
+            physical_incarnation: "foreign".into(),
+        },
+        pc::SandboxObservation::Disposing {
+            physical_incarnation: "root-uid".into(),
+        },
+        pc::SandboxObservation::Disposing {
+            physical_incarnation: "foreign".into(),
+        },
+        pc::SandboxObservation::Ready,
+        pc::SandboxObservation::Provisioning { deadline: None },
+        pc::SandboxObservation::Incompatible {
+            reason: "foreign".into(),
+        },
+    ] {
+        let absent = matches!(
+            &observation,
+            pc::SandboxObservation::DefinitivelyUnavailable {
+                physical_incarnation: None
+            }
+        );
+        let exact = matches!(&observation, pc::SandboxObservation::Terminal { physical_incarnation: uid } | pc::SandboxObservation::Disposing { physical_incarnation: uid } if uid == "root-uid");
+        assert_eq!(
+            validate_closed_observation(&handle, &observation).is_ok(),
+            absent || exact,
+            "F1-F5 {observation:?}"
+        );
+        assert_eq!(
+            validate_closed_observation(&legacy, &observation).is_ok(),
+            absent,
+            "legacy F1/F2/F4/F5 {observation:?}"
+        );
+    }
+}

@@ -22,7 +22,7 @@ async fn unattached_container_rebuild_is_refused_before_any_provider_call() {
         .realizer()
         .create_effective_for_effect(
             &spec,
-            awaken_session_environment_contract::ProviderEffect::Unattached,
+            awaken_provisioning_contract::SandboxEffect::Unattached,
             Some(&source),
             awaken_session_environment_contract::EnvironmentRealizationKind::Rebuild,
         )
@@ -36,7 +36,7 @@ async fn unattached_container_rebuild_is_refused_before_any_provider_call() {
         .realizer()
         .create_effective_for_effect(
             &spec,
-            awaken_session_environment_contract::ProviderEffect::Unattached,
+            awaken_provisioning_contract::SandboxEffect::Unattached,
             None,
             awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
@@ -67,7 +67,7 @@ async fn adopted_container_reprojects_the_current_managed_file_tree() {
         .realizer()
         .create_effective_for_effect(
             &spec,
-            awaken_session_environment_contract::ProviderEffect::Unattached,
+            awaken_provisioning_contract::SandboxEffect::Unattached,
             None,
             awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
@@ -101,7 +101,7 @@ async fn adopted_container_reprojects_the_current_managed_file_tree() {
         .adopt_effective_for_effect(
             &spec,
             &handle,
-            awaken_session_environment_contract::ProviderEffect::Unattached,
+            awaken_provisioning_contract::SandboxEffect::Unattached,
         )
         .await
         .expect("adopt the same container after the input tree was lost");
@@ -121,14 +121,15 @@ async fn adopted_container_reprojects_the_current_managed_file_tree() {
 
 #[tokio::test]
 async fn host_observation_preserves_purpose_and_exact_fence() {
-    // H1 ordinary recovery and H2 terminal cleanup pass their distinct purpose
-    // plus the unchanged fence through the same adapter. H3 provider failure
-    // remains an error, never a stopped receipt. No creation/adoption/disposal.
+    // H1 ordinary recovery and H2 terminal cleanup pass the canonical Sandbox
+    // purpose plus the unchanged fence through the same adapter. The producer
+    // and expected provider value use the sole enum; hard-coding Recovery must
+    // still fail H2. H3 provider failure remains an error, never a stopped
+    // receipt. No creation/adoption/disposal. Type-path acceptance and rejection
+    // are paired compile cases on the owning EnvironmentAdoption role.
     let fake = Arc::new(FakeContainerProvider::default());
-    fake.shared
-        .lock()
-        .unwrap()
-        .insert("__ready_observation".into(), Vec::new());
+    *fake.observation.lock().unwrap() =
+        Some(Ok(awaken_provisioning_contract::SandboxObservation::Ready));
     let provider = SandboxEnvironmentProvider::container(
         fake.clone(),
         Vec::new(),
@@ -141,12 +142,12 @@ async fn host_observation_preserves_purpose_and_exact_fence() {
     let fence = pc::SandboxEffectFence::new("observe", "owner", "boot", 1, u64::MAX).unwrap();
     for (purpose, container_purpose) in [
         (
-            awaken_session_environment_contract::ObservationPurpose::Recovery,
-            awaken_container_contract::ContainerObservationPurpose::Recovery,
+            awaken_provisioning_contract::SandboxObservationPurpose::Recovery,
+            awaken_provisioning_contract::SandboxObservationPurpose::Recovery,
         ),
         (
-            awaken_session_environment_contract::ObservationPurpose::TerminalCleanup,
-            awaken_container_contract::ContainerObservationPurpose::TerminalCleanup,
+            awaken_provisioning_contract::SandboxObservationPurpose::TerminalCleanup,
+            awaken_provisioning_contract::SandboxObservationPurpose::TerminalCleanup,
         ),
     ] {
         assert_eq!(
@@ -171,7 +172,7 @@ async fn host_observation_preserves_purpose_and_exact_fence() {
             Some(&(container_purpose, fence.clone()))
         );
     }
-    fake.shared.lock().unwrap().remove("__ready_observation");
+    *fake.observation.lock().unwrap() = None;
     assert!(
         provider
             .adoption()
@@ -183,7 +184,7 @@ async fn host_observation_preserves_purpose_and_exact_fence() {
                     spec: &spec,
                     effect_fence: &fence,
                 },
-                awaken_session_environment_contract::ObservationPurpose::TerminalCleanup
+                awaken_provisioning_contract::SandboxObservationPurpose::TerminalCleanup
             )
             .await
             .is_err()

@@ -15,11 +15,12 @@ use super::{guarded_claim, observation, process, terminal_evidence};
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
 use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::{AgentProcess, SandboxCreateAttempt, SandboxEffectFence};
 use awaken_sandbox_container::engine::{ExistingRealizationDecision, legacy_unfenced_fingerprint};
 use awaken_sandbox_container::{
-    ContainerCreateAttempt, ContainerEffectFence, ContainerObservationExpectation, ContainerPlan,
-    ContainerRealizationContext, ContainerRealizationIntent, ContainerRuntime, ContainerState,
-    RuntimeAgentProcess, RuntimeError, SandboxControlBindingRequest,
+    ContainerObservationExpectation, ContainerPlan, ContainerRealizationContext,
+    ContainerRealizationIntent, ContainerRuntime, ContainerState, RuntimeError,
+    SandboxControlBindingRequest,
 };
 use awaken_sandbox_container::{MissingHandleTerminalEvidence, PreparedContainer};
 use awaken_sandbox_control::SandboxControlServiceKind;
@@ -77,7 +78,7 @@ impl K8sRuntime {
     pub(super) async fn close_observed_creation_attempt(
         &self,
         scope: &str,
-        fence: &ContainerEffectFence,
+        fence: &SandboxEffectFence,
     ) -> Option<tokio::sync::OwnedRwLockWriteGuard<()>> {
         let gate = self.existing_creation_attempt(scope, fence)?;
         let guard = gate.barrier.clone().write_owned().await;
@@ -157,8 +158,8 @@ impl ContainerRuntime for K8sRuntime {
     async fn checkpoint_upload(
         &self,
         expectation: ContainerObservationExpectation<'_>,
-        access: awaken_sandbox_container::ContainerCheckpointAccess<'_>,
-        mutation: awaken_sandbox_container::ContainerCheckpointMutation<'_>,
+        access: awaken_provisioning_contract::SandboxCheckpointAccess<'_>,
+        mutation: awaken_provisioning_contract::SandboxCheckpointMutation<'_>,
     ) -> Result<Option<pc::SandboxCheckpointUpload>, RuntimeError> {
         checkpoint::persist_checkpoint_upload(self, expectation, access, mutation).await
     }
@@ -325,7 +326,7 @@ impl ContainerRuntime for K8sRuntime {
         &self,
         scope: &str,
         plan: &ContainerPlan,
-        expected_effect_fence: Option<&ContainerEffectFence>,
+        expected_effect_fence: Option<&SandboxEffectFence>,
     ) -> Result<MissingHandleTerminalEvidence, RuntimeError> {
         terminal_evidence::missing_handle_terminal_evidence(
             self,
@@ -500,7 +501,7 @@ impl ContainerRuntime for K8sRuntime {
             }
         };
         let recovery_attempt =
-            ContainerCreateAttempt::new(observed.attempt_id.clone().ok_or_else(|| {
+            SandboxCreateAttempt::new(observed.attempt_id.clone().ok_or_else(|| {
                 backend("Kubernetes Sandbox realization has no projected-content attempt fence")
             })?);
         let recovery_context = context.with_attempt(&recovery_attempt);
@@ -601,7 +602,7 @@ impl ContainerRuntime for K8sRuntime {
         &self,
         admitted: awaken_sandbox_container::AdmittedExec,
         command: pc::MaterializedCommand,
-    ) -> Result<RuntimeAgentProcess, RuntimeError> {
+    ) -> Result<AgentProcess, RuntimeError> {
         process::spawn_agent(self, admitted, command).await
     }
 
@@ -798,7 +799,7 @@ mod unmaterialized_absence_tests {
         // section, installs a process-lifetime tombstone, and every late retry
         // is rejected before another backend call.
         let runtime = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
-        let fence = ContainerEffectFence::new(
+        let fence = SandboxEffectFence::new(
             "create-operation",
             "worker-owner",
             "worker-boot",
@@ -863,7 +864,7 @@ mod unmaterialized_absence_tests {
         // cross-process fail-closed limit until a durable physical proof exists.
         let old = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
         let replacement = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
-        let fence = ContainerEffectFence::new(
+        let fence = SandboxEffectFence::new(
             "create-operation",
             "worker-owner",
             "worker-boot",

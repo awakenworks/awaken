@@ -100,7 +100,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
         _thread: &str,
         _projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         self.baseline_installs.fetch_add(1, Ordering::SeqCst);
         if matches!(
             mode,
@@ -114,17 +114,29 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
         }
         match self.projection_failure.swap(0, Ordering::SeqCst) {
             1 => {
-                return Err(RunError::unavailable(
-                    "injected retryable projection failure",
-                ));
+                return Err(
+                    (RunError::unavailable("injected retryable projection failure")).into(),
+                );
             }
             2 => {
-                return Err(RunError::classified(
+                return Err((RunError::classified(
                     "session_realization_invariant_violated",
                     "injected terminal projection failure",
-                ));
+                ))
+                .into());
             }
-            3 => return Err(RunError::internal("injected unknown projection failure")),
+            3 => return Err((RunError::internal("injected unknown projection failure")).into()),
+            4 => {
+                return Err(
+                    awaken_session_realization_contract::SessionRealizationEffectFailure::new(
+                        RunError::unavailable_classified(
+                            awaken_session_realization_contract::ENVIRONMENT_PROVISIONING_CODE,
+                            "provider still provisioning",
+                        ),
+                        Some(std::time::Duration::from_secs(6)),
+                    ),
+                );
+            }
             _ => {}
         }
         Ok(())
@@ -1460,6 +1472,9 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     // and still performs no external effect; C5 an AcceptDurableRoot caller
     // replays that same failed operation; E5 it receives the failed root without
     // changing the historical await-realization contract or repeating effects.
+    // C6 a protocol calls the existing SessionCreation role after the mutation
+    // kernel moves; E6 both completion modes reach that same kernel once and
+    // preserve R3/R4, without recursively calling the role or writing a root.
     //
     // | Rule | Receipt | Lowering | Durable root | Effect |
     // |---|---|---|---|---|
@@ -1467,6 +1482,7 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     // | R2 | exact | changed | activated | E2+E3 |
     // | R3 | exact | same | ActivationFailed | E3+E4 |
     // | R4 | exact accept | same | ActivationFailed | E3+E5 |
+    // | R5 | exact via role | either completion | ActivationFailed | E3+E6 |
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
@@ -1593,6 +1609,42 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
         accepted_failed.execution,
         awaken_session_state_contract::SessionExecutionState::ActivationFailed,
         "R4/E5"
+    );
+    let original_receipt = awaken_session_state_contract::IdempotencyRecord {
+        key: "create-replay-effects".into(),
+        payload_hash: "stable-product-request".into(),
+    };
+    assert!(matches!(
+        crate::SessionCreation::replay_session_create(
+            &application,
+            "workspace",
+            &accepted_failed.session_id,
+            &original_receipt,
+        )
+        .await,
+        Err(SessionCreationError::Tombstoned)
+    ));
+    assert_eq!(
+        crate::SessionCreation::replay_accepted_session_create(
+            &application,
+            "workspace",
+            &accepted_failed.session_id,
+            &original_receipt,
+        )
+        .await
+        .expect("R5/E6 accepted replay through protocol role"),
+        Some(accepted_failed.clone()),
+        "R5/E6 exact durable root"
+    );
+    assert_eq!(
+        repository.get(&accepted_failed.session_id).await.unwrap(),
+        accepted_failed,
+        "R5/E3 no root write"
+    );
+    assert_eq!(
+        repository.pending_lifecycle().await.unwrap(),
+        outbox_before,
+        "R5/E3 no outbox effect"
     );
     assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 1, "R4/E3");
     assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "R4/E3");
@@ -2786,7 +2838,11 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
         0,
         "T6 zero repeated effects"
     );
-    let owner = application.owner(&created.session_id).await.unwrap();
+    let owner = application
+        .queries()
+        .owner(&created.session_id)
+        .await
+        .unwrap();
     let mut changed = created.clone();
     changed.title = Some("time mutation".into());
     let receipt = awaken_session_state_contract::IdempotencyRecord {
@@ -2794,6 +2850,7 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
         payload_hash: "time-mutation".into(),
     };
     let commit = application
+        .mutations
         .commit_session_snapshot_with_record(
             &owner,
             // T3 is the real authoring CAS; T4 retains the original raw
@@ -2810,6 +2867,7 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     assert_eq!(updated.updated_at_unix_ms, Some(1_800_000_010_123));
     clock.advance(10_000);
     let commit = application
+        .mutations
         .commit_session_snapshot_with_record(
             &owner,
             awaken_session_state_contract::SessionAggregate::try_from(changed)
@@ -2823,6 +2881,7 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     assert_eq!(commit.into_session(), updated);
     clock.set(1);
     let rollback = application
+        .mutations
         .commit_session_snapshot_with_outcome(
             &owner,
             awaken_session_state_contract::SessionAggregate::try_from(updated.clone())

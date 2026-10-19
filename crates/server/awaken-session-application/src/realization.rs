@@ -16,7 +16,7 @@ use awaken_session_realization_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
     SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
-    SessionRealizationLeaseReceipt, SessionTerminalCleanupAssignment,
+    SessionRealizationDriveError, SessionRealizationLeaseReceipt, SessionTerminalCleanupAssignment,
     terminal_cleanup_worker_requirements,
 };
 use awaken_session_execution_contract::RealizationRuntime;
@@ -113,15 +113,17 @@ fn validate_target(
     validate_realization_target(&command.target, now_ms)
 }
 
-/// Failure while the Session application drives durable realization effects.
-#[derive(Debug, thiserror::Error)]
-pub enum SessionRealizationError {
-    #[error("Session realization control failed: {0}")]
-    Control(#[source] SessionRealizationControlFailure),
-    #[error("Session realization effect failed: {0}")]
-    Effect(#[source] RunError),
-    #[error("Session realization did not converge")]
-    DidNotConverge,
+/// Preserve the application-facing diagnostic prefix at its presentation
+/// edge; the contract's driver error is the one failure algebra.
+pub(super) fn realization_failure_message(
+    error: &awaken_session_realization_contract::SessionRealizationDriveError,
+) -> String {
+    use awaken_session_realization_contract::SessionRealizationDriveError as Error;
+    match error {
+        Error::Control(error) => format!("Session realization control failed: {error}"),
+        Error::Effect(error) => format!("Session realization effect failed: {error}"),
+        Error::DidNotConverge => "Session realization did not converge".into(),
+    }
 }
 
 /// One Session recovery failure retained for a later reconciliation pass.
@@ -150,8 +152,13 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
 {
     fn observe_realization_request(
         &self,
-    ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
-        self.runtime.observe_realization_request()
+    ) -> Result<
+        awaken_lease_contract::authority::AuthorityProofStarted,
+        awaken_session_realization_contract::SessionRealizationEffectFailure,
+    > {
+        self.runtime
+            .observe_realization_request()
+            .map_err(Into::into)
     }
 
     async fn synchronize_session_projection(
@@ -160,7 +167,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         projection: &awaken_session_realization_contract::FrozenSessionProjection,
         lease: &awaken_session_realization_contract::ObservedSessionRealizationLease,
         prepare_session: bool,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         self.runtime
             .install_session_projection(
                 session_id.as_str(),
@@ -177,10 +184,11 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         &self,
         session_id: &awaken_session_types::SessionId,
         lease: &SessionRealizationLease,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         self.runtime
             .invalidate_session_realization_lease(session_id.as_str(), lease)
             .await
+            .map_err(Into::into)
     }
 }
 
@@ -270,6 +278,7 @@ impl SessionApplication {
             true,
         )
         .await
+        .map_err(RunError::from)
     }
 
     #[cfg(test)]
@@ -476,14 +485,14 @@ impl SessionApplication {
         &self,
         owner_scope: &str,
         session: &PersistedSession,
-    ) -> Result<(), SessionRealizationError> {
+    ) -> Result<(), SessionRealizationDriveError> {
         let realization_runtime = self.runtime().realization();
 
         let projection = self
             .frozen_session_projection(owner_scope.to_string(), session, true)
             .await
             .map_err(|error| {
-                SessionRealizationError::Effect(RunError::internal(error.to_string()))
+                SessionRealizationDriveError::from(RunError::internal(error.to_string()))
             })?;
         realization_runtime
             .install_session_projection(
@@ -492,7 +501,7 @@ impl SessionApplication {
                 awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
             )
             .await
-            .map_err(SessionRealizationError::Effect)
+            .map_err(SessionRealizationDriveError::from)
     }
 
     /// Drive one local Session through the canonical durable realization phase
@@ -501,11 +510,11 @@ impl SessionApplication {
     pub async fn realize_session(
         &self,
         session_id: &awaken_session_types::SessionId,
-    ) -> Result<PersistedSession, SessionRealizationError> {
+    ) -> Result<PersistedSession, SessionRealizationDriveError> {
         let admission = self
             .refresh_executable_projections()
             .await
-            .map_err(|error| SessionRealizationError::Control(unavailable(error)))?;
+            .map_err(|error| SessionRealizationDriveError::Control(unavailable(error)))?;
         admission
             .enter(|| self.realize_session_after_refresh(session_id))
             .await
@@ -516,7 +525,7 @@ impl SessionApplication {
     pub(super) async fn realize_session_after_refresh(
         &self,
         session_id: &awaken_session_types::SessionId,
-    ) -> Result<PersistedSession, SessionRealizationError> {
+    ) -> Result<PersistedSession, SessionRealizationDriveError> {
         let realization_runtime = self.runtime().realization();
 
         // One co-located phase driver per Session. The request path and the
@@ -529,13 +538,13 @@ impl SessionApplication {
             .await;
         let request_started = realization_runtime
             .observe_realization_request()
-            .map_err(SessionRealizationError::Effect)?;
+            .map_err(SessionRealizationDriveError::from)?;
         let lease_expires_at_unix_ms = self
             .clock
             .now_ms()
             .checked_add(LOCAL_SESSION_REALIZATION_LEASE_MS)
             .ok_or_else(|| {
-                SessionRealizationError::Effect(RunError::internal("lease expiry overflow"))
+                SessionRealizationDriveError::from(RunError::internal("lease expiry overflow"))
             })?;
         let directive = self
             .begin_session_realization_after_refresh(BeginSessionRealization {
@@ -549,13 +558,14 @@ impl SessionApplication {
                 },
             })
             .await
-            .map_err(SessionRealizationError::Control)?;
+            .map_err(SessionRealizationDriveError::Control)?;
         self.drive_local_realization(&permit, directive, request_started)
             .await?;
-        self.session_aggregate(session_id)
+        self.mutations
+            .session_aggregate(session_id)
             .await
             .map_err(repository_control)
-            .map_err(SessionRealizationError::Control)
+            .map_err(SessionRealizationDriveError::Control)
             .map(SessionAggregate::into_snapshot)
     }
 
@@ -564,7 +574,7 @@ impl SessionApplication {
         permit: &awaken_session_realization_contract::SessionRealizationPermit,
         directive: SessionRealizationDirective,
         request_started: awaken_lease_contract::authority::AuthorityProofStarted,
-    ) -> Result<(), SessionRealizationError> {
+    ) -> Result<(), SessionRealizationDriveError> {
         let control = RefreshedSessionRealizationControl(self);
         crate::drive_session_realization(
             permit,
@@ -578,21 +588,12 @@ impl SessionApplication {
             request_started,
         )
         .await
-        .map_err(|error| match error {
-            awaken_session_realization_contract::SessionRealizationDriveError::Effect(error) => {
-                SessionRealizationError::Effect(error)
-            }
-            awaken_session_realization_contract::SessionRealizationDriveError::Control(error) => {
-                SessionRealizationError::Control(error)
-            }
-            awaken_session_realization_contract::SessionRealizationDriveError::DidNotConverge => {
-                SessionRealizationError::DidNotConverge
-            }
-        })
     }
 
     /// Renew due local projections through the lease-only root-CAS command.
-    pub async fn renew_due_session_realizations(&self) -> Result<usize, SessionRealizationError> {
+    pub async fn renew_due_session_realizations(
+        &self,
+    ) -> Result<usize, SessionRealizationDriveError> {
         let realization_runtime = self.runtime().realization();
 
         realization_runtime
@@ -605,7 +606,7 @@ impl SessionApplication {
                 ),
             )
             .await
-            .map_err(SessionRealizationError::Effect)
+            .map_err(SessionRealizationDriveError::from)
     }
 
     /// Recover the one local Runtime projection for every Session that lost its
@@ -709,7 +710,7 @@ impl SessionApplication {
                         Ok(()) => report.settled.push(session.clone()),
                         Err(error) => report.failures.push(SessionReconciliationFailure {
                             session_id: candidate.session_id.to_string(),
-                            message: error.to_string(),
+                            message: realization_failure_message(&error),
                         }),
                     }
                 }
@@ -738,7 +739,7 @@ impl SessionApplication {
                 Ok(session) => report.settled.push(session),
                 Err(error) => report.failures.push(SessionReconciliationFailure {
                     session_id: session_id.into_string(),
-                    message: error.to_string(),
+                    message: realization_failure_message(&error),
                 }),
             }
         }
@@ -843,6 +844,7 @@ impl SessionApplication {
     ) -> Result<(String, PersistedSession), SessionRealizationControlFailure> {
         use tracing::Instrument as _;
         let owner_scope = self
+            .mutations
             .owner(session_id)
             .instrument(tracing::info_span!("session.realization.owner_lookup"))
             .await

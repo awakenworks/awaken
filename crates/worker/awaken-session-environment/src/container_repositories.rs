@@ -122,7 +122,7 @@ impl SandboxControlService for OperationRepositoryCredential {
 }
 
 async fn publish_credential(
-    sandbox: &dyn awaken_container_contract::ContainerEnvironment,
+    sandbox: &dyn awaken_provisioning_contract::SessionSandbox,
     remote_url: &str,
     credential: Option<&pc::RepositoryHttpBasicCredential>,
     clock: &Arc<dyn awaken_time::WallClock>,
@@ -149,7 +149,7 @@ async fn publish_credential(
 }
 
 pub(super) async fn provision(
-    sandbox: &dyn awaken_container_contract::ContainerEnvironment,
+    sandbox: &dyn awaken_provisioning_contract::SessionSandbox,
     publisher_bin: &str,
     plan: &pc::RepositoryRealizationPlan,
     credential: Option<&pc::RepositoryHttpBasicCredential>,
@@ -196,7 +196,7 @@ struct RepositoryObservation {
 }
 
 async fn run_repository_command(
-    sandbox: &dyn awaken_container_contract::ContainerEnvironment,
+    sandbox: &dyn awaken_provisioning_contract::SessionSandbox,
     command: pc::Command,
     limit: usize,
 ) -> Result<(pc::ExitStatus, Result<RepositoryObservation, ()>), pc::SandboxError> {
@@ -366,7 +366,7 @@ fn repository_clone_command(
 }
 
 pub(super) async fn push(
-    sandbox: &dyn awaken_container_contract::ContainerEnvironment,
+    sandbox: &dyn awaken_provisioning_contract::SessionSandbox,
     helper_bin: &str,
     plan: &pc::RepositoryRealizationPlan,
     expectation: &pc::RepositoryPublicationExpectation,
@@ -579,7 +579,7 @@ mod tests {
         // E1=retain the exit status and diagnose DNS; E2=no raw output or secret
         // escapes the Repository boundary. R1(C1,C2)->E1+E2, no success claim.
         use crate::test_support::{FakeContainerProvider, spec};
-        use awaken_container_contract::ContainerEnvironmentProvider as _;
+        use awaken_provisioning_contract::SandboxProvider as _;
         let shared = Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
             ("__fail_repository_import".into(), Vec::new()),
             ("__repository_import_observation".into(), b"fatal: unable to access 'https://user:secret-fixture@example.invalid/': Could not resolve host: example.invalid\n".to_vec()),
@@ -589,7 +589,11 @@ mod tests {
             ..Default::default()
         };
         let container = provider
-            .create_unattached_environment(&spec())
+            .claim_for_effect(
+                &spec(),
+                awaken_provisioning_contract::SandboxEffect::Unattached,
+                awaken_provisioning_contract::SandboxRealizationIntent::Create,
+            )
             .await
             .unwrap();
         let error = provision(
@@ -629,10 +633,14 @@ mod tests {
         // an exact remote observation from a truncated tail. R2 exact->Rejected.
         // A MiB exceeds both the output bound and pipe capacity: it must drain.
         use crate::test_support::{FakeContainerProvider, spec};
-        use awaken_container_contract::ContainerEnvironmentProvider as _;
+        use awaken_provisioning_contract::SandboxProvider as _;
         let provider = FakeContainerProvider::default();
         let container = provider
-            .create_unattached_environment(&spec())
+            .claim_for_effect(
+                &spec(),
+                awaken_provisioning_contract::SandboxEffect::Unattached,
+                awaken_provisioning_contract::SandboxRealizationIntent::Create,
+            )
             .await
             .unwrap();
         let expectation = pc::RepositoryPublicationExpectation {

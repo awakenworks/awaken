@@ -3,6 +3,7 @@
 // @formal reason: facts; replies delegate to the one Session coordination admission.
 //! Exact Run reads over the existing Session, dispatch and Thread authorities.
 
+use crate::SessionProjectionReads as _;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::{RunLifecycleCursor, ThreadId};
 use awaken_dispatch_contract::{DispatchCursor, DispatchPage, SessionRunEventPage};
@@ -22,6 +23,7 @@ impl SessionApplication {
         session_id: &SessionId,
     ) -> Result<(), SessionProjectionRecoveryError> {
         let projection = self
+            .queries
             .read_session_projection(session_id.as_str(), Some(owner_scope))
             .await?
             .ok_or(SessionProjectionRecoveryError::NotFound)?;

@@ -3,7 +3,6 @@
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Authenticated Control-to-Coordinator subject-content erasure boundary.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,17 +43,15 @@ impl ContentEraser for CoordinatorContentEraser {
     }
 }
 
-/// Compose every subject-keyed content store owned by Coordinator. Both split
-/// Coordinator and AllInOne call this factory; neither assembles a second fanout.
+/// Compose subject-content erasure over the stores selected by the process root.
+/// Coordinator owns the fanout and receipt; callers construct the concrete stores.
 pub fn coordinator_content_eraser(
     captured_content: Arc<dyn ContentEraser>,
-    acp_session_blob_root: Option<PathBuf>,
+    acp_session_content: Option<Arc<dyn ContentEraser>>,
 ) -> Arc<dyn ContentEraser> {
     let mut targets = vec![captured_content];
-    if let Some(root) = acp_session_blob_root {
-        targets.push(Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(
-            root,
-        )));
+    if let Some(content) = acp_session_content {
+        targets.push(content);
     }
     Arc::new(CoordinatorContentEraser { targets })
 }
@@ -245,6 +242,107 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn injected_erasure_roles_preserve_order_errors_and_receipt_bounds() {
+        // Cause/effect graph: C1 optional ACP content is installed; C2 captured
+        // content fails; C3 ACP content fails; C4 two successful receipts overflow.
+        // C3 is evaluated only after !C2; C4 only after C1 + !C2 + !C3.
+        // Effects: the original exact subject and captured-first order reach
+        // the injected roles; the first error is preserved without a later
+        // call; successful receipts use checked addition, including zero/MAX.
+        //
+        // | rule | captured | ACP        | effect                    | calls |
+        // | R1 | Ok(0)    | absent     | Ok(0)                     | C     |
+        // | R2 | Ok(2)    | Ok(5)      | Ok(7)                     | C,A   |
+        // | R3 | Err(C)   | Ok(MAX)    | original captured error   | C     |
+        // | R4 | Ok(2)    | Err(A)     | original ACP error        | C,A   |
+        // | R5 | Ok(MAX)  | Ok(1)      | original overflow error   | C,A   |
+        // | R6 | Ok(MAX)  | Ok(0)      | Ok(MAX)                   | C,A   |
+        // | R7 | Err(C)   | absent     | original captured error   | C     |
+        // | R8 | Ok(0)    | Ok(0)      | clean zero receipt        | C,A   |
+        // This spy observes only injection, order, error and receipt behavior;
+        // the adjacent real-FS case retains authentication and durable replay.
+        struct RecordingEraser {
+            name: &'static str,
+            outcome: Result<usize, &'static str>,
+            calls: Arc<std::sync::Mutex<Vec<&'static str>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl ContentEraser for RecordingEraser {
+            async fn erase_subject(&self, subject: &DataSubjectId) -> Result<usize, ErasureError> {
+                assert_eq!(subject.as_str(), "dsub_selected", "exact injected subject");
+                self.calls.lock().unwrap().push(self.name);
+                self.outcome
+                    .map_err(|message| ErasureError(message.to_owned()))
+            }
+        }
+
+        for (rule, captured, portable, expected, expected_calls) in [
+            ("R1", Ok(0), None, Ok(0), vec!["captured"]),
+            ("R2", Ok(2), Some(Ok(5)), Ok(7), vec!["captured", "acp"]),
+            (
+                "R3",
+                Err("captured failure"),
+                Some(Ok(usize::MAX)),
+                Err("captured failure"),
+                vec!["captured"],
+            ),
+            (
+                "R4",
+                Ok(2),
+                Some(Err("ACP failure")),
+                Err("ACP failure"),
+                vec!["captured", "acp"],
+            ),
+            (
+                "R5",
+                Ok(usize::MAX),
+                Some(Ok(1)),
+                Err("Coordinator erasure receipt overflow"),
+                vec!["captured", "acp"],
+            ),
+            (
+                "R6",
+                Ok(usize::MAX),
+                Some(Ok(0)),
+                Ok(usize::MAX),
+                vec!["captured", "acp"],
+            ),
+            (
+                "R7",
+                Err("captured failure"),
+                None,
+                Err("captured failure"),
+                vec!["captured"],
+            ),
+            ("R8", Ok(0), Some(Ok(0)), Ok(0), vec!["captured", "acp"]),
+        ] {
+            let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let captured: Arc<dyn ContentEraser> = Arc::new(RecordingEraser {
+                name: "captured",
+                outcome: captured,
+                calls: calls.clone(),
+            });
+            let portable: Option<Arc<dyn ContentEraser>> = portable.map(|outcome| {
+                Arc::new(RecordingEraser {
+                    name: "acp",
+                    outcome,
+                    calls: calls.clone(),
+                }) as Arc<dyn ContentEraser>
+            });
+            let actual = coordinator_content_eraser(captured, portable)
+                .erase_subject(&DataSubjectId("dsub_selected".into()))
+                .await;
+            assert_eq!(
+                actual.map_err(|error| error.0),
+                expected.map_err(str::to_owned),
+                "{rule}"
+            );
+            assert_eq!(*calls.lock().unwrap(), expected_calls, "{rule}");
+        }
+    }
+
+    #[tokio::test]
     async fn private_erasure_boundary_authenticates_fans_out_and_fences() {
         // Cause/effect decision table: R1 valid token + captured content + ACP
         // blob -> erase both and return two; R2 retry -> replay the same durable
@@ -261,7 +359,7 @@ mod tests {
             1,
         );
         let blob_root = tempfile::tempdir().unwrap();
-        let blobs = FsSessionBlobStore::new(blob_root.path().to_path_buf());
+        let blobs = Arc::new(FsSessionBlobStore::new(blob_root.path().to_path_buf()));
         let source = tempfile::tempdir().unwrap();
         std::fs::write(source.path().join("session"), b"opaque").unwrap();
         // R1/C5: retain this complete blob for the erasure oracle; portable
@@ -278,8 +376,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let eraser =
-            coordinator_content_eraser(store.clone(), Some(blob_root.path().to_path_buf()));
+        let eraser = coordinator_content_eraser(store.clone(), Some(blobs));
         let app = router(eraser, "secret").unwrap();
         let request = |token: &'static str| {
             Request::post(ERASE_COORDINATOR_CONTENT_PATH)

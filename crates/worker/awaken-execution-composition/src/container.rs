@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use crate::ContainerEnvironmentComponents;
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-use awaken_sandbox_container::ContainerProvider;
+use awaken_provisioning_contract::{SandboxCapacity, SandboxProvider};
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-use awaken_sandbox_container::{ContainerEnvironmentCapacity, ContainerEnvironmentProvider};
+use awaken_sandbox_container::ContainerProvider;
 
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 use awaken_session_environment_contract::ContainerHandResidency;
@@ -63,8 +63,9 @@ fn container_image(image: Option<&str>) -> Result<String, String> {
 
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 struct BuiltContainerEnvironment {
-    provider: Arc<dyn ContainerEnvironmentProvider>,
-    capacity: Option<Arc<dyn ContainerEnvironmentCapacity>>,
+    provider:
+        Arc<dyn SandboxProvider<Environment = dyn awaken_provisioning_contract::SessionSandbox>>,
+    capacity: Option<Arc<dyn SandboxCapacity>>,
 }
 
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]

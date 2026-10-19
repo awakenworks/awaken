@@ -22,12 +22,32 @@ async fn failed_terminal_times_survive_archive_and_cold_reconstruction() {
             let mut persisted = crate::state::tests::sample_persisted(&id);
             persisted.execution =
                 awaken_session_state_contract::SessionExecutionState::ActivationFailed;
-            persisted.realization_progress.failed_at_unix_ms = failure_time;
-            persisted.realization_progress.last_error = Some("activation failed".into());
+            let source_run_id = sourced.then(|| RunId("failed-time-run".into()));
+            if let Some(now) = failure_time {
+                // W3/R1: the existing assignment command owns known failure
+                // time and the exact optional source; release time is distinct.
+                let mut aggregate =
+                    awaken_session_state_contract::SessionAggregate::try_from(persisted)
+                        .expect("valid failed Session fixture");
+                aggregate.assignment().record_failure(
+                    "activation failed".into(),
+                    now,
+                    source_run_id.clone(),
+                );
+                persisted = aggregate.into_snapshot();
+            } else {
+                // W3/R2: legacy decoding preserves unknown time. Calling the
+                // record command would fabricate an observation for this row.
+                let mut progress = serde_json::to_value(&persisted).unwrap();
+                progress["realization_progress"]["last_error"] = "activation failed".into();
+                if let Some(run) = &source_run_id {
+                    progress["realization_progress"]["failure_source_run_id"] =
+                        serde_json::to_value(run).unwrap();
+                }
+                persisted = serde_json::from_value(progress).unwrap();
+            }
             let runtime = RehydrateFake::default();
-            if sourced {
-                let run = RunId("failed-time-run".into());
-                persisted.realization_progress.failure_source_run_id = Some(Box::new(run.clone()));
+            if let Some(run) = source_run_id {
                 runtime.lifecycle.lock().unwrap().push(lifecycle(
                     1,
                     &id,

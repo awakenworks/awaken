@@ -248,7 +248,7 @@ impl pc::SandboxCheckpointStore for CountingCheckpointStore {
 #[tokio::test]
 async fn container_restore_is_refused_at_selection_when_the_provider_has_no_restorable_rung() {
     let provider = Arc::new(FakeContainerProvider::default());
-    assert!(provider.restorable().is_none(), "C1");
+    assert!(provider.restoration().restorable().is_err(), "C1");
     let container = SandboxEnvironmentProvider::container(
         provider,
         Vec::new(),

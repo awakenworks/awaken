@@ -669,9 +669,14 @@ fn guarded_claim_handle_keeps_one_typed_terminal_incarnation() {
     // incarnation claim. Rules H1=C1+C2+C4->E1, H2=C3->E2. Ordinary adoption
     // is owned by the K8s runtime purpose table, not duplicated in this test.
     use crate::{CreateTicket, CreateTicketRequest, TicketOrigin, TicketResult, TicketStatus};
-    let predecessor =
-        crate::ContainerEffectFence::new("old-effect", "old-worker", "old-boot", 1, u64::MAX)
-            .unwrap();
+    let predecessor = awaken_provisioning_contract::SandboxEffectFence::new(
+        "old-effect",
+        "old-worker",
+        "old-boot",
+        1,
+        u64::MAX,
+    )
+    .unwrap();
     let ticket = CreateTicket {
         request: CreateTicketRequest::new(
             "old-group",
@@ -752,4 +757,73 @@ fn guarded_claim_handle_keeps_one_typed_terminal_incarnation() {
         malformed_handle.container_physical_incarnation().is_err(),
         "H2 empty guard UID"
     );
+}
+
+#[test]
+fn closed_container_observation_requires_the_original_physical_incarnation() {
+    // Causes: C1 provider-decoded current/legacy handle; C2 closed/non-closed
+    // observation; C3 exact/foreign/missing physical incarnation. Effects:
+    // R1 current+closed+exact -> accept; R2 current+closed+(foreign|missing)
+    // -> Conflict; R3 non-closed -> Invalid; R4 no handle incarnation -> refuse.
+    // The table has no provider I/O and cannot grant disposal authority.
+    let handle = pc::SandboxHandle::container_v2(
+        "scope",
+        container_v2(
+            Some(ContainerContinuationHandle::KubernetesContinuationV2 {
+                pod_uid: "pod-uid-a".into(),
+                claim_uid: None,
+            }),
+            Vec::new(),
+        ),
+    );
+    let legacy = pc::SandboxHandle::container(
+        "scope",
+        ContainerSandboxHandleV1 {
+            sandbox_control_incarnation: None,
+            runtime_handle: None,
+            ..container_v1(None)
+        },
+    );
+    for observation in [
+        pc::SandboxObservation::Ready,
+        pc::SandboxObservation::Provisioning { deadline: None },
+        pc::SandboxObservation::Incompatible {
+            reason: "foreign".into(),
+        },
+        pc::SandboxObservation::DefinitivelyUnavailable {
+            physical_incarnation: None,
+        },
+        pc::SandboxObservation::DefinitivelyUnavailable {
+            physical_incarnation: Some("pod-uid-a".into()),
+        },
+        pc::SandboxObservation::DefinitivelyUnavailable {
+            physical_incarnation: Some("foreign".into()),
+        },
+        pc::SandboxObservation::Terminal {
+            physical_incarnation: "pod-uid-a".into(),
+        },
+        pc::SandboxObservation::Terminal {
+            physical_incarnation: "foreign".into(),
+        },
+        pc::SandboxObservation::Disposing {
+            physical_incarnation: "pod-uid-a".into(),
+        },
+        pc::SandboxObservation::Disposing {
+            physical_incarnation: "foreign".into(),
+        },
+    ] {
+        let expected = matches!(&observation,
+            pc::SandboxObservation::DefinitivelyUnavailable { physical_incarnation: Some(uid) }
+            | pc::SandboxObservation::Terminal { physical_incarnation: uid }
+            | pc::SandboxObservation::Disposing { physical_incarnation: uid } if uid == "pod-uid-a");
+        assert_eq!(
+            validate_container_closed_observation(&handle, &observation).is_ok(),
+            expected,
+            "R1-R3 {observation:?}"
+        );
+        assert!(
+            validate_container_closed_observation(&legacy, &observation).is_err(),
+            "R4 {observation:?}"
+        );
+    }
 }

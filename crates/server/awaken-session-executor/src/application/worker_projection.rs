@@ -38,7 +38,7 @@ pub async fn realize_session(
         synchronizer,
         awaken_authority_clock::authority_proof_started().map_err(|error| {
             awaken_session_realization_contract::SessionRealizationDriveError::Effect(
-                awaken_session_types::RunError::unavailable(error.to_string()),
+                awaken_session_types::RunError::unavailable(error.to_string()).into(),
             )
         })?,
         &realization,

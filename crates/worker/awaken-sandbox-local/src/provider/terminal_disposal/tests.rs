@@ -16,7 +16,7 @@ async fn terminal_takeover_cannot_borrow_absence_from_another_provider_base() {
         for foreign_base in [false, true] {
             let original = tempfile::tempdir().unwrap();
             let foreign = tempfile::tempdir().unwrap();
-            let provider = |base: &std::path::Path| -> Box<dyn pc::SandboxProvider> {
+            let provider = |base: &std::path::Path| -> Box<dyn pc::SandboxProvider<Environment = dyn pc::Sandbox>> {
                 if namespace {
                     Box::new(crate::NamespaceProvider::new(base))
                 } else {
@@ -37,8 +37,11 @@ async fn terminal_takeover_cannot_borrow_absence_from_another_provider_base() {
             let sandbox = source
                 .claim_for_effect(
                     &spec,
-                    &create,
-                    &pc::test_support::EffectAuthority::new(&create),
+                    awaken_provisioning_contract::SandboxEffect::Fenced {
+                        fence: &create,
+                        authority: &pc::test_support::EffectAuthority::new(&create),
+                    },
+                    awaken_provisioning_contract::SandboxRealizationIntent::Create,
                 )
                 .await
                 .unwrap();
@@ -421,11 +424,12 @@ async fn terminal_cleanup_uses_current_proof_not_provider_wall_time() {
             for proof in ["current", "revoked", "exhausted"] {
                 for phase in ["resident", "cold", "absent"] {
                     let tmp = tempfile::tempdir().unwrap();
-                    let provider: Box<dyn pc::SandboxProvider> = if namespace {
-                        Box::new(crate::NamespaceProvider::new(tmp.path()))
-                    } else {
-                        Box::new(LocalProvider::new(tmp.path()))
-                    };
+                    let provider: Box<dyn pc::SandboxProvider<Environment = dyn pc::Sandbox>> =
+                        if namespace {
+                            Box::new(crate::NamespaceProvider::new(tmp.path()))
+                        } else {
+                            Box::new(LocalProvider::new(tmp.path()))
+                        };
                     let mut spec = workdir_spec("clock-authority", false);
                     if namespace {
                         spec.isolation = pc::IsolationClass::Namespace;
@@ -449,13 +453,9 @@ async fn terminal_cleanup_uses_current_proof_not_provider_wall_time() {
                         None
                     } else {
                         let sandbox = provider
-                            .claim_for_effect(
-                                &spec,
-                                &create,
-                                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                            .claim_for_effect(&spec, awaken_provisioning_contract::SandboxEffect::Fenced { fence: &create, authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                                     &create,
-                                ),
-                            )
+                                ) }, awaken_provisioning_contract::SandboxRealizationIntent::Create)
                             .await
                             .unwrap();
                         std::fs::write(&secret, b"unchanged-by-denial").unwrap();
@@ -503,7 +503,7 @@ async fn terminal_cleanup_uses_current_proof_not_provider_wall_time() {
                             assert_eq!(
                                 provider
                                     .observe(
-                                        handle.as_ref().unwrap(),
+                                        pc::SandboxAdoption::new(&spec, handle.as_ref().unwrap()),
                                         pc::SandboxObservationBasis::Effect {
                                             spec: &spec,
                                             effect_fence: &create,

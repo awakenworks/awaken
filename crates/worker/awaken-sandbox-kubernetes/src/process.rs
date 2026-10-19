@@ -12,7 +12,7 @@ use tokio::io::AsyncReadExt;
 use super::{EXEC_SEQUENCE, K8sRuntime, backend, channel};
 use awaken_agent_channel::{AgentChannel, SplitChannel};
 use awaken_connection_plan::{ChannelFactory as _, ConnectionPlan, TokioChannelFactory};
-use awaken_sandbox_container::RuntimeAgentProcess;
+use awaken_provisioning_contract::AgentProcess;
 use awaken_sandbox_container::RuntimeError;
 use std::sync::atomic::Ordering;
 use tokio::io::AsyncWriteExt as _;
@@ -342,7 +342,7 @@ pub(super) async fn spawn_agent(
     runtime: &K8sRuntime,
     admitted: awaken_sandbox_container::AdmittedExec,
     command: pc::MaterializedCommand,
-) -> Result<RuntimeAgentProcess, RuntimeError> {
+) -> Result<AgentProcess, RuntimeError> {
     let container_id = admitted.container_id();
     let id = format!(
         "k8s-agent-exec-{}-{}",
@@ -380,7 +380,7 @@ pub(super) async fn spawn_agent(
     let completion = attached
         .take_status()
         .ok_or_else(|| backend("k8s agent exec has no completion status"))?;
-    Ok(RuntimeAgentProcess {
+    Ok(AgentProcess {
         process: Box::new(K8sExecProcess {
             id,
             pod: container_id.to_string(),

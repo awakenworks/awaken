@@ -58,7 +58,7 @@ async fn continuation_handle_kind_is_rejected_before_kubernetes_io() {
     let error = ContainerRuntime::observe(
         &runtime,
         ContainerObservationExpectation {
-            purpose: awaken_sandbox_container::ContainerObservationPurpose::Recovery,
+            purpose: awaken_provisioning_contract::SandboxObservationPurpose::Recovery,
             retained_attempt: None,
             container_id: "never-read",
             adoption_fingerprint: None,
@@ -110,7 +110,7 @@ fn continuation_observation_has_one_disposing_authority() {
                     effect_fenced,
                     fenced_total_absence| {
         let evidence = ContinuationObservationEvidence {
-            purpose: ContainerObservationPurpose::TerminalCleanup,
+            purpose: SandboxObservationPurpose::TerminalCleanup,
             pod_present,
             pod_deleting,
             cleanup_gate_held: cleanup_gate,
@@ -127,7 +127,7 @@ fn continuation_observation_has_one_disposing_authority() {
             // state, or UID mismatch. Cross every present-Pod KCO1 rule with
             // Recovery as a metamorphic identity; KCO2 owns absent-Pod rows.
             let recovery = continuation_observation_disposition(ContinuationObservationEvidence {
-                purpose: ContainerObservationPurpose::Recovery,
+                purpose: SandboxObservationPurpose::Recovery,
                 ..evidence
             });
             assert_eq!(
@@ -206,8 +206,8 @@ fn absent_pod_observation_separates_recovery_from_terminal_absence() {
      * KPV5 attaches these rows to real provider observation, preparation,
      * disposal and Rebuild; the K3d node-loss scenario checks the Host/Worker
      * path and retained bytes. A pure classifier pass is not that I/O proof. */
-    use ContainerObservationPurpose::{Recovery, TerminalCleanup};
     use ContinuationObservationDisposition::{Disposing, Incompatible, Live};
+    use SandboxObservationPurpose::{Recovery, TerminalCleanup};
     for purpose in [Recovery, TerminalCleanup] {
         for fenced in [false, true] {
             for terminating in [false, true] {
@@ -332,7 +332,7 @@ async fn realization_configuration_covers_every_immutable_kubernetes_input() {
     let changed = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap())
         .with_rendezvous("127.0.0.1:7000".parse().unwrap())
         .with_image_pull_secrets(["registry-auth".into()])
-        .with_continuation_volume(awaken_sandbox_container::K8sContinuationVolume {
+        .with_continuation_volume(awaken_container_contract::K8sContinuationVolume {
             storage_class_name: Some("fast".into()),
             size: "20Gi".into(),
         })
@@ -364,7 +364,7 @@ async fn realization_configuration_covers_every_immutable_kubernetes_input() {
     ] {
         let configuration = || {
             K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap())
-                .with_continuation_volume(awaken_sandbox_container::K8sContinuationVolume {
+                .with_continuation_volume(awaken_container_contract::K8sContinuationVolume {
                     storage_class_name: class.map(str::to_owned),
                     size: size.into(),
                 })
@@ -387,7 +387,7 @@ async fn historical_terminal_configuration_requires_explicit_no_claim_evidence()
     // The returned candidate changes only storage policy. Backend observation
     // must still match actual Pod/PVC UIDs and fingerprints before any effect.
     let runtime = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap()).with_continuation_volume(
-        awaken_sandbox_container::K8sContinuationVolume {
+        awaken_container_contract::K8sContinuationVolume {
             storage_class_name: Some("local-path".into()),
             size: "1Gi".into(),
         },
@@ -1556,7 +1556,7 @@ fn build_pod_realizes_memory_mounts_from_one_authoritative_snapshot_path() {
         },
     ]);
     let effect_fence =
-        ContainerEffectFence::new("memory-projection-1", "owner-1", "runtime-1", 1, u64::MAX)
+        SandboxEffectFence::new("memory-projection-1", "owner-1", "runtime-1", 1, u64::MAX)
             .unwrap();
     let pod = build_pod_with_continuation(
         "run-1",
@@ -2170,8 +2170,8 @@ fn retained_original_source_observation_never_grants_absence_or_execution() {
     // current TerminalCleanup -> RetainedOriginal, never absence/Disposing.
     // R4 every remaining deleting-source combination stays unresolved.
     for purpose in [
-        ContainerObservationPurpose::Recovery,
-        ContainerObservationPurpose::TerminalCleanup,
+        SandboxObservationPurpose::Recovery,
+        SandboxObservationPurpose::TerminalCleanup,
     ] {
         for observed in [None, Some("claim"), Some("foreign")] {
             for guard in [false, true] {
@@ -2200,7 +2200,7 @@ fn retained_original_source_observation_never_grants_absence_or_execution() {
                                 result.unwrap(),
                                 ContinuationObservationDisposition::Disposing
                             );
-                        } else if purpose == ContainerObservationPurpose::TerminalCleanup
+                        } else if purpose == SandboxObservationPurpose::TerminalCleanup
                             && guard
                             && fenced
                         {

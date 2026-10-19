@@ -15,7 +15,7 @@ use super::guarded_claim::verify_joined_original_claim;
 use super::participants;
 use super::pod_name;
 use super::sandbox_control;
-use awaken_sandbox_container::ContainerEffectFence;
+use awaken_provisioning_contract::SandboxEffectFence;
 use awaken_sandbox_container::ContainerPlan;
 use awaken_sandbox_container::ContainerRealizationContext;
 use awaken_sandbox_container::ContainerRealizationIntent;
@@ -124,7 +124,7 @@ pub(super) async fn joined_original_evidence(
     scope: &str,
     pod: &Pod,
     claim_uid: Option<String>,
-    predecessor: &ContainerEffectFence,
+    predecessor: &SandboxEffectFence,
     joined: &JoinedOriginalTickets,
     plan: &ContainerPlan,
 ) -> Result<MissingHandleTerminalEvidence, RuntimeError> {
@@ -205,7 +205,7 @@ pub(super) async fn joined_original_evidence(
 pub(super) struct GuardedOriginalContext<'a> {
     scope: &'a str,
     plan: &'a ContainerPlan,
-    predecessor: &'a ContainerEffectFence,
+    predecessor: &'a SandboxEffectFence,
     pod_name: &'a str,
     claim_name: &'a str,
     claim_required: bool,
@@ -289,7 +289,7 @@ pub(super) async fn missing_handle_terminal_evidence(
     runtime: &K8sRuntime,
     scope: &str,
     plan: &ContainerPlan,
-    expected_effect_fence: Option<&ContainerEffectFence>,
+    expected_effect_fence: Option<&SandboxEffectFence>,
 ) -> Result<MissingHandleTerminalEvidence, RuntimeError> {
     // Kubernetes creates the Pod before ConfigMaps, Secrets, Memory
     // projection, or control sidecars. Only the narrow shape can receive

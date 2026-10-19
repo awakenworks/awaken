@@ -6,6 +6,9 @@
 //! takeover and retained-handle reconstruction live with the existing recovery owner.
 
 use super::*;
+use awaken_provisioning_contract::{
+    SandboxAdoption, SandboxEffectFence, SandboxObservationPurpose, SessionSandbox,
+};
 
 fn rebase_staged_paths(
     plan: &mut ContainerPlan,
@@ -29,11 +32,11 @@ fn rebase_staged_paths(
 }
 
 fn refresh_effect_fence(
-    asserted: &ContainerEffectFence,
-    source: ContainerEffect<'_>,
+    asserted: &SandboxEffectFence,
+    source: SandboxEffect<'_>,
     now_ms: u64,
-) -> Result<ContainerEffectFence, pc::SandboxError> {
-    let ContainerEffect::Fenced {
+) -> Result<SandboxEffectFence, pc::SandboxError> {
+    let SandboxEffect::Fenced {
         authority: source, ..
     } = source
     else {
@@ -327,7 +330,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         self.create_container_for_effect(
             spec,
-            ContainerEffect::Unattached,
+            SandboxEffect::Unattached,
             ContainerRealizationIntent::Create,
         )
         .await
@@ -336,7 +339,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     pub(crate) async fn create_container_for_effect(
         &self,
         spec: &pc::SandboxSpec,
-        effect: ContainerEffect<'_>,
+        effect: SandboxEffect<'_>,
         intent: ContainerRealizationIntent,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         let effect_fence = effect.fence();
@@ -873,7 +876,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
 
     async fn adopt_container_with_adoption(
         &self,
-        adoption: ContainerEnvironmentAdoption<'_>,
+        adoption: SandboxAdoption<'_>,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         if adoption.handle.restoration().is_some() {
             return self
@@ -881,14 +884,14 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .await;
         }
         match self
-            .observe_container_adoption(adoption, None, ContainerObservationPurpose::Recovery)
+            .observe_container_adoption(adoption, None, SandboxObservationPurpose::Recovery)
             .await?
         {
             pc::SandboxObservation::Ready => {
                 self.adopt_observed_container_with_spec(
                     adoption.handle,
                     adoption.spec,
-                    ContainerObservationPurpose::Recovery,
+                    SandboxObservationPurpose::Recovery,
                     &|| Ok(()),
                 )
                 .await
@@ -915,7 +918,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         handle: &pc::SandboxHandle,
         spec: &pc::SandboxSpec,
-        purpose: ContainerObservationPurpose,
+        purpose: SandboxObservationPurpose,
         admit: &(impl Fn() -> Result<(), pc::SandboxError> + Sync),
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         admit()?;
@@ -961,12 +964,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         // Compatibility-only handle adoption has no frozen SandboxSpec from
         // which terminal participants can be reconstructed. Managed Session
-        // adoption always enters through ContainerEnvironmentAdoption above.
+        // adoption always enters through SandboxAdoption above.
         self.adopt_observed_container_with_lifecycle(
             handle,
             None,
             ContainerCleanupState::physical_cleanup_only(),
-            ContainerObservationPurpose::Recovery,
+            SandboxObservationPurpose::Recovery,
             &|| Ok(()),
         )
         .await
@@ -977,14 +980,14 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         handle: &pc::SandboxHandle,
         spec: Option<&pc::SandboxSpec>,
         lifecycle: ContainerCleanupState,
-        purpose: ContainerObservationPurpose,
+        purpose: SandboxObservationPurpose,
         admit: &(impl Fn() -> Result<(), pc::SandboxError> + Sync),
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         admit()?;
         let payload = recovery::decode_handle(handle)?;
         if let Some(runtime_handle) = payload.runtime_handle.as_ref()
             && runtime_handle.terminal_only()
-            && purpose != ContainerObservationPurpose::TerminalCleanup
+            && purpose != SandboxObservationPurpose::TerminalCleanup
         {
             return Err(pc::SandboxError::unsupported(
                 "joined-empty evidence is terminal cleanup only",
@@ -1004,7 +1007,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         let container_id = payload.container_id;
         let sandbox_control_incarnation = if control_services.is_empty() {
             None
-        } else if purpose == ContainerObservationPurpose::TerminalCleanup {
+        } else if purpose == SandboxObservationPurpose::TerminalCleanup {
             // The caller already observed the exact Terminal/Disposing physical
             // owner under its aggregate fence. Preserve its immutable topology
             // without reopening a control listener or transferring live owner.
@@ -1074,14 +1077,14 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
 
     pub(super) async fn observe_container_adoption(
         &self,
-        adoption: ContainerEnvironmentAdoption<'_>,
+        adoption: SandboxAdoption<'_>,
         effect_fence: Option<&pc::SandboxEffectFence>,
-        purpose: ContainerObservationPurpose,
+        purpose: SandboxObservationPurpose,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         if let Some(stored) = adoption.handle.container_adoption_fingerprint()? {
             let (plan, expected) = self.adoption_plan(adoption.spec)?;
             let historical_match = if stored != expected
-                && purpose == ContainerObservationPurpose::TerminalCleanup
+                && purpose == SandboxObservationPurpose::TerminalCleanup
                 && effect_fence.is_some()
             {
                 self.runtime
@@ -1121,7 +1124,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
 
     async fn adopt_container_with_adoption_for_effect(
         &self,
-        adoption: ContainerEnvironmentAdoption<'_>,
+        adoption: SandboxAdoption<'_>,
         effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
@@ -1136,7 +1139,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .observe_container_adoption(
                 adoption,
                 Some(effect_fence),
-                ContainerObservationPurpose::Recovery,
+                SandboxObservationPurpose::Recovery,
             )
             .await?
         {
@@ -1144,7 +1147,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 self.adopt_observed_container_with_spec(
                     adoption.handle,
                     adoption.spec,
-                    ContainerObservationPurpose::Recovery,
+                    SandboxObservationPurpose::Recovery,
                     &admit,
                 )
                 .await
@@ -1169,7 +1172,24 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
 }
 
 #[async_trait]
-impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerProvider<R> {
+impl<R: ContainerRuntime + 'static> pc::SandboxReadiness for ContainerProvider<R> {
+    fn capabilities(&self) -> pc::SandboxCapabilities {
+        self.runtime_sandbox_capabilities()
+    }
+
+    fn checkpoint_formats(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
+        self.probe_runtime_ready().await
+    }
+}
+
+#[async_trait]
+impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R> {
+    type Environment = dyn SessionSandbox;
+
     async fn prewarm_images(&self, specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError> {
         let mut images = std::collections::BTreeSet::new();
         for spec in specs {
@@ -1186,10 +1206,6 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
             .map_err(pc::SandboxError::from)
     }
 
-    fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
-        self.runtime_sandbox_capabilities()
-    }
-
     fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
         self.install_memory_mounter(mounter);
     }
@@ -1198,101 +1214,73 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         self.install_secret_broker(broker);
     }
 
-    async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
-        self.probe_runtime_ready().await
-    }
-
-    async fn create_unattached_environment(
-        &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        Ok(Arc::new(self.create_container(spec).await?))
-    }
-
     fn adoption_layout(
         &self,
         handle: &pc::SandboxHandle,
-    ) -> Result<awaken_container_contract::ContainerAdoptionLayout, pc::SandboxError> {
+    ) -> Result<pc::SandboxAdoptionLayout, pc::SandboxError> {
         crate::container_adoption_layout(handle)
     }
 
-    fn physical_incarnation(&self, handle: &pc::SandboxHandle) -> Result<String, pc::SandboxError> {
-        crate::container_physical_incarnation(handle)
+    fn validate_closed_observation(
+        &self,
+        handle: &pc::SandboxHandle,
+        observation: &pc::SandboxObservation,
+    ) -> Result<(), pc::SandboxError> {
+        crate::validate_container_closed_observation(handle, observation)
     }
 
-    async fn create_environment_for_effect(
-        &self,
-        spec: &pc::SandboxSpec,
-        effect_fence: &ContainerEffectFence,
-        authority: &dyn pc::CurrentExecutionAuthority,
-        intent: awaken_container_contract::EnvironmentRealizationIntent,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        let intent = ContainerRealizationIntent::from_environment(intent)?;
-        Ok(Arc::new(
-            self.create_container_for_effect(
-                spec,
-                ContainerEffect::Fenced {
-                    fence: effect_fence,
-                    authority,
-                },
-                intent,
-            )
-            .await?,
-        ))
+    // The same physical labels retain responsibility before the first poll.
+    // Both unattached capacity and fenced realization use this one provider edge.
+    fn claim_for_effect<'a>(
+        &'a self,
+        spec: &'a pc::SandboxSpec,
+        effect: SandboxEffect<'a>,
+        intent: pc::SandboxRealizationIntent,
+    ) -> pc::ClaimedEffect<'a, Arc<dyn SessionSandbox>> {
+        let claim = pc::EffectClaim::self_recording(CONTAINER_REALIZATION_RECONCILER);
+        pc::ClaimedEffect::new(claim, async move {
+            intent.admit_under(effect)?;
+            let intent = ContainerRealizationIntent::from_environment(intent)?;
+            Ok(Arc::new(
+                self.create_container_for_effect(spec, effect, intent)
+                    .await?,
+            ) as Arc<dyn SessionSandbox>)
+        })
     }
 
-    async fn observe_environment(
+    async fn observe(
         &self,
-        adoption: ContainerEnvironmentAdoption<'_>,
+        adoption: SandboxAdoption<'_>,
         basis: pc::SandboxObservationBasis<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        let effect_fence = match basis {
-            pc::SandboxObservationBasis::Unattached => None,
-            pc::SandboxObservationBasis::Effect { spec, effect_fence } => {
-                if spec != adoption.spec {
-                    return Err(pc::SandboxError::invalid(
-                        "container observation basis names a different effective spec",
-                    ));
-                }
-                Some(effect_fence)
-            }
-        };
+        let effect_fence = adoption.observation_fence(basis)?;
         self.observe_container_adoption(adoption, effect_fence, adoption.observation_purpose)
             .await
     }
 
-    async fn adopt_unattached_environment(
+    async fn adopt_for_effect(
         &self,
-        adoption: ContainerEnvironmentAdoption<'_>,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        Ok(Arc::new(
-            self.adopt_container_with_adoption(adoption).await?,
-        ))
+        adoption: SandboxAdoption<'_>,
+        effect: SandboxEffect<'_>,
+    ) -> Result<Arc<dyn SessionSandbox>, pc::SandboxError> {
+        let environment = match effect {
+            SandboxEffect::Unattached => self.adopt_container_with_adoption(adoption).await?,
+            SandboxEffect::Fenced { fence, authority } => {
+                self.adopt_container_with_adoption_for_effect(adoption, fence, authority)
+                    .await?
+            }
+        };
+        Ok(Arc::new(environment))
     }
 
-    async fn adopt_environment_for_effect(
-        &self,
-        adoption: ContainerEnvironmentAdoption<'_>,
-        effect_fence: &ContainerEffectFence,
-        authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        // `adopt_container` re-observes the exact durable incarnation at this
-        // effect edge. It never deletes or replaces; a concurrent transition to
-        // Gone is surfaced to the Host for a separately authorized Rebuild.
-        Ok(Arc::new(
-            self.adopt_container_with_adoption_for_effect(adoption, effect_fence, authority)
-                .await?,
-        ))
-    }
-
-    async fn prepare_terminal_environment_for_effect(
+    async fn prepare_terminal_for_effect(
         &self,
         spec: &pc::SandboxSpec,
         handle: Option<&pc::SandboxHandle>,
-        expected_effect_fence: Option<&ContainerEffectFence>,
-        terminal_effect_fence: &ContainerEffectFence,
+        expected_effect_fence: Option<&SandboxEffectFence>,
+        terminal_effect_fence: &SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<Option<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
+    ) -> Result<Option<Arc<dyn SessionSandbox>>, pc::SandboxError> {
         self.prepare_terminal_container_for_effect(
             spec,
             handle,
@@ -1302,14 +1290,12 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         )
         .await
         .map(|environment| {
-            environment.map(|environment| Arc::new(environment) as Arc<dyn ContainerEnvironment>)
+            environment.map(|environment| Arc::new(environment) as Arc<dyn SessionSandbox>)
         })
     }
 
-    fn restore_targets(
-        &self,
-    ) -> Option<&dyn pc::RestoreTargetProvider<Arc<dyn ContainerEnvironment>>> {
-        Some(self)
+    fn restoration(&self) -> pc::SandboxRestoration<'_, Arc<dyn SessionSandbox>> {
+        pc::SandboxRestoration::Targets(self)
     }
 }
 
@@ -1321,11 +1307,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
-    ) -> Result<pc::SandboxRestoreTarget<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
+    ) -> Result<pc::SandboxRestoreTarget<Arc<dyn SessionSandbox>>, pc::SandboxError> {
         Ok(self
             .acquire_restore_sandbox(spec, request)
             .await?
-            .map_target(|sandbox| Arc::new(sandbox) as Arc<dyn ContainerEnvironment>))
+            .map_target(|sandbox| Arc::new(sandbox) as Arc<dyn SessionSandbox>))
     }
 
     /// Dispose the unpublished container-environment restore target.
@@ -1342,14 +1328,14 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
 }
 
 #[async_trait]
-impl<R: ContainerRuntime + 'static> pc::RestoreTargetProvider<Arc<dyn ContainerEnvironment>>
+impl<R: ContainerRuntime + 'static> pc::RestoreTargetProvider<Arc<dyn SessionSandbox>>
     for ContainerProvider<R>
 {
     async fn acquire_restore(
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
-    ) -> Result<pc::SandboxRestoreTarget<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
+    ) -> Result<pc::SandboxRestoreTarget<Arc<dyn SessionSandbox>>, pc::SandboxError> {
         self.acquire_restore_environment(spec, request).await
     }
 
@@ -1361,132 +1347,6 @@ impl<R: ContainerRuntime + 'static> pc::RestoreTargetProvider<Arc<dyn ContainerE
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         self.dispose_restored_environment(spec, request, authorization, authority)
-            .await
-    }
-}
-
-#[async_trait]
-impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R> {
-    fn capabilities(&self) -> pc::SandboxCapabilities {
-        self.runtime_sandbox_capabilities()
-    }
-
-    async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
-        self.probe_runtime_ready().await
-    }
-
-    /// The container is born carrying its own record: the create request
-    /// stamps `MANAGED_SANDBOX_LABEL`, the scope, adoption, realization and
-    /// attempt labels, and the effect-fence labels, all computed from the spec
-    /// and fence before the request is issued. So a caller dropped mid-create
-    /// cannot separate the container from the evidence naming its owner, and
-    /// `existing_realization_decision` — which reads exactly those labels back
-    /// off the runtime — is the scan that decides its fate. Nothing is retained
-    /// in process, because nothing in process is needed to find it again.
-    fn claim_for_effect<'a>(
-        &'a self,
-        spec: &'a pc::SandboxSpec,
-        effect_fence: &'a pc::SandboxEffectFence,
-        authority: &'a dyn pc::CurrentExecutionAuthority,
-    ) -> pc::ClaimedEffect<'a, Box<dyn pc::Sandbox>> {
-        let claim = pc::EffectClaim::self_recording(CONTAINER_REALIZATION_RECONCILER);
-        pc::ClaimedEffect::new(claim, async move {
-            Ok(Box::new(
-                self.create_container_for_effect(
-                    spec,
-                    ContainerEffect::Fenced {
-                        fence: effect_fence,
-                        authority,
-                    },
-                    ContainerRealizationIntent::Create,
-                )
-                .await?,
-            ) as Box<dyn pc::Sandbox>)
-        })
-    }
-
-    async fn observe(
-        &self,
-        handle: &pc::SandboxHandle,
-        basis: pc::SandboxObservationBasis<'_>,
-    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        match basis {
-            pc::SandboxObservationBasis::Unattached => self.observe_container_handle(handle).await,
-            pc::SandboxObservationBasis::Effect { spec, effect_fence } => {
-                self.observe_container_adoption(
-                    ContainerEnvironmentAdoption::new(spec, handle),
-                    Some(effect_fence),
-                    ContainerObservationPurpose::Recovery,
-                )
-                .await
-            }
-        }
-    }
-
-    async fn adopt_for_effect(
-        &self,
-        spec: &pc::SandboxSpec,
-        handle: &pc::SandboxHandle,
-        effect_fence: &pc::SandboxEffectFence,
-        authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        Ok(Box::new(
-            self.adopt_container_with_adoption_for_effect(
-                ContainerEnvironmentAdoption::new(spec, handle),
-                effect_fence,
-                authority,
-            )
-            .await?,
-        ))
-    }
-
-    async fn prepare_terminal_for_effect(
-        &self,
-        spec: &pc::SandboxSpec,
-        handle: Option<&pc::SandboxHandle>,
-        expected_effect_fence: Option<&pc::SandboxEffectFence>,
-        terminal_effect_fence: &pc::SandboxEffectFence,
-        authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<Option<Box<dyn pc::Sandbox>>, pc::SandboxError> {
-        self.prepare_terminal_container_for_effect(
-            spec,
-            handle,
-            expected_effect_fence,
-            terminal_effect_fence,
-            authority,
-        )
-        .await
-        .map(|sandbox| sandbox.map(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
-    }
-
-    fn restore_targets(&self) -> Option<&dyn pc::RestoreTargetProvider<Box<dyn pc::Sandbox>>> {
-        Some(self)
-    }
-}
-
-#[async_trait]
-impl<R: ContainerRuntime + 'static> pc::RestoreTargetProvider<Box<dyn pc::Sandbox>>
-    for ContainerProvider<R>
-{
-    async fn acquire_restore(
-        &self,
-        spec: &pc::SandboxSpec,
-        request: &pc::SandboxRestoreRequest,
-    ) -> Result<pc::SandboxRestoreTarget<Box<dyn pc::Sandbox>>, pc::SandboxError> {
-        Ok(self
-            .acquire_restore_sandbox(spec, request)
-            .await?
-            .map_target(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
-    }
-
-    async fn dispose_restored(
-        &self,
-        spec: &pc::SandboxSpec,
-        request: &pc::SandboxRestoreRequest,
-        authorization: &pc::SandboxDisposalAuthorization,
-        authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<(), pc::SandboxError> {
-        self.dispose_restore_target(spec, request, authorization, authority)
             .await
     }
 }

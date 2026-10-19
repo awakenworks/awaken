@@ -213,7 +213,14 @@ impl ExecutableAgentWiring {
         let coordinator_content =
             awaken_coordinator::data_subject_boundary::coordinator_content_eraser(
                 captured_content,
-                deployment.runtime.acp_session_blob_root.clone(),
+                deployment
+                    .runtime
+                    .acp_session_blob_root
+                    .clone()
+                    .map(|root| {
+                        Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(root))
+                            as Arc<dyn awaken_data_governance_contract::ContentEraser>
+                    }),
             );
         let private_router = private_router.merge(
             awaken_coordinator::data_subject_boundary::router_with_authenticator(

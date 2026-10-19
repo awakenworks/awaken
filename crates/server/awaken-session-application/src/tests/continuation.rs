@@ -115,7 +115,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ContinuationRunti
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         self.projection_attempts.fetch_add(1, Ordering::SeqCst);
         let successful_install = (thread.to_string(), projection.clone(), mode.clone());
         install_complete_test_projection(self, thread, projection, mode).await?;
@@ -1595,6 +1595,7 @@ async fn disposal_failure_retries_without_recheckpointing() {
         expires_at_unix_ms: 100_000,
     });
     let _fixture = app
+        .mutations
         .commit_session_snapshot_with_outcome(
             "workspace",
             awaken_session_state_contract::SessionAggregate::try_from(failed_over)
@@ -1670,6 +1671,7 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
         .unwrap();
     renewed.realization.as_mut().unwrap().expires_at_unix_ms = 200_000;
     let _fixture = app
+        .mutations
         .commit_session_snapshot_with_outcome(
             "workspace",
             awaken_session_state_contract::SessionAggregate::try_from(renewed)
@@ -1717,6 +1719,7 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
         expires_at_unix_ms: 300_000,
     });
     let _fixture = app
+        .mutations
         .commit_session_snapshot_with_outcome(
             "workspace",
             awaken_session_state_contract::SessionAggregate::try_from(disposing)

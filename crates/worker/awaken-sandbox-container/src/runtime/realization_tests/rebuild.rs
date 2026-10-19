@@ -21,13 +21,18 @@ fn rebuilt_result_converges_without_relaxing_source_or_effect_fences() {
      * K8s distributed_control_e2e supplies the actual create -> activate ->
      * committed binding sequence and independently checks retained PVC bytes. */
     let exact = fingerprint("exact-rebuild");
-    let fence = crate::ContainerEffectFence::new("rebuild", "owner", "runtime", 7, 100).unwrap();
-    let old_fence = crate::ContainerEffectFence::new("create", "owner", "runtime", 7, 100).unwrap();
+    let fence = awaken_provisioning_contract::SandboxEffectFence::new(
+        "rebuild", "owner", "runtime", 7, 100,
+    )
+    .unwrap();
+    let old_fence =
+        awaken_provisioning_contract::SandboxEffectFence::new("create", "owner", "runtime", 7, 100)
+            .unwrap();
     let intent = crate::ContainerRealizationIntent::Rebuild {
         source_incarnation: "incarnation-1".into(),
         source_runtime_handle: None, // adapter owns the real PVC -> evidence mapping
     };
-    let attempt = crate::ContainerCreateAttempt::new("rebuild-attempt");
+    let attempt = awaken_provisioning_contract::SandboxCreateAttempt::new("rebuild-attempt");
     for source in [false, true] {
         for continuity in [false, true] {
             for reconstructible in [false, true] {

@@ -6,6 +6,7 @@
 //! `github_repository` and `memory_store` bind in the create-time snapshot.
 //! Repository tokens use the official write-only create/update fields and are
 //! sealed into the canonical Vault before a Session snapshot is persisted.
+use awaken_session_application::SessionRootReads as _;
 use awaken_session_execution_contract::ThreadReadRuntime;
 use awaken_session_execution_contract::{SessionCoordinationReads as _, StreamingRunRuntime as _};
 use awaken_session_types::SessionId;
@@ -1023,6 +1024,7 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
     );
     let equal_persisted = equal_state
         .session_application()
+        .queries()
         .session(&SessionId::from(equal_created.id))
         .await
         .expect("R1 persisted Session");
@@ -1109,6 +1111,7 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
     );
     let persisted = resolved_state
         .session_application()
+        .queries()
         .session(&SessionId::from(created.id))
         .await
         .expect("R2 persisted Session");
@@ -1875,7 +1878,7 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         if self
             .stall_projection_install
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -2838,6 +2841,7 @@ async fn settle_coordinated_user_run_activity(
     rule: &str,
 ) {
     let session = application
+        .queries()
         .session(&SessionId::from(session_id))
         .await
         .unwrap_or_else(|error| panic!("{rule}: read admitted Session: {error}"));
@@ -3582,6 +3586,7 @@ async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
         .expect("L2 terminal recovery scan");
     settle_coordinated_user_run_activity(&application, session_id, "L2/C4").await;
     let settled = application
+        .queries()
         .session(&SessionId::from(session_id))
         .await
         .expect("L2/E2 Session");
@@ -4271,6 +4276,7 @@ async fn platform_repository_default_is_shared_and_replaceable_without_a_false_p
         .expect("P2 same-mount Repository replaces the published default");
     let replacement = state
         .session_application()
+        .queries()
         .session(&SessionId::from(replacement.id))
         .await
         .expect("P2 durable replacement Session");
@@ -6301,7 +6307,10 @@ async fn profiled_create_replays_and_releases_activation_failed_root_without_res
         .await
         .expect("seed Session root");
     failed.execution = awaken_session_state_contract::SessionExecutionState::ActivationFailed;
-    failed.realization_progress.last_error = Some("sandbox realization failed".into());
+    // W3/F1: import the historical unknown-time failure unchanged.
+    let mut progress = serde_json::to_value(&failed).unwrap();
+    progress["realization_progress"]["last_error"] = "sandbox realization failed".into();
+    failed = serde_json::from_value(progress).unwrap();
     failed.revision = Default::default();
 
     let sessions = support::session_repository("target Session repository").await;
@@ -6410,7 +6419,14 @@ async fn profiled_create_replays_and_releases_activation_failed_root_without_res
 
     let mut running = failed.clone();
     running.execution = SessionExecutionState::Running;
-    running.realization_progress.last_error = None;
+    // W5: an independent Running row has no failure cause; a new counted
+    // Preparing claim would change its phase, lease and history.
+    let mut progress = serde_json::to_value(&running).unwrap();
+    progress["realization_progress"]
+        .as_object_mut()
+        .unwrap()
+        .remove("last_error");
+    running = serde_json::from_value(progress).unwrap();
     running.revision = Default::default();
     let running_sessions = support::session_repository("running Session repository").await;
     running_sessions
@@ -7235,6 +7251,7 @@ async fn profiled_run_commits_into_the_existing_managed_read_projection() {
     assert_eq!(replay, receipt, "R2c/E4 stable completed receipt");
     assert!(
         application
+            .queries()
             .session(&SessionId::from(session_id))
             .await
             .expect("R2c durable Session")

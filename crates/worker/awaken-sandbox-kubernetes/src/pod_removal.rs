@@ -11,8 +11,9 @@ use super::{
     observed_pod_incarnation, participants,
 };
 use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::SandboxObservationPurpose;
+use awaken_sandbox_container::RuntimeError;
 use awaken_sandbox_container::engine::ExistingRealization;
-use awaken_sandbox_container::{ContainerObservationPurpose, RuntimeError};
 
 pub(super) async fn replace_exact_realization(
     runtime: &K8sRuntime,
@@ -125,7 +126,7 @@ pub(super) async fn remove_bound(
         container_id,
         observed_pod.as_ref(),
         expected_claim_uid,
-        ContainerObservationPurpose::TerminalCleanup,
+        SandboxObservationPurpose::TerminalCleanup,
         effect_fenced,
         effect_fenced && persisted_claim_uid.is_some(),
     )

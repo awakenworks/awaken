@@ -10,6 +10,7 @@
 //! permission and can only seal an original, unregistered provider enrollment;
 //! it cannot create a Registry incarnation, process exit or Session cleanup receipt.
 
+use awaken_session_application::SessionRootReads as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -228,7 +229,7 @@ async fn handle_relay_destination(
     };
     let now = awaken_time::WallClockExt::now_ms(state.clock.as_ref());
     let session_id = awaken_session_types::SessionId::from(query.session_id);
-    let session = match state.sessions.session(&session_id).await {
+    let session = match state.sessions.queries().session(&session_id).await {
         Ok(session) => session,
         Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
             return StatusCode::NOT_FOUND.into_response();

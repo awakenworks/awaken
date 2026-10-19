@@ -63,6 +63,7 @@ consistent vocabulary. This affects the documentation layers differently:
 | `design/tool-and-capability.md` | Runtime-owned | Capability segmentation, neutral ToolExecutor port, builtin-tools placement, unified delegation tool, and permission boundary |
 | `design/run-ingress-message-delivery.md` | Boundary-only | Dispatch/server boundary for run ingress, durable delivery, pending input, and message handoff |
 | `design/remote-worker-protocol.md` | Boundary-only | Accepted P0/P1/P2 contract for recoverable, database-independent, embeddable remote Workers; PostgreSQL active-active execution is verified without sticky routing, while optional transfer optimizations remain deferred |
+| `design/sandbox-provider-contract.md` | Boundary-only | One claimed Sandbox supply port, provider codec/restoration roles, and source migration boundaries; deployment qualification remains separate |
 | `application-authentication.md` | Product-owned | Integration guidance for service credentials, application tokens, and authenticated frontend transports |
 | `design/anthropic-alignment-and-sessions.md` | Product-owned | Downstream product adapter guidance |
 | `design/managed-dream.md` | Product-owned | Owns the Managed Dream API and Dream job, frozen JSONL/session evidence, read-only source snapshot, required write-through result MemoryStore, restricted ordinary Agent execution, recovery, and test design |
@@ -120,6 +121,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/tool-and-capability.md` | Role owner | Required | self |
 | `design/run-ingress-message-delivery.md` | Role owner | Required | self |
 | `design/remote-worker-protocol.md` | Role owner | Required | self |
+| `design/sandbox-provider-contract.md` | Delegated boundary narrative | Delegated | [Sandbox provider role catalog](adr/0041-sandbox-execution-environment-provider.md#role-catalog) |
 | `application-authentication.md` | Role owner | Required | self |
 | `design/anthropic-alignment-and-sessions.md` | Product/downstream mapping | Not required | n/a |
 | `design/managed-dream.md` | Role owner | Required | self |

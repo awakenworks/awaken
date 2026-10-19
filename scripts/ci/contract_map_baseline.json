@@ -5,14 +5,10 @@
   },
   "optional-role": {
     "AcpToolExporter::attached_channels": 1,
-    "ContainerEnvironmentProvider::restorable": 1,
-    "ContainerEnvironmentProvider::restore_targets": 1,
     "RawTool::durable_tasks": 1,
     "ResolvedExecutionEnv::dynamic_tool": 1,
     "RunDelegationService::cancellation": 1,
     "Sandbox::checkpointing": 1,
-    "SandboxProvider::restorable": 1,
-    "SandboxProvider::restore_targets": 1,
     "ToolExecutor::durable_tasks": 1
   },
   "bundle-trait": {
@@ -40,8 +36,8 @@
   "foreign-persistence-port": {
     "FileStore <- awaken-session-executor": 1,
     "ResourceReclamationRepository <- awaken-session-executor": 1,
-    "SandboxCheckpointStore <- awaken-session-executor": 1,
     "SandboxCheckpointStore <- awaken-sandbox-local": 1,
+    "SandboxCheckpointStore <- awaken-session-executor": 1,
     "SandboxCheckpointStore <- awaken-session-realization": 1,
     "SandboxExecutionPolicyStore <- awaken-protocol-awaken": 1,
     "SandboxExecutionPolicyStore <- awaken-protocol-managed": 1,
@@ -51,7 +47,6 @@
     "SkillStore <- awaken-session-executor": 1
   },
   "fat-trait": {
-    "ContainerEnvironmentProvider": 16,
     "DurableRunOperations": 15,
     "Sandbox": 15
   },
@@ -82,7 +77,7 @@
   "aggregate-pub-field": {
     "CheckpointReceipt": 3,
     "IdempotencyRecord": 2,
-    "PersistedSession": 24,
+    "PersistedSession": 23,
     "QuiescenceReceipt": 5,
     "RestoreReceipt": 4,
     "SandboxCheckpointRequest": 10,
@@ -96,7 +91,6 @@
     "SessionExecutionTransitionError": 2,
     "SessionIdempotencyReceipt": 2,
     "SessionMutation": 4,
-    "SessionRealizationProgress": 5,
     "SessionRepositoryPublicationCommand": 3,
     "SessionRepositoryPublicationIntent": 2,
     "SessionRepositoryPublicationReceipt": 3,

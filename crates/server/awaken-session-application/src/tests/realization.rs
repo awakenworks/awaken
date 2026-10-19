@@ -7,11 +7,12 @@
 // @formal evidence session_resources.terminal_assignment_retains_desired_generation
 // @formal evidence session_resources.terminal_session_never_reactivates
 // @formal evidence session_run.execution_requires_dispatch_work_and_realization_owner
-// awaken-allow(file-limit-ceiling): 6486 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 6223 (legacy oversized test file: split, never grow)
 use super::*;
 mod capacity_budget;
 mod cleanup_timing;
 mod initial_preparation;
+mod retry_hint;
 mod source_admission;
 mod unattempted_owner_recovery;
 mod worker_affinity;
@@ -473,6 +474,8 @@ awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RecordingR
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for RecordingResourceRuntime);
 
+// Only complete installation exercises this resource fixture; lifecycle
+// methods reuse NeutralRuntime and its authoritative role contract unchanged.
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::RealizationRuntime for RecordingResourceRuntime {
     fn observe_realization_request(
@@ -481,11 +484,6 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingResource
         crate::tests::test_realization_request_started()
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Reconcile the existing Runtime projections through the given Control
-    /// owner. Local and Worker deployment use one slot-based selection and
-    /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
     async fn renew_session_realization_projections(
         &self,
         control: &dyn awaken_session_realization_contract::SessionRealizationControl,
@@ -503,15 +501,12 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingResource
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
-        install_complete_test_projection(self, thread, projection, mode).await
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        install_complete_test_projection(self, thread, projection, mode)
+            .await
+            .map_err(Into::into)
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Install a monotonic same-owner/same-incarnation/same-epoch successor of
-    /// an already-installed realization fence. This is the only lease-only
-    /// Runtime mutation; it deliberately carries no projection or phase action.
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
@@ -522,12 +517,6 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingResource
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Forget one failed realization fence from disposable Runtime state. The
-    /// aggregate remains the sole lease authority: this hook only prevents a
-    /// later retry from authorizing effects with a lease that Control has
-    /// already failed or may have failed before losing its response.
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
@@ -943,6 +932,7 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
     let mut idle = outcome.session;
     idle.execution = SessionExecutionState::Idle;
     let _fixture = app
+        .mutations
         .commit_session_snapshot_with_outcome(
             "workspace",
             awaken_session_state_contract::SessionAggregate::try_from(idle)
@@ -1433,265 +1423,6 @@ async fn profiled_resource_mutation_policy_fences_the_root_before_external_effec
 }
 
 #[tokio::test]
-async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
-    // Cause/effect graph: C1 failure retryable/permanent; C2 persisted attempts
-    // below/at budget; C3 asserted lease exact/stale. Effects: E1 retryable below
-    // budget keeps Preparing and expires the lease; E2 the next assignment
-    // advances epoch and attempts; E3 retryable at budget or permanent enters
-    // activation_failed; E4 stale delivery mutates nothing. Decision rules
-    // covered: R1 retryable+attempt1<2+exact => E1; R2 next exact claim => E2;
-    // R3 retryable+attempt2=2+exact => E3; stale ownership is covered by the
-    // realization authority table. C4 executable refresh fails before claim;
-    // E5 no lease/revision mutation, and successful retry enters R1. Constraint
-    // K1 refresh owns no realization state. D1 C4=>E5; D2 !C4=>R1.
-    // FMECA: an unbounded retry can strand create
-    // forever (S8/O5/D6), while immediate terminal failure loses recoverability
-    // (S8/O4/D4); persisted attempts plus lease expiry bound both modes.
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        sqlite_session_repository("session repository").await;
-    create(repo.as_ref(), persisted("retry-budget", false, "preparing")).await;
-    let refresh = Arc::new(ToggleProjectionRefresh::default());
-    refresh.fail.store(true, Ordering::SeqCst);
-    let mut app = application_with_configuration(
-        repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration {
-            realization_retry_budget: 2,
-            ..Default::default()
-        },
-    );
-    app.set_executable_projection_refresh(paired_projection_refresh(refresh.clone()))
-        .unwrap();
-    let target =
-        |incarnation: &str| awaken_session_realization_contract::SessionRealizationTarget {
-            owner: "worker".into(),
-            runtime_incarnation: incarnation.into(),
-            lease_expires_at_unix_ms: u64::MAX,
-            reassign_existing_lease: false,
-        };
-
-    let before_refresh_failure = repo.get(&SessionId::from("retry-budget")).await.unwrap();
-    assert!(
-        matches!(
-            app.begin_session_realization(
-                awaken_session_realization_contract::BeginSessionRealization {
-                    expected_resources: None,
-                    session_id: "retry-budget".into(),
-                    target: target("worker/refresh-failure"),
-                }
-            )
-            .await,
-            Err(
-                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
-                    _
-                )
-            )
-        ),
-        "D1/E5"
-    );
-    assert_eq!(
-        repo.get(&SessionId::from("retry-budget")).await.unwrap(),
-        before_refresh_failure,
-        "D1/E5 no claim mutation"
-    );
-    refresh.fail.store(false, Ordering::SeqCst);
-
-    let first = app
-        .begin_session_realization(
-            awaken_session_realization_contract::BeginSessionRealization {
-                expected_resources: None,
-                session_id: "retry-budget".into(),
-                target: target("worker/1"),
-            },
-        )
-        .await
-        .expect("R1 begin");
-    app.fail_session_realization(
-        awaken_session_realization_contract::FailSessionRealization {
-            session_id: "retry-budget".into(),
-            lease: first.authority.lease,
-            prepared_resource_revision: None,
-            retryable: true,
-            not_ready: false,
-            source_run_id: None,
-            reason: "worker unavailable".into(),
-        },
-    )
-    .await
-    .expect("R1 retryable failure");
-    let after_first = repo.get(&SessionId::from("retry-budget")).await.unwrap();
-    assert_eq!(
-        after_first.execution,
-        SessionExecutionState::Preparing,
-        "R1/E1"
-    );
-    assert_eq!(after_first.realization_progress.attempts, 1, "R1/E1");
-    assert_eq!(
-        after_first.realization.as_ref().unwrap().expires_at_unix_ms,
-        0,
-        "R1/E1"
-    );
-
-    let second = app
-        .begin_session_realization(
-            awaken_session_realization_contract::BeginSessionRealization {
-                expected_resources: None,
-                session_id: "retry-budget".into(),
-                target: target("worker/2"),
-            },
-        )
-        .await
-        .expect("R2 reclaim");
-    assert_eq!(second.authority.lease.epoch, 2, "R2/E2");
-    assert_eq!(
-        repo.get(&SessionId::from("retry-budget"))
-            .await
-            .unwrap()
-            .realization_progress
-            .attempts,
-        2,
-        "R2/E2"
-    );
-    app.fail_session_realization(
-        awaken_session_realization_contract::FailSessionRealization {
-            session_id: "retry-budget".into(),
-            lease: second.authority.lease,
-            prepared_resource_revision: None,
-            retryable: true,
-            not_ready: false,
-            source_run_id: None,
-            reason: "worker unavailable again".into(),
-        },
-    )
-    .await
-    .expect("R3 exhausted");
-    assert_eq!(
-        repo.get(&SessionId::from("retry-budget"))
-            .await
-            .unwrap()
-            .execution,
-        SessionExecutionState::ActivationFailed,
-        "R3/E3"
-    );
-}
-
-#[tokio::test]
-async fn failed_nonterminal_realization_expires_assignment_before_same_incarnation_recovery() {
-    // Causes: C1 initial Preparing / already Idle; C2 retryable / permanent;
-    // C3 attempt below / at budget; C4 exact / stale failure lease.
-    // Decision table: F0 stale -> no root mutation; F1 initial+retry+below ->
-    // Preparing, expired assignment; F2 other initial -> ActivationFailed;
-    // F3 Idle+any C2/C3 -> Idle, expired assignment, retained active resources,
-    // realization attempts unchanged (the Run's dispatch budget bounds retries).
-    // F4 F1/F3+same-incarnation begin -> successor epoch, never reuse the closed
-    // generation; old failure replay cannot mutate that successor. The existing
-    // running-realization test owns interval/terminal settlement. The HTTP MCP
-    // hot-swap test additionally proves the previous Active server still runs.
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        sqlite_session_repository("session repository").await;
-    let app = application_with_configuration(
-        repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration {
-            realization_retry_budget: 2,
-            ..Default::default()
-        },
-    );
-    for idle in [false, true] {
-        for retryable in [false, true] {
-            for attempts in [1, 2] {
-                let id = format!("failure-{idle}-{retryable}-{attempts}");
-                let lease = crate::session_resource::SessionRealizationLease {
-                    owner: "worker".into(),
-                    runtime_incarnation: "worker/1".into(),
-                    epoch: 7,
-                    expires_at_unix_ms: u64::MAX,
-                };
-                let mut root = persisted(&id, false, if idle { "idle" } else { "preparing" });
-                root.realization = Some(lease.clone());
-                root.realization_progress.attempts = attempts;
-                create(repo.as_ref(), root).await;
-                let before = repo.get(&SessionId::from(&id)).await.unwrap();
-                let command = awaken_session_realization_contract::FailSessionRealization {
-                    session_id: SessionId::from(&id),
-                    lease: lease.clone(),
-                    prepared_resource_revision: None,
-                    retryable,
-                    not_ready: false,
-                    source_run_id: None,
-                    reason: "external stage failed".into(),
-                };
-                let mut stale = command.clone();
-                stale.lease.epoch -= 1;
-                assert!(app.fail_session_realization(stale).await.is_err(), "F0");
-                assert_eq!(repo.get(&SessionId::from(&id)).await.unwrap(), before, "F0");
-                app.fail_session_realization(command.clone()).await.unwrap();
-                let failed = repo.get(&SessionId::from(&id)).await.unwrap();
-                let recoverable = idle || (retryable && attempts < 2);
-                assert_eq!(
-                    failed.execution,
-                    if idle {
-                        SessionExecutionState::Idle
-                    } else if recoverable {
-                        SessionExecutionState::Preparing
-                    } else {
-                        SessionExecutionState::ActivationFailed
-                    },
-                    "F1/F2/F3"
-                );
-                assert_eq!(
-                    failed.resources, before.resources,
-                    "retain active resource authority"
-                );
-                if idle {
-                    // F3: an Idle Session's failure spends no realization
-                    // budget; the Run's dispatch retry budget bounds it.
-                    assert_eq!(
-                        failed.realization_progress.attempts, attempts,
-                        "F3 Idle keeps the realization budget"
-                    );
-                }
-                assert_eq!(failed.realization.as_ref().unwrap().epoch, 7);
-                if recoverable {
-                    assert_eq!(
-                        failed.realization.as_ref().unwrap().expires_at_unix_ms,
-                        0,
-                        "F1/F3 root cannot reissue the locally closed generation"
-                    );
-                    let directive = app
-                        .begin_session_realization(
-                            awaken_session_realization_contract::BeginSessionRealization {
-                                session_id: SessionId::from(&id),
-                                expected_resources: None,
-                                target:
-                                    awaken_session_realization_contract::SessionRealizationTarget {
-                                        owner: lease.owner.clone(),
-                                        runtime_incarnation: lease.runtime_incarnation.clone(),
-                                        lease_expires_at_unix_ms: u64::MAX,
-                                        reassign_existing_lease: false,
-                                    },
-                            },
-                        )
-                        .await
-                        .unwrap();
-                    assert_eq!(directive.authority.lease.epoch, 8, "F4");
-                    let successor = repo.get(&SessionId::from(&id)).await.unwrap();
-                    assert!(
-                        app.fail_session_realization(command).await.is_err(),
-                        "F4 stale replay"
-                    );
-                    assert_eq!(
-                        repo.get(&SessionId::from(id)).await.unwrap(),
-                        successor,
-                        "F4 successor retained"
-                    );
-                }
-            }
-        }
-    }
-}
-
-#[tokio::test]
 async fn lease_renewal_is_a_projection_free_root_cas() {
     // Renewal cause/effect graph: C1 exact live owner/incarnation/epoch; C2 the
     // requested expiry is newer/equal/older; C3 executable projection refresh
@@ -1945,7 +1676,7 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
             other
                 .realize_session(&SessionId::from("local-restart"))
                 .await,
-            Err(crate::SessionRealizationError::Control(
+            Err(awaken_session_realization_contract::SessionRealizationDriveError::Control(
                 awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership
             ))
         ),
@@ -2078,6 +1809,7 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
     let mut winner = stale.clone();
     winner.title = Some("concurrent winner".into());
     let _fixture = application
+        .mutations
         .commit_session_snapshot_with_outcome(
             "workspace",
             // R2 needs a legal authoring winner before the stale Resource CAS.
@@ -5809,7 +5541,8 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
     let (continuous, _, _) = fixture(id);
     create(repo.as_ref(), continuous).await;
     let initial = repo.get(&SessionId::from(id)).await.unwrap();
-    let owner = application.owner(&SessionId::from(id)).await.unwrap();
+    let queries = application.queries();
+    let owner = queries.owner(&SessionId::from(id)).await.unwrap();
     let mut directive = awaken_session_realization_contract::SessionRealizationDirective {
         projection: application
             .active_frozen_session_projection(owner.clone(), &initial, true)
@@ -6413,7 +6146,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
         .await
         .unwrap();
     assert_eq!(
-        failed_truth.realization_progress.failed_at_unix_ms,
+        failed_truth.realization_progress().failed_at_unix_ms(),
         Some(500),
         "R5 failure observes application clock"
     );
@@ -6421,10 +6154,12 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
     // terminal failure redelivery is inert under a different recovery clock.
     clock.set(900);
     let owner = application
+        .queries()
         .owner(&SessionId::from("running-realization-failed"))
         .await
         .unwrap();
     let later = application
+        .mutations
         .commit_session_snapshot_with_outcome(
             &owner,
             awaken_session_state_contract::SessionAggregate::try_from(failed_truth.clone())
@@ -6436,7 +6171,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
         .unwrap()
         .into_session();
     assert_eq!(later.updated_at_unix_ms, Some(900));
-    assert_eq!(later.realization_progress.failed_at_unix_ms, Some(500));
+    assert_eq!(later.realization_progress().failed_at_unix_ms(), Some(500));
     application
         .fail_session_realization(
             awaken_session_realization_contract::FailSessionRealization {
@@ -6464,10 +6199,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
         "R4/E4"
     );
     assert_eq!(
-        failed_truth
-            .realization_progress
-            .failure_source_run_id
-            .as_deref(),
+        failed_truth.realization_progress().failure_source_run_id(),
         Some(&awaken_agent_contract::agent::run::Id(
             "running-realization-run".into()
         )),

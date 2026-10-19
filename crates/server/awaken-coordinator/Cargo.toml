@@ -21,8 +21,6 @@ awaken-service-lifecycle.workspace = true
 # The extracted service layer: ExecutorComponents / ManagedHost / RunApplicationHost and all
 # host modules live here; Coordinator startup selects the served router modes.
 awaken-session-executor.workspace = true
-# The live MCP credential probe the configuration plane drives.
-awaken-session-mcp.workspace = true
 awaken-dispatch-http.workspace = true
 awaken-resource-worker-http.workspace = true
 awaken-config-service.workspace = true
@@ -34,6 +32,10 @@ awaken-worker-transport-security.workspace = true
 # The original Create broker retains its sole ledger/CAS/UID decision owner.
 # Physical Worker transport selection is performed by the process root.
 awaken-sandbox-container.workspace = true
+# The broker wire is a pure container contract; ledger/Pod mechanics stay
+# in the existing Kubernetes adapter.
+awaken-container-contract = { workspace = true, optional = true }
+# The Kubernetes Create broker speaks the engine's ledger and Pod process wire.
 awaken-sandbox-kubernetes = { workspace = true, optional = true }
 kube = { workspace = true, features = ["client", "rustls-tls", "http-proxy"], optional = true }
 awaken-executable-agent-contract.workspace = true
@@ -64,14 +66,6 @@ awaken-session-store = { workspace = true }
 # Volatile Environment execution for test/scenario startup only.
 awaken-work-store = { workspace = true, optional = true }
 awaken-executable-environment-catalog = { workspace = true, optional = true }
-# Concrete worker adapter is assembled here, outside runtime-host, behind the
-# neutral MemoryMounter port (FUSE where available, copy/harvest otherwise).
-awaken-sandbox-memoryd = { workspace = true }
-# ACP runtime (R3/R4): drive an external ACP CLI as a peer RunExecutor when a
-# session selects `runtime: "acp:*"`.
-awaken-run-executor-acp = { workspace = true }
-awaken-acp-application.workspace = true
-awaken-protocol-acp.workspace = true
 # A2A attempt adapter is selected here, at the data-plane process boundary,
 # and injected into the neutral runtime host through `RunAttemptExecutor`.
 awaken-run-executor-a2a = { workspace = true }
@@ -169,11 +163,14 @@ test-support = [
 # wake selector. This is the *wake* channel only and is independent of the crate's
 # non-optional `async-nats` used for the ADR-0045 hand relay — do not conflate them.
 nats = ["awaken-dispatch/nats"]
-# The same Coordinator Create broker, until its concrete ledger/API dependency
-# is inverted through the existing contract boundary.
-container-k8s = ["awaken-worker-transport-security/kubernetes", "dep:awaken-sandbox-kubernetes", "dep:kube"]
+# The same Coordinator Create broker; physical Worker selection belongs to the CLI.
+container-k8s = ["dep:awaken-container-contract", "awaken-worker-transport-security/kubernetes", "dep:awaken-sandbox-kubernetes", "dep:kube"]
 
 [dev-dependencies]
+# The relay fixture uses the real root invalidation bus.
+awaken-sandbox-memoryd.workspace = true
+# The erasure regression retains the real portable ACP filesystem store.
+awaken-run-executor-acp.workspace = true
 awaken-coordinator-client.workspace = true
 # Cross-component closure cases select the actual existing transport and keep
 # all original Registry/Dispatch/ledger assertions at the broker decision owner.

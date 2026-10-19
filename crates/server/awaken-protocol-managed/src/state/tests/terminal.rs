@@ -8,7 +8,7 @@ use awaken_tool_contract::tool_batch::ToolBatch;
 fn test_thread_agent(id: &str) -> SessionThreadAgent {
     SessionThreadAgent::from(
         &super::super::sessions::session_agent_from_configuration(
-            &super::super::sessions::agent_configuration_from_profile(id, Default::default()),
+            &awaken_session_application::agent_configuration_from_profile(id, Default::default()),
         )
         .expect("valid profile fixture"),
     )
@@ -101,7 +101,8 @@ async fn cloud_create_returns_durable_root_before_sandbox_realization() {
             "R1/R2 logical status"
         );
         let root = state
-            .application
+            .roles
+            .roots
             .session(&SessionId::from(&created.id))
             .await
             .unwrap();
@@ -1737,7 +1738,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EndSessionFailer 
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,

@@ -39,7 +39,7 @@ async fn deliver(
         )
         .await;
     trace.push(serde_json::json!({"rule": rule, "before": before, "incoming": incoming, "after": observation(host), "admitted": result.is_ok()}));
-    result
+    result.map_err(Into::into)
 }
 
 #[tokio::test]

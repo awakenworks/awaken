@@ -58,9 +58,11 @@ pub(crate) struct ContainerControlPublicationRegistry {
 }
 
 impl ContainerControlPublicationRegistry {
-    pub(crate) async fn for_adoption(purpose: crate::ContainerObservationPurpose) -> Self {
+    pub(crate) async fn for_adoption(
+        purpose: awaken_provisioning_contract::SandboxObservationPurpose,
+    ) -> Self {
         let registry = Self::default();
-        if purpose == crate::ContainerObservationPurpose::TerminalCleanup {
+        if purpose == awaken_provisioning_contract::SandboxObservationPurpose::TerminalCleanup {
             registry.close_for_dispose().await;
         }
         registry

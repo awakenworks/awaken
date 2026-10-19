@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
-use awaken_provisioning_contract::SandboxProvider;
+use awaken_provisioning_contract::{SandboxProvider, SandboxReadiness};
 use awaken_runtime_contract::llm::ToolCall;
 mod common;
 use awaken_file_store::{FileStore, FsFileStore};
@@ -62,7 +62,7 @@ async fn execution_deployment_selects_once_and_never_claims_unqualified_supervis
         .install_execution_deployment(deployment.clone())
         .unwrap();
     assert!(provider.install_execution_deployment(deployment).is_err());
-    assert!(!pc::SandboxProvider::capabilities(&provider).process_tree_supervision);
+    assert!(!pc::SandboxReadiness::capabilities(&provider).process_tree_supervision);
     let spec = spec("selected-boundary");
     assert!(provider.create_sandbox(&spec).await.is_err());
     assert_eq!(std::fs::read_dir(base.path()).unwrap().count(), 0);
@@ -604,7 +604,10 @@ async fn disposed_handle_is_observed_as_absent_and_cannot_be_adopted() {
 
     assert!(matches!(
         provider
-            .observe(&handle, pc::SandboxObservationBasis::Unattached)
+            .observe(
+                pc::SandboxAdoption::new(&spec("t-stale"), &handle),
+                pc::SandboxObservationBasis::Unattached
+            )
             .await
             .unwrap(),
         pc::SandboxObservation::DefinitivelyUnavailable {

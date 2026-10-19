@@ -30,7 +30,7 @@ async fn profiled_release_closes_only_a_never_attempted_work_unit_preparation() 
         .expect_for(StatusCode::ACCEPTED, "W1/W2 create");
         let before = sessions.get(&SessionId::from(id)).await.unwrap();
         assert_eq!(before.execution, SessionExecutionState::Preparing);
-        assert_eq!(before.realization_progress.attempts, 0);
+        assert_eq!(before.realization_progress().attempts(), 0);
         assert!(
             state.archive_session(id).await.is_err(),
             "public archive stays IdleOnly"

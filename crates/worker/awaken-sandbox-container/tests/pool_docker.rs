@@ -14,11 +14,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::SandboxProvider;
+use awaken_provisioning_contract::{AgentProcess, SandboxCapacity};
 use awaken_sandbox_container::docker::DockerRuntime;
-use awaken_sandbox_container::{
-    ContainerEnvironmentCapacity, ContainerEnvironmentProvider, ContainerProvider,
-    RuntimeAgentProcess, WarmContainerPool,
-};
+
+use awaken_sandbox_container::{ContainerProvider, WarmContainerPool};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const AGENT_PORT: u16 = 8080;
@@ -114,16 +114,20 @@ async fn a_warm_pool_pre_provisions_capacity_and_hands_a_ready_agent_to_a_sessio
     // A matching session is handed a WARM agent (no create on the request path); the
     // ready count drops by one immediately (checked before any await lets the
     // off-path replenish run on this current-thread runtime).
-    let environment =
-        ContainerEnvironmentProvider::create_unattached_environment(&pool, &session_spec)
-            .await
-            .expect("canonical Environment checkout hands out warm capacity");
+    let environment = SandboxProvider::claim_for_effect(
+        &pool,
+        &session_spec,
+        awaken_provisioning_contract::SandboxEffect::Unattached,
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
+    )
+    .await
+    .expect("canonical Environment checkout hands out warm capacity");
     assert_eq!(
         pool.ready_len(&session_spec),
         1,
         "handing out a session consumed one warm agent"
     );
-    let RuntimeAgentProcess {
+    let AgentProcess {
         process,
         mut channel,
     } = environment
@@ -157,7 +161,7 @@ async fn a_warm_pool_pre_provisions_capacity_and_hands_a_ready_agent_to_a_sessio
     assert_eq!(process.wait().await.unwrap().code, Some(0), "W2");
 
     // Capacity teardown reaps only never-used entries and stops replenishment.
-    ContainerEnvironmentCapacity::shutdown_capacity(&pool).await;
+    SandboxCapacity::shutdown_capacity(&pool).await;
     assert_eq!(
         pool.ready_len(&session_spec),
         0,
@@ -222,9 +226,14 @@ async fn a_session_with_a_mount_bypasses_the_pool() {
     // Create the mounted Session environment through the same provider seam used
     // by the runtime. This proves the pool decision directly without coupling the
     // test to an agent protocol endpoint that busybox intentionally does not expose.
-    let environment = ContainerEnvironmentProvider::create_unattached_environment(&pool, &mounted)
-        .await
-        .expect("create mounted environment outside the pool");
+    let environment = SandboxProvider::claim_for_effect(
+        &pool,
+        &mounted,
+        awaken_provisioning_contract::SandboxEffect::Unattached,
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
+    )
+    .await
+    .expect("create mounted environment outside the pool");
     assert_eq!(
         pool.ready_len(&base),
         1,

@@ -120,7 +120,7 @@ async fn create_seal_uses_closed_registry_and_original_ledger_without_process_ex
                 "foreign-configuration".into();
         }
         let before = f.stored.lock().unwrap().clone();
-        let predecessor = ContainerEffectFence::new(
+        let predecessor = SandboxEffectFence::new(
             "old-effect",
             &f.identity.worker_id,
             f.identity.lease_owner(),

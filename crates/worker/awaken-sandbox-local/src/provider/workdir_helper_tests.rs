@@ -169,19 +169,20 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
                         gate: tokio::sync::Semaphore::new(0),
                         absent: kind == "absent",
                     });
-                    let provider: Box<dyn pc::SandboxProvider> = if namespace {
-                        Box::new(
-                            crate::NamespaceProvider::new(tmp.path())
-                                .with_blob_source(source.clone())
-                                .with_secret_broker(source.clone()),
-                        )
-                    } else {
-                        Box::new(
-                            LocalProvider::trusted_host(tmp.path())
-                                .with_blob_source(source.clone())
-                                .with_secret_broker(source.clone()),
-                        )
-                    };
+                    let provider: Box<dyn pc::SandboxProvider<Environment = dyn pc::Sandbox>> =
+                        if namespace {
+                            Box::new(
+                                crate::NamespaceProvider::new(tmp.path())
+                                    .with_blob_source(source.clone())
+                                    .with_secret_broker(source.clone()),
+                            )
+                        } else {
+                            Box::new(
+                                LocalProvider::trusted_host(tmp.path())
+                                    .with_blob_source(source.clone())
+                                    .with_secret_broker(source.clone()),
+                            )
+                        };
                     let mut spec = workdir_spec("resource-proof", false);
                     if namespace {
                         spec.isolation = pc::IsolationClass::Namespace;
@@ -212,8 +213,11 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
                         provider
                             .claim_for_effect(
                                 &spec,
-                                &fence,
-                                &pc::test_support::EffectAuthority::denied()
+                                awaken_provisioning_contract::SandboxEffect::Fenced {
+                                    fence: &fence,
+                                    authority: &pc::test_support::EffectAuthority::denied()
+                                },
+                                awaken_provisioning_contract::SandboxRealizationIntent::Create
                             )
                             .await
                             .is_err()
@@ -222,7 +226,14 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
                     assert_eq!(source.calls.load(Ordering::SeqCst), 0);
                     let mut pending = Box::pin(
                         provider
-                            .claim_for_effect(&spec, &fence, &authority)
+                            .claim_for_effect(
+                                &spec,
+                                awaken_provisioning_contract::SandboxEffect::Fenced {
+                                    fence: &fence,
+                                    authority: &authority,
+                                },
+                                awaken_provisioning_contract::SandboxRealizationIntent::Create,
+                            )
                             .into_future(),
                     );
                     std::future::poll_fn(|cx| {
@@ -268,7 +279,14 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
                         source.gate.add_permits(1);
                     }
                     let replay = provider
-                        .claim_for_effect(&spec, &fence, &authority)
+                        .claim_for_effect(
+                            &spec,
+                            awaken_provisioning_contract::SandboxEffect::Fenced {
+                                fence: &fence,
+                                authority: &authority,
+                            },
+                            awaken_provisioning_contract::SandboxRealizationIntent::Create,
+                        )
                         .await
                         .unwrap();
                     assert_eq!(
@@ -285,7 +303,14 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
                     );
                     assert_eq!(
                         provider
-                            .claim_for_effect(&spec, &fence, &authority)
+                            .claim_for_effect(
+                                &spec,
+                                awaken_provisioning_contract::SandboxEffect::Fenced {
+                                    fence: &fence,
+                                    authority: &authority
+                                },
+                                awaken_provisioning_contract::SandboxRealizationIntent::Create
+                            )
                             .await
                             .unwrap()
                             .handle(),
@@ -432,11 +457,14 @@ async fn failed_creation_teardown_retains_guards_past_temporary_sandbox_drop() {
                     drops: drops.clone(),
                     failures,
                 });
-                let provider: Box<dyn pc::SandboxProvider> = if namespace {
-                    Box::new(crate::NamespaceProvider::new(tmp.path()).with_memory_mounter(mounter))
-                } else {
-                    Box::new(LocalProvider::new(tmp.path()).with_memory_mounter(mounter))
-                };
+                let provider: Box<dyn pc::SandboxProvider<Environment = dyn pc::Sandbox>> =
+                    if namespace {
+                        Box::new(
+                            crate::NamespaceProvider::new(tmp.path()).with_memory_mounter(mounter),
+                        )
+                    } else {
+                        Box::new(LocalProvider::new(tmp.path()).with_memory_mounter(mounter))
+                    };
                 let mut spec = workdir_spec("failed-creation-memory-retention", false);
                 if namespace {
                     spec.isolation = pc::IsolationClass::Namespace;
@@ -471,17 +499,22 @@ async fn failed_creation_teardown_retains_guards_past_temporary_sandbox_drop() {
                     pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX).unwrap();
                 let result = if current {
                     provider
-                        .claim_for_effect(
-                            &spec,
-                            &effect,
-                            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                        .claim_for_effect(&spec, awaken_provisioning_contract::SandboxEffect::Fenced { fence: &effect, authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                                 &effect,
-                            ),
-                        )
+                            ) }, awaken_provisioning_contract::SandboxRealizationIntent::Create)
                         .await
                 } else {
                     let __fx = pc::test_support::fixture_effect("fixture-create");
-                    provider.claim_for_effect(&spec, &__fx.0, &__fx.1).await
+                    provider
+                        .claim_for_effect(
+                            &spec,
+                            awaken_provisioning_contract::SandboxEffect::Fenced {
+                                fence: &__fx.0,
+                                authority: &__fx.1,
+                            },
+                            awaken_provisioning_contract::SandboxRealizationIntent::Create,
+                        )
+                        .await
                 };
                 let cause = result.err().expect("R1 later mount fails");
                 assert!(cause.to_string().contains("injected later mount failure"));
@@ -1322,9 +1355,13 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         "M2 missing evidence"
     );
     assert_eq!(
-        pc::SandboxProvider::observe(&provider, &missing, pc::SandboxObservationBasis::Unattached)
-            .await
-            .unwrap(),
+        pc::SandboxProvider::observe(
+            &provider,
+            pc::SandboxAdoption::new(&spec, &missing),
+            pc::SandboxObservationBasis::Unattached
+        )
+        .await
+        .unwrap(),
         pc::SandboxObservation::Ready,
         "M2 zero marker/root mutation"
     );

@@ -36,7 +36,7 @@ pub trait RealizationRuntime: Send + Sync {
         thread: &str,
         projection: crate::FrozenSessionProjection,
         mode: crate::SessionProjectionInstallMode,
-    ) -> Result<(), RunError>;
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>;
 
     /// Install a monotonic same-owner/same-incarnation/same-epoch successor of
     /// an already-installed realization fence. This is the only lease-only
@@ -685,15 +685,14 @@ pub trait LiveInboxRuntime: Send + Sync {
 /// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
 pub trait CapabilityRuntime: Send + Sync {
-    /// The advertised capability surface echoed in the session's agent object. The
-    /// default reports nothing; a real host overrides it with its built-in tools,
-    /// custom tools, skills, and delegate roster so the session enumerates what it does.
-    /// A catalog that cannot be read is refused, never advertised as empty.
+    /// The advertised capability surface echoed in the Session's Agent object.
+    /// Each Runtime supplies its built-in tools, custom tools, Skills and delegate
+    /// roster explicitly. An unreadable catalog returns an error.
     fn capabilities(&self) -> Result<AgentCapabilities, RunError>;
 
     /// The capability surface visible to one prepared session. Runtimes whose
-    /// catalogs are workspace-scoped override this; simple runtimes inherit the
-    /// process-wide view for backwards compatibility. A Session whose frozen
-    /// inputs cannot be read is refused, never advertised a guessed surface.
+    /// catalogs are workspace-scoped read its frozen inputs; process-wide
+    /// Runtimes explicitly supply their process-wide view. Unreadable frozen
+    /// inputs return an error.
     fn capabilities_for(&self, thread: &str) -> Result<AgentCapabilities, RunError>;
 }

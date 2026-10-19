@@ -830,11 +830,13 @@ async fn projection_selector_keeps_exact_parent_partition_and_session_unchanged(
         application_with_runtime(runtime.clone(), repository.clone(), environments.clone());
     let before = repository.get(&id).await.unwrap();
     let selected_latest = application
+        .queries
         .projection_thread_snapshot(&id, &child.0, None)
         .await
         .unwrap()
         .unwrap();
     let selected_old = application
+        .queries
         .projection_thread_snapshot(&id, &child.0, Some(&old))
         .await
         .unwrap()
@@ -864,6 +866,7 @@ async fn projection_selector_keeps_exact_parent_partition_and_session_unchanged(
     );
     assert!(
         application
+            .queries
             .projection_thread_snapshot(&id, &child.0, Some(&RunId("absent".into())))
             .await
             .unwrap()
@@ -872,6 +875,7 @@ async fn projection_selector_keeps_exact_parent_partition_and_session_unchanged(
     );
     assert!(
         application
+            .queries
             .projection_thread_snapshot(&SessionId::from(child.0.clone()), &child.0, Some(&old))
             .await
             .unwrap()
@@ -889,6 +893,7 @@ async fn projection_selector_keeps_exact_parent_partition_and_session_unchanged(
         .thread_id = ThreadId("foreign-thread".into());
     for selector in [None, Some(&old)] {
         let error = application
+            .queries
             .projection_thread_snapshot(&id, &child.0, selector)
             .await
             .unwrap_err();
@@ -902,6 +907,7 @@ async fn projection_selector_keeps_exact_parent_partition_and_session_unchanged(
     wrong_run_owner.runs[0].thread_id = ThreadId("foreign-run-thread".into());
     runtime.set_recovery_snapshot(id.as_str(), &child, wrong_run_owner);
     let error = application
+        .queries
         .projection_thread_snapshot(&id, &child.0, Some(&old))
         .await
         .unwrap_err();
@@ -919,6 +925,7 @@ async fn projection_selector_keeps_exact_parent_partition_and_session_unchanged(
         duplicate.runs.push(row);
         runtime.set_recovery_snapshot(id.as_str(), &child, duplicate);
         let error = application
+            .queries
             .projection_thread_snapshot(&id, &child.0, Some(&old))
             .await
             .unwrap_err();
@@ -933,6 +940,7 @@ async fn projection_selector_keeps_exact_parent_partition_and_session_unchanged(
     runtime.set_recovery_snapshot(id.as_str(), &child, blank_owner);
     assert_eq!(
         application
+            .queries
             .projection_thread_snapshot(&id, &child.0, Some(&old))
             .await
             .unwrap_err()

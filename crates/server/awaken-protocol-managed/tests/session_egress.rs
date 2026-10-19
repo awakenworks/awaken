@@ -110,7 +110,7 @@ impl awaken_session_execution_contract::RealizationRuntime for CapturingFake {
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         if let Some(init) = awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,

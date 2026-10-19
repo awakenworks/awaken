@@ -9,22 +9,22 @@
 //! cannot cancel that task; losing the Coordinator process leaves InFlight and
 //! therefore Unknown rather than manufacturing a cleanup witness.
 
+use awaken_container_contract::{K8sCreateRequest, K8sCreateResponse};
 use std::sync::Arc;
 
 use awaken_agent_contract::{
     collision_resistant_fingerprint, collision_resistant_fingerprint_digest,
 };
+use awaken_provisioning_contract::SandboxEffectFence;
 use awaken_dispatch::{
     ApplicationError, RegisteredWorker, WorkerCreateLedger, WorkerDirectory, WorkerIdentity,
     WorkerState,
 };
-use awaken_sandbox_container::ContainerEffectFence;
 use awaken_sandbox_container::{CreateTicketRequest, TicketResult};
 use awaken_sandbox_kubernetes::{
     CreateReplyProfile, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, K8S_CREATE_WIRE_VERSION,
-    K8sCreateRequest, K8sCreateResponse, K8sLedgerBinding, K8sWorkerCreateLedger,
-    ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION, RequestJoin, TicketAdmission,
-    collect_create_body, original_request_metadata_matches,
+    K8sLedgerBinding, K8sWorkerCreateLedger, ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION,
+    RequestJoin, TicketAdmission, collect_create_body, original_request_metadata_matches,
 };
 use awaken_time::{WallClock, WallClockExt};
 use awaken_worker_transport_security::kubernetes::KubernetesPodIdentity;
@@ -89,7 +89,7 @@ struct SealWire {
     wire_version: u8,
     identity: WorkerIdentity,
     scope: String,
-    predecessor: ContainerEffectFence,
+    predecessor: SandboxEffectFence,
     expected_pod_name: String,
 }
 
@@ -661,7 +661,7 @@ impl K8sCreateBroker {
         &self,
         directory: Arc<dyn WorkerDirectory>,
         scope: &str,
-        predecessor: &ContainerEffectFence,
+        predecessor: &SandboxEffectFence,
         expected_pod_name: &str,
     ) -> Result<RequestJoin, ApplicationError> {
         if scope.trim().is_empty() || scope.trim() != scope || scope.len() > 256 {

@@ -179,7 +179,7 @@ impl RealizationRuntime for ClockedRealization {
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         NeutralRuntime
             .install_session_projection(thread, projection, mode)
             .await

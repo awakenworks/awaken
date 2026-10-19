@@ -1705,3 +1705,40 @@ pub(crate) fn dispose_legacy(
 #[cfg(test)]
 #[path = "realization_marker/tests.rs"]
 mod tests;
+
+/// Match only closed evidence against the exact marker incarnation. Filesystem
+/// absence has no physical incarnation; a live terminal marker must name its own.
+pub(crate) fn validate_closed_observation(
+    handle: &awaken_provisioning_contract::SandboxHandle,
+    observation: &awaken_provisioning_contract::SandboxObservation,
+) -> Result<(), awaken_provisioning_contract::SandboxError> {
+    use awaken_provisioning_contract::{SandboxError, SandboxObservation};
+    match observation {
+        SandboxObservation::DefinitivelyUnavailable {
+            physical_incarnation: None,
+        } => Ok(()),
+        SandboxObservation::DefinitivelyUnavailable { .. } => Err(SandboxError::conflict(
+            "filesystem sandbox absence carried a foreign physical incarnation",
+        )),
+        SandboxObservation::Terminal {
+            physical_incarnation,
+        }
+        | SandboxObservation::Disposing {
+            physical_incarnation,
+        } => {
+            let expected = handle.filesystem_physical_incarnation()?.ok_or_else(|| {
+                SandboxError::unsupported("legacy filesystem handle has no physical incarnation")
+            })?;
+            if *physical_incarnation == expected {
+                Ok(())
+            } else {
+                Err(SandboxError::conflict(
+                    "terminal sandbox observation does not match the durable incarnation",
+                ))
+            }
+        }
+        _ => Err(SandboxError::invalid(
+            "sandbox observation does not carry closed physical evidence",
+        )),
+    }
+}

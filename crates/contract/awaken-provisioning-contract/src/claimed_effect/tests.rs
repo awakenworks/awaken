@@ -249,3 +249,316 @@ fn the_claim_state_machine_settles_everything_and_retains_only_an_unsettled_drop
         }
     }
 }
+
+#[test]
+fn mapped_effect_defers_mapper_and_keeps_original_claim_through_every_boundary() {
+    // Graph: construct -> mapper preflight -> original effect -> result wrap
+    // -> completion. Each async stage has a real Pending observation. Causes:
+    // C1 cancel at construction/preflight/effect/wrap; C2 reject preflight;
+    // C3 original completes Ok/Err; C4 explicitly abandon before polling;
+    // C5 result wrapping completes Err after the original completed Ok.
+    // Effects: E1 original retention exactly once on an unsettled drop;
+    // E2 completion/abandon never retains; E3 preflight rejection never polls
+    // the original; E4 the original reconciler and projected result survive.
+    // | Row | terminal boundary | polls (preflight, original, wrap) | retention |
+    // | M1  | unpolled drop     | 0,0,0                            | 1 |
+    // | M2  | preflight Pending | 1,0,0                            | 1 |
+    // | M3  | original Pending  | 2,1,0                            | 1 |
+    // | M4  | wrap Pending      | 2,2,1                            | 1 |
+    // | M5  | success           | 2,2,2                            | 0 |
+    // | M6  | original Err      | 2,2,0                            | 0 |
+    // | M7  | preflight Err     | 0,0,0                            | 0 |
+    // | M8  | abandon           | 0,0,0                            | 0 |
+    // | M9  | wrap Err          | 2,2,2                            | 0 |
+    // Constraints: preflight Err excludes original/wrap; original Err excludes
+    // wrap; abandon cannot follow IntoFuture because that consumes the value.
+    // Durable mode exercises both retention and reconciler; mapping has no
+    // mode-dependent branch, and the existing three-mode tests remain intact.
+    for row in [
+        "unpolled",
+        "preflight",
+        "original",
+        "wrap",
+        "success",
+        "original_error",
+        "preflight_error",
+        "abandon",
+        "wrap_error",
+    ] {
+        let (runs, retain) = retention();
+        let original_error = SandboxError::conflict("original effect failure");
+        let metadata_error = SandboxError::invalid("metadata rejected");
+        let expected_metadata_error = metadata_error.clone();
+        let wrap_error = SandboxError::conflict("result wrapper rejected");
+        let (original_polls, original) = yield_once(if row == "original_error" {
+            Err(original_error.clone())
+        } else {
+            Ok(())
+        });
+        let (preflight_polls, preflight) = yield_once(Ok(()));
+        let (wrap_polls, wrap) = yield_once(if row == "wrap_error" {
+            Err(wrap_error.clone())
+        } else {
+            Ok(())
+        });
+        let mapper_calls = Arc::new(AtomicUsize::new(0));
+        let calls = mapper_calls.clone();
+        let mapped = ClaimedEffect::new(EffectClaim::durable("original_scan", retain), original)
+            .map_future(move |original| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if row == "preflight_error" {
+                        return Err(metadata_error);
+                    }
+                    preflight.await?;
+                    original.await?;
+                    wrap.await?;
+                    Ok(7_u8)
+                }
+            });
+        assert_eq!(mapped.reconciler(), Some("original_scan"), "{row} E4");
+        assert_eq!(
+            mapper_calls.load(Ordering::SeqCst),
+            0,
+            "{row} construction cannot invoke mapper"
+        );
+        assert_eq!(
+            original_polls.load(Ordering::SeqCst),
+            0,
+            "{row} construction cannot start physical I/O"
+        );
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            0,
+            "{row} handoff cannot discharge or duplicate claim"
+        );
+        if matches!(row, "unpolled" | "abandon") {
+            if row == "abandon" {
+                mapped.abandon();
+            } else {
+                drop(mapped);
+            }
+            assert_eq!(
+                mapper_calls.load(Ordering::SeqCst),
+                0,
+                "M1/M8 mapper never runs"
+            );
+            assert_eq!(
+                original_polls.load(Ordering::SeqCst),
+                0,
+                "M1/M8 original never runs"
+            );
+            assert_eq!(
+                preflight_polls.load(Ordering::SeqCst),
+                0,
+                "M1/M8 preflight never runs"
+            );
+            assert_eq!(
+                wrap_polls.load(Ordering::SeqCst),
+                0,
+                "M1/M8 wrap never runs"
+            );
+            assert_eq!(
+                runs.load(Ordering::SeqCst),
+                usize::from(row == "unpolled"),
+                "M1/M8"
+            );
+            continue;
+        }
+        let mut in_flight = Box::pin(mapped.into_future());
+        let mut cx = Context::from_waker(Waker::noop());
+        let pending_polls = match row {
+            "preflight" => Some(1),
+            "original" => Some(2),
+            "wrap" => Some(3),
+            _ => None,
+        };
+        if let Some(count) = pending_polls {
+            for _ in 0..count {
+                assert!(
+                    in_flight.as_mut().poll(&mut cx).is_pending(),
+                    "{row} real Pending"
+                );
+            }
+        } else {
+            let mut result = None;
+            for _ in 0..4 {
+                if let Poll::Ready(outcome) = in_flight.as_mut().poll(&mut cx) {
+                    result = Some(outcome);
+                    break;
+                }
+            }
+            let expected = match row {
+                "original_error" => Err(original_error),
+                "preflight_error" => Err(expected_metadata_error),
+                "wrap_error" => Err(wrap_error),
+                "success" => Ok(7_u8),
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                result,
+                Some(expected),
+                "{row} E3/E4 original error or projected result"
+            );
+        }
+        let expected_polls = match row {
+            "preflight" => (1, 0, 0),
+            "original" => (2, 1, 0),
+            "wrap" => (2, 2, 1),
+            "success" | "wrap_error" => (2, 2, 2),
+            "original_error" => (2, 2, 0),
+            "preflight_error" => (0, 0, 0),
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            (
+                preflight_polls.load(Ordering::SeqCst),
+                original_polls.load(Ordering::SeqCst),
+                wrap_polls.load(Ordering::SeqCst)
+            ),
+            expected_polls,
+            "{row}"
+        );
+        assert_eq!(
+            mapper_calls.load(Ordering::SeqCst),
+            1,
+            "{row} mapper is one shot"
+        );
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            0,
+            "{row} original claim still belongs to outer owner"
+        );
+        drop(in_flight);
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            usize::from(pending_polls.is_some()),
+            "{row} E1/E2"
+        );
+    }
+}
+
+#[test]
+fn a_mapper_panic_on_first_poll_retains_the_original_claim_only_when_dropped() {
+    // P1 construct -> mapper=0, physical=0, retention=0. P2 first poll invokes
+    // the mapper and it panics before touching original -> mapper=1, physical=0,
+    // retention=0 while the in-flight owner remains alive. P3 dropping that
+    // owner -> original retention=1. No second claim or panic-cleanup protocol.
+    let (runs, retain) = retention();
+    let (polled, original) = yield_once(Ok(()));
+    let mapper_calls = Arc::new(AtomicUsize::new(0));
+    let calls = mapper_calls.clone();
+    let mapped = ClaimedEffect::new(EffectClaim::durable("original_scan", retain), original)
+        .map_future(
+            move |_original| -> std::future::Ready<Result<u8, SandboxError>> {
+                calls.fetch_add(1, Ordering::SeqCst);
+                panic!("injected mapper construction panic");
+            },
+        );
+    assert_eq!(mapped.reconciler(), Some("original_scan"), "P1");
+    assert_eq!(mapper_calls.load(Ordering::SeqCst), 0, "P1");
+    assert_eq!(polled.load(Ordering::SeqCst), 0, "P1");
+    let mut in_flight = Box::pin(mapped.into_future());
+    let mut cx = Context::from_waker(Waker::noop());
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = in_flight.as_mut().poll(&mut cx);
+    }));
+    assert!(panic.is_err(), "P2");
+    assert_eq!(mapper_calls.load(Ordering::SeqCst), 1, "P2");
+    assert_eq!(
+        polled.load(Ordering::SeqCst),
+        0,
+        "P2 original future never polled"
+    );
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        0,
+        "P2 original in-flight owner remains live"
+    );
+    drop(in_flight);
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "P3 same original retention");
+}
+
+#[test]
+fn repeated_future_projection_keeps_one_original_claim_and_reconciler() {
+    // Inductive handoff table: one/three identity projections followed by a
+    // result-type projection, crossed with unpolled drop, Pending drop,
+    // abandon, Ok, and Err. Every settled husk must be inert; the final owner
+    // keeps the same reconciler. Drop rows retain once; explicit terminal rows
+    // never retain. The original future is polled only by the final owner.
+    for depth in [1, 3] {
+        for outcome in ["drop", "pending", "abandon", "ok", "error"] {
+            let (runs, retain) = retention();
+            let original_error = SandboxError::conflict("original error");
+            let (polled, original) = yield_once(if outcome == "error" {
+                Err(original_error.clone())
+            } else {
+                Ok(())
+            });
+            let mut projected =
+                ClaimedEffect::new(EffectClaim::durable("original_scan", retain), original);
+            for _ in 0..depth {
+                projected = projected.map_future(std::convert::identity);
+                assert_eq!(
+                    projected.reconciler(),
+                    Some("original_scan"),
+                    "{depth}/{outcome}"
+                );
+                assert_eq!(
+                    polled.load(Ordering::SeqCst),
+                    0,
+                    "{depth}/{outcome} no early effect"
+                );
+                assert_eq!(
+                    runs.load(Ordering::SeqCst),
+                    0,
+                    "{depth}/{outcome} inert husk"
+                );
+            }
+            let projected = projected.map_future(|original| async move {
+                original.await?;
+                Ok(19_u8)
+            });
+            assert_eq!(
+                projected.reconciler(),
+                Some("original_scan"),
+                "{depth}/{outcome}"
+            );
+            if outcome == "abandon" {
+                projected.abandon();
+                assert_eq!(polled.load(Ordering::SeqCst), 0);
+                assert_eq!(runs.load(Ordering::SeqCst), 0);
+                continue;
+            }
+            if outcome == "drop" {
+                drop(projected);
+                assert_eq!(polled.load(Ordering::SeqCst), 0);
+                assert_eq!(runs.load(Ordering::SeqCst), 1);
+                continue;
+            }
+            let mut in_flight = Box::pin(projected.into_future());
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(
+                in_flight.as_mut().poll(&mut cx).is_pending(),
+                "{depth}/{outcome} real Pending"
+            );
+            if outcome == "pending" {
+                drop(in_flight);
+                assert_eq!(polled.load(Ordering::SeqCst), 1);
+                assert_eq!(runs.load(Ordering::SeqCst), 1);
+            } else {
+                assert_eq!(
+                    in_flight.as_mut().poll(&mut cx),
+                    Poll::Ready(if outcome == "error" {
+                        Err(original_error)
+                    } else {
+                        Ok(19_u8)
+                    })
+                );
+                drop(in_flight);
+                assert_eq!(polled.load(Ordering::SeqCst), 2);
+                assert_eq!(runs.load(Ordering::SeqCst), 0);
+            }
+        }
+    }
+}

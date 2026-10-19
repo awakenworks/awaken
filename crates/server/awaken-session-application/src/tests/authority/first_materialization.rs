@@ -40,6 +40,7 @@ pub(super) async fn claim_subject(
             )
             .unwrap();
         let committed = app
+            .mutations
             .commit_session_snapshot_with_outcome(
                 "workspace",
                 root,

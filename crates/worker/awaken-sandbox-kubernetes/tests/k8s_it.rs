@@ -5,6 +5,7 @@
 //! Run with: `cargo test -p awaken-sandbox-kubernetes --test k8s_it`
 
 // The container provider owns the exact restore fixture every engine uses.
+use awaken_container_contract::{K8sCreateRequest, K8sCreateResponse};
 #[path = "../../awaken-sandbox-container/tests/common/restore.rs"]
 mod common;
 mod k8s_common;
@@ -15,10 +16,12 @@ mod finalizer_tests;
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::ContainerHandleCodec as _;
+
+use awaken_container_contract::K8sContinuationVolume;
 use awaken_sandbox_container::{
-    ContainerEnvironmentProvider, ContainerPlan, ContainerProvider, ContainerRuntime,
-    ContainerState, K8sContinuationVolume, NetworkMode, RootfsPlan,
+    ContainerPlan, ContainerProvider, ContainerRuntime, ContainerState, NetworkMode, RootfsPlan,
 };
 use awaken_sandbox_kubernetes::K8sRuntime;
 use k8s_common::{
@@ -119,12 +122,14 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         .with_clock(awaken_time::system_clock());
     let desired = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
     let create_fence = effect_fence(&scope, "create", "lifecycle-owner", 1);
-    let first = ContainerEnvironmentProvider::create_environment_for_effect(
+    let first = SandboxProvider::claim_for_effect(
         &provider,
         &desired,
-        &create_fence,
-        &EffectAuthority::new(&create_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create_fence,
+            authority: &EffectAuthority::new(&create_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .expect("create a real Pod via the apiserver");
@@ -133,12 +138,14 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
     assert!(id.starts_with("awaken-h-"), "K1a bounded opaque name: {id}");
     assert!(id.len() <= 63, "K1a DNS label length: {id}");
 
-    let retried = ContainerEnvironmentProvider::create_environment_for_effect(
+    let retried = SandboxProvider::claim_for_effect(
         &provider,
         &desired,
-        &create_fence,
-        &EffectAuthority::new(&create_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create_fence,
+            authority: &EffectAuthority::new(&create_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .expect("an identical retry must adopt the existing realization");
@@ -150,12 +157,14 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         "K1a physical UID"
     );
     let changed = spec_with_command(&scope, fixture_image(), command(&["sleep", "31"]));
-    let mismatch = ContainerEnvironmentProvider::create_environment_for_effect(
+    let mismatch = SandboxProvider::claim_for_effect(
         &provider,
         &changed,
-        &create_fence,
-        &EffectAuthority::new(&create_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create_fence,
+            authority: &EffectAuthority::new(&create_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .err()
@@ -184,11 +193,11 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
     let replacement = ContainerProvider::new(replacement_runtime, fixture_image())
         .with_clock(awaken_time::system_clock());
     let mut observation =
-        awaken_sandbox_container::ContainerEnvironmentAdoption::new(&desired, &first_handle);
+        awaken_provisioning_contract::SandboxAdoption::new(&desired, &first_handle);
     assert!(
         matches!(
             replacement
-                .observe_environment(observation, observation.effect_basis(&terminal_fence))
+                .observe(observation, observation.effect_basis(&terminal_fence))
                 .await
                 .unwrap(),
             pc::SandboxObservation::Incompatible { .. }
@@ -196,7 +205,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         "K1d ordinary recovery cannot consume historical policy"
     );
     observation.observation_purpose =
-        awaken_sandbox_container::ContainerObservationPurpose::TerminalCleanup;
+        awaken_provisioning_contract::SandboxObservationPurpose::TerminalCleanup;
     // K1e matching historical configuration is not physical identity or fence
     // authority. Corrupt only the Pod UID, then only the owner at the original
     // epoch; both observations must reject and leave the real Pod unchanged.
@@ -211,7 +220,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
     assert!(
         matches!(
             replacement
-                .observe_environment(
+                .observe(
                     foreign_observation,
                     foreign_observation.effect_basis(&terminal_fence)
                 )
@@ -225,7 +234,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
     assert!(
         matches!(
             replacement
-                .observe_environment(observation, observation.effect_basis(&foreign_fence))
+                .observe(observation, observation.effect_basis(&foreign_fence))
                 .await
                 .unwrap(),
             pc::SandboxObservation::Incompatible { .. }
@@ -240,7 +249,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
     assert!(
         matches!(
             replacement
-                .observe_environment(observation, observation.effect_basis(&terminal_fence))
+                .observe(observation, observation.effect_basis(&terminal_fence))
                 .await
                 .unwrap(),
             pc::SandboxObservation::Ready | pc::SandboxObservation::Terminal { .. }
@@ -248,7 +257,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         "K1d terminal observation retains exact instance"
     );
     let retried = replacement
-        .prepare_terminal_environment_for_effect(
+        .prepare_terminal_for_effect(
             &desired,
             Some(&first_handle),
             Some(&create_fence),
@@ -308,12 +317,14 @@ async fn create_replay_keeps_a_later_managed_file_generation() {
         .with_clock(awaken_time::system_clock());
     let desired = spec_with_command(&scope, image, command(&["sleep", "30"]));
     let create_fence = effect_fence(&scope, "create", "file-owner", 1);
-    let first = ContainerEnvironmentProvider::create_environment_for_effect(
+    let first = SandboxProvider::claim_for_effect(
         &provider,
         &desired,
-        &create_fence,
-        &EffectAuthority::new(&create_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create_fence,
+            authority: &EffectAuthority::new(&create_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .expect("KLI3 initial fenced Create");
@@ -360,12 +371,14 @@ async fn create_replay_keeps_a_later_managed_file_generation() {
     };
     assert_eq!(read(), b"later-resource-generation", "KLI3 before replay");
 
-    let replay = ContainerEnvironmentProvider::create_environment_for_effect(
+    let replay = SandboxProvider::claim_for_effect(
         &provider,
         &desired,
-        &create_fence,
-        &EffectAuthority::new(&create_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create_fence,
+            authority: &EffectAuthority::new(&create_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .expect("KLI3 same-effect Create replay");
@@ -743,12 +756,14 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
         .with_clock(awaken_time::system_clock());
     let frozen = spec_with_command(&scope, fixture_image(), command(&["sh", "-c", "sleep 300"]));
     let create_fence = effect_fence(&scope, "create", "terminal-owner", 1);
-    let first_environment = ContainerEnvironmentProvider::create_environment_for_effect(
+    let first_environment = SandboxProvider::claim_for_effect(
         &provider,
         &frozen,
-        &create_fence,
-        &EffectAuthority::new(&create_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create_fence,
+            authority: &EffectAuthority::new(&create_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .expect("create first incarnation");
@@ -828,12 +843,14 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
     drop(first_environment);
 
     let rebuild_fence = effect_fence(&scope, "rebuild", "terminal-owner", 2);
-    let replacement_environment = ContainerEnvironmentProvider::create_environment_for_effect(
+    let replacement_environment = SandboxProvider::claim_for_effect(
         &provider,
         &frozen,
-        &rebuild_fence,
-        &EffectAuthority::new(&rebuild_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Rebuild {
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &rebuild_fence,
+            authority: &EffectAuthority::new(&rebuild_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Rebuild {
             source: Box::new(first_handle.clone()),
         },
     )
@@ -917,12 +934,14 @@ async fn terminal_control_pod_is_cleaned_without_reopening_live_control() {
         .control_services
         .insert(pc::SandboxControlServiceKind::RepositoryGitCredential);
     let create = effect_fence(&scope, "create", "control-owner", 1);
-    let original = ContainerEnvironmentProvider::create_environment_for_effect(
+    let original = SandboxProvider::claim_for_effect(
         &provider,
         &desired,
-        &create,
-        &EffectAuthority::new(&create),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create,
+            authority: &EffectAuthority::new(&create),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .expect("KC1 create real control Pod");
@@ -958,14 +977,13 @@ async fn terminal_control_pod_is_cleaned_without_reopening_live_control() {
         "KC1 status value not observed: {}",
         String::from_utf8_lossy(&waited.stderr)
     );
-    let mut adoption =
-        awaken_sandbox_container::ContainerEnvironmentAdoption::new(&desired, &handle);
+    let mut adoption = awaken_provisioning_contract::SandboxAdoption::new(&desired, &handle);
     adoption.observation_purpose =
-        awaken_sandbox_container::ContainerObservationPurpose::TerminalCleanup;
+        awaken_provisioning_contract::SandboxObservationPurpose::TerminalCleanup;
     assert!(
         matches!(
             provider
-                .observe_environment(adoption, adoption.effect_basis(&cleanup))
+                .observe(adoption, adoption.effect_basis(&cleanup))
                 .await
                 .unwrap(),
             pc::SandboxObservation::Terminal { .. }
@@ -973,7 +991,7 @@ async fn terminal_control_pod_is_cleaned_without_reopening_live_control() {
         "KC1 exact provider Terminal receipt"
     );
     drop(original);
-    let terminal = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+    let terminal = SandboxProvider::prepare_terminal_for_effect(
         &provider,
         &desired,
         Some(&handle),
@@ -1036,12 +1054,14 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
     let scope = format!("claim-fence-{}", std::process::id());
     let frozen = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
     let first_fence = effect_fence(&scope, "create-a", "claim-owner", 1);
-    let first_environment = ContainerEnvironmentProvider::create_environment_for_effect(
+    let first_environment = SandboxProvider::claim_for_effect(
         &provider,
         &frozen,
-        &first_fence,
-        &EffectAuthority::new(&first_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &first_fence,
+            authority: &EffectAuthority::new(&first_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .unwrap();
@@ -1072,12 +1092,14 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
         .unwrap();
 
     let second_fence = effect_fence(&scope, "create-b", "claim-owner", 3);
-    let second_environment = ContainerEnvironmentProvider::create_environment_for_effect(
+    let second_environment = SandboxProvider::claim_for_effect(
         &provider,
         &frozen,
-        &second_fence,
-        &EffectAuthority::new(&second_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &second_fence,
+            authority: &EffectAuthority::new(&second_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .unwrap();
@@ -1145,12 +1167,14 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
     let scope = format!("claim-orphan-{}", std::process::id());
     let frozen = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
     let create_fence = effect_fence(&scope, "create", "orphan-owner-a", 1);
-    let first = ContainerEnvironmentProvider::create_environment_for_effect(
+    let first = SandboxProvider::claim_for_effect(
         &provider,
         &frozen,
-        &create_fence,
-        &EffectAuthority::new(&create_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create_fence,
+            authority: &EffectAuthority::new(&create_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .expect("KPV3 C1 create retained realization");
@@ -1206,12 +1230,14 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
     drop(first);
 
     let foreign_fence = effect_fence(&scope, "create", "orphan-owner-b", 1);
-    let foreign = ContainerEnvironmentProvider::create_environment_for_effect(
+    let foreign = SandboxProvider::claim_for_effect(
         &provider,
         &frozen,
-        &foreign_fence,
-        &EffectAuthority::new(&foreign_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &foreign_fence,
+            authority: &EffectAuthority::new(&foreign_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .err()
@@ -1233,12 +1259,14 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
         "KPV3a P remains"
     );
 
-    let recovered = ContainerEnvironmentProvider::create_environment_for_effect(
+    let recovered = SandboxProvider::claim_for_effect(
         &provider,
         &frozen,
-        &create_fence,
-        &EffectAuthority::new(&create_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create_fence,
+            authority: &EffectAuthority::new(&create_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .expect("KPV3b exact response-loss replay");
@@ -1294,9 +1322,7 @@ async fn missing_handle_reconstructs_a_live_original_pod_and_claim_for_terminal_
     use awaken_sandbox_container::{
         CreateTicket, CreateTicketRequest, RuntimeError, TicketResult, TicketStatus,
     };
-    use awaken_sandbox_kubernetes::{
-        K8sCreateRequest, K8sCreateResponse, K8sCreateTransport, RequestJoin,
-    };
+    use awaken_sandbox_kubernetes::{K8sCreateTransport, RequestJoin};
 
     struct JoinedPair {
         client: kube::Client,
@@ -1387,7 +1413,7 @@ async fn missing_handle_reconstructs_a_live_original_pod_and_claim_for_terminal_
         async fn seal_predecessor(
             &self,
             _: &str,
-            _: &awaken_sandbox_container::ContainerEffectFence,
+            _: &awaken_provisioning_contract::SandboxEffectFence,
             _: &str,
         ) -> Result<RequestJoin, RuntimeError> {
             self.sealed.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1425,12 +1451,14 @@ async fn missing_handle_reconstructs_a_live_original_pod_and_claim_for_terminal_
     let scope = format!("joined-pvc-{}", uuid::Uuid::new_v4());
     let frozen = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
     let create_fence = effect_fence(&scope, "create", "joined-owner", 1);
-    let first = ContainerEnvironmentProvider::create_environment_for_effect(
+    let first = SandboxProvider::claim_for_effect(
         &first_provider,
         &frozen,
-        &create_fence,
-        &EffectAuthority::new(&create_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create_fence,
+            authority: &EffectAuthority::new(&create_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .expect("KPV4 C1 real Pod/PVC Create");
@@ -1481,7 +1509,7 @@ async fn missing_handle_reconstructs_a_live_original_pod_and_claim_for_terminal_
     let replacement_provider = ContainerProvider::new(Arc::new(replacement), fixture_image())
         .with_clock(awaken_time::system_clock());
     let terminal_fence = effect_fence(&scope, "terminal", "joined-owner", 2);
-    let terminal = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+    let terminal = SandboxProvider::prepare_terminal_for_effect(
         &replacement_provider,
         &frozen,
         None,
@@ -1551,12 +1579,14 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
     let scope = format!("claim-only-terminal-{}", std::process::id());
     let frozen = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
     let create_fence = effect_fence(&scope, "create", "claim-only-owner", 1);
-    let source = ContainerEnvironmentProvider::create_environment_for_effect(
+    let source = SandboxProvider::claim_for_effect(
         &provider,
         &frozen,
-        &create_fence,
-        &EffectAuthority::new(&create_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create_fence,
+            authority: &EffectAuthority::new(&create_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .expect("KPV5 C1 create retained source");
@@ -1628,15 +1658,14 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
     drop(source);
 
     for fenced in [false, true] {
-        let adoption =
-            awaken_sandbox_container::ContainerEnvironmentAdoption::new(&frozen, &source_handle);
+        let adoption = awaken_provisioning_contract::SandboxAdoption::new(&frozen, &source_handle);
         let observed = if fenced {
             provider
-                .observe_environment(adoption, adoption.effect_basis(&create_fence))
+                .observe(adoption, adoption.effect_basis(&create_fence))
                 .await
         } else {
             provider
-                .observe_environment(
+                .observe(
                     adoption,
                     awaken_provisioning_contract::SandboxObservationBasis::Unattached,
                 )
@@ -1675,7 +1704,7 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         "KPV5d must reach claim admission, not fail on an invalid fence: {rejected}"
     );
 
-    let error = match ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+    let error = match SandboxProvider::prepare_terminal_for_effect(
         &provider,
         &frozen,
         Some(&source_handle),
@@ -1721,12 +1750,14 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
     );
 
     let rebuild_fence = effect_fence(&scope, "rebuild", "claim-only-owner", 2);
-    let replacement = ContainerEnvironmentProvider::create_environment_for_effect(
+    let replacement = SandboxProvider::claim_for_effect(
         &provider,
         &frozen,
-        &rebuild_fence,
-        &EffectAuthority::new(&rebuild_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Rebuild {
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &rebuild_fence,
+            authority: &EffectAuthority::new(&rebuild_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Rebuild {
             source: Box::new(source_handle.clone()),
         },
     )
@@ -1785,7 +1816,7 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
 
     // Response-loss row: the persisted current V3 original-set handle and same live effect
     // authorize only the zero-mutation total-absence result.
-    let replay = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+    let replay = SandboxProvider::prepare_terminal_for_effect(
         &provider,
         &frozen,
         Some(&replacement_handle),
@@ -1835,12 +1866,14 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
     let scope = format!("claim-delete-rebuild-wins-{}", std::process::id());
     let frozen = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
     let create_fence = effect_fence(&scope, "create", "delete-race-owner", 1);
-    let source = ContainerEnvironmentProvider::create_environment_for_effect(
+    let source = SandboxProvider::claim_for_effect(
         provider.as_ref(),
         &frozen,
-        &create_fence,
-        &EffectAuthority::new(&create_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create_fence,
+            authority: &EffectAuthority::new(&create_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .expect("KPV6 C1 create retained source");
@@ -1950,12 +1983,14 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
     let rebuild_source_handle = source_handle.clone();
     let rebuild = tokio::spawn(async move {
         let fence = effect_fence(&rebuild_scope, "rebuild", "delete-race-owner", 2);
-        ContainerEnvironmentProvider::create_environment_for_effect(
+        SandboxProvider::claim_for_effect(
             rebuild_provider.as_ref(),
             &rebuild_spec,
-            &fence,
-            &EffectAuthority::new(&fence),
-            awaken_container_contract::EnvironmentRealizationIntent::Rebuild {
+            awaken_provisioning_contract::SandboxEffect::Fenced {
+                fence: &fence,
+                authority: &EffectAuthority::new(&fence),
+            },
+            awaken_provisioning_contract::SandboxRealizationIntent::Rebuild {
                 source: Box::new(rebuild_source_handle),
             },
         )
@@ -2098,12 +2133,14 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
     let scope = format!("claim-delete-order-{}", std::process::id());
     let frozen = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
     let create_fence = effect_fence(&scope, "create", "delete-order-owner", 1);
-    let source = ContainerEnvironmentProvider::create_environment_for_effect(
+    let source = SandboxProvider::claim_for_effect(
         &provider,
         &frozen,
-        &create_fence,
-        &EffectAuthority::new(&create_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create_fence,
+            authority: &EffectAuthority::new(&create_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .expect("KPV4 C1 create retained source");
@@ -2196,10 +2233,10 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     };
 
-    let observed_disposing = ContainerEnvironmentProvider::observe_environment(
+    let observed_disposing = SandboxProvider::observe(
         &provider,
-        awaken_sandbox_container::ContainerEnvironmentAdoption::new(&frozen, &source_handle),
-        awaken_sandbox_container::ContainerEnvironmentAdoption::new(&frozen, &source_handle)
+        awaken_provisioning_contract::SandboxAdoption::new(&frozen, &source_handle),
+        awaken_provisioning_contract::SandboxAdoption::new(&frozen, &source_handle)
             .effect_basis(&terminal_fence),
     )
     .await
@@ -2212,7 +2249,7 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         ),
         "KPV4d/E5: {observed_disposing:?}"
     );
-    let physical_cleanup = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+    let physical_cleanup = SandboxProvider::prepare_terminal_for_effect(
         &provider,
         &frozen,
         Some(&source_handle),
@@ -2248,12 +2285,14 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
     }
 
     let rebuild_fence = effect_fence(&scope, "rebuild", "delete-order-owner", 2);
-    let rebuild = ContainerEnvironmentProvider::create_environment_for_effect(
+    let rebuild = SandboxProvider::claim_for_effect(
         &provider,
         &frozen,
-        &rebuild_fence,
-        &EffectAuthority::new(&rebuild_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Rebuild {
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &rebuild_fence,
+            authority: &EffectAuthority::new(&rebuild_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Rebuild {
             source: Box::new(source_handle.clone()),
         },
     )
@@ -2306,12 +2345,14 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
     let scope = format!("claim-preflight-{}", std::process::id());
     let frozen = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
     let owner_fence = effect_fence(&scope, "create-a", "preflight-owner-a", 1);
-    let owner_environment = ContainerEnvironmentProvider::create_environment_for_effect(
+    let owner_environment = SandboxProvider::claim_for_effect(
         &plain_provider,
         &frozen,
-        &owner_fence,
-        &EffectAuthority::new(&owner_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &owner_fence,
+            authority: &EffectAuthority::new(&owner_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .unwrap();
@@ -2361,12 +2402,14 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
         .with_clock(awaken_time::system_clock());
     let foreign_fence = effect_fence(&scope, "create-b", "preflight-owner-b", 1);
     let authority = EffectAuthority::new(&foreign_fence);
-    let error = ContainerEnvironmentProvider::create_environment_for_effect(
+    let error = SandboxProvider::claim_for_effect(
         &retained_provider,
         &frozen,
-        &foreign_fence,
-        &authority,
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &foreign_fence,
+            authority: &authority,
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     );
     let error = error.await.err().expect("KPV2 foreign effect rejects");
     assert!(

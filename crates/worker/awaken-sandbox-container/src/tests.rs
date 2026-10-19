@@ -6,8 +6,14 @@
 
 use super::*;
 use crate::test_support::{disposal_authorization, spec};
-use awaken_provisioning_contract::SandboxProvider;
+use awaken_agent_channel::AgentChannel;
+use awaken_container_contract::LIVE_INPUTS_ROOT;
 use awaken_provisioning_contract::test_support::FenceTamper as _;
+use awaken_provisioning_contract::{
+    SandboxAdoption, SandboxCheckpointAccess, SandboxCheckpointMutation, SandboxEffectFence,
+    SandboxObservationPurpose, SessionSandbox,
+};
+use awaken_provisioning_contract::{SandboxProvider, SandboxReadiness};
 use std::collections::HashMap;
 use std::sync::{
     Mutex,
@@ -887,6 +893,23 @@ async fn uncertain_memory_staging_blocks_remount_until_exact_recovery() {
     );
 }
 
+fn activation_memory_spec(scope: &str) -> pc::SandboxSpec {
+    let mut sandbox_spec = spec(scope);
+    sandbox_spec.mounts.push(pc::MountRequirement {
+        mount_id: "memory".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "durable-copy".into(),
+            materialization_reference: Some("claim-copy".into()),
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+        },
+        mount_path: "/workspace/memory".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    });
+    sandbox_spec
+}
+
 #[tokio::test]
 async fn activation_response_loss_recovers_copy_from_the_backend_bound_root() {
     /* Container Memory decision table CM1. Causes: C1 the exact backend
@@ -903,30 +926,22 @@ async fn activation_response_loss_recovers_copy_from_the_backend_bound_root() {
         st: Mutex::new(FakeState {
             recover_prepared_reservations: true,
             host_live_input_bind: true,
-            lose_activation_response_once: true,
+            activation_failure: Some(ActivationFailure::AfterEffect(
+                RuntimeError::MayHaveCommitted("injected activation response loss".into()),
+            )),
             ..Default::default()
         }),
     });
-    let mut sandbox_spec = spec(scope);
-    sandbox_spec.mounts.push(pc::MountRequirement {
-        mount_id: "memory".into(),
-        source: pc::MountSource::MemoryStore {
-            store_id: "durable-copy".into(),
-            materialization_reference: Some("claim-copy".into()),
-            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
-        },
-        mount_path: "/workspace/memory".into(),
-        access: pc::MountAccess::ReadWrite,
-        lifetime: pc::MountLifetime::Session,
-        required: true,
-    });
+    let sandbox_spec = activation_memory_spec(scope);
     let mount_calls = Arc::new(AtomicUsize::new(0));
     let recovery_calls = Arc::new(AtomicUsize::new(0));
+    let teardown_calls = Arc::new(AtomicUsize::new(0));
     let mounter = Arc::new(OrderedCopyMounter {
         runtime: runtime.clone(),
         scope: scope.into(),
         mount_calls: mount_calls.clone(),
         recovery_calls: recovery_calls.clone(),
+        teardown_calls: teardown_calls.clone(),
     });
     let first = provider(runtime.clone());
     first.install_memory_mounter(mounter.clone());
@@ -937,6 +952,11 @@ async fn activation_response_loss_recovers_copy_from_the_backend_bound_root() {
     assert!(error.to_string().contains("may have committed"), "R2");
     assert_eq!(mount_calls.load(Ordering::SeqCst), 1, "R1/R2");
     assert_eq!(runtime.st.lock().unwrap().activation_calls, 1, "R1/R2");
+    assert_eq!(
+        teardown_calls.load(Ordering::SeqCst),
+        0,
+        "R2 original Memory retained"
+    );
     drop(first);
 
     let recovered_root = runtime
@@ -1741,7 +1761,7 @@ async fn physical_disposal_rechecks_current_authority_before_delete_release_and_
             assert!(observations > 0, "R6 non-vacuous runtime observation");
             assert_eq!(
                 runtime.st.lock().unwrap().observation_purposes,
-                vec![ContainerObservationPurpose::TerminalCleanup; observations as usize],
+                vec![SandboxObservationPurpose::TerminalCleanup; observations as usize],
                 "R6 {boundary}/{change}"
             );
             *authority.current.lock().unwrap() = None;
@@ -2000,17 +2020,19 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
         physical_incarnation: "cid-cold-native-recovery".into(),
     });
     assert!(
-        ContainerEnvironmentProvider::adopt_environment_for_effect(
+        SandboxProvider::adopt_for_effect(
             &pool,
-            ContainerEnvironmentAdoption::new(&sandbox_spec, &handle),
-            &terminal_fence,
-            &pc::test_support::EffectAuthority::new(&terminal_fence)
+            SandboxAdoption::new(&sandbox_spec, &handle),
+            awaken_provisioning_contract::SandboxEffect::Fenced {
+                fence: &terminal_fence,
+                authority: &pc::test_support::EffectAuthority::new(&terminal_fence)
+            }
         )
         .await
         .is_err(),
         "E4 active adoption does not disguise terminal preparation",
     );
-    let adapter_prepared = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+    let adapter_prepared = SandboxProvider::prepare_terminal_for_effect(
         &pool,
         &sandbox_spec,
         Some(&handle),
@@ -2040,7 +2062,7 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
     drop(adapter_prepared);
     runtime.set_observation(pc::SandboxObservation::Ready);
     assert!(
-        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        SandboxProvider::prepare_terminal_for_effect(
             &pool,
             &sandbox_spec,
             Some(&handle),
@@ -2057,7 +2079,7 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
         physical_incarnation: Some("cid-cold-native-recovery".into()),
     });
     assert!(
-        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        SandboxProvider::prepare_terminal_for_effect(
             &pool,
             &sandbox_spec,
             Some(&handle),
@@ -2071,7 +2093,7 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
         "E5 absence cannot fabricate a lifecycle"
     );
     assert!(
-        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        SandboxProvider::prepare_terminal_for_effect(
             &pool,
             &sandbox_spec,
             None,
@@ -2218,7 +2240,7 @@ async fn cold_host_bind_terminal_preparation_fails_before_observation_or_removal
     .unwrap();
 
     assert!(
-        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        SandboxProvider::prepare_terminal_for_effect(
             &provider,
             &sandbox_spec,
             Some(&handle),
@@ -2282,7 +2304,7 @@ async fn cold_host_bind_terminal_recovery_requires_complete_participants() {
         let fence =
             pc::SandboxEffectFence::new("cold-cleanup", "owner", "incarnation", 8, u64::MAX)
                 .unwrap();
-        let result = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        let result = SandboxProvider::prepare_terminal_for_effect(
             &cold,
             &sandbox_spec,
             Some(&handle),
@@ -2357,19 +2379,18 @@ async fn cold_reconstruction_and_adoption_recheck_authority_after_each_provider_
         fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
         live: bool,
-    ) -> Result<Option<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
+    ) -> Result<Option<Arc<dyn SessionSandbox>>, pc::SandboxError> {
         if live {
             provider
-                .adopt_environment_for_effect(
-                    ContainerEnvironmentAdoption::new(spec, handle),
-                    fence,
-                    authority,
+                .adopt_for_effect(
+                    SandboxAdoption::new(spec, handle),
+                    awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority },
                 )
                 .await
                 .map(Some)
         } else {
             provider
-                .prepare_terminal_environment_for_effect(spec, Some(handle), None, fence, authority)
+                .prepare_terminal_for_effect(spec, Some(handle), None, fence, authority)
                 .await
         }
     }
@@ -2502,9 +2523,9 @@ async fn cold_reconstruction_and_adoption_recheck_authority_after_each_provider_
                     assert_eq!(
                         state.observation_purposes.last(),
                         Some(&if phase == "live" {
-                            ContainerObservationPurpose::Recovery
+                            SandboxObservationPurpose::Recovery
                         } else {
-                            ContainerObservationPurpose::TerminalCleanup
+                            SandboxObservationPurpose::TerminalCleanup
                         }),
                         "R5 {phase}/{boundary}/{change}"
                     );
@@ -2545,9 +2566,9 @@ async fn cold_reconstruction_and_adoption_recheck_authority_after_each_provider_
                 assert_eq!(
                     runtime.st.lock().unwrap().observation_purposes.last(),
                     Some(&if phase == "live" {
-                        ContainerObservationPurpose::Recovery
+                        SandboxObservationPurpose::Recovery
                     } else {
-                        ContainerObservationPurpose::TerminalCleanup
+                        SandboxObservationPurpose::TerminalCleanup
                     }),
                     "R5 exact retry preserves the purpose"
                 );
@@ -2606,7 +2627,7 @@ async fn effect_fenced_total_absence_has_no_terminal_environment() {
     )
     .unwrap();
 
-    let target = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+    let target = SandboxProvider::prepare_terminal_for_effect(
         &provider,
         &sandbox_spec,
         Some(&handle),
@@ -2711,6 +2732,7 @@ struct OrderedCopyMounter {
     scope: String,
     mount_calls: Arc<AtomicUsize>,
     recovery_calls: Arc<AtomicUsize>,
+    teardown_calls: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -2735,7 +2757,7 @@ impl pc::MemoryMounter for OrderedCopyMounter {
         pc::MemoryMountOutcome::Mounted(Box::new(FakeMemoryMount {
             torn_down: Arc::new(AtomicBool::new(false)),
             fail_teardown: false,
-            teardown_calls: Arc::new(AtomicUsize::new(0)),
+            teardown_calls: self.teardown_calls.clone(),
             response_gate: None,
             realization: pc::Realization::Copy,
         }))
@@ -2775,6 +2797,11 @@ type RuntimePathObservation = (
     Option<String>,
 );
 
+enum ActivationFailure {
+    BeforeEffect(RuntimeError),
+    AfterEffect(RuntimeError),
+}
+
 #[derive(Default)]
 struct FakeState {
     network_allowlist: bool,
@@ -2807,8 +2834,8 @@ struct FakeState {
     prepared_attempts: HashMap<String, String>,
     active_reservations: std::collections::HashSet<String>,
     activation_calls: usize,
-    lose_activation_response_once: bool,
-    effect_fences: Vec<ContainerEffectFence>,
+    activation_failure: Option<ActivationFailure>,
+    effect_fences: Vec<SandboxEffectFence>,
     attempted_binds: Vec<BindPlan>,
     refreshed_credential: Option<Vec<u8>>,
     live_credential: Option<Vec<u8>>,
@@ -2849,7 +2876,7 @@ struct FakeState {
     restore_disposal_response_gate: Option<Arc<tokio::sync::Semaphore>>,
     restore_disposal_authorizations: Vec<pc::SandboxDisposalAuthorization>,
     observations: u32,
-    observation_purposes: Vec<ContainerObservationPurpose>,
+    observation_purposes: Vec<SandboxObservationPurpose>,
     retained_observation_attempts: Vec<Option<String>>,
     observation: Option<pc::SandboxObservation>,
     unmaterialized_absence_proven: bool,
@@ -2919,7 +2946,7 @@ async fn container_checkpoint_projection_preserves_exact_handle_and_current_auth
         let mut sandbox = provider
             .create_container_for_effect(
                 &requested,
-                crate::ContainerEffect::Fenced {
+                awaken_provisioning_contract::SandboxEffect::Fenced {
                     fence: &create,
                     authority: &pc::test_support::EffectAuthority::new(&create),
                 },
@@ -2946,16 +2973,16 @@ async fn container_checkpoint_projection_preserves_exact_handle_and_current_auth
             sandbox.adoption_fingerprint = None;
             sandbox.realization_fingerprint = None;
         }
-        let access = ContainerCheckpointAccess {
+        let access = SandboxCheckpointAccess {
             source_effect_fence: &source,
             effect_fence: &active,
             request_fingerprint: "request",
             authority: &authority,
         };
-        let mut pending = Box::pin(ContainerEnvironment::checkpoint_upload(
+        let mut pending = Box::pin(SessionSandbox::checkpoint_upload(
             &sandbox,
             access,
-            ContainerCheckpointMutation::Acquire,
+            SandboxCheckpointMutation::Acquire,
         ));
         if matches!(change, "denied" | "legacy") {
             assert!(pending.await.is_err(), "CF2");
@@ -3145,7 +3172,7 @@ impl ContainerRuntime for FakeRuntime {
         &self,
         _scope: &str,
         plan: &ContainerPlan,
-        expected_effect_fence: Option<&ContainerEffectFence>,
+        expected_effect_fence: Option<&SandboxEffectFence>,
     ) -> Result<MissingHandleTerminalEvidence, RuntimeError> {
         let mut state = self.st.lock().unwrap();
         state.unmaterialized_absence_checks += 1;
@@ -3188,8 +3215,8 @@ impl ContainerRuntime for FakeRuntime {
     async fn checkpoint_upload(
         &self,
         expectation: ContainerObservationExpectation<'_>,
-        access: ContainerCheckpointAccess<'_>,
-        mutation: ContainerCheckpointMutation<'_>,
+        access: SandboxCheckpointAccess<'_>,
+        mutation: SandboxCheckpointMutation<'_>,
     ) -> Result<Option<pc::SandboxCheckpointUpload>, RuntimeError> {
         let gate = {
             let mut state = self.st.lock().unwrap();
@@ -3214,7 +3241,7 @@ impl ContainerRuntime for FakeRuntime {
             assert_eq!(access.source_effect_fence, source);
             assert_eq!(access.effect_fence, active);
             assert_eq!(access.request_fingerprint, "request");
-            assert!(matches!(mutation, ContainerCheckpointMutation::Acquire));
+            assert!(matches!(mutation, SandboxCheckpointMutation::Acquire));
             state.checkpoint_calls += 1;
             state.checkpoint_response_gate.clone()
         };
@@ -3417,7 +3444,7 @@ impl ContainerRuntime for FakeRuntime {
         _realization_fingerprint: &pc::SandboxRealizationFingerprint,
         prepared_locator: &str,
     ) -> Result<String, RuntimeError> {
-        {
+        let failure = {
             let mut state = self.st.lock().unwrap();
             state
                 .created_binds
@@ -3426,14 +3453,17 @@ impl ContainerRuntime for FakeRuntime {
                 .created_memory_mounts
                 .insert(prepared_locator.to_owned(), plan.memory_mounts.clone());
             state.activation_calls += 1;
-            state.active_reservations.insert(context.scope.to_owned());
-        }
+            match state.activation_failure.take() {
+                Some(ActivationFailure::BeforeEffect(error)) => return Err(error),
+                failure => {
+                    state.active_reservations.insert(context.scope.to_owned());
+                    failure
+                }
+            }
+        };
         self.creation_response("activation").await;
-        let mut state = self.st.lock().unwrap();
-        if std::mem::take(&mut state.lose_activation_response_once) {
-            return Err(RuntimeError::MayHaveCommitted(
-                "injected activation response loss".into(),
-            ));
+        if let Some(ActivationFailure::AfterEffect(error)) = failure {
+            return Err(error);
         }
         Ok(prepared_locator.to_owned())
     }
@@ -3811,7 +3841,7 @@ impl ContainerRuntime for FakeRuntime {
         &self,
         admitted: crate::AdmittedExec,
         command: pc::MaterializedCommand,
-    ) -> Result<RuntimeAgentProcess, RuntimeError> {
+    ) -> Result<AgentProcess, RuntimeError> {
         let container_id = admitted.container_id();
         let memory_archive = if command.argv.iter().any(|arg| arg == "read-tree-nofollow") {
             self.st.lock().unwrap().memory_archive.clone()
@@ -3826,7 +3856,7 @@ impl ContainerRuntime for FakeRuntime {
         tokio::spawn(async move {
             let _ = peer.write_all(&memory_archive).await;
         });
-        Ok(RuntimeAgentProcess {
+        Ok(AgentProcess {
             process,
             channel: Box::new(ours),
         })
@@ -3957,7 +3987,7 @@ async fn expired_effect_fence_rejects_before_runtime_or_mount_materialization() 
     let error = match provider
         .create_container_for_effect(
             &spec("expired-fence"),
-            crate::ContainerEffect::Fenced {
+            awaken_provisioning_contract::SandboxEffect::Fenced {
                 fence: &expired,
                 authority: &pc::test_support::EffectAuthority::denied(),
             },
@@ -4036,7 +4066,7 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
     // File response -> backend prepare response -> Memory/recovery response ->
     // activation -> handle response -> control response -> publication.
     // C1 boundary x C2 current proof {revoked, replaced, exhausted, renewed}
-    // x C3 neutral/ContainerEnvironment/warm-pool port (144 rows).
+    // x C3 neutral/SessionSandbox/warm-pool port (144 rows).
     // A copied future fence is constant. Package/File/Memory responses exercise
     // actual dependencies, including already-created local participant bytes.
     // CA1 loss before prepare => Err, no physical creation; CA2 loss at/after
@@ -4185,22 +4215,29 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
                         pc::SandboxProvider::claim_for_effect(
                             provider.as_ref(),
                             &requested,
-                            &fence,
-                            &authority,
+                            awaken_provisioning_contract::SandboxEffect::Fenced {
+                                fence: &fence,
+                                authority: &authority,
+                            },
+                            awaken_provisioning_contract::SandboxRealizationIntent::Create,
                         )
                         .await
                         .map(|_| ())
                     } else {
-                        let port: &dyn ContainerEnvironmentProvider = if port == "pool" {
+                        let port: &dyn SandboxProvider<
+                            Environment = dyn awaken_provisioning_contract::SessionSandbox,
+                        > = if port == "pool" {
                             &pool
                         } else {
                             provider.as_ref()
                         };
-                        port.create_environment_for_effect(
+                        port.claim_for_effect(
                             &requested,
-                            &fence,
-                            &authority,
-                            awaken_container_contract::EnvironmentRealizationIntent::Create,
+                            awaken_provisioning_contract::SandboxEffect::Fenced {
+                                fence: &fence,
+                                authority: &authority,
+                            },
+                            awaken_provisioning_contract::SandboxRealizationIntent::Create,
                         )
                         .await
                         .map(|_| ())
@@ -4347,7 +4384,7 @@ async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() 
     provider
         .create_container_for_effect(
             &renewable_spec,
-            crate::ContainerEffect::Fenced {
+            awaken_provisioning_contract::SandboxEffect::Fenced {
                 fence: &initial,
                 authority: &source,
             },
@@ -4402,7 +4439,7 @@ async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() 
         let error = match provider
             .create_container_for_effect(
                 &rejected_spec,
-                crate::ContainerEffect::Fenced {
+                awaken_provisioning_contract::SandboxEffect::Fenced {
                     fence: &initial,
                     authority: &source,
                 },
@@ -4782,9 +4819,10 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
         Some("fake-control-incarnation"),
         "B2/E2 persisted"
     );
-    let exact = ContainerEnvironmentProvider::adopt_unattached_environment(
+    let exact = SandboxProvider::adopt_for_effect(
         &container_provider,
-        ContainerEnvironmentAdoption::new(&demanded, &handle),
+        SandboxAdoption::new(&demanded, &handle),
+        awaken_provisioning_contract::SandboxEffect::Unattached,
     )
     .await
     .expect("B3/E3 exact adoption");
@@ -4801,7 +4839,7 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
         demanded.control_services,
         "B3/E3"
     );
-    let adoption_fence = ContainerEffectFence::new(
+    let adoption_fence = SandboxEffectFence::new(
         "control-adoption",
         "worker-control",
         "worker-control:1:boot",
@@ -4809,11 +4847,13 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
         u64::MAX,
     )
     .unwrap();
-    ContainerEnvironmentProvider::adopt_environment_for_effect(
+    SandboxProvider::adopt_for_effect(
         &container_provider,
-        ContainerEnvironmentAdoption::new(&demanded, &handle),
-        &adoption_fence,
-        &pc::test_support::EffectAuthority::new(&adoption_fence),
+        SandboxAdoption::new(&demanded, &handle),
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &adoption_fence,
+            authority: &pc::test_support::EffectAuthority::new(&adoption_fence),
+        },
     )
     .await
     .expect("B4/E3 fenced exact spec");
@@ -4835,9 +4875,10 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
         },
     );
     assert!(
-        ContainerEnvironmentProvider::adopt_unattached_environment(
+        SandboxProvider::adopt_for_effect(
             &container_provider,
-            ContainerEnvironmentAdoption::new(&demanded, &missing_incarnation)
+            SandboxAdoption::new(&demanded, &missing_incarnation),
+            awaken_provisioning_contract::SandboxEffect::Unattached
         )
         .await
         .is_err(),
@@ -4861,9 +4902,10 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
 
     let ordinary = spec("demanded-control");
     assert!(
-        ContainerEnvironmentProvider::adopt_unattached_environment(
+        SandboxProvider::adopt_for_effect(
             &container_provider,
-            ContainerEnvironmentAdoption::new(&ordinary, &handle)
+            SandboxAdoption::new(&ordinary, &handle),
+            awaken_provisioning_contract::SandboxEffect::Unattached
         )
         .await
         .is_err(),
@@ -4878,9 +4920,10 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
         },
     );
     assert!(
-        ContainerEnvironmentProvider::adopt_unattached_environment(
+        SandboxProvider::adopt_for_effect(
             &container_provider,
-            ContainerEnvironmentAdoption::new(&demanded, &legacy)
+            SandboxAdoption::new(&demanded, &legacy),
+            awaken_provisioning_contract::SandboxEffect::Unattached
         )
         .await
         .is_err(),
@@ -4888,9 +4931,10 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
     );
     let unsupported_provider = provider(Arc::new(FakeRuntime::default()));
     assert!(
-        ContainerEnvironmentProvider::adopt_unattached_environment(
+        SandboxProvider::adopt_for_effect(
             &unsupported_provider,
-            ContainerEnvironmentAdoption::new(&demanded, &handle)
+            SandboxAdoption::new(&demanded, &handle),
+            awaken_provisioning_contract::SandboxEffect::Unattached
         )
         .await
         .is_err(),
@@ -5107,9 +5151,9 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
     let handle = pc::Sandbox::handle(&sandbox);
 
     assert_eq!(
-        ContainerEnvironmentProvider::observe_environment(
+        SandboxProvider::observe(
             &provider,
-            ContainerEnvironmentAdoption::new(&exact, &handle),
+            SandboxAdoption::new(&exact, &handle),
             awaken_provisioning_contract::SandboxObservationBasis::Unattached
         )
         .await
@@ -5124,15 +5168,13 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
     // A2 diagnostic evidence carries only the two equality fingerprints, not
     // raw spec/paths/environment contents. This changes no admission transition:
     // mismatch still rejects before backend observation and cannot clear a slot.
-    let pc::SandboxObservation::Incompatible { reason } =
-        ContainerEnvironmentProvider::observe_environment(
-            &provider,
-            ContainerEnvironmentAdoption::new(&drifted, &handle),
-            awaken_provisioning_contract::SandboxObservationBasis::Unattached,
-        )
-        .await
-        .unwrap()
-    else {
+    let pc::SandboxObservation::Incompatible { reason } = SandboxProvider::observe(
+        &provider,
+        SandboxAdoption::new(&drifted, &handle),
+        awaken_provisioning_contract::SandboxObservationBasis::Unattached,
+    )
+    .await
+    .unwrap() else {
         panic!("A2 mismatch must reject");
     };
     let stored = handle.container_adoption_fingerprint().unwrap().unwrap();
@@ -5144,27 +5186,23 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
     // A3 the creating object holds the original attempt (never durable handle
     // data); both fenced/unfenced observation share fingerprint validation and
     // pass precisely this proof. A4 an adopted wrapper cannot mint a new one.
-    let mut retained = ContainerEnvironmentAdoption::new(&exact, &handle);
+    let mut retained = SandboxAdoption::new(&exact, &handle);
     retained.retained_attempt = sandbox.retained_create_attempt();
     assert!(
         retained.retained_attempt.is_some(),
         "A3 creator retains proof"
     );
-    ContainerEnvironmentProvider::observe_environment(
+    SandboxProvider::observe(
         &provider,
         retained,
         awaken_provisioning_contract::SandboxObservationBasis::Unattached,
     )
     .await
     .unwrap();
-    let fence = ContainerEffectFence::new("observe", "owner", "runtime", 1, u64::MAX).unwrap();
-    ContainerEnvironmentProvider::observe_environment(
-        &provider,
-        retained,
-        retained.effect_basis(&fence),
-    )
-    .await
-    .unwrap();
+    let fence = SandboxEffectFence::new("observe", "owner", "runtime", 1, u64::MAX).unwrap();
+    SandboxProvider::observe(&provider, retained, retained.effect_basis(&fence))
+        .await
+        .unwrap();
     let attempts = runtime
         .st
         .lock()
@@ -5221,10 +5259,10 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
     assert_eq!(
         state.observation_purposes,
         [
-            ContainerObservationPurpose::Recovery,
-            ContainerObservationPurpose::Recovery,
-            ContainerObservationPurpose::Recovery,
-            ContainerObservationPurpose::TerminalCleanup,
+            SandboxObservationPurpose::Recovery,
+            SandboxObservationPurpose::Recovery,
+            SandboxObservationPurpose::Recovery,
+            SandboxObservationPurpose::TerminalCleanup,
         ],
         "A7 one observer, distinct recovery and cleanup semantics"
     );
@@ -5251,28 +5289,24 @@ async fn observation_purpose_reaches_runtime_without_granting_cleanup() {
     let exact = spec("purpose-propagation");
     let sandbox = provider.create_container(&exact).await.unwrap();
     let handle = pc::Sandbox::handle(&sandbox);
-    let fence = ContainerEffectFence::new("observe", "owner", "runtime", 1, u64::MAX).unwrap();
+    let fence = SandboxEffectFence::new("observe", "owner", "runtime", 1, u64::MAX).unwrap();
     for purpose in [
-        ContainerObservationPurpose::Recovery,
-        ContainerObservationPurpose::TerminalCleanup,
+        SandboxObservationPurpose::Recovery,
+        SandboxObservationPurpose::TerminalCleanup,
     ] {
         for fenced in [false, true] {
-            let mut adoption = ContainerEnvironmentAdoption::new(&exact, &handle);
+            let mut adoption = SandboxAdoption::new(&exact, &handle);
             assert_eq!(
                 adoption.observation_purpose,
-                ContainerObservationPurpose::Recovery
+                SandboxObservationPurpose::Recovery
             );
             adoption.observation_purpose = purpose;
             if fenced {
-                ContainerEnvironmentProvider::observe_environment(
-                    &provider,
-                    adoption,
-                    adoption.effect_basis(&fence),
-                )
-                .await
-                .unwrap();
+                SandboxProvider::observe(&provider, adoption, adoption.effect_basis(&fence))
+                    .await
+                    .unwrap();
             } else {
-                ContainerEnvironmentProvider::observe_environment(
+                SandboxProvider::observe(
                     &provider,
                     adoption,
                     awaken_provisioning_contract::SandboxObservationBasis::Unattached,
@@ -5288,13 +5322,10 @@ async fn observation_purpose_reaches_runtime_without_granting_cleanup() {
             drifted.outputs_path = "/different".into();
             adoption.spec = &drifted;
             let before = runtime.st.lock().unwrap().observations;
-            let observation = ContainerEnvironmentProvider::observe_environment(
-                &provider,
-                adoption,
-                adoption.effect_basis(&fence),
-            )
-            .await
-            .unwrap();
+            let observation =
+                SandboxProvider::observe(&provider, adoption, adoption.effect_basis(&fence))
+                    .await
+                    .unwrap();
             assert!(matches!(
                 observation,
                 pc::SandboxObservation::Incompatible { .. }
@@ -5320,7 +5351,7 @@ async fn historical_configuration_is_only_an_exact_fenced_terminal_candidate() {
     let mut changed = original.clone();
     changed.insert("storage".into(), "new".into());
     runtime.st.lock().unwrap().configuration = Some(changed);
-    let fence = ContainerEffectFence::new("cleanup", "owner", "boot", 1, u64::MAX).unwrap();
+    let fence = SandboxEffectFence::new("cleanup", "owner", "boot", 1, u64::MAX).unwrap();
     for candidate in [false, true] {
         runtime.st.lock().unwrap().historical_configuration = candidate.then(|| original.clone());
         for terminal in [false, true] {
@@ -5330,21 +5361,17 @@ async fn historical_configuration_is_only_an_exact_fenced_terminal_candidate() {
                     if drift {
                         requested.outputs_path = "/other".into();
                     }
-                    let mut adoption = ContainerEnvironmentAdoption::new(&requested, &handle);
+                    let mut adoption = SandboxAdoption::new(&requested, &handle);
                     if terminal {
-                        adoption.observation_purpose = ContainerObservationPurpose::TerminalCleanup;
+                        adoption.observation_purpose = SandboxObservationPurpose::TerminalCleanup;
                     }
                     let before = runtime.st.lock().unwrap().observations;
                     let result = if fenced {
-                        ContainerEnvironmentProvider::observe_environment(
-                            &provider,
-                            adoption,
-                            adoption.effect_basis(&fence),
-                        )
-                        .await
-                        .unwrap()
+                        SandboxProvider::observe(&provider, adoption, adoption.effect_basis(&fence))
+                            .await
+                            .unwrap()
                     } else {
-                        ContainerEnvironmentProvider::observe_environment(
+                        SandboxProvider::observe(
                             &provider,
                             adoption,
                             awaken_provisioning_contract::SandboxObservationBasis::Unattached,
@@ -5374,7 +5401,7 @@ async fn restored_adoption_rechecks_original_authority_after_each_query_response
     // -> inspect -> evidence -> plan -> continuation handle -> publish handle.
     // Every async arrow can suspend; authority loss after any response must cut
     // off the NEXT query or publication, without disposing/recreating the target.
-    // Decision table: C1 either public provider port; C2 each of four response
+    // Decision table: C1 concrete or object-erased view of the one provider port; C2 each of four response
     // cuts; C3 unchanged/renewed/revoked/replaced/exhausted/cancelled authority;
     // C4 past/future Control expiry (not a Worker clock oracle).
     // R1 denied entry => zero I/O. R2 unchanged/renewed => exact handle success.
@@ -5389,7 +5416,7 @@ async fn restored_adoption_rechecks_original_authority_after_each_query_response
     // a second lifecycle model. Its bounded two-effect proof is NOT a proof of
     // this four-query Rust refinement, real daemon behavior or remote atomicity.
     const QUERIES: [&str; 4] = ["inspect", "evidence", "plan", "handle"];
-    for port in ["sandbox", "container"] {
+    for port in ["concrete", "erased"] {
         for expiry in [100, u64::MAX - 1] {
             for (cut, boundary) in QUERIES.into_iter().enumerate() {
                 for change in [
@@ -5427,18 +5454,27 @@ async fn restored_adoption_rechecks_original_authority_after_each_query_response
                     > {
                         let (provider, spec, handle, fence) = (&provider, &spec, &handle, &fence);
                         Box::pin(async move {
-                            if port == "sandbox" {
+                            if port == "concrete" {
                                 pc::SandboxProvider::adopt_for_effect(
-                                    provider, spec, handle, fence, authority,
+                                    provider,
+                                    awaken_provisioning_contract::SandboxAdoption::new(
+                                        spec, handle,
+                                    ),
+                                    awaken_provisioning_contract::SandboxEffect::Fenced {
+                                        fence,
+                                        authority,
+                                    },
                                 )
                                 .await
                                 .map(|sandbox| sandbox.handle())
                             } else {
                                 provider
-                                    .adopt_environment_for_effect(
-                                        ContainerEnvironmentAdoption::new(spec, handle),
-                                        fence,
-                                        authority,
+                                    .adopt_for_effect(
+                                        SandboxAdoption::new(spec, handle),
+                                        awaken_provisioning_contract::SandboxEffect::Fenced {
+                                            fence,
+                                            authority,
+                                        },
                                     )
                                     .await
                                     .map(|environment| environment.handle())
@@ -5549,7 +5585,7 @@ async fn terminal_restored_container_disposal_rechecks_current_authority_across_
     use std::time::Duration;
     // C1 exact target bound/absent; C2 Pending observation/committed-delete
     // response; C3 revoke/replace/expire/renew/cancel. Constraint: an absent
-    // target has no delete response. C4 both neutral provider entry ports.
+    // target has no delete response. C4 concrete versus object-erased view of the same provider port.
     // R1 denied entry => zero backend admission. R2 stale authority after
     // observation => no deletion; after committed deletion => no success, no
     // invented rollback. R3 renewal completes; R4 cancellation keeps the same
@@ -5557,7 +5593,7 @@ async fn terminal_restored_container_disposal_rechecks_current_authority_across_
     // repeats a deletion, and still denies without current authority.
     // Full 3x5x2 actual Pending schedules, reusing the original fake runtime,
     // physical target map and checkpoint request, not another recovery engine.
-    for port in ["sandbox", "container"] {
+    for port in ["concrete", "erased"] {
         for (present, boundary) in [
             (true, "observation"),
             (true, "delete"),
@@ -5591,8 +5627,8 @@ async fn terminal_restored_container_disposal_rechecks_current_authority_across_
                 let call = |authority| -> std::pin::Pin<
                     Box<dyn std::future::Future<Output = Result<(), pc::SandboxError>> + Send + '_>,
                 > {
-                    if port == "sandbox" {
-                        pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
+                    if port == "concrete" {
+                        pc::RestoreTargetProvider::<Arc<dyn SessionSandbox>>::dispose_restored(
                             &provider,
                             &spec,
                             &request,
@@ -5600,13 +5636,9 @@ async fn terminal_restored_container_disposal_rechecks_current_authority_across_
                             authority,
                         )
                     } else {
-                        pc::RestoreTargetProvider::<Arc<dyn ContainerEnvironment>>::dispose_restored(
-                            &provider,
-                            &spec,
-                            &request,
-                            &authorization,
-                            authority,
-                        )
+                        let target_owner: &dyn pc::RestoreTargetProvider<Arc<dyn SessionSandbox>> =
+                            &provider;
+                        target_owner.dispose_restored(&spec, &request, &authorization, authority)
                     }
                 };
                 let denied = EffectAuthority::denied();
@@ -5927,9 +5959,10 @@ async fn a_second_node_adopts_a_running_container_over_the_shared_runtime() {
     let recovered: pc::SandboxHandle = serde_json::from_str(&wire).unwrap();
     assert_eq!(recovered.provider_kind(), "container");
     let node_b = provider(rt.clone());
-    let sandbox_b = ContainerEnvironmentProvider::adopt_unattached_environment(
+    let sandbox_b = SandboxProvider::adopt_for_effect(
         &node_b,
-        ContainerEnvironmentAdoption::new(&sandbox_spec, &recovered),
+        SandboxAdoption::new(&sandbox_spec, &recovered),
+        awaken_provisioning_contract::SandboxEffect::Unattached,
     )
     .await
     .expect("a second node adopts the container from its handle");
@@ -5993,9 +6026,10 @@ async fn handle_round_trips_and_adopt_reconnects() {
         p.adopt(&recovered).await.is_err(),
         "current handle-only adoption cannot invent terminal participant policy"
     );
-    let adopted = ContainerEnvironmentProvider::adopt_unattached_environment(
+    let adopted = SandboxProvider::adopt_for_effect(
         &p,
-        ContainerEnvironmentAdoption::new(&sandbox_spec, &recovered),
+        SandboxAdoption::new(&sandbox_spec, &recovered),
+        awaken_provisioning_contract::SandboxEffect::Unattached,
     )
     .await
     .unwrap();
@@ -6010,7 +6044,7 @@ async fn handle_round_trips_and_adopt_reconnects() {
 async fn generic_container_adoption_rejects_restoration_without_a_frozen_spec() {
     // Phase-B spec-less adoption rule R13: C1 a Phase-A reader accepts a complete
     // future Some value; C2 it is attached to an ordinary live target; C3 generic
-    // SandboxProvider::adopt supplies no frozen SandboxSpec. Phase-A wire-reader
+    // The legacy concrete adoption edge supplies no frozen SandboxSpec. Phase-A wire-reader
     // compatibility does not activate a Phase-B restore. C1+C2+C3 => E1 reject
     // before every runtime effect and E2 preserve the existing physical target.
     let runtime = Arc::new(FakeRuntime::default());
@@ -6147,9 +6181,10 @@ async fn a_capable_runtime_replaces_only_read_only_files_below_the_live_input_ro
     );
 
     let handle = pc::Sandbox::handle(&sandbox);
-    let adopted = ContainerEnvironmentProvider::adopt_unattached_environment(
+    let adopted = SandboxProvider::adopt_for_effect(
         &provider,
-        ContainerEnvironmentAdoption::new(&sandbox_spec, &handle),
+        SandboxAdoption::new(&sandbox_spec, &handle),
+        awaken_provisioning_contract::SandboxEffect::Unattached,
     )
     .await
     .unwrap();
@@ -6183,9 +6218,10 @@ async fn adopt_rejects_a_handle_whose_runtime_is_gone() {
     let handle = sandbox.handle();
     sandbox.dispose_unattached().await.unwrap();
     assert!(
-        ContainerEnvironmentProvider::adopt_unattached_environment(
+        SandboxProvider::adopt_for_effect(
             &p,
-            ContainerEnvironmentAdoption::new(&sandbox_spec, &handle)
+            SandboxAdoption::new(&sandbox_spec, &handle),
+            awaken_provisioning_contract::SandboxEffect::Unattached
         )
         .await
         .is_err(),
@@ -6386,12 +6422,16 @@ async fn canonical_environment_spawns_agent_without_process_owning_terminal_clea
     let provider = provider_without_broker(rt.clone()).with_secret_broker(broker.clone());
     let mut requested = spec("run-oa");
     requested.mounts.push(writable_credential_mount());
-    let environment =
-        ContainerEnvironmentProvider::create_unattached_environment(&provider, &requested)
-            .await
-            .expect("L1 canonical Environment creation");
+    let environment = SandboxProvider::claim_for_effect(
+        &provider,
+        &requested,
+        awaken_provisioning_contract::SandboxEffect::Unattached,
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
+    )
+    .await
+    .expect("L1 canonical Environment creation");
     let handle = environment.handle();
-    let RuntimeAgentProcess { process, channel } = environment
+    let AgentProcess { process, channel } = environment
         .spawn_agent_process(pc::Command {
             argv: command_of(&requested),
             cwd: String::new(),
@@ -6703,10 +6743,15 @@ async fn durable_writable_secret_waits_for_explicit_environment_disposal() {
         control_services: Default::default(),
     };
 
-    let environment = ContainerEnvironmentProvider::create_unattached_environment(&provider, &spec)
-        .await
-        .expect("W1 canonical Environment creation");
-    let RuntimeAgentProcess {
+    let environment = SandboxProvider::claim_for_effect(
+        &provider,
+        &spec,
+        awaken_provisioning_contract::SandboxEffect::Unattached,
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
+    )
+    .await
+    .expect("W1 canonical Environment creation");
+    let AgentProcess {
         process,
         channel: _channel,
     } = environment
@@ -6803,11 +6848,15 @@ async fn remote_runtime_harvests_live_credential_only_at_environment_disposal() 
     let provider =
         ContainerProvider::for_test(rt.clone(), "agent:latest").with_secret_broker(broker.clone());
     let requested = writable_credential_spec("remote-credential-refresh");
-    let environment =
-        ContainerEnvironmentProvider::create_unattached_environment(&provider, &requested)
-            .await
-            .expect("S1 canonical Environment creation");
-    let RuntimeAgentProcess {
+    let environment = SandboxProvider::claim_for_effect(
+        &provider,
+        &requested,
+        awaken_provisioning_contract::SandboxEffect::Unattached,
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
+    )
+    .await
+    .expect("S1 canonical Environment creation");
+    let AgentProcess {
         process,
         channel: _channel,
     } = environment

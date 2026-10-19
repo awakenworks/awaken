@@ -7,6 +7,7 @@
 //! adapters invoke these use-case methods and never reach through to either
 //! collaborator, preventing a second orchestration boundary in protocol state.
 
+use crate::SessionProjectionReads as _;
 use awaken_time::WallClockExt as _;
 use std::sync::Arc;
 
@@ -16,12 +17,10 @@ use awaken_agent_contract::stream::sink::Sink;
 use awaken_executable_agent_contract::ExecutableAgentSessionProfile;
 use awaken_session_application_contract::{DelegatedRun, Pending, StepOutcome};
 use awaken_session_budget_contract::SessionUsage;
-use awaken_session_configuration_contract::AgentCapabilities;
 use awaken_session_configuration_contract::resource::ResolvedSkillBinding;
 use awaken_session_execution_contract::{
     CommittedOutcomeProjection, OutcomeDrive, ToolPermissionDecision,
 };
-use awaken_session_state_contract::{PersistedSession, SessionRepositoryError};
 use awaken_session_types::RunError;
 
 use crate::{
@@ -30,19 +29,6 @@ use crate::{
 };
 
 use awaken_resource_contract::{SESSION_REPOSITORY_OWNER_KIND, SESSION_REPOSITORY_OWNER_SESSION};
-
-/// Exact pins never fall through to mutable current catalog state.
-pub(super) fn selected_session_profile(
-    application: &SessionApplication,
-    workspace_id: &str,
-    agent_id: &str,
-    source_revision: Option<u64>,
-) -> Option<ExecutableAgentSessionProfile> {
-    match source_revision {
-        Some(revision) => application.session_profile_at_revision(workspace_id, agent_id, revision),
-        None => application.session_profile(workspace_id, agent_id),
-    }
-}
 
 /// One transitive count law; callers lend their already selected direct values.
 /// The resolver owns exact/current selection, never an implicit pin fallback.
@@ -80,8 +66,7 @@ pub(super) fn validate_session_skill_total(
             .find(|(id, _)| id == &delegate.agent_id)
             .map(|(_, selected)| selected.clone())
             .or_else(|| {
-                selected_session_profile(
-                    application,
+                application.queries.selected_session_profile(
                     workspace_id,
                     &delegate.agent_id,
                     delegate.source_revision,
@@ -279,8 +264,11 @@ impl SessionApplication {
         workspace_id: &str,
         agent_id: &str,
     ) -> Result<(), RunError> {
-        if self.session_profile(workspace_id, agent_id).is_none()
-            || self.agent_unavailable(workspace_id, agent_id)
+        if self
+            .queries
+            .selected_session_profile(workspace_id, agent_id, None)
+            .is_none()
+            || self.queries.agent_unavailable(workspace_id, agent_id)
         {
             return Err(RunError::bad_request(format!(
                 "agent `{agent_id}` is unavailable"
@@ -297,7 +285,8 @@ impl SessionApplication {
         workspace_id: &str,
         session_id: &str,
     ) -> Result<Vec<Message>, RunError> {
-        self.read_session_projection(session_id, Some(workspace_id))
+        self.queries
+            .read_session_projection(session_id, Some(workspace_id))
             .await
             .map_err(|error| match error {
                 crate::SessionProjectionRecoveryError::NotFound => {
@@ -326,6 +315,7 @@ impl SessionApplication {
         use awaken_runtime_contract::llm::ModelRequestObservation as RuntimeModelRequestObservation;
 
         let recovered = self
+            .queries
             .read_session_projection(session_id.as_str(), Some(workspace_id))
             .await?
             .ok_or(crate::SessionProjectionRecoveryError::NotFound)?;
@@ -459,60 +449,6 @@ impl SessionApplication {
             execution: recovered.session.execution,
             runs,
         })
-    }
-
-    pub async fn session(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-    ) -> Result<PersistedSession, SessionRepositoryError> {
-        self.sessions_repo.get(session_id).await
-    }
-
-    pub async fn sessions_by_owner(
-        &self,
-        owner_scope: &str,
-    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
-        self.sessions_repo
-            .scan(awaken_session_state_contract::SessionScanQuery::Workspace {
-                workspace_id: owner_scope,
-            })
-            .await
-            .map(awaken_session_state_contract::SessionScan::into_sessions)
-    }
-
-    #[must_use]
-    pub fn session_profile(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-    ) -> Option<ExecutableAgentSessionProfile> {
-        self.config_source
-            .as_ref()
-            .and_then(|source| source.session_profile_in(workspace_id, agent_id))
-    }
-
-    #[must_use]
-    pub fn has_agent_profile_source(&self) -> bool {
-        self.config_source.is_some()
-    }
-
-    #[must_use]
-    pub fn session_profile_at_revision(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-        source_revision: u64,
-    ) -> Option<ExecutableAgentSessionProfile> {
-        self.config_source.as_ref().and_then(|source| {
-            source.session_profile_at_revision_in(workspace_id, agent_id, source_revision)
-        })
-    }
-
-    #[must_use]
-    pub fn agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
-        self.config_source
-            .as_ref()
-            .is_some_and(|source| source.agent_unavailable_in(workspace_id, agent_id))
     }
 
     pub fn validate_session_skill_total(
@@ -1188,6 +1124,7 @@ impl SessionApplication {
             thread_usages.push(current);
         }
         let session = self
+            .mutations
             .session_aggregate(&awaken_session_types::SessionId::from(thread))
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
@@ -1222,12 +1159,6 @@ impl SessionApplication {
         let execution = self.runtime().core();
 
         execution.model()
-    }
-
-    pub fn capabilities_for(&self, thread: &str) -> Result<AgentCapabilities, RunError> {
-        let capabilities = self.runtime().capability();
-
-        capabilities.capabilities_for(thread)
     }
 }
 

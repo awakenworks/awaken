@@ -94,10 +94,10 @@ where
         &self,
     ) -> Result<
         awaken_lease_contract::authority::AuthorityProofStarted,
-        awaken_session_types::RunError,
+        awaken_session_realization_contract::SessionRealizationEffectFailure,
     > {
         awaken_authority_clock::authority_proof_started().map_err(|error| {
-            awaken_session_types::RunError::unavailable(format!("authority clock: {error}"))
+            awaken_session_types::RunError::unavailable(format!("authority clock: {error}")).into()
         })
     }
 
@@ -107,25 +107,11 @@ where
         projection: &awaken_session_realization_contract::FrozenSessionProjection,
         lease: &awaken_session_realization_contract::ObservedSessionRealizationLease,
         prepare_session: bool,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         let realizations = self.execution.sessions();
         let exec = self.execution.realization_executor();
         let retained_publication = realizations.published_snapshot(session_id.as_str())?;
-        if let Some(claimed) = self.published_snapshot
-            && !matches!(
-                awaken_session_realization_contract::frozen_agent_publication_decision(
-                    &projection.baseline,
-                    Some(claimed),
-                ),
-                awaken_session_realization_contract::FrozenAgentPublicationDecision::Unpinned
-                    | awaken_session_realization_contract::FrozenAgentPublicationDecision::Exact
-            )
-        {
-            return Err(awaken_session_types::RunError::classified(
-                "session_runtime_publication_conflict",
-                "claimed Run does not match the frozen Session Agent publication",
-            ));
-        }
+        validate_claimed_publication(projection, self.published_snapshot)?;
         let delivered_publication = projection
             .agent_publication
             .as_ref()
@@ -139,16 +125,16 @@ where
             | awaken_session_realization_contract::FrozenAgentPublicationDecision::OptionalMissing
             | awaken_session_realization_contract::FrozenAgentPublicationDecision::Exact => {}
             awaken_session_realization_contract::FrozenAgentPublicationDecision::MissingRequired => {
-                return Err(awaken_session_types::RunError::classified(
+                return Err((awaken_session_types::RunError::classified(
                     "session_runtime_publication_missing",
                     "Worker Session realization requires its exact frozen Agent publication",
-                ));
+                )).into());
             }
             awaken_session_realization_contract::FrozenAgentPublicationDecision::Mismatch => {
-                return Err(awaken_session_types::RunError::classified(
+                return Err((awaken_session_types::RunError::classified(
                     "session_runtime_publication_conflict",
                     "Worker Agent publication does not match the frozen Session identity, revision, or runtime",
-                ));
+                )).into());
             }
         }
         // Match ManagedHost's lifecycle -> Resource-projection lock order. A
@@ -179,10 +165,10 @@ where
             let has_environment_binding = self.claimed_environment_binding.is_some()
                 || projection.environment.binding().is_some();
             if a2a_only && (has_environment_binding || has_local_environment_owner) {
-                return Err(awaken_session_types::RunError::classified(
+                return Err((awaken_session_types::RunError::classified(
                     "session_runtime_remote_environment_conflict",
                     "remote A2A Session realization cannot consume a local Environment binding or owner",
-                ));
+                )).into());
             }
             if self.rebuild_unavailable_environment && !a2a_only {
                 let provider = if let Some(candidate) = model_candidate.as_ref() {
@@ -255,10 +241,10 @@ where
             && published_snapshot.is_none()
             && !runtime_authority_resident
         {
-            return Err(awaken_session_types::RunError::classified(
+            return Err((awaken_session_types::RunError::classified(
                 "session_runtime_publication_missing",
                 "sandbox stdio MCP realization requires the exact claimed Agent snapshot before effects",
-            ));
+            )).into());
         }
         let source_generation_id = projection
             .environment
@@ -333,10 +319,10 @@ where
         &self,
         session_id: &awaken_session_types::SessionId,
         lease: &session_resource::SessionRealizationLease,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         self.execution
             .invalidate_realization_lease(session_id.as_str(), lease)
-            .map_err(awaken_session_types::RunError::from)
+            .map_err(Into::into)
     }
 }
 
@@ -369,4 +355,28 @@ impl<T: SessionProjectionExecution> awaken_session_execution_contract::McpAttach
     ) -> Result<(), awaken_session_types::RunError> {
         self.0.mcp_effects().drain_mcp_generation(generation).await
     }
+}
+
+/// The frozen-claim publication preflight, before any installation or effects.
+/// Uses the existing contract decision; it selects no new publication policy.
+fn validate_claimed_publication(
+    projection: &awaken_session_realization_contract::FrozenSessionProjection,
+    claimed: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+) -> Result<(), awaken_session_types::RunError> {
+    if let Some(claimed) = claimed
+        && !matches!(
+            awaken_session_realization_contract::frozen_agent_publication_decision(
+                &projection.baseline,
+                Some(claimed),
+            ),
+            awaken_session_realization_contract::FrozenAgentPublicationDecision::Unpinned
+                | awaken_session_realization_contract::FrozenAgentPublicationDecision::Exact
+        )
+    {
+        return Err(awaken_session_types::RunError::classified(
+            "session_runtime_publication_conflict",
+            "claimed Run does not match the frozen Session Agent publication",
+        ));
+    }
+    Ok(())
 }

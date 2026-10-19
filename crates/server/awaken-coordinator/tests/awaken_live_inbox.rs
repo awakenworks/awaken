@@ -11,7 +11,7 @@ use awaken_session_types::SessionId;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
@@ -97,6 +97,7 @@ fn text_content(text: &str) -> serde_json::Value {
 #[derive(Default)]
 struct QueueFake {
     active: AtomicBool,
+    live_calls: AtomicU64,
     queue: Mutex<FakeQueue>,
     user_runs: Mutex<HashMap<String, awaken_session_execution_contract::AdmitSessionRun>>,
 }
@@ -192,7 +193,7 @@ impl awaken_session_execution_contract::RealizationRuntime for QueueFake {
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         _mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         // Test-fixture cause/effect rule: complete thread/workspace/Agent coordinates are
         // accepted so live-inbox cases can reach their subject; any missing coordinate fails
         // before queue state exists. The typed port makes every partial installation impossible.
@@ -200,9 +201,10 @@ impl awaken_session_execution_contract::RealizationRuntime for QueueFake {
             || projection.workspace_id.is_empty()
             || projection.baseline.agent_id.is_empty()
         {
-            return Err(RunError::bad_request(
+            return Err((RunError::bad_request(
                 "live-inbox test Session projection is incomplete",
-            ));
+            ))
+            .into());
         }
         Ok(())
     }
@@ -746,6 +748,7 @@ impl awaken_session_execution_contract::LiveInboxRuntime for QueueFake {
         &self,
         _thread: &str,
     ) -> Result<LiveInboxSnapshot, LiveInboxError> {
+        self.live_calls.fetch_add(1, Ordering::SeqCst);
         if !self.active.load(Ordering::SeqCst) {
             return Ok(LiveInboxSnapshot::inactive());
         }
@@ -769,6 +772,7 @@ impl awaken_session_execution_contract::LiveInboxRuntime for QueueFake {
         _thread: &str,
         content: Vec<ContentBlock>,
     ) -> Result<u64, LiveInboxError> {
+        self.live_calls.fetch_add(1, Ordering::SeqCst);
         if !self.active.load(Ordering::SeqCst) {
             return Err(LiveInboxError::Inactive);
         }
@@ -781,6 +785,7 @@ impl awaken_session_execution_contract::LiveInboxRuntime for QueueFake {
     }
 
     async fn live_inbox_remove(&self, _thread: &str, id: u64) -> Result<(), LiveInboxError> {
+        self.live_calls.fetch_add(1, Ordering::SeqCst);
         if !self.active.load(Ordering::SeqCst) {
             return Err(LiveInboxError::Inactive);
         }
@@ -801,6 +806,7 @@ impl awaken_session_execution_contract::LiveInboxRuntime for QueueFake {
         id: u64,
         content: Vec<ContentBlock>,
     ) -> Result<(), LiveInboxError> {
+        self.live_calls.fetch_add(1, Ordering::SeqCst);
         if !self.active.load(Ordering::SeqCst) {
             return Err(LiveInboxError::Inactive);
         }
@@ -820,6 +826,7 @@ impl awaken_session_execution_contract::LiveInboxRuntime for QueueFake {
         _thread: &str,
         order: Vec<u64>,
     ) -> Result<(), LiveInboxError> {
+        self.live_calls.fetch_add(1, Ordering::SeqCst);
         if !self.active.load(Ordering::SeqCst) {
             return Err(LiveInboxError::Inactive);
         }
@@ -918,7 +925,8 @@ async fn app_with_session_application(
             thread: &str,
             projection: awaken_session_realization_contract::FrozenSessionProjection,
             mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-        ) -> Result<(), RunError> {
+        ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>
+        {
             self.0
                 .install_session_projection(thread, projection, mode)
                 .await
@@ -1456,7 +1464,7 @@ async fn app_with_session_application(
     let state = Arc::new(ManagedState::new(Shared(fake)).await);
     let application = state.session_application();
     (
-        router(state).merge(live_inbox_router(application.clone())),
+        router(state).merge(live_inbox_router(application.inputs())),
         application,
     )
 }
@@ -1480,7 +1488,7 @@ async fn workspace_scope_fences_every_live_inbox_operation() {
     // | S3 | exists | owner | POST | accepted by active queue |
     let fake = Arc::new(QueueFake::default());
     fake.active.store(true, Ordering::SeqCst);
-    let app = app(fake).await;
+    let app = app(fake.clone()).await;
     let session = create(&app).await;
     let base = format!("/v1/awaken/sessions/{session}/live-inbox");
 
@@ -1496,6 +1504,34 @@ async fn workspace_scope_fences_every_live_inbox_operation() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "S2");
+
+    // S4 crosses all five verbs with missing/foreign scopes. Every refused
+    // request must stop before polling the selected Inbox port, including reads
+    // and well-formed edit commands. The owner round trip below
+    // still uses the same queue and confirms rejection consumed no id.
+    let before_calls = fake.live_calls.load(Ordering::SeqCst);
+    for scope in [None, Some("workspace-b")] {
+        for (method, suffix, body) in [
+            ("GET", "", serde_json::Value::Null),
+            ("POST", "", text_content("rejected")),
+            ("PUT", "/1", text_content("rejected-edit")),
+            ("DELETE", "/1", serde_json::Value::Null),
+            ("PUT", "/order", serde_json::json!({ "order": [] })),
+        ] {
+            let (status, _) =
+                call_in_scope(&app, method, &format!("{base}{suffix}"), body, scope).await;
+            assert_eq!(
+                status,
+                StatusCode::NOT_FOUND,
+                "S4 {scope:?} {method} {suffix}"
+            );
+            assert_eq!(
+                fake.live_calls.load(Ordering::SeqCst),
+                before_calls,
+                "S4 no Inbox poll"
+            );
+        }
+    }
 
     let (status, queued) = call(&app, "POST", &base, text_content("owner")).await;
     assert_eq!(status, StatusCode::OK, "S3");

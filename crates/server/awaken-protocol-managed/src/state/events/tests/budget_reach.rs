@@ -265,7 +265,8 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
         ),
     ]);
     let mut persisted = warm
-        .application
+        .roles
+        .roots
         .session(&SessionId::from(&session.id))
         .await
         .unwrap();
@@ -330,7 +331,8 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
         ),
     ]);
     let mut persisted = warm
-        .application
+        .roles
+        .roots
         .session(&SessionId::from(&session.id))
         .await
         .unwrap();
