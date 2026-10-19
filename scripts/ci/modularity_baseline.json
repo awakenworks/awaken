@@ -17,7 +17,7 @@
     },
     "awaken-runtime::Runtime": {
       "files": 4,
-      "methods": 61,
+      "methods": 60,
       "reason": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock"
     },
     "awaken-session-application::SessionApplication": {
@@ -286,10 +286,9 @@
     "awaken-protocol-managed::routes/vaults.rs::create_credential": 181,
     "awaken-protocol-managed::routes/vaults.rs::update_credential": 217,
     "awaken-protocol-managed::state/events/admission.rs::send_event_batch": 235,
-    "awaken-protocol-managed::state/events/admission.rs::validate_event_batch": 379,
+    "awaken-protocol-managed::state/events/admission.rs::validate_event_batch": 355,
     "awaken-protocol-managed::state/events/committed_projection.rs::build_committed_projection_candidate_over": 172,
     "awaken-protocol-managed::state/events/committed_projection/canonical_order.rs::canonicalize_committed_events": 200,
-    "awaken-protocol-managed::state/events/lifecycle_projection.rs::append_delegation_projections": 152,
     "awaken-protocol-managed::state/events/transcript_projection.rs::append_child_transcript_projection": 162,
     "awaken-protocol-managed::state/resources.rs::lower_complete_resource_manifest": 260,
     "awaken-provider-genai::lib.rs::infer_streaming": 228,

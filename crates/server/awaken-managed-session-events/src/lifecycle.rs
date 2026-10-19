@@ -104,6 +104,7 @@ pub fn root_terminal_facts(
     outcome_owns_failure: bool,
     root: Option<&RunRecoverySnapshot>,
     historical_pending: &HashMap<RunLifecycleCursor, Pending>,
+    index: &crate::OrderIndex<'_>,
 ) -> Result<RootTerminalFacts, ProjectionError> {
     let error = if outcome_owns_failure {
         None
@@ -125,11 +126,11 @@ pub fn root_terminal_facts(
         })
     };
     let stop = terminal_stop(
-        &terminal.state,
+        terminal,
         historical_pending.get(&terminal.cursor),
-        terminal.await_reason.as_ref(),
         false,
-    );
+        index,
+    )?;
     Ok(RootTerminalFacts {
         error,
         idle: DerivedSessionEvent::new(
@@ -232,6 +233,7 @@ pub fn project_child_lifecycle(
     events: &[RunLifecycleEvent],
     historical_pending: &HashMap<RunLifecycleCursor, Pending>,
     snapshots: &HashMap<String, RunRecoverySnapshot>,
+    index: &crate::OrderIndex<'_>,
 ) -> Result<ChildLifecycle, ProjectionError> {
     let mut projection = ChildLifecycle::default();
     for event in events {
@@ -297,12 +299,7 @@ pub fn project_child_lifecycle(
                 {
                     continue;
                 }
-                let stop = terminal_stop(
-                    &event.state,
-                    terminal_pending,
-                    event.await_reason.as_ref(),
-                    false,
-                );
+                let stop = terminal_stop(event, terminal_pending, false, index)?;
                 if let Some(fault) = run_fault(event, snapshots.get(thread_id))? {
                     projection.facts.push(fact(
                         ManagedEventType::LifecycleError,
@@ -418,13 +415,13 @@ pub fn terminate_session(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{RunFault, StopFact};
     use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
 
-    fn event(
+    pub(crate) fn event(
         source: u64,
         thread: &str,
         kind: RunLifecycleEventKind,
@@ -762,7 +759,11 @@ mod tests {
                 vec![(
                     ManagedEventType::LifecycleStatusIdle,
                     SessionEventKind::ThreadIdle(StopFact::RequiresAction {
-                        calls: vec!["call".into()],
+                        calls: vec![crate::ToolResultSource {
+                            source_id: "run-c".into(),
+                            call_id: "call".into(),
+                            name: "read".into(),
+                        }],
                     }),
                 )],
                 ThreadStatus::Idle,
@@ -801,11 +802,37 @@ mod tests {
             } else {
                 HashMap::new()
             };
+            let mut snapshots = HashMap::new();
+            if ticket {
+                let mut snapshot = crate::index::snapshot(Vec::new(), Vec::new());
+                snapshot.thread_id = lifecycle.thread_id.clone();
+                snapshot.claimed_run_id = lifecycle.run_id.clone();
+                snapshot.latest_run_id = Some(lifecycle.run_id.clone());
+                snapshot.runs[0].id = lifecycle.run_id.clone();
+                snapshot.runs[0].thread_id = lifecycle.thread_id.clone();
+                snapshot.runs[0].state = lifecycle.state.clone();
+                snapshots.insert(lifecycle.thread_id.0.clone(), snapshot);
+            }
+            let index = crate::OrderIndex::new(crate::OrderEvidence {
+                updates: None,
+                session_id: "root",
+                batches: &[],
+                closed_intervals: &[],
+                budget_reach: &[],
+                parent_terminal: Default::default(),
+                lifecycle: std::slice::from_ref(&lifecycle),
+                root: None,
+                children: &snapshots,
+                links: &[],
+                outcomes: &[],
+                historical_pending: &audited,
+            });
             let projected = project_child_lifecycle(
                 &mut threads,
                 std::slice::from_ref(&lifecycle),
                 &audited,
-                &HashMap::new(),
+                &snapshots,
+                &index,
             )
             .unwrap();
             assert_eq!(roles(&projected.facts), expected, "{rule}");

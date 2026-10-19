@@ -55,11 +55,22 @@ pub type PluginConfigurationValidator = fn(Option<&serde_json::Value>) -> Result
 /// Only `capability` crosses the serializable API boundary; the function is
 /// process wiring, not another configuration store or executable snapshot.
 #[derive(Clone, Debug)]
-pub struct PluginConfigurationSource {
-    pub capability: PluginCapability,
-    /// None requires a Workspace-dependent publication resolver when the
-    /// capability declares a configuration section.
-    pub validate: Option<PluginConfigurationValidator>,
+pub enum PluginConfigurationSource {
+    Exact {
+        // Keep the metadata payload out of the small declaration enum.
+        capability: Box<PluginCapability>,
+        /// None requires a Workspace-dependent publication resolver when the
+        /// capability declares a configuration section.
+        validate: Option<PluginConfigurationValidator>,
+    },
+    /// Pure metadata for each MCP server already declared by this Agent. This
+    /// is not a wildcard plugin, connection factory or permission grant. A
+    /// callback error means no advertisable exact instance, not a validation
+    /// result for the complete binding. Agent compilation retains that owner.
+    McpServers {
+        capability_for: fn(&str) -> Result<PluginCapability, String>,
+        validate: PluginConfigurationValidator,
+    },
 }
 
 impl PluginConfigurationSource {
@@ -67,7 +78,10 @@ impl PluginConfigurationSource {
     pub fn capabilities(sources: &[Self]) -> Vec<PluginCapability> {
         sources
             .iter()
-            .map(|source| source.capability.clone())
+            .filter_map(|source| match source {
+                Self::Exact { capability, .. } => Some(capability.as_ref().clone()),
+                Self::McpServers { .. } => None,
+            })
             .collect()
     }
 }

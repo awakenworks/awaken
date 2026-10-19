@@ -138,8 +138,9 @@ pub struct CommittedToolOccurrence {
     call_id: String,
 }
 
-/// The committed ToolUse that one result answers. Synthetic waits retain the
-/// existing Run source; ordinary calls retain their exact Message source.
+/// The committed ToolUse that one result or historical pause names. Synthetic
+/// waits retain the existing Run source; ordinary calls retain their exact
+/// Message source.
 #[derive(Clone, Debug)]
 pub struct ToolResultSource {
     pub source_id: String,
@@ -340,11 +341,29 @@ pub fn validate_committed_message_identities(
     Ok(())
 }
 
+/// Match a result's existing batch scope without introducing another identity
+/// parser. Unscoped historical results retain the original ordered FIFO rule.
+fn result_matches_occurrence(
+    scope: Option<(&str, usize, &str)>,
+    source: &Message,
+    call_id: &str,
+) -> bool {
+    match scope {
+        Some((run, step, call)) => {
+            call == call_id
+                && source
+                    .id
+                    .assistant_coordinates()
+                    .is_some_and(|(owner, source_step, _)| owner == run && source_step == step)
+        }
+        None => true,
+    }
+}
+
 /// Fold the full committed prefix once into exact occurrence evidence. A result
-/// consumes the earliest unmatched call with the same provider-local id; the
-/// current ticket then classifies the earliest still-unmatched occurrence. This
-/// ordered rule prevents raw-id reuse from turning an unrelated call into either
-/// an executed or answerable Managed event.
+/// consumes the earliest unmatched call in its proven batch scope, or the same
+/// provider-local id for an unscoped historical result. The current ticket then
+/// classifies the earliest still-unmatched occurrence.
 pub fn committed_transcript_evidence(
     messages: &[awaken_agent_contract::agent::message::Message],
     pending: Option<&Pending>,
@@ -355,6 +374,7 @@ pub fn committed_transcript_evidence(
 
     struct Occurrence {
         key: CommittedToolOccurrence,
+        message_index: usize,
         name: String,
         advisor: bool,
         classification: RuntimeToolProjectionPhase,
@@ -399,6 +419,7 @@ pub fn committed_transcript_evidence(
                             block_ordinal,
                             call_id: id.clone(),
                         },
+                        message_index,
                         name: name.clone(),
                         advisor,
                         classification: RuntimeToolProjectionPhase::Unclassified,
@@ -412,10 +433,18 @@ pub fn committed_transcript_evidence(
                     let ContentBlock::ToolResult { tool_use_id, .. } = block else {
                         continue;
                     };
-                    let Some(index) = unmatched
-                        .get_mut(tool_use_id)
-                        .and_then(std::collections::VecDeque::pop_front)
-                    else {
+                    let Some(queue) = unmatched.get_mut(tool_use_id) else {
+                        continue;
+                    };
+                    let scope = message.id.tool_result_coordinates();
+                    let position = queue.iter().position(|&index| {
+                        result_matches_occurrence(
+                            scope,
+                            &messages[occurrences[index].message_index],
+                            tool_use_id,
+                        )
+                    });
+                    let Some(index) = position.and_then(|position| queue.remove(position)) else {
                         continue;
                     };
                     if occurrences[index].advisor {
@@ -729,6 +758,85 @@ mod tests {
             validate_committed_message_identities(&[exact[0].clone(), changed]).is_err(),
             "R3/E3"
         );
+    }
+
+    #[test]
+    fn scoped_tool_results_settle_only_their_own_run_and_step() {
+        // Causes: C1 an earlier unresolved call reuses the provider-local id;
+        // C2 its Run or Step differs from a later call; C3 the later call's
+        // real ToolBatch mints a result; C4 that exact result is replayed.
+        // Effects: E1 C3 settles only its own Run/Step occurrence; E2 C1 stays
+        // unresolved; E3 C4 retains the first result cursor. Decision rows:
+        // R1=C1+C2(other Run)+C3+C4=>E1-E3;
+        // R2=C1+C2(other Step)+C3+C4=>E1-E3. Existing legacy FIFO cases own
+        // unscoped compatibility. No result id, batch coordinate or receipt
+        // is invented here: ToolBatch remains their one minting authority.
+        use awaken_tool_contract::tool::{ToolCall, ToolRecoveryPolicy};
+        use awaken_tool_contract::tool_batch::ToolBatch;
+
+        for (rule, earlier_run, earlier_step) in
+            [("R1", "cancelled-run", 1), ("R2", "active-run", 0)]
+        {
+            let run = RunId("active-run".into());
+            let call = |run: &RunId, step| {
+                Message::new(
+                    MessageId::assistant(run, step),
+                    Role::Assistant,
+                    vec![ContentBlock::tool_use(
+                        "same",
+                        "read",
+                        serde_json::json!({}),
+                    )],
+                )
+            };
+            let earlier = call(&RunId(earlier_run.into()), earlier_step);
+            let selected = call(&run, 1);
+            let batch = ToolBatch::for_step(
+                run,
+                1,
+                [(
+                    ToolCall {
+                        call_id: "same".into(),
+                        tool_id: "read".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                    ToolRecoveryPolicy::replay_safe(),
+                )],
+            )
+            .unwrap();
+            let result = Message::new(
+                batch.result_message_id("same").unwrap(),
+                Role::Tool,
+                vec![ContentBlock::tool_result(
+                    "same",
+                    vec![ContentBlock::text("done")],
+                )],
+            );
+            let evidence = committed_transcript_evidence(
+                &[
+                    earlier.clone(),
+                    selected.clone(),
+                    result.clone(),
+                    result.clone(),
+                ],
+                None,
+            );
+            assert_eq!(
+                evidence.result_message_index(&earlier.id.0, 0, "same"),
+                None,
+                "{rule}/E2"
+            );
+            assert_eq!(
+                evidence.result_message_index(&selected.id.0, 0, "same"),
+                Some(2),
+                "{rule}/E1+E3"
+            );
+            assert_eq!(
+                evidence.result_source(&result.id.0, 0).unwrap().source_id,
+                selected.id.0,
+                "{rule}/E1"
+            );
+        }
     }
 
     #[test]

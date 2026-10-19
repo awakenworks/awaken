@@ -74,6 +74,7 @@ impl CandidateEvidence {
             &self.acceptance.accepted,
             &self.historical_pending,
             &self.links,
+            index,
         )
         .map_err(projection_error)?;
         let coordination = awaken_managed_session_events::derive_coordination_events(

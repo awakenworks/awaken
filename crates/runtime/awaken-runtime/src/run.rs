@@ -35,17 +35,6 @@ impl Runtime {
         crate::Conversation::new(self, snapshot, ThreadId(thread.into()), context)
     }
 
-    /// Compatibility entry for [`Runtime::conversation`].
-    #[deprecated(note = "Use Runtime::conversation for the SDK conversation binding.")]
-    pub fn session<'a>(
-        &'a self,
-        snapshot: &'a ExecutableAgentSnapshot,
-        thread: impl Into<String>,
-        context: RuntimeRunContext,
-    ) -> Result<crate::Conversation<'a>, Error> {
-        self.conversation(snapshot, thread, context)
-    }
-
     /// Single-shot entry returning a named projection of the committed record.
     pub async fn run_with_outcome(
         &self,

@@ -336,3 +336,28 @@ the existing model DTOs and SDK serde value. Tests keep the original validation,
 wire, frozen-control, and recovery assertions. The original SDK snapshot check,
 independent consumer, and explicit SemVer runner remain the release oracles;
 ordinary compilation is not their substitute.
+
+### 2026-10-19: One SDK conversation binding
+
+The SDK binding is `Conversation`, constructed by `Runtime::conversation`.
+`EmbeddedSession` was a deprecated alias of this same type and `Runtime::session`
+only forwarded to the same constructor. Removing these redundant entries and
+migrating their callers gives the binding one public name and one constructor.
+
+The execution, approval, committed outcome and recovery implementations are
+unchanged. Two bindings to the same Snapshot, Thread, store and clock exercise
+both starter directions, exact-identity recovery and terminal replay through
+that one implementation. Owner-attached examples independently reject the old
+type and method names and accept the canonical binding.
+
+Both removed entries exist in the immutable SDK qualification baseline
+`50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940`. Their removal is a real source API
+break; deprecation does not waive the API, downstream-consumer or SemVer checks.
+The Runtime package advances from `1.0.0` to `2.0.0`; the workspace default and
+other packages keep their versions. Cargo owns the corresponding lock updates.
+The public-API tool must report and review the two removed entries. The SDK
+release qualifier must independently prove the baseline calls, reject each
+removed entry, accept the migrated caller, and audit the actual SemVer findings
+before publication. This decision does not alter a SemVer exception list or
+relax another published path's compatibility obligation. It adds no execution
+state, dependency, constructor, forwarding export or alternate recovery path.

@@ -15,13 +15,13 @@ async fn plugin_configuration_admission_is_shared_by_validate_preview_and_publis
         Arc::new(FakeResolver),
         Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
         Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
-        vec![PluginConfigurationSource {
-            capability: PluginCapability {
+        vec![PluginConfigurationSource::Exact {
+            capability: Box::new(PluginCapability {
                 id: "owned".into(),
                 schema_keys: vec!["owned".into()],
                 config_schema: Some(serde_json::json!({"type":"object"})),
                 bound: Default::default(),
-            },
+            }),
             validate: Some(|value| {
                 if value.is_some_and(|value| value["valid"] == true) {
                     Ok(())
@@ -1474,4 +1474,147 @@ async fn web_compilation_rejects_every_config_entry_before_publication_effects()
         );
     }
     assert_eq!(effects.0.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn declared_mcp_configuration_uses_one_admission_for_validate_preview_and_publish() {
+    // L4 declared input+cancel policy -> all three existing ConfigPlane paths
+    // accept through the same source/parser, without connecting; L5 unknown
+    // field -> all three refuse, preserving Draft/publications/catalog. S1-S7
+    // owns other partitions; provider_push keeps all its original assertions.
+    use awaken_runtime_contract::agent_bindings::{ToolsetPolicy, ToolsetSource};
+    let catalog = Arc::new(ExecutableAgentCatalog::new());
+    let service = Arc::new(ConfigService::new(
+        Arc::new(FakeResolver),
+        Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
+        Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        vec![mcp_configuration_source()],
+    ));
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
+    let plane = ConfigPlane::new(
+        service,
+        store,
+        Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+    );
+    let workspace = scope("workspace-mcp-source");
+    let policy = serde_json::json!({"notifications":{
+        "notifications/phone/input":{"event_id":"/id","delivery":{"kind":"message","text":"/text"}},
+        "notifications/phone/interrupt":{"event_id":"/id","delivery":{"kind":"cancel_response","input_method":"notifications/phone/input","input_event_id":"/target"}}
+    }});
+    for valid in [false, true] {
+        let mut config = agent_config(if valid {
+            "mcp-source-valid"
+        } else {
+            "mcp-source-invalid"
+        });
+        config.plugin_ids = vec!["mcp:phone".into()];
+        config.mcp_servers = vec![mcp_server_binding("phone")];
+        config.toolsets = vec![ToolsetPolicy {
+            source: ToolsetSource::Mcp {
+                server_name: "phone".into(),
+            },
+            default: Default::default(),
+            overrides: Vec::new(),
+        }];
+        config.plugin_config.insert(
+            "mcp:phone".into(),
+            if valid {
+                policy.clone()
+            } else {
+                serde_json::json!({"unknown":true})
+            },
+        );
+        plane.put(&workspace, &config).await.unwrap();
+        let stored = plane.get(&workspace, &config.id).await.unwrap();
+        assert_eq!(
+            plane.validate(&workspace, &config).await.is_ok(),
+            valid,
+            "L4/L5 validate"
+        );
+        let mut preview = config.clone();
+        preview.id = format!("preview-{}", config.id);
+        assert_eq!(
+            plane
+                .preview_for_execution_workspace(
+                    &workspace,
+                    workspace.as_str(),
+                    &preview.id,
+                    &preview,
+                    AgentInputConfig {
+                        agent_id: preview.id.clone(),
+                        environment: None,
+                        inputs: vec![],
+                        revision: 0
+                    }
+                )
+                .await
+                .is_ok(),
+            valid,
+            "L4/L5 preview"
+        );
+        assert_eq!(
+            plane.publish(&workspace, &config.id).await.is_ok(),
+            valid,
+            "L4/L5 publish"
+        );
+        assert_eq!(
+            plane.get(&workspace, &config.id).await.unwrap(),
+            stored,
+            "pure admission does not rewrite authoring"
+        );
+        assert_eq!(
+            catalog.current(workspace.as_str(), &config.id).is_some(),
+            valid
+        );
+        assert_eq!(
+            catalog.current(workspace.as_str(), &preview.id).is_some(),
+            valid
+        );
+        if !valid {
+            assert!(plane.publications(&workspace).await.unwrap().is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn unselected_mcp_binding_errors_remain_with_the_original_agent_compiler() {
+    // S9 the exact plugin admission succeeds despite an unrelated binding that
+    // cannot advertise metadata; the subsequent complete Agent compiler still
+    // refuses its empty name. No new publication Unresolvable/409 is invented.
+    use awaken_executable_agent_contract::capability::{
+        PluginCapability, PluginConfigurationSource,
+    };
+    let service = ConfigService::new(
+        Arc::new(FakeResolver),
+        Arc::new(LocalExecutableAgentRegistrar::new(Arc::new(
+            ExecutableAgentCatalog::new(),
+        ))),
+        Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        vec![
+            mcp_configuration_source(),
+            PluginConfigurationSource::Exact {
+                capability: Box::new(PluginCapability {
+                    id: "owned".into(),
+                    schema_keys: vec![],
+                    config_schema: None,
+                    bound: Default::default(),
+                }),
+                validate: None,
+            },
+        ],
+    );
+    let mut config = agent_config("unselected-invalid-mcp");
+    config.plugin_ids = vec!["owned".into()];
+    config.mcp_servers = vec![mcp_server_binding("")];
+    let before = config.clone();
+    let issue = service
+        .validate(&scope("workspace-mcp-source"), &config, &[])
+        .await
+        .unwrap_err();
+    assert_eq!(
+        issue.code, None,
+        "original compiler refusal, not plugin_configuration_invalid"
+    );
+    assert_eq!(issue.path, "tools");
+    assert_eq!(config, before);
 }

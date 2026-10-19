@@ -51,6 +51,18 @@ fn plugin_id(server_name: &str) -> String {
     format!("mcp:{server_name}")
 }
 
+fn manifest(server_name: &str, namespace: &str) -> PluginManifest {
+    PluginManifest {
+        id: plugin_id(server_name),
+        requires: Vec::new(),
+        config_sections: vec![plugin_id(server_name)],
+        bound: CapabilityBound {
+            tools: IdBound::Namespace(namespace.to_owned()),
+            ..Default::default()
+        },
+    }
+}
+
 /// A server's live tool registry: the current tool set and a version that
 /// advances on every `tools/list_changed`.
 struct McpRegistry {
@@ -209,17 +221,18 @@ pub struct McpPlugin {
     _refresh: Arc<RegistryRefresh>,
 }
 
+impl McpPlugin {
+    /// The same pure metadata as a connected server, with the canonical namespace
+    /// derived without connecting, discovering tools or granting execution rights.
+    pub fn manifest_for(server_name: &str) -> Result<PluginManifest, McpError> {
+        let namespace = tool_namespace(server_name)?;
+        Ok(manifest(server_name, &namespace))
+    }
+}
+
 impl Plugin for McpPlugin {
     fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: plugin_id(&self.server_name),
-            requires: Vec::new(),
-            config_sections: vec![plugin_id(&self.server_name)],
-            bound: CapabilityBound {
-                tools: IdBound::Namespace(self.namespace.clone()),
-                ..Default::default()
-            },
-        }
+        manifest(&self.server_name, &self.namespace)
     }
 
     fn resolve(&self) -> Contributions {
@@ -302,13 +315,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn pure_server_manifest_uses_the_canonical_coordinate_without_a_connection() {
+        // M3 empty names fail through the existing coordinate owner; M4 ASCII
+        // and Unicode keep exact plugin ids and injective canonical bounds.
+        // No McpServer/transport exists in these metadata-only rows.
+        assert!(McpPlugin::manifest_for("").is_err());
+        for server in ["phone", "智客/phone"] {
+            let projected = McpPlugin::manifest_for(server).unwrap();
+            assert_eq!(projected.id, format!("mcp:{server}"));
+            assert_eq!(projected.config_sections, vec![projected.id.clone()]);
+            assert!(projected.requires.is_empty());
+            assert_eq!(
+                projected.bound,
+                CapabilityBound {
+                    tools: IdBound::Namespace(tool_namespace(server).unwrap()),
+                    ..Default::default()
+                }
+            );
+        }
+    }
+
     #[tokio::test]
     async fn plugin_projects_the_registry_as_dynamic_tools() {
         let transport = Arc::new(SwappingTransport {
             calls: AtomicUsize::new(0),
         });
         let (_tx, rx) = broadcast::channel(4);
-        let server = McpServer::start("srv", transport, rx)
+        let mut server = McpServer::start("srv", transport, rx)
             .await
             .expect("starts");
         let plugin = server.plugin();
@@ -325,6 +359,14 @@ mod tests {
         assert_eq!(
             contributions.dynamic_tools[0].descriptor().id,
             "mcp__srv__alpha"
+        );
+        // M1 the pure entry equals a connected instance; M2 an existing
+        // forced namespace stays instance-owned rather than recalculated.
+        assert_eq!(McpPlugin::manifest_for("srv").unwrap(), plugin.manifest());
+        server.set_namespace_for_test("forced-existing-namespace".into());
+        assert_eq!(
+            server.plugin().manifest().bound.tools,
+            IdBound::Namespace("forced-existing-namespace".into())
         );
     }
 

@@ -281,6 +281,7 @@ pub fn project_child_activity(
     lifecycle: &[RunLifecycleEvent],
     historical_pending: &HashMap<RunLifecycleCursor, Pending>,
     snapshots: &HashMap<String, RunRecoverySnapshot>,
+    index: &crate::OrderIndex<'_>,
 ) -> Result<ChildLifecycle, ProjectionError> {
     enum Trigger<'a> {
         Send(&'a DerivedSessionEvent),
@@ -350,6 +351,7 @@ pub fn project_child_activity(
                     std::slice::from_ref(event),
                     historical_pending,
                     snapshots,
+                    index,
                 )?;
                 projection.facts.extend(one.facts);
                 projection.terminal_cursors.extend(one.terminal_cursors);
@@ -605,13 +607,30 @@ mod tests {
             },
         )]);
         let project = |events: &[RunLifecycleEvent]| {
+            let historical = HashMap::new();
+            let children = HashMap::new();
+            let index = crate::OrderIndex::new(crate::OrderEvidence {
+                updates: None,
+                session_id: "root",
+                batches: &[],
+                closed_intervals: &[],
+                budget_reach: &[],
+                parent_terminal: Default::default(),
+                lifecycle: events,
+                root: None,
+                children: &children,
+                links: &[],
+                outcomes: &[],
+                historical_pending: &historical,
+            });
             project_child_activity(
                 &mut [child()],
                 std::slice::from_ref(&sent),
                 &orders,
                 events,
-                &HashMap::new(),
-                &HashMap::new(),
+                &historical,
+                &children,
+                &index,
             )
             .unwrap()
             .facts

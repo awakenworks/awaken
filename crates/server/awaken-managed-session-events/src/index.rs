@@ -17,6 +17,8 @@
 #[cfg(test)]
 mod terminal_time_tests;
 mod tool_results;
+#[cfg(test)]
+pub(crate) use tool_results::snapshot;
 
 use std::collections::{HashMap, HashSet};
 

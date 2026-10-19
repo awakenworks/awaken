@@ -41,8 +41,9 @@ mod usage;
 
 pub use acceptance::{AcceptanceFence, LifecycleAcceptance, accept_lifecycle};
 pub use accepted_prefix::{
-    AcceptedLifecycle, ChildThreadStates, accept_committed_lifecycle, child_thread_states,
-    committed_pause_health, current_recovery_run,
+    AcceptedLifecycle, ChildThreadStates, PendingTicketAdmission, PendingTicketObservation,
+    accept_committed_lifecycle, advance_answered_pending_commit, answered_pending_commit_cursor,
+    child_thread_states, committed_pause_health, current_recovery_run, pending_ticket_admission,
 };
 pub use activation::{ActivationFailureProjection, activation_failure_projection};
 pub use aggregate::{

@@ -228,11 +228,11 @@ impl ManagedState {
             self.append_delegation_projections(record, delegation, &coordination)?;
         self.close_aggregate(
             record,
-            session_id,
             &persisted,
             &evidence,
             &root,
             &aggregate_plan,
+            &order_index,
         )?;
         // Parent terminality is a durable Session fact and absorbs every
         // derived child lifecycle. Keeping this at the end of the sole warm/cold

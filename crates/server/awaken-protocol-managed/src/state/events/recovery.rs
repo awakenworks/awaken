@@ -4,89 +4,15 @@
 //! Committed recovery snapshots, pending-tool identity resolution, and projection qualification.
 
 use super::*;
+use awaken_managed_session_events::{
+    PendingTicketAdmission, PendingTicketObservation, answered_pending_commit_cursor,
+    pending_ticket_admission,
+};
 
+#[cfg(kani)]
+use awaken_managed_session_events::advance_answered_pending_commit;
 #[cfg(any(test, kani))]
 mod selection_tests;
-
-/// Facts selected from the same committed snapshot, before materializing any
-/// public Pending payload. Cardinality belongs to the outer snapshot lookup.
-#[derive(Clone, Copy)]
-enum PendingTicketObservation<'a> {
-    Absent,
-    Multiple,
-    One(&'a awaken_agent_contract::agent::awaiting::ResumeTicket),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PendingTicketAdmission {
-    Inactive,
-    Missing { positive_awaiting: bool },
-    Multiple,
-    Inconsistent,
-    Admit,
-}
-
-/// The one strict ticket-admission decision, consumed by the snapshot entry
-/// below. Run truth dominates residual, duplicate and corrupt ticket rows.
-/// Unknown legacy lifecycle preserves a unique exact ticket. Identity remains
-/// owned by the neutral recovery contract; this adapter does not reimplement it.
-fn pending_ticket_admission(
-    current_state: Option<&awaken_agent_contract::agent::run::RunState>,
-    current_run_id: &awaken_agent_contract::RunId,
-    thread_id: &awaken_agent_contract::ThreadId,
-    observation: PendingTicketObservation<'_>,
-) -> PendingTicketAdmission {
-    use awaken_agent_contract::agent::run::RunState;
-    if matches!(current_state, Some(RunState::Running | RunState::Ended(_))) {
-        return PendingTicketAdmission::Inactive;
-    }
-    match observation {
-        PendingTicketObservation::Absent => PendingTicketAdmission::Missing {
-            positive_awaiting: matches!(current_state, Some(RunState::Awaiting)),
-        },
-        PendingTicketObservation::Multiple => PendingTicketAdmission::Multiple,
-        PendingTicketObservation::One(ticket) => {
-            if awaken_agent_contract::thread::read::recovery::validate_resume_ticket_owner(
-                ticket,
-                current_run_id,
-                thread_id,
-            )
-            .is_err()
-            {
-                PendingTicketAdmission::Inconsistent
-            } else {
-                PendingTicketAdmission::Admit
-            }
-        }
-    }
-}
-
-/// Fold one lifecycle fact into the exact Awaiting commit selected for a
-/// reply. This is the heap-free production owner for the fenced maximum; the
-/// surrounding method supplies real Thread/Run/kind equality observations.
-const fn advance_answered_pending_commit(
-    selected: Option<u64>,
-    same_thread: bool,
-    same_run: bool,
-    awaiting: bool,
-    source_commit_cursor: u64,
-    snapshot_store_cursor: u64,
-) -> Option<u64> {
-    if same_thread
-        && same_run
-        && awaiting
-        && source_commit_cursor != 0
-        && source_commit_cursor <= snapshot_store_cursor
-        && match selected {
-            Some(current) => source_commit_cursor > current,
-            None => true,
-        }
-    {
-        Some(source_commit_cursor)
-    } else {
-        selected
-    }
-}
 
 impl ManagedState {
     /// Resolve the one current Run carried by a recovery prefix through the
@@ -307,6 +233,11 @@ impl ManagedState {
         };
         let admission =
             pending_ticket_admission(current_state, run_id, &snapshot.thread_id, observation);
+        let inconsistent_pending = || {
+            StateError::projection_recovery_required(
+                "Runtime recovery exposed an inconsistent pending-tool identity; interrupt the Session to settle it",
+            )
+        };
         match admission {
             PendingTicketAdmission::Inactive => return Ok(None),
             PendingTicketAdmission::Multiple => {
@@ -315,9 +246,7 @@ impl ManagedState {
                 ));
             }
             PendingTicketAdmission::Inconsistent => {
-                return Err(StateError::projection_recovery_required(
-                    "Runtime recovery exposed an inconsistent pending-tool identity; interrupt the Session to settle it",
-                ));
+                return Err(inconsistent_pending());
             }
             PendingTicketAdmission::Missing { positive_awaiting } => {
                 if snapshot
@@ -325,9 +254,7 @@ impl ManagedState {
                     .iter()
                     .any(|ticket| &ticket.ticket.run_id == run_id)
                 {
-                    return Err(StateError::projection_recovery_required(
-                        "Runtime recovery exposed an inconsistent pending-tool identity; interrupt the Session to settle it",
-                    ));
+                    return Err(inconsistent_pending());
                 }
                 let audit_state = Self::latest_recovery_run_state_change(snapshot, run_id)
                     .map(|(_, state)| state);
@@ -457,10 +384,12 @@ impl ManagedState {
                     // exposing that same fact again as `agent.tool_result`
                     // violates the public tool family and makes an exact SDK
                     // history internally contradictory.
-                    let public_tool_use_id = tool_index.result_id(
+                    let public_tool_use_id = tool_index.event_id_for_source(
                         &public_thread_id,
                         tool_use_id,
-                        result_sources.next(),
+                        result_sources
+                            .next()
+                            .map(|source| (source.source_id.as_str(), source.call_id.as_str())),
                     )?;
                     if tool_index
                         .client_settled_occurrences
@@ -468,7 +397,9 @@ impl ManagedState {
                     {
                         continue;
                     }
-                    if tool_index.custom.contains(&public_tool_use_id) {
+                    if tool_index.family_for_event(&public_tool_use_id)
+                        == Some(ProjectedToolUseFamily::Custom)
+                    {
                         event.kind = OutboundKind::UserCustomToolResult {
                             custom_tool_use_id: public_tool_use_id,
                             content: Some(content.clone()),
@@ -482,10 +413,12 @@ impl ManagedState {
                 OutboundKind::AgentMcpToolResult {
                     mcp_tool_use_id, ..
                 } => {
-                    *mcp_tool_use_id = tool_index.result_id(
+                    *mcp_tool_use_id = tool_index.event_id_for_source(
                         &public_thread_id,
                         mcp_tool_use_id,
-                        result_sources.next(),
+                        result_sources
+                            .next()
+                            .map(|source| (source.source_id.as_str(), source.call_id.as_str())),
                     )?;
                 }
                 OutboundKind::SessionStatusIdle {
@@ -493,11 +426,17 @@ impl ManagedState {
                     ..
                 } => {
                     for event_id in event_ids {
-                        *event_id = tool_index.latest_id(event_id).ok_or_else(|| {
-                            StateError::Run(RunError::internal(
-                                "Managed requires_action has no answerable tool-use identity",
-                            ))
-                        })?;
+                        *event_id = tool_index
+                            .event_id_for_source(
+                                &public_thread_id,
+                                event_id,
+                                call_source_id.map(|source| (source, event_id.as_str())),
+                            )
+                            .map_err(|_| {
+                                StateError::Run(RunError::internal(
+                                    "Managed requires_action has no answerable tool-use identity",
+                                ))
+                            })?;
                     }
                 }
                 _ => {}
@@ -523,18 +462,7 @@ impl ManagedState {
         snapshot_store_cursor: u64,
         lifecycle_events: &[RunLifecycleEvent],
     ) -> Result<u64, StateError> {
-        lifecycle_events
-            .iter()
-            .fold(None, |selected, event| {
-                advance_answered_pending_commit(
-                    selected,
-                    &event.thread_id == thread_id,
-                    &event.run_id == run_id,
-                    event.kind == RunLifecycleEventKind::Awaiting,
-                    event.source_commit_cursor,
-                    snapshot_store_cursor,
-                )
-            })
+        answered_pending_commit_cursor(thread_id, run_id, snapshot_store_cursor, lifecycle_events)
             .ok_or_else(|| {
                 StateError::Run(RunError::unavailable(
                     "committed pending lifecycle is not yet visible",
