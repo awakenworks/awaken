@@ -24,19 +24,14 @@ test-support fixtures are excluded.
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 
 import _crate_boundary_workspace
 import _poisoned_lock_fitness
 
 REALIZATION_SRC = "crates/server/awaken-session-realization/src"
-# The owning crates are declared for hooks; compiled source discovery is shared
-# with the poison rule through Cargo authority metadata and module reachability.
-INPUT_GLOBS: tuple[str, ...] = (
-    "crates/server/awaken-session-realization/src/**",
-    "crates/server/awaken-session-executor/src/**",
-)
+# check_crate_boundaries.py owns this helper's execution and hook inputs.
+# Compiled source discovery follows Cargo authority and module reachability.
 TEST_FILES = re.compile(r"(^|/)(tests?|test_support)(\.rs|/)")
 
 EXECUTOR_ERROR = re.compile(r"\b(?:HostError|SessionExecutionError)\b")
@@ -179,11 +174,3 @@ def check_all(repo_root: Path) -> list[str]:
             else realization_error_violations(sources)
         )
     return errors
-
-
-if __name__ == "__main__":
-    if sys.argv[1:] != ["--self-test"]:
-        print("usage: python3 scripts/ci/_realization_error_fitness.py --self-test", file=sys.stderr)
-        raise SystemExit(2)
-    selftest()
-    print("_realization_error_fitness selftest: the decision table holds")

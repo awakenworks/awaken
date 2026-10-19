@@ -20,6 +20,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import generate_hooks
+from _lefthook_fitness import hook_entry_errors, self_test as hook_entry_self_test
 from test_trusted_host_portability import self_test as trusted_host_portability_self_test
 from shared_conformance import (TEST_ATTRIBUTE, shared_conformance_errors,
                                 self_test as shared_conformance_self_test)
@@ -720,7 +721,7 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
     """
     errors = []
     pre_commit = hooks.split("pre-commit:", 1)[-1].split("\npre-push:", 1)[0]
-    pre_push = hooks.split("\npre-push:", 1)[-1] if "\npre-push:" in hooks else ""
+    pre_push = hooks.split("\npush-qualification:", 1)[-1] if "\npush-qualification:" in hooks else ""
     owner = re.search(r"(?m)^    rust-quick:\n((?:      .*\n)+)", pre_commit)
     owner_text = owner.group(1) if owner else ""
     if owner_text.count("run: scripts/ci/check-rust.sh --quick") != 1:
@@ -1088,6 +1089,7 @@ def validate(root: Path) -> list[str]:
         (root / "lefthook.yml").read_text(encoding="utf-8"),
         (root / "scripts/ci/check-rust.sh").read_text(encoding="utf-8"),
     ))
+    errors.extend(hook_entry_errors((root / "lefthook.yml").read_text(encoding="utf-8")))
     errors.extend(
         generated_hook_glob_errors(
             (root / "lefthook.yml").read_text(encoding="utf-8"),
@@ -1150,6 +1152,7 @@ def validate(root: Path) -> list[str]:
 
 
 def self_test() -> None:
+    hook_entry_self_test(ROOT)
     # Per-test deadline decision table. C1 the default profile terminates a
     # test; C2 the deadline is within the bound; C3 no override removes it;
     # C4 the Rust gate runs the suite under nextest; C5 the gate runs no
