@@ -4,6 +4,55 @@
 use crate::inbox_mutation::{
     PendingInputMutation, PendingInputMutationPlan, plan_pending_input_mutation,
 };
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::DispatchAttemptRecordReads for PostgresDispatchStore {
+    async fn attempt_admissions_after(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+        session_thread: &ThreadId,
+        member_threads: &[ThreadId],
+    ) -> Result<DispatchPage, DispatchError> {
+        crate::dispatch::validate_admission_scope(session_thread, member_threads)?;
+        let events = self
+            .read_stored_operations(
+                cursor,
+                limit,
+                None,
+                crate::dispatch::OperationReadPurpose::Admissions {
+                    session_thread,
+                    member_threads,
+                },
+            )
+            .await?;
+        Ok(crate::dispatch::diagnostic_page(cursor, events))
+    }
+
+    async fn attempt_closure_records_after(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+        run: Option<&RunId>,
+    ) -> Result<crate::AttemptClosurePage, DispatchError> {
+        let events = self
+            .read_stored_operations(
+                cursor,
+                limit,
+                run,
+                crate::dispatch::OperationReadPurpose::AttemptClosure,
+            )
+            .await?
+            .into_iter()
+            .filter_map(crate::dispatch::StoredDispatchEvent::attempt_closure)
+            .collect::<Vec<_>>();
+        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
+        Ok(crate::AttemptClosurePage {
+            events,
+            next_cursor,
+        })
+    }
+}
+
 #[async_trait]
 impl DispatchOperationalFeed for PostgresDispatchStore {
     async fn events_after(
@@ -19,15 +68,8 @@ impl DispatchOperationalFeed for PostgresDispatchStore {
                 run,
                 crate::dispatch::OperationReadPurpose::Diagnostics,
             )
-            .await?
-            .into_iter()
-            .filter_map(crate::dispatch::StoredDispatchEvent::diagnostic)
-            .collect::<Vec<_>>();
-        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
-        Ok(DispatchPage {
-            events,
-            next_cursor,
-        })
+            .await?;
+        Ok(crate::dispatch::diagnostic_page(cursor, events))
     }
 }
 
@@ -426,7 +468,7 @@ async fn insert_operation(
     Ok(())
 }
 
-// Both purposes use the original operation rows, codec and global sequence.
+// Every view uses the original operation rows, codec and global sequence.
 // Raw batches are decoded before filtering; hidden prefixes cannot consume the
 // logical LIMIT or turn unknown/corrupt old rows into silently empty pages.
 async fn read_stored_operation_page(
@@ -434,7 +476,7 @@ async fn read_stored_operation_page(
     cursor: DispatchCursor,
     limit: usize,
     run: Option<&RunId>,
-    purpose: crate::dispatch::OperationReadPurpose,
+    purpose: crate::dispatch::OperationReadPurpose<'_>,
 ) -> Result<Vec<crate::dispatch::StoredDispatchEvent>, DispatchError> {
     let mut events = Vec::new();
     let mut scanned = cursor;
@@ -442,7 +484,18 @@ async fn read_stored_operation_page(
         let after = i64::try_from(scanned.0)
             .map_err(|_| DispatchError::Rejected("dispatch cursor exceeds storage range".into()))?;
         let remaining = i64::try_from(limit - events.len()).unwrap_or(i64::MAX);
-        let selection = if run.is_some() { "AND run_id = $3" } else { "" };
+        let selection = match purpose {
+            crate::dispatch::OperationReadPurpose::Admissions { .. } => {
+                "AND NOT (COALESCE(operation->>'type','') = ANY($5)) \
+                 AND (COALESCE(operation->>'type','') <> 'attempt_admitted' \
+                   OR operation->'attempt'->>'session_thread_id' = $3 \
+                   OR operation->'attempt'->>'thread_id' = ANY($4) \
+                   OR jsonb_typeof(operation->'attempt'->'thread_id') IS DISTINCT FROM 'string' \
+                   OR NOT (operation->'attempt'->>'thread_id' ~ '[!-~]'))"
+            }
+            _ if run.is_some() => "AND run_id = $3",
+            _ => "",
+        };
         let sql = format!(
             "SELECT sequence, recorded_at_ms, run_id, operation FROM {NS}_dispatch_operation WHERE sequence > $1 {selection} ORDER BY sequence LIMIT $2"
         );
@@ -450,7 +503,21 @@ async fn read_stored_operation_page(
             sqlx::query_as::<_, (i64, Option<i64>, String, Json<serde_json::Value>)>(&sql)
                 .bind(after)
                 .bind(remaining);
-        if let Some(run) = run {
+        if let crate::dispatch::OperationReadPurpose::Admissions {
+            session_thread,
+            member_threads,
+        } = purpose
+        {
+            query = query
+                .bind(&session_thread.0)
+                .bind(
+                    member_threads
+                        .iter()
+                        .map(|id| id.0.clone())
+                        .collect::<Vec<_>>(),
+                )
+                .bind(crate::dispatch::NON_ADMISSION_OPERATION_TAGS);
+        } else if let Some(run) = run {
             query = query.bind(&run.0);
         }
         let rows = query
@@ -482,7 +549,7 @@ impl PostgresDispatchStore {
         cursor: DispatchCursor,
         limit: usize,
         run: Option<&RunId>,
-        purpose: crate::dispatch::OperationReadPurpose,
+        purpose: crate::dispatch::OperationReadPurpose<'_>,
     ) -> Result<Vec<crate::dispatch::StoredDispatchEvent>, DispatchError> {
         if limit == 0 {
             return Ok(Vec::new());

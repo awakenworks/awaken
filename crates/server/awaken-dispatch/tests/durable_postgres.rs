@@ -63,11 +63,16 @@ async fn postgres_operational_feed_waits_for_the_complete_committed_prefix() {
     // Fault injection uses actual independent PostgreSQL transactions in an
     // isolated schema; the observation is the production events_after port.
     use awaken_dispatch_contract::{DispatchCursor, DispatchOperation, DispatchOperationalFeed};
-    for (commit_lower, filtered, schema) in [
-        (true, false, "t_dispatch_prefix_commit"),
-        (false, false, "t_dispatch_prefix_rollback"),
-        (true, true, "t_dispatch_prefix_filtered_commit"),
-        (false, true, "t_dispatch_prefix_filtered_rollback"),
+    // The new scoped admission view uses the SAME original prefix barrier:
+    // even an unresolved foreign lower allocation must settle before the
+    // selected higher original cursor can become an observation checkpoint.
+    for (commit_lower, filtered, admissions, schema) in [
+        (true, false, false, "t_dispatch_prefix_commit"),
+        (false, false, false, "t_dispatch_prefix_rollback"),
+        (true, true, false, "t_dispatch_prefix_filtered_commit"),
+        (false, true, false, "t_dispatch_prefix_filtered_rollback"),
+        (true, true, true, "t_dispatch_prefix_admission_commit"),
+        (false, true, true, "t_dispatch_prefix_admission_rollback"),
     ] {
         let Some(pool) = harness::schema_pool(schema).await else {
             return;
@@ -85,12 +90,23 @@ async fn postgres_operational_feed_waits_for_the_complete_committed_prefix() {
             .await
             .unwrap();
         let operation = |run: &str| {
-            serde_json::to_value(DispatchOperation::Claimed {
-                claim: RunClaim {
-                    run_id: RunId(run.into()),
-                    owner: "fixture".into(),
-                    epoch: 1,
-                },
+            let claim = RunClaim {
+                run_id: RunId(run.into()),
+                owner: "fixture".into(),
+                epoch: 1,
+            };
+            serde_json::to_value(if admissions {
+                DispatchOperation::AttemptAdmitted {
+                    attempt: awaken_dispatch::PhysicalAttempt {
+                        claim,
+                        binding: None,
+                        thread_id: Some(ThreadId(format!("thread-{run}"))),
+                        session_thread_id: Some(ThreadId(format!("root-{run}"))),
+                        closing: false,
+                    },
+                }
+            } else {
+                DispatchOperation::Claimed { claim }
             })
             .unwrap()
         };
@@ -110,9 +126,21 @@ async fn postgres_operational_feed_waits_for_the_complete_committed_prefix() {
         assert_eq!(empty.next_cursor, DispatchCursor(0));
         let observation = tokio::spawn(async move {
             let selected = RunId("b".into());
-            store
-                .events_after(DispatchCursor(0), 10, filtered.then_some(&selected))
-                .await
+            if admissions {
+                let root = ThreadId("root-b".into());
+                store
+                    .attempt_admissions_after(
+                        DispatchCursor(0),
+                        10,
+                        &root,
+                        &[root.clone(), ThreadId("thread-b".into())],
+                    )
+                    .await
+            } else {
+                store
+                    .events_after(DispatchCursor(0), 10, filtered.then_some(&selected))
+                    .await
+            }
         });
         // The independent backend must actually enter PostgreSQL Lock wait;
         // slow connection establishment cannot stand in for prefix protection.

@@ -555,30 +555,3 @@ impl awaken_dispatch_contract::DispatchControlClaims for SqliteDispatchStore {
         Ok(claimed)
     }
 }
-
-#[async_trait::async_trait]
-impl awaken_dispatch_contract::DispatchAttemptRecordReads for SqliteDispatchStore {
-    async fn attempt_closure_records_after(
-        &self,
-        cursor: DispatchCursor,
-        limit: usize,
-        run: Option<&RunId>,
-    ) -> Result<crate::AttemptClosurePage, DispatchError> {
-        let events = self
-            .read_stored_operations(
-                cursor,
-                limit,
-                run,
-                crate::dispatch::OperationReadPurpose::AttemptClosure,
-            )
-            .await?
-            .into_iter()
-            .filter_map(crate::dispatch::StoredDispatchEvent::attempt_closure)
-            .collect::<Vec<_>>();
-        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
-        Ok(crate::AttemptClosurePage {
-            events,
-            next_cursor,
-        })
-    }
-}

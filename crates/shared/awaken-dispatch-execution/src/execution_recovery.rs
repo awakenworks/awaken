@@ -298,9 +298,7 @@ pub async fn read_execution_recovery<S, R>(
     session: &PersistedSession,
 ) -> Observation
 where
-    S: awaken_dispatch_contract::DispatchOperationalFeed
-        + awaken_dispatch_contract::DispatchAttemptRecordReads
-        + ?Sized,
+    S: awaken_dispatch_contract::DispatchAttemptRecordReads + ?Sized,
     R: awaken_session_execution_contract::ThreadReadRuntime + ?Sized,
 {
     let (threads, runtime_commit_cursor) = match frozen_terminal_scope(session) {
@@ -308,11 +306,20 @@ where
         Err(reason) => return unknown(reason),
     };
 
+    let root = awaken_agent_contract::agent::thread::Id(session.session_id.to_string());
+    let members = threads
+        .iter()
+        .cloned()
+        .map(awaken_agent_contract::agent::thread::Id)
+        .collect::<Vec<_>>();
     let mut entries = Vec::new();
     let mut cursor = DispatchCursor::default();
     let mut exhausted = true;
     for _ in 0..MAX_PAGES {
-        let Ok(page) = source.events_after(cursor, PAGE_SIZE, None).await else {
+        let Ok(page) = source
+            .attempt_admissions_after(cursor, PAGE_SIZE, &root, &members)
+            .await
+        else {
             return unknown(Gap::HistoryUnavailable);
         };
         if page.events.is_empty() {
@@ -336,6 +343,8 @@ where
                 if member {
                     entries.push(attempt);
                 }
+            } else {
+                return unknown(Gap::IdentityMismatch);
             }
         }
         cursor = page.next_cursor;
@@ -542,6 +551,42 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl awaken_dispatch_contract::DispatchAttemptRecordReads for RecoverySource {
+        async fn attempt_admissions_after(
+            &self,
+            cursor: DispatchCursor,
+            limit: usize,
+            root: &ThreadId,
+            members: &[ThreadId],
+        ) -> Result<
+            awaken_dispatch_contract::DispatchPage,
+            awaken_dispatch_contract::DispatchError,
+        > {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.unavailable.load(Ordering::SeqCst) {
+                return Err(awaken_dispatch_contract::DispatchError::Unavailable(
+                    "fixture outage".into(),
+                ));
+            }
+            let events = self
+                .events
+                .iter()
+                .filter(|event| event.cursor > cursor)
+                .filter(|event| {
+                    matches!(&event.operation,
+                    DispatchOperation::AttemptAdmitted { attempt }
+                        if attempt.session_thread_id.as_ref() == Some(root)
+                        || attempt.thread_id.as_ref().is_some_and(|id| members.contains(id)))
+                })
+                .take(limit)
+                .cloned()
+                .collect::<Vec<_>>();
+            let next_cursor = events.last().map_or(cursor, |event| event.cursor);
+            Ok(awaken_dispatch_contract::DispatchPage {
+                events,
+                next_cursor,
+            })
+        }
+
         async fn attempt_closure_records_after(
             &self,
             cursor: DispatchCursor,
@@ -1132,11 +1177,15 @@ mod tests {
         // R10 every member has original response-only/no-tool coverage ->
         // optional footprint. R11 one opaque child -> closure still truthful,
         // but no scope-wide no-effects footprint may borrow the root's proof.
-        // R12 an admitted Run missing from an otherwise present snapshot is
-        // incomplete, never vacuously response-only. R13 a tool committed just
+        // R12 >65,536 unrelated diagnostic/admission records preserve R1;
+        // R13 an admitted unfrozen child still refuses; R14 foreign records
+        // cannot invent missing own inventory; R15 the same bounded budget
+        // still refuses an actually oversized own admission inventory.
+        // R16 an admitted Run missing from an otherwise present snapshot is
+        // incomplete, never vacuously response-only. R17 a tool committed just
         // before the closure read returns must be included in inventory and
         // prevent a borrowed response-only footprint. Cleanup remains Requested.
-        for rule in 1..=13 {
+        for rule in 1..=17 {
             let id = SessionId::from(format!("recovery-scope-{rule}"));
             let child = ThreadId(format!("{}-child", id.as_str()));
             let root_run = RunId(format!("{}-root-run", id.as_str()));
@@ -1173,7 +1222,7 @@ mod tests {
                 if rule == 8 && thread == child {
                     snapshot.thread_id = ThreadId("foreign-thread".into());
                 }
-                if rule >= 10 {
+                if matches!(rule, 10 | 11 | 16 | 17) {
                     use awaken_agent_contract::agent::state::StateKey;
                     use awaken_runtime_contract::attempt_termination::{
                         ActiveNativeAttemptCoverage, NativeAttemptCoverage,
@@ -1203,7 +1252,7 @@ mod tests {
                     snapshot.state = vec![marker, entry];
                     snapshot.state_commit_cursors = vec![1, 2];
                 }
-                if rule == 12 && thread.0 == id.as_str() {
+                if rule == 16 && thread.0 == id.as_str() {
                     snapshot.runs.clear();
                 }
                 runtime.set_recovery_snapshot(id.as_str(), &thread, snapshot);
@@ -1255,12 +1304,69 @@ mod tests {
                     });
                 }
             }
+            if matches!(rule, 12 | 14) {
+                let offset = (PAGE_SIZE * MAX_PAGES) as u64;
+                for event in &mut events {
+                    event.cursor.0 += offset;
+                }
+                for event in &mut closures {
+                    event.cursor.0 += offset;
+                }
+                let mut foreign = entry();
+                foreign.thread_id = Some(ThreadId("unrelated-thread".into()));
+                foreign.session_thread_id = Some(ThreadId("unrelated-session".into()));
+                let mut noise = (1..=offset)
+                    .map(|sequence| DispatchOperationalEvent {
+                        cursor: DispatchCursor(sequence),
+                        recorded_at_ms: Some(0),
+                        operation: if sequence % 2 == 0 {
+                            DispatchOperation::AttemptAdmitted {
+                                attempt: foreign.clone(),
+                            }
+                        } else {
+                            DispatchOperation::Claimed {
+                                claim: foreign.claim.clone(),
+                            }
+                        },
+                    })
+                    .collect::<Vec<_>>();
+                if rule == 12 {
+                    noise.extend(events);
+                }
+                events = noise;
+            }
+            if rule == 13 {
+                let mut orphan = entry();
+                orphan.thread_id = Some(ThreadId("unfrozen-child".into()));
+                orphan.session_thread_id = Some(ThreadId(id.as_str().into()));
+                events.push(DispatchOperationalEvent {
+                    cursor: DispatchCursor(3),
+                    recorded_at_ms: Some(1),
+                    operation: DispatchOperation::AttemptAdmitted { attempt: orphan },
+                });
+            }
+            if rule == 15 {
+                let own = match &events[0].operation {
+                    DispatchOperation::AttemptAdmitted { attempt } => attempt.clone(),
+                    _ => unreachable!(),
+                };
+                events = (1..=(PAGE_SIZE * MAX_PAGES) as u64)
+                    .map(|sequence| DispatchOperationalEvent {
+                        cursor: DispatchCursor(sequence),
+                        recorded_at_ms: Some(1),
+                        operation: DispatchOperation::AttemptAdmitted {
+                            attempt: own.clone(),
+                        },
+                    })
+                    .collect();
+                closures.clear();
+            }
             let feed = Arc::new(RecoverySource {
                 events,
                 closures: Some(closures),
                 calls: 0.into(),
                 unavailable: (rule == 7).into(),
-                on_closure_read: (rule == 13).then(|| {
+                on_closure_read: (rule == 17).then(|| {
                     let runtime = runtime.clone();
                     let root = id.as_str().to_owned();
                     Arc::new(move || {
@@ -1293,7 +1399,7 @@ mod tests {
                 }),
             });
             let observed = read_execution_recovery(feed.as_ref(), runtime.as_ref(), &session).await;
-            if matches!(rule, 1 | 10 | 11 | 13) {
+            if matches!(rule, 1 | 10 | 11 | 12 | 17) {
                 let Observation::EffectsClosed {
                     operation_footprint,
                     operation_inventory,
@@ -1303,19 +1409,19 @@ mod tests {
                     ..
                 } = observed
                 else {
-                    panic!("R1 complete scope is closed");
+                    panic!("R{rule} complete scope is closed; got {observed:?}");
                 };
                 assert_eq!(runtime_commit_cursor, 41, "R1 original scope fence");
-                if rule == 13 {
+                if rule == 17 {
                     let Some(SessionExecutionOperationInventory::Recorded { tools, .. }) =
                         operation_inventory
                     else {
-                        panic!("R13 late operation inventory must remain available");
+                        panic!("R17 late operation inventory must remain available");
                     };
                     assert_eq!(
                         tools.len(),
                         1,
-                        "R13 no lost operation at the closure boundary"
+                        "R17 no lost operation at the closure boundary"
                     );
                     assert_eq!(tools[0].tool_id, "original-tool");
                 }
@@ -1335,9 +1441,11 @@ mod tests {
                     2 => Gap::NotTerminal,
                     3 => Gap::ScopeNotFrozen,
                     4 => Gap::HistoryMissing,
-                    5 | 12 => Gap::InventoryIncomplete,
+                    5 | 16 => Gap::InventoryIncomplete,
                     6 => Gap::AttemptStillOpen,
                     7 => Gap::HistoryUnavailable,
+                    14 => Gap::InventoryIncomplete,
+                    15 => Gap::ReadBudgetExceeded,
                     _ => Gap::IdentityMismatch,
                 };
                 assert_eq!(observed, Observation::NotProven { reason }, "R{rule}");

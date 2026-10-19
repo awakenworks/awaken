@@ -93,20 +93,84 @@ impl StoredDispatchOperation {
             Self::PhysicalFact(fact) => Some(fact),
         }
     }
-    pub(crate) fn matches(&self, purpose: OperationReadPurpose) -> bool {
-        matches!(
-            (self, purpose),
+    pub(crate) fn matches(&self, purpose: OperationReadPurpose<'_>) -> bool {
+        match (self, purpose) {
             (Self::Diagnostic(_), OperationReadPurpose::Diagnostics)
-                | (Self::PhysicalFact(_), OperationReadPurpose::AttemptClosure)
-        )
+            | (Self::PhysicalFact(_), OperationReadPurpose::AttemptClosure) => true,
+            (
+                Self::Diagnostic(awaken_dispatch_contract::DispatchOperation::AttemptAdmitted {
+                    attempt,
+                }),
+                OperationReadPurpose::Admissions {
+                    session_thread,
+                    member_threads,
+                },
+            ) => {
+                attempt.session_thread_id.as_ref() == Some(session_thread)
+                    || attempt
+                        .thread_id
+                        .as_ref()
+                        .is_some_and(|id| member_threads.contains(id))
+            }
+            _ => false,
+        }
     }
 }
 
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 #[derive(Clone, Copy)]
-pub(crate) enum OperationReadPurpose {
+pub(crate) enum OperationReadPurpose<'a> {
     Diagnostics,
     AttemptClosure,
+    Admissions {
+        session_thread: &'a awaken_agent_contract::agent::thread::Id,
+        member_threads: &'a [awaken_agent_contract::agent::thread::Id],
+    },
+}
+
+// Query exclusions, not another codec: unrecognized tags still reach decode_row.
+// Missing a future non-admission tag merely makes it an extra decoded raw row.
+#[cfg(feature = "durable")]
+pub(crate) const NON_ADMISSION_OPERATION_TAGS: &[&str] = &[
+    "claimed",
+    "lease_lost",
+    "reclaimed",
+    "settled",
+    "dead_lettered",
+    "attempt_acknowledgement",
+    "attempt_closure",
+];
+
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn validate_admission_scope(
+    root: &awaken_agent_contract::agent::thread::Id,
+    members: &[awaken_agent_contract::agent::thread::Id],
+) -> Result<(), DispatchError> {
+    if root.0.trim().is_empty()
+        || !members.contains(root)
+        || members.iter().any(|id| id.0.trim().is_empty())
+    {
+        return Err(DispatchError::Rejected(
+            "admission scope must contain its exact nonempty root and members".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn diagnostic_page(
+    cursor: awaken_dispatch_contract::DispatchCursor,
+    stored: Vec<StoredDispatchEvent>,
+) -> awaken_dispatch_contract::DispatchPage {
+    let events = stored
+        .into_iter()
+        .filter_map(StoredDispatchEvent::diagnostic)
+        .collect::<Vec<_>>();
+    let next_cursor = events.last().map_or(cursor, |event| event.cursor);
+    awaken_dispatch_contract::DispatchPage {
+        events,
+        next_cursor,
+    }
 }
 
 /// The sole Memory operation element, and the canonical decoded SQL element.

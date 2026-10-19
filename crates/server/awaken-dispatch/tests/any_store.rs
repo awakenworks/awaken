@@ -55,10 +55,16 @@ async fn any_in_memory_with_clock(
 
 #[tokio::test]
 async fn execution_binding_is_frozen_with_the_physical_slot() {
-    // Shared B1-B9 includes Any delegation, Memory and real SQLite transactions.
+    // Shared B1-B10/I1-I2 includes Any delegation, Memory and real SQLite
+    // transactions. With no injected fault, the existing fault decorator must
+    // preserve the same original admission inventory and global cursors.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     for store in [
         AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(MemoryDispatchStore::new(
+            clock.clock(),
+        ))),
+        AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(harness::FlakyDispatchStore::new(
+            0,
             clock.clock(),
         ))),
         any_in_memory_with_clock(&clock).await,

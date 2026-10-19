@@ -155,3 +155,9 @@ required-features = ["test-support"]
 
 [lints]
 workspace = true
+
+# Scoped inventory conformance imports the same explicit store test harness.
+# Production/default builds must not acquire its Memory fixture capability.
+[[test]]
+name = "attempt_inventory"
+required-features = ["test-support"]
