@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -47,6 +48,24 @@ EXPECTED = {
 }
 
 
+def consumer_calls(source: str) -> int:
+    """Recognize the gate's direct and dependency-scoped executable forms."""
+    direct = ["python3", "scripts/ci/check_sdk_consumer.py"]
+    count = 0
+    for line in re.sub(r"\\\r?\n", " ", source).splitlines():
+        try:
+            command = shlex.split(line, comments=True)
+        except ValueError:
+            continue  # An unrecognized call cannot admit the consumer graph.
+        if command == direct:
+            count += 1
+        elif (len(command) == 6 and command[:2] == ["scoped_step", "sdk-consumer"]
+              and command[3] == "$(consumed_packages examples/sdk-consumer/Cargo.toml)"
+              and command[4:] == direct):
+            count += 1
+    return count
+
+
 def admission_errors(owner: str, gate: str) -> list[str]:
     errors = []
     triggers = re.findall(r'(?m)^\s*glob: "([^"]+)"\s*$', owner)
@@ -61,8 +80,7 @@ def admission_errors(owner: str, gate: str) -> list[str]:
         except SystemExit as error:
             errors.append(f"SDK consumer gate mode cannot be admitted: {error}")
             break
-        calls = re.findall(r'(?m)^\s*python3 scripts/ci/check_sdk_consumer\.py\s*$', source)
-        if len(calls) != 1:
+        if consumer_calls(source) != 1:
             errors.append(f"Rust gate {mode} must execute the independent SDK consumer exactly once")
     return errors
 
@@ -120,6 +138,19 @@ def self_test() -> None:
                     gate.replace(invocation, 'if [ "$mode" = "--push" ]; then\n' + invocation + '\nfi'),
                     gate.replace(invocation, 'if [ "$mode" = "--full" ]; then\n' + invocation + '\nfi')):
         assert admission_errors(owner, changed)
+    scoped = ('scoped_step "sdk-consumer" "external SDK tasks" \\\n'
+              '  "$(consumed_packages examples/sdk-consumer/Cargo.toml)" ' + invocation)
+    scoped_gate = gate.replace(invocation, scoped)
+    assert not admission_errors(owner, scoped_gate)
+    for changed in (
+        scoped_gate + scoped + '\n',
+        scoped_gate.replace(scoped, '# ' + scoped.replace('\\\n', ' ')),
+        scoped_gate.replace(invocation, invocation + ' --self-test'),
+        scoped_gate.replace('examples/sdk-consumer/Cargo.toml', 'fuzz/Cargo.toml'),
+        scoped_gate.replace('"sdk-consumer"', '"other-consumer"'),
+        scoped_gate.replace(scoped, 'echo ' + scoped.replace('\\\n', ' ')),
+    ):
+        assert admission_errors(owner, changed), "scoped SDK admission must retain execution and its dependency graph"
     passing = "\n".join(f"test {name} ... ok" for name in sorted(EXPECTED))
     summary = f"\ntest result: ok. {len(EXPECTED)} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
     validate_task_evidence(passing + summary)

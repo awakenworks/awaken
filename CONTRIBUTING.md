@@ -15,7 +15,12 @@ commands and their flags by `check_gate_arguments.py`).
 - **Devcontainer**: [`.devcontainer/`](.devcontainer/devcontainer.json) builds
   Rust plus PostgreSQL and runs the installs above.
 - **Hooks**: `lefthook install`. [`lefthook.yml`](lefthook.yml) runs the
-  pre-commit, commit-msg and pre-push checks.
+  pre-commit, commit-msg and pre-push checks. Re-run the install after updating
+  hook entry points. Pre-push always starts the checks, including when a branch
+  has no upstream or pushes to a different destination; the Rust and API planners
+  select the affected work. Staged-file selection still applies to pre-commit.
+  Shared hooks also support older worktrees that retain the earlier config.
+  A checkout using the current entry must contain its script or the hook fails.
 - **What is missing on this machine**: `scripts/ci/doctor.sh` reports each
   absent tool and the check group it costs ([`gate_tools.json`](scripts/ci/gate_tools.json)
   declares them all).

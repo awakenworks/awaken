@@ -29,6 +29,13 @@ output:
 
 glob_matcher: doublestar
 
+# Push scope belongs to the repository's planners. A missing branch upstream or
+# a remote default branch different from the explicit push destination must not
+# let Lefthook guess an empty diff and skip every pre-push command.
+# Worktrees share generated Git hooks. An older checkout without this config key
+# still uses its own Lefthook config; a checkout declaring it requires the script.
+lefthook: $(if grep -q '^lefthook:' lefthook.yml; then printf 'sh scripts/ci/run_lefthook.sh'; else printf lefthook; fi)
+
 pre-commit:
   # Cargo, code generation and workspace formatting share the same resource
   # budget. Keep every check, but avoid concurrent compiler processes during
