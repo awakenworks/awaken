@@ -1,50 +1,10 @@
 // @formal surface requirement=session.lifecycle.session_state
 // @formal reason: Constructor-selected effects use the original realizer and canonical MCP authority. Configured forwarding retains no unrelated Session owner; local Direct execution keeps its required staging context.
-//! Run-side effects reached by claimed execution: the Memory terminal
-//! observer of a guarded dispatch, the Session MCP realizer the composition
-//! selected, and the ordinary Run MCP role (SDK Direct admission).
+//! Constructor-selected MCP execution effects and local generation projections.
 use awaken_session_types::RunError;
 use std::sync::Arc;
 
 impl crate::RunAssembly {
-    /// Build the terminal observer from the exact guarded dispatch. The logical
-    /// Thread owns transcript/extraction identity; `commit` may still point at
-    /// its parent Session's physical partition.
-    pub(crate) async fn dispatched_memory_terminal_observer(
-        &self,
-        dispatch: &awaken_dispatch_contract::RunDispatch,
-        commit: Arc<crate::store::HostCommit>,
-    ) -> Result<
-        Option<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>,
-        crate::SessionExecutionError,
-    > {
-        let manifest =
-            awaken_dispatch_execution::session_envelope::decode_dispatched_resource_manifest(
-                dispatch,
-            )
-            .map_err(crate::SessionExecutionError::internal)?;
-        let workspace = dispatch
-            .execution_scope
-            .as_ref()
-            .map_or_else(|| self.local_workspace(), |scope| scope.0.0.as_str());
-        let frozen_publications = crate::agent_catalog::RUN_PUBLICATIONS
-            .exact_source(
-                &dispatch.activation.snapshot,
-                &dispatch.agent_publications,
-                workspace,
-            )
-            .map_err(crate::SessionExecutionError::internal)?;
-        self.memory_terminal_observer(
-            &dispatch.session_thread_id().0,
-            &dispatch.activation.snapshot,
-            dispatch.activation.effective_model_ref(),
-            manifest.as_ref(),
-            frozen_publications.as_ref(),
-            commit,
-        )
-        .await
-    }
-
     /// The one Session MCP attachment realizer: the realizer the composition
     /// selected for durable Worker commands, else this assembly's own.
     pub(crate) fn session_mcp_realizer(

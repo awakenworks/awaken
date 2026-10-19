@@ -2,7 +2,7 @@
 // @formal reason: Static owner: the extracted Host adapter binds a frozen Agent publication,
 // @formal reason: Session-scoped Memory handle, and committed Thread reader to the existing
 // @formal reason: MemoryTerminalObserver and extraction aggregate. Dynamic path: disabled or absent
-// @formal reason: bindings produce no observer; an enabled exact binding delegates terminal extraction to
+// @formal reason: plugins produce no observer; missing required bindings refuse, while an exact binding delegates terminal extraction to
 // @formal reason: the one durable Memory controller, so this requirement-only classification adds no
 // @formal reason: observer state machine or consistency authority and makes no direct formal-proof claim.
 //! Host projection from a frozen Memory publication to the shared terminal observer.
@@ -11,7 +11,8 @@
 //! machine. This module only binds the published Agent snapshot, Session-scoped
 //! Memory handle, and committed Thread reader onto those existing authorities.
 
-use std::sync::Arc;
+use awaken_runtime_contract::terminal::RunTerminalObserver;
+use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
@@ -43,50 +44,76 @@ impl MemoryTerminalExtraction for BoundMemoryTerminalExtraction {
     }
 }
 
-impl crate::RunAssembly {
-    fn published_memory_terminal_configuration(
-        snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
-        effective_model_ref: &str,
-    ) -> Result<
-        Option<(
-            awaken_ext_memory::MemoryConfig,
-            awaken_runtime_contract::resolved::ResolvedModelCandidate,
-        )>,
-        crate::SessionExecutionError,
-    > {
-        if !snapshot
-            .resolved_spec
-            .plugin_ids
-            .iter()
-            .any(|id| id == awaken_ext_memory::MEMORY_PLUGIN_ID)
-        {
-            return Ok(None);
+/// Selected terminal Memory roles, with only a weak view of resident Sessions.
+pub(crate) struct MemoryTerminalObservers {
+    sessions: Weak<crate::installed_session::InstalledSessions>,
+    bindings: awaken_session_realization::memory_binding_compiler::MemoryBindingCompiler,
+    runtime: Arc<super::MemoryRuntime>,
+    local_workspace: String,
+    direct_config: Option<serde_json::Value>,
+}
+impl MemoryTerminalObservers {
+    pub(crate) fn new(
+        sessions: Weak<crate::installed_session::InstalledSessions>,
+        bindings: awaken_session_realization::memory_binding_compiler::MemoryBindingCompiler,
+        runtime: Arc<super::MemoryRuntime>,
+        local_workspace: String,
+        direct_config: Option<serde_json::Value>,
+    ) -> Self {
+        Self {
+            sessions,
+            bindings,
+            runtime,
+            local_workspace,
+            direct_config,
         }
-        let config = awaken_ext_memory::MemoryConfig::from_value(
-            snapshot
-                .resolved_spec
-                .plugin_config
-                .get(awaken_ext_memory::MEMORY_PLUGIN_ID),
+    }
+    pub(crate) fn for_thread(
+        &self,
+        thread: &str,
+    ) -> Result<Option<BoundMemory>, crate::realization_error::RealizationError> {
+        let Some(sessions) = self.sessions.upgrade() else {
+            return Ok(None);
+        };
+        Ok(sessions
+            .realizations()
+            .read_realization(thread, |r| r.staging().memory.clone())?
+            .flatten()
+            .map(|binding| self.runtime.bound(binding)))
+    }
+    pub(crate) async fn for_dispatch(
+        &self,
+        dispatch: &awaken_dispatch_contract::RunDispatch,
+        commit: Arc<crate::store::HostCommit>,
+    ) -> Result<Option<Arc<dyn RunTerminalObserver>>, crate::SessionExecutionError> {
+        let manifest =
+            awaken_dispatch_execution::session_envelope::decode_dispatched_resource_manifest(
+                dispatch,
+            )
+            .map_err(crate::SessionExecutionError::internal)?;
+        let workspace = dispatch
+            .execution_scope
+            .as_ref()
+            .map_or_else(|| self.local_workspace.as_str(), |scope| scope.0.0.as_str());
+        let frozen_publications = crate::agent_catalog::RUN_PUBLICATIONS
+            .exact_source(
+                &dispatch.activation.snapshot,
+                &dispatch.agent_publications,
+                workspace,
+            )
+            .map_err(crate::SessionExecutionError::internal)?;
+        self.for_published_run(
+            &dispatch.session_thread_id().0,
+            &dispatch.activation.snapshot,
+            dispatch.activation.effective_model_ref(),
+            manifest.as_ref(),
+            frozen_publications.as_ref(),
+            commit,
         )
-        .map_err(|error| {
-            crate::SessionExecutionError::internal(format!(
-                "invalid frozen Memory plugin configuration: {error}"
-            ))
-        })?;
-        let model = snapshot
-            .resolved_spec
-            .candidate_for_model(effective_model_ref)
-            .cloned()
-            .ok_or_else(|| {
-                crate::SessionExecutionError::internal(format!(
-                    "memory extraction model `{effective_model_ref}` is absent from frozen snapshot `{}`",
-                    snapshot.id.0
-                ))
-            })?;
-        Ok(Some((config, model)))
+        .await
     }
 
-    pub(crate) async fn memory_terminal_observer(
+    pub(crate) async fn for_published_run(
         &self,
         session_thread: &str,
         snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
@@ -94,12 +121,10 @@ impl crate::RunAssembly {
         dispatched_resources: Option<&crate::session_resource::SessionResourceManifest>,
         frozen_publications: &dyn awaken_runtime_contract::PublishedAgentSnapshotSource,
         commit: Arc<HostCommit>,
-    ) -> Result<
-        Option<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>,
-        crate::SessionExecutionError,
-    > {
+    ) -> Result<Option<Arc<dyn RunTerminalObserver>>, crate::SessionExecutionError> {
         let Some((config, model)) =
-            Self::published_memory_terminal_configuration(snapshot, effective_model_ref)?
+            awaken_ext_memory::published_extraction_configuration(snapshot, effective_model_ref)
+                .map_err(crate::SessionExecutionError::internal)?
         else {
             return Ok(None);
         };
@@ -113,12 +138,11 @@ impl crate::RunAssembly {
                 )
             })?;
             let binding = self
-                .realization_executor
-                .staging()
-                .compile_frozen_memory_binding(session_thread, manifest, binding_id)
+                .bindings
+                .compile_frozen(session_thread, manifest, binding_id)
                 .await
                 .map_err(|error| crate::SessionExecutionError::internal(error.to_string()))?;
-            let memory = self.resources.memory.bound(binding);
+            let memory = self.runtime.bound(binding);
             if !memory.binding().extraction_enabled {
                 return Ok(None);
             }
@@ -128,9 +152,9 @@ impl crate::RunAssembly {
                 .map_err(|error| crate::SessionExecutionError::internal(error.to_string()))?;
             memory
         } else {
-            let Some(memory) = self.memory_for_thread(session_thread)? else {
-                return Ok(None);
-            };
+            let memory = self.for_thread(session_thread)?.ok_or_else(|| crate::SessionExecutionError::internal(
+                "Memory settlement without a frozen manifest requires its original resident Session binding",
+            ))?;
             // Resident Session construction has already attached `commit` to
             // every writable frozen binding through
             // `bind_thread_memory_recovery`, including this selected one.
@@ -139,8 +163,14 @@ impl crate::RunAssembly {
         if !memory.binding().extraction_enabled {
             return Ok(None);
         }
-        self.configured_memory_terminal_observer(config, model, memory, frozen_publications, commit)
-            .await
+        Self::configured_memory_terminal_observer(
+            config,
+            model,
+            memory,
+            frozen_publications,
+            commit,
+        )
+        .await
     }
 
     /// Build the direct compatibility observer without manufacturing a Session
@@ -148,56 +178,34 @@ impl crate::RunAssembly {
     /// exact configuration authority; an unpinned direct Session uses the same
     /// host Memory config and host-executor model binding that `server_config`
     /// projects later during ordinary context construction.
-    pub(crate) async fn direct_memory_terminal_observer(
+    pub(crate) async fn for_direct_run(
         &self,
         session_thread: &str,
         published: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         effective_model_ref: &str,
         frozen_publications: &dyn awaken_runtime_contract::PublishedAgentSnapshotSource,
         commit: Arc<HostCommit>,
-    ) -> Result<
-        Option<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>,
-        crate::SessionExecutionError,
-    > {
-        let Some(memory) = self.memory_for_thread(session_thread)? else {
+    ) -> Result<Option<Arc<dyn RunTerminalObserver>>, crate::SessionExecutionError> {
+        let Some(memory) = self.for_thread(session_thread)? else {
             return Ok(None);
         };
         let (config, model) = match published {
             Some(snapshot) => {
-                let Some(configuration) =
-                    Self::published_memory_terminal_configuration(snapshot, effective_model_ref)?
+                let Some(configuration) = awaken_ext_memory::published_extraction_configuration(
+                    snapshot,
+                    effective_model_ref,
+                )
+                .map_err(crate::SessionExecutionError::internal)?
                 else {
                     return Ok(None);
                 };
                 configuration
             }
-            None => {
-                let config = awaken_ext_memory::MemoryConfig::from_value(
-                    self.capabilities
-                        .tools
-                        .plugin_config
-                        .get(awaken_ext_memory::MEMORY_PLUGIN_ID),
-                )
-                .map_err(|error| {
-                    crate::SessionExecutionError::internal(format!(
-                        "invalid direct Memory plugin configuration: {error}"
-                    ))
-                })?;
-                let binding = awaken_runtime_contract::resolved::ModelBinding::parse(
-                    "default",
-                    effective_model_ref,
-                    "default",
-                )
-                .map_err(|error| {
-                    crate::SessionExecutionError::internal(format!(
-                        "effective model reference `{effective_model_ref}` for direct Memory \
-                         extraction is not an executable binding: {error}"
-                    ))
-                })?;
-                let model =
-                    awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
-                (config, model)
-            }
+            None => awaken_ext_memory::direct_extraction_configuration(
+                self.direct_config.as_ref(),
+                effective_model_ref,
+            )
+            .map_err(crate::SessionExecutionError::internal)?,
         };
         if !config.extraction_enabled || !memory.binding().extraction_enabled {
             return Ok(None);
@@ -206,21 +214,23 @@ impl crate::RunAssembly {
             .bind_recovery(commit.clone())
             .await
             .map_err(|error| crate::SessionExecutionError::internal(error.to_string()))?;
-        self.configured_memory_terminal_observer(config, model, memory, frozen_publications, commit)
-            .await
+        Self::configured_memory_terminal_observer(
+            config,
+            model,
+            memory,
+            frozen_publications,
+            commit,
+        )
+        .await
     }
 
     async fn configured_memory_terminal_observer(
-        &self,
         config: awaken_ext_memory::MemoryConfig,
         model: awaken_runtime_contract::resolved::ResolvedModelCandidate,
         memory: BoundMemory,
         frozen_publications: &dyn awaken_runtime_contract::PublishedAgentSnapshotSource,
         commit: Arc<HostCommit>,
-    ) -> Result<
-        Option<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>,
-        crate::SessionExecutionError,
-    > {
+    ) -> Result<Option<Arc<dyn RunTerminalObserver>>, crate::SessionExecutionError> {
         let agent_id = config.agent_id.as_deref().unwrap_or(MEMORY_AGENT_ID);
         let agent = crate::agent_catalog::resolve_auxiliary_snapshot(
             Some(frozen_publications),

@@ -20,7 +20,10 @@ use crate::{ExecutorComponents, FileContentSource};
 /// boundary. The Worker already owns Session-coordination settlement; keeping
 /// this adapter Memory-only prevents the two processes from delivering the
 /// same coordinated child effect twice.
-struct HostMemoryDispatchSettlementObserver(Arc<crate::RunAssembly>);
+struct MemoryDispatchSettlementObserver {
+    reads: Arc<crate::ThreadReads>,
+    terminal_observers: Arc<crate::memory::MemoryTerminalObservers>,
+}
 
 #[async_trait::async_trait]
 impl RunRecoverySource for crate::ThreadReads {
@@ -51,9 +54,10 @@ impl ExecutorComponents {
     }
 
     pub fn worker_memory_settlement_observer(&self) -> Arc<dyn DispatchSettlementObserver> {
-        Arc::new(HostMemoryDispatchSettlementObserver(
-            self.run_assembly.clone(),
-        ))
+        Arc::new(MemoryDispatchSettlementObserver {
+            reads: self.thread_reads.clone(),
+            terminal_observers: self.resources.memory_terminal_observers.clone(),
+        })
     }
 
     pub fn worker_completion_sink(&self) -> Arc<dyn CompletionSink> {
@@ -78,7 +82,7 @@ impl ExecutorComponents {
 }
 
 #[async_trait::async_trait]
-impl DispatchSettlementObserver for HostMemoryDispatchSettlementObserver {
+impl DispatchSettlementObserver for MemoryDispatchSettlementObserver {
     async fn before_settle(
         &self,
         dispatch: &RunDispatch,
@@ -103,14 +107,13 @@ impl DispatchSettlementObserver for HostMemoryDispatchSettlementObserver {
             }
         };
         let commit = self
-            .0
-            .thread_reads
+            .reads
             .commit_for_read(&dispatch.session_thread_id().0)
             .await
             .map_err(|error| DispatchSettlementError(error.to_string()))?;
         let observers = self
-            .0
-            .dispatched_memory_terminal_observer(dispatch, commit)
+            .terminal_observers
+            .for_dispatch(dispatch, commit)
             .await
             .map_err(|error| DispatchSettlementError(error.to_string()))?
             .into_iter()

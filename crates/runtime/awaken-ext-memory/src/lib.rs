@@ -18,7 +18,11 @@ pub mod localfs;
 pub mod plugin;
 pub mod recall;
 pub mod select;
+mod terminal_configuration;
 pub mod tool;
+pub use terminal_configuration::{
+    direct_extraction_configuration, published_extraction_configuration,
+};
 
 /// Prefix reserved for request-only recalled context. Extraction excludes these
 /// messages because they are not new Thread facts to memorize again.

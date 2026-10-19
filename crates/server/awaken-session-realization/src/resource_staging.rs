@@ -66,6 +66,13 @@ pub struct ResourceStaging {
 }
 
 impl ResourceStaging {
+    /// Original Memory-only roles, without retaining the Session staging owner.
+    pub fn memory_binding_compiler(&self) -> crate::memory_binding_compiler::MemoryBindingCompiler {
+        crate::memory_binding_compiler::MemoryBindingCompiler::new(
+            self.memory.clone(),
+            self.resource_validator.clone(),
+        )
+    }
     /// Stage Resources of the installed Sessions through the selected sources.
     pub fn new(
         sessions: crate::session_realizations::SessionRealizations,

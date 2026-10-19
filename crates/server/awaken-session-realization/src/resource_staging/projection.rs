@@ -832,27 +832,8 @@ impl crate::resource_staging::ResourceStaging {
         manifest: &awaken_session_configuration_contract::resource::SessionResourceManifest,
         binding_id: &str,
     ) -> Result<Arc<crate::memory_binding::MemoryBinding>, RunError> {
-        let input = manifest
-            .resources
-            .inputs()
-            .iter()
-            .find(|input| input.binding_id.as_str() == binding_id)
-            .ok_or_else(|| {
-                RunError::internal(format!(
-                    "frozen Memory binding `{binding_id}` is absent from the Session manifest"
-                ))
-            })?;
-        if !matches!(
-            &input.source,
-            awaken_session_configuration_contract::resource::ResolvedInputSource::MemoryStore { .. }
-        ) {
-            return Err(RunError::internal(format!(
-                "frozen binding `{binding_id}` is not a MemoryStore"
-            )));
-        }
-        self.compile_memory_binding(session_thread, &manifest.workspace_id, input, None)
-            .await?
-            .map(|(_, memory)| memory)
-            .ok_or_else(|| RunError::internal("frozen Memory input did not compile"))
+        self.memory_binding_compiler()
+            .compile_frozen(session_thread, manifest, binding_id)
+            .await
     }
 }

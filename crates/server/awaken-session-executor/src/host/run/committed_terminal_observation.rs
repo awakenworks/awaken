@@ -120,15 +120,17 @@ impl crate::RunAssembly {
                                 "invalid Agent publication closure: {error}"
                             ))
                         })?;
-                self.direct_memory_terminal_observer(
-                    thread,
-                    installed.as_ref(),
-                    &effective_model_ref,
-                    &source,
-                    commit.clone(),
-                )
-                .await
-                .map(|observer| observer.into_iter().collect())
+                self.resources
+                    .memory_terminal_observers
+                    .for_direct_run(
+                        thread,
+                        installed.as_ref(),
+                        &effective_model_ref,
+                        &source,
+                        commit.clone(),
+                    )
+                    .await
+                    .map(|observer| observer.into_iter().collect())
             },
         )
         .await
