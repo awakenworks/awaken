@@ -1180,7 +1180,6 @@ independent original-guard release. Ordinary live-Pod cleanup keeps its current
 continuation-finalizer path. This change alone does not qualify Actor retirement
 or the original automatic-development mission.
 
-
 ## 2026-10-18 shared Create-value ownership amendment
 
 The Create ticket/request/result/status/origin, admission/join observations,
@@ -1197,3 +1196,21 @@ isolation, direct-mode activity guards or Registry anchor. Forward/Complete
 values grant no independent permission, cleanup receipt or lease-derived join.
 The original detached request lifetime, GET non-200 no-poll boundary and
 complete outward encoding before finish CAS remain the same causal boundary.
+
+## Amendment 2026-10-18: project original operation inventory
+
+The existing recovery read projects original ToolBatch identities after execution
+closure only when all original model scopes are response-only. Opaque or missing
+model history makes the inventory unproven. Execution owns the engine SPI;
+Session publishes operation references. Assistant messages cannot replace
+original journals. Logical clears retain prior operations and prove no stop.
+Conflicting history remains unproven, independently of physical containment.
+
+The Session read language owns detail selection and extraction. The Managed
+execution-evidence adapter exposes the inventory only when
+`include_operation_inventory=true`; its default response stays unchanged.
+Downstream products must reconcile their original business-operation ledgers:
+this inventory grants no retry, publication, execution or cleanup permission.
+The original Session preparation and disposal owners remain unchanged; no new
+ledger, queue, scheduler or cleanup receipt is introduced. This projection alone
+does not qualify business continuation or automatic-development acceptance.

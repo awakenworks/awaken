@@ -6,9 +6,7 @@
 
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_session_state_contract::SessionExecutionState;
-use axum::Router;
-use axum::handler::Handler;
-use axum::routing::get;
+use axum::{Router, handler::Handler, routing::get};
 use serde::{Deserialize, Serialize};
 
 /// Product-facing projection of one immutable Session execution selection and
@@ -23,6 +21,10 @@ pub struct SessionExecutionEvidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_footprint:
         Option<awaken_session_execution_contract::SessionExecutionOperationFootprint>,
+    /// Expanded original-operation read, explicitly selected by the caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_inventory:
+        Option<awaken_session_execution_contract::SessionExecutionOperationInventory>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<awaken_session_execution_contract::SessionExecutionRecoveryObservation>,
     pub session_id: String,
@@ -67,17 +69,12 @@ where
 mod tests {
     use super::*;
 
-    #[test]
-    fn evidence_wire_is_exact_and_rejects_unknown_fields() {
-        // Cause/effect decision table: W1 complete evidence round-trips every
-        // frozen and committed coordinate; W2 omitted optional coordinates stay
-        // absent; W3 an unknown field is rejected. Effects: E1 no evidence
-        // identity is lost; E2 historical unknown is not invented; E3 schema
-        // drift fails closed. Rules R1=W1=>E1, R2=W2=>E2, R3=W3=>E3.
-        let evidence = SessionExecutionEvidence {
+    fn evidence_fixture() -> SessionExecutionEvidence {
+        SessionExecutionEvidence {
             preparation: None,
             artifact_capture: None,
             operation_footprint: None,
+            operation_inventory: None,
             recovery: None,
             session_id: "session-1".into(),
             session_revision: 4,
@@ -108,7 +105,17 @@ mod tests {
                     },
                 ],
             }],
-        };
+        }
+    }
+
+    #[test]
+    fn evidence_wire_is_exact_and_rejects_unknown_fields() {
+        // Cause/effect decision table: W1 complete evidence round-trips every
+        // frozen and committed coordinate; W2 omitted optional coordinates stay
+        // absent; W3 an unknown field is rejected. Effects: E1 no evidence
+        // identity is lost; E2 historical unknown is not invented; E3 schema
+        // drift fails closed. Rules R1=W1=>E1, R2=W2=>E2, R3=W3=>E3.
+        let evidence = evidence_fixture();
         let wire = serde_json::to_value(&evidence).expect("R1 serialize");
         assert_eq!(
             serde_json::from_value::<SessionExecutionEvidence>(wire.clone())
@@ -167,6 +174,7 @@ mod tests {
             awaken_session_execution_contract::SessionExecutionRecoveryObservation::EffectsClosed {
                 preparation: None,
                 operation_footprint: None,
+                operation_inventory: None,
                 session_revision: 4,
                 runtime_commit_cursor: 9,
                 thread_ids: vec!["session-1".into()],
@@ -212,22 +220,9 @@ mod tests {
         use tower::ServiceExt as _;
 
         async fn read(Path(session_id): Path<String>) -> Json<SessionExecutionEvidence> {
-            Json(SessionExecutionEvidence {
-                preparation: None,
-                artifact_capture: None,
-                operation_footprint: None,
-                recovery: None,
-                session_id,
-                session_revision: 1,
-                agent_id: "agent".into(),
-                agent_revision: None,
-                application_origin: None,
-                model: "model".into(),
-                execution_model_ref: "model".into(),
-                backend_ref: None,
-                execution: SessionExecutionState::Idle,
-                runs: Vec::new(),
-            })
+            let mut evidence = evidence_fixture();
+            evidence.session_id = session_id;
+            Json(evidence)
         }
 
         let app = session_execution_evidence_router(read);
