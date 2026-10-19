@@ -292,30 +292,13 @@ impl<T> SandboxRestoreResult<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        FilesystemContinuity, IsolationClass, MountAccess, MountLifetime, MountRequirement,
-        MountSource, NetworkPolicy, ResourceLimits,
-    };
+    use crate::{MountAccess, MountLifetime, MountRequirement, MountSource};
 
     fn spec() -> SandboxSpec {
-        SandboxSpec {
-            process_tree_supervision: false,
-            scope: "session-a".into(),
-            isolation: IsolationClass::Workdir,
-            mounts: Vec::new(),
-            env: Vec::new(),
-            packages: Default::default(),
-            network: NetworkPolicy::Unrestricted,
-            outputs_path: "/outputs".into(),
-            requests: Default::default(),
-            limits: ResourceLimits::default(),
-            filesystem_continuity: FilesystemContinuity::Retained,
-            lease_ttl_secs: None,
-            control_services: Default::default(),
-            environment: None,
-            command: vec!["agent".into()],
-            deny_tool_egress: false,
-        }
+        let mut spec = crate::test_support::spec("session-a", None);
+        spec.outputs_path = "/outputs".into();
+        spec.command = vec!["agent".into()];
+        spec
     }
 
     fn restore_request() -> SandboxRestoreRequest {

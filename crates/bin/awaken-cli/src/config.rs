@@ -565,12 +565,12 @@ mod tests {
             if let Ok(resolved) = result {
                 assert_eq!(
                     resolved.runtime.sandbox.k8s_continuation_volume,
-                    expected.map(
-                        |(class, size)| awaken_sandbox_container::K8sContinuationVolume {
+                    expected.map(|(class, size)| {
+                        awaken_container_contract::K8sContinuationVolume {
                             storage_class_name: class.map(str::to_owned),
                             size: size.into(),
                         }
-                    ),
+                    }),
                     "KP exact policy"
                 );
             }

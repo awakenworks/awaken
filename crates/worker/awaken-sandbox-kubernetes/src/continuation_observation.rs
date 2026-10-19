@@ -3,7 +3,8 @@
 //! Classification of one combined Pod/claim continuation observation before
 //! the observer or the cleanup path interprets it.
 
-use awaken_sandbox_container::{ContainerObservationPurpose, RuntimeError};
+use awaken_provisioning_contract::SandboxObservationPurpose;
+use awaken_sandbox_container::RuntimeError;
 
 use super::{backend, continuation};
 
@@ -17,7 +18,7 @@ pub(crate) enum ContinuationObservationDisposition {
 
 #[derive(Clone, Copy)]
 pub(crate) struct ContinuationObservationEvidence<'a> {
-    pub(crate) purpose: ContainerObservationPurpose,
+    pub(crate) purpose: SandboxObservationPurpose,
     pub(crate) pod_present: bool,
     pub(crate) pod_deleting: bool,
     pub(crate) cleanup_gate_held: bool,
@@ -65,7 +66,7 @@ pub(crate) fn continuation_observation_disposition(
     if !pod_present && expected_uid.is_some() {
         // The same exact live claim is recovery evidence, not completed cleanup.
         // Only the existing deletion admission owns the unsafe-live-claim rule.
-        if purpose == ContainerObservationPurpose::Recovery && !observed_terminating {
+        if purpose == SandboxObservationPurpose::Recovery && !observed_terminating {
             return Ok(ContinuationObservationDisposition::Live);
         }
         return if observed_terminating && effect_fenced {
@@ -91,7 +92,7 @@ pub(crate) fn continuation_observation_disposition(
     }
 
     if pod_present && pod_deleting {
-        if purpose == ContainerObservationPurpose::TerminalCleanup
+        if purpose == SandboxObservationPurpose::TerminalCleanup
             && original_terminal_guard
             && !observed_terminating
             && effect_fenced
@@ -127,8 +128,8 @@ fn absent_pod_observation_never_confuses_recovery_with_completed_cleanup() {
     // absent/exact/foreign claim, termination, fence and total-absence bit.
     // KPV5 checks purpose routing and API effects; this finite string quotient
     // proves classification, not API linearizability or external storage bytes.
-    use ContainerObservationPurpose::{Recovery, TerminalCleanup};
     use ContinuationObservationDisposition::{Disposing, Incompatible, Live};
+    use SandboxObservationPurpose::{Recovery, TerminalCleanup};
     let claim = kani::any::<u8>();
     kani::assume(claim < 3);
     let observed_uid = match claim {

@@ -20,19 +20,30 @@ async fn creation_and_adoption_recheck_authority_and_retain_pending_memory() {
     use awaken_provisioning_contract::test_support::FenceTamper as _;
     use std::time::Duration;
     async fn reopen(
-        provider: &dyn pc::SandboxProvider,
+        provider: &dyn pc::SandboxProvider<Environment = dyn pc::Sandbox>,
         spec: &pc::SandboxSpec,
         handle: Option<&pc::SandboxHandle>,
         fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+    ) -> Result<Arc<dyn pc::Sandbox>, pc::SandboxError> {
         match handle {
             Some(handle) => {
                 provider
-                    .adopt_for_effect(spec, handle, fence, authority)
+                    .adopt_for_effect(
+                        awaken_provisioning_contract::SandboxAdoption::new(spec, handle),
+                        awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority },
+                    )
                     .await
             }
-            None => provider.claim_for_effect(spec, fence, authority).await,
+            None => {
+                provider
+                    .claim_for_effect(
+                        spec,
+                        awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority },
+                        awaken_provisioning_contract::SandboxRealizationIntent::Create,
+                    )
+                    .await
+            }
         }
     }
     for operation in ["adopt", "create-replay", "create"] {
@@ -42,19 +53,20 @@ async fn creation_and_adoption_recheck_authority_and_retain_pending_memory() {
                     for change in ["revoke", "replace", "exhaust", "renew", "cancel"] {
                         let root = tempfile::tempdir().unwrap();
                         let mounter = Arc::new(PausedMounter::new(before_pause, 0));
-                        let make_provider = || -> Box<dyn pc::SandboxProvider> {
-                            if namespace {
-                                Box::new(
-                                    crate::NamespaceProvider::new(root.path())
-                                        .with_memory_mounter(mounter.clone()),
-                                )
-                            } else {
-                                Box::new(
-                                    crate::LocalProvider::trusted_host(root.path())
-                                        .with_memory_mounter(mounter.clone()),
-                                )
-                            }
-                        };
+                        let make_provider =
+                            || -> Box<dyn pc::SandboxProvider<Environment = dyn pc::Sandbox>> {
+                                if namespace {
+                                    Box::new(
+                                        crate::NamespaceProvider::new(root.path())
+                                            .with_memory_mounter(mounter.clone()),
+                                    )
+                                } else {
+                                    Box::new(
+                                        crate::LocalProvider::trusted_host(root.path())
+                                            .with_memory_mounter(mounter.clone()),
+                                    )
+                                }
+                            };
                         let mut spec = workdir_spec("adoption-proof", false);
                         if namespace {
                             spec.isolation = pc::IsolationClass::Namespace;
@@ -77,13 +89,9 @@ async fn creation_and_adoption_recheck_authority_and_retain_pending_memory() {
                             mounter.mount_gate.add_permits(1);
                             let old = make_provider();
                             let first = old
-                        .claim_for_effect(
-                            &spec,
-                            &create,
-                            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                        .claim_for_effect(&spec, awaken_provisioning_contract::SandboxEffect::Fenced { fence: &create, authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                                 &create,
-                            ),
-                        )
+                            ) }, awaken_provisioning_contract::SandboxRealizationIntent::Create)
                         .await
                         .unwrap();
                             let handle = first.handle();
@@ -250,7 +258,8 @@ async fn copy_replay_keeps_original_bytes_and_ack_prevents_second_harvest() {
             let mounter = Arc::new(awaken_sandbox_memoryd::MemoryStoreMounter::copy_only(
                 store.clone(),
             ));
-            let provider: Box<dyn pc::SandboxProvider> = if namespace {
+            let provider: Box<dyn pc::SandboxProvider<Environment = dyn pc::Sandbox>> = if namespace
+            {
                 Box::new(
                     crate::NamespaceProvider::new(root.path()).with_memory_mounter(mounter.clone()),
                 )
@@ -270,8 +279,14 @@ async fn copy_replay_keeps_original_bytes_and_ack_prevents_second_harvest() {
             let first = provider
                 .claim_for_effect(
                     &spec,
-                    &create,
-                    &awaken_provisioning_contract::test_support::EffectAuthority::new(&create),
+                    awaken_provisioning_contract::SandboxEffect::Fenced {
+                        fence: &create,
+                        authority:
+                            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                                &create,
+                            ),
+                    },
+                    awaken_provisioning_contract::SandboxRealizationIntent::Create,
                 )
                 .await
                 .unwrap();
@@ -283,10 +298,11 @@ async fn copy_replay_keeps_original_bytes_and_ack_prevents_second_harvest() {
             let replay = if adoption {
                 provider
                     .adopt_for_effect(
-                        &spec,
-                        &handle,
-                        &create,
-                        &pc::test_support::EffectAuthority::new(&create),
+                        awaken_provisioning_contract::SandboxAdoption::new(&spec, &handle),
+                        awaken_provisioning_contract::SandboxEffect::Fenced {
+                            fence: &create,
+                            authority: &pc::test_support::EffectAuthority::new(&create),
+                        },
                     )
                     .await
                     .unwrap()
@@ -294,8 +310,14 @@ async fn copy_replay_keeps_original_bytes_and_ack_prevents_second_harvest() {
                 provider
                     .claim_for_effect(
                         &spec,
-                        &create,
-                        &awaken_provisioning_contract::test_support::EffectAuthority::new(&create),
+                        awaken_provisioning_contract::SandboxEffect::Fenced {
+                            fence: &create,
+                            authority:
+                                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                                    &create,
+                                ),
+                        },
+                        awaken_provisioning_contract::SandboxRealizationIntent::Create,
                     )
                     .await
                     .unwrap()
@@ -378,17 +400,18 @@ async fn provider_retry_replay_and_adoption_share_the_original_participants() {
             for failures in [0, 1] {
                 let root = tempfile::tempdir().unwrap();
                 let mounter = Arc::new(PausedMounter::new(before_pause, failures));
-                let provider: Box<dyn pc::SandboxProvider> = if namespace {
-                    Box::new(
-                        crate::NamespaceProvider::new(root.path())
-                            .with_memory_mounter(mounter.clone()),
-                    )
-                } else {
-                    Box::new(
-                        crate::LocalProvider::trusted_host(root.path())
-                            .with_memory_mounter(mounter.clone()),
-                    )
-                };
+                let provider: Box<dyn pc::SandboxProvider<Environment = dyn pc::Sandbox>> =
+                    if namespace {
+                        Box::new(
+                            crate::NamespaceProvider::new(root.path())
+                                .with_memory_mounter(mounter.clone()),
+                        )
+                    } else {
+                        Box::new(
+                            crate::LocalProvider::trusted_host(root.path())
+                                .with_memory_mounter(mounter.clone()),
+                        )
+                    };
                 let mut spec = workdir_spec("retained-provider", false);
                 if namespace {
                     spec.isolation = pc::IsolationClass::Namespace;
@@ -399,7 +422,14 @@ async fn provider_retry_replay_and_adoption_share_the_original_participants() {
                 let create_authority = pc::test_support::EffectAuthority::new(&effect);
                 let mut first = Box::pin(
                     provider
-                        .claim_for_effect(&spec, &effect, &create_authority)
+                        .claim_for_effect(
+                            &spec,
+                            awaken_provisioning_contract::SandboxEffect::Fenced {
+                                fence: &effect,
+                                authority: &create_authority,
+                            },
+                            awaken_provisioning_contract::SandboxRealizationIntent::Create,
+                        )
                         .into_future(),
                 );
                 assert_pending(first.as_mut()).await;
@@ -410,13 +440,9 @@ async fn provider_retry_replay_and_adoption_share_the_original_participants() {
                 if failures != 0 {
                     assert!(
                         provider
-                            .claim_for_effect(
-                                &spec,
-                                &effect,
-                                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                            .claim_for_effect(&spec, awaken_provisioning_contract::SandboxEffect::Fenced { fence: &effect, authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                                     &effect
-                                )
-                            )
+                                ) }, awaken_provisioning_contract::SandboxRealizationIntent::Create)
                             .await
                             .is_err()
                     );
@@ -426,8 +452,14 @@ async fn provider_retry_replay_and_adoption_share_the_original_participants() {
                 let first = provider
                     .claim_for_effect(
                         &spec,
-                        &effect,
-                        &awaken_provisioning_contract::test_support::EffectAuthority::new(&effect),
+                        awaken_provisioning_contract::SandboxEffect::Fenced {
+                            fence: &effect,
+                            authority:
+                                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                                    &effect,
+                                ),
+                        },
+                        awaken_provisioning_contract::SandboxRealizationIntent::Create,
                     )
                     .await
                     .unwrap();
@@ -438,8 +470,14 @@ async fn provider_retry_replay_and_adoption_share_the_original_participants() {
                 let replay = provider
                     .claim_for_effect(
                         &spec,
-                        &effect,
-                        &awaken_provisioning_contract::test_support::EffectAuthority::new(&effect),
+                        awaken_provisioning_contract::SandboxEffect::Fenced {
+                            fence: &effect,
+                            authority:
+                                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                                    &effect,
+                                ),
+                        },
+                        awaken_provisioning_contract::SandboxRealizationIntent::Create,
                     )
                     .await
                     .unwrap();
@@ -447,10 +485,11 @@ async fn provider_retry_replay_and_adoption_share_the_original_participants() {
                 drop(replay);
                 let adopted = provider
                     .adopt_for_effect(
-                        &spec,
-                        &handle,
-                        &effect,
-                        &pc::test_support::EffectAuthority::new(&effect),
+                        awaken_provisioning_contract::SandboxAdoption::new(&spec, &handle),
+                        awaken_provisioning_contract::SandboxEffect::Fenced {
+                            fence: &effect,
+                            authority: &pc::test_support::EffectAuthority::new(&effect),
+                        },
                     )
                     .await
                     .unwrap();

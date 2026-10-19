@@ -14,6 +14,8 @@
 //! Managed projection receiver; neither receiver reads or acknowledges the
 //! outbox independently.
 
+#[cfg(test)]
+use awaken_session_application::SessionRootReads;
 use std::sync::Arc;
 
 use awaken_protocol_managed::{ManagedLifecycleFactDelivery, ManagedState};
@@ -329,6 +331,7 @@ mod tests {
         // test transport plumbing, not a second application completion path.
         let active_epochs = state
             .session_application()
+            .queries()
             .session(&awaken_session_types::SessionId::from(&session.id))
             .await
             .expect("L1 committed active Session")
@@ -345,6 +348,7 @@ mod tests {
         assert_eq!(
             state
                 .session_application()
+                .queries()
                 .session(&awaken_session_types::SessionId::from(&session.id))
                 .await
                 .expect("L1 settled Session")

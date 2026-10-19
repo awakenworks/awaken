@@ -15,7 +15,7 @@
 //! and errors these roles speak are owned by this crate, so the traits live
 //! beside them rather than in a contract crate.
 //!
-//! [`SessionApplication`] is the one implementation. Every method forwards to
+//! Each role is bound to its owning application service. Commands forward to
 //! its owning command. Termination-only role lowering selects the existing
 //! archive kernel without extending the broad inherent application surface.
 
@@ -24,11 +24,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_environment_contract::EnvItem;
-use awaken_executable_agent_contract::ExecutableAgentSessionProfile;
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
 use awaken_session_application_contract::{ExecutableProjectionAdmission, SessionEventAdmission};
 use awaken_session_budget_contract::SessionUsage;
-use awaken_session_configuration_contract::AgentCapabilities;
 use awaken_session_event_contract::{SessionEventBatch, SessionEventInput};
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, CoordinatedThreadLink, SessionRunActivation,
@@ -36,7 +34,7 @@ use awaken_session_execution_contract::{
 };
 use awaken_session_state_contract::{
     DeletedSessionEventAdmissions, IdempotencyRecord, ManagedLifecycleFact, PersistedSession,
-    SessionRepositoryError, SessionScan, SessionScanQuery,
+    SessionRepositoryError,
 };
 use awaken_session_types::RunError;
 use awaken_session_types::SessionId;
@@ -62,6 +60,11 @@ use crate::{
 /// its bind-time Vault check.
 #[async_trait]
 pub trait SessionCreation: Send + Sync {
+    /// Advance executable facts before entering a lifecycle command. This is
+    /// admission with effects, not a Session query.
+    async fn refresh_executable_projections(&self)
+    -> Result<ExecutableProjectionAdmission, String>;
+
     /// See [`SessionApplication::create_requested_session`].
     async fn create_requested_session(
         &self,
@@ -69,7 +72,7 @@ pub trait SessionCreation: Send + Sync {
         protocol: &dyn SessionCreateProtocol,
     ) -> Result<PersistedSession, SessionCreateRequestError>;
 
-    /// See [`SessionApplication::replay_session_create`].
+    /// See [`crate::SessionMutations::replay_session_create`].
     async fn replay_session_create(
         &self,
         owner_scope: &str,
@@ -77,7 +80,7 @@ pub trait SessionCreation: Send + Sync {
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionCreationError>;
 
-    /// See [`SessionApplication::replay_accepted_session_create`].
+    /// See [`crate::SessionMutations::replay_accepted_session_create`].
     async fn replay_accepted_session_create(
         &self,
         owner_scope: &str,
@@ -141,14 +144,31 @@ pub trait SessionRootReads: Send + Sync {
 /// Session projection reads.
 #[async_trait]
 pub trait SessionProjectionReads: Send + Sync {
-    /// See [`SessionApplication::read_projection_evidence`].
+    /// Recover the original recorded or legacy configuration without effects.
+    /// The returned baseline borrows this same root; missing exact publications
+    /// retain the original interactive/frozen recovery law.
+    fn recover_agent_configuration<'a>(
+        &self,
+        id: &str,
+        owner_scope: &str,
+        persisted: &'a PersistedSession,
+        purpose: crate::SessionRecoveryPurpose,
+    ) -> Result<
+        (
+            &'a awaken_session_configuration_contract::SessionBaseline,
+            awaken_session_configuration_contract::SessionAgentConfiguration,
+        ),
+        RunError,
+    >;
+
+    /// See [`crate::SessionQueries::read_projection_evidence`].
     async fn read_projection_evidence(
         &self,
         persisted: &PersistedSession,
         started: awaken_time::mono::Stopwatch,
     ) -> Result<CommittedSessionFacts, RunError>;
 
-    /// See [`SessionApplication::projection_thread_snapshot`].
+    /// See [`crate::SessionQueries::projection_thread_snapshot`].
     async fn projection_thread_snapshot(
         &self,
         session_id: &SessionId,
@@ -156,42 +176,19 @@ pub trait SessionProjectionReads: Send + Sync {
         selected_run: Option<&awaken_agent_contract::RunId>,
     ) -> Result<Option<RunRecoverySnapshot>, RunError>;
 
-    /// See [`SessionApplication::projection_coordinated_prefix`].
+    /// See [`crate::SessionQueries::projection_coordinated_prefix`].
     async fn projection_coordinated_prefix(
         &self,
         session_id: &SessionId,
         observed_root: Option<&RunRecoverySnapshot>,
     ) -> Result<(Vec<CoordinatedThreadLink>, ProjectionThreadSnapshots), RunError>;
 
-    /// See [`SessionApplication::read_session_projection`].
+    /// See [`crate::SessionQueries::read_session_projection`].
     async fn read_session_projection(
         &self,
         thread_id: &str,
         expected_owner: Option<&str>,
     ) -> Result<Option<RecoveredSessionProjection>, SessionProjectionRecoveryError>;
-
-    /// See [`SessionApplication::refresh_executable_projections`].
-    async fn refresh_executable_projections(&self)
-    -> Result<ExecutableProjectionAdmission, String>;
-
-    /// The capabilities the Runtime serves on one Thread; an unreadable
-    /// Session is refused, never advertised a guessed surface.
-    fn capabilities_for(&self, thread: &str) -> Result<AgentCapabilities, RunError>;
-
-    /// The current Session profile of one published Agent.
-    fn session_profile(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-    ) -> Option<ExecutableAgentSessionProfile>;
-
-    /// The Session profile of one Agent at an exact publication revision.
-    fn session_profile_at_revision(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-        source_revision: u64,
-    ) -> Option<ExecutableAgentSessionProfile>;
 }
 
 /// Admit Event batches into a Session.
@@ -469,6 +466,12 @@ pub trait DeploymentSessionEnvironment: Send + Sync {
 
 #[async_trait]
 impl SessionCreation for SessionApplication {
+    async fn refresh_executable_projections(
+        &self,
+    ) -> Result<ExecutableProjectionAdmission, String> {
+        SessionApplication::refresh_executable_projections(self).await
+    }
+
     async fn create_requested_session(
         &self,
         request: SessionCreateRequest,
@@ -483,7 +486,9 @@ impl SessionCreation for SessionApplication {
         session_id: &SessionId,
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionCreationError> {
-        SessionApplication::replay_session_create(self, owner_scope, session_id, idempotency).await
+        self.mutations
+            .replay_session_create(owner_scope, session_id, idempotency)
+            .await
     }
 
     async fn replay_accepted_session_create(
@@ -492,13 +497,9 @@ impl SessionCreation for SessionApplication {
         session_id: &SessionId,
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionCreationError> {
-        SessionApplication::replay_accepted_session_create(
-            self,
-            owner_scope,
-            session_id,
-            idempotency,
-        )
-        .await
+        self.mutations
+            .replay_accepted_session_create(owner_scope, session_id, idempotency)
+            .await
     }
 
     async fn missing_vault(
@@ -511,120 +512,6 @@ impl SessionCreation for SessionApplication {
 
     fn runtime_incarnation(&self) -> &str {
         SessionApplication::runtime_incarnation(self)
-    }
-}
-
-#[async_trait]
-impl SessionRootReads for SessionApplication {
-    async fn session(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<PersistedSession, SessionRepositoryError> {
-        SessionApplication::session(self, session_id).await
-    }
-
-    async fn owner(&self, session_id: &SessionId) -> Result<String, SessionMutationError> {
-        SessionApplication::owner(self, session_id).await
-    }
-
-    async fn sessions_by_owner(
-        &self,
-        owner_scope: &str,
-    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
-        SessionApplication::sessions_by_owner(self, owner_scope).await
-    }
-
-    async fn sessions_referencing_credential_source(
-        &self,
-        workspace_id: &str,
-        source_id: &awaken_credential_contract::CredentialSourceId,
-    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
-        self.sessions_repo
-            .scan(SessionScanQuery::CredentialSourceReferences {
-                workspace_id,
-                source_id,
-            })
-            .await
-            .map(SessionScan::into_sessions)
-    }
-
-    async fn deleted_event_admissions(
-        &self,
-        owner_scope: &str,
-        session_id: &SessionId,
-    ) -> Result<Option<DeletedSessionEventAdmissions>, SessionRepositoryError> {
-        self.sessions_repo
-            .deleted_event_admissions(owner_scope, session_id)
-            .await
-    }
-}
-
-#[async_trait]
-impl SessionProjectionReads for SessionApplication {
-    async fn read_projection_evidence(
-        &self,
-        persisted: &PersistedSession,
-        started: awaken_time::mono::Stopwatch,
-    ) -> Result<CommittedSessionFacts, RunError> {
-        SessionApplication::read_projection_evidence(self, persisted, started).await
-    }
-
-    async fn projection_thread_snapshot(
-        &self,
-        session_id: &SessionId,
-        thread_id: &str,
-        selected_run: Option<&awaken_agent_contract::RunId>,
-    ) -> Result<Option<RunRecoverySnapshot>, RunError> {
-        SessionApplication::projection_thread_snapshot(self, session_id, thread_id, selected_run)
-            .await
-    }
-
-    async fn projection_coordinated_prefix(
-        &self,
-        session_id: &SessionId,
-        observed_root: Option<&RunRecoverySnapshot>,
-    ) -> Result<(Vec<CoordinatedThreadLink>, ProjectionThreadSnapshots), RunError> {
-        SessionApplication::projection_coordinated_prefix(self, session_id, observed_root).await
-    }
-
-    async fn read_session_projection(
-        &self,
-        thread_id: &str,
-        expected_owner: Option<&str>,
-    ) -> Result<Option<RecoveredSessionProjection>, SessionProjectionRecoveryError> {
-        SessionApplication::read_session_projection(self, thread_id, expected_owner).await
-    }
-
-    async fn refresh_executable_projections(
-        &self,
-    ) -> Result<ExecutableProjectionAdmission, String> {
-        SessionApplication::refresh_executable_projections(self).await
-    }
-
-    fn capabilities_for(&self, thread: &str) -> Result<AgentCapabilities, RunError> {
-        SessionApplication::capabilities_for(self, thread)
-    }
-
-    fn session_profile(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-    ) -> Option<ExecutableAgentSessionProfile> {
-        SessionApplication::session_profile(self, workspace_id, agent_id)
-    }
-
-    fn session_profile_at_revision(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-        source_revision: u64,
-    ) -> Option<ExecutableAgentSessionProfile> {
-        SessionApplication::session_profile_at_revision(
-            self,
-            workspace_id,
-            agent_id,
-            source_revision,
-        )
     }
 }
 
@@ -701,7 +588,7 @@ impl SessionEventBatches for SessionApplication {
     }
 
     fn agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
-        SessionApplication::agent_unavailable(self, workspace_id, agent_id)
+        self.queries.agent_unavailable(workspace_id, agent_id)
     }
 
     async fn supports_mid_conversation_system(&self, thread: &str) -> Result<bool, RunError> {

@@ -34,7 +34,7 @@ pub struct SessionExecutionProcess {
     /// How the Session MCP relay is exposed to container networks, if at all.
     pub mcp_relay: Option<awaken_session_mcp::ContainerMcpRelayExposure>,
     /// The exact ACP adapters this process advertises and serves.
-    pub acp_profile: Option<crate::AcpWorkerProfile>,
+    pub acp_profile: Option<awaken_acp_contract::AcpWorkerProfile>,
     /// The process wall clock the Host drives its Workers on.
     pub clock: Arc<dyn awaken_time::WallClock>,
 }

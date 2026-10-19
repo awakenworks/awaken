@@ -20,8 +20,9 @@ use super::{
     K8sRepositoryGatewayTrust, K8sSandboxControlForwarder, lifecycle, live_inputs, memory,
     projection, sandbox_control,
 };
+use awaken_provisioning_contract::SandboxEffectFence;
 use awaken_sandbox_container::engine::{WritableRootTopology, writable_root_topology};
-use awaken_sandbox_container::{BindPlan, ContainerEffectFence, ContainerPlan};
+use awaken_sandbox_container::{BindPlan, ContainerPlan};
 
 pub(super) fn build_pod(
     id: &str,
@@ -234,7 +235,7 @@ pub(crate) fn build_pod_with_continuation(
     rendezvous: Option<&str>,
     image_pull_secrets: &[String],
     continuation_claim: Option<&str>,
-    effect_fence: Option<&ContainerEffectFence>,
+    effect_fence: Option<&SandboxEffectFence>,
     sandbox_control_forwarder: Option<&K8sSandboxControlForwarder>,
     repository_gateway_trust: Option<&K8sRepositoryGatewayTrust>,
 ) -> Pod {
@@ -293,7 +294,7 @@ pub(crate) fn build_pod_with_continuation(
             });
             agent_mounts.push(VolumeMount {
                 name: "repository-gateway-trust".into(),
-                mount_path: awaken_sandbox_container::REPOSITORY_GATEWAY_CA_PATH
+                mount_path: awaken_container_contract::REPOSITORY_GATEWAY_CA_PATH
                     .strip_suffix("/ca.crt")
                     .expect("Repository CA path has one file component")
                     .into(),

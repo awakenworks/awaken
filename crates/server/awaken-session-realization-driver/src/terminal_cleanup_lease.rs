@@ -115,7 +115,7 @@ where
                 };
                 runtime.install_terminal_cleanup_assignment(&renewed_assignment, observed)
                     .await
-                    .map_err(SessionRealizationDriveError::Effect)?;
+                    .map_err(SessionRealizationDriveError::from)?;
                 asserted_lease = renewed_lease;
             }
         }

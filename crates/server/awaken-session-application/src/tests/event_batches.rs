@@ -207,7 +207,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EventBatchRuntime
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         if mode.prepares_session() {
             self.trace
                 .lock()
@@ -225,7 +225,9 @@ impl awaken_session_execution_contract::RealizationRuntime for EventBatchRuntime
                 .unwrap()
                 .push(thread.to_string());
         }
-        install_complete_test_projection(self, thread, projection, mode).await
+        install_complete_test_projection(self, thread, projection, mode)
+            .await
+            .map_err(Into::into)
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -5238,6 +5240,7 @@ async fn user_run_activity_rejects_a_root_changed_after_projection_recovery() {
     let mut replacement = repository.get(&SessionId::from(session_id)).await.unwrap();
     replacement.environment.set_resident("binding-b");
     let _fixture = app
+        .mutations
         .commit_session_snapshot_with_outcome(
             "workspace",
             awaken_session_state_contract::SessionAggregate::try_from(replacement)

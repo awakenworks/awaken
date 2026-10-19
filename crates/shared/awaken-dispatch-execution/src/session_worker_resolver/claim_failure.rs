@@ -84,17 +84,18 @@ pub fn map_session_realization_drive_error(
     use awaken_session_realization_contract::SessionRealizationDriveError as Drive;
     // An effect and a Control failure share one Worker projection; a
     // capacity refusal is NotReady, the request-local deferral (ADR-0092).
-    let (disposition, message) = match error {
+    let (disposition, message, retry_after) = match error {
         Drive::Effect(error) => (
-            awaken_session_realization_contract::effect_failure_disposition(&error),
+            awaken_session_realization_contract::effect_failure_disposition(error.run_error()),
             error.to_string(),
+            error.retry_after(),
         ),
-        Drive::Control(control) => (control.disposition(), control.to_string()),
+        Drive::Control(control) => (control.disposition(), control.to_string(), None),
         retryable @ Drive::DidNotConverge => {
             return execution_error(retryable.to_string());
         }
     };
-    claim_outcome(disposition, message, None)
+    claim_outcome(disposition, message, retry_after)
 }
 
 /// When a deferred claim is due again: the pool's backoff, shortened to the
@@ -121,5 +122,66 @@ fn a_deferral_is_due_no_later_than_its_owners_hint_or_the_backoff() {
         // than that deadline.
         Some(hint) => assert!(due <= hint && (due == hint || due == backoff)),
         None => assert_eq!(due, backoff),
+    }
+}
+
+#[cfg(test)]
+mod retry_hint_tests {
+    use super::*;
+    use awaken_session_realization_contract::{
+        ENVIRONMENT_PROVISIONING_CODE, SessionRealizationDriveError,
+        SessionRealizationEffectFailure,
+    };
+    use awaken_session_types::RunError;
+    use std::time::Duration;
+
+    #[test]
+    fn only_driver_deferrals_retain_a_provider_retry_hint() {
+        // W1-W4 decision table. C1 original class is NotReady/Retryable/Terminal;
+        // C2 hint is absent/zero/positive (including a misleading hint on a
+        // failure); C3 pool backoff is shorter or longer than a real hint.
+        // W1 NotReady => Defer and exact hint; W2 Retryable => failed-attempt
+        // Retry with no hint delay; W3 Terminal => absorbing resolution;
+        // W4 deferred wait stays <= original hint and existing pool backoff.
+        let rows = [
+            (
+                (|| RunError::unavailable_classified(ENVIRONMENT_PROVISIONING_CODE, "original"))
+                    as fn() -> RunError,
+                "defer",
+            ),
+            (|| RunError::unavailable("original"), "retry"),
+            (|| RunError::conflict("original"), "retry"),
+            (|| RunError::classified("permanent", "original"), "absorb"),
+        ];
+        for (error, class) in rows {
+            for hint in [None, Some(Duration::ZERO), Some(Duration::from_secs(6))] {
+                let projected =
+                    map_session_realization_drive_error(SessionRealizationDriveError::Effect(
+                        SessionRealizationEffectFailure::new(error(), hint),
+                    ));
+                match (class, projected) {
+                    ("defer", crate::Error::ResolutionNotReady(wait)) => {
+                        assert_eq!(wait.retry_after(), hint, "W1");
+                        for backoff in [Duration::from_secs(2), Duration::from_secs(10)] {
+                            let due = deferral_retry_after(backoff, wait.retry_after());
+                            assert!(due <= backoff, "W4");
+                            if let Some(hint) = hint {
+                                assert!(due <= hint, "W4");
+                            }
+                        }
+                    }
+                    ("retry", error @ crate::Error::Execution(_)) => assert_eq!(
+                        error.claim_release(),
+                        crate::error::ClaimRelease::Retry,
+                        "W2 spends an attempt"
+                    ),
+                    ("absorb", error @ crate::Error::TerminalResolution(_)) => assert!(
+                        error.is_terminal_resolution(),
+                        "W3 absorbs before execution"
+                    ),
+                    (class, actual) => panic!("{class} had wrong projection {actual:?}"),
+                }
+            }
+        }
     }
 }

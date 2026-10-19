@@ -368,7 +368,8 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                         Some("competing publisher")
                     );
                     let durable = state
-                        .application
+                        .roles
+                        .roots
                         .session(&SessionId::from(&id))
                         .await
                         .unwrap();

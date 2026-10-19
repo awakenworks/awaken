@@ -33,13 +33,13 @@ pub(crate) struct AttemptBackends {
     pub(crate) credential_materializer: Option<crate::PinnedCredentialMaterializer>,
     /// The exact ACP adapters this process advertises; `None` advertises the
     /// installed executor's whole catalog for MCP injection and no ACP CLI.
-    pub(crate) acp_profile: Option<crate::AcpWorkerProfile>,
+    pub(crate) acp_profile: Option<awaken_acp_contract::AcpWorkerProfile>,
 }
 
 impl AttemptBackends {
     /// No ACP backend or decorator yet; process composition installs the
     /// executor and its optional portable session-home adapter.
-    pub(in crate::host) fn new(acp_profile: Option<crate::AcpWorkerProfile>) -> Self {
+    pub(in crate::host) fn new(acp_profile: Option<awaken_acp_contract::AcpWorkerProfile>) -> Self {
         Self {
             acp_profile,
             acp: None,

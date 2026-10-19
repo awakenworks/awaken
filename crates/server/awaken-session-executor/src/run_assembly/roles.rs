@@ -7,7 +7,6 @@
 //! application, served by [`RunAssembly`]: the realization executor performs
 //! the effect, this component supplies the Session context facts around it.
 
-use awaken_session_execution_contract::EnvironmentRuntime as _;
 use awaken_session_types::RunError;
 
 use super::RunAssembly;
@@ -44,7 +43,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RunAssembly {
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         let realizations = self.installed_sessions.realizations();
         // Installing the frozen projection is the install path. Every
         // Environment-owner projection, including lease-only recovery, crosses
@@ -72,7 +71,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RunAssembly {
         if mode.adopts_resident_environment()
             && let Some(binding) = projection.environment.binding()
         {
-            self.adopt_session_environment(&projection.baseline.agent_id, thread, binding)
+            adopt_environment_for_realization(self, &projection.baseline.agent_id, thread, binding)
                 .await?;
         }
         Ok(())
@@ -141,30 +140,9 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RunAssembly {
         thread: &str,
         binding: &str,
     ) -> Result<(), RunError> {
-        // Managed Session restoration is a continuity contract: the durable
-        // binding must decode, belong to this Session/provider, and still name a
-        // ready physical environment. Run-dispatch recovery has its own explicit
-        // RebuildFromCommittedTruth policy; applying that fallback here would
-        // turn corrupt or deleted Session authority into a replacement sandbox.
-        let provider = self
-            .realization_executor
-            .environments()
-            .projected_session_environment_provider(thread, Some(agent))
-            .map_err(RunError::from)?;
-        let disposition = self
-            .realization_executor
-            .adopt_bound_session_environment(thread, Some(binding), provider, None, false)
+        adopt_environment_for_realization(self, agent, thread, binding)
             .await
-            .map_err(RunError::from)?;
-        if disposition != crate::session_environment::SessionEnvironmentAdoptionDisposition::Ready {
-            return Err(RunError::internal(
-                "durable Session Environment adoption did not publish a ready binding",
-            ));
-        }
-        self.ctx_for(thread, Some(agent))
-            .await
-            .map_err(to_run_error)?;
-        Ok(())
+            .map_err(RunError::from)
     }
 
     async fn quiesce_session_environment(
@@ -291,4 +269,39 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RunAssembly {
             .await
             .map_err(to_run_error)
     }
+}
+
+// Both existing role entrances use this one adoption/context body. The
+// realization entrance keeps the provider hint; the Environment role's
+// existing neutral result is its explicit non-scheduling projection.
+async fn adopt_environment_for_realization(
+    assembly: &RunAssembly,
+    agent: &str,
+    thread: &str,
+    binding: &str,
+) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+    // Managed Session restoration is a continuity contract: the durable
+    // binding must decode, belong to this Session/provider, and still name a
+    // ready physical environment. Run-dispatch recovery has its own explicit
+    // RebuildFromCommittedTruth policy; applying that fallback here would
+    // turn corrupt or deleted Session authority into a replacement sandbox.
+    let provider = assembly
+        .realization_executor
+        .environments()
+        .projected_session_environment_provider(thread, Some(agent))?;
+    let disposition = assembly
+        .realization_executor
+        .adopt_bound_session_environment(thread, Some(binding), provider, None, false)
+        .await?;
+    if disposition != crate::session_environment::SessionEnvironmentAdoptionDisposition::Ready {
+        return Err(RunError::internal(
+            "durable Session Environment adoption did not publish a ready binding",
+        )
+        .into());
+    }
+    assembly
+        .ctx_for(thread, Some(agent))
+        .await
+        .map_err(to_run_error)?;
+    Ok(())
 }

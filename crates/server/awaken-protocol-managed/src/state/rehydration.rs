@@ -3,8 +3,8 @@
 // @formal reason: Rehydrates disposable projections from canonical Session truth.
 //! Cold reconstruction of disposable Managed Session projections.
 
-use super::sessions::RehydrationPurpose;
 use super::*;
+use awaken_session_application::SessionRecoveryPurpose;
 
 impl ManagedState {
     pub(super) async fn project_replayed_session(
@@ -72,7 +72,7 @@ impl ManagedState {
     /// warm callers consume those facts through `refresh_committed_projection`,
     /// so recovery cannot grow a second projector.
     pub(super) async fn ensure_session_record(&self, id: &str) -> Result<(), StateError> {
-        self.hydrate_session_record(id, RehydrationPurpose::Interactive)
+        self.hydrate_session_record(id, SessionRecoveryPurpose::Interactive)
             .await
     }
 
@@ -85,7 +85,7 @@ impl ManagedState {
     pub(super) async fn hydrate_session_record(
         &self,
         id: &str,
-        purpose: RehydrationPurpose,
+        purpose: SessionRecoveryPurpose,
     ) -> Result<(), StateError> {
         if self.sessions.lock().unwrap().contains_key(id) {
             return Ok(());
@@ -105,10 +105,10 @@ impl ManagedState {
         let root_time = RootTimeEvidence::from(&persisted);
         let resource_state = persisted.resources.clone();
         let session = match purpose {
-            RehydrationPurpose::Interactive => {
+            SessionRecoveryPurpose::Interactive => {
                 let admission = self
                     .roles
-                    .projection
+                    .creation
                     .refresh_executable_projections()
                     .await
                     .map_err(|error| {
@@ -119,7 +119,7 @@ impl ManagedState {
                     })?;
                 admission.enter(|| self.rehydrated_session(id, &owner_scope, persisted))?
             }
-            RehydrationPurpose::CollectionRead | RehydrationPurpose::FrozenControl => {
+            SessionRecoveryPurpose::CollectionRead | SessionRecoveryPurpose::FrozenControl => {
                 self.rehydrated_session_for(id, &owner_scope, persisted, purpose)?
             }
         };
@@ -464,7 +464,8 @@ mod tests {
             assert!(restarted.get_session(id).is_ok(), "{id}/E1");
             assert_eq!(
                 restarted
-                    .application
+                    .roles
+                    .roots
                     .session(&awaken_session_types::SessionId::from(id))
                     .await
                     .unwrap()
@@ -475,7 +476,8 @@ mod tests {
             );
             assert_eq!(
                 restarted
-                    .application
+                    .roles
+                    .roots
                     .session(&awaken_session_types::SessionId::from(id))
                     .await
                     .unwrap()
@@ -529,8 +531,16 @@ mod tests {
             .await
             .with_session_repo(repo);
         for (rule, id, purpose) in [
-            ("H1", "hydrate-interactive", RehydrationPurpose::Interactive),
-            ("H2", "hydrate-frozen", RehydrationPurpose::FrozenControl),
+            (
+                "H1",
+                "hydrate-interactive",
+                SessionRecoveryPurpose::Interactive,
+            ),
+            (
+                "H2",
+                "hydrate-frozen",
+                SessionRecoveryPurpose::FrozenControl,
+            ),
         ] {
             state
                 .hydrate_session_record(id, purpose)
@@ -551,8 +561,8 @@ mod tests {
         }
         for (rule, id) in [("H3", "hydrate-hidden"), ("H4", "hydrate-absent")] {
             for purpose in [
-                RehydrationPurpose::Interactive,
-                RehydrationPurpose::FrozenControl,
+                SessionRecoveryPurpose::Interactive,
+                SessionRecoveryPurpose::FrozenControl,
             ] {
                 assert!(
                     matches!(

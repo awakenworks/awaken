@@ -893,7 +893,15 @@ fn run_free_worker_candidate(id: &str) -> PersistedSession {
         panic!("run-free fixture requires frozen baseline");
     };
     baseline.runtime_placement = awaken_session_types::SessionRuntimePlacement::Worker;
-    pending.realization_progress.run_free_initial_preparation = true;
+    // W1: this legal opt-in uses the same assignment command as production;
+    // no model Run, owner or extra persistence effect is introduced by setup.
+    let mut aggregate = awaken_session_state_contract::SessionAggregate::try_from(pending)
+        .expect("valid run-free fixture");
+    aggregate
+        .assignment()
+        .request_run_free_preparation()
+        .unwrap();
+    let pending = aggregate.into_snapshot();
     assert!(
         pending.is_run_free_initial_preparation_candidate(),
         "run-free fixture is a valid Worker preparation candidate"

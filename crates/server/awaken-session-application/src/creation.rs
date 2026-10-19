@@ -16,13 +16,14 @@ use awaken_session_configuration_contract::{
     CompiledSessionCreation, SessionCreationIntent, SessionToolConfiguration,
 };
 use awaken_session_realization_contract::SessionRealizationControlDisposition;
+use awaken_session_realization_contract::SessionRealizationDriveError;
 use awaken_session_state_contract::{
     IdempotencyRecord, PersistedSession, SessionAggregate, SessionExecutionState,
     SessionMutationPayload,
 };
 use awaken_session_types::RunError;
 
-use super::{SessionApplication, SessionMutationError, SessionRealizationError};
+use super::{SessionApplication, SessionMutationError};
 
 /// The only value admitted to the Session root-insert boundary.
 ///
@@ -469,11 +470,11 @@ impl SessionCreationError {
         }
     }
 
-    fn realization(error: SessionRealizationError) -> Self {
+    fn realization(error: SessionRealizationDriveError) -> Self {
         match error {
-            SessionRealizationError::Effect(error) => Self::Rejected(error),
-            SessionRealizationError::Control(error) => Self::Unavailable(error.to_string()),
-            SessionRealizationError::DidNotConverge => {
+            SessionRealizationDriveError::Effect(error) => Self::Rejected(error.into()),
+            SessionRealizationDriveError::Control(error) => Self::Unavailable(error.to_string()),
+            SessionRealizationDriveError::DidNotConverge => {
                 Self::Unavailable("Session realization did not converge".into())
             }
         }
@@ -489,6 +490,7 @@ async fn commit_creation_activation(
     let candidate = crate::mutation::aggregate_from_snapshot(session)
         .map_err(crate::mutation::repository_failure)?;
     application
+        .mutations
         .commit_session_snapshot_with_outcome(owner, candidate, "activate", Vec::new())
         .await
 }
@@ -549,6 +551,7 @@ impl SessionApplication {
         command: CreateSessionCommand,
         completion: SessionCreationCompletion,
     ) -> Result<PersistedSession, SessionCreationError> {
+        let mutations = &self.mutations;
         let CreateSessionCommand {
             owner_scope,
             session_id,
@@ -625,13 +628,13 @@ impl SessionApplication {
         let idempotency = idempotency.unwrap_or_else(|| {
             SessionMutationPayload::default_create_idempotency(compiled_root.as_session())
         });
-        let create_result = match self
+        let create_result = match mutations
             .create_session_root(&owner_scope, compiled_root, idempotency.clone(), Vec::new())
             .await
         {
             Ok(result) => result,
             Err(first) => {
-                match self
+                match mutations
                     .replay_session_create(
                         &owner_scope,
                         &awaken_session_types::SessionId::from(&session_id),
@@ -711,7 +714,7 @@ impl SessionApplication {
             Err(error) => {
                 let recoverable_control = matches!(
                     &error,
-                    SessionRealizationError::Control(control)
+                    SessionRealizationDriveError::Control(control)
                         if session_create_control_failure_plan(control.disposition())
                             == SessionCreateControlFailurePlan::ReplayDurableRootAndWake
                 );
@@ -719,7 +722,7 @@ impl SessionApplication {
                 // state, never from an effect error or a control-error label.
                 // The accepting replay exposes that state without converting an
                 // ActivationFailed root into a transport-only tombstone.
-                let current = self
+                let current = mutations
                     .replay_accepted_session_create(
                         &owner_scope,
                         &awaken_session_types::SessionId::from(&session_id),
@@ -756,7 +759,7 @@ impl SessionApplication {
                 // a lost acknowledgement from this final CAS) cannot invalidate
                 // the create receipt. Return the exact receipt's current root
                 // instead of exposing a retry-unsafe failed POST.
-                let Some(session) = self
+                let Some(session) = mutations
                     .replay_session_create(
                         &owner_scope,
                         &awaken_session_types::SessionId::from(&session_id),

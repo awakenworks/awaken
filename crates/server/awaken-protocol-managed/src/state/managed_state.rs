@@ -43,8 +43,8 @@ impl SessionApplicationRoles {
     pub(super) fn of(application: &Arc<SessionApplication>) -> Self {
         Self {
             creation: application.clone(),
-            roots: application.clone(),
-            projection: application.clone(),
+            roots: application.queries(),
+            projection: application.queries(),
             events: application.clone(),
             profiled: application.clone(),
             termination: application.clone(),

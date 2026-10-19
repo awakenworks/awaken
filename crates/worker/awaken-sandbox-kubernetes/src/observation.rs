@@ -12,8 +12,8 @@ use super::guarded_claim::observe_guarded_claim;
 use super::observed_pod;
 use super::participants;
 use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::SandboxObservationPurpose;
 use awaken_sandbox_container::ContainerObservationExpectation;
-use awaken_sandbox_container::ContainerObservationPurpose;
 use awaken_sandbox_container::RuntimeError;
 use awaken_sandbox_container::engine::ExistingRealizationPhase;
 use awaken_sandbox_container::engine::sandbox_observation;
@@ -22,7 +22,7 @@ pub(super) async fn observe(
     runtime: &K8sRuntime,
     expectation: ContainerObservationExpectation<'_>,
 ) -> Result<pc::SandboxObservation, RuntimeError> {
-    if expectation.purpose == ContainerObservationPurpose::Recovery
+    if expectation.purpose == SandboxObservationPurpose::Recovery
         && expectation
             .runtime_handle
             .is_some_and(awaken_sandbox_container::ContainerContinuationHandle::terminal_only)

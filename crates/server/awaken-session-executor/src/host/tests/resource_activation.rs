@@ -875,7 +875,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     let temp = tempfile::tempdir().expect("publication fixture");
     let sandbox_root = temp.path().join("sandboxes");
     let namespace_probe = awaken_sandbox_local::NamespaceProvider::new(&sandbox_root);
-    awaken_provisioning_contract::SandboxProvider::probe_ready(&namespace_probe)
+    awaken_provisioning_contract::SandboxReadiness::probe_ready(&namespace_probe)
         .await
         .expect("the required Linux publication gate needs a working Namespace substrate");
     let remote = temp.path().join("remote.git");

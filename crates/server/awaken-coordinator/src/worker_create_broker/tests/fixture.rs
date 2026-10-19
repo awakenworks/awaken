@@ -112,7 +112,7 @@ pub(super) async fn ready_route_fixture() -> (NoApiRouteFixture, WorkerIdentity)
 pub(super) fn seal_body(identity: &WorkerIdentity) -> Vec<u8> {
     let old = WorkerIdentity::new("k8s:sandbox-ns:old-worker:old-uid", "old-uid", 1);
     let predecessor =
-        ContainerEffectFence::new("old-effect", &old.worker_id, old.lease_owner(), 1, u64::MAX)
+        SandboxEffectFence::new("old-effect", &old.worker_id, old.lease_owner(), 1, u64::MAX)
             .unwrap();
     serde_json::to_vec(&json!({
         "wire_version": K8S_CREATE_WIRE_VERSION,

@@ -3,10 +3,10 @@ use crate::K8sRuntime;
 use crate::guarded_claim::{
     GuardedClaimPhysical, guarded_claim_physical_state, remove_guarded_claim,
 };
+use awaken_container_contract::K8sContinuationVolume;
 use awaken_provisioning_contract as pc;
-use awaken_sandbox_container::{
-    ContainerEffectFence, K8sContinuationVolume, KubernetesGuardedClaimHandle,
-};
+use awaken_provisioning_contract::SandboxEffectFence;
+use awaken_sandbox_container::KubernetesGuardedClaimHandle;
 
 #[tokio::test]
 async fn guarded_claim_disposal_requires_live_policy_exact_uid_and_current_authority() {
@@ -20,10 +20,9 @@ async fn guarded_claim_disposal_requires_live_policy_exact_uid_and_current_autho
     // replay. Rules P1=C1+C2+C3->E1, P2=any missing->E2,
     // P3=P1+C4->E3, P4=post-delete C5->E4. The live API test owns defaulting.
     let predecessor =
-        ContainerEffectFence::new("old-effect", "old-worker", "old-boot", 1, u64::MAX).unwrap();
+        SandboxEffectFence::new("old-effect", "old-worker", "old-boot", 1, u64::MAX).unwrap();
     let terminal =
-        ContainerEffectFence::new("terminal-effect", "old-worker", "old-boot", 2, u64::MAX)
-            .unwrap();
+        SandboxEffectFence::new("terminal-effect", "old-worker", "old-boot", 2, u64::MAX).unwrap();
     let state = Arc::new(Mutex::new(Fixture {
         policy: true,
         delete_denied: true,

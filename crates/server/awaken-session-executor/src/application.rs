@@ -890,7 +890,8 @@ mod terminal_cleanup_drive_error_tests {
                     awaken_session_types::RunError::unavailable_classified(
                         "terminal_provider_retry",
                         "provider is temporarily unavailable",
-                    ),
+                    )
+                    .into(),
                 ),
             ),
         });
@@ -1091,15 +1092,14 @@ impl awaken_session_realization_driver::TerminalRecoveryProjections for crate::R
 fn terminal_recovery_error(
     error: awaken_session_realization_driver::TerminalRecoveryError,
 ) -> crate::SessionExecutionError {
-    match error {
+    let error = match error {
         awaken_session_realization_driver::TerminalRecoveryError::Drive(
             awaken_session_realization_contract::SessionRealizationDriveError::Effect(error),
-        )
-        | awaken_session_realization_driver::TerminalRecoveryError::Projection(error) => {
-            crate::session_execution_error::from_run_error(error)
-        }
-        error => crate::SessionExecutionError::internal(error.to_string()),
-    }
+        ) => awaken_session_types::RunError::from(error),
+        awaken_session_realization_driver::TerminalRecoveryError::Projection(error) => error,
+        error => return crate::SessionExecutionError::internal(error.to_string()),
+    };
+    crate::session_execution_error::from_run_error(error)
 }
 
 /// A sweep failure keeps its first cause's class and names its Session.

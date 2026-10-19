@@ -128,7 +128,11 @@ impl SessionExecutorBuilder {
     #[must_use]
     pub(crate) fn with_session_container_provider(
         self,
-        provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
+        provider: Arc<
+            dyn awaken_provisioning_contract::SandboxProvider<
+                    Environment = dyn awaken_provisioning_contract::SessionSandbox,
+                >,
+        >,
         hand_factory: Arc<dyn awaken_session_environment_contract::HandExecutorFactory>,
     ) -> Self {
         let hand = crate::SandboxSettings::default();

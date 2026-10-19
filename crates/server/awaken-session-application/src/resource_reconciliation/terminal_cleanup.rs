@@ -3,6 +3,7 @@
 //! Terminal resource reclamation through the Session aggregate's one durable
 //! cleanup operation.
 
+use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_time::WallClockExt as _;
 use std::{future::Future, pin::Pin};
 
@@ -125,7 +126,7 @@ fn terminal_driver_failure(
     };
 
     match error {
-        DriveError::Effect(error) => SessionPreparationError::Rejected(error),
+        DriveError::Effect(error) => SessionPreparationError::Rejected(error.into()),
         DriveError::Control(ControlFailure::NotFound) => SessionPreparationError::NotFound,
         DriveError::Control(
             ControlFailure::NotReady
@@ -265,7 +266,7 @@ impl SessionApplication {
         owner_scope: &str,
         session_id: &str,
     ) -> Result<Option<PersistedSession>, SessionPreparationError> {
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
             match self
                 .release_terminal_resources_once(owner_scope, session_id)
                 .await
@@ -280,7 +281,7 @@ impl SessionApplication {
                     // recoverable cleanup failure after cleanup already won.
                     return Ok(None);
                 }
-                Err(SessionPreparationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                Err(SessionPreparationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
                     // Delete admission deliberately wakes the durable lifecycle
                     // driver and also starts an eager cleanup attempt. Another
                     // process may do the same after failover. Every external
@@ -306,11 +307,12 @@ impl SessionApplication {
                 + 'a,
         >,
     > {
+        let mutations = &self.mutations;
         let coordination_runtime = self.runtime().coordination();
         let cleanup_runtime = self.runtime().terminal_cleanup();
 
         Box::pin(async move {
-            let mut session = match self
+            let mut session = match mutations
                 .session_aggregate(&awaken_session_types::SessionId::from(session_id))
                 .await
             {
@@ -419,7 +421,7 @@ impl SessionApplication {
                             .await
                             .map_err(terminal_driver_failure)?;
                         drove_local_cleanup = true;
-                        session = match self
+                        session = match mutations
                             .session_aggregate(&awaken_session_types::SessionId::from(session_id))
                             .await
                         {
@@ -636,7 +638,8 @@ mod tests {
             thread: &str,
             projection: awaken_session_realization_contract::FrozenSessionProjection,
             mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-        ) -> Result<(), awaken_session_types::RunError> {
+        ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>
+        {
             awaken_session_execution_contract::NeutralRuntime
                 .install_session_projection(thread, projection, mode)
                 .await
@@ -1369,9 +1372,9 @@ mod tests {
             &failed_runtime,
             &failed_runtime,
             async {
-                Err(SessionRealizationDriveError::Effect(RunError::internal(
-                    "drive failed",
-                )))
+                Err(SessionRealizationDriveError::Effect(
+                    (RunError::internal("drive failed")).into(),
+                ))
             },
             {
                 let failed_calls = Arc::clone(&failed_calls);
@@ -1462,7 +1465,7 @@ mod tests {
         assert!(matches!(
             terminal_driver_failure(
                 awaken_session_realization_contract::SessionRealizationDriveError::Effect(
-                    RunError::internal("effect"),
+                    (RunError::internal("effect")).into()
                 )
             ),
             SessionPreparationError::Rejected(_)

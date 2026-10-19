@@ -37,16 +37,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[cfg(test)]
 use awaken_connection_plan::ConnectionPlan;
+use awaken_provisioning_contract::SandboxEffectFence;
+#[cfg(test)]
+use awaken_provisioning_contract::{SandboxCreateAttempt, SandboxObservationPurpose};
 #[cfg(test)]
 use awaken_sandbox_container::engine::ExistingRealizationPhase;
 use awaken_sandbox_container::engine::sandbox_scope_identity;
 #[cfg(test)]
+use awaken_sandbox_container::{ContainerObservationExpectation, ContainerRuntime};
 use awaken_sandbox_container::{
-    ContainerCreateAttempt, ContainerObservationExpectation, ContainerObservationPurpose,
-    ContainerRuntime,
-};
-use awaken_sandbox_container::{
-    ContainerEffectFence, ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
+    ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
     ContainerRealizationNamespace, RuntimeError,
 };
 use awaken_sandbox_container::{CreateTicket, TicketResult, TicketStatus};
@@ -146,8 +146,8 @@ pub use create_ledger::{
     REQUEST_DIGEST_ANNOTATION, RequestJoin, TicketAdmission, WorkerCreateLedgerState,
     collect_create_body, original_request_metadata_matches,
 };
+pub use create_transport::K8sCreateTransport;
 pub(crate) use create_transport::brokered_client;
-pub use create_transport::{K8sCreateRequest, K8sCreateResponse, K8sCreateTransport};
 pub use package_image::K8sPackageImageProvisioner;
 pub use repository_gateway::K8sRepositoryGatewayTrust;
 
@@ -200,8 +200,8 @@ pub struct K8sRuntime {
     /// port-forward subresource. `None` preserves the legacy channel topology.
     pod_channel_port: Option<u16>,
     sandbox_control_forwarder: Option<K8sSandboxControlForwarder>,
-    continuation_volume: Option<awaken_sandbox_container::K8sContinuationVolume>,
-    image_prewarm: Option<awaken_sandbox_container::K8sImagePrewarm>,
+    continuation_volume: Option<awaken_container_contract::K8sContinuationVolume>,
+    image_prewarm: Option<awaken_container_contract::K8sImagePrewarm>,
     create_transport: Option<Arc<dyn K8sCreateTransport>>,
     create_mode_frozen: AtomicBool,
     creation_attempts:
@@ -223,7 +223,7 @@ struct K8sCreationAttemptKey {
 }
 
 impl K8sCreationAttemptKey {
-    fn new(scope: &str, fence: &ContainerEffectFence) -> Self {
+    fn new(scope: &str, fence: &SandboxEffectFence) -> Self {
         Self {
             scope: scope.to_owned(),
             operation_id: fence.operation_id().to_owned(),
@@ -365,7 +365,7 @@ impl K8sRuntime {
     #[must_use]
     pub fn with_continuation_volume(
         mut self,
-        config: awaken_sandbox_container::K8sContinuationVolume,
+        config: awaken_container_contract::K8sContinuationVolume,
     ) -> Self {
         self.continuation_volume = Some(config);
         self
@@ -422,7 +422,7 @@ impl K8sRuntime {
     fn observed_creation_attempt(
         &self,
         scope: &str,
-        fence: &ContainerEffectFence,
+        fence: &SandboxEffectFence,
     ) -> Arc<K8sCreationAttemptGate> {
         self.creation_attempts
             .lock()
@@ -435,7 +435,7 @@ impl K8sRuntime {
     fn existing_creation_attempt(
         &self,
         scope: &str,
-        fence: &ContainerEffectFence,
+        fence: &SandboxEffectFence,
     ) -> Option<Arc<K8sCreationAttemptGate>> {
         self.creation_attempts
             .lock()
@@ -505,7 +505,7 @@ impl K8sRuntime {
         &self,
         id: &str,
         plan: &ContainerPlan,
-        effect_fence: Option<&ContainerEffectFence>,
+        effect_fence: Option<&SandboxEffectFence>,
     ) -> Pod {
         let rendezvous = self.rendezvous.map(|a| a.to_string());
         let claim = continuation::claim_name(id, plan, self.continuation_volume.is_some());

@@ -41,7 +41,7 @@ mod tests {
                 awaken_dispatch_execution::session_worker_resolver::map_admission_error(error);
             assert_eq!(actual.is_terminal_resolution(), terminal);
             let driver = awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
-                awaken_session_realization_contract::SessionRealizationDriveError::Effect(run_error),
+                awaken_session_realization_contract::SessionRealizationDriveError::Effect(run_error.into()),
             );
             assert_eq!(driver.is_terminal_resolution(), terminal, "driver agrees");
             if !terminal {
@@ -51,6 +51,144 @@ mod tests {
                 ));
             }
         }
+    }
+
+    /// Cause/effect row C3: an ordinary SQLite Queue claim carries exact Runtime,
+    /// Resources and publication, but the real Provider Create refuses capacity
+    /// before allocating a handle. The original resolver returns Defer/None;
+    /// its exact claim stays current and no dispatch retry attempt is consumed.
+    /// This is an ordinary/unowned Run, not a Managed failure/refund CAS proof.
+    /// No installed environment, binding or cleanup success may be invented.
+    /// The backend conformance deferral table owns later settlement/handoff.
+    #[tokio::test]
+    async fn real_provider_create_capacity_refusal_defers_the_original_ordinary_claim() {
+        use crate::host::worker_resolver::test_support::{
+            adoption_dependencies, eager_environment, test_activation, with_empty_session_resources,
+        };
+        use awaken_dispatch::WorkerResolver as _;
+        use awaken_dispatch_contract::{
+            DispatchClaimOwnership as _, DispatchClaims as _, DispatchEnqueue as _,
+            DispatchReads as _, DispatchState, RunClaim, RunDispatch, SessionRuntimeEnvelope,
+        };
+        use awaken_session_environment::SandboxEnvironmentProvider;
+        use awaken_session_environment::test_support::{
+            FakeContainerProvider, FakeHandExecutorFactory,
+        };
+        use std::sync::Arc;
+        use std::sync::atomic::Ordering;
+
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
+        let store = Arc::new(
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+                .await
+                .unwrap(),
+        );
+        let fake = Arc::new(FakeContainerProvider::default());
+        *fake.create_error.lock().unwrap() = Some(
+            awaken_provisioning_contract::SandboxError::capacity_unavailable("provider quota"),
+        );
+        let provider = SandboxEnvironmentProvider::container(
+            fake.clone(),
+            Vec::new(),
+            Arc::new(FakeHandExecutorFactory),
+            "awaken-sandbox",
+        )
+        .into_session_provider();
+        let host = adoption_dependencies()
+            .await
+            .with_session_environment_provider(provider)
+            .with_ephemeral_dispatch(store.clone())
+            .build()
+            .unwrap();
+        let resolver =
+            crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch).unwrap();
+        let runtime = SessionRuntimeEnvelope::new(
+            awaken_session_configuration_contract::SessionRuntimeProjection {
+                environment: eager_environment(),
+                tools: Some(Default::default()),
+                mcp_stages: Some(Vec::new()),
+            }
+            .encode()
+            .unwrap(),
+        );
+        store
+            .enqueue(with_empty_session_resources(
+                RunDispatch::new(test_activation("session-container", "capacity-create-run"))
+                    .with_session_runtime(runtime),
+                host.run_assembly.local_workspace(),
+            ))
+            .await
+            .unwrap();
+        let attempts_before = store.list_dispatches().await.unwrap()[0].attempt_count;
+        clock.set(awaken_time::system_clock().now().as_epoch_ms());
+        let claimed = store
+            .claim("capacity-worker", 60_000, &Default::default())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(claimed.request.session_thread_id.is_none());
+        assert!(claimed.session_work_authority.is_none());
+        let claim = RunClaim::from(&claimed.lease);
+        let error = resolver
+            .worker_for_claimed(&claimed)
+            .await
+            .err()
+            .expect("C3 actual Provider Create must refuse");
+        assert_eq!(
+            fake.creates.load(Ordering::SeqCst),
+            1,
+            "C3 Provider Create entered: {error:?}"
+        );
+        match error {
+            awaken_dispatch_execution::Error::ResolutionNotReady(wait) => {
+                assert_eq!(wait.retry_after(), None, "C3 original Defer has no hint");
+                assert!(wait.to_string().contains("provider quota"));
+            }
+            other => panic!("C3 wrong claim disposition: {other:?}"),
+        }
+        assert!(
+            store.claim_is_current(&claim).await.unwrap(),
+            "C3 exact original owner/epoch"
+        );
+        let rows = store.list_dispatches().await.unwrap();
+        assert_eq!(rows[0].state, DispatchState::Leased);
+        assert_eq!(
+            rows[0].attempt_count, attempts_before,
+            "C3 resolver does not spend budget"
+        );
+        assert!(!rows[0].sandbox_bound, "C3 no durable Sandbox binding");
+        assert_eq!(fake.observations.lock().unwrap().len(), 0);
+        assert_eq!(fake.adopts.load(Ordering::SeqCst), 0);
+        assert_eq!(fake.disposals.load(Ordering::SeqCst), 0);
+        assert!(
+            host.realization_executor
+                .environments()
+                .session_environment("session-container")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            host.realization_executor
+                .environments()
+                .durable_environment_binding("session-container")
+                .unwrap()
+                .is_none(),
+            "C3 no successful Environment binding"
+        );
+        assert!(
+            host.run_assembly
+                .installed_sessions
+                .read("session-container", |slot| slot.run.context.is_none()
+                    && slot.run.dispatch_claim.as_ref() == Some(&claim)
+                    && !slot.run.session_dispatch
+                    && slot.inputs.baseline.is_none()
+                    && slot.realization.execution().authority.lease().is_none()
+                    && slot.realization.execution().frozen_receipt.is_none())
+                .unwrap()
+                .unwrap_or(false),
+            "C3 original ordinary inputs/claim remain, without a complete context or Managed authority/receipt"
+        );
     }
 
     fn claim_outcome(error: &awaken_dispatch_execution::Error) -> &'static str {
@@ -168,9 +306,7 @@ mod tests {
             );
             let reported = (command.retryable, command.not_ready);
             let driver = awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
-                awaken_session_realization_contract::SessionRealizationDriveError::Effect(
-                    run_error,
-                ),
+                awaken_session_realization_contract::SessionRealizationDriveError::Effect(run_error.into()),
             );
             assert_eq!(claim_outcome(&resolver), claim, "{rule} P2 {sandbox}");
             assert_eq!(claim_outcome(&driver), claim, "{rule} P1 {sandbox}");
@@ -193,20 +329,18 @@ mod tests {
         );
         assert_eq!(
             claim_outcome(&awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
-                awaken_session_realization_contract::SessionRealizationDriveError::Effect(
-                    awaken_session_types::RunError::internal("unclassified"),
-                ),
+                awaken_session_realization_contract::SessionRealizationDriveError::Effect((
+                    awaken_session_types::RunError::internal("unclassified")).into()),
             )),
             "relinquish"
         );
         assert_eq!(
             claim_outcome(&awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
-                awaken_session_realization_contract::SessionRealizationDriveError::Effect(
+                awaken_session_realization_contract::SessionRealizationDriveError::Effect((
                     awaken_session_types::RunError::classified(
                         awaken_session_realization_contract::ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
                         "mislabelled",
-                    ),
-                ),
+                    )).into()),
             )),
             "absorb"
         );
@@ -232,7 +366,8 @@ mod tests {
                     awaken_session_types::RunError::unavailable_classified(
                         "mcp_material_source_unavailable",
                         "materializer unavailable",
-                    ),
+                    )
+                    .into(),
                 ),
             );
         assert!(matches!(
@@ -268,7 +403,8 @@ mod tests {
                 awaken_session_types::RunError::classified(
                     "mcp_credential_revision_mismatch",
                     "invalid revision",
-                ),
+                )
+                .into(),
             ),
             awaken_session_realization_contract::SessionRealizationDriveError::Control(
                 awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
@@ -478,7 +614,9 @@ mod tests {
             let synchronizer = awaken_session_types::RunError::from(failure());
             let driver = map_session_realization_drive_error(
                 awaken_session_realization_contract::SessionRealizationDriveError::Effect(
-                    awaken_session_types::RunError::from(failure()),
+                    awaken_session_realization_contract::SessionRealizationEffectFailure::from(
+                        failure(),
+                    ),
                 ),
             );
             assert_eq!(outcome(&claim), expected, "{rule} P1 claim");
@@ -490,6 +628,13 @@ mod tests {
                 "{rule} P2 synchronizer"
             );
             assert_eq!(outcome(&driver), expected, "{rule} P3 driver");
+            if let awaken_dispatch_execution::Error::ResolutionNotReady(wait) = driver {
+                assert_eq!(
+                    wait.retry_after(),
+                    failure().retry_after(),
+                    "{rule} P3 original provider hint"
+                );
+            }
         }
     }
 

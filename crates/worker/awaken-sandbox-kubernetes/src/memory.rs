@@ -1,7 +1,8 @@
 //! Kubernetes projection of authority-resolved Memory snapshots.
 
 use super::{K8sRuntime, backend};
-use awaken_sandbox_container::{ContainerEffectFence, ContainerPlan, RuntimeError};
+use awaken_provisioning_contract::SandboxEffectFence;
+use awaken_sandbox_container::{ContainerPlan, RuntimeError};
 use kube::api::AttachParams;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -11,7 +12,7 @@ pub(super) async fn project_snapshots(
     runtime: &K8sRuntime,
     container_id: &str,
     plan: &ContainerPlan,
-    effect_fence: &ContainerEffectFence,
+    effect_fence: &SandboxEffectFence,
 ) -> Result<(), RuntimeError> {
     runtime.validate_effect_fence(effect_fence)?;
     let expected = super::projection::projection_fence_value(effect_fence);

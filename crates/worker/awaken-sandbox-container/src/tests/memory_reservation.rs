@@ -178,3 +178,234 @@ async fn create_failure_compensates_only_when_the_runtime_proves_no_backend_effe
     assert!(retained_root.exists(), "R2 backend-bound root retained");
     std::fs::remove_dir_all(retained_root).expect("test-only retained stage cleanup");
 }
+
+#[tokio::test]
+async fn activation_rejection_retains_original_memory_only_after_an_uncertain_effect() {
+    /* Activation/Memory cause-effect table. This is the consumer half of the
+     * real-Kubernetes HTTP regressions: that adapter produces the existing
+     * after_mutation class for a changed scheduler refusal, missing RV, or
+     * DELETE CAS 409. Here the same original FakeRuntime activation edge
+     * returns those port outcomes after actual provider reservation + Memory
+     * mount + pre-activation receipt; no test constructs a realization context.
+     * C1 failure before activation effect / post-effect uncertainty; C2 original
+     * Copy handle mounted. M1 before-effect Backend+C2 -> teardown=1. M2-M5
+     * post-effect state/RV/CAS/already-uncertain+C2 -> teardown=0, exact original
+     * backend attempt/fence/staging/receipt retained, then the original recovery
+     * path reuses them without remount, reactivation, or a second identity.
+     * ClaimedEffect itself completes Err and settles by its unchanged T2 law;
+     * these retained owners are backend responsibility, not a live RAII claim.
+     * Existing CR1 still covers rejection before any mount. This table proves
+     * real provider/Memory I/O over its original fake, not a physical cluster.
+     */
+    for (row, failure) in [
+        (
+            "before-effect",
+            ActivationFailure::BeforeEffect(RuntimeError::Backend(
+                "activation rejected before effect".into(),
+            )),
+        ),
+        (
+            "scheduler-state",
+            ActivationFailure::AfterEffect(
+                RuntimeError::Conflict("scheduler refusal changed".into()).after_mutation(),
+            ),
+        ),
+        (
+            "missing-rv",
+            ActivationFailure::AfterEffect(
+                RuntimeError::Backend("unscheduled Pod has no valid resourceVersion".into())
+                    .after_mutation(),
+            ),
+        ),
+        (
+            "delete-cas",
+            ActivationFailure::AfterEffect(
+                RuntimeError::Conflict("stale DELETE UID or resourceVersion".into())
+                    .after_mutation(),
+            ),
+        ),
+        (
+            "already-uncertain",
+            ActivationFailure::AfterEffect(
+                RuntimeError::MayHaveCommitted("original ambiguous activation".into())
+                    .after_mutation(),
+            ),
+        ),
+    ] {
+        let after_effect = row != "before-effect";
+        let scope = format!("activation-rejection-{row}");
+        let cid = format!("cid-{scope}");
+        let runtime = Arc::new(FakeRuntime {
+            st: Mutex::new(FakeState {
+                recover_prepared_reservations: true,
+                host_live_input_bind: true,
+                activation_failure: Some(failure),
+                ..Default::default()
+            }),
+        });
+        let requested = activation_memory_spec(&scope);
+        let mount_calls = Arc::new(AtomicUsize::new(0));
+        let recovery_calls = Arc::new(AtomicUsize::new(0));
+        let teardown_calls = Arc::new(AtomicUsize::new(0));
+        let mounter = Arc::new(OrderedCopyMounter {
+            runtime: runtime.clone(),
+            scope: scope.clone(),
+            mount_calls: mount_calls.clone(),
+            recovery_calls: recovery_calls.clone(),
+            teardown_calls: teardown_calls.clone(),
+        });
+        let fence =
+            pc::SandboxEffectFence::new("create", "worker", "boot", 1, u64::MAX - 1).unwrap();
+        let authority = pc::test_support::EffectAuthority::new(&fence);
+        let first = provider(runtime.clone());
+        first.install_memory_mounter(mounter.clone());
+        let pending = pc::SandboxProvider::claim_for_effect(
+            &first,
+            &requested,
+            pc::SandboxEffect::Fenced {
+                fence: &fence,
+                authority: &authority,
+            },
+            pc::SandboxRealizationIntent::Create,
+        );
+        assert_eq!(
+            pending.reconciler(),
+            Some(crate::CONTAINER_REALIZATION_RECONCILER)
+        );
+        assert_eq!(
+            mount_calls.load(Ordering::SeqCst),
+            0,
+            "M claim construction has no effect"
+        );
+        let error = match pending.await {
+            Ok(_) => panic!("M failure cannot publish a Sandbox"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            mount_calls.load(Ordering::SeqCst),
+            1,
+            "M original mount actually ran"
+        );
+        assert_eq!(recovery_calls.load(Ordering::SeqCst), 0, "M fresh source");
+        assert_eq!(
+            teardown_calls.load(Ordering::SeqCst),
+            usize::from(!after_effect),
+            "M1 compensates; M2-M5 retain actual handle"
+        );
+        if after_effect {
+            assert!(
+                matches!(&error, pc::SandboxError::Transport(_)),
+                "M2-M5 {row}: {error}"
+            );
+            assert_eq!(
+                error
+                    .to_string()
+                    .matches("effect may have committed")
+                    .count(),
+                1,
+                "M idempotent post-mutation wrapper"
+            );
+        } else {
+            assert!(
+                matches!(&error, pc::SandboxError::Backend { .. }),
+                "M1 definite failure retains original class"
+            );
+        }
+        let (original_attempt, root) = {
+            let state = runtime.st.lock().unwrap();
+            assert_eq!(state.activation_calls, 1, "M original activation");
+            assert_eq!(
+                state.alive.get(&cid),
+                Some(&true),
+                "M original reservation remains"
+            );
+            assert_eq!(
+                state.active_reservations.contains(&scope),
+                after_effect,
+                "M actual fake effect boundary"
+            );
+            assert!(
+                state.removals.is_empty(),
+                "M no fabricated disposal/receipt"
+            );
+            assert_eq!(
+                state.effect_fences.as_slice(),
+                std::slice::from_ref(&fence),
+                "M same original grant"
+            );
+            (
+                state.prepared_attempts[&scope].clone(),
+                state.recovered_staging.clone().unwrap(),
+            )
+        };
+        assert!(
+            !original_attempt.is_empty(),
+            "M provider minted original attempt"
+        );
+        drop(first);
+        assert!(
+            root.is_dir(),
+            "M backend-bound staging outlives failed caller"
+        );
+        assert!(
+            root.join(crate::staged_mounts::MEMORY_PRE_ACTIVATION_RECEIPT)
+                .is_file(),
+            "M original receipt survives"
+        );
+        if after_effect {
+            let second = provider(runtime.clone());
+            second.install_memory_mounter(mounter.clone());
+            let recovered = pc::SandboxProvider::claim_for_effect(
+                &second,
+                &requested,
+                pc::SandboxEffect::Fenced {
+                    fence: &fence,
+                    authority: &authority,
+                },
+                pc::SandboxRealizationIntent::Create,
+            )
+            .await
+            .expect("M original active reservation recovers");
+            assert!(recovered.is_recovered(), "M original recovery disposition");
+            assert_eq!(mount_calls.load(Ordering::SeqCst), 1, "M no remount");
+            assert_eq!(
+                recovery_calls.load(Ordering::SeqCst),
+                0,
+                "M no compensation"
+            );
+            assert_eq!(
+                teardown_calls.load(Ordering::SeqCst),
+                0,
+                "M retained handle not torn down"
+            );
+            let state = runtime.st.lock().unwrap();
+            assert_eq!(
+                state.prepared_attempts[&scope], original_attempt,
+                "M original backend responsibility identity"
+            );
+            assert_eq!(
+                state.recovered_staging.as_ref(),
+                Some(&root),
+                "M exact original staging"
+            );
+            assert_eq!(state.activation_calls, 1, "M no second activation");
+            assert_eq!(state.alive.len(), 1, "M no second physical owner");
+            assert!(state.removals.is_empty());
+            assert!(
+                state
+                    .effect_fences
+                    .iter()
+                    .all(|observed| observed == &fence)
+            );
+            drop(state);
+            drop(recovered);
+            drop(second);
+        }
+        drop(mounter);
+        drop(runtime);
+        // This test owns only a fake reservation and this exact temporary Copy
+        // directory. Removing its bytes after the assertions is fixture hygiene,
+        // never production Pod disposal or Session cleanup evidence.
+        std::fs::remove_dir_all(root).expect("test-only retained Copy staging cleanup");
+    }
+}

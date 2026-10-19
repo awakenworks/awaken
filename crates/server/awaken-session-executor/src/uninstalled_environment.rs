@@ -10,11 +10,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::SandboxEffect;
 use awaken_session_environment_contract::{
     EnvironmentAdoption, EnvironmentAdoptionLayout, EnvironmentCapacity,
     EnvironmentProviderInstallation, EnvironmentRealizationKind, EnvironmentRealizer,
-    EnvironmentTerminalRealization, ObservationPurpose, ProviderEffect, SessionEnvironment,
-    SessionEnvironmentProvider,
+    EnvironmentTerminalRealization, SessionEnvironment, SessionEnvironmentProvider,
 };
 
 /// The construction-time Session provider: the Workdir adapter rooted at
@@ -64,7 +64,7 @@ impl EnvironmentRealizer for UninstalledSessionEnvironmentProvider {
     async fn create_effective_for_effect(
         &self,
         _spec: &pc::SandboxSpec,
-        _effect: ProviderEffect<'_>,
+        _effect: SandboxEffect<'_>,
         _source_handle: Option<&pc::SandboxHandle>,
         _kind: EnvironmentRealizationKind,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
@@ -88,7 +88,7 @@ impl EnvironmentAdoption for UninstalledSessionEnvironmentProvider {
         _handle: &pc::SandboxHandle,
         _retained: Option<&SessionEnvironment>,
         _basis: pc::SandboxObservationBasis<'_>,
-        _purpose: ObservationPurpose,
+        _purpose: pc::SandboxObservationPurpose,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         Err(not_installed())
     }
@@ -105,7 +105,7 @@ impl EnvironmentAdoption for UninstalledSessionEnvironmentProvider {
         &self,
         _spec: &pc::SandboxSpec,
         _handle: &pc::SandboxHandle,
-        _effect: ProviderEffect<'_>,
+        _effect: SandboxEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         Err(not_installed())
     }
@@ -115,7 +115,7 @@ impl EnvironmentAdoption for UninstalledSessionEnvironmentProvider {
         _spec: &pc::SandboxSpec,
         _handle: &pc::SandboxHandle,
         _retained: &SessionEnvironment,
-        _effect: ProviderEffect<'_>,
+        _effect: SandboxEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         Err(not_installed())
     }

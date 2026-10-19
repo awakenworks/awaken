@@ -4,6 +4,7 @@
 // @formal reason: Revisioned Session update path.
 //! Canonical mutable Session command and its durable/effect ordering.
 
+use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_time::WallClockExt as _;
 use std::collections::BTreeMap;
 
@@ -93,8 +94,8 @@ pub enum SessionUpdateError {
     IdempotencyMismatch,
     #[error("Session update was rejected: {0}")]
     Rejected(#[source] RunError),
-    #[error("Session realization failed: {0}")]
-    Realization(#[source] super::SessionRealizationError),
+    #[error("Session realization failed: {}", crate::realization::realization_failure_message(.0))]
+    Realization(#[source] awaken_session_realization_contract::SessionRealizationDriveError),
     /// Durable truth and its command receipt committed before realization or a
     /// disposable Runtime projection failed. The outcome lets interface
     /// adapters project the committed fact once and an idempotent replay repairs
@@ -147,14 +148,20 @@ fn mcp_projection_requires_realization(
     projection_requires_completion || active_requires_new_owner
 }
 
-fn realization_failure_after_commit(error: super::SessionRealizationError) -> RunError {
+fn realization_failure_after_commit(
+    error: awaken_session_realization_contract::SessionRealizationDriveError,
+) -> RunError {
     match error {
-        super::SessionRealizationError::Effect(source) => source,
-        super::SessionRealizationError::Control(
+        awaken_session_realization_contract::SessionRealizationDriveError::Effect(source) => {
+            source.into()
+        }
+        awaken_session_realization_contract::SessionRealizationDriveError::Control(
             awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(message),
         ) => RunError::bad_request(message),
-        super::SessionRealizationError::Control(error) => RunError::internal(error.to_string()),
-        super::SessionRealizationError::DidNotConverge => {
+        awaken_session_realization_contract::SessionRealizationDriveError::Control(error) => {
+            RunError::internal(error.to_string())
+        }
+        awaken_session_realization_contract::SessionRealizationDriveError::DidNotConverge => {
             RunError::internal("Session realization did not converge")
         }
     }
@@ -347,12 +354,13 @@ impl SessionApplication {
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<PersistedSession, SessionUpdateError> {
-        let owner_scope = self
+        let mutations = &self.mutations;
+        let owner_scope = mutations
             .owner(session_id)
             .await
             .map_err(SessionUpdateError::mutation)?;
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let mut session = self
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
+            let mut session = mutations
                 .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
@@ -394,7 +402,7 @@ impl SessionApplication {
                     "committed failed MCP generation produced no retry intent".into(),
                 ));
             }
-            match self
+            match mutations
                 .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
@@ -404,7 +412,7 @@ impl SessionApplication {
                 .await
             {
                 Ok(commit) => return Ok(commit.into_session()),
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
                 Err(error) => return Err(SessionUpdateError::mutation(error)),
@@ -458,7 +466,8 @@ impl SessionApplication {
                     .enter(|| self.retry_failed_mcp_update_realization(session_id))
                     .await?
             } else {
-                self.session_aggregate(session_id)
+                self.mutations
+                    .session_aggregate(session_id)
                     .await
                     .map_err(repository_failure)
                     .map_err(SessionUpdateError::mutation)?
@@ -519,7 +528,7 @@ impl SessionApplication {
             None
         };
 
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
             let update = || self.update_session_once(session_id, &command, command_record.clone());
             let result = match admission.as_ref() {
                 Some(admission) => admission.enter(update).await,
@@ -527,7 +536,7 @@ impl SessionApplication {
             };
             match result {
                 Err(SessionUpdateError::Conflict)
-                    if command.if_match.is_none() && attempt + 1 < Self::ROOT_CAS_ATTEMPTS =>
+                    if command.if_match.is_none() && attempt + 1 < ROOT_CAS_ATTEMPTS =>
                 {
                     continue;
                 }
@@ -700,11 +709,12 @@ impl SessionApplication {
         command: &SessionUpdateCommand,
         command_record: Option<IdempotencyRecord>,
     ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
-        let owner_scope = self
+        let mutations = &self.mutations;
+        let owner_scope = mutations
             .owner(session_id)
             .await
             .map_err(SessionUpdateError::mutation)?;
-        let mut session = self
+        let mut session = mutations
             .session_aggregate(session_id)
             .await
             .map_err(repository_failure)
@@ -734,7 +744,7 @@ impl SessionApplication {
                 // The snapshot above may have raced the exact command commit.
                 // Reload after observing its receipt so runtime reconciliation
                 // never decides from pre-command budget/tools/metadata truth.
-                session = self
+                session = mutations
                     .session_aggregate(session_id)
                     .await
                     .map_err(repository_failure)
@@ -823,11 +833,11 @@ impl SessionApplication {
             || command_record.is_some()
         {
             let commit = match command_record {
-                Some(record) => self
+                Some(record) => mutations
                     .commit_session_snapshot_with_record(&owner_scope, session, record, Vec::new())
                     .await
                     .map_err(SessionUpdateError::mutation)?,
-                None => self
+                None => mutations
                     .commit_session_snapshot_with_outcome(
                         &owner_scope,
                         session,

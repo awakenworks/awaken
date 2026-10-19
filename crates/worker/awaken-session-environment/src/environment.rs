@@ -26,7 +26,7 @@ pub enum SandboxEnvironment {
         hand: Arc<SessionHandExecutor>,
     },
     Container {
-        sandbox: Arc<dyn awaken_container_contract::ContainerEnvironment>,
+        sandbox: Arc<dyn awaken_provisioning_contract::SessionSandbox>,
         hand: Arc<SessionHandExecutor>,
         skills: Arc<ContainerSkillCache>,
         capabilities: pc::SandboxCapabilities,
@@ -191,7 +191,7 @@ impl SandboxEnvironment {
     }
 
     pub(super) async fn container(
-        sandbox: Arc<dyn awaken_container_contract::ContainerEnvironment>,
+        sandbox: Arc<dyn awaken_provisioning_contract::SessionSandbox>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: &str,
         hand_idle_after: std::time::Duration,

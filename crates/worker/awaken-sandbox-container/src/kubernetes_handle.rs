@@ -39,7 +39,7 @@ pub enum KubernetesProjectedOrigin {
     },
     JoinedEmpty {
         attempt: String,
-        predecessor: Box<crate::ContainerEffectFence>,
+        predecessor: Box<awaken_provisioning_contract::SandboxEffectFence>,
         original_group: String,
     },
     FrozenPlanEmpty {
@@ -125,7 +125,7 @@ impl KubernetesProjectedParticipants {
         namespace: String,
         pod_uid: String,
         attempt: String,
-        predecessor: crate::ContainerEffectFence,
+        predecessor: awaken_provisioning_contract::SandboxEffectFence,
         original_group: String,
     ) -> Result<Self, pc::SandboxError> {
         if original_group.trim().is_empty() {
@@ -281,7 +281,7 @@ impl<'de> Deserialize<'de> for KubernetesProjectedParticipants {
 #[serde(deny_unknown_fields)]
 pub struct KubernetesGuardedClaimHandle {
     pub(crate) scope: String,
-    pub(crate) predecessor: crate::ContainerEffectFence,
+    pub(crate) predecessor: awaken_provisioning_contract::SandboxEffectFence,
     pub(crate) guard: CreateTicket,
     pub(crate) claim_uid: String,
 }
@@ -289,7 +289,7 @@ pub struct KubernetesGuardedClaimHandle {
 impl KubernetesGuardedClaimHandle {
     pub fn new(
         scope: &str,
-        predecessor: &crate::ContainerEffectFence,
+        predecessor: &awaken_provisioning_contract::SandboxEffectFence,
         guard: CreateTicket,
         claim_uid: &str,
     ) -> Result<Self, crate::RuntimeError> {
@@ -323,7 +323,7 @@ impl KubernetesGuardedClaimHandle {
     }
 
     #[must_use]
-    pub fn predecessor(&self) -> &crate::ContainerEffectFence {
+    pub fn predecessor(&self) -> &awaken_provisioning_contract::SandboxEffectFence {
         &self.predecessor
     }
 

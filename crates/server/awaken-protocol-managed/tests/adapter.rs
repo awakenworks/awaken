@@ -6,6 +6,7 @@
 //! Adapter integration tests with fake runtimes: the happy path, and the HITL
 //! await -> `requires_action` -> `user.tool_confirmation` -> resume round-trip.
 
+use awaken_session_application::SessionRootReads as _;
 use awaken_session_execution_contract::SessionCoordinationReads as _;
 use awaken_session_execution_contract::{StreamingRunRuntime, ThreadReadRuntime};
 use awaken_session_types::SessionId;
@@ -630,7 +631,10 @@ async fn failed_idempotent_create_is_409_while_exact_get_exposes_failure() {
         .await
         .expect("durable Session");
     failed.execution = SessionExecutionState::ActivationFailed;
-    failed.realization_progress.last_error = Some("repository realization timed out".into());
+    // W3/F1: legacy failure has no observed time or source Run.
+    let mut progress = serde_json::to_value(&failed).unwrap();
+    progress["realization_progress"]["last_error"] = "repository realization timed out".into();
+    failed = serde_json::from_value(progress).unwrap();
     let failed = support::replace_session_fixture(
         repo.as_ref(),
         "default",
@@ -661,7 +665,7 @@ async fn failed_idempotent_create_is_409_while_exact_get_exposes_failure() {
     assert_eq!(body["status"], "terminated", "F1/E2");
     support::assert_current_sdk_session_shape(&body);
     assert_eq!(
-        failed.realization_progress.last_error.as_deref(),
+        failed.realization_progress().last_error(),
         Some("repository realization timed out"),
         "F1/E2 durable cause remains internal"
     );
@@ -890,7 +894,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EchoFake {
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,
@@ -1988,7 +1992,11 @@ async fn happy_path_projects_message_and_idle() {
     // input observation, reproducing the terminal-anchor misclassification.
     support::drive_retained_session_events(&state, &id).await;
     let application = state.session_application();
-    let unsettled = application.session(&SessionId::from(&id)).await.unwrap();
+    let unsettled = application
+        .queries()
+        .session(&SessionId::from(&id))
+        .await
+        .unwrap();
     assert!(
         !unsettled.active_activity_epochs.is_empty(),
         "S1 retains activity"
@@ -2027,7 +2035,11 @@ async fn happy_path_projects_message_and_idle() {
     );
     assert_eq!(list["data"][0]["id"], sent["data"][0]["id"], "R1/R2 W2");
     assert!(list["data"][0]["processed_at"].is_string(), "R1/R2 W2");
-    let settled = application.session(&SessionId::from(&id)).await.unwrap();
+    let settled = application
+        .queries()
+        .session(&SessionId::from(&id))
+        .await
+        .unwrap();
     assert!(settled.active_activity_epochs.is_empty(), "S2");
     assert_eq!(settled.closed_runtime_intervals.len(), 1, "S2 one interval");
     let cold = router(support::shared_state_over(runtime.clone(), repo).await);
@@ -2140,7 +2152,7 @@ impl awaken_session_execution_contract::RealizationRuntime for CapableFake {
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,
@@ -2750,7 +2762,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ToolAwaitingFake 
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,
@@ -3597,7 +3609,7 @@ impl awaken_session_execution_contract::RealizationRuntime for OutcomeFake {
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,
@@ -4303,7 +4315,11 @@ async fn hitl_await_confirm_resume() {
         "H6/E1 receipt is the immutable admission view"
     );
     let application = state.session_application();
-    let before_settlement = application.session(&SessionId::from(&id)).await.unwrap();
+    let before_settlement = application
+        .queries()
+        .session(&SessionId::from(&id))
+        .await
+        .unwrap();
     let boundary = runtime
         .settlement
         .lock()
@@ -4349,7 +4365,11 @@ async fn hitl_await_confirm_resume() {
             }
         }
     }
-    let settled = application.session(&SessionId::from(&id)).await.unwrap();
+    let settled = application
+        .queries()
+        .session(&SessionId::from(&id))
+        .await
+        .unwrap();
     assert_eq!(settled.execution, SessionExecutionState::Idle, "H8");
     assert_eq!(
         settled.closed_runtime_intervals.len(),
@@ -4681,7 +4701,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingFake {
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,
@@ -5611,7 +5631,7 @@ impl awaken_session_execution_contract::RealizationRuntime for InterruptRedirect
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,

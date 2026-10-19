@@ -107,7 +107,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ActivationOnlySes
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         self.events.lock().unwrap().push(match &mode {
             awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch => {
                 "dispatch_projection"
@@ -124,7 +124,9 @@ impl awaken_session_execution_contract::RealizationRuntime for ActivationOnlySes
             .lock()
             .unwrap()
             .push((projection.clone(), mode.clone()));
-        install_complete_test_projection(self, thread, projection, mode).await
+        install_complete_test_projection(self, thread, projection, mode)
+            .await
+            .map_err(Into::into)
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -1233,8 +1235,10 @@ impl awaken_session_execution_contract::RealizationRuntime for BlockingSessionRu
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
-        install_complete_test_projection(self, thread, projection, mode).await
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        install_complete_test_projection(self, thread, projection, mode)
+            .await
+            .map_err(Into::into)
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never

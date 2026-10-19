@@ -2,12 +2,11 @@
 use awaken_provisioning_contract as pc;
 // The creation and terminal ports are trait obligations, so the trait has to
 // be in scope for this oracle to reach them.
+use awaken_provisioning_contract::SandboxAdoption;
 use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::ContainerHandleCodec as _;
-use awaken_sandbox_container::{
-    ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerProvider,
-    ContainerRuntime, ContainerState,
-};
+
+use awaken_sandbox_container::{ContainerProvider, ContainerRuntime, ContainerState};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -85,8 +84,13 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
     let sandbox = creator
         .claim_for_effect(
             &spec,
-            &initial_fence,
-            &awaken_provisioning_contract::test_support::EffectAuthority::new(&initial_fence),
+            awaken_provisioning_contract::SandboxEffect::Fenced {
+                fence: &initial_fence,
+                authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    &initial_fence,
+                ),
+            },
+            awaken_provisioning_contract::SandboxRealizationIntent::Create,
         )
         .await
         .expect("R1 ordinary creation");
@@ -131,7 +135,10 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
     );
     std::fs::rename(&root, &displaced).unwrap();
     let missing_rejected = peer
-        .adopt_unattached_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
+        .adopt_for_effect(
+            SandboxAdoption::new(&spec, &handle),
+            awaken_provisioning_contract::SandboxEffect::Unattached,
+        )
         .await
         .is_err();
     let missing_preserved =
@@ -140,7 +147,10 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
     let (symlink_rejected, symlink_preserved) = {
         std::os::unix::fs::symlink(&displaced, &root).unwrap();
         let rejected = peer
-            .adopt_unattached_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
+            .adopt_for_effect(
+                SandboxAdoption::new(&spec, &handle),
+                awaken_provisioning_contract::SandboxEffect::Unattached,
+            )
             .await
             .is_err();
         let preserved = peer_runtime.inspect(&physical_id).await.unwrap()
@@ -153,9 +163,9 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
     let foreign = super::disposal::effect_fence(&spec.scope, "foreign", "foreign", 1);
     assert!(
         matches!(
-            peer.observe_environment(
-                ContainerEnvironmentAdoption::new(&spec, &handle),
-                ContainerEnvironmentAdoption::new(&spec, &handle).effect_basis(&foreign)
+            peer.observe(
+                SandboxAdoption::new(&spec, &handle),
+                SandboxAdoption::new(&spec, &handle).effect_basis(&foreign)
             )
             .await
             .unwrap(),
@@ -167,9 +177,9 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
     changed.mounts[0].access = pc::MountAccess::ReadWrite;
     assert!(
         matches!(
-            peer.observe_environment(
-                ContainerEnvironmentAdoption::new(&changed, &handle),
-                ContainerEnvironmentAdoption::new(&changed, &handle).effect_basis(&initial_fence)
+            peer.observe(
+                SandboxAdoption::new(&changed, &handle),
+                SandboxAdoption::new(&changed, &handle).effect_basis(&initial_fence)
             )
             .await
             .unwrap(),
@@ -178,7 +188,10 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
         "R9 adoption cannot silently change read-only mount policy"
     );
     let adopted = peer
-        .adopt_unattached_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
+        .adopt_for_effect(
+            SandboxAdoption::new(&spec, &handle),
+            awaken_provisioning_contract::SandboxEffect::Unattached,
+        )
         .await
         .expect("R2 fresh provider adopts exact retained evidence");
     assert_eq!(adopted.handle(), handle, "R2 same physical environment");
@@ -292,9 +305,12 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
         "R6 reject with zero symlink-target mutation"
     );
     assert!(
-        cold.adopt_unattached_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
-            .await
-            .is_err(),
+        cold.adopt_for_effect(
+            SandboxAdoption::new(&spec, &handle),
+            awaken_provisioning_contract::SandboxEffect::Unattached
+        )
+        .await
+        .is_err(),
         "R8 absent physical environment is not silently recreated"
     );
     assert!(!root.exists(), "R8 rejection cannot recreate staging");

@@ -34,7 +34,10 @@ async fn bwrap_works() -> bool {
         .unwrap_or(false)
 }
 
-fn provider(tier: Tier, base: &std::path::Path) -> Box<dyn pc::SandboxProvider> {
+fn provider(
+    tier: Tier,
+    base: &std::path::Path,
+) -> Box<dyn pc::SandboxProvider<Environment = dyn pc::Sandbox>> {
     match tier {
         Tier::Workdir => Box::new(LocalProvider::new(base)),
         Tier::Namespace => Box::new(NamespaceProvider::new(base)),
@@ -118,8 +121,13 @@ async fn cross_node_adopt(tier: Tier, can_exec: bool) {
     let sandbox_a = host_a
         .claim_for_effect(
             &sandbox_spec,
-            &realization_fence,
-            &awaken_provisioning_contract::test_support::EffectAuthority::new(&realization_fence),
+            awaken_provisioning_contract::SandboxEffect::Fenced {
+                fence: &realization_fence,
+                authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    &realization_fence,
+                ),
+            },
+            awaken_provisioning_contract::SandboxRealizationIntent::Create,
         )
         .await
         .unwrap();
@@ -146,10 +154,11 @@ async fn cross_node_adopt(tier: Tier, can_exec: bool) {
     let host_b = provider(tier, base.path());
     let sandbox_b = host_b
         .adopt_for_effect(
-            &sandbox_spec,
-            &recovered,
-            &realization_fence,
-            &pc::test_support::EffectAuthority::new(&realization_fence),
+            awaken_provisioning_contract::SandboxAdoption::new(&sandbox_spec, &recovered),
+            awaken_provisioning_contract::SandboxEffect::Fenced {
+                fence: &realization_fence,
+                authority: &pc::test_support::EffectAuthority::new(&realization_fence),
+            },
         )
         .await
         .unwrap_or_else(|e| panic!("{tier:?}: a second host must adopt the handle: {e:?}"));

@@ -153,10 +153,16 @@ fn unattempted_profiled_release_checks_every_root_admission_cause() {
                 })
             }),
             ("attempted-realization", |s| {
-                s.realization_progress.attempts = 1
+                // W5: one historical counted attempt disqualifies this root.
+                let mut progress = serde_json::to_value(&*s).unwrap();
+                progress["realization_progress"]["attempts"] = 1.into();
+                *s = serde_json::from_value(progress).unwrap();
             }),
             ("unknown-failure", |s| {
-                s.realization_progress.last_error = Some("uncertain".into())
+                // W3/W5: old failure time stays unknown; do not stamp now.
+                let mut progress = serde_json::to_value(&*s).unwrap();
+                progress["realization_progress"]["last_error"] = "uncertain".into();
+                *s = serde_json::from_value(progress).unwrap();
             }),
             ("resident-environment", |s| {
                 s.environment = SessionEnvironmentState::Resident {

@@ -8,8 +8,9 @@ use std::path::Component;
 
 use tokio::io::AsyncReadExt;
 
-use crate::{ContainerRuntime, ContainerSandbox, EnvironmentFile};
+use crate::{ContainerRuntime, ContainerSandbox};
 use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::SandboxFile;
 
 const MAX_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_FILES: usize = 10_000;
@@ -21,7 +22,7 @@ fn safe_root(root: &str) -> bool {
             .any(|component| component == "." || component == "..")
 }
 
-fn decode(bytes: &[u8]) -> Result<Vec<EnvironmentFile>, pc::SandboxError> {
+fn decode(bytes: &[u8]) -> Result<Vec<SandboxFile>, pc::SandboxError> {
     if bytes.is_empty() {
         return Ok(Vec::new());
     }
@@ -59,7 +60,7 @@ fn decode(bytes: &[u8]) -> Result<Vec<EnvironmentFile>, pc::SandboxError> {
         entry
             .read_to_end(&mut content)
             .map_err(|error| pc::SandboxError::backend("decode", error))?;
-        files.push(EnvironmentFile {
+        files.push(SandboxFile {
             path: safe.join("/"),
             bytes: content,
         });
@@ -76,7 +77,7 @@ fn decode(bytes: &[u8]) -> Result<Vec<EnvironmentFile>, pc::SandboxError> {
 pub(crate) async fn read_files<R: ContainerRuntime + 'static>(
     sandbox: &ContainerSandbox<R>,
     root: &str,
-) -> Result<Vec<EnvironmentFile>, pc::SandboxError> {
+) -> Result<Vec<SandboxFile>, pc::SandboxError> {
     if !safe_root(root) {
         return Err(pc::SandboxError::invalid("unsafe container file root"));
     }
@@ -175,14 +176,14 @@ mod tests {
             &self,
             _admitted: crate::AdmittedExec,
             command: pc::MaterializedCommand,
-        ) -> Result<crate::RuntimeAgentProcess, crate::RuntimeError> {
+        ) -> Result<awaken_provisioning_contract::AgentProcess, crate::RuntimeError> {
             self.commands.lock().unwrap().push(command.argv);
             let (channel, mut writer) = tokio::io::duplex(self.archive.len().max(1));
             let archive = self.archive.clone();
             tokio::spawn(async move {
                 writer.write_all(&archive).await.unwrap();
             });
-            Ok(crate::RuntimeAgentProcess {
+            Ok(awaken_provisioning_contract::AgentProcess {
                 process: Box::new(ScanProcess {
                     status: pc::ExitStatus {
                         code: Some(self.code),
@@ -306,11 +307,11 @@ mod tests {
         assert_eq!(
             decode(&bytes).unwrap(),
             vec![
-                EnvironmentFile {
+                SandboxFile {
                     path: "a/x".into(),
                     bytes: b"a".to_vec(),
                 },
-                EnvironmentFile {
+                SandboxFile {
                     path: "b.txt".into(),
                     bytes: b"b".to_vec(),
                 },
@@ -357,7 +358,7 @@ mod tests {
         let (success, commands) = sandbox(bytes, 0);
         assert_eq!(
             read_files(&success, "/outputs").await.unwrap(),
-            vec![EnvironmentFile {
+            vec![SandboxFile {
                 path: "result.txt".into(),
                 bytes: b"result".to_vec(),
             }]

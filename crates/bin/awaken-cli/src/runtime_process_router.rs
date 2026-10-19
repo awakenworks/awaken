@@ -5,7 +5,7 @@
 
 use super::*;
 
-use awaken_coordinator::{install_managed_agent_coordination, with_platform_memory_data_plane};
+use awaken_coordinator::install_managed_agent_coordination;
 use cloud_plane::{CloudPlane, assemble_cloud_plane};
 
 mod cloud_plane;
@@ -254,7 +254,11 @@ async fn assemble_deployment_and_resources(
         base.process
             .deployment
             .as_ref()
-            .and_then(|deployment| deployment.acp_session_blob_root.clone()),
+            .and_then(|deployment| deployment.acp_session_blob_root.clone())
+            .map(|root| {
+                Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(root))
+                    as Arc<dyn awaken_data_governance_contract::ContentEraser>
+            }),
     );
     let resource_application = coordinator_stores.resources.application.clone();
     let memory_invalidator = coordinator_stores.resources.invalidator.clone();
@@ -642,7 +646,7 @@ async fn assemble_execution_host(
             None => host_builder,
         },
         deployment.sandbox_tier,
-        &resources.resource_authorities,
+        resources.resource_authorities.memory_mount_source(),
         resources.memory_invalidator.clone(),
     );
     let repository_bindings = Arc::new(

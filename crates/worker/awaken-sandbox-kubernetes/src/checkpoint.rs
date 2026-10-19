@@ -20,7 +20,7 @@ use kube::api::PostParams;
 use participant::ContainerCheckpointParticipant;
 
 pub(super) mod participant;
-use awaken_sandbox_container::{ContainerCheckpointAccess, ContainerCheckpointMutation};
+use awaken_provisioning_contract::{SandboxCheckpointAccess, SandboxCheckpointMutation};
 
 const CHECKPOINT_ANNOTATION: &str = "awaken.dev/checkpoint-upload";
 
@@ -36,7 +36,7 @@ fn participant(pod: &Pod) -> Result<Option<ContainerCheckpointParticipant>, Runt
 fn admit_pod(
     pod: &Pod,
     expectation: ContainerObservationExpectation<'_>,
-    access: ContainerCheckpointAccess<'_>,
+    access: SandboxCheckpointAccess<'_>,
 ) -> Result<(), RuntimeError> {
     access.admit().map_err(backend)?;
     if expectation
@@ -87,8 +87,8 @@ fn admit_pod(
 pub(super) async fn persist_checkpoint_upload(
     runtime: &K8sRuntime,
     expectation: ContainerObservationExpectation<'_>,
-    access: ContainerCheckpointAccess<'_>,
-    mutation: ContainerCheckpointMutation<'_>,
+    access: SandboxCheckpointAccess<'_>,
+    mutation: SandboxCheckpointMutation<'_>,
 ) -> Result<Option<pc::SandboxCheckpointUpload>, RuntimeError> {
     access.admit().map_err(backend)?;
     let pods = runtime.pods();

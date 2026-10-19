@@ -157,7 +157,7 @@ impl awaken_session_execution_contract::RealizationRuntime for PreparingFake {
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         if matches!(
             mode,
             awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch
@@ -170,7 +170,7 @@ impl awaken_session_execution_contract::RealizationRuntime for PreparingFake {
                 match repo.get(&SessionId::from(thread)).await {
                     Ok(session) => self.observed_durable.lock().unwrap().push(session),
                     Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {}
-                    Err(error) => return Err(RunError::internal(error.to_string())),
+                    Err(error) => return Err((RunError::internal(error.to_string())).into()),
                 }
             }
             self.captured
@@ -178,7 +178,7 @@ impl awaken_session_execution_contract::RealizationRuntime for PreparingFake {
                 .unwrap()
                 .push(projection.session_init());
             match self.fail_with {
-                Some(failure) => Err(failure()),
+                Some(failure) => Err((failure()).into()),
                 None => Ok(()),
             }
         } else {
@@ -700,7 +700,7 @@ impl awaken_session_execution_contract::RealizationRuntime for HotRuntime {
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         let _ = awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,
@@ -1867,7 +1867,7 @@ async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope()
         if matches!(kind, "R3" | "R4" | "R5") {
             assert_eq!(read["status"], "rescheduling", "{kind}");
             assert_eq!(failed.execution, SessionExecutionState::Preparing, "{kind}");
-            assert_eq!(failed.realization_progress.attempts, 1, "{kind}");
+            assert_eq!(failed.realization_progress().attempts(), 1, "{kind}");
             assert_eq!(
                 failed.mcp.attachments[0].state,
                 awaken_session_configuration_contract::mcp::McpAttachmentState::Realizing,
@@ -1883,7 +1883,7 @@ async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope()
             );
             let expected_cause = format!("run failed: {}", failure().message);
             assert_eq!(
-                failed.realization_progress.last_error.as_deref(),
+                failed.realization_progress().last_error(),
                 Some(expected_cause.as_str()),
                 "R1/R2 durable root retains the exact realization cause: {kind:?}"
             );
@@ -3331,7 +3331,8 @@ async fn minting_namespace_cannot_alias_committed_truth() {
             thread: &str,
             projection: awaken_session_realization_contract::FrozenSessionProjection,
             mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-        ) -> Result<(), RunError> {
+        ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>
+        {
             awaken_protocol_managed_testkit::complete_session_projection_init(
                 thread,
                 &projection,

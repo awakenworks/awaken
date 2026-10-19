@@ -9,8 +9,8 @@ static HOST_PROJECTION_SEQUENCE: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 // The projection root and its one lexical admission rule are shared with the
-// Session owner through the provisioning contract.
-pub use awaken_container_contract::{LIVE_INPUTS_ROOT, live_input_relative_path};
+// Session owner through the container contract.
+use awaken_container_contract::{LIVE_INPUTS_ROOT, live_input_relative_path};
 
 /// One classification for initial planning and subsequent attach/remove. Keeping
 /// it here prevents Docker/Podman and Kubernetes from drifting on which mounts

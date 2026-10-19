@@ -498,7 +498,7 @@ mod tests {
                     .realizer()
                     .create_effective_for_effect(
                         &host.realization_executor.sandbox_spec(thread),
-                        crate::session_environment::ProviderEffect::Fenced {
+                        awaken_provisioning_contract::SandboxEffect::Fenced {
                             fence,
                             authority: &authority,
                         },
@@ -1382,7 +1382,8 @@ mod tests {
         .await
         .expect_err("CR1 Managed authority cannot borrow an Unowned response");
         assert_eq!(
-            error.code, "session_environment_owned_root_missing",
+            error.run_error().code,
+            "session_environment_owned_root_missing",
             "CR1/E2 typed pending"
         );
         assert!(!retired_sentinel.exists(), "CR1/E1 exact old root disposed");
@@ -1690,7 +1691,8 @@ mod tests {
         .await
         .expect_err("RA1/E1 remote A2A must fail before local effects");
         assert_eq!(
-            error.code, "session_runtime_remote_environment_conflict",
+            error.run_error().code,
+            "session_runtime_remote_environment_conflict",
             "RA1/E1 classified fail-closed"
         );
 

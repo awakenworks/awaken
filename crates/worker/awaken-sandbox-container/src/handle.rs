@@ -478,20 +478,21 @@ impl ContainerHandleCodec for pc::SandboxHandle {
 
 /// The layout a container provider reopens from one of its durable handles.
 /// Every container provider (and a test double standing in for one) answers
-/// [`awaken_container_contract::ContainerEnvironmentProvider::adoption_layout`] with this
+/// [`awaken_provisioning_contract::SandboxProvider::adoption_layout`] with this
 /// one codec projection.
 pub fn container_adoption_layout(
     handle: &pc::SandboxHandle,
-) -> Result<awaken_container_contract::ContainerAdoptionLayout, pc::SandboxError> {
+) -> Result<awaken_provisioning_contract::SandboxAdoptionLayout, pc::SandboxError> {
     let payload = handle.container_payload()?;
-    Ok(awaken_container_contract::ContainerAdoptionLayout {
+    Ok(awaken_provisioning_contract::SandboxAdoptionLayout {
         outputs_path: payload.outputs_path,
         base_env: payload.base_env,
+        network: None,
     })
 }
 
-/// The exact physical incarnation a container handle records; the one answer to
-/// [`awaken_container_contract::ContainerEnvironmentProvider::physical_incarnation`].
+/// The exact physical incarnation a container handle records. Only the
+/// provider codec and its closed-observation validator interpret it.
 pub fn container_physical_incarnation(
     handle: &pc::SandboxHandle,
 ) -> Result<String, pc::SandboxError> {
@@ -500,3 +501,35 @@ pub fn container_physical_incarnation(
 
 #[cfg(test)]
 mod tests;
+
+/// Validate closed provider evidence against the exact durable incarnation.
+/// Observation is a fact only; this grants no deletion or replacement authority.
+pub fn validate_container_closed_observation(
+    handle: &pc::SandboxHandle,
+    observation: &pc::SandboxObservation,
+) -> Result<(), pc::SandboxError> {
+    let expected = container_physical_incarnation(handle)?;
+    let observed = match observation {
+        pc::SandboxObservation::DefinitivelyUnavailable {
+            physical_incarnation,
+        } => physical_incarnation.as_deref(),
+        pc::SandboxObservation::Terminal {
+            physical_incarnation,
+        }
+        | pc::SandboxObservation::Disposing {
+            physical_incarnation,
+        } => Some(physical_incarnation.as_str()),
+        _ => {
+            return Err(pc::SandboxError::invalid(
+                "sandbox observation does not carry closed physical evidence",
+            ));
+        }
+    };
+    if observed == Some(expected.as_str()) {
+        Ok(())
+    } else {
+        Err(pc::SandboxError::conflict(
+            "container closed observation does not match the durable incarnation",
+        ))
+    }
+}

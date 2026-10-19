@@ -2,6 +2,7 @@
 // @formal reason: Application integration for proved budget arithmetic.
 //! Session-root list-cost admission and cumulative usage settlement.
 
+use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_session_budget_contract::{ManagedBudgetUsageCursor, SessionUsage};
 use awaken_session_state_contract::{ManagedLifecycleFact, PersistedSession};
 use awaken_time::WallClockExt as _;
@@ -20,9 +21,10 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
         usage: SessionUsage,
     ) -> Result<BudgetSettlementOutcome, SessionMutationError> {
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner_scope = self.owner(session_id).await?;
-            let mut session = self
+        let mutations = &self.mutations;
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
+            let owner_scope = mutations.owner(session_id).await?;
+            let mut session = mutations
                 .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)?;
@@ -92,7 +94,7 @@ impl SessionApplication {
             } else {
                 Vec::new()
             };
-            match self
+            match mutations
                 .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
@@ -110,7 +112,7 @@ impl SessionApplication {
                         reached_now,
                     });
                 }
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {}
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
                 Err(error) => return Err(error),
             }
         }

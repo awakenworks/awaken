@@ -18,7 +18,8 @@ use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_session_realization_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, FailSessionRealization,
     SessionProjectionSynchronizer, SessionRealizationAction, SessionRealizationControl,
-    SessionRealizationDirective, SessionRealizationDriveError, SessionRealizationPermit,
+    SessionRealizationDirective, SessionRealizationDriveError, SessionRealizationEffectFailure,
+    SessionRealizationPermit,
 };
 use awaken_session_execution_contract::McpAttachmentRealizer;
 use awaken_session_types::RunError;
@@ -70,8 +71,9 @@ async fn fail_realization_effect(
     synchronizer: &dyn SessionProjectionSynchronizer,
     lease: &SessionRealizationLease,
     prepared_resource_revision: Option<u64>,
-    error: &RunError,
-) {
+    error: SessionRealizationEffectFailure,
+) -> SessionRealizationDriveError {
+    let reporting = awaken_time::mono::Stopwatch::start();
     // One classification for Control and the Worker claim projection.
     let _ = control
         .fail_session_realization(FailSessionRealization::for_effect(
@@ -79,12 +81,13 @@ async fn fail_realization_effect(
             lease.clone(),
             prepared_resource_revision,
             source_run_id.cloned(),
-            error,
+            error.run_error(),
         ))
         .await;
     let _ = synchronizer
         .invalidate_session_realization_lease(session_id, lease)
         .await;
+    SessionRealizationDriveError::Effect(error.after_wait(reporting.elapsed()))
 }
 
 /// Canonical Stage → Activate → Publish/Drain → Acknowledge driver.
@@ -121,17 +124,16 @@ pub async fn drive_session_realization(
             )
             .await
         {
-            fail_realization_effect(
+            return Err(fail_realization_effect(
                 session_id,
                 source_run_id.as_ref(),
                 control,
                 synchronizer,
                 &directive.authority.lease,
                 prepare_session.then_some(directive.projection.resource_revision),
-                &error,
+                error,
             )
-            .await;
-            return Err(error.into());
+            .await);
         }
         #[cfg(feature = "test-support")]
         {
@@ -178,17 +180,16 @@ pub async fn drive_session_realization(
                     for receipt in &receipts {
                         let _ = drain_mcp_projection(mcp, &receipt.generation).await;
                     }
-                    fail_realization_effect(
+                    return Err(fail_realization_effect(
                         session_id,
                         source_run_id.as_ref(),
                         control,
                         synchronizer,
                         &directive.authority.lease,
                         prepare_session.then_some(directive.projection.resource_revision),
-                        &error,
+                        error.into(),
                     )
-                    .await;
-                    return Err(error.into());
+                    .await);
                 }
                 #[cfg(feature = "test-support")]
                 awaken_session_realization_contract::realization_observation::checkpoint("stage", session_id,
@@ -244,17 +245,16 @@ pub async fn drive_session_realization(
                 }
                 .await;
                 if let Err(error) = effect {
-                    fail_realization_effect(
+                    return Err(fail_realization_effect(
                         session_id,
                         source_run_id.as_ref(),
                         control,
                         synchronizer,
                         &directive.authority.lease,
                         None,
-                        &error,
+                        error.into(),
                     )
-                    .await;
-                    return Err(error.into());
+                    .await);
                 }
                 #[cfg(feature = "test-support")]
                 awaken_session_realization_contract::realization_observation::checkpoint("published", session_id,
@@ -304,3 +304,6 @@ pub async fn drive_session_realization(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

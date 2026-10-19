@@ -69,7 +69,7 @@ async fn restored_disposal_keeps_immutable_id_and_current_authority_at_each_adap
             info.as_object_mut().unwrap().remove("Id");
         }
         let info = info.to_string();
-        let mounts = serde_json::json!([{"Source": stage.path().join("live-inputs"), "Destination":crate::LIVE_INPUTS_ROOT}]).to_string();
+        let mounts = serde_json::json!([{"Source": stage.path().join("live-inputs"), "Destination":awaken_container_contract::LIVE_INPUTS_ROOT}]).to_string();
         let changing = authority.clone();
         let (runtime, commands) = runtime_with(8080, move |args| {
             let selected = match args[0].as_str() {
@@ -226,7 +226,7 @@ fn observation_runtime(summary: &str, live_inputs: &std::path::Path) -> PodmanRu
     let summary = summary.to_owned();
     let mounts = serde_json::json!([{
         "Source": live_inputs,
-        "Destination": crate::LIVE_INPUTS_ROOT,
+        "Destination": awaken_container_contract::LIVE_INPUTS_ROOT,
     }])
     .to_string();
     runtime_with(8080, move |args| {
@@ -280,7 +280,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
         ContainerRuntime::observe(
             &runtime,
             crate::ContainerObservationExpectation {
-                purpose: crate::ContainerObservationPurpose::Recovery,
+                purpose: awaken_provisioning_contract::SandboxObservationPurpose::Recovery,
                 retained_attempt: None,
                 container_id: "container-1",
                 adoption_fingerprint: Some(&fingerprint),
@@ -300,7 +300,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
         ContainerRuntime::observe(
             &terminal_runtime,
             crate::ContainerObservationExpectation {
-                purpose: crate::ContainerObservationPurpose::Recovery,
+                purpose: awaken_provisioning_contract::SandboxObservationPurpose::Recovery,
                 retained_attempt: None,
                 container_id: "container-1",
                 adoption_fingerprint: Some(&fingerprint),
@@ -339,7 +339,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
             ContainerRuntime::observe(
                 &runtime,
                 crate::ContainerObservationExpectation {
-                    purpose: crate::ContainerObservationPurpose::Recovery,
+                    purpose: awaken_provisioning_contract::SandboxObservationPurpose::Recovery,
                     retained_attempt: None,
                     container_id: "container-1",
                     adoption_fingerprint: Some(&fingerprint),
@@ -364,7 +364,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
             ContainerRuntime::observe(
                 &missing_fingerprint,
                 crate::ContainerObservationExpectation {
-                    purpose: crate::ContainerObservationPurpose::Recovery,
+                    purpose: awaken_provisioning_contract::SandboxObservationPurpose::Recovery,
                     retained_attempt: None,
                     container_id: "container-1",
                     adoption_fingerprint: Some(&fingerprint),
@@ -385,7 +385,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
         ContainerRuntime::observe(
             &missing,
             crate::ContainerObservationExpectation {
-                purpose: crate::ContainerObservationPurpose::Recovery,
+                purpose: awaken_provisioning_contract::SandboxObservationPurpose::Recovery,
                 retained_attempt: None,
                 container_id: "container-1",
                 adoption_fingerprint: Some(&fingerprint),
@@ -406,7 +406,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
             ContainerRuntime::observe(
                 &missing,
                 crate::ContainerObservationExpectation {
-                    purpose: crate::ContainerObservationPurpose::Recovery,
+                    purpose: awaken_provisioning_contract::SandboxObservationPurpose::Recovery,
                     retained_attempt: None,
                     container_id: "container-1",
                     adoption_fingerprint: None,
@@ -427,7 +427,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
         ContainerRuntime::observe(
             &unavailable,
             crate::ContainerObservationExpectation {
-                purpose: crate::ContainerObservationPurpose::Recovery,
+                purpose: awaken_provisioning_contract::SandboxObservationPurpose::Recovery,
                 retained_attempt: None,
                 container_id: "container-1",
                 adoption_fingerprint: Some(&fingerprint),
@@ -1016,7 +1016,7 @@ async fn fenced_prepare_reserves_then_exact_activation_starts_once() {
     };
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec);
     let fence = pc::SandboxEffectFence::new("effect", "owner", "runtime", 1, u64::MAX).unwrap();
-    let attempt = crate::ContainerCreateAttempt::new("attempt");
+    let attempt = awaken_provisioning_contract::SandboxCreateAttempt::new("attempt");
     let intent = ContainerRealizationIntent::Create;
     let context = ContainerRealizationContext::new(
         &spec.scope,

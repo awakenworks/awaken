@@ -7,6 +7,7 @@
 //! Durable activity fencing for overlapping Session Runs.
 
 use crate::SessionAggregate;
+use crate::mutation::ROOT_CAS_ATTEMPTS;
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -369,6 +370,7 @@ impl SessionApplication {
             return Ok(None);
         };
         let session = self
+            .mutations
             .session_aggregate(session_id)
             .await
             .map_err(repository_failure)
@@ -458,6 +460,7 @@ impl SessionApplication {
             return Ok(committed);
         }
         let owner_scope = self
+            .mutations
             .owner(session_id)
             .await
             .map_err(SessionActivityError::mutation)
@@ -483,7 +486,8 @@ impl SessionApplication {
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<PersistedSession, SessionActivityError> {
-        match self.session_aggregate(session_id).await {
+        let mutations = &self.mutations;
+        match mutations.session_aggregate(session_id).await {
             Ok(session) if session.is_terminal() => return Err(SessionActivityError::Terminal),
             Ok(_) => {}
             Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
@@ -497,13 +501,17 @@ impl SessionApplication {
                 super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
                 error => SessionActivityError::Unavailable(error.to_string()),
             })?;
-        let admission = self.fresh_mutation_record(session_id.as_str(), "begin-activity");
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner_scope = self
+        let admission = mutations.fresh_mutation_record(
+            self.runtime_incarnation.as_str(),
+            session_id.as_str(),
+            "begin-activity",
+        );
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
+            let owner_scope = mutations
                 .owner(session_id)
                 .await
                 .map_err(SessionActivityError::mutation)?;
-            let mut session = self
+            let mut session = mutations
                 .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
@@ -524,7 +532,7 @@ impl SessionApplication {
                 admitted_after,
                 None,
             )?;
-            match self
+            match mutations
                 .commit_session_snapshot_with_record(
                     &owner_scope,
                     session,
@@ -534,7 +542,7 @@ impl SessionApplication {
                 .await
             {
                 Ok(commit) => return Ok(commit.into_session()),
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
                 Err(error) => return Err(SessionActivityError::mutation(error)),
@@ -640,6 +648,7 @@ impl SessionApplication {
         projected_revision: Option<SessionRevision>,
         source: Option<(&ThreadId, &RunId)>,
     ) -> Result<(PersistedSession, u64), SessionActivityError> {
+        let mutations = &self.mutations;
         if operation_id.trim().is_empty() {
             return Err(SessionActivityError::Unavailable(
                 "Session activity operation identity is required".into(),
@@ -655,7 +664,7 @@ impl SessionApplication {
 
         let continuation_may_advance = match projected_revision {
             Some(projected_revision) => {
-                let projected_root = self
+                let projected_root = mutations
                     .session_aggregate(session_id)
                     .await
                     .map_err(repository_failure)
@@ -687,18 +696,18 @@ impl SessionApplication {
                 revision
             }
         });
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
             if let Some(committed) = self
                 .replayed_activity_operation(session_id, &record, operation_id, source)
                 .await?
             {
                 return Ok(committed);
             }
-            let owner_scope = self
+            let owner_scope = mutations
                 .owner(session_id)
                 .await
                 .map_err(SessionActivityError::mutation)?;
-            let mut session = self
+            let mut session = mutations
                 .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
@@ -741,7 +750,7 @@ impl SessionApplication {
                     .activity()
                     .settle_activity_epoch(prior_activity_epoch);
             }
-            match self
+            match mutations
                 .commit_session_snapshot_with_record(
                     &owner_scope,
                     session,
@@ -774,7 +783,7 @@ impl SessionApplication {
                         .map_err(|_| SessionActivityError::Conflict)?;
                     return Ok((session, epoch));
                 }
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
                 Err(error) => return Err(SessionActivityError::mutation(error)),
@@ -842,12 +851,13 @@ impl SessionApplication {
             awaken_session_execution_contract::SessionAgentRunBoundary,
         )>,
     ) -> Result<PersistedSession, SessionActivityError> {
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner_scope = self
+        let mutations = &self.mutations;
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
+            let owner_scope = mutations
                 .owner(session_id)
                 .await
                 .map_err(SessionActivityError::mutation)?;
-            let mut session = self
+            let mut session = mutations
                 .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
@@ -973,7 +983,7 @@ impl SessionApplication {
                 session_id,
             )?;
             let emitted_runtime_interval = !lifecycle_facts.is_empty();
-            match self
+            match mutations
                 .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
@@ -992,7 +1002,7 @@ impl SessionApplication {
                     }
                     return Ok(commit.into_session());
                 }
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
                 Err(error) => return Err(SessionActivityError::mutation(error)),
@@ -1009,12 +1019,13 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
         observation: SessionRuntimeIntervalObservation,
     ) -> Result<PersistedSession, SessionActivityError> {
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner_scope = self
+        let mutations = &self.mutations;
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
+            let owner_scope = mutations
                 .owner(session_id)
                 .await
                 .map_err(SessionActivityError::mutation)?;
-            let mut session = self
+            let mut session = mutations
                 .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
@@ -1053,7 +1064,7 @@ impl SessionApplication {
                     "Runtime boundary does not belong to the active Session interval".into(),
                 ));
             }
-            match self
+            match mutations
                 .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
@@ -1063,7 +1074,7 @@ impl SessionApplication {
                 .await
             {
                 Ok(commit) => return Ok(commit.into_session()),
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {}
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
                 Err(error) => return Err(SessionActivityError::mutation(error)),
             }
         }

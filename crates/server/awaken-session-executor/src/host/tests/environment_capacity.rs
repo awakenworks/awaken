@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::SandboxEffect;
 use awaken_session_environment_contract::{
     EnvironmentAdoption, EnvironmentAdoptionLayout, EnvironmentCapacity,
     EnvironmentProviderInstallation, EnvironmentRealizationKind, EnvironmentRealizer,
-    EnvironmentTerminalRealization, ObservationPurpose, ProviderEffect, SessionEnvironment,
-    SessionEnvironmentProvider,
+    EnvironmentTerminalRealization, SessionEnvironment, SessionEnvironmentProvider,
 };
 
 /// Delegates every environment role to a real workdir provider and records the
@@ -39,7 +39,7 @@ impl EnvironmentRealizer for RecordingCapacity {
     async fn create_effective_for_effect(
         &self,
         spec: &pc::SandboxSpec,
-        effect: ProviderEffect<'_>,
+        effect: SandboxEffect<'_>,
         source_handle: Option<&pc::SandboxHandle>,
         kind: EnvironmentRealizationKind,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
@@ -68,7 +68,7 @@ impl EnvironmentAdoption for RecordingCapacity {
         handle: &pc::SandboxHandle,
         retained: Option<&SessionEnvironment>,
         basis: pc::SandboxObservationBasis<'_>,
-        purpose: ObservationPurpose,
+        purpose: pc::SandboxObservationPurpose,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         self.inner
             .adoption()
@@ -90,7 +90,7 @@ impl EnvironmentAdoption for RecordingCapacity {
         &self,
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
-        effect: ProviderEffect<'_>,
+        effect: SandboxEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         self.inner
             .adoption()
@@ -103,7 +103,7 @@ impl EnvironmentAdoption for RecordingCapacity {
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
         retained: &SessionEnvironment,
-        effect: ProviderEffect<'_>,
+        effect: SandboxEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         self.inner
             .adoption()

@@ -81,6 +81,10 @@ mod tests {
 
     #[test]
     fn bounded_image_preparation_policy() {
+        // Ownership-only migration: all five policy values are imported from
+        // this owner directly. It adds no runtime causes or effects, so the
+        // existing P/L decision tables remain authoritative; affected
+        // consumer feature builds verify removal of the forwarding paths.
         // Decision table P1 max_images at valid boundaries => admit;
         // P2 zero/above maximum => reject before Kubernetes effects.
         for max_images in [0, 1, 16, 256, 257] {

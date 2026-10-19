@@ -9,6 +9,7 @@
 
 mod support;
 
+use awaken_session_application::SessionRootReads as _;
 use awaken_session_execution_contract::ThreadReadRuntime;
 use awaken_session_execution_contract::{SessionCoordinationReads as _, StreamingRunRuntime as _};
 use std::collections::HashMap;
@@ -468,7 +469,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ScriptFake {
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,
@@ -1477,6 +1478,7 @@ async fn a_rescheduled_run_projects_the_complete_thread_status_sequence() {
     support::drive_completed_user_dispatches(&state, &id, &completions).await;
     let persisted = state
         .session_application()
+        .queries()
         .session(&awaken_session_types::SessionId::from(&id))
         .await
         .unwrap();

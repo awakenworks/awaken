@@ -683,7 +683,8 @@ pub(crate) mod tests {
             thread: &str,
             projection: awaken_session_realization_contract::FrozenSessionProjection,
             mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-        ) -> Result<(), awaken_session_types::RunError> {
+        ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>
+        {
             awaken_session_execution_contract::NeutralRuntime
                 .install_session_projection(thread, projection, mode)
                 .await

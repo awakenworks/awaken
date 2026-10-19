@@ -69,6 +69,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/tool-and-capability.md` | Role owner | Required | self |
 | `design/run-ingress-message-delivery.md` | Role owner | Required | self |
 | `design/remote-worker-protocol.md` | Role owner | Required | self |
+| `design/sandbox-provider-contract.md` | Delegated boundary narrative | Delegated | [Sandbox provider role catalog](adr/0041-sandbox-execution-environment-provider.md#role-catalog) |
 | `application-authentication.md` | Role owner | Required | self |
 | `design/anthropic-alignment-and-sessions.md` | Product/downstream mapping | Not required | n/a |
 | `design/managed-dream.md` | Role owner | Required | self |

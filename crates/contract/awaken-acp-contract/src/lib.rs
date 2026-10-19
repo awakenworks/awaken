@@ -14,8 +14,10 @@ use sha2::{Digest, Sha256};
 mod adapter_policy;
 pub mod managed_credential;
 mod session;
+mod worker_profile;
 pub use adapter_policy::AcpAdapterPolicy;
 pub use session::{AcpLaunchEvent, AcpLaunchStage, LaunchObserver, SessionMcpServer};
+pub use worker_profile::AcpWorkerProfile;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NegotiatedAcpCapabilities {

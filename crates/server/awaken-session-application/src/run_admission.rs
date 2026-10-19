@@ -10,6 +10,8 @@
 //! Runtime Host executes an already-admitted Run. Session creation/recovery is
 //! application policy, so it is configured here once for every public protocol.
 
+use crate::{SessionProjectionReads as _, SessionRootReads as _};
+use awaken_session_realization_contract::SessionRealizationDriveError;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -19,8 +21,8 @@ use awaken_session_application_contract::{
 };
 use awaken_session_configuration_contract::mcp::McpAttachmentOrigin;
 use awaken_session_configuration_contract::{
-    ApplicationOriginBinding, ControlSessionCreationInputs, SessionBaselineState,
-    SessionContextSeed, SessionCreationIntent, SessionMcpAuthoringContext, SessionNetworkPolicy,
+    ApplicationOriginBinding, ControlSessionCreationInputs, SessionContextSeed,
+    SessionCreationIntent, SessionMcpAuthoringContext, SessionNetworkPolicy,
     SessionSystemPromptSelection, SessionToolConfiguration, SessionTrigger,
 };
 use awaken_session_execution_contract::{
@@ -35,8 +37,8 @@ use crate::creation::SessionCreationCompletion;
 use crate::{
     ConfiguredSessionRepository, CreateSessionCommand, McpAttachmentCandidate,
     McpAttachmentCandidateTarget, SessionApplication, SessionCreationError, SessionMutationError,
-    SessionPreparationError, SessionRealizationError, SessionRepositoryOwner,
-    SessionRepositoryResourceInput, session_repository_error,
+    SessionPreparationError, SessionRepositoryOwner, SessionRepositoryResourceInput,
+    session_repository_error,
 };
 
 /// Protocol-independent request to create a Session from one published Agent
@@ -118,11 +120,11 @@ fn preparation_error(error: SessionPreparationError) -> RunError {
     }
 }
 
-fn realization_error(error: SessionRealizationError) -> RunError {
+fn realization_error(error: SessionRealizationDriveError) -> RunError {
     match error {
-        SessionRealizationError::Effect(error) => error,
-        SessionRealizationError::Control(error) => RunError::unavailable(error.to_string()),
-        SessionRealizationError::DidNotConverge => {
+        SessionRealizationDriveError::Effect(error) => error.into(),
+        SessionRealizationDriveError::Control(error) => RunError::unavailable(error.to_string()),
+        SessionRealizationDriveError::DidNotConverge => {
             RunError::unavailable("Session realization did not converge")
         }
     }
@@ -249,7 +251,7 @@ impl SessionApplication {
             // freezes the dispatch; only activity creation is skipped on receipt
             // replay. Reservation remains non-executable until the exact epoch is
             // activated.
-            let durable_owner = match self.owner(&session_id).await {
+            let durable_owner = match self.mutations.owner(&session_id).await {
                 Ok(actual_owner) => {
                     if expected_owner.is_some_and(|expected| expected != actual_owner) {
                         return Err(RunError::bad_request("Session was not found"));
@@ -397,65 +399,15 @@ impl SessionApplication {
         }
     }
 
-    /// Read the one durable Session projection used by every protocol without
-    /// driving Runtime effects. Queries must remain projections; realization is
-    /// owned by create, run admission, Worker claims, and reconciliation.
-    /// `Ok(None)` means no Session aggregate exists; callers with a separate
-    /// Thread read model may still project that Thread without inventing one.
-    pub async fn read_session_projection(
-        &self,
-        thread_id: &str,
-        expected_owner: Option<&str>,
-    ) -> Result<Option<RecoveredSessionProjection>, SessionProjectionRecoveryError> {
-        let session = match self
-            .session(&awaken_session_types::SessionId::from(thread_id))
-            .await
-        {
-            Ok(session) => session,
-            Err(SessionRepositoryError::NotFound) => return Ok(None),
-            Err(error) => {
-                return Err(SessionProjectionRecoveryError::Rejected(
-                    session_repository_error(error),
-                ));
-            }
-        };
-        if !session.is_publicly_readable() {
-            return Err(SessionProjectionRecoveryError::NotFound);
-        }
-        let owner = self
-            .owner(&awaken_session_types::SessionId::from(thread_id))
-            .await
-            .map_err(|error| match error {
-                SessionMutationError::NotFound => SessionProjectionRecoveryError::NotFound,
-                SessionMutationError::Conflict | SessionMutationError::IdempotencyMismatch => {
-                    SessionProjectionRecoveryError::Unavailable(error.to_string())
-                }
-                SessionMutationError::Unavailable(message) => {
-                    SessionProjectionRecoveryError::Unavailable(message)
-                }
-            })?;
-        if expected_owner.is_some_and(|expected| expected != owner) {
-            return Err(SessionProjectionRecoveryError::NotFound);
-        }
-        if matches!(session.baseline, SessionBaselineState::Preparing(_)) {
-            return Err(SessionProjectionRecoveryError::Unavailable(
-                "Session creation finalization is incomplete".into(),
-            ));
-        }
-        Ok(Some(RecoveredSessionProjection {
-            owner_scope: owner,
-            session,
-        }))
-    }
-
     /// Rebuild the disposable Runtime projection at an execution admission
-    /// boundary. This is deliberately separate from [`Self::read_session_projection`].
+    /// boundary. This is deliberately separate from [`crate::SessionQueries::read_session_projection`].
     pub async fn recover_session_projection(
         &self,
         thread_id: &str,
         expected_owner: Option<&str>,
     ) -> Result<Option<RecoveredSessionProjection>, SessionProjectionRecoveryError> {
         let Some(recovered) = self
+            .queries
             .read_session_projection(thread_id, expected_owner)
             .await?
         else {
@@ -616,6 +568,7 @@ impl SessionApplication {
         command: CreateProfiledSessionCommand,
         completion: SessionCreationCompletion,
     ) -> Result<awaken_session_state_contract::PersistedSession, SessionCreationError> {
+        let queries = &self.queries;
         let CreateProfiledSessionCommand {
             owner_scope,
             session_id,
@@ -663,12 +616,8 @@ impl SessionApplication {
                     format!("Executable projections could not be refreshed: {error}"),
                 )
             })?;
-        let profile = admission.enter(|| {
-            source_revision.map_or_else(
-                || self.session_profile(&owner_scope, &agent_id),
-                |revision| self.session_profile_at_revision(&owner_scope, &agent_id, revision),
-            )
-        });
+        let profile = admission
+            .enter(|| queries.selected_session_profile(&owner_scope, &agent_id, source_revision));
         if let (Some(requested), Some(resolved)) = (source_revision, profile.as_ref())
             && !awaken_executable_agent_contract::requested_profile_revision_matches(
                 resolved.source_revision,
@@ -687,7 +636,7 @@ impl SessionApplication {
                 "agent_version_unavailable: agent `{agent_id}` has no executable publication at version {revision}"
             )).into());
         }
-        if source_revision.is_none() && self.agent_unavailable(&owner_scope, &agent_id) {
+        if source_revision.is_none() && queries.agent_unavailable(&owner_scope, &agent_id) {
             return Err(RunError::bad_request(format!(
                 "agent_unavailable: agent `{agent_id}` cannot start a new session"
             ))
@@ -744,7 +693,7 @@ impl SessionApplication {
                     .filter(|backend| !backend.is_empty())
                     .map(str::to_owned)
             });
-        let capabilities = self.capabilities_for(&session_id)?;
+        let capabilities = queries.capabilities_for(&session_id)?;
         let capability_tools = SessionToolConfiguration::from_capabilities(&capabilities);
         let inherited_tools = profile.as_ref().map_or_else(
             || capability_tools.clone(),
@@ -1032,6 +981,7 @@ impl SessionApplication {
         agent_id: &str,
     ) -> Result<SessionRevision, RunApplicationError> {
         match self
+            .queries
             .session(&awaken_session_types::SessionId::from(thread_id))
             .await
         {
@@ -1046,6 +996,7 @@ impl SessionApplication {
                     // every loser adopts the exact winner through the same recovery.
                     Err(error) if error.kind == awaken_session_types::RunErrorKind::Unavailable => {
                         match self
+                            .queries
                             .session(&awaken_session_types::SessionId::from(thread_id))
                             .await
                         {

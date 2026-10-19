@@ -402,6 +402,29 @@ pub(super) fn pod_readiness(pod: &Pod) -> PodReadiness {
     PodReadiness::Waiting(format!("Pod phase is {phase}"))
 }
 
+/// Project the API's scheduler condition through the one canonical refusal
+/// predicate. Readiness waiting and original-create disposal use the same
+/// Pending + PodScheduled=False + Unschedulable law, without another policy.
+pub(super) fn pod_unschedulable(pod: &Pod) -> Option<String> {
+    let status = pod.status.as_ref();
+    let scheduled = status
+        .and_then(|status| status.conditions.as_ref())
+        .into_iter()
+        .flatten()
+        .find(|condition| condition.type_ == "PodScheduled")
+        .map(
+            |condition| awaken_container_contract::K8sPodScheduledCondition {
+                status: &condition.status,
+                reason: condition.reason.as_deref(),
+                message: condition.message.as_deref(),
+            },
+        );
+    awaken_container_contract::k8s_pod_unschedulable(
+        status.and_then(|status| status.phase.as_deref()),
+        scheduled,
+    )
+}
+
 /// The Pod's creation instant as the API server recorded it: durable
 /// evidence that outlives the creating process, so a later observer measures
 /// the same wait the creator did.
@@ -446,29 +469,14 @@ pub(super) async fn await_pod_ready(
     unschedulable_wait: Duration,
     clock: Option<&std::sync::Arc<dyn awaken_time::WallClock>>,
 ) -> Result<(), RuntimeError> {
-    use awaken_container_contract::{K8sPodScheduledCondition, K8sPodWait};
+    use awaken_container_contract::K8sPodWait;
     let (waited, mut startup) = (
         awaken_time::mono::Stopwatch::start(),
         awaken_time::mono::Stopwatch::start(),
     );
     loop {
         let pod = api.get(name).await.map_err(backend)?;
-        let status = pod.status.as_ref();
-        let mut conditions = status
-            .and_then(|status| status.conditions.as_ref())
-            .into_iter()
-            .flatten();
-        let scheduled = conditions
-            .find(|condition| condition.type_ == "PodScheduled")
-            .map(|condition| K8sPodScheduledCondition {
-                status: &condition.status,
-                reason: condition.reason.as_deref(),
-                message: condition.message.as_deref(),
-            });
-        let unschedulable = awaken_container_contract::k8s_pod_unschedulable(
-            status.and_then(|status| status.phase.as_deref()),
-            scheduled,
-        );
+        let unschedulable = pod_unschedulable(&pod);
         if unschedulable.is_some() {
             startup = awaken_time::mono::Stopwatch::start();
         }

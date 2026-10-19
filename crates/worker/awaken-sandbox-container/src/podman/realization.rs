@@ -162,7 +162,7 @@ impl PodmanRuntime {
         serde_json::from_str::<Vec<PodmanMount>>(&output)
             .map_err(backend)?
             .into_iter()
-            .find(|mount| mount.destination == crate::LIVE_INPUTS_ROOT)
+            .find(|mount| mount.destination == awaken_container_contract::LIVE_INPUTS_ROOT)
             .map(|mount| mount.source)
             .ok_or_else(|| backend("Podman container has no managed live-input root bind"))
     }

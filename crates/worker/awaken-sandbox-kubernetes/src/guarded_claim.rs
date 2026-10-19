@@ -13,17 +13,18 @@ use super::pod_effect_fence;
 use super::pod_name;
 use super::projection_verification;
 use awaken_provisioning_contract as pc;
-use awaken_sandbox_container::ContainerEffectFence;
+use awaken_provisioning_contract::SandboxEffectFence;
+use awaken_provisioning_contract::SandboxObservationPurpose;
+use awaken_sandbox_container::ContainerObservationExpectation;
 use awaken_sandbox_container::ContainerPlan;
 use awaken_sandbox_container::RuntimeError;
-use awaken_sandbox_container::{ContainerObservationExpectation, ContainerObservationPurpose};
 use k8s_openapi::api::core::v1::PersistentVolumeClaim;
 
 pub(super) fn verify_joined_original_claim(
     runtime: &K8sRuntime,
     scope: &str,
     plan: &ContainerPlan,
-    predecessor: &ContainerEffectFence,
+    predecessor: &SandboxEffectFence,
     ticket_uid: &str,
     observed: &PersistentVolumeClaim,
 ) -> Result<(), RuntimeError> {
@@ -105,7 +106,7 @@ pub(super) async fn observe_guarded_claim(
     let incompatible = || pc::SandboxObservation::Incompatible {
         reason: "guarded Kubernetes claim differs from its terminal-only physical evidence".into(),
     };
-    if expectation.purpose != ContainerObservationPurpose::TerminalCleanup
+    if expectation.purpose != SandboxObservationPurpose::TerminalCleanup
         || expectation.effect_fence.is_none()
         || expectation.adoption_fingerprint.is_none()
         || expectation.realization_fingerprint.is_none()

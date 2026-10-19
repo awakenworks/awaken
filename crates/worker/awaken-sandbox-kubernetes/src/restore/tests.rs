@@ -203,7 +203,7 @@ async fn historical_directory_init_keeps_exact_projection_and_digest() {
     // Pod with copied old provenance is not an old Pod. No security field is
     // ignored and no historical creation path is reintroduced.
     let runtime = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap()).with_continuation_volume(
-        awaken_sandbox_container::K8sContinuationVolume {
+        awaken_container_contract::K8sContinuationVolume {
             storage_class_name: None,
             size: "1Gi".into(),
         },
@@ -301,7 +301,7 @@ fn claim_projection_preserves_policy_across_api_defaulting() {
     for configured in [None, Some("pinned")] {
         let mut expected = continuation::build_claim(
             "restore-proof",
-            &awaken_sandbox_container::K8sContinuationVolume {
+            &awaken_container_contract::K8sContinuationVolume {
                 storage_class_name: configured.map(str::to_owned),
                 size: "1Gi".into(),
             },
@@ -631,7 +631,7 @@ fn deleting_projection_requires_authorized_disposal_and_exact_identity() {
     };
     let mut claim = continuation::build_claim(
         "disposal-projection",
-        &awaken_sandbox_container::K8sContinuationVolume {
+        &awaken_container_contract::K8sContinuationVolume {
             storage_class_name: None,
             size: "1Gi".into(),
         },

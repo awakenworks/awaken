@@ -10,21 +10,15 @@ product = "platform"
 bounded_context = "environment"
 layer = "contract"
 # ADR-0081 §1 interface kinds this crate may hold (types | spi | api | remote | ext).
-kinds = ["types", "spi"]
+kinds = ["types"]
 authority = "container-environment"
 separation = "contract"
 
 [dependencies]
-# The container ports are the container projection of the provisioning ports:
-# they speak its Sandbox, handle, fence, and restore vocabulary.
+# Pure container wire and capacity values share provisioning vocabulary.
 awaken-provisioning-contract.workspace = true
-# `ContainerEnvironment::open_agent_channel` and `RuntimeAgentProcess` carry the
-# agent's byte channel opened inside the container.
-awaken-agent-channel.workspace = true
-# `ContainerEnvironment` publishes Sandbox control services.
-awaken-sandbox-control.workspace = true
-async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 
 [lints]
 workspace = true

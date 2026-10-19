@@ -11,6 +11,7 @@
 //! the Session baseline and delegates ordinary Thread/Run persistence to the
 //! existing [`awaken_session_execution_contract::SessionRuntime`] port.
 
+use crate::SessionRootReads as _;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_session_application_contract::{Pending, RunResume, StepOutcome};
@@ -217,18 +218,14 @@ impl SessionApplication {
         let baseline = session
             .frozen_baseline()
             .ok_or_else(|| RunError::unavailable("Session creation has not completed"))?;
-        match baseline.agent_revision {
-            Some(revision) => {
-                self.session_profile_at_revision(owner_scope, &baseline.agent_id, revision)
-            }
-            None => self.session_profile(owner_scope, &baseline.agent_id),
-        }
-        .ok_or_else(|| {
-            RunError::unavailable(format!(
-                "the Session's frozen coordinator Agent `{}` is unavailable",
-                baseline.agent_id
-            ))
-        })
+        self.queries
+            .selected_session_profile(owner_scope, &baseline.agent_id, baseline.agent_revision)
+            .ok_or_else(|| {
+                RunError::unavailable(format!(
+                    "the Session's frozen coordinator Agent `{}` is unavailable",
+                    baseline.agent_id
+                ))
+            })
     }
 
     fn coordination_roster(
@@ -262,7 +259,8 @@ impl SessionApplication {
                 ))
             })?;
             let profile = self
-                .session_profile_at_revision(owner_scope, agent_id, revision)
+                .queries
+                .selected_session_profile(owner_scope, agent_id, Some(revision))
                 .ok_or_else(|| {
                     RunError::unavailable(format!(
                         "roster Agent `{agent_id}` revision {revision} is unavailable"
@@ -297,6 +295,7 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
     ) -> Result<(String, awaken_session_state_contract::PersistedSession), RunError> {
         let session = self
+            .queries
             .session(session_id)
             .await
             .map_err(|error| match error {
@@ -316,10 +315,16 @@ impl SessionApplication {
                 "Session realization has not completed",
             ));
         }
-        let owner = self.owner(session_id).await.map_err(|error| match error {
-            crate::SessionMutationError::NotFound => RunError::bad_request("Session was not found"),
-            other => RunError::unavailable(other.to_string()),
-        })?;
+        let owner = self
+            .mutations
+            .owner(session_id)
+            .await
+            .map_err(|error| match error {
+                crate::SessionMutationError::NotFound => {
+                    RunError::bad_request("Session was not found")
+                }
+                other => RunError::unavailable(other.to_string()),
+            })?;
         Ok((owner, session))
     }
 }
@@ -470,12 +475,16 @@ impl SessionApplication {
             ));
         }
         if let Some(expected_owner) = expected_owner {
-            let actual_owner = self.owner(session_id).await.map_err(|error| match error {
-                crate::SessionMutationError::NotFound => {
-                    RunError::bad_request("Session was not found")
-                }
-                other => RunError::unavailable(other.to_string()),
-            })?;
+            let actual_owner =
+                self.mutations
+                    .owner(session_id)
+                    .await
+                    .map_err(|error| match error {
+                        crate::SessionMutationError::NotFound => {
+                            RunError::bad_request("Session was not found")
+                        }
+                        other => RunError::unavailable(other.to_string()),
+                    })?;
             if actual_owner != expected_owner {
                 return Err(RunError::bad_request("Session was not found"));
             }
@@ -597,6 +606,7 @@ impl SessionAgentCoordination for SessionApplication {
         let thread_reads = self.runtime().thread_reads();
 
         let session = self
+            .queries
             .session(session_id)
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
@@ -838,6 +848,7 @@ impl SessionAgentCoordination for SessionApplication {
             SessionAgentBoundaryRole::Child
         };
         let current = self
+            .queries
             .session(&command.session_id)
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
@@ -922,9 +933,13 @@ impl SessionAgentCoordination for SessionApplication {
         // Current ownership, frozen roster and exact committed source are
         // checked before recovery. Mutable fresh preparation follows only a
         // confirmed Missing request, so lost-ACK replay has no new effects.
-        let owner = self.owner(&command.session_id).await.map_err(|error| {
-            RunError::unavailable(format!("Session ownership is unavailable: {error}"))
-        })?;
+        let owner = self
+            .mutations
+            .owner(&command.session_id)
+            .await
+            .map_err(|error| {
+                RunError::unavailable(format!("Session ownership is unavailable: {error}"))
+            })?;
         let member = self
             .coordination_roster(&owner, &settled)?
             .into_iter()
@@ -970,6 +985,7 @@ impl SessionAgentCoordination for SessionApplication {
             return Ok(());
         }
         let current = self
+            .queries
             .session(&command.session_id)
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;

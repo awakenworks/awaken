@@ -9,6 +9,84 @@
 use crate::{FailSessionRealization, RunError, SessionRealizationControlDisposition};
 use awaken_session_state_contract::{PersistedSession, SessionExecutionState};
 
+/// One failed realization effect across projection and driver boundaries.
+/// The provider's relative scheduling hint travels beside the unchanged
+/// neutral error. It is not a lease, a new provisioning deadline or a retry
+/// budget; classification remains [`effect_failure_disposition`].
+#[derive(Debug, thiserror::Error)]
+#[error("{error}")]
+pub struct SessionRealizationEffectFailure {
+    #[source]
+    error: RunError,
+    retry_after: Option<std::time::Duration>,
+}
+
+impl SessionRealizationEffectFailure {
+    #[must_use]
+    pub fn new(error: RunError, retry_after: Option<std::time::Duration>) -> Self {
+        Self { error, retry_after }
+    }
+
+    #[must_use]
+    pub fn run_error(&self) -> &RunError {
+        &self.error
+    }
+
+    #[must_use]
+    pub const fn retry_after(&self) -> Option<std::time::Duration> {
+        self.retry_after
+    }
+
+    /// Charge only time the driver spent reporting this failure. No clock is
+    /// read here and no Provider observation is reclassified; a spent hint is
+    /// still present, as zero, so the existing pool immediately re-observes.
+    #[must_use]
+    pub fn after_wait(mut self, elapsed: std::time::Duration) -> Self {
+        self.retry_after = retry_after_wait(self.retry_after, elapsed);
+        self
+    }
+}
+
+impl From<RunError> for SessionRealizationEffectFailure {
+    fn from(error: RunError) -> Self {
+        Self::new(error, None)
+    }
+}
+
+impl From<SessionRealizationEffectFailure> for RunError {
+    fn from(failure: SessionRealizationEffectFailure) -> Self {
+        failure.error
+    }
+}
+
+fn retry_after_wait(
+    hint: Option<std::time::Duration>,
+    elapsed: std::time::Duration,
+) -> Option<std::time::Duration> {
+    hint.map(|remaining| remaining.saturating_sub(elapsed))
+}
+
+#[cfg(kani)]
+/// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
+#[kani::proof]
+fn driver_wait_never_extends_or_discards_the_original_retry_hint() {
+    let duration = || std::time::Duration::new(kani::any(), kani::any::<u32>() % 1_000_000_000);
+    let hint = kani::any::<bool>().then(duration);
+    let elapsed = duration();
+    let remaining = retry_after_wait(hint, elapsed);
+    match (hint, remaining) {
+        (None, None) => {}
+        (Some(before), Some(after)) => {
+            assert!(after <= before);
+            assert_eq!(after, before.saturating_sub(elapsed));
+            if elapsed >= before {
+                assert!(after.is_zero());
+            }
+        }
+        _ => unreachable!("waiting never changes hint presence"),
+    }
+}
+
 /// Stable `RunError` code of a Transient environment failure: the provider
 /// mechanism or a transitional state failed and an identical retry may clear.
 pub const ENVIRONMENT_UNAVAILABLE_CODE: &str = "environment_unavailable";
@@ -176,6 +254,34 @@ impl FailSessionRealization {
 
     /// Classify the current root without mutating its compatible DTO. The
     /// controlled aggregate applies any counted-attempt refund separately.
+    ///
+    /// P1: callers can inspect the immutable plan. Persisted mutation remains
+    /// with the aggregate's existing checked assignment operation and root CAS.
+    ///
+    /// ```
+    /// use awaken_session_realization_contract::{
+    ///     FailSessionRealization, RealizationFailureOutcome, SessionRealizationControlFailure,
+    /// };
+    /// use awaken_session_state_contract::PersistedSession;
+    /// fn observe(command: &FailSessionRealization, session: &PersistedSession)
+    ///     -> Result<RealizationFailureOutcome, SessionRealizationControlFailure>
+    /// {
+    ///     command.initial_realization_failure_plan(session, 3)
+    /// }
+    /// ```
+    ///
+    /// P2: the former mutable DTO shortcut is unavailable. This paired negative
+    /// case uses the same valid public types as P1, so import errors cannot
+    /// masquerade as closure. Other snapshot replacement paths remain outside
+    /// this bounded removal; field encapsulation is checked separately.
+    ///
+    /// ```compile_fail,E0599
+    /// use awaken_session_realization_contract::FailSessionRealization;
+    /// use awaken_session_state_contract::PersistedSession;
+    /// fn bypass(command: &FailSessionRealization, session: &mut PersistedSession) {
+    ///     let _ = command.retries_initial_realization(session, 3);
+    /// }
+    /// ```
     pub fn initial_realization_failure_plan(
         &self,
         session: &PersistedSession,
@@ -185,7 +291,7 @@ impl FailSessionRealization {
             self.retryable,
             self.not_ready,
             session.execution,
-            session.realization_progress.attempts,
+            session.realization_progress().attempts(),
             budget,
         )
         .map_err(|reason| crate::SessionRealizationControlFailure::Invalid(reason.into()))?;
@@ -193,27 +299,6 @@ impl FailSessionRealization {
             return Ok(RealizationFailureOutcome::Absorb);
         }
         Ok(outcome)
-    }
-
-    /// Whether this failure retries the Session's initial realization (Idle
-    /// Sessions answer `false` and keep their existing path). A not-ready
-    /// report retries and refunds the attempt its lease's assignment counted
-    /// (Preparing or Activating), so it never spends the persisted budget.
-    pub fn retries_initial_realization(
-        &self,
-        session: &mut PersistedSession,
-        budget: u32,
-    ) -> Result<bool, crate::SessionRealizationControlFailure> {
-        let outcome = self.initial_realization_failure_plan(session, budget)?;
-        Ok(match outcome {
-            RealizationFailureOutcome::Retry { refund_attempt } => {
-                if refund_attempt {
-                    session.realization_progress.attempts -= 1;
-                }
-                true
-            }
-            RealizationFailureOutcome::Absorb => false,
-        })
     }
 }
 
@@ -568,5 +653,69 @@ mod tests {
                 "{rule}"
             );
         }
+    }
+    #[test]
+    fn effect_error_payload_keeps_classification_and_only_shortens_its_hint() {
+        // Cause/effect table E1-E4. C1 neutral error kind/code spans the
+        // existing NotReady/Retryable/Terminal partitions; C2 hint is absent,
+        // zero or positive; C3 reporting wait is below/equal/above the hint.
+        // E1 !C2 => None; E2 Some(h)+wait<h => Some(h-wait);
+        // E3 Some(h)+wait>=h => Some(0), never discarded; E4 every C1/C2/C3
+        // keeps the exact kind/code/message and original classification.
+        // The Kani harness exhausts duration arithmetic; these rows prove the
+        // real error payload and its neutral projection compose with it.
+        use std::time::Duration as D;
+        let errors: [fn() -> RunError; 7] = [
+            || RunError::unavailable_classified(ENVIRONMENT_PROVISIONING_CODE, "original"),
+            || RunError::unavailable_classified(ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, "original"),
+            || RunError::unavailable("original"),
+            || RunError::conflict("original"),
+            || RunError::internal("original"),
+            || RunError::classified("classified", "original"),
+            || RunError::bad_request("original"),
+        ];
+        for error in errors {
+            for hint in [None, Some(D::ZERO), Some(D::from_secs(5)), Some(D::MAX)] {
+                for wait in [
+                    D::ZERO,
+                    D::from_secs(2),
+                    D::from_secs(5),
+                    D::from_secs(8),
+                    D::MAX,
+                ] {
+                    let original = error();
+                    let expected = (
+                        original.kind,
+                        original.code.clone(),
+                        original.message.clone(),
+                        effect_failure_disposition(&original),
+                    );
+                    let failure =
+                        SessionRealizationEffectFailure::new(original, hint).after_wait(wait);
+                    assert_eq!(
+                        failure.retry_after(),
+                        hint.map(|h| h.saturating_sub(wait)),
+                        "E1-E3"
+                    );
+                    assert_eq!(
+                        effect_failure_disposition(failure.run_error()),
+                        expected.3,
+                        "E4 class"
+                    );
+                    let projected = RunError::from(failure);
+                    assert_eq!(
+                        (projected.kind, projected.code, projected.message),
+                        (expected.0, expected.1, expected.2),
+                        "E4 exact error"
+                    );
+                }
+            }
+        }
+        assert!(
+            SessionRealizationEffectFailure::from(RunError::internal("plain"))
+                .retry_after()
+                .is_none(),
+            "E1 neutral failure has no invented hint"
+        );
     }
 }

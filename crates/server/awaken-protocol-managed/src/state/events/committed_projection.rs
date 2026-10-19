@@ -28,10 +28,10 @@ mod run_observation_projection;
 pub(in crate::state::events) mod source_fence;
 mod usage_projection;
 use crate::state::session_record::ProjectionDeliveryMemo;
-use crate::state::sessions::RehydrationPurpose;
 use awaken_managed_session_events::{
     BudgetReachAnchor, OrderEvidence, OrderIndex, ParentTerminalEvidence,
 };
+use awaken_session_application::SessionRecoveryPurpose;
 use candidate_evidence::CandidateEvidence;
 use canonical_order::CanonicalizationEvidence;
 pub(super) use root_projection::transcript_fact_key;
@@ -89,7 +89,7 @@ impl ManagedState {
             session_id,
             owner_scope,
             persisted.clone(),
-            RehydrationPurpose::CollectionRead,
+            SessionRecoveryPurpose::CollectionRead,
         )?;
         let mut record = SessionRecord::new(
             agent_id,

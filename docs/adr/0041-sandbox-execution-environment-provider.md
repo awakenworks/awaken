@@ -1182,3 +1182,10 @@ as an exit receipt.
   `crates/contract/awaken-provisioning-contract/src/lease.rs`); it is the agreed
   design, wired when the disposal decision becomes shared. Today each provider
   owns disposal, with the process-identity reaper of Amendment 11.
+
+
+## Amendment 2026-10-18: one provider port
+
+The container projection is merged into the one `SandboxProvider` port; its
+readiness role, live type, restore ladder and provider-owned handle evidence
+are specified in [the provider contract](../design/sandbox-provider-contract.md).

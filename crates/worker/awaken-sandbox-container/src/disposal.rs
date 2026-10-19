@@ -22,9 +22,9 @@
 use awaken_provisioning_contract as pc;
 
 use crate::{
-    ContainerRuntime, ContainerSandbox, EnvironmentFile, MAX_MEMORY_SNAPSHOT_BYTES,
-    MAX_MEMORY_SNAPSHOT_FILES, files,
+    ContainerRuntime, ContainerSandbox, MAX_MEMORY_SNAPSHOT_BYTES, MAX_MEMORY_SNAPSHOT_FILES, files,
 };
+use awaken_provisioning_contract::SandboxFile;
 
 /// What cleanup managed to take out of an environment before removing it.
 ///
@@ -60,7 +60,7 @@ impl DisposalHarvest {
 
 fn replace_memory_snapshot(
     root: &std::path::Path,
-    files: &[EnvironmentFile],
+    files: &[SandboxFile],
 ) -> Result<(), pc::SandboxError> {
     if root.exists() {
         std::fs::remove_dir_all(root)

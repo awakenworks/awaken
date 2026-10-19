@@ -3,7 +3,7 @@
 #![cfg(all(feature = "hand", target_os = "linux"))]
 
 use awaken_provisioning_contract as pc;
-use awaken_provisioning_contract::{Sandbox as _, SandboxProvider as _};
+use awaken_provisioning_contract::{Sandbox as _, SandboxReadiness as _};
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_sandbox_local::NamespaceProvider;
 use awaken_tool_relay::{RemoteToolExecutor, wire::HandResult};

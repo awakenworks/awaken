@@ -682,6 +682,17 @@ impl From<RealizationError> for RunError {
     }
 }
 
+/// Keep the Provider's scheduling hint before projecting through the one
+/// neutral Run conversion. No caller repeats the realization classification.
+impl From<RealizationError>
+    for awaken_session_realization_contract::SessionRealizationEffectFailure
+{
+    fn from(error: RealizationError) -> Self {
+        let retry_after = error.retry_after();
+        Self::new(RunError::from(error), retry_after)
+    }
+}
+
 /// A CacheVolume failure is classified here, with every other realization
 /// failure, so one place decides its disposition.
 impl crate::cache_volume::CacheVolumeError {

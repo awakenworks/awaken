@@ -61,7 +61,7 @@ async fn historic_failed_source_denials_keep_pod_claim_and_projection_evidence()
             pc::SandboxEffectFence::new("cleanup", "owner", "boot", 1, u64::MAX - 1).unwrap();
         let error = runtime
             .observe(ContainerObservationExpectation {
-                purpose: ContainerObservationPurpose::TerminalCleanup,
+                purpose: SandboxObservationPurpose::TerminalCleanup,
                 container_id: "awaken-cleanup",
                 adoption_fingerprint: Some(&fingerprint),
                 realization_fingerprint: Some(&fingerprint),

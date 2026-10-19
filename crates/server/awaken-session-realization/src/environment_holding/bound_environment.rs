@@ -67,7 +67,7 @@ impl EnvironmentHolding {
                                     "live bound Environment recovery has no durable handle",
                                 )
                             })?,
-                            crate::session_environment::ProviderEffect::Fenced {
+                            awaken_provisioning_contract::SandboxEffect::Fenced {
                                 fence: effect_fence,
                                 authority: &authority,
                             },
@@ -151,7 +151,7 @@ impl EnvironmentHolding {
                         spec,
                         &environment.lifecycle().handle(),
                         &environment,
-                        crate::session_environment::ProviderEffect::Fenced {
+                        awaken_provisioning_contract::SandboxEffect::Fenced {
                             fence: effect_fence,
                             authority: &authority,
                         },
@@ -415,9 +415,9 @@ impl EnvironmentHolding {
                     effect_fence,
                 },
                 if mode.requires_live_source() {
-                    awaken_session_environment_contract::ObservationPurpose::Recovery
+                    awaken_provisioning_contract::SandboxObservationPurpose::Recovery
                 } else {
-                    awaken_session_environment_contract::ObservationPurpose::TerminalCleanup
+                    awaken_provisioning_contract::SandboxObservationPurpose::TerminalCleanup
                 },
             )
             .await

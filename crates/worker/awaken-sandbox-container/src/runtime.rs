@@ -10,12 +10,12 @@ use awaken_sandbox_control::SandboxControlServiceKind;
 use crate::ContainerPlan;
 use crate::egress::EgressRealizationIdentity;
 use crate::podman_plan::RootfsPlan;
-use crate::provider_contract::ContainerEffectFence;
 use crate::provider_contract::{PreparedContainer, PreparedContainerDisposition};
 use crate::resident_hand::ResidentHandConfig;
 pub use crate::runtime_error::RuntimeError;
 #[cfg(feature = "docker")]
 pub(crate) use crate::runtime_error::RuntimeFailure;
+use awaken_provisioning_contract::SandboxEffectFence;
 
 /// Stable label every managed Sandbox container/pod carries. The wire value is
 /// retained for compatibility with existing resources; it is discovery evidence,
@@ -53,7 +53,7 @@ pub const SANDBOX_ATTEMPT_LABEL: &str = "awaken.sandbox.attempt";
 
 #[cfg(any(feature = "docker", feature = "podman"))]
 pub(crate) fn container_effect_label_values(
-    fence: Option<&ContainerEffectFence>,
+    fence: Option<&SandboxEffectFence>,
 ) -> Vec<(&'static str, String)> {
     fence.map_or_else(Vec::new, |fence| {
         vec![
@@ -78,7 +78,7 @@ pub fn container_effect_fence_from_values(
     runtime_incarnation: Option<&str>,
     epoch: Option<&str>,
     expires_at_unix_ms: Option<&str>,
-) -> Result<Option<ContainerEffectFence>, RuntimeError> {
+) -> Result<Option<SandboxEffectFence>, RuntimeError> {
     match (
         operation_id,
         owner,
@@ -93,7 +93,7 @@ pub fn container_effect_fence_from_values(
             Some(runtime_incarnation),
             Some(epoch),
             Some(expires_at_unix_ms),
-        ) => ContainerEffectFence::new(
+        ) => SandboxEffectFence::new(
             operation_id,
             owner,
             runtime_incarnation,
@@ -345,8 +345,6 @@ pub struct MemoryMount {
     pub snapshot_tar: Vec<u8>,
 }
 
-pub use awaken_container_contract::K8sContinuationVolume;
-
 pub fn validate_runtime_effect_fence(
     effect_fence: &pc::SandboxEffectFence,
     clock: Option<&std::sync::Arc<dyn awaken_time::WallClock>>,
@@ -425,7 +423,7 @@ pub struct ExistingRealization {
     /// an arbitrary backend label.
     pub adoption_fingerprint: Option<String>,
     pub fingerprint: Option<String>,
-    pub fence: Option<crate::ContainerEffectFence>,
+    pub fence: Option<awaken_provisioning_contract::SandboxEffectFence>,
     pub attempt_id: Option<String>,
     /// Whether a new provider process can reconstruct every lifecycle
     /// dependency of this object, or only the in-process attempt that created
@@ -598,7 +596,7 @@ mod realization_tests {
             adoption_fingerprint: fingerprint.as_ref().map(ToString::to_string),
             fingerprint: fingerprint.map(|value| value.to_string()),
             fence: Some(
-                crate::ContainerEffectFence::new(
+                awaken_provisioning_contract::SandboxEffectFence::new(
                     "operation-1",
                     "owner-1",
                     "runtime-1",
@@ -616,9 +614,9 @@ mod realization_tests {
     fn realization_decision_for_test(
         adoption: Option<&pc::SandboxRealizationFingerprint>,
         realization: Option<&pc::SandboxRealizationFingerprint>,
-        effect_fence: Option<&crate::ContainerEffectFence>,
+        effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
         intent: &crate::ContainerRealizationIntent,
-        attempt: &crate::ContainerCreateAttempt,
+        attempt: &awaken_provisioning_contract::SandboxCreateAttempt,
         rebuild_continuity: RebuildContinuityEvidence,
         observed: &[ExistingRealization],
     ) -> Result<ExistingRealizationDecision, RuntimeError> {
@@ -653,11 +651,17 @@ mod realization_tests {
         // are owned by SandboxEffectFence::authorizes_successor.
         let exact = fingerprint("exact");
         let different = fingerprint("different");
-        let fence =
-            crate::ContainerEffectFence::new("operation-1", "owner-1", "runtime-1", 1, u64::MAX)
-                .unwrap();
-        let attempt = crate::ContainerCreateAttempt::new("attempt-1");
-        let replacement_attempt = crate::ContainerCreateAttempt::new("attempt-2");
+        let fence = awaken_provisioning_contract::SandboxEffectFence::new(
+            "operation-1",
+            "owner-1",
+            "runtime-1",
+            1,
+            u64::MAX,
+        )
+        .unwrap();
+        let attempt = awaken_provisioning_contract::SandboxCreateAttempt::new("attempt-1");
+        let replacement_attempt =
+            awaken_provisioning_contract::SandboxCreateAttempt::new("attempt-2");
         assert_eq!(
             realization_decision_for_test(
                 Some(&exact),
@@ -735,9 +739,14 @@ mod realization_tests {
             ),
             "R6 renewed expiry",
         );
-        let incoming_with_shorter_expiry =
-            crate::ContainerEffectFence::new("operation-1", "owner-1", "runtime-1", 1, 122)
-                .unwrap();
+        let incoming_with_shorter_expiry = awaken_provisioning_contract::SandboxEffectFence::new(
+            "operation-1",
+            "owner-1",
+            "runtime-1",
+            1,
+            122,
+        )
+        .unwrap();
         let mut observed_with_newer_expiry =
             observed(Some(exact.clone()), ExistingRealizationPhase::Ready);
         {
@@ -874,7 +883,7 @@ mod realization_tests {
          * same-lease Create=>E4. The successor/activation table below owns the
          * result produced by this exact Rebuild, which is not its old source. */
         let exact = fingerprint("exact-rebuild");
-        let create_fence = crate::ContainerEffectFence::new(
+        let create_fence = awaken_provisioning_contract::SandboxEffectFence::new(
             "create-operation",
             "owner-1",
             "runtime-1",
@@ -882,7 +891,7 @@ mod realization_tests {
             u64::MAX,
         )
         .unwrap();
-        let rebuild_fence = crate::ContainerEffectFence::new(
+        let rebuild_fence = awaken_provisioning_contract::SandboxEffectFence::new(
             "rebuild-operation",
             "owner-1",
             "runtime-1",
@@ -890,7 +899,7 @@ mod realization_tests {
             u64::MAX,
         )
         .unwrap();
-        let attempt = crate::ContainerCreateAttempt::new("rebuild-attempt");
+        let attempt = awaken_provisioning_contract::SandboxCreateAttempt::new("rebuild-attempt");
         let intent = crate::ContainerRealizationIntent::Rebuild {
             source_incarnation: "incarnation-1".into(),
             source_runtime_handle: Some(
@@ -982,8 +991,8 @@ mod realization_tests {
         // fault -> Incompatible even with an exact retained wrapper. Terminal
         // observation uses the existing exact-incarnation disposal rules.
         let exact = fingerprint("exact");
-        let retained = crate::ContainerCreateAttempt::new("attempt-1");
-        let other = crate::ContainerCreateAttempt::new("other-attempt");
+        let retained = awaken_provisioning_contract::SandboxCreateAttempt::new("attempt-1");
+        let other = awaken_provisioning_contract::SandboxCreateAttempt::new("other-attempt");
         for phase in [
             ExistingRealizationPhase::Creating,
             ExistingRealizationPhase::Ready,
@@ -1239,7 +1248,7 @@ mod realization_tests {
             "R3 missing fingerprint"
         );
 
-        let current_fence = crate::ContainerEffectFence::new(
+        let current_fence = awaken_provisioning_contract::SandboxEffectFence::new(
             "terminal-operation",
             "owner-1",
             "runtime-1",
@@ -1249,7 +1258,7 @@ mod realization_tests {
         .unwrap();
         let mut same_lease_different_operation = reconstructible(ExistingRealizationPhase::Ready);
         same_lease_different_operation.fence = Some(
-            crate::ContainerEffectFence::new(
+            awaken_provisioning_contract::SandboxEffectFence::new(
                 "create-operation",
                 "owner-1",
                 "runtime-1",
@@ -1280,20 +1289,44 @@ mod realization_tests {
         missing_fence.fence = None;
         let mut newer_fence = reconstructible(ExistingRealizationPhase::Ready);
         newer_fence.fence = Some(
-            crate::ContainerEffectFence::new("newer", "owner-2", "runtime-2", 3, u64::MAX).unwrap(),
+            awaken_provisioning_contract::SandboxEffectFence::new(
+                "newer",
+                "owner-2",
+                "runtime-2",
+                3,
+                u64::MAX,
+            )
+            .unwrap(),
         );
         let mut foreign_same_epoch = reconstructible(ExistingRealizationPhase::Ready);
         foreign_same_epoch.fence = Some(
-            crate::ContainerEffectFence::new("foreign", "owner-2", "runtime-2", 2, u64::MAX)
-                .unwrap(),
+            awaken_provisioning_contract::SandboxEffectFence::new(
+                "foreign",
+                "owner-2",
+                "runtime-2",
+                2,
+                u64::MAX,
+            )
+            .unwrap(),
         );
-        let shorter_current_fence =
-            crate::ContainerEffectFence::new("terminal-operation", "owner-1", "runtime-1", 2, 100)
-                .unwrap();
+        let shorter_current_fence = awaken_provisioning_contract::SandboxEffectFence::new(
+            "terminal-operation",
+            "owner-1",
+            "runtime-1",
+            2,
+            100,
+        )
+        .unwrap();
         let mut same_lease_newer_expiry = reconstructible(ExistingRealizationPhase::Ready);
         same_lease_newer_expiry.fence = Some(
-            crate::ContainerEffectFence::new("create-operation", "owner-1", "runtime-1", 2, 101)
-                .unwrap(),
+            awaken_provisioning_contract::SandboxEffectFence::new(
+                "create-operation",
+                "owner-1",
+                "runtime-1",
+                2,
+                101,
+            )
+            .unwrap(),
         );
         for (current, rejected) in [
             (&current_fence, missing_fence),
@@ -1357,7 +1390,7 @@ mod realization_tests {
     }
 }
 
-pub use awaken_container_contract::RuntimeAgentProcess;
+use awaken_provisioning_contract::AgentProcess;
 
 /// Independent package-image build/publish port.
 #[async_trait]
@@ -1599,7 +1632,7 @@ pub trait ContainerRuntime: Send + Sync {
         &self,
         _scope: &str,
         _plan: &ContainerPlan,
-        _expected_effect_fence: Option<&crate::ContainerEffectFence>,
+        _expected_effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
     ) -> Result<MissingHandleTerminalEvidence, RuntimeError> {
         Ok(MissingHandleTerminalEvidence::Unknown)
     }
@@ -1707,8 +1740,8 @@ pub trait ContainerRuntime: Send + Sync {
     async fn checkpoint_upload(
         &self,
         _expectation: crate::ContainerObservationExpectation<'_>,
-        _access: crate::ContainerCheckpointAccess<'_>,
-        _mutation: crate::ContainerCheckpointMutation<'_>,
+        _access: awaken_provisioning_contract::SandboxCheckpointAccess<'_>,
+        _mutation: awaken_provisioning_contract::SandboxCheckpointMutation<'_>,
     ) -> Result<Option<pc::SandboxCheckpointUpload>, RuntimeError> {
         Err(RuntimeError::Backend(
             "container runtime does not implement a fenced checkpoint participant".into(),
@@ -1806,7 +1839,7 @@ pub trait ContainerRuntime: Send + Sync {
         &self,
         _admitted: crate::AdmittedExec,
         _command: pc::MaterializedCommand,
-    ) -> Result<RuntimeAgentProcess, RuntimeError> {
+    ) -> Result<AgentProcess, RuntimeError> {
         Err(RuntimeError::Backend(
             "container runtime does not implement attached exec".into(),
         ))
@@ -1944,7 +1977,8 @@ pub trait ContainerRuntime: Send + Sync {
         // Disposal owns its observation purpose even if the caller constructed
         // a recovery expectation. Process absence alone cannot acknowledge
         // retained continuation bytes as deleted.
-        expectation.purpose = crate::ContainerObservationPurpose::TerminalCleanup;
+        expectation.purpose =
+            awaken_provisioning_contract::SandboxObservationPurpose::TerminalCleanup;
         let admit = || {
             pc::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))
                 .map_err(|error| RuntimeError::Backend(error.to_string()))

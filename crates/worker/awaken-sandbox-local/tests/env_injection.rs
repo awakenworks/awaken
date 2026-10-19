@@ -82,7 +82,7 @@ fn provider(
     tier: Tier,
     base: &std::path::Path,
     broker: Option<Arc<dyn pc::SecretBroker>>,
-) -> Box<dyn pc::SandboxProvider> {
+) -> Box<dyn pc::SandboxProvider<Environment = dyn pc::Sandbox>> {
     match tier {
         Tier::Workdir => Box::new(match broker {
             Some(broker) => LocalProvider::new(base).with_secret_broker(broker),
@@ -147,7 +147,14 @@ async fn run(tier: Tier, can_exec: bool) -> bool {
 
     let (fence, authority) = pc::test_support::fixture_effect("env-injection");
     let sandbox = p
-        .claim_for_effect(&s, &fence, &authority)
+        .claim_for_effect(
+            &s,
+            awaken_provisioning_contract::SandboxEffect::Fenced {
+                fence: &fence,
+                authority: &authority,
+            },
+            awaken_provisioning_contract::SandboxRealizationIntent::Create,
+        )
         .await
         .unwrap_or_else(|e| panic!("{tier:?}: create with env: {e:?}"));
 
@@ -237,7 +244,17 @@ async fn missing_broker_fails_before_a_workdir_process_starts() {
         visibility: pc::EnvVisibility::Process,
     });
     let (fence, authority) = pc::test_support::fixture_effect("env-injection");
-    let sandbox = p.claim_for_effect(&s, &fence, &authority).await.unwrap();
+    let sandbox = p
+        .claim_for_effect(
+            &s,
+            awaken_provisioning_contract::SandboxEffect::Fenced {
+                fence: &fence,
+                authority: &authority,
+            },
+            awaken_provisioning_contract::SandboxRealizationIntent::Create,
+        )
+        .await
+        .unwrap();
     assert!(sandbox.spawn(sh("exit 0")).await.is_err());
     assert!(sandbox.artifacts().await.unwrap().is_empty());
     pc::test_support::dispose_owned_fixture(sandbox.as_ref(), &fence, &authority)

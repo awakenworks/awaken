@@ -679,11 +679,9 @@ dependencies = [
 name = "awaken-container-contract"
 version = "1.0.0"
 dependencies = [
- "async-trait",
- "awaken-agent-channel",
  "awaken-provisioning-contract",
- "awaken-sandbox-control",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -769,7 +767,6 @@ name = "awaken-coordinator"
 version = "1.0.0"
 dependencies = [
  "async-trait",
- "awaken-acp-application",
  "awaken-agent-config",
  "awaken-agent-contract",
  "awaken-authz-enforce",
@@ -778,6 +775,7 @@ dependencies = [
  "awaken-config-resolver",
  "awaken-config-service",
  "awaken-config-store",
+ "awaken-container-contract",
  "awaken-control",
  "awaken-coordinator-client",
  "awaken-credential-contract",
@@ -811,7 +809,6 @@ dependencies = [
  "awaken-observability",
  "awaken-outbound-http",
  "awaken-protocol-a2a",
- "awaken-protocol-acp",
  "awaken-protocol-ag-ui",
  "awaken-protocol-ai-sdk",
  "awaken-protocol-awaken",
@@ -846,7 +843,6 @@ dependencies = [
  "awaken-session-execution-contract",
  "awaken-session-executor",
  "awaken-session-executor-testkit",
- "awaken-session-mcp",
  "awaken-session-realization-contract",
  "awaken-session-repository-contract",
  "awaken-session-state-contract",
@@ -1510,7 +1506,6 @@ dependencies = [
  "awaken-acp-contract",
  "awaken-agent-contract",
  "awaken-connection-plan",
- "awaken-container-contract",
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-credential-vault",
@@ -2294,6 +2289,7 @@ name = "awaken-provisioning-contract"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "awaken-agent-channel",
  "awaken-agent-contract",
  "awaken-environment-contract",
  "awaken-lease-contract",
@@ -3251,7 +3247,6 @@ dependencies = [
  "awaken-agent-channel",
  "awaken-agent-contract",
  "awaken-authority-clock",
- "awaken-container-contract",
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-dispatch-contract",

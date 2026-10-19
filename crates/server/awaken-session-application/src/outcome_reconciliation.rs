@@ -75,7 +75,7 @@ impl SessionApplication {
             // and grade an Agent the operator never published. Restore the
             // exact dispatch projection first, and leave the aggregate
             // untouched when restoration is impossible.
-            let owner = match self.owner(&session_id).await {
+            let owner = match self.mutations.owner(&session_id).await {
                 Ok(owner) => owner,
                 Err(error) => {
                     report

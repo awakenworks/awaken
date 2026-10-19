@@ -257,7 +257,8 @@ async fn persist_batch_projection_anchors(
     source_commit_cursors: &[u64],
 ) {
     let mut session = state
-        .application
+        .roles
+        .roots
         .session(&SessionId::from(session_id))
         .await
         .expect("load Session root");
@@ -281,11 +282,13 @@ async fn persist_batch_projection_anchors(
     }
     let owner = state
         .application
+        .mutations()
         .owner(&SessionId::from(session_id))
         .await
         .expect("owner");
     let _fixture = state
         .application
+        .mutations()
         .commit_session_snapshot_with_outcome(
             &owner,
             awaken_session_state_contract::SessionAggregate::try_from(session)
@@ -1085,7 +1088,7 @@ impl awaken_session_execution_contract::RealizationRuntime for LifecycleRuntime 
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,
@@ -1908,7 +1911,8 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
         .await
         .expect("IR1 durable root receipt");
     let revision = state
-        .application
+        .roles
+        .roots
         .session(&SessionId::from(&session.id))
         .await
         .expect("IR1 root before retry")
@@ -1947,7 +1951,8 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
         "IR1/E1 no disposable cache publication"
     );
     let unchanged = state
-        .application
+        .roles
+        .roots
         .session(&SessionId::from(&session.id))
         .await
         .expect("IR1 root after retry");
@@ -2273,13 +2278,19 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
         let mut persisted = crate::state::tests::sample_persisted(session_id);
         persisted.execution =
             awaken_session_state_contract::SessionExecutionState::ActivationFailed;
-        persisted.realization_progress.last_error =
-            Some("broader Session realization failure".into());
         // AF8 cleanup has a later root update time. The failure owns its
         // immutable observation and must keep it in every replica.
-        persisted.realization_progress.failed_at_unix_ms = Some(100);
+        // W3: the known time/source are recorded by the existing assignment
+        // command, independently of the later root update observation.
+        let mut aggregate = awaken_session_state_contract::SessionAggregate::try_from(persisted)
+            .expect("valid failed Session fixture");
+        aggregate.assignment().record_failure(
+            "broader Session realization failure".into(),
+            100,
+            source_run_id,
+        );
+        let mut persisted = aggregate.into_snapshot();
         persisted.updated_at_unix_ms = Some(900);
-        persisted.realization_progress.failure_source_run_id = source_run_id.map(Box::new);
         crate::state::test_support::create_session_fixture(
             repository.as_ref(),
             DEFAULT_SCOPE,
@@ -2427,9 +2438,13 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
 
     let mut child_source = crate::state::tests::sample_persisted("activation-child");
     child_source.execution = awaken_session_state_contract::SessionExecutionState::ActivationFailed;
-    child_source.realization_progress.last_error = Some("child-sourced Session failure".into());
     let child_run = RunId("activation-child-run".into());
-    child_source.realization_progress.failure_source_run_id = Some(Box::new(child_run.clone()));
+    // W3/AF5: the historical source exists but its failure time is unknown.
+    let mut progress = serde_json::to_value(&child_source).unwrap();
+    progress["realization_progress"]["last_error"] = "child-sourced Session failure".into();
+    progress["realization_progress"]["failure_source_run_id"] =
+        serde_json::to_value(&child_run).unwrap();
+    child_source = serde_json::from_value(progress).unwrap();
     assert!(matches!(
         awaken_managed_session_events::activation_failure_projection(&child_source, &[]).unwrap(),
         awaken_managed_session_events::ActivationFailureProjection::AwaitingSourceRun
@@ -2455,7 +2470,9 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
     let mut missing_cause = crate::state::tests::sample_persisted("activation-missing-cause");
     missing_cause.execution =
         awaken_session_state_contract::SessionExecutionState::ActivationFailed;
-    missing_cause.realization_progress.last_error = None;
+    // W5/AF7: the original default has no cause; keep this malformed row so
+    // the projection, rather than an unrelated setup command, rejects it.
+    assert!(missing_cause.realization_progress().last_error().is_none());
     assert!(
         awaken_managed_session_events::activation_failure_projection(&missing_cause, &[]).is_err(),
         "AF7 malformed ownerless failure remains closed"
@@ -3593,7 +3610,8 @@ async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
             }
             let before = serde_json::to_value(
                 state
-                    .application
+                    .roles
+                    .roots
                     .session(&SessionId::from(&session_id))
                     .await
                     .unwrap(),
@@ -3616,7 +3634,8 @@ async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
             assert_eq!(
                 serde_json::to_value(
                     state
-                        .application
+                        .roles
+                        .roots
                         .session(&SessionId::from(&session_id))
                         .await
                         .unwrap()
@@ -3643,7 +3662,8 @@ async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
             assert_eq!(
                 serde_json::to_value(
                     state
-                        .application
+                        .roles
+                        .roots
                         .session(&SessionId::from(session_id))
                         .await
                         .unwrap()
@@ -3732,7 +3752,8 @@ async fn retained_unprocessed_tool_reply_queues_a_followup_user_message() {
         "AR2/E2"
     );
     let retained = state
-        .application
+        .roles
+        .roots
         .session(&SessionId::from(&session_id))
         .await
         .expect("AR3 retained Session root");
@@ -4965,7 +4986,8 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
         .await
         .unwrap();
     let stale = state
-        .application
+        .roles
+        .roots
         .session(&SessionId::from(&session.id))
         .await
         .unwrap();
@@ -5177,7 +5199,8 @@ async fn failed_committed_projection_does_not_poison_warm_recovery() {
         );
     }
     let observed_revision = state
-        .application
+        .roles
+        .roots
         .session(&SessionId::from(&session.id))
         .await
         .expect("A2 observed Session root")
@@ -6601,7 +6624,8 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
     );
 
     let updated_root = state
-        .application
+        .roles
+        .roots
         .session(&SessionId::from(&session.id))
         .await
         .unwrap();
@@ -6687,7 +6711,8 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
         .unwrap();
     assert_eq!((user + 1, updated + 1), (updated, running), "S2/E2");
     let anchored_root = state
-        .application
+        .roles
+        .roots
         .session(&SessionId::from(&session.id))
         .await
         .unwrap();
@@ -7380,7 +7405,8 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
     ]);
 
     let mut persisted = state
-        .application
+        .roles
+        .roots
         .session(&SessionId::from(&session.id))
         .await
         .expect("B1-B3 persisted Session");
@@ -12991,7 +13017,8 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                 );
                 assert!(
                     state
-                        .application
+                        .roles
+                        .roots
                         .session(&SessionId::from(&session.id))
                         .await
                         .unwrap()
@@ -13215,7 +13242,8 @@ async fn recovered_terminal_errors_are_visible_once_without_releasing_active_ses
             cold.refresh_committed_events(session_id).await.unwrap();
             assert_eq!(observe(&cold), original);
             assert_eq!(
-                cold.application
+                cold.roles
+                    .roots
                     .session(&SessionId::from(session_id))
                     .await
                     .unwrap()

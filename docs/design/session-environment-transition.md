@@ -214,6 +214,33 @@ state, and the cleanup laws decide through the transition function:
   refused continuation is executed. A process restart may signal the still
   blocked root again; this diagnostic grants no authority and persists nothing.
 
+## Provider retry hints through the one driver
+
+The realization contract owns `SessionRealizationEffectFailure`: the unchanged
+neutral `RunError` and the provider's optional relative retry hint. Realization
+captures that hint from its typed error before the existing neutral projection;
+it does not sample another wall clock or reinterpret the provider's frozen
+observation. Both existing entry points carry the same value: Worker projection
+synchronization and the local `RealizationRuntime::install_session_projection`.
+The latter shares one adoption/context body with the Environment role, retaining
+the hint before any executor error projection can flatten it.
+
+The existing failure-report helper sends the original failure to Control and
+invalidates its exact lease projection. It charges only its own monotonic elapsed
+wait to the original hint with saturating subtraction; exhausted hints remain
+`Some(0)`. Control/invalidation failure never replaces the original effect, and
+cancellation drops the same owned future. Dispatch reads the original error's
+one classification: only Defer carries the hint into its existing backoff;
+Retry and Terminal cannot acquire a new delay or budget from it.
+
+`SessionRealizationDriveError` is the sole failure algebra for both topologies.
+The mirrored `awaken_session_application::SessionRealizationError` and its
+three-arm reconstruction are removed; callers import the contract owner directly,
+without an alias. Existing application report/update prefixes remain presentation
+only, and Managed still projects the original neutral fault/code/message. The
+realization-role macro spells the owning contract path directly; its existing
+invocations already depend on that owner. No wire or durable schema changes.
+
 ## Verification
 
 - `awaken-session-state-contract` `environment::transition::tests` T1–T11,
@@ -237,3 +264,20 @@ state, and the cleanup laws decide through the transition function:
   R1–R9/T1–T3 and S1–S7 (absence, generation selection and bounded sweep).
 - `awaken-session-application` `tests::recovery_sweep` D1–D12 (changed
   refusal, successful absence, failed later page, retry EOF, aggregate cause).
+
+- `awaken-session-realization-contract` E1–E4 exercise the exact neutral
+  payload and hint partitions; the pure Kani `driver_wait_never_extends_or_discards_the_original_retry_hint`
+  checks the complete Duration domain, without a clock/transport liveness claim.
+- `awaken-session-realization` H1–H4 keep the provider's original hint through
+  its existing single Run projection.
+- `awaken-session-realization-driver` D1–D5 cover report/invalidation waits,
+  their failures, exhausted hints and caller cancellation.
+- `awaken-session-executor` L3–L6 use the real Local application/install/R/provider
+  adapter chain over the canonical Root fixture; observation, Create, adoption,
+  disposal, retained binding and absent context are all asserted. A failed
+  observation remains indeterminate even for a capacity-typed error. C3 drives
+  an actual Provider Create capacity refusal through the ordinary claimed
+  resolver and original SQLite Queue to Defer/None, preserving its exact claim
+  and dispatch budget; it does not assert a Managed failure/refund CAS.
+- `awaken-dispatch-execution` W1–W4 keep hints only on the existing Defer
+  branch; application L1–L2 and P1–P3 cover local budget and message projection.

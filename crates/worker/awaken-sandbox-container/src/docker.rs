@@ -38,8 +38,8 @@ use crate::runtime::{
 use crate::{
     ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
     ContainerRealizationNamespace, ContainerRuntime, ContainerState, MANAGED_SANDBOX_LABEL,
-    PackageImageProvisioner, PreparedContainer, RUNTIME_OWNER_LABEL, RuntimeAgentProcess,
-    RuntimeError, RuntimeRestoreTarget, SANDBOX_ADOPTION_LABEL, SANDBOX_ATTEMPT_LABEL,
+    PackageImageProvisioner, PreparedContainer, RUNTIME_OWNER_LABEL, RuntimeError,
+    RuntimeRestoreTarget, SANDBOX_ADOPTION_LABEL, SANDBOX_ATTEMPT_LABEL,
     SANDBOX_EFFECT_EPOCH_LABEL, SANDBOX_EFFECT_EXPIRY_LABEL, SANDBOX_EFFECT_LABEL,
     SANDBOX_EFFECT_OWNER_LABEL, SANDBOX_EFFECT_RUNTIME_LABEL, SANDBOX_REALIZATION_LABEL,
     SANDBOX_SCOPE_LABEL, container_effect_fence_from_values, container_effect_label_values,
@@ -47,6 +47,7 @@ use crate::{
     runtime_container_name, sandbox_scope_identity,
 };
 use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory};
+use awaken_provisioning_contract::AgentProcess;
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -110,7 +111,9 @@ fn docker_host_staging_root(info: &ContainerInspectResponse) -> Result<PathBuf, 
         .as_ref()
         .into_iter()
         .flatten()
-        .find(|mount| mount.destination.as_deref() == Some(crate::LIVE_INPUTS_ROOT))
+        .find(|mount| {
+            mount.destination.as_deref() == Some(awaken_container_contract::LIVE_INPUTS_ROOT)
+        })
         .and_then(|mount| mount.source.as_deref())
         .map(PathBuf::from)
         .ok_or_else(|| backend("Docker container has no managed live-input root bind"))?;
@@ -851,7 +854,9 @@ impl DockerRuntime {
             .mounts
             .unwrap_or_default()
             .into_iter()
-            .find(|mount| mount.destination.as_deref() == Some(crate::LIVE_INPUTS_ROOT))
+            .find(|mount| {
+                mount.destination.as_deref() == Some(awaken_container_contract::LIVE_INPUTS_ROOT)
+            })
             .and_then(|mount| mount.source)
             .map(PathBuf::from)
             .ok_or_else(|| backend("Docker container has no managed live-input root bind"))
@@ -1452,7 +1457,9 @@ impl ContainerRuntime for DockerRuntime {
             .as_deref()
             .unwrap_or_default()
             .iter()
-            .find(|mount| mount.destination.as_deref() == Some(crate::LIVE_INPUTS_ROOT))
+            .find(|mount| {
+                mount.destination.as_deref() == Some(awaken_container_contract::LIVE_INPUTS_ROOT)
+            })
             .and_then(|mount| mount.source.as_deref())
             .ok_or_else(|| backend("Docker restored target has no managed live-input root bind"))?;
         let staging_root = std::path::Path::new(live_inputs)
@@ -1583,7 +1590,7 @@ impl ContainerRuntime for DockerRuntime {
         &self,
         admitted: crate::AdmittedExec,
         command: pc::MaterializedCommand,
-    ) -> Result<RuntimeAgentProcess, RuntimeError> {
+    ) -> Result<AgentProcess, RuntimeError> {
         let container_id = admitted.container_id();
         if command.argv.is_empty() {
             return Err(backend("agent exec command argv is empty"));
@@ -1627,7 +1634,7 @@ impl ContainerRuntime for DockerRuntime {
                 }
             }
         });
-        Ok(RuntimeAgentProcess {
+        Ok(AgentProcess {
             process: Box::new(DockerExecProcess::new(
                 self.docker.clone(),
                 container_id,

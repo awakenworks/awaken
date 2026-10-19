@@ -213,6 +213,17 @@ impl SessionApplicationBuilder {
                 (Some(value.references), Some(value.files), Some(value.purge))
             });
         let started_at = clock.now().as_unix_nanos();
+        let mutations = crate::SessionMutations::new(store.clone(), clock.clone());
+        let queries = Arc::new(crate::SessionQueries::new(
+            store.clone(),
+            self.runtime.projection_handle(),
+            self.runtime.capability.clone(),
+            self.profiles.clone(),
+        ));
+        let inputs = Arc::new(crate::SessionInputs::new(
+            store.clone(),
+            self.runtime.live_inbox.clone(),
+        ));
         Ok(SessionApplication {
             clock,
             configuration,
@@ -229,7 +240,9 @@ impl SessionApplicationBuilder {
             resource_references,
             resource_files,
             managed_list_prices: self.prices,
-            sessions_repo: store.clone(),
+            mutations,
+            queries,
+            inputs,
             environment_binding_sink,
             lifecycle_outbox: store,
             executable_projection_refresh: self.refresh,
@@ -243,8 +256,6 @@ impl SessionApplicationBuilder {
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ),
             local_realization_locks: Arc::default(),
-            #[cfg(any(test, feature = "test-support"))]
-            mutation_sequence: std::sync::atomic::AtomicU64::new(0),
             lifecycle_supervisor_started: std::sync::atomic::AtomicBool::new(false),
             lifecycle_wakeup: tokio::sync::Notify::new(),
             event_batch_cutover_validation: Arc::default(),

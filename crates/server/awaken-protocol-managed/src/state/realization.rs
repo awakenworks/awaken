@@ -22,16 +22,16 @@ impl ManagedState {
     }
 
     pub(super) fn map_realization_application_error(
-        error: awaken_session_application::SessionRealizationError,
+        error: awaken_session_realization_contract::SessionRealizationDriveError,
     ) -> StateError {
         match error {
-            awaken_session_application::SessionRealizationError::Control(error) => {
+            awaken_session_realization_contract::SessionRealizationDriveError::Control(error) => {
                 Self::map_realization_failure(error)
             }
-            awaken_session_application::SessionRealizationError::Effect(error) => {
-                StateError::Run(error)
+            awaken_session_realization_contract::SessionRealizationDriveError::Effect(error) => {
+                StateError::Run(error.into())
             }
-            awaken_session_application::SessionRealizationError::DidNotConverge => {
+            awaken_session_realization_contract::SessionRealizationDriveError::DidNotConverge => {
                 StateError::Run(RunError::internal("Session realization did not converge"))
             }
         }
@@ -153,7 +153,8 @@ mod tests {
             thread: &str,
             projection: awaken_session_realization_contract::FrozenSessionProjection,
             mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-        ) -> Result<(), RunError> {
+        ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>
+        {
             awaken_protocol_managed_testkit::complete_session_projection_init(
                 thread,
                 &projection,
