@@ -102,6 +102,9 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
     'worker_credential_observation_ttl_secs = 30',
     ...standaloneWorkerSandboxConfig(providerCredentials, runtime),
     `sandbox_trusted_host_scoped_execution = ${scopedHost}`,
+    // Deterministic peers own their stderr. Preserve assertion failures in the
+    // Worker log instead of reducing a crashed peer to an unexplained EOF.
+    ...(!providerCredentials ? ['sandbox_inherit_agent_stderr = true'] : []),
   ].join('\n'));
   const environment = providerCredentials
     ? {...providerCredentials.environment, HOME:workerData, AWAKEN_DATA_DIR:workerData}

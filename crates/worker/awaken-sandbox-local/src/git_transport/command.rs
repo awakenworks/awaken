@@ -353,6 +353,35 @@ fn compose_git_command(
 mod windows_tests {
     use super::*;
 
+    fn agent_git(repository: &Path, args: &[&str]) -> std::process::Output {
+        // Deliberately bypass git_command_output's process-local longpaths
+        // floor. The published repository must also work for the Agent's Git.
+        let mut command = std::process::Command::new("git");
+        for (name, _) in std::env::vars_os() {
+            if name
+                .to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with("GIT_")
+            {
+                command.env_remove(name);
+            }
+        }
+        let output = command
+            .current_dir(repository)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "NUL")
+            .env("GIT_CEILING_DIRECTORIES", repository.parent().unwrap())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "Agent Git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    }
+
     #[test]
     fn staged_clone_over_git_directory_limit_preserves_exact_plan_and_replay() {
         // R1 ASCII and R2 multibyte paths fit the Windows process-directory
@@ -380,6 +409,7 @@ mod windows_tests {
         let url = url::Url::from_directory_path(&source).unwrap().to_string();
         let unicode_segment = "仓".repeat(16);
         for (style, workspace_units, unicode) in [
+            ("direct", 170, ""),
             ("ascii", 210, ""),
             ("ascii-limit", 214, ""),
             ("unicode", 190, unicode_segment.as_str()),
@@ -466,12 +496,43 @@ mod windows_tests {
                 } else {
                     assert_eq!(symbolic.unwrap().trim(), branch.unwrap_or("fixture-branch"));
                 }
+                // Each path/checkout row must support ordinary Agent writes,
+                // including new loose objects beyond MAX_PATH. A successful
+                // clone through our process-only flag is insufficient.
+                let agent_output = format!("{}.txt", "agent-output-".repeat(8));
+                assert!(
+                    destination
+                        .join(&agent_output)
+                        .to_string_lossy()
+                        .encode_utf16()
+                        .count()
+                        > 260
+                );
+                std::fs::write(destination.join(&agent_output), b"agent edit\n").unwrap();
+                agent_git(&destination, &["add", "-N", &agent_output]);
+                let diff = agent_git(
+                    &destination,
+                    &["diff", "--no-ext-diff", "--", &agent_output],
+                );
+                assert!(String::from_utf8_lossy(&diff.stdout).contains("+agent edit\n"));
+                assert_eq!(
+                    agent_git(
+                        &destination,
+                        &["config", "--local", "--get", "core.longpaths"]
+                    )
+                    .stdout,
+                    b"true\n"
+                );
                 std::fs::write(destination.join("a.txt"), b"user edit").unwrap();
                 provision(awaken_provisioning_contract::RepositoryRealizationIntent::Retain)
                     .unwrap();
                 assert_eq!(
                     std::fs::read(destination.join("a.txt")).unwrap(),
                     b"user edit"
+                );
+                assert_eq!(
+                    std::fs::read(destination.join(&agent_output)).unwrap(),
+                    b"agent edit\n"
                 );
                 assert_eq!(
                     std::fs::read_dir(&workspace).unwrap().count(),
@@ -675,6 +736,11 @@ pub(super) fn credentialed_git_clone(
         }
     }
     let mut args = vec!["clone", "--no-checkout"];
+    // Persist the Windows setting in the new repository as well as using the
+    // command floor above. Agent Git runs after publication do not inherit our
+    // process flags and may create long loose-object or working-tree paths.
+    #[cfg(windows)]
+    args.extend(["--config", "core.longpaths=true"]);
     if let Some(branch) = initial_branch {
         args.extend(["--branch", branch]);
     }
@@ -705,6 +771,7 @@ fn windows_private_clone(
         }
         let mut network = vec!["clone", "--bare"];
         let mut local = vec!["clone", "--local", "--no-hardlinks", "--no-checkout"];
+        local.extend(["--config", "core.longpaths=true"]);
         if let Some(branch) = initial_branch {
             // Preserve the original remote HEAD in the bare source; only the
             // final local clone selects the caller's checkout branch.

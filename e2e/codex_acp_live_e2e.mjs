@@ -179,6 +179,8 @@ async function startHostLoginProfile() {
     `sandbox_tier = "${native && !nativeHost ? 'namespace' : 'local'}"`,
     `sandbox_trusted_host_scoped_execution = ${scopedHost}`,
     'log_filter = "warn"',
+    ...(profile === 'host-fixture' || standaloneWorker
+      ? ['sandbox_inherit_agent_stderr = true'] : []),
     `acp_clis = ${JSON.stringify(native ? [] : [runtime])}`,
     ...(external?.controlConfig ?? []),
     // Select the runtime under test, without configuring a default backend or
