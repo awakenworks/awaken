@@ -386,9 +386,25 @@ impl DreamExecutor for BuiltInDreamAgent {
         // A crash before the result catalog record commits may leave a partial
         // deterministic clone. No Agent could have received it yet, so reclaim it
         // and rebuild from one fresh atomic source snapshot.
-        let _ = self.content_purge.purge_store(&snapshot_id).await;
+        self.content_purge
+            .purge_store(&snapshot_id)
+            .await
+            .map_err(|error| {
+                DreamFailure::new(
+                    "internal_error",
+                    format!("private Dream snapshot cleanup failed: {error}"),
+                )
+            })?;
         if matches!(request.output_behavior, DreamOutputBehavior::CreateNew) {
-            let _ = self.content_purge.purge_store(&result_id).await;
+            self.content_purge
+                .purge_store(&result_id)
+                .await
+                .map_err(|error| {
+                    DreamFailure::new(
+                        "internal_error",
+                        format!("private Dream result cleanup failed: {error}"),
+                    )
+                })?;
         }
         if self
             .stores
@@ -817,3 +833,6 @@ mod tests {
         assert!(!allowed.contains("delegate"));
     }
 }
+
+#[cfg(all(test, feature = "test-support"))]
+mod private_content_tests;

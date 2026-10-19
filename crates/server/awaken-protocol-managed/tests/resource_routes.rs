@@ -29,7 +29,6 @@ async fn status(app: &Router, uri: &str) -> StatusCode {
 #[tokio::test]
 async fn resource_routes_share_one_application_without_conflicts() {
     let resources = support::resources::ephemeral_resources().await;
-    let authorities = resources.authorities();
 
     // FMECA: FM1 one route family reopens its own Resource authority; FM2 a
     // route disappears during process startup; FM3 route merging swallows the
@@ -40,17 +39,10 @@ async fn resource_routes_share_one_application_without_conflicts() {
     // Cause graph: C1&&C2&&C3 -> E1+E3; C1&&C2&&C3&&C4 -> E2.
     // Decision table: R1 C1+C2+C3 => E1+E3; R2 R1+C4 => E2.
     let app = Router::new()
-        .merge(resources_router(ResourcesRouterInput {
-            repositories: resources.repositories(Arc::new(
-                awaken_resource_contract::UnavailableRepositoryCredentialValidator,
-            )),
-            files: resources.files(),
-            memory: authorities.memory_management_content(),
-            memory_stores: resources.memory_stores(),
-            skills: Some(authorities.skill_store()),
-            purge: resources.purge_scheduler(),
-            clock: authorities.clock(),
-        }))
+        .merge(resources_router(ResourcesRouterInput::new(
+            &resources,
+            Arc::new(awaken_resource_contract::UnavailableRepositoryCredentialValidator),
+        )))
         .merge(models_router(Arc::new(default_models(1_704_067_200_000))));
 
     // Each plane's list entrypoint answers on the same app (200, not a 404 from a
