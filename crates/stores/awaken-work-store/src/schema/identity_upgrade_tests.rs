@@ -97,6 +97,7 @@ async fn sqlite_both_published_histories_preserve_live_leases_and_fence_deleted_
 }
 
 #[tokio::test]
+#[ignore = "requires PostgreSQL; run scripts/ci/pg_tests.sh --require-docker"]
 async fn postgres_both_published_histories_preserve_live_leases_and_fence_deleted_ids() {
     // A1 optional+absent reports the canonical local skip; A2 required+absent
     // or invalid configuration fails at admission/setup; A3 live runs both

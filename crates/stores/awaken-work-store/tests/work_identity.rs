@@ -274,6 +274,7 @@ async fn sqlite_work_identity_is_not_reused_after_lifecycle_removal() {
 }
 
 #[tokio::test]
+#[ignore = "requires PostgreSQL; run scripts/ci/pg_tests.sh --require-docker"]
 async fn postgres_work_identity_is_not_reused_after_lifecycle_removal() {
     // A1 optional+absent reports a local skip; A2 required+absent or invalid
     // configuration fails; A3 live exercises every removal/replay identity

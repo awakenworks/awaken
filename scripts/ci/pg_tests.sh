@@ -13,8 +13,9 @@
 # gate passes ``--require-docker`` so the same condition fails instead of
 # producing a false green.
 #
-# Usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--self-test]
+# Usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--self-test]
 # --backend-parity uses a caller-owned live URL and runs only the named matrix.
+# --work-store uses a caller-owned live URL and requires the complete Work suite.
 set -uo pipefail
 # Keep phase diagnostics visible even when a command suppresses probe output.
 # This descriptor belongs to this runner; never log command arguments/secrets.
@@ -130,6 +131,24 @@ backend_parity() {
     --require-case=in_memory_conforms --require-case=sqlite_conforms --require-case=postgres::postgres_conforms \
     --require-case=postgres::fixture_absence_and_configured_failure_are_distinct \
     -- --test-threads=1 || record_failure "$?"
+}
+
+work_store_evidence() {
+  # These physical database cases stay out of the substrate-free workspace
+  # lane. The live lane must list and execute every named outcome, including
+  # ignored cases, with the existing required-runner receipt and deadline.
+  # Restart helpers receive private fixtures from their parent tests and must
+  # not be launched independently by this package-wide selection.
+  pg_required_test -p awaken-work-store --features test-support \
+    --require-case=schema::identity_upgrade_tests::postgres_both_published_histories_preserve_live_leases_and_fence_deleted_ids \
+    --require-case=postgres_archive_keeps_existing_session_authority_after_reconnect \
+    --require-case=durable::postgres_allocator_work_and_watermark_roll_back_as_one_transaction \
+    --require-case=durable::postgres_independent_pools_allocate_concurrently_without_reset \
+    --require-case=durable::postgres_missing_malformed_and_exhausted_allocators_fail_closed \
+    --require-case=postgres_work_identity_is_not_reused_after_lifecycle_removal \
+    --require-case=restart::postgres_identity_high_watermark_survives_a_native_process_restart \
+    -- --include-ignored --test-threads=1 \
+    --skip environment_revision_restart_child --skip restart::identity_restart_child
 }
 
 published_port() {
@@ -404,13 +423,44 @@ self_test() {
     echo "Postgres gate must run the complete ingress suite with test-support" >&2
     return 1
   }
-  # P11 WorkQueue parity uses one generic suite for all three backends. The
-  # full Work selection also requires named identity/archive witnesses, so
-  # optional local skips cannot be mistaken for live PostgreSQL evidence.
-  grep -Fxq 'pg_required_test -p awaken-work-store --features test-support \' "$0" || {
-    echo "Postgres gate must qualify the complete Work suite with test-support" >&2
+  # P11 the full gate and the focused Work gate share one required selection,
+  # including every named identity/archive witness and test-support. The exact
+  # unindented call below belongs to the full gate, not its focused branch.
+  grep -Fxq 'work_store_evidence || record_failure "$?"' "$0" || {
+    echo "Postgres gate must run the required complete Work suite" >&2
     return 1
   }
+  # W1 a selected Work database suite includes ignored cases and all seven
+  # physical evidence floors. W2 the existing runner's failure/refusal status
+  # propagates unchanged; no success is minted by the selection wrapper.
+  if ! (
+    local expected_status observed_status arguments required_case
+    pg_required_test() {
+      arguments=" $* "
+      [[ "$arguments" == *' -p awaken-work-store --features test-support '* ]] || return 2
+      [[ "$arguments" == *' -- --include-ignored --test-threads=1 '* ]] || return 2
+      [[ "$arguments" == *' --skip environment_revision_restart_child --skip restart::identity_restart_child '* ]] || return 2
+      for required_case in \
+        schema::identity_upgrade_tests::postgres_both_published_histories_preserve_live_leases_and_fence_deleted_ids \
+        postgres_archive_keeps_existing_session_authority_after_reconnect \
+        durable::postgres_allocator_work_and_watermark_roll_back_as_one_transaction \
+        durable::postgres_independent_pools_allocate_concurrently_without_reset \
+        durable::postgres_missing_malformed_and_exhausted_allocators_fail_closed \
+        postgres_work_identity_is_not_reused_after_lifecycle_removal \
+        restart::postgres_identity_high_watermark_survives_a_native_process_restart; do
+        [[ "$arguments" == *" --require-case=$required_case "* ]] || return 2
+      done
+      return "$expected_status"
+    }
+    for expected_status in 0 23 75; do
+      observed_status=0
+      work_store_evidence || observed_status=$?
+      [ "$observed_status" -eq "$expected_status" ] || exit 1
+    done
+  ); then
+    echo "Postgres Work selection must retain its cases, ignored execution and runner status" >&2
+    return 1
+  fi
   # P12 initialization-only socket readiness must not qualify TCP clients.
   grep -Fxq '    docker exec "$NAME" pg_isready -h 127.0.0.1 -U postgres -d "$DB" >/dev/null 2>&1; then ready=1; break; fi' "$0" || {
     echo "Postgres gate must wait for the final TCP server" >&2
@@ -524,12 +574,14 @@ self_test() {
 }
 
 backend_only=0
+work_store_only=0
 case "${1:-}" in
   "") ;;
   --require-docker) require_docker=1 ;;
   --self-test) self_test; exit $? ;;
   --backend-parity) backend_only=1 ;;
-  *) echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--self-test]" >&2; exit 2 ;;
+  --work-store) work_store_only=1 ;;
+  *) echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--self-test]" >&2; exit 2 ;;
 esac
 
 for deadline in "$PG_OPERATION_TIMEOUT_SECONDS" "$PG_READY_TIMEOUT_SECONDS" \
@@ -540,12 +592,16 @@ for deadline in "$PG_OPERATION_TIMEOUT_SECONDS" "$PG_READY_TIMEOUT_SECONDS" \
   }
 done
 
-if [ "$backend_only" -eq 1 ]; then
+if [ "$backend_only" -eq 1 ] || [ "$work_store_only" -eq 1 ]; then
   [ "$#" -eq 1 ] && [ -n "${AWAKEN_TEST_DATABASE_URL:-}" ] || {
-    echo "backend parity requires an explicit owned PostgreSQL fixture URL" >&2; exit 2;
+    echo "focused PostgreSQL tests require an explicit owned fixture URL" >&2; exit 2;
   }
   export AWAKEN_TEST_REQUIRE_POSTGRES=1
-  backend_parity
+  if [ "$work_store_only" -eq 1 ]; then
+    work_store_evidence || record_failure "$?"
+  else
+    backend_parity
+  fi
   exit "$first_failure"
 fi
 
@@ -837,20 +893,9 @@ pg_test cargo test -p awaken-executable-environment-catalog || record_failure "$
 pg_test cargo test -p awaken-environment-image-build \
   postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority \
   -- --exact --test-threads=1 || record_failure "$?"
-# A1 the gate owns a required live fixture: every named storage witness must
-# actually pass; absence, a skipped fixture or selection drift fails. A2 the
-# two ignored private child entrypoints remain parent-only, exactly as before;
-# their original parent tests still launch and verify the real native phases.
-pg_required_test -p awaken-work-store --features test-support \
-  --require-case=schema::identity_upgrade_tests::postgres_both_published_histories_preserve_live_leases_and_fence_deleted_ids \
-  --require-case=postgres_archive_keeps_existing_session_authority_after_reconnect \
-  --require-case=postgres_work_identity_is_not_reused_after_lifecycle_removal \
-  --require-case=durable::postgres_independent_pools_allocate_concurrently_without_reset \
-  --require-case=durable::postgres_allocator_work_and_watermark_roll_back_as_one_transaction \
-  --require-case=durable::postgres_missing_malformed_and_exhausted_allocators_fail_closed \
-  --require-case=restart::postgres_identity_high_watermark_survives_a_native_process_restart \
-  -- --skip restart::identity_restart_child --skip environment_revision_restart_child \
-  --test-threads=1 || record_failure "$?"
+# Both entry points require these physical outcomes. Private restart children
+# stay parent-only; the shared helper selects all seven live witnesses.
+work_store_evidence || record_failure "$?"
 
 # The same live PostgreSQL and object-store substrates finish with a physical
 # point-in-time restore. This is a recovery drill, not another repository or
