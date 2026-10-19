@@ -40,7 +40,3 @@ pub use outcome::{RunOutcome, RunOutcomeError};
 pub use permission::PermissionGate;
 pub use run::RunInput;
 pub use runtime::{ActiveAttemptScope, Runtime};
-
-/// Compatibility name for [`Conversation`].
-#[deprecated(note = "Use Conversation for the SDK's Snapshot, Thread and execution binding.")]
-pub type EmbeddedSession<'a> = Conversation<'a>;

@@ -107,40 +107,34 @@ impl Id {
         ))
     }
 
+    /// Decode the Run, Step and provider call of a batch-scoped Runtime result.
+    /// Legacy identities have no such coordinate. This is the canonical reader
+    /// shared by call recognition and committed occurrence attribution; a
+    /// decoded identity does not establish that its ToolBatch was committed.
+    #[must_use]
+    pub fn tool_result_coordinates(&self) -> Option<(&str, usize, &str)> {
+        let encoded = self.0.strip_prefix("batch-tool-result-v2:")?;
+        let (batch_len, rest) = encoded.split_once(':')?;
+        let batch_len = batch_len.parse::<usize>().ok()?;
+        let batch_id = rest.get(..batch_len)?;
+        let (run, step) = batch_id.strip_prefix("tool-batch:")?.rsplit_once(':')?;
+        let number = step.parse::<usize>().ok()?;
+        if run.is_empty() || number.to_string() != step {
+            return None;
+        }
+        let call_id = rest.get(batch_len..)?.strip_prefix(':')?;
+        Some((run, number, call_id))
+    }
+
     /// Recognize the exact provider call addressed by a Runtime result,
     /// including legacy committed results. A different call or SDK result id
     /// does not acquire Runtime-owned receipt authority by its content alone.
     #[must_use]
     pub fn is_tool_result_for_call(&self, call_id: &str) -> bool {
-        if self == &Self::tool_result(call_id) {
-            return true;
-        }
-        let Some(encoded) = self.0.strip_prefix("batch-tool-result-v2:") else {
-            return false;
-        };
-        let Some((batch_len, rest)) = encoded.split_once(':') else {
-            return false;
-        };
-        let Ok(batch_len) = batch_len.parse::<usize>() else {
-            return false;
-        };
-        let Some(batch_id) = rest.get(..batch_len) else {
-            return false;
-        };
-        let canonical_batch = batch_id
-            .strip_prefix("tool-batch:")
-            .and_then(|coordinate| coordinate.rsplit_once(':'))
-            .is_some_and(|(run, step)| {
-                !run.is_empty()
-                    && step
-                        .parse::<usize>()
-                        .is_ok_and(|number| number.to_string() == step)
-            });
-        canonical_batch
-            && rest
-                .get(batch_len..)
-                .and_then(|suffix| suffix.strip_prefix(':'))
-                .is_some_and(|result_call| result_call == call_id)
+        self == &Self::tool_result(call_id)
+            || self
+                .tool_result_coordinates()
+                .is_some_and(|(_, _, result_call)| result_call == call_id)
     }
 
     /// A steer-feedback continuation message: `{run}-steer-{nth}`.
@@ -460,6 +454,43 @@ mod tests {
                 !forged.is_tool_result_for_call("voice-final"),
                 "R6 forged or SDK-looking ID must not grant Runtime receipt authority: {forged:?}"
             );
+        }
+    }
+
+    #[test]
+    fn tool_result_coordinate_reader_preserves_exact_batch_scope() {
+        // Causes: C1 canonical batch Run/Step/call, including delimiters and
+        // Unicode; C2 zero/max Step; C3 legacy result; C4 malformed length,
+        // UTF-8 boundary, Run, Step or separator. Effects: E1 C1+C2 returns
+        // its exact borrowed scope and retains call recognition; E2 C3+C4
+        // has no batch scope. R1=C1+C2=>E1; R2=C3=>E2 with the original
+        // legacy recognizer still true; R3=C4=>E2 and recognizer false.
+        for (run, step, call) in [
+            ("run", 0, "same"),
+            ("运行:assistant-2", 7, "调用:final"),
+            ("run:with:delimiters", usize::MAX, ""),
+        ] {
+            let id = Id::tool_result_for_batch(&format!("tool-batch:{run}:{step}"), call);
+            assert_eq!(id.tool_result_coordinates(), Some((run, step, call)), "R1");
+            assert!(id.is_tool_result_for_call(call), "R1 original recognition");
+            assert!(!id.is_tool_result_for_call("different"), "R1 exact call");
+        }
+        let legacy = Id::tool_result("same");
+        assert_eq!(legacy.tool_result_coordinates(), None, "R2");
+        assert!(legacy.is_tool_result_for_call("same"), "R2");
+        for id in [
+            "batch-tool-result-v2:999:tool-batch:run:0:same",
+            "batch-tool-result-v2:12:tool-batch:运:0:same",
+            "batch-tool-result-v2:13:tool-batch::0:same",
+            "batch-tool-result-v2:17:tool-batch:run:01:same",
+            "batch-tool-result-v2:17:tool-batch:run:+1:same",
+            "batch-tool-result-v2:17:tool-batch:run:-1:same",
+            "batch-tool-result-v2:16:tool-batch:run:0!same",
+        ]
+        .map(|value| Id(value.into()))
+        {
+            assert_eq!(id.tool_result_coordinates(), None, "R3 {id:?}");
+            assert!(!id.is_tool_result_for_call("same"), "R3 {id:?}");
         }
     }
 

@@ -507,3 +507,191 @@ async fn overlapping_reused_calls_keep_exact_result_sources_and_families_after_r
         }
     }
 }
+
+#[tokio::test]
+async fn historical_idle_keeps_exact_tool_sources_across_two_runs() {
+    // Causes: C1 Run one commits ToolUse(same) at4 and its audited Awaiting5;
+    // C2 a replacement cancels it, then Run two commits another ToolUse(same)
+    // at9 and Awaiting10; C3 a cold replica reads the complete same prefix.
+    // Effects: E1 the first idle keeps its original id AND first public tool
+    // occurrence; E2 the second idle names only the second occurrence; E3 the
+    // complete warm/cold histories agree with no rejected refresh. Rules:
+    // R1=C1=>E1; R2=C1+C2=>E1+E2; R3=C1+C2+C3=>E1+E2+E3. Constraints: the
+    // raw call id is deliberately reused, both sources are real committed
+    // Messages from different Runs, and each historical target is fixed at
+    // its own audit cursor. Existing LifecycleRuntime/SQLite/from_parts and
+    // durable_history own the fixture and oracle; no sleep, new store, fake
+    // projection or compatibility id. Whole-record latest_id aliases R2's
+    // old idle to the new call and the real delivery guard must expose it.
+    let runtime = LifecycleRuntime::default();
+    let repository = Arc::new(ephemeral_session_repo().await);
+    let clock = awaken_time::system_clock();
+    let environments =
+        awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution;
+    let compiler = Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler);
+    let warm = crate::state::test_support::managed_state_from_parts(
+        Arc::new(runtime.clone()),
+        None,
+        repository.clone(),
+        environments.clone(),
+        clock.clone(),
+        compiler.clone(),
+    );
+    let session = warm
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        )
+        .await
+        .unwrap();
+    let first_run = RunId("first-awaiting-run".into());
+    let second_run = RunId("replacement-awaiting-run".into());
+    let pending = Pending {
+        tool_use_id: "same".into(),
+        name: "read".into(),
+        input: serde_json::json!({"path":"same-path"}),
+        client_executed: false,
+    };
+    let first_message = Message::new(
+        MessageId::assistant(&first_run, 0),
+        Role::Assistant,
+        vec![ContentBlock::tool_use(
+            "same",
+            "read",
+            pending.input.clone(),
+        )],
+    );
+    let target = awaken_protocol_managed_testkit::tool_call_target(
+        pending.clone(),
+        awaken_agent_contract::agent::awaiting::ToolAwaitReason::Permission,
+    );
+    let mut first_awaiting = lifecycle(
+        5,
+        &session.id,
+        &first_run,
+        RunLifecycleEventKind::Awaiting,
+        RunState::Awaiting,
+    );
+    first_awaiting.await_reason = Some(target.reason());
+    runtime.lifecycle.lock().unwrap().extend([
+        lifecycle(
+            1,
+            &session.id,
+            &first_run,
+            RunLifecycleEventKind::Running,
+            RunState::Running,
+        ),
+        first_awaiting.clone(),
+    ]);
+    runtime.push_committed_message(4, first_message.clone());
+    runtime
+        .await_targets
+        .lock()
+        .unwrap()
+        .insert(first_awaiting.cursor, target.clone());
+    *runtime.pending.lock().unwrap() = Some(pending.clone());
+    warm.refresh_committed_events(&session.id).await.unwrap();
+    let first_history = super::timeline_scenarios::durable_history(&warm, &session.id);
+    let first_idle_id = fact_event_id(
+        &session.id,
+        &awaken_managed_session_events::root_terminal_idle_key(&session.id, &first_awaiting),
+    );
+    let first_idle = first_history
+        .iter()
+        .find(|event| event.0 == first_idle_id)
+        .expect("R1 the original Awaiting has its stable idle fact")
+        .clone();
+    let public_thread = ManagedState::public_tool_thread_id(&session.id, None);
+    let first_tool = managed_tool_event_id(&public_thread, &first_message.id.0, "same");
+    assert_eq!(
+        first_idle.1["stop_reason"]["event_ids"],
+        serde_json::json!([first_tool]),
+        "R1 first idle owns first Message occurrence"
+    );
+
+    let second_message = Message::new(
+        MessageId::assistant(&second_run, 0),
+        Role::Assistant,
+        vec![ContentBlock::tool_use(
+            "same",
+            "read",
+            pending.input.clone(),
+        )],
+    );
+    let mut second_awaiting = lifecycle(
+        10,
+        &session.id,
+        &second_run,
+        RunLifecycleEventKind::Awaiting,
+        RunState::Awaiting,
+    );
+    second_awaiting.await_reason = Some(target.reason());
+    runtime.lifecycle.lock().unwrap().extend([
+        lifecycle(
+            6,
+            &session.id,
+            &first_run,
+            RunLifecycleEventKind::Cancelled,
+            RunState::Ended(awaken_agent_contract::agent::run::EndCause::Cancelled),
+        ),
+        lifecycle(
+            7,
+            &session.id,
+            &second_run,
+            RunLifecycleEventKind::Running,
+            RunState::Running,
+        ),
+        second_awaiting.clone(),
+    ]);
+    runtime.push_committed_message(9, second_message.clone());
+    runtime
+        .await_targets
+        .lock()
+        .unwrap()
+        .insert(second_awaiting.cursor, target);
+    warm.refresh_committed_events(&session.id)
+        .await
+        .expect("R2 valid later occurrence cannot rewrite the historical idle payload");
+    let complete = super::timeline_scenarios::durable_history(&warm, &session.id);
+    assert!(
+        complete.starts_with(&first_history),
+        "R2 immutable published prefix"
+    );
+    assert_eq!(
+        complete.iter().find(|event| event.0 == first_idle_id),
+        Some(&first_idle),
+        "R2 first stable id retains its complete original payload and time"
+    );
+    let second_idle_id = fact_event_id(
+        &session.id,
+        &awaken_managed_session_events::root_terminal_idle_key(&session.id, &second_awaiting),
+    );
+    let second_idle = complete
+        .iter()
+        .find(|event| event.0 == second_idle_id)
+        .expect("R2 replacement Awaiting has its own stable idle fact");
+    let second_tool = managed_tool_event_id(&public_thread, &second_message.id.0, "same");
+    assert_ne!(first_tool, second_tool, "R2 distinct committed occurrences");
+    assert_eq!(
+        second_idle.1["stop_reason"]["event_ids"],
+        serde_json::json!([second_tool]),
+        "R2 second idle owns only the replacement occurrence"
+    );
+    let cold = crate::state::test_support::managed_state_from_parts(
+        Arc::new(runtime),
+        None,
+        repository,
+        environments,
+        clock,
+        compiler,
+    );
+    cold.refresh_committed_events(&session.id).await.unwrap();
+    assert_eq!(
+        super::timeline_scenarios::durable_history(&cold, &session.id),
+        complete,
+        "R3 full cold history equals the complete warm history"
+    );
+}

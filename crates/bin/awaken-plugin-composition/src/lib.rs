@@ -36,6 +36,10 @@ pub fn platform_plugin_configurations_with_web_search(
     let search = WebSearchPlugin::new(providers.clone(), None).manifest();
     let fetch = WebFetchPlugin::new(providers.clone(), None).manifest();
     vec![
+        PluginConfigurationSource::McpServers {
+            capability_for: mcp_capability,
+            validate: validate_mcp,
+        },
         configuration(
             PluginCapability {
                 id: awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID.into(),
@@ -97,10 +101,25 @@ fn configuration(
     capability: PluginCapability,
     validate: Option<PluginConfigurationValidator>,
 ) -> PluginConfigurationSource {
-    PluginConfigurationSource {
-        capability,
+    PluginConfigurationSource::Exact {
+        capability: Box::new(capability),
         validate,
     }
+}
+
+fn mcp_capability(server: &str) -> Result<PluginCapability, String> {
+    let manifest =
+        awaken_ext_mcp::McpPlugin::manifest_for(server).map_err(|error| error.to_string())?;
+    Ok(PluginCapability {
+        id: manifest.id,
+        schema_keys: manifest.config_sections,
+        config_schema: None,
+        bound: manifest.bound,
+    })
+}
+
+fn validate_mcp(value: Option<&Value>) -> Result<(), String> {
+    awaken_ext_mcp::notification::McpNotificationConfig::parse(value).map(|_| ())
 }
 
 fn validate_memory(value: Option<&Value>) -> Result<(), String> {
@@ -145,6 +164,10 @@ mod tests {
 
     #[test]
     fn capability_projection_and_validation_share_every_platform_declaration() {
+        // Storage placement adds no decision combinations: the boxed Exact
+        // payload must preserve the original discovery values and decoders.
+        // These existing data cases cover value preservation; Clippy's
+        // large_enum_variant check independently owns the declaration layout.
         // DT-CONFIG-SOURCE C1 each installed declaration -> exactly one public
         // metadata row; C2 four pure configurations -> one owned decoder each;
         // C3 Web providers -> original Workspace resolver, never a fake Runtime
@@ -152,21 +175,31 @@ mod tests {
         let sources = platform_plugin_configurations();
         let projected = PluginConfigurationSource::capabilities(&sources);
         assert_eq!(projected, platform_plugin_capabilities());
-        let ids = sources
+        let exact = sources
             .iter()
-            .map(|source| source.capability.id.as_str())
+            .filter_map(|source| match source {
+                PluginConfigurationSource::Exact {
+                    capability,
+                    validate,
+                } => Some((capability, validate)),
+                PluginConfigurationSource::McpServers { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        let ids = exact
+            .iter()
+            .map(|(capability, _)| capability.id.as_str())
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(ids.len(), sources.len());
-        for source in sources {
-            if let Some(validate) = source.validate {
-                assert!(validate(None).is_ok(), "{}", source.capability.id);
-                assert!(
-                    validate(Some(&Value::Null)).is_err(),
-                    "{}",
-                    source.capability.id
-                );
+        assert_eq!(ids.len(), exact.len());
+        // Six original exact rows survive; a dynamic declaration is not a
+        // seventh advertised plugin or a wildcard capability grant.
+        assert_eq!(exact.len(), 6);
+        assert_eq!(sources.len(), exact.len() + 1);
+        for (capability, validate) in exact {
+            if let Some(validate) = validate {
+                assert!(validate(None).is_ok(), "{}", capability.id);
+                assert!(validate(Some(&Value::Null)).is_err(), "{}", capability.id);
             } else {
-                assert!(["web_search", "web_fetch"].contains(&source.capability.id.as_str()));
+                assert!(["web_search", "web_fetch"].contains(&capability.id.as_str()));
             }
         }
     }
@@ -229,14 +262,20 @@ mod tests {
             ),
         ];
         for (id, authored, accepted) in fixtures {
-            let source = sources
+            let (capability, validate) = sources
                 .iter()
-                .find(|source| source.capability.id == id)
+                .find_map(|source| match source {
+                    PluginConfigurationSource::Exact {
+                        capability,
+                        validate,
+                    } if capability.id == id => Some((capability, validate)),
+                    _ => None,
+                })
                 .unwrap();
-            let result = source.validate.unwrap()(Some(&authored));
+            let result = validate.unwrap()(Some(&authored));
             assert_eq!(result.is_ok(), accepted, "{id}: {authored}: {result:?}");
             if accepted {
-                let schema = source.capability.config_schema.as_ref().unwrap();
+                let schema = capability.config_schema.as_ref().unwrap();
                 assert!(
                     jsonschema::validator_for(schema)
                         .unwrap()
@@ -246,6 +285,40 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn declared_mcp_metadata_uses_its_runtime_owner_and_never_advertises_a_wildcard() {
+        // D1 one dynamic declaration expands declared ASCII/Unicode names
+        // through the real manifest; D2 empty refuses; D3 legal input+cancel
+        // uses the original parser. Global discovery stays the six exact rows.
+        let sources = platform_plugin_configurations();
+        let (capability_for, validate) = sources
+            .iter()
+            .find_map(|source| match source {
+                PluginConfigurationSource::McpServers {
+                    capability_for,
+                    validate,
+                } => Some((capability_for, validate)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(PluginConfigurationSource::capabilities(&sources).len(), 6);
+        assert!(capability_for("").is_err());
+        for server in ["phone", "智客/phone"] {
+            let capability = capability_for(server).unwrap();
+            let manifest = awaken_ext_mcp::McpPlugin::manifest_for(server).unwrap();
+            assert_eq!(capability.id, manifest.id);
+            assert_eq!(capability.schema_keys, manifest.config_sections);
+            assert_eq!(capability.bound, manifest.bound);
+            assert!(capability.config_schema.is_none());
+        }
+        assert!(validate(None).is_ok());
+        assert!(validate(Some(&serde_json::json!({"notifications":{
+            "notifications/phone/input":{"event_id":"/id","delivery":{"kind":"message","text":"/text"}},
+            "notifications/phone/interrupt":{"event_id":"/id","delivery":{"kind":"cancel_response","input_method":"notifications/phone/input","input_event_id":"/target"}}
+        }}))).is_ok());
+        assert!(validate(Some(&serde_json::json!({"unknown":true}))).is_err());
+    }
+
     #[test]
     fn platform_capabilities_expose_the_schema() {
         // Capability cause/effect table. C1 the authoritative registry contains

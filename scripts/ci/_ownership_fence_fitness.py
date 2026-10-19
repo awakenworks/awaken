@@ -41,7 +41,8 @@ FENCE_TYPE = re.compile(
     r"\b(?P<kind>struct|enum|type|trait)\s+(?P<name>\w*(?:Fence|Lease|Tenure|Epoch))\b"
 )
 KERNEL_TYPE = re.compile(r"\b(?:Lease|Tenure|EffectFence|Epoch|SlotToken)\b")
-EPOCH_U64 = re.compile(r"\b\w*epoch\w*\s*:\s*u64\b")
+# A qualified primitive value path is not a raw type annotation.
+EPOCH_U64 = re.compile(r"\b\w*epoch\w*\s*:\s*u64\b(?!\s*::)")
 EPOCH_INCREMENT = re.compile(
     r"\b\w*epoch\w*\s*(?:\+=\s*1\b|\+\s*1\b|\.\s*(?:checked|saturating|wrapping)_add\s*\(\s*1\s*\))"
 )
@@ -311,6 +312,44 @@ def selftest() -> None:
     assert not violations(
         {"crates/a/src/lib.rs": "pub struct OldLease;\nfn bump(l: &mut u8) {}\n"}
     ), "F2'"
+    # F2 cause/effect table: C1 an epoch name has a primitive type annotation;
+    # C2 u64 instead starts a qualified value path; C3 that value occurs in
+    # the reference/current snapshot. F2d: C1 -> one declaration, refused when
+    # added. F2v: C2 -> no declaration, regardless of spaces or blanked comments.
+    # F2r: removing a reference-side value cannot pay for a new C1 declaration.
+    # Existing C1/kernel rows below retain the non-code and kernel exclusions.
+    for declaration in (
+        "struct A { next_epoch: u64 }",
+        "fn typed(epoch: u64) {}",
+        "fn typed() { let epoch: u64 = 0; }",
+        "fn typed() { let epoch: u64 = u64::MAX; }",
+        "struct A { next_epoch: u64 /* type annotation */, }",
+    ):
+        assert any(
+            "F2" in error for error in violations({"crates/b.rs": declaration})
+        ), f"F2d {declaration}"
+    for value in (
+        "u64::MAX",
+        "u64::try_from(3).unwrap()",
+        "u64 :: MAX",
+        "u64 /* value path */ :: MAX",
+        "u64 // value path\n ::try_from(3).unwrap()",
+        "u64\n::MAX",
+    ):
+        assert not violations(
+            {"crates/b.rs": f"fn value() {{ let _ = OldLease {{ epoch: {value} }}; }}"}
+        ), f"F2v {value}"
+    assert _count(
+        _code({"crates/b.rs": "struct A { epoch: u64 } fn f() { let _ = A { epoch: u64::MAX }; let _ = A { epoch: u64::try_from(3).unwrap() }; }"}),
+        EPOCH_U64,
+    ) == 1, "F2m count the annotation once despite multiple value initializers"
+    assert any(
+        "F2" in error
+        for error in ownership_fence_violations(
+            {"crates/b.rs": "struct A { epoch: u64 } fn f() { let _ = A { epoch: u64::MAX }; }"},
+            {"crates/b.rs": "struct A { epoch: u64 } fn f(next_epoch: u64) {}"},
+        )
+    ), "F2r reference value paths cannot offset an added declaration"
     assert any(
         "F3" in e for e in violations({"crates/b.rs": "fn f(e: Epoch) { let n = lease_epoch + 1; }"})
     ), "F3"

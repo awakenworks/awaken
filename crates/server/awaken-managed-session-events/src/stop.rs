@@ -1,6 +1,8 @@
 // @formal entrypoint session.runtime_projection_distinguishes_pending_resolving_and_processed_tools_and_fails_closed
 //! Why a Run's Thread, or the aggregate Session, paused or stopped.
 
+use crate::{OrderIndex, ProjectionError, ToolResultSource};
+use awaken_agent_contract::RunLifecycleEvent;
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_session_application_contract::Pending;
@@ -14,9 +16,9 @@ pub enum StopFact {
     EndTurn,
     RetriesExhausted,
     BudgetReached,
-    /// Paused on these answerable Runtime calls; empty when no ticket is known.
+    /// Exact committed ToolUse sources of the pause; empty when no ticket is known.
     RequiresAction {
-        calls: Vec<String>,
+        calls: Vec<ToolResultSource>,
     },
 }
 
@@ -26,20 +28,25 @@ pub enum StopFact {
 /// # Panics
 ///
 /// A `Running` state is not a boundary; callers pass only Run boundaries.
-#[must_use]
 pub fn terminal_stop(
-    state: &RunState,
+    terminal: &RunLifecycleEvent,
     pending: Option<&Pending>,
-    await_reason: Option<&AwaitReason>,
     aggregate_budget_reached: bool,
-) -> StopFact {
-    match state {
+    index: &OrderIndex<'_>,
+) -> Result<StopFact, ProjectionError> {
+    let await_reason = terminal.await_reason.as_ref();
+    Ok(match &terminal.state {
         RunState::Awaiting if await_reason == Some(&AwaitReason::BudgetReached) => {
             StopFact::BudgetReached
         }
         RunState::Awaiting => StopFact::RequiresAction {
             calls: pending
-                .map(|pending| vec![pending.tool_use_id.clone()])
+                .map(|pending| {
+                    index
+                        .pending_tool_source(terminal, pending)
+                        .map(|source| vec![source])
+                })
+                .transpose()?
                 .unwrap_or_default(),
         },
         RunState::Ended(EndCause::MaxSteps | EndCause::Error(_)) => StopFact::RetriesExhausted,
@@ -48,7 +55,7 @@ pub fn terminal_stop(
         }
         RunState::Ended(_) => StopFact::EndTurn,
         RunState::Running => unreachable!("StepOutcome cannot contain Running"),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -82,7 +89,11 @@ mod tests {
                 Some(&pending),
                 false,
                 StopFact::RequiresAction {
-                    calls: vec!["call".into()],
+                    calls: vec![ToolResultSource {
+                        source_id: "run-thread".into(),
+                        call_id: "call".into(),
+                        name: "read".into(),
+                    }],
                 },
             ),
             (
@@ -134,8 +145,42 @@ mod tests {
                 StopFact::EndTurn,
             ),
         ] {
+            let kind = match &state {
+                RunState::Awaiting => awaken_agent_contract::RunLifecycleEventKind::Awaiting,
+                RunState::Ended(EndCause::Cancelled) => {
+                    awaken_agent_contract::RunLifecycleEventKind::Cancelled
+                }
+                _ => awaken_agent_contract::RunLifecycleEventKind::Completed,
+            };
+            let mut terminal = crate::lifecycle::tests::event(2, "thread", kind, state);
+            terminal.await_reason = reason;
+            let mut snapshot = crate::index::snapshot(Vec::new(), Vec::new());
+            snapshot.claimed_run_id = terminal.run_id.clone();
+            snapshot.latest_run_id = Some(terminal.run_id.clone());
+            snapshot.runs[0].id = terminal.run_id.clone();
+            snapshot.runs[0].state = terminal.state.clone();
+            let lifecycle = [terminal.clone()];
+            let historical = ticket
+                .map(|ticket| (terminal.cursor, ticket.clone()))
+                .into_iter()
+                .collect();
+            let children = std::collections::HashMap::new();
+            let index = OrderIndex::new(crate::OrderEvidence {
+                updates: None,
+                session_id: "thread",
+                batches: &[],
+                closed_intervals: &[],
+                budget_reach: &[],
+                parent_terminal: Default::default(),
+                lifecycle: &lifecycle,
+                root: Some(&snapshot),
+                children: &children,
+                links: &[],
+                outcomes: &[],
+                historical_pending: &historical,
+            });
             assert_eq!(
-                terminal_stop(&state, ticket, reason.as_ref(), budget),
+                terminal_stop(&terminal, ticket, budget, &index).unwrap(),
                 expected,
                 "{rule}"
             );

@@ -4661,8 +4661,8 @@ async fn newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason() {
         assert!(
             record
                 .projected_tool_index_for(None)
-                .latest_id(call_id)
-                .is_some(),
+                .sources
+                .contains(&("scheduled-tool".into(), call_id.into())),
             "S1/E1 answerable public tool"
         );
         assert!(

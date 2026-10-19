@@ -1,9 +1,11 @@
-// @formal surface obligation=session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
-// @formal reason: Child Run states, dispositions, the audit-joined accepted lifecycle and per-Thread
-// @formal reason: current tickets, moved unchanged from the Managed candidate evidence. Pure over the
-// @formal reason: committed prefixes read once; a damaged prefix or an Awaiting Run without its exact
-// @formal reason: audited target fails the candidate closed. Pause-health, acceptance and warm/cold tests
-// @formal reason: cover it. Reducer TCB.
+// @formal entrypoint session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
+// @formal entrypoint tool_result.pending_commit_coordinate_is_exact
+// @formal entrypoint tool_result.terminal_run_rejects_late_result
+// Child Run states, dispositions, the audit-joined accepted lifecycle and per-Thread
+// current tickets are pure over the committed prefixes read once. A damaged
+// prefix or an Awaiting Run without its exact audited target fails closed.
+// Pause-health, acceptance and warm/cold tests cover this reducer TCB; the
+// original ticket/anchor kernels retain their independent native and Kani bounds.
 //! The committed Thread states and accepted lifecycle one candidate derives.
 //!
 //! Pure over the facts the Session application read: each child's current
@@ -41,6 +43,106 @@ pub fn current_recovery_run(
             snapshot.thread_id.0
         ))
     })
+}
+
+/// Facts selected from the same committed snapshot, before materializing any
+/// public Pending payload. Cardinality belongs to the outer snapshot lookup.
+#[derive(Clone, Copy)]
+pub enum PendingTicketObservation<'a> {
+    Absent,
+    Multiple,
+    One(&'a awaken_agent_contract::agent::awaiting::ResumeTicket),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingTicketAdmission {
+    Inactive,
+    Missing { positive_awaiting: bool },
+    Multiple,
+    Inconsistent,
+    Admit,
+}
+
+/// The one strict ticket-admission decision consumed by the Managed snapshot
+/// reader. Run truth dominates residual, duplicate and corrupt ticket rows.
+/// Unknown legacy lifecycle preserves a unique exact ticket. Identity remains
+/// owned by the neutral recovery contract; this decision borrows its validator.
+pub fn pending_ticket_admission(
+    current_state: Option<&awaken_agent_contract::agent::run::RunState>,
+    current_run_id: &awaken_agent_contract::RunId,
+    thread_id: &awaken_agent_contract::ThreadId,
+    observation: PendingTicketObservation<'_>,
+) -> PendingTicketAdmission {
+    use awaken_agent_contract::agent::run::RunState;
+    if matches!(current_state, Some(RunState::Running | RunState::Ended(_))) {
+        return PendingTicketAdmission::Inactive;
+    }
+    match observation {
+        PendingTicketObservation::Absent => PendingTicketAdmission::Missing {
+            positive_awaiting: matches!(current_state, Some(RunState::Awaiting)),
+        },
+        PendingTicketObservation::Multiple => PendingTicketAdmission::Multiple,
+        PendingTicketObservation::One(ticket) => {
+            if awaken_agent_contract::thread::read::recovery::validate_resume_ticket_owner(
+                ticket,
+                current_run_id,
+                thread_id,
+            )
+            .is_err()
+            {
+                PendingTicketAdmission::Inconsistent
+            } else {
+                PendingTicketAdmission::Admit
+            }
+        }
+    }
+}
+
+/// The exact original reply anchor over one already-read lifecycle prefix.
+/// Absence has no wire meaning here; the adapter retains its existing error.
+pub fn answered_pending_commit_cursor(
+    thread_id: &awaken_agent_contract::agent::thread::Id,
+    run_id: &awaken_agent_contract::agent::run::Id,
+    snapshot_store_cursor: u64,
+    lifecycle_events: &[RunLifecycleEvent],
+) -> Option<u64> {
+    lifecycle_events.iter().fold(None, |selected, event| {
+        advance_answered_pending_commit(
+            selected,
+            &event.thread_id == thread_id,
+            &event.run_id == run_id,
+            event.kind == RunLifecycleEventKind::Awaiting,
+            event.source_commit_cursor,
+            snapshot_store_cursor,
+        )
+    })
+}
+
+/// Fold one lifecycle fact into the exact Awaiting commit selected for a
+/// reply. This is the heap-free production owner for the fenced maximum; the
+/// surrounding method supplies real Thread/Run/kind equality observations.
+pub const fn advance_answered_pending_commit(
+    selected: Option<u64>,
+    same_thread: bool,
+    same_run: bool,
+    awaiting: bool,
+    source_commit_cursor: u64,
+    snapshot_store_cursor: u64,
+) -> Option<u64> {
+    if same_thread
+        && same_run
+        && awaiting
+        && source_commit_cursor != 0
+        && source_commit_cursor <= snapshot_store_cursor
+        && match selected {
+            Some(current) => source_commit_cursor > current,
+            None => true,
+        }
+    {
+        Some(source_commit_cursor)
+    } else {
+        selected
+    }
 }
 
 /// Refuse a committed prefix whose current Run is paused without the

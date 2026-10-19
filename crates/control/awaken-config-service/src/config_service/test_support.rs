@@ -614,3 +614,40 @@ fn test_service_and_catalog() -> (ConfigService, Arc<ExecutableAgentCatalog>) {
         catalog,
     )
 }
+
+// One real MCP parser/metadata input shared by source-selection and the
+// existing ConfigPlane lifecycle tests; no transport, fake plugin or parser.
+pub(crate) fn mcp_configuration_source()
+-> awaken_executable_agent_contract::capability::PluginConfigurationSource {
+    use awaken_executable_agent_contract::capability::{
+        PluginCapability, PluginConfigurationSource,
+    };
+    PluginConfigurationSource::McpServers {
+        capability_for: |server| {
+            let manifest = awaken_ext_mcp::McpPlugin::manifest_for(server)
+                .map_err(|error| error.to_string())?;
+            Ok(PluginCapability {
+                id: manifest.id,
+                schema_keys: manifest.config_sections,
+                config_schema: None,
+                bound: manifest.bound,
+            })
+        },
+        validate: |value| {
+            awaken_ext_mcp::notification::McpNotificationConfig::parse(value).map(|_| ())
+        },
+    }
+}
+
+pub(crate) fn mcp_server_binding(
+    name: &str,
+) -> awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+    awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+        name: name.into(),
+        transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::http(
+            "https://mcp.invalid",
+        ),
+        credential: None,
+        prompts_as_skills: false,
+    }
+}

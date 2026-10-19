@@ -250,6 +250,30 @@ maps and values inside declared fields keep their domain-owned key semantics.
 The background-task configuration owns its existing tool-id/notification
 validation once, shared by publication admission and Runtime consumption.
 
+### Declared MCP configuration instances
+
+The same `PluginConfigurationSource` declaration directory holds exact static
+sources and one typed `McpServers` metadata/validator callback. Global capability
+discovery projects only the exact entries; it does not advertise a fake wildcard
+MCP plugin. At Agent admission, the existing operation projects the declared
+`AgentMcpServerBinding` names through that callback into disposable exact sources,
+then applies its original selected-id uniqueness, validation and Workspace
+resolution sequence. Two matching exact sources remain ambiguous; unknown or
+undeclared selected ids remain unavailable. No second directory is persisted.
+
+The MCP callback reuses the SDK's pure `McpPlugin::manifest_for` metadata entry
+and the existing `McpNotificationConfig::parse` decoder. Connected instances and
+the pure entry share one manifest constructor, while connected instances keep
+their stored namespace. This requires no connection, discovery, credential,
+Runtime plugin instance or permission grant, and adds no invented MCP Schema.
+
+A metadata callback error means that binding produces no advertisable exact
+instance. It is not a new structural admission result: a selected id still needs
+one successful exact source, and unrelated malformed binding errors stay with
+the existing complete Agent compiler. This preserves the original active-plugin,
+credential, Workspace resolver and compiler failure ordering and HTTP classes.
+Inactive configuration sections stay lossless and never enter a decoder.
+
 ## Amendment A1 (2026-06-29): refinements proven in implementation
 
 These refine D2–D5 against the awaken runtime implementation, which carried this

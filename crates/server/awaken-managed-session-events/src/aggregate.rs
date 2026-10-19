@@ -48,8 +48,13 @@ pub struct AggregateFallbackClose {
 /// the call identities to its already-issued public tool IDs when rendering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AggregateStop {
-    Run { calls_owner: String, stop: StopFact },
-    Calls { thread_calls: Vec<(String, String)> },
+    Run {
+        calls_owner: String,
+        stop: StopFact,
+    },
+    Calls {
+        thread_calls: Vec<(String, crate::ToolResultSource)>,
+    },
 }
 
 /// The sole aggregate projection plan over one committed prefix.
@@ -82,6 +87,7 @@ pub fn plan_aggregate(
     lifecycle_events: &[RunLifecycleEvent],
     historical_pending: &HashMap<RunLifecycleCursor, Pending>,
     links: &[CoordinatedThreadLink],
+    index: &crate::OrderIndex<'_>,
 ) -> Result<AggregatePlan, ProjectionError> {
     let session_id = persisted.session_id.as_str();
     let aggregate = |role, provenance| EventIdentity::new(session_id, role, provenance);
@@ -121,20 +127,18 @@ pub fn plan_aggregate(
                     && event.run_id == observation.run_id
             })
         });
-        let (stop, calls_owner) = terminal.map_or_else(
-            || (StopFact::EndTurn, session_id.to_string()),
-            |terminal| {
-                (
-                    terminal_stop(
-                        &terminal.state,
-                        historical_pending.get(&terminal.cursor),
-                        terminal.await_reason.as_ref(),
-                        false,
-                    ),
-                    terminal.thread_id.0.clone(),
-                )
-            },
-        );
+        let (stop, calls_owner) = match terminal {
+            Some(terminal) => (
+                terminal_stop(
+                    terminal,
+                    historical_pending.get(&terminal.cursor),
+                    false,
+                    index,
+                )?,
+                terminal.thread_id.0.clone(),
+            ),
+            None => (StopFact::EndTurn, session_id.to_string()),
+        };
         let budget_transition_owns_pause = stop == StopFact::BudgetReached
             && persisted
                 .budget
@@ -171,7 +175,8 @@ pub fn plan_aggregate(
         lifecycle_events,
         historical_pending,
         links,
-    );
+        index,
+    )?;
     Ok(plan)
 }
 
@@ -183,7 +188,8 @@ fn plan_fallback_aggregate(
     lifecycle_events: &[RunLifecycleEvent],
     historical_pending: &HashMap<RunLifecycleCursor, Pending>,
     links: &[CoordinatedThreadLink],
-) {
+    index: &crate::OrderIndex<'_>,
+) -> Result<(), ProjectionError> {
     let session_id = persisted.session_id.as_str();
     let known_children = links
         .iter()
@@ -194,7 +200,7 @@ fn plan_fallback_aggregate(
         crate::BudgetReachAnchor::of(persisted, lifecycle_events, historical_pending);
     let mut root_running = false;
     let mut running_children = HashSet::<&str>::new();
-    let mut paused = BTreeMap::<&str, &Pending>::new();
+    let mut paused = BTreeMap::<&str, crate::ToolResultSource>::new();
     let mut deferred: Option<(Option<&RunId>, AggregateStop)> = None;
     let mut aggregate_open = false;
     for event in lifecycle_events {
@@ -245,21 +251,21 @@ fn plan_fallback_aggregate(
         let pending = historical_pending
             .get(&event.cursor)
             .filter(|_| event.kind == RunLifecycleEventKind::Awaiting);
-        match pending {
-            Some(pending) => {
-                paused.insert(thread, pending);
-            }
-            None => {
-                paused.remove(thread);
-            }
+        let stop = crate::terminal_stop(event, pending, false, index)?;
+        // The one boundary classification owns its exact answerable source
+        // for both the paused set and deferred close; do not select it twice.
+        if let StopFact::RequiresAction { calls } = &stop
+            && let Some(source) = calls.first()
+        {
+            paused.insert(thread, source.clone());
+        } else {
+            paused.remove(thread);
         }
         let budget_pause = event.await_reason.as_ref() == Some(&AwaitReason::BudgetReached);
         let idle = !root_running
             && running_children.is_empty()
             && !hold.session_active.contains(&event.cursor);
         if is_root {
-            let stop =
-                crate::terminal_stop(&event.state, pending, event.await_reason.as_ref(), false);
             let replace = match &deferred {
                 None => true,
                 Some((
@@ -290,8 +296,6 @@ fn plan_fallback_aggregate(
                 },
             ));
         } else if !idle {
-            let stop =
-                crate::terminal_stop(&event.state, pending, event.await_reason.as_ref(), false);
             deferred.get_or_insert((
                 None,
                 AggregateStop::Run {
@@ -327,7 +331,7 @@ fn plan_fallback_aggregate(
         } else {
             let thread_calls = paused
                 .iter()
-                .map(|(thread, pending)| ((*thread).to_string(), pending.tool_use_id.clone()))
+                .map(|(thread, source)| ((*thread).to_string(), source.clone()))
                 .collect();
             deferred = None;
             AggregateStop::Calls { thread_calls }
@@ -358,6 +362,7 @@ fn plan_fallback_aggregate(
             stop,
         });
     }
+    Ok(())
 }
 
 /// How admitted Session intervals hold the lifecycle boundaries of a prefix.

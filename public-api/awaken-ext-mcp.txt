@@ -144,6 +144,8 @@ pub trait awaken_ext_mcp::notification::McpNotificationHandler: core::marker::Se
 pub fn awaken_ext_mcp::notification::McpNotificationHandler::receive<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub mod awaken_ext_mcp::plugin
 pub struct awaken_ext_mcp::plugin::McpPlugin
+impl awaken_ext_mcp::plugin::McpPlugin
+pub fn awaken_ext_mcp::plugin::McpPlugin::manifest_for(&str) -> core::result::Result<awaken_runtime_contract::plugin::capability::PluginManifest, awaken_ext_mcp::error::McpError>
 impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_mcp::plugin::McpPlugin
 pub fn awaken_ext_mcp::plugin::McpPlugin::live_version(&self) -> core::option::Option<u64>
 pub fn awaken_ext_mcp::plugin::McpPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
@@ -411,6 +413,8 @@ pub fn awaken_ext_mcp::manager::McpManager::plugins(&self) -> alloc::vec::Vec<aw
 pub fn awaken_ext_mcp::manager::McpManager::server_names(&self) -> alloc::vec::Vec<alloc::string::String>
 pub fn awaken_ext_mcp::manager::McpManager::status(&self) -> alloc::vec::Vec<awaken_ext_mcp::manager::ServerStatus>
 pub struct awaken_ext_mcp::McpPlugin
+impl awaken_ext_mcp::plugin::McpPlugin
+pub fn awaken_ext_mcp::plugin::McpPlugin::manifest_for(&str) -> core::result::Result<awaken_runtime_contract::plugin::capability::PluginManifest, awaken_ext_mcp::error::McpError>
 impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_mcp::plugin::McpPlugin
 pub fn awaken_ext_mcp::plugin::McpPlugin::live_version(&self) -> core::option::Option<u64>
 pub fn awaken_ext_mcp::plugin::McpPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest

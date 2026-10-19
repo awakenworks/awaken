@@ -35,12 +35,15 @@ pub(super) fn resolve_stop(
             StopReason::RequiresAction {
                 event_ids: calls
                     .iter()
-                    .map(|call| {
-                        index.latest_id(call).ok_or_else(|| {
-                            StateError::Run(RunError::internal(
-                                "Managed pending ticket has no answerable public tool event",
-                            ))
-                        })
+                    .map(|source| {
+                        index.event_id_for_source(
+                            &ManagedState::public_tool_thread_id(
+                                &record.session.id,
+                                owner_thread_id,
+                            ),
+                            &source.call_id,
+                            Some((source.source_id.as_str(), source.call_id.as_str())),
+                        )
                     })
                     .collect::<Result<_, _>>()?,
             }

@@ -175,42 +175,47 @@ async fn typed_tool_and_named_outcome_work_without_builtin_dependencies() {
 }
 
 #[tokio::test]
-#[expect(deprecated, reason = "exercise the public SDK compatibility entries")]
-async fn legacy_session_and_conversation_share_run_identity_and_recovery() {
-    for start_legacy in [false, true] {
+async fn conversation_bindings_share_run_identity_and_recovery() {
+    // B1/B2: either of two canonical bindings starts on the same Thread,
+    // Snapshot, store and clock; binding itself has zero commit/model/tool
+    // effects. The other binding resumes the exact ticket once; replay through
+    // the starter reads terminal truth without approval, model or tool effects.
+    // Both starter rows and every assertion from the former cross-name test
+    // remain; only the redundant public names are removed (C2/C3 doctests).
+    for start_first in [false, true] {
         let (runtime, snapshot, model, hits, store) = setup(true, awaken_time::system_clock());
         let context = RuntimeRunContext::new().with_store(store.clone());
-        let legacy: awaken_runtime::EmbeddedSession<'_> = runtime
-            .session(&snapshot, "migration", context.clone())
+        let first: awaken_runtime::Conversation<'_> = runtime
+            .conversation(&snapshot, "migration", context.clone())
             .unwrap();
-        let conversation: awaken_runtime::Conversation<'_> = runtime
+        let second: awaken_runtime::Conversation<'_> = runtime
             .conversation(&snapshot, "migration", context)
             .unwrap();
-        assert_eq!(legacy.thread_id(), conversation.thread_id());
+        assert_eq!(first.thread_id(), second.thread_id());
         assert_eq!(store.commit_count(), 0, "binding does not commit a Run");
         assert_eq!(model.calls.load(Ordering::SeqCst), 0);
         assert_eq!(hits.load(Ordering::SeqCst), 0);
 
-        let pending = if start_legacy {
-            legacy.run("original input").await.unwrap()
+        let pending = if start_first {
+            first.run("original input").await.unwrap()
         } else {
-            conversation.run("original input").await.unwrap()
+            second.run("original input").await.unwrap()
         };
         assert_eq!(pending.state(), &RunState::Awaiting);
-        assert_eq!(pending.thread_id(), conversation.thread_id());
+        assert_eq!(pending.thread_id(), second.thread_id());
         assert!(pending.resume_ticket(store.as_ref()).unwrap().is_some());
         assert_eq!(hits.load(Ordering::SeqCst), 0);
 
-        // Either public name resumes the other entry's original identity.
-        let resumed = if start_legacy {
-            conversation
+        // The other canonical binding resumes the original committed identity.
+        let resumed = if start_first {
+            second
                 .resume_with_id_async(pending.run_id().clone(), "original input", |_| {
                     std::future::ready(Ok(ResumeResult::allow()))
                 })
                 .await
                 .unwrap()
         } else {
-            legacy
+            first
                 .resume_with_id_async(pending.run_id().clone(), "original input", |_| {
                     std::future::ready(Ok(ResumeResult::allow()))
                 })
@@ -222,20 +227,20 @@ async fn legacy_session_and_conversation_share_run_identity_and_recovery() {
         assert_eq!(resumed.end_cause(), Some(&EndCause::NaturalEnd));
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert!(resumed.resume_ticket(store.as_ref()).unwrap().is_none());
-        assert_eq!(legacy.outcome(pending.run_id()).unwrap(), resumed);
-        assert_eq!(conversation.outcome(pending.run_id()).unwrap(), resumed);
+        assert_eq!(first.outcome(pending.run_id()).unwrap(), resumed);
+        assert_eq!(second.outcome(pending.run_id()).unwrap(), resumed);
 
         let commits = store.commit_count();
         let calls = model.calls.load(Ordering::SeqCst);
-        let replay = if start_legacy {
-            legacy
+        let replay = if start_first {
+            first
                 .resume_with_id_async(pending.run_id().clone(), "ignored", |_| async {
                     panic!("terminal replay cannot ask for approval")
                 })
                 .await
                 .unwrap()
         } else {
-            conversation
+            second
                 .resume_with_id_async(pending.run_id().clone(), "ignored", |_| async {
                     panic!("terminal replay cannot ask for approval")
                 })

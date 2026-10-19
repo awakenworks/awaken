@@ -510,17 +510,14 @@ async fn scenario(
             .0,
         StatusCode::OK
     );
-    assert_eq!(
-        api(
-            &app,
-            "POST",
-            "/v1/config/agents/zhike-push/publish",
-            Value::Null
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
+    let (status, publication) = api(
+        &app,
+        "POST",
+        "/v1/config/agents/zhike-push/publish",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{publication}");
     let (status, session) = api(
         &app,
         "POST",

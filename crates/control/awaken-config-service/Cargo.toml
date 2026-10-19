@@ -42,6 +42,8 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 
 [dev-dependencies]
+# Exercise the real pure MCP parser/metadata in the existing ConfigService fixture.
+awaken-ext-mcp.workspace = true
 awaken-ext-builtin-tools.workspace = true
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }
