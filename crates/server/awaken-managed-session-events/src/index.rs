@@ -33,7 +33,6 @@ use awaken_session_state_contract::{
     PersistedSession, SessionExecutionState, SessionRuntimeInterval,
 };
 
-use crate::historical::historical_message_boundaries;
 use crate::interval::{budget_reach_projection_close_cursor, interval_close_cursor, is_opening};
 use crate::order::historical_pending_projection_order;
 use crate::role::{TranscriptRole, phase};
@@ -42,6 +41,7 @@ use crate::transcript::{
 };
 use crate::{
     AnchoredOutcome, EventIdentity, EventPosition, FactProvenance, ManagedEventType, Ordinal,
+    ProjectionError,
 };
 
 /// The committed evidence one candidate is ordered over, all borrowed.
@@ -168,7 +168,7 @@ impl<'a> ThreadIndex<'a> {
             aligned,
             messages_by_id,
             messages_by_response,
-            transcript: committed_transcript_evidence(&snapshot.messages, None),
+            transcript: committed_transcript_evidence(&snapshot.messages),
         }
     }
 
@@ -393,84 +393,77 @@ impl<'a> OrderIndex<'a> {
 
     /// Order of the tool-use or tool-result block of `call_id` inside one
     /// committed Message of `thread_id`.
-    #[must_use]
     pub fn message_call_order(
         &self,
         thread_id: &str,
         message_id: &str,
         call_id: &str,
-    ) -> Option<EventPosition> {
-        let thread = self.threads.get(thread_id)?;
+    ) -> Result<Option<EventPosition>, ProjectionError> {
+        let Some(thread) = self.threads.get(thread_id) else {
+            return Ok(None);
+        };
         if !thread.aligned {
-            return None;
+            return Err(ProjectionError::corrupt(
+                "tool source prefix has misaligned Message coordinates",
+            ));
         }
-        thread
+        // Exact replay retains its FIRST committed occurrence, just like the
+        // transcript/source index; a later replay is not an alternate proof.
+        let Some(&position) = thread
             .messages_by_id
-            .get(message_id)?
-            .iter()
-            .filter_map(|&index| {
-                let message = &thread.snapshot.messages[index];
-                let block = message.content.iter().position(|block| match block {
-                    ContentBlock::ToolUse { id, .. } => id == call_id,
-                    ContentBlock::ToolResult { tool_use_id, .. } => tool_use_id == call_id,
-                    _ => false,
-                })?;
-                let mut order = thread.message_order(index, block)?;
-                if let ContentBlock::ToolUse { id, input, .. } = &message.content[block] {
-                    let awaiting = historical_message_boundaries(
-                        message,
-                        self.evidence.historical_pending,
-                        self.evidence.lifecycle,
-                        thread_id,
-                        message.id.assistant_coordinates().map(|(run, _, _)| run),
-                    )
-                    .into_iter()
-                    .find(|(pending, _)| pending.tool_use_id == *id && pending.input == *input);
-                    // Classification is per ToolUse block, not per Message:
-                    // a sibling call in the same Message may become visible at
-                    // a later result even while another call was already
-                    // answerable. The first committed proof of this exact call
-                    // is its Awaiting audit or matching ToolResult commit.
-                    let visible_cursor = if let Some((_, run)) = awaiting {
-                        self.pending_orders
-                            .get(&(thread_id.to_string(), run.0.clone(), id.clone()))
-                            .map(|pending| pending.source_commit_cursor)
-                    } else {
-                        thread
-                            .transcript
-                            .result_message_index(message_id, block, call_id)
-                            .and_then(|result_index| {
-                                thread
-                                    .snapshot
-                                    .message_commit_cursors
-                                    .get(result_index)
-                                    .copied()
-                            })
-                    };
-                    if let Some(cursor) =
-                        visible_cursor.filter(|cursor| *cursor > order.source_commit_cursor)
-                    {
-                        order.source_commit_cursor = cursor;
-                        order.processed_at_unix_ms =
-                            thread.snapshot.commit_timestamps.get(&cursor).copied();
-                    }
-                }
-                Some(order)
-            })
-            .min()
+            .get(message_id)
+            .and_then(|positions| positions.first())
+        else {
+            return Ok(None);
+        };
+        let message = &thread.snapshot.messages[position];
+        let Some(block) = message.content.iter().position(|block| match block {
+            ContentBlock::ToolUse { id, .. } => id == call_id,
+            ContentBlock::ToolResult { tool_use_id, .. } => tool_use_id == call_id,
+            _ => false,
+        }) else {
+            return Ok(None);
+        };
+        let mut order = thread.message_order(position, block).ok_or_else(|| {
+            ProjectionError::corrupt("tool source has no exact committed Message coordinate")
+        })?;
+        if let ContentBlock::ToolUse { id, .. } = &message.content[block] {
+            // Visibility and identity use the same exact Awaiting proof. A
+            // corrupt source is an error, never a missing-anchor fallback.
+            let awaiting = self
+                .message_pending_sources(thread, message, position)?
+                .into_iter()
+                .filter(|(source, pending, _)| {
+                    source.source_id == message.id.0 && pending.tool_use_id == *id
+                })
+                .map(|(_, _, cursor)| cursor)
+                .min();
+            let result = thread
+                .transcript
+                .result_message_index(message_id, block, call_id)
+                .and_then(|result| thread.snapshot.message_commit_cursors.get(result).copied());
+            let visible_cursor = awaiting.into_iter().chain(result).min();
+            if let Some(cursor) =
+                visible_cursor.filter(|cursor| *cursor > order.source_commit_cursor)
+            {
+                order.source_commit_cursor = cursor;
+                order.processed_at_unix_ms =
+                    thread.snapshot.commit_timestamps.get(&cursor).copied();
+            }
+        }
+        Ok(Some(order))
     }
 
     /// Order of a tool-use event qualified by (Thread, source, call): its
     /// source Message's block, or the Awaiting commit of a synthetic pause
     /// whose source is the Run.
-    #[must_use]
     pub fn tool_order(
         &self,
         thread_id: &str,
         source_id: &str,
         call_id: &str,
-    ) -> Option<EventPosition> {
-        let from_message = self.message_call_order(thread_id, source_id, call_id);
+    ) -> Result<Option<EventPosition>, ProjectionError> {
+        let from_message = self.message_call_order(thread_id, source_id, call_id)?;
         let from_pause = self
             .pending_orders
             .get(&(
@@ -479,7 +472,7 @@ impl<'a> OrderIndex<'a> {
                 call_id.to_string(),
             ))
             .copied();
-        from_message.into_iter().chain(from_pause).min()
+        Ok(from_message.into_iter().chain(from_pause).min())
     }
 
     /// The Run operation that issued one tool call of a committed assistant
@@ -1497,17 +1490,17 @@ mod tests {
             assert_eq!(order(index.fact_order(&key)), expected, "{rule}");
         }
         assert_eq!(
-            order(index.tool_order(SESSION, &tool_use.id.0, "call")),
+            order(index.tool_order(SESSION, &tool_use.id.0, "call").unwrap()),
             Some((3, 50, (2, 0), None)),
             "T1 tool use at its Message block"
         );
         assert_eq!(
-            order(index.tool_order(SESSION, "run", "ticket")),
+            order(index.tool_order(SESSION, "run", "ticket").unwrap()),
             Some((5, 50, (0, 0), None)),
             "T2 audited pause at its own Awaiting commit"
         );
         assert_eq!(
-            order(index.tool_order(SESSION, "run", "other")),
+            order(index.tool_order(SESSION, "run", "other").unwrap()),
             None,
             "T3 no Message and no pause"
         );
@@ -1777,8 +1770,12 @@ mod tests {
         // The index is built from committed evidence alone: no reader's event
         // count or other held state is an input, so every refresh schedule
         // resolves these keys to the same coordinates.
-        let late = order(index.tool_order(SESSION, &long.id.0, "late-call"));
-        let short_order = order(index.tool_order(SESSION, &short.id.0, "short-call"));
+        let late = order(index.tool_order(SESSION, &long.id.0, "late-call").unwrap());
+        let short_order = order(
+            index
+                .tool_order(SESSION, &short.id.0, "short-call")
+                .unwrap(),
+        );
         let after = order(index.fact_order(&after));
         assert_eq!(late, Some((3, 50, (0, 11), None)), "R1/E1");
         assert_eq!(short_order, Some((3, 50, (1, 0), None)), "R1/E1");

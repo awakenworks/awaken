@@ -97,8 +97,7 @@ pub use transcript_fold::{
     ToolFamilies, ToolUseFamily, TranscriptFold, is_public_user_input, transcript_fact_identity,
 };
 pub use transcript_plan::{
-    ChildTranscript, ChildTranscriptPlan, ChildTranscriptStep, MessageFold, plan_child_transcript,
-    plan_folds,
+    ChildTranscript, ChildTranscriptPlan, ChildTranscriptStep, plan_child_transcript,
 };
 pub use usage::{committed_thread_usage, session_usage_as_of};
 

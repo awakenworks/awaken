@@ -226,32 +226,6 @@ pub struct AcceptedLifecycle {
     pub historical_pending: HashMap<RunLifecycleCursor, Pending>,
 }
 
-impl AcceptedLifecycle {
-    /// A Thread's current answerable call: its latest accepted lifecycle
-    /// commit, when that commit is an audited pause.
-    #[must_use]
-    pub fn current_pending<'a>(
-        &self,
-        thread_ids: impl IntoIterator<Item = &'a String>,
-    ) -> HashMap<String, Pending> {
-        let mut latest_by_thread = HashMap::<&str, &RunLifecycleEvent>::new();
-        for event in &self.acceptance.accepted {
-            latest_by_thread.insert(event.thread_id.0.as_str(), event);
-        }
-        thread_ids
-            .into_iter()
-            .filter_map(|thread_id| {
-                latest_by_thread
-                    .get(thread_id.as_str())
-                    .filter(|event| event.kind == RunLifecycleEventKind::Awaiting)
-                    .and_then(|event| self.historical_pending.get(&event.cursor))
-                    .cloned()
-                    .map(|pending| (thread_id.clone(), pending))
-            })
-            .collect()
-    }
-}
-
 /// Accept the merged committed lifecycle of the root and its coordinated
 /// children.
 ///

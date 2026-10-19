@@ -20,6 +20,7 @@ use std::hash::Hash;
 
 use crate::{
     CoordinationEvents, EventIdentity, EventPosition, FactProvenance, ManagedEventType, OrderIndex,
+    ProjectionError,
 };
 
 /// The committed identity one projected event was minted from.
@@ -69,13 +70,13 @@ fn keyed_order(
     index: &OrderIndex<'_>,
     event: &AnchoredEvent<'_, impl Sized>,
     present_types: &HashSet<&str>,
-) -> Option<EventPosition> {
-    match &event.anchor {
+) -> Result<Option<EventPosition>, ProjectionError> {
+    Ok(match &event.anchor {
         EventAnchor::Tool {
             thread_id,
             source_id,
             call_id,
-        } => index.tool_order(thread_id, source_id, call_id),
+        } => index.tool_order(thread_id, source_id, call_id)?,
         EventAnchor::Fact(key) => {
             let authenticated = match (&key.role, &key.provenance) {
                 (ManagedEventType::Transcript(role), FactProvenance::AssistantResponse { .. }) => {
@@ -89,7 +90,7 @@ fn keyed_order(
             authenticated.then(|| index.fact_order(key)).flatten()
         }
         EventAnchor::Transient | EventAnchor::Inbound { .. } | EventAnchor::Unanchored => None,
-    }
+    })
 }
 
 /// Position every committed event of one candidate.
@@ -100,12 +101,11 @@ fn keyed_order(
 /// and parent-terminal facts at the terminal source once every other fact of
 /// the prefix is placed. An event the prefix cannot place has no entry; the
 /// caller fails the candidate closed.
-#[must_use]
 pub fn position_events<Id: Clone + Eq + Hash>(
     index: &OrderIndex<'_>,
     coordination: &CoordinationEvents,
     events: &[AnchoredEvent<'_, Id>],
-) -> HashMap<Id, EventPosition> {
+) -> Result<HashMap<Id, EventPosition>, ProjectionError> {
     let inbound =
         index
             .inbound_orders()
@@ -138,13 +138,13 @@ pub fn position_events<Id: Clone + Eq + Hash>(
                     parent_terminal_facts.push((event.id.clone(), *key));
                 }
                 _ => {
-                    if let Some(order) = keyed_order(index, event, &present_types) {
+                    if let Some(order) = keyed_order(index, event, &present_types)? {
                         orders.insert(event.id.clone(), order);
                     }
                 }
             },
             EventAnchor::Tool { .. } | EventAnchor::Unanchored => {
-                if let Some(order) = keyed_order(index, event, &present_types) {
+                if let Some(order) = keyed_order(index, event, &present_types)? {
                     orders.insert(event.id.clone(), order);
                 }
             }
@@ -179,5 +179,5 @@ pub fn position_events<Id: Clone + Eq + Hash>(
             }
         }
     }
-    orders
+    Ok(orders)
 }

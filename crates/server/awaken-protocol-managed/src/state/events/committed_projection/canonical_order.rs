@@ -132,7 +132,7 @@ impl ManagedState {
                 anchor: event_anchor(record, &inbound, event),
             })
             .collect::<Vec<_>>();
-        let orders = position_events(index, coordination, &anchored);
+        let orders = position_events(index, coordination, &anchored).map_err(projection_error)?;
         drop(anchored);
 
         record.event_times = orders

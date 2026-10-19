@@ -481,12 +481,17 @@ async fn archived_environment_keeps_existing_session_bearer_http_scope() {
             .is_accepted()
     );
     let repository = support::session_repository("Archive Session root").await;
-    let state = Arc::new(
-        support::state(AcceptingFake)
-            .await
-            .with_session_repo(repository.clone())
-            .with_environments(fixture.execution.clone()),
-    );
+    // Construction cause/effect: supply this exact SQLite root, Environment
+    // owner and clock before sharing. The pre/post-archive assertions below
+    // must observe that same root and lease authority throughout the HTTP flow.
+    let state = Arc::new(awaken_protocol_managed_testkit::managed_state_from_parts(
+        Arc::new(AcceptingFake),
+        None,
+        repository.clone(),
+        fixture.execution.clone(),
+        clock.clone(),
+        Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+    ));
     let guard = awaken_protocol_managed::ManagedWorkSessionAccess::new(
         fixture.execution.clone(),
         state.clone(),

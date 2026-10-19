@@ -117,7 +117,6 @@ impl ManagedState {
             transcripts,
             lifecycle_events,
             latest_run_states,
-            pending,
             historical_pending,
             dispositions,
             usage,
@@ -207,16 +206,6 @@ impl ManagedState {
                     lifecycle_events: &child_lifecycle_events,
                     latest_run_id: link.latest_run_id.as_ref(),
                     latest_run_state: latest_run_states.get(thread_id),
-                    pending: pending.get(thread_id),
-                    pending_source_run_id: lifecycle_events
-                        .iter()
-                        .rev()
-                        .find(|event| {
-                            event.thread_id.0 == thread_id
-                                && event.kind == RunLifecycleEventKind::Awaiting
-                        })
-                        .map(|event| &event.run_id),
-                    historical_pending,
                 },
                 order_index,
             )?;
