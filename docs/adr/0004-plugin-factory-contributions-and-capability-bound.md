@@ -187,6 +187,69 @@ an injected port through the call context, never via interior mutability.
   anti-corruption value between an extension and the kernel; the kernel
   enumerates no plugin vocabulary.
 
+## Amendment (2026-10-19): configured-section contract consistency
+
+The extension-owned typed decoder is the semantic owner for a configuration
+section. Its public Schema, direct decoding and configured Runtime consumption
+must agree about closed fields, partial defaults, nullability and numeric bounds.
+A Schema declaring `additionalProperties: false` cannot accompany a decoder
+that silently drops an unknown authored field. Schema defaults are projections
+of the type's existing `Default`, not separately maintained values.
+
+Flattened configuration keeps its existing wire shape. The Memory section's
+recall facet closes the remaining flattened keys against the serialized
+`RecallBounds` shape and enforces the same minimum entry count advertised by its
+Schema. It does not add an alternate Memory configuration type or parser. Direct
+`MemoryConfig` decoding, the ordinary Memory plugin and auxiliary-Agent
+declarations therefore consume that same decision. Valid partial configurations,
+prompt text and the existing default values retain their original meaning.
+
+Publication must reuse the extension's decoder through the existing publication
+resolution seam; Control must not copy extension rules or instantiate resource-
+holding Runtime plugins merely to validate input. Broader publication coverage
+and its composition adapters require their own source-bound tests before being
+reported complete. Existing immutable publications are not rewritten by a
+configuration inspection, view change or Schema update.
+
+The existing platform plugin capability declaration also carries an optional
+pure configuration-validation function as `PluginConfigurationSource`. Its
+`PluginCapability` is the unchanged serializable discovery projection; the
+function itself is process wiring and is never serialized, stored or sent to a
+Worker. ConfigService consumes that same injected declaration before its
+existing Workspace-dependent publication resolvers. A configurable active plugin
+must have one pure validator or one publication resolver; missing or ambiguous
+ownership fails before registration. A configuration-free declaration accepts
+no authored section. Inactive sections stay lossless and are not validated as
+active execution input.
+
+| Name | Kind | Owns | Uses | Must not own |
+|---|---|---|---|---|
+| `PluginConfigurationSource` | Composition value | Capability metadata paired with its owner's optional pure validation entry | Existing plugin typed decoders and `PluginCapability` | Persistence, permission grants, resources or execution |
+| ConfigService plugin configuration admission | Existing application operation | Exact active configuration-owner selection before compilation | Injected sources and existing `PluginPublicationResolver` | A copied plugin decoder or a second plugin catalog |
+
+The platform declaration belongs to the process roots, not the Execution
+context: pairing configuration metadata with decoders must not introduce an
+Execution-to-Config dependency. The small `awaken-plugin-composition` bootstrap
+crate owns that declaration once for the CLI and scenario host. It is an `apps`
+composition library, not a new plugin system or semantic authority. An existing
+execution bootstrap cannot own this Config dependency; the Control application
+and configuration contract must not choose concrete Runtime plugins either.
+Separating this composition keeps those dependency boundaries testable and
+removes the obsolete Config-catalog dependency from SessionExecutor.
+ConfigService requires the declarations explicitly at construction.
+
+The platform capability API projects only the metadata half. The
+Runtime still invokes its original plugin factory; its configuration parser and
+the pure publication validator call the same extension-owned type/compile
+decision. Workspace-dependent Web credential/provider resolution stays in its
+existing publication resolver, not in a resource-holding Runtime factory.
+
+State-machine configuration structs likewise reject unknown structural fields;
+their existing derived Schema reflects that same serde declaration. Authored
+maps and values inside declared fields keep their domain-owned key semantics.
+The background-task configuration owns its existing tool-id/notification
+validation once, shared by publication admission and Runtime consumption.
+
 ## Amendment A1 (2026-06-29): refinements proven in implementation
 
 These refine D2–D5 against the awaken runtime implementation, which carried this

@@ -52,6 +52,7 @@ impl ConfigService {
             message: error.to_string(),
         })?;
         resolve_plugin_configuration(
+            &self.plugin_configurations,
             &self.plugin_publication_resolvers,
             workspace,
             &mut resolved.config,
@@ -118,6 +119,7 @@ impl ConfigService {
         )
         .await?;
         resolve_plugin_configuration(
+            &self.plugin_configurations,
             &self.plugin_publication_resolvers,
             workspace,
             &mut resolved.config,

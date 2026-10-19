@@ -132,3 +132,13 @@ D3's `ConfigStore` port was renamed `ConfigRegistry` by
 Current trait: `crates/control/awaken-agent-config/src/store.rs:479`; its SQLite
 and Postgres adapters live in `awaken-config-store` under the `config` namespace
 (`crates/control/awaken-config-store/src/sqlite.rs:35`, `postgres.rs:35`).
+
+## Amendment (2026-10-19): disabling retains authoring configuration
+
+Disabling a plugin changes the Agent's selected plugin ids while retaining the
+authored configuration section. Explicitly clearing a section is a separate
+authoring action using the same AgentConfig writer and revision review. Neither
+operation introduces a browser-side configuration store or a second plugin
+lifecycle. The executable-only projection above remains authoritative: edits to
+inactive residue do not change an executable snapshot, while activation and
+active configuration changes still participate in compilation and fingerprinting.

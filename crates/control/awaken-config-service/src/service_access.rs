@@ -14,6 +14,9 @@ impl ConfigService {
         tool_configuration_compiler: Arc<
             dyn awaken_tool_contract::tool_configuration::ToolConfigurationCompiler,
         >,
+        plugin_configurations: Vec<
+            awaken_executable_agent_contract::capability::PluginConfigurationSource,
+        >,
     ) -> Self {
         Self {
             registrar,
@@ -22,6 +25,7 @@ impl ConfigService {
             model_publication_resolver,
             credential_reference_validator: None,
             plugin_publication_resolvers: Vec::new(),
+            plugin_configurations,
         }
     }
 }

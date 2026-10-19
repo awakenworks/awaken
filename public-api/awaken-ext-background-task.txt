@@ -78,6 +78,8 @@ pub awaken_ext_background_task::BackgroundTaskCompletion::fence: awaken_ext_back
 pub struct awaken_ext_background_task::BackgroundTaskConfig
 pub awaken_ext_background_task::BackgroundTaskConfig::notifications: awaken_ext_background_task::TaskNotifications
 pub awaken_ext_background_task::BackgroundTaskConfig::tools: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+impl awaken_ext_background_task::BackgroundTaskConfig
+pub fn awaken_ext_background_task::BackgroundTaskConfig::validate(&self) -> core::result::Result<(), alloc::string::String>
 pub struct awaken_ext_background_task::BackgroundTaskId(_)
 impl awaken_ext_background_task::BackgroundTaskId
 pub fn awaken_ext_background_task::BackgroundTaskId::as_str(&self) -> &str

@@ -20,6 +20,7 @@ use crate::result::{ContentMatcher, ResultMatcher, StatusMatcher};
 /// The whole state-machine plugin configuration.
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct StateMachineConfig {
     #[serde(default)]
     pub machines: Vec<MachineEntry>,
@@ -30,7 +31,7 @@ pub struct StateMachineConfig {
 /// Loop-continuation settings shared by all machines.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ContinuationSettings {
     /// Max forced continuations while a machine instance is non-terminal. `0`
     /// disables the continuation guard.
@@ -41,6 +42,7 @@ pub struct ContinuationSettings {
 
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct MachineEntry {
     pub name: String,
     #[serde(default)]
@@ -83,6 +85,7 @@ pub enum KeyNormalizerEntry {
 
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct TransitionEntry {
     pub on: TriggerEntry,
     pub from: FromEntry,
@@ -111,7 +114,7 @@ pub enum TriggerEntry {
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct CounterConditionEntry {
     pub gte: Option<u64>,
     pub lte: Option<u64>,
@@ -119,7 +122,7 @@ pub struct CounterConditionEntry {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct UpdateEntry {
     pub capture: BTreeMap<String, String>,
     pub increment: Vec<String>,
@@ -151,6 +154,7 @@ pub enum WhenEntry {
 
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct EmitEntry {
     #[serde(default)]
     pub target: EmitTargetEntry,

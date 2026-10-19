@@ -116,10 +116,7 @@ pub use crate::cache_volume::{
     CacheVolumeInitializer, CacheVolumeWarmup, SandboxCacheVolumeInitializer,
 };
 pub use crate::commit_ingest::session_commit_owner;
-pub use crate::config::{
-    advertised_tools, authorable_tools, block_text, platform_plugin_capabilities,
-    platform_plugin_capabilities_with_web_search,
-};
+pub use crate::config::{advertised_tools, authorable_tools, block_text};
 pub use crate::deployment_config::{
     ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
     PackageImageBuilder, SandboxPackageSettingsInput, SandboxSettings, SandboxTier, StoreKind,
