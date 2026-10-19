@@ -104,7 +104,6 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         realization_source,
     );
     let memory = memory_runtime(&agent, &env, &resources, &clock);
-    let background_supervisor = background_supervisor(&clock);
     let realization_executor = Arc::new(crate::realization_executor::RealizationExecutor::new(
         clock.clone(),
         realizations.clone(),
@@ -138,17 +137,18 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         installed_sessions.clone(),
         realization_executor.clone(),
     ));
-    let live_inboxes = Arc::new(crate::LiveInboxes::new(installed_sessions.clone()));
-    let agent = Arc::new(capability::AgentExecution::new(
-        agent,
-        installed_sessions.clone(),
+    let resources = Arc::new(capability::ResourcePorts::new(
+        resources,
+        memory,
+        Arc::downgrade(&installed_sessions),
+        realization_executor.staging().memory_binding_compiler(),
+        local_workspace.clone(),
+        tools
+            .plugin_config
+            .get(awaken_ext_memory::MEMORY_PLUGIN_ID)
+            .cloned(),
     ));
-    let exec = Arc::new(exec);
-    let worker = Arc::new(worker);
-    let tools = Arc::new(tools);
-    let resources = Arc::new(capability::ResourcePorts::new(resources, memory));
     let capture = Arc::new(capture);
-    let session_execution = Arc::new(session_execution);
     let completion = Arc::new(CompletionRegistry::new(
         hub.clone(),
         session_application.lifecycle_wakeup_binding(),
@@ -166,11 +166,14 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         local_workspace: local_workspace.clone(),
         installed_sessions: installed_sessions.clone(),
         clock: clock.clone(),
-        background_supervisor: background_supervisor.clone(),
-        agent: agent.clone(),
-        exec: exec.clone(),
-        tools: tools.clone(),
-        worker: worker.clone(),
+        background_supervisor: background_supervisor(&clock),
+        agent: Arc::new(capability::AgentExecution::new(
+            agent,
+            installed_sessions.clone(),
+        )),
+        exec: Arc::new(exec),
+        tools: Arc::new(tools),
+        worker: Arc::new(worker),
         session_application: session_application.clone(),
     });
     let run_assembly = Arc::new(crate::RunAssembly {
@@ -188,7 +191,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         authority: authority.clone(),
         clock: clock.clone(),
         completion: completion.clone(),
-        session_execution: session_execution.clone(),
+        session_execution: Arc::new(session_execution),
         execution: execution.clone(),
         realization_executor: realization_executor.clone(),
         thread_reads: thread_reads.clone(),
@@ -203,7 +206,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
     ExecutorComponents {
         realization_executor,
         thread_reads,
-        live_inboxes,
+        live_inboxes: Arc::new(crate::LiveInboxes::new(installed_sessions.clone())),
         capabilities,
         run_assembly,
         coordination: Arc::new(crate::ChildRunCoordination::new(session_runs.clone())),

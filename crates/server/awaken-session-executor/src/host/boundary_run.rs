@@ -31,7 +31,9 @@ pub(crate) async fn construct_boundary_worker(
     }
     if host.authority.observes_terminal_memory_locally()
         && let Some(observer) = host
-            .dispatched_memory_terminal_observer(&claimed.request, commit.clone())
+            .resources
+            .memory_terminal_observers
+            .for_dispatch(&claimed.request, commit.clone())
             .await
             .map_err(|error| {
                 awaken_dispatch_execution::session_execution::execution_error(error.to_string())

@@ -45,6 +45,7 @@ mod selector;
 mod terminal_observer;
 pub(crate) use crate::memory_binding::{MemoryBinding, PlatformMemoryHandle};
 pub(crate) use selector::AgentSelector;
+pub(crate) use terminal_observer::MemoryTerminalObservers;
 
 static EXTRACTION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -540,11 +541,7 @@ impl crate::RunAssembly {
         &self,
         thread: &str,
     ) -> Result<Option<BoundMemory>, crate::realization_error::RealizationError> {
-        let realizations = self.installed_sessions.realizations();
-        Ok(realizations
-            .read_realization(thread, |r| r.staging().memory.clone())?
-            .flatten()
-            .map(|binding| self.resources.memory.bound(binding)))
+        self.resources.memory_terminal_observers.for_thread(thread)
     }
 
     /// Attach the one physical Session commit authority to every writable

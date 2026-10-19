@@ -63,6 +63,7 @@ pub(crate) struct ResourcePorts {
     /// Host-level memory auxiliary-agent capability. It owns no store: every
     /// recall/extraction operation requires a Session-scoped governed binding.
     pub(crate) memory: Arc<crate::memory::MemoryRuntime>,
+    pub(crate) memory_terminal_observers: Arc<crate::memory::MemoryTerminalObservers>,
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
     /// collected artifacts. A database-less Worker carries a fail-closed adapter;
     /// immutable claim-scoped reads use `file_content_source` instead.
@@ -121,8 +122,19 @@ impl ResourcePorts {
     pub(in crate::host) fn new(
         selection: ResourceSelection,
         memory: Arc<crate::memory::MemoryRuntime>,
+        sessions: std::sync::Weak<crate::InstalledSessions>,
+        bindings: awaken_session_realization::memory_binding_compiler::MemoryBindingCompiler,
+        local_workspace: String,
+        direct_config: Option<serde_json::Value>,
     ) -> Self {
         Self {
+            memory_terminal_observers: Arc::new(crate::memory::MemoryTerminalObservers::new(
+                sessions,
+                bindings,
+                memory.clone(),
+                local_workspace,
+                direct_config,
+            )),
             memory,
             #[cfg(any(test, feature = "test-support"))]
             file_store: selection.file_store,

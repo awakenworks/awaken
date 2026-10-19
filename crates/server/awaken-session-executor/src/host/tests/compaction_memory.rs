@@ -665,7 +665,9 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
             .expect("child is runnable");
         assert!(
             host.run_assembly
-                .dispatched_memory_terminal_observer(&claimed.request, parent_commit.clone())
+                .resources
+                .memory_terminal_observers
+                .for_dispatch(&claimed.request, parent_commit.clone())
                 .await
                 .expect("resolve exact child terminal observer")
                 .is_some(),

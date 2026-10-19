@@ -1034,4 +1034,222 @@ mod tests {
         };
         assert_eq!(error.kind, crate::SessionExecutionErrorKind::Internal, "W3");
     }
+
+    #[tokio::test]
+    async fn retained_memory_settlement_observes_frozen_child_after_executor_release() {
+        // Original claimed commit service writes one terminal child under its
+        // parent partition before any observation. Then every executor/assembly
+        // and write resolver is dropped. R1 frozen enabled: observe + replay
+        // creates exactly one extraction/version using the effective candidate.
+        // R2 manifestless enabled: missing original resident binding is an error.
+        // R3 extraction disabled and R4 plugin absent: no extraction. R5 foreign frozen binding:
+        // reject before extraction. Every row must release the actual slot table.
+        for rule in ["frozen", "legacy", "disabled", "absent", "foreign-binding"] {
+            let parent = format!("released-memory-parent-{rule}");
+            let child = format!("released-memory-child-{rule}");
+            let run = RunId(format!("released-memory-run-{rule}"));
+            let store_id = format!("released-memory-store-{rule}");
+            let (mut snapshot, candidate, extractor) = claimed_memory_snapshot();
+            if rule == "absent" {
+                snapshot.resolved_spec.plugin_ids.clear();
+                snapshot
+                    .recompute_fingerprint()
+                    .expect("disabled published configuration");
+            }
+            if rule == "disabled" {
+                snapshot.resolved_spec.plugin_config.insert(awaken_ext_memory::MEMORY_PLUGIN_ID.into(),
+                    serde_json::json!({"binding_id": MEMORY_BINDING_ID, "extraction_enabled": false}));
+                snapshot
+                    .recompute_fingerprint()
+                    .expect("extraction disabled while plugin remains selected");
+            }
+            if rule == "foreign-binding" {
+                snapshot.resolved_spec.plugin_config.insert(
+                    awaken_ext_memory::MEMORY_PLUGIN_ID.into(),
+                    serde_json::json!({"binding_id":"missing-frozen-binding"}),
+                );
+                snapshot
+                    .recompute_fingerprint()
+                    .expect("foreign published binding");
+            }
+            let activation =
+                RunActivation::new(run.clone(), ThreadId(child.clone()), snapshot, Vec::new())
+                    .with_model_ref_override(Some(OVERRIDE_MODEL_REF.into()));
+            let publications =
+                awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([extractor])
+                    .expect("exact auxiliary publication");
+            let manifest = match rule {
+                "legacy" | "disabled" | "absent" => None,
+                _ => Some(claimed_memory_manifest(&store_id)),
+            };
+            let request = crate::agent_runner::child_dispatch_request(
+                activation,
+                ThreadId(parent.clone()),
+                manifest,
+                Some(&publications),
+            )
+            .expect("production child dispatch decoration");
+            let (host, managed, versions) = cold_claimed_memory_host().await;
+            let queue = Arc::new(MemoryDispatchStore::new(host.run_assembly.clock()));
+            queue
+                .enqueue(request)
+                .await
+                .expect("enqueue exact dispatch");
+            let claimed = queue
+                .claim("released-memory-worker", 30_000, &Default::default())
+                .await
+                .expect("claim exact dispatch")
+                .expect("dispatch is claimable");
+            let service = ClaimedCommitService::with_coordinator_resolver(
+                queue,
+                Arc::new(SessionCommitOwner(host.clone())),
+            );
+            let terminal_commit = ThreadCommit::assemble(
+                ThreadId(child.clone()),
+                RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
+                true,
+                vec![Message::text(
+                    MessageId(format!("released-memory-message-{rule}")),
+                    Role::Assistant,
+                    "child report",
+                )],
+                Vec::new(),
+                Vec::new(),
+            );
+            service
+                .apply_claimed(ClaimedCommitRequest {
+                    claim: RunClaim::from(&claimed.lease),
+                    identity: WorkerIdentity::new("released-memory-worker", "boot", 1),
+                    operation: CommitOperation {
+                        operation_id: CommitOperationId::new(run.clone(), 0),
+                        expected_thread_version: 0,
+                        payload_hash: commit_payload_hash(&terminal_commit)
+                            .expect("exact commit hash"),
+                        commit: terminal_commit,
+                    },
+                })
+                .await
+                .expect("original guarded service commits terminal child");
+            assert_no_resident_session_projection(&host, &parent, rule);
+            let intent_id = format!("memory-extraction:{child}:{}", run.0);
+            let runtime = host.resources.memory.clone();
+            let content = host.resources.memory_stores.clone();
+            assert!(
+                runtime
+                    .extraction_repository()
+                    .get_extraction(&intent_id)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "commit ingestion must not perform terminal observation"
+            );
+            let observer = host.worker_memory_settlement_observer();
+            let facade = Arc::downgrade(&host);
+            let slots = Arc::downgrade(&host.run_assembly.installed_sessions);
+            let assembly = Arc::downgrade(&host.run_assembly);
+            let authority = host.run_assembly.authority.clone();
+            drop(service);
+            drop(managed);
+            drop(host);
+            assert!(
+                facade.upgrade().is_none(),
+                "{rule}: selected settlement services must release the Host"
+            );
+            assert!(
+                slots.upgrade().is_none(),
+                "{rule}: selected settlement services must release the slot table"
+            );
+            assert!(
+                assembly.upgrade().is_none(),
+                "{rule}: no broad RunAssembly owner retained"
+            );
+            for delivery in ["fresh", "replay"] {
+                let result = observer
+                    .before_settle(
+                        &claimed.request,
+                        &RunClaim::from(&claimed.lease),
+                        &RunState::Ended(EndCause::NaturalEnd),
+                        false,
+                    )
+                    .await;
+                match rule {
+                    "legacy" => assert!(
+                        result
+                            .expect_err("legacy missing binding cannot silently skip extraction")
+                            .to_string()
+                            .contains("original resident Session binding"),
+                        "{delivery}"
+                    ),
+                    "foreign-binding" => assert!(
+                        result
+                            .expect_err("foreign binding must fail closed")
+                            .to_string()
+                            .contains("missing-frozen-binding"),
+                        "{delivery}"
+                    ),
+                    _ => result.unwrap_or_else(|error| panic!("{rule}/{delivery}: {error}")),
+                }
+            }
+            assert!(
+                runtime.drain(std::time::Duration::from_secs(10)).await,
+                "{rule}: original Memory runtime drains"
+            );
+            let intent = runtime
+                .extraction_repository()
+                .get_extraction(&intent_id)
+                .await
+                .expect("original intent authority");
+            let history = versions
+                .list_versions(&store_id)
+                .await
+                .expect("original version authority");
+            if rule == "frozen" {
+                let intent = intent.expect("frozen dispatch creates extraction after Host release");
+                assert_eq!(
+                    intent.status,
+                    MemoryExtractionStatus::Completed,
+                    "{:?}",
+                    intent.last_error
+                );
+                assert_eq!(intent.session_id, parent);
+                assert_eq!(intent.logical_thread_id(), child);
+                assert_eq!(intent.memory_store_id, store_id);
+                assert_eq!(
+                    intent.extractor.agent.resolved_spec.model_binding,
+                    candidate
+                );
+                assert_eq!(intent.attempts, 1, "replay retains one extraction attempt");
+                assert_eq!(history.len(), 1, "replay retains one Memory version");
+                assert!(
+                    content
+                        .queries()
+                        .get_by_path(&store_id, "/user-prefs.md")
+                        .await
+                        .unwrap()
+                        .is_some()
+                );
+            } else {
+                assert!(
+                    intent.is_none(),
+                    "{rule}: no extraction intent may be manufactured"
+                );
+                assert!(
+                    history.is_empty(),
+                    "{rule}: no Memory version may be written"
+                );
+            }
+            assert!(
+                authority.durable_thread_exists(&parent).await.unwrap(),
+                "{rule}: original parent physical partition remains"
+            );
+            assert!(
+                !authority.durable_thread_exists(&child).await.unwrap(),
+                "{rule}: no child physical partition"
+            );
+            assert!(
+                slots.upgrade().is_none(),
+                "{rule}: settlement cannot resurrect a Session slot"
+            );
+        }
+    }
 }

@@ -12,6 +12,7 @@ pub mod execution_authority;
 pub mod frozen_inputs;
 pub mod managed_input_layout;
 pub mod memory_binding;
+pub mod memory_binding_compiler;
 pub mod peers;
 pub mod realization_error;
 pub mod realization_executor;

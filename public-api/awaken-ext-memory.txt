@@ -494,9 +494,11 @@ pub fn awaken_ext_memory::RecallSelector::select<'life0, 'life1, 'life2, 'async_
 pub fn awaken_ext_memory::accepts_memory_content(&str) -> bool
 pub fn awaken_ext_memory::default_memory_agent(awaken_runtime_contract::resolved::ResolvedModelCandidate, &str) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub fn awaken_ext_memory::default_selector_agent(&str, &str) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::resolved::model_binding::InvalidModelBinding>
+pub fn awaken_ext_memory::direct_extraction_configuration(core::option::Option<&serde_json::value::Value>, &str) -> core::result::Result<(awaken_ext_memory::plugin::MemoryConfig, awaken_runtime_contract::resolved::ResolvedModelCandidate), alloc::string::String>
 pub fn awaken_ext_memory::memory_agent(&str, awaken_runtime_contract::resolved::ResolvedModelCandidate, &str) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub fn awaken_ext_memory::memory_config_schema() -> serde_json::value::Value
 pub fn awaken_ext_memory::parse_indices(&str, usize, usize) -> alloc::vec::Vec<usize>
+pub fn awaken_ext_memory::published_extraction_configuration(&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, &str) -> core::result::Result<core::option::Option<(awaken_ext_memory::plugin::MemoryConfig, awaken_runtime_contract::resolved::ResolvedModelCandidate)>, alloc::string::String>
 pub fn awaken_ext_memory::recall_block(&awaken_ext_memory::localfs::MemoryDir, &awaken_ext_memory::recall::RecallBounds) -> core::option::Option<alloc::string::String>
 pub fn awaken_ext_memory::sanitize_stem(&str) -> alloc::string::String
 pub fn awaken_ext_memory::select_input(&str, &[(usize, alloc::string::String)], usize) -> alloc::string::String

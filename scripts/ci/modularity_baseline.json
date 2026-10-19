@@ -31,8 +31,8 @@
       "reason": "slice H: each of the eleven session-runtime roles gets one owning component (plan 10.3 item 11)"
     },
     "awaken-session-executor::RunAssembly": {
-      "files": 16,
-      "methods": 69,
+      "files": 15,
+      "methods": 64,
       "reason": "executor split (plan v4 D5): RunAssembly owns Session context assembly and the realization roles' executor part, with its MCP root authority, application-input target and durable Run cancellation as owned parts instead of weak Host back-references; the SharedHost forwarding it replaces is deleted as the remaining components land"
     },
     "awaken-session-executor::SessionRuns": {
@@ -350,7 +350,7 @@
     "awaken-session-executor::background_task.rs::launch_remote": 342,
     "awaken-session-executor::host/run.rs::resume": 153,
     "awaken-session-executor::host/run/quiescence.rs::quiesce_terminal_delegations": 196,
-    "awaken-session-executor::host/session/context/assembly.rs::assemble": 524,
+    "awaken-session-executor::host/session/context/assembly.rs::assemble": 521,
     "awaken-session-executor::host/session/context/execution.rs::prepare": 231,
     "awaken-session-executor::host/session/context/extensions.rs::skills": 179,
     "awaken-session-executor::host/session/context/plan.rs::prepare": 193,
