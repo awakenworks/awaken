@@ -1,6 +1,7 @@
 //! One explicit test composition around the production Session Root and CAS.
 
 use super::compile_complete_test_session_projection;
+use awaken_session_repository_contract::SessionRepositoryReads;
 use awaken_time::WallClockExt as _;
 use std::sync::Arc;
 
@@ -148,7 +149,6 @@ impl ManagedSessionRootFixture {
         awaken_session_realization_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
     > {
-        use awaken_session_repository_contract::SessionRepository as _;
         let id = awaken_session_types::SessionId::from(thread);
         let root = self
             .repository
@@ -211,7 +211,6 @@ impl ManagedSessionRootFixture {
         awaken_session_realization_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
     > {
-        use awaken_session_repository_contract::SessionRepository as _;
         let id = awaken_session_types::SessionId::from(thread);
         let owner = self
             .repository
@@ -349,7 +348,6 @@ impl ManagedSessionRootFixture {
         awaken_session_realization_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
     > {
-        use awaken_session_repository_contract::SessionRepository as _;
         let projection = self
             .settle_resource_stage(managed, thread, projection)
             .await?;
@@ -403,7 +401,6 @@ impl ManagedSessionRootFixture {
         awaken_session_types::RunError,
     > {
         use awaken_session_realization_contract::SessionRealizationControl as _;
-        use awaken_session_repository_contract::SessionRepository as _;
         let id = awaken_session_types::SessionId::from(thread);
         let root = self
             .repository
@@ -522,7 +519,6 @@ impl ManagedSessionRootFixture {
         awaken_session_realization_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
     > {
-        use awaken_session_repository_contract::SessionRepository as _;
         let id = awaken_session_types::SessionId::from(thread);
         let owner = self
             .repository
@@ -639,7 +635,6 @@ mod retry_hint_tests {
     use awaken_session_environment::test_support::{
         FakeContainerProvider, FakeHandExecutorFactory,
     };
-    use awaken_session_repository_contract::SessionRepository as _;
     use std::sync::atomic::Ordering;
 
     #[tokio::test]

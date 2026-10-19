@@ -69,9 +69,8 @@ pub use any_factory::{
     connect_postgres_with_nats_wake as connect_postgres_dispatch_store_with_nats_wake,
 };
 pub use application::{
-    ApplicationError, ApplicationErrorKind, AttemptClosureKind, AttemptStopStatus,
-    ClaimedCommitService, ClaimedOperationCoordinatorResolver, ClosedAttemptExecution,
-    ClosedWorkerExecution, DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult,
+    AttemptClosureKind, AttemptStopStatus, ClaimedCommitService,
+    ClaimedOperationCoordinatorResolver, ClosedAttemptExecution, ClosedWorkerExecution,
     ObservedAttemptStop, ObservedWorkerProcessExit, WorkerEvidenceReleaseAdapter,
     WorkerExecutionBindingSource, WorkerExecutionStopSource, WorkerProcessStopStatus,
     has_active_physical_attempt_for_owner, reconcile_closed_idle_worker_evidence,

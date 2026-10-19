@@ -47,7 +47,6 @@ mod kani_proofs {
 }
 
 pub use awaken_provisioning_contract::{
-    SandboxCheckpointExpiryBehavior as EnvironmentCheckpointExpiryBehavior,
     SandboxIdleRetentionMode as EnvironmentIdleRetentionMode,
     SandboxIdleRetentionPolicy as EnvironmentIdleRetentionPolicy, SandboxProvisioning,
 };
@@ -469,6 +468,7 @@ mod tests {
     use awaken_credential_contract::{PlaintextBoundary, PlaintextHolder};
     use awaken_provisioning_contract::{
         EnvValue, EnvVar, EnvVisibility, MountAccess, MountLifetime, MountRequirement, MountSource,
+        SandboxCheckpointExpiryBehavior,
     };
 
     fn mount(id: &str) -> MountRequirement {
@@ -529,7 +529,7 @@ mod tests {
             mode: EnvironmentIdleRetentionMode::CheckpointAndRelease,
             checkpoint_after_secs: 60,
             retention_secs: 3_600,
-            expiry_behavior: EnvironmentCheckpointExpiryBehavior::FreshFromFrozenEnvironment,
+            expiry_behavior: SandboxCheckpointExpiryBehavior::FreshFromFrozenEnvironment,
             max_checkpoint_bytes: 1_024,
             max_checkpoint_duration_secs: 30,
             checkpoint_format: "awaken-fs-tar-v1".into(),

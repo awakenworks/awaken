@@ -1069,7 +1069,7 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     install_test_session_application(&replacement);
     // Recovery reads the existing authoritative Root. The replacement Host's
     // defaults are not a new creation request or an idempotency replay input.
-    use awaken_session_repository_contract::SessionRepository as _;
+    use awaken_session_repository_contract::SessionRepositoryReads;
     let stored = roots
         .repository
         .get(&awaken_session_types::SessionId::from(thread))

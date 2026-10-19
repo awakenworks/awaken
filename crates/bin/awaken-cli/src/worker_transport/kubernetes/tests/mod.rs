@@ -289,7 +289,7 @@ async fn pod_replacement_and_unobservable_processes_never_degrade_to_unbound_adm
         assert!(
             matches!(
                 source.binding_for(&worker).await.unwrap_err().kind,
-                awaken_run_ingress::ApplicationErrorKind::Unavailable
+                awaken_session_runtime_contract::ApplicationErrorKind::Unavailable
             ),
             "R3/R4 {pointer}"
         );

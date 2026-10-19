@@ -25,6 +25,7 @@ use std::time::Duration;
 
 mod environment_count_stream;
 mod keyset_query_plans;
+mod repository_reads;
 pub(crate) mod root_update_history;
 
 /// A raw fixture connection with SQLite's plain defaults, outside the embedded
@@ -319,15 +320,7 @@ async fn recovery_backlog_cannot_starve_session_authority_timers() {
     let scans = (0..40)
         .map(|_| {
             let repository = Arc::clone(&repository);
-            tokio::spawn(async move {
-                repository
-                    .scan(
-                        awaken_session_state_contract::SessionScanQuery::Reconcilable {
-                            after: None,
-                        },
-                    )
-                    .await
-            })
+            tokio::spawn(async move { repository.reconciliation_scan(None).await })
         })
         .collect::<Vec<_>>();
     tokio::task::yield_now().await;
@@ -387,10 +380,7 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         "R1 typed outbox"
     );
     assert!(
-        postgres
-            .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-            .await
-            .is_err(),
+        postgres.reconciliation_scan(None).await.is_err(),
         "R1 typed reconciliation"
     );
     assert!(
@@ -418,10 +408,7 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         create_fixture(&sqlite, "workspace", sample("sesn_corrupt"), Vec::new()).await;
     create_fixture(&sqlite, "workspace", sample("sesn_healthy"), Vec::new()).await;
     overwrite_sqlite_aggregate(&sqlite.pool, "sesn_corrupt", "{").await;
-    let scan = sqlite
-        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-        .await
-        .unwrap();
+    let scan = sqlite.reconciliation_scan(None).await.unwrap();
     assert_eq!(scan.sessions.len(), 1, "R3/E4 healthy work continues");
     assert_eq!(scan.sessions[0].session.session_id, "sesn_healthy");
     assert!(
@@ -452,10 +439,7 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         }],
         "R3/E3 exposes secret-free durable isolation evidence"
     );
-    let replay = sqlite
-        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-        .await
-        .unwrap();
+    let replay = sqlite.reconciliation_scan(None).await.unwrap();
     assert_eq!(replay.sessions.len(), 1);
     assert_eq!(replay.quarantined, scan.quarantined, "R3 idempotent replay");
     let quarantined_rows: i64 =
@@ -476,10 +460,7 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         .unwrap()
         .remove("active_activity_epochs");
     overwrite_sqlite_aggregate(&sqlite.pool, "sesn_corrupt", &recognized_legacy.to_string()).await;
-    let healed = sqlite
-        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-        .await
-        .unwrap();
+    let healed = sqlite.reconciliation_scan(None).await.unwrap();
     assert!(healed.quarantined.is_empty(), "R4 stale quarantine cleared");
     assert!(
         healed
@@ -523,10 +504,7 @@ async fn reconciliation_keyset_pages_cover_more_than_one_fixed_batch_exactly_onc
         create_fixture(&sqlite, "workspace", sample(session_id), Vec::new()).await;
     }
 
-    let first = sqlite
-        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-        .await
-        .unwrap();
+    let first = sqlite.reconciliation_scan(None).await.unwrap();
     assert_eq!(
         first.sessions.len(),
         usize::try_from(RECOVERY_BATCH_SIZE).unwrap(),
@@ -535,14 +513,7 @@ async fn reconciliation_keyset_pages_cover_more_than_one_fixed_batch_exactly_onc
     let cursor = first.next_cursor.clone().expect("R2/E2 next page");
     assert_eq!(cursor.session_id().as_str(), expected[total - 2], "R2/E2");
 
-    let second = sqlite
-        .scan(
-            awaken_session_state_contract::SessionScanQuery::Reconcilable {
-                after: Some(&cursor),
-            },
-        )
-        .await
-        .unwrap();
+    let second = sqlite.reconciliation_scan(Some(&cursor)).await.unwrap();
     assert_eq!(second.sessions.len(), 1, "R3/E1");
     assert!(second.next_cursor.is_none(), "R3/E4 terminal page");
     let observed = first
@@ -758,8 +729,7 @@ async fn sqlite_recovery_scan_waits_before_reading_and_repairing_quarantine() {
         let repo = repo.clone();
         tokio::spawn(async move {
             started_tx.send(()).unwrap();
-            repo.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-                .await
+            repo.reconciliation_scan(None).await
         })
     };
     started_rx.await.unwrap();
@@ -3706,10 +3676,7 @@ async fn postgres_round_trips_and_upserts() {
     create_fixture(&repo, "workspace", sample("sesn_pg_healthy"), Vec::new()).await;
     create_fixture(&repo, "workspace", sample("sesn_pg_corrupt"), Vec::new()).await;
     overwrite_postgres_aggregate(&repo.pool, "sesn_pg_corrupt", "{").await;
-    let scan = repo
-        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-        .await
-        .unwrap();
+    let scan = repo.reconciliation_scan(None).await.unwrap();
     assert!(
         scan.sessions
             .iter()
@@ -3722,10 +3689,7 @@ async fn postgres_round_trips_and_upserts() {
             .any(|row| row.session_id == "sesn_pg_corrupt"),
         "Q2"
     );
-    let replay = repo
-        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-        .await
-        .unwrap();
+    let replay = repo.reconciliation_scan(None).await.unwrap();
     assert_eq!(replay.quarantined, scan.quarantined, "Q3");
 }
 

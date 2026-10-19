@@ -36,11 +36,11 @@ pub use agent_config::{
 };
 pub use application_origin::{ApplicationOriginBinding, ApplicationOriginBindingError};
 pub use baseline::{
-    CompiledSessionCreation, ControlSessionCreationInputs, EnvironmentCheckpointExpiryBehavior,
-    EnvironmentFingerprint, EnvironmentIdleRetentionMode, EnvironmentIdleRetentionPolicy,
-    EnvironmentSnapshot, SandboxProvisioning, SessionBaseline, SessionBaselineFingerprint,
-    SessionBaselineInputs, SessionBaselineState, SessionCreationFinalizeError,
-    SessionCreationIntent, SessionMcpAuthoringContext, SessionSystemPromptSelection,
+    CompiledSessionCreation, ControlSessionCreationInputs, EnvironmentFingerprint,
+    EnvironmentIdleRetentionMode, EnvironmentIdleRetentionPolicy, EnvironmentSnapshot,
+    SandboxProvisioning, SessionBaseline, SessionBaselineFingerprint, SessionBaselineInputs,
+    SessionBaselineState, SessionCreationFinalizeError, SessionCreationIntent,
+    SessionMcpAuthoringContext, SessionSystemPromptSelection,
     resolved_environment_snapshot_is_exact,
 };
 pub use dispatched_runtime::{SessionRuntimeDispatchError, SessionRuntimeProjection};

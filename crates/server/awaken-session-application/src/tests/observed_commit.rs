@@ -1,7 +1,7 @@
 // @formal evidence session_time.root_observations_are_revision_bound_and_replay_stable
 //! Direct execution of the existing asynchronous replacement boundary.
 use crate::SessionMutations;
-use awaken_session_repository_contract::SessionRepository;
+use awaken_session_repository_contract::{SessionRepository, SessionRepositoryReads};
 use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionCreateResult,
     SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
@@ -18,6 +18,38 @@ struct ObservedCommitPort {
     pending_once: bool,
     calls: AtomicUsize,
     result: Result<SessionMutationResult, SessionRepositoryError>,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_repository_contract::SessionRepositoryReads for ObservedCommitPort {
+    async fn get(
+        &self,
+        _session_id: &SessionId,
+    ) -> Result<PersistedSession, SessionRepositoryError> {
+        panic!("unexpected repository operation")
+    }
+
+    async fn owner(&self, _session_id: &SessionId) -> Result<String, SessionRepositoryError> {
+        panic!("unexpected repository operation")
+    }
+
+    async fn scan(
+        &self,
+        _query: awaken_session_state_contract::SessionScanQuery<'_>,
+    ) -> Result<awaken_session_state_contract::SessionScan, SessionRepositoryError> {
+        panic!("unexpected repository operation")
+    }
+
+    async fn deleted_event_admissions(
+        &self,
+        _owner_scope: &str,
+        _session_id: &SessionId,
+    ) -> Result<
+        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
+        SessionRepositoryError,
+    > {
+        panic!("unexpected repository operation")
+    }
 }
 
 #[async_trait::async_trait]
@@ -57,28 +89,7 @@ impl SessionRepository for ObservedCommitPort {
     ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
         panic!("unexpected repository operation")
     }
-    async fn get(
-        &self,
-        _session_id: &SessionId,
-    ) -> Result<PersistedSession, SessionRepositoryError> {
-        panic!("unexpected repository operation")
-    }
-    async fn scan(
-        &self,
-        _query: awaken_session_state_contract::SessionScanQuery<'_>,
-    ) -> Result<awaken_session_state_contract::SessionScan, SessionRepositoryError> {
-        panic!("unexpected repository operation")
-    }
-    async fn deleted_event_admissions(
-        &self,
-        _owner_scope: &str,
-        _session_id: &SessionId,
-    ) -> Result<
-        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
-        SessionRepositoryError,
-    > {
-        panic!("unexpected repository operation")
-    }
+
     async fn count_environment_phase(
         &self,
         _phase: awaken_session_state_contract::SessionEnvironmentPhase,
@@ -92,7 +103,11 @@ impl SessionRepository for ObservedCommitPort {
     ) -> Result<Option<SessionIdempotencyReceipt>, SessionRepositoryError> {
         panic!("unexpected repository operation")
     }
-    async fn owner(&self, _session_id: &SessionId) -> Result<String, SessionRepositoryError> {
+
+    async fn reconciliation_scan(
+        &self,
+        _after: Option<&awaken_session_state_contract::SessionScanCursor>,
+    ) -> Result<awaken_session_state_contract::SessionScan, SessionRepositoryError> {
         panic!("unexpected repository operation")
     }
 }

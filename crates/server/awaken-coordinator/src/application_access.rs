@@ -402,6 +402,73 @@ mod tests {
         failure: Option<TestSessionReadFailure>,
     }
 
+    #[async_trait::async_trait]
+    impl awaken_session_repository_contract::SessionRepositoryReads for TestSessions {
+        async fn get(
+            &self,
+            session_id: &awaken_session_types::SessionId,
+        ) -> Result<PersistedSession, awaken_session_state_contract::SessionRepositoryError>
+        {
+            if self.failure == Some(TestSessionReadFailure::Get) {
+                return Err(
+                    awaken_session_state_contract::SessionRepositoryError::Corrupt(
+                        "get-backend-diagnostic-456".into(),
+                    ),
+                );
+            }
+            self.rows
+                .get(session_id.as_str())
+                .map(|(_, session)| session.clone())
+                .ok_or(awaken_session_state_contract::SessionRepositoryError::NotFound)
+        }
+
+        async fn owner(
+            &self,
+            session_id: &awaken_session_types::SessionId,
+        ) -> Result<String, awaken_session_state_contract::SessionRepositoryError> {
+            if self.failure == Some(TestSessionReadFailure::Owner) {
+                return Err(
+                    awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                        "owner-backend-diagnostic-123".into(),
+                    ),
+                );
+            }
+            self.rows
+                .get(session_id.as_str())
+                .map(|(owner, _)| owner.clone())
+                .ok_or(awaken_session_state_contract::SessionRepositoryError::NotFound)
+        }
+
+        async fn scan(
+            &self,
+            _query: awaken_session_state_contract::SessionScanQuery<'_>,
+        ) -> Result<
+            awaken_session_state_contract::SessionScan,
+            awaken_session_state_contract::SessionRepositoryError,
+        > {
+            Err(
+                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                    "read-only TestSessions does not own Session indexing".into(),
+                ),
+            )
+        }
+
+        async fn deleted_event_admissions(
+            &self,
+            _owner_scope: &str,
+            _session_id: &awaken_session_types::SessionId,
+        ) -> Result<
+            Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
+            awaken_session_state_contract::SessionRepositoryError,
+        > {
+            Err(
+                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                    "read-only TestSessions does not retain deletion evidence".into(),
+                ),
+            )
+        }
+    }
+
     #[async_trait]
     impl SessionRepository for TestSessions {
         async fn create(
@@ -450,58 +517,6 @@ mod tests {
             )
         }
 
-        async fn get(
-            &self,
-            session_id: &awaken_session_types::SessionId,
-        ) -> Result<PersistedSession, awaken_session_state_contract::SessionRepositoryError>
-        {
-            if self.failure == Some(TestSessionReadFailure::Get) {
-                return Err(
-                    awaken_session_state_contract::SessionRepositoryError::Corrupt(
-                        "get-backend-diagnostic-456".into(),
-                    ),
-                );
-            }
-            self.rows
-                .get(session_id.as_str())
-                .map(|(_, session)| session.clone())
-                .ok_or(awaken_session_state_contract::SessionRepositoryError::NotFound)
-        }
-
-        async fn scan(
-            &self,
-            query: awaken_session_state_contract::SessionScanQuery<'_>,
-        ) -> Result<
-            awaken_session_state_contract::SessionScan,
-            awaken_session_state_contract::SessionRepositoryError,
-        > {
-            match query {
-                awaken_session_state_contract::SessionScanQuery::Reconcilable { .. } => {
-                    Ok(awaken_session_state_contract::SessionScan::default())
-                }
-                _ => Err(
-                    awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
-                        "read-only TestSessions does not own Session indexing".into(),
-                    ),
-                ),
-            }
-        }
-
-        async fn deleted_event_admissions(
-            &self,
-            _owner_scope: &str,
-            _session_id: &awaken_session_types::SessionId,
-        ) -> Result<
-            Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
-            awaken_session_state_contract::SessionRepositoryError,
-        > {
-            Err(
-                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
-                    "read-only TestSessions does not retain deletion evidence".into(),
-                ),
-            )
-        }
-
         async fn count_environment_phase(
             &self,
             _phase: awaken_session_state_contract::SessionEnvironmentPhase,
@@ -524,21 +539,14 @@ mod tests {
             Ok(None)
         }
 
-        async fn owner(
+        async fn reconciliation_scan(
             &self,
-            session_id: &awaken_session_types::SessionId,
-        ) -> Result<String, awaken_session_state_contract::SessionRepositoryError> {
-            if self.failure == Some(TestSessionReadFailure::Owner) {
-                return Err(
-                    awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
-                        "owner-backend-diagnostic-123".into(),
-                    ),
-                );
-            }
-            self.rows
-                .get(session_id.as_str())
-                .map(|(owner, _)| owner.clone())
-                .ok_or(awaken_session_state_contract::SessionRepositoryError::NotFound)
+            _after: Option<&awaken_session_state_contract::SessionScanCursor>,
+        ) -> Result<
+            awaken_session_state_contract::SessionScan,
+            awaken_session_state_contract::SessionRepositoryError,
+        > {
+            Ok(awaken_session_state_contract::SessionScan::default())
         }
     }
 

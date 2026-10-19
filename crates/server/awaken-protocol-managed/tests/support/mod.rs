@@ -52,7 +52,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use awaken_session_repository_contract::SessionRepository;
+use awaken_session_repository_contract::{SessionRepository, SessionRepositoryReads};
 use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionIdempotencyReceipt,
     SessionMutation, SessionMutationResult, SessionRepositoryError,
@@ -405,6 +405,43 @@ pub async fn replace_session_fixture(
 }
 
 #[async_trait::async_trait]
+impl awaken_session_repository_contract::SessionRepositoryReads for ScheduledConflictRepository {
+    async fn get(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<PersistedSession, SessionRepositoryError> {
+        self.inner.get(session_id).await
+    }
+
+    async fn owner(&self, session_id: &SessionId) -> Result<String, SessionRepositoryError> {
+        self.inner.owner(session_id).await
+    }
+
+    async fn scan(
+        &self,
+        query: awaken_session_state_contract::SessionScanQuery<'_>,
+    ) -> Result<
+        awaken_session_state_contract::SessionScan,
+        awaken_session_state_contract::SessionRepositoryError,
+    > {
+        self.inner.scan(query).await
+    }
+
+    async fn deleted_event_admissions(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<
+        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
+        awaken_session_state_contract::SessionRepositoryError,
+    > {
+        self.inner
+            .deleted_event_admissions(owner_scope, session_id)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
 impl SessionRepository for ScheduledConflictRepository {
     async fn create(
         &self,
@@ -514,13 +551,6 @@ impl SessionRepository for ScheduledConflictRepository {
         self.inner.commit(owner_scope, mutation).await
     }
 
-    async fn get(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<PersistedSession, SessionRepositoryError> {
-        self.inner.get(session_id).await
-    }
-
     async fn idempotency_receipt(
         &self,
         session_id: &SessionId,
@@ -529,38 +559,21 @@ impl SessionRepository for ScheduledConflictRepository {
         self.inner.idempotency_receipt(session_id, key).await
     }
 
-    async fn owner(&self, session_id: &SessionId) -> Result<String, SessionRepositoryError> {
-        self.inner.owner(session_id).await
-    }
-
-    async fn scan(
-        &self,
-        query: awaken_session_state_contract::SessionScanQuery<'_>,
-    ) -> Result<
-        awaken_session_state_contract::SessionScan,
-        awaken_session_state_contract::SessionRepositoryError,
-    > {
-        self.inner.scan(query).await
-    }
-
-    async fn deleted_event_admissions(
-        &self,
-        owner_scope: &str,
-        session_id: &awaken_session_types::SessionId,
-    ) -> Result<
-        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
-        awaken_session_state_contract::SessionRepositoryError,
-    > {
-        self.inner
-            .deleted_event_admissions(owner_scope, session_id)
-            .await
-    }
-
     async fn count_environment_phase(
         &self,
         phase: awaken_session_state_contract::SessionEnvironmentPhase,
     ) -> Result<u64, awaken_session_state_contract::SessionRepositoryError> {
         self.inner.count_environment_phase(phase).await
+    }
+
+    async fn reconciliation_scan(
+        &self,
+        after: Option<&awaken_session_state_contract::SessionScanCursor>,
+    ) -> Result<
+        awaken_session_state_contract::SessionScan,
+        awaken_session_state_contract::SessionRepositoryError,
+    > {
+        self.inner.reconciliation_scan(after).await
     }
 }
 

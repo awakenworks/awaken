@@ -52,8 +52,7 @@ mod tests {
     use awaken_ext_memory::MemoryExtractionStatus;
     use awaken_run_ingress::ClaimedCommitService;
     use awaken_run_ingress::{
-        ApplicationErrorKind, ClaimedCommitRequest, MemoryDispatchStore, WorkerIdentity,
-        WorkerResolver as _,
+        ClaimedCommitRequest, MemoryDispatchStore, WorkerIdentity, WorkerResolver as _,
     };
     use awaken_run_ingress_contract::ClaimedRunCommit;
     use awaken_run_ingress_contract::DispatchClaims;
@@ -63,6 +62,7 @@ mod tests {
     use awaken_run_ingress_contract::{RunClaim, RunDispatch};
     use awaken_runtime_contract::RunActivation;
     use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ResolvedModelCandidate};
+    use awaken_session_runtime_contract::ApplicationErrorKind;
 
     /// The Coordinator composition's resolver, rebuilt here over the same
     /// Host method so these tests drive the real claimed-commit service.

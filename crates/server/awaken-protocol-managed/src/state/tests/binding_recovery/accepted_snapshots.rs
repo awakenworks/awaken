@@ -3,7 +3,7 @@ use super::*;
 use awaken_executable_agent_contract::{
     ExecutableAgentProfileSource, ExecutableAgentSessionProfile,
 };
-use awaken_session_repository_contract::LifecycleOutbox as _;
+use awaken_session_repository_contract::{LifecycleOutbox as _, SessionRepositoryReads};
 use awaken_session_state_contract::{
     SessionScanQuery, SessionUpdateAgentConfiguration, SessionUpdateHistory,
 };
@@ -170,7 +170,10 @@ async fn accepted_a_and_b_snapshots_survive_catalog_withdrawal_and_cold_peer() {
     })), DEFAULT_SCOPE).await.unwrap();
     assert_eq!(a.agent.name, "coordinator-v7");
     assert_eq!(a.agent.version, 7);
-    assert_eq!(a.agent.model.speed, Some(crate::types::ModelSpeed::Fast));
+    assert_eq!(
+        a.agent.model.speed,
+        Some(awaken_runtime_contract::agent_bindings::InferenceSpeed::Fast)
+    );
     assert_eq!(a.agent.system.as_deref(), Some("coordinator-v7 system"));
     assert_eq!(b.agent.name, "coordinator-v8");
     assert_eq!(

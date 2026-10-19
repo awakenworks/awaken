@@ -108,7 +108,10 @@
       }
     },
     "awaken-session-dream-contract": {
-      "depth": 1
+      "depth": 3,
+      "growth_reasons": {
+        "depth": "Reason: Dream and Managed reuse the existing ADR-0086 published InferenceSpeed Value instead of two mirrors; the SDK 1.0.0 definition/deep path and immutable source SemVer baseline remain unchanged. Dream contract gains one direct owner edge and four pure SDK contract nodes (runtime-contract/tool-contract/agent-contract/time), depth 1 to 3; Dream application gains one direct owner edge but zero transitive nodes. No engine/provider/Platform implementation or SPI violation. Approved by: user-authorized full v4 duplication removal and Codex integration owner bounded review. Date: 2026-10-18. Remove when: the ADR-0086 value/trait split lands through the formal compatible SDK release process and the same change lowers measured Dream depth."
+      }
     },
     "awaken-session-environment-contract": {
       "depth": 5,

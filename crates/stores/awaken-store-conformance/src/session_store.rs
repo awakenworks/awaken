@@ -825,9 +825,7 @@ pub async fn scan_query_decision_table<R: awaken_session_repository_contract::Se
     let mut cursor = None;
     loop {
         let page = r
-            .scan(SessionScanQuery::Reconcilable {
-                after: cursor.as_ref(),
-            })
+            .reconciliation_scan(cursor.as_ref())
             .await
             .expect("Q5 reconciliation page");
         for scoped in &page.sessions {
@@ -967,9 +965,7 @@ pub async fn worker_realization_owner_scan_decision_table<
     let mut prior_cursor = None;
     loop {
         let page = r
-            .scan(SessionScanQuery::Reconcilable {
-                after: prior_cursor.as_ref(),
-            })
+            .reconciliation_scan(prior_cursor.as_ref())
             .await
             .expect("R3 prior repository obligations");
         assert!(page.quarantined.is_empty(), "R3 no quarantined fixture");
@@ -1032,7 +1028,7 @@ pub async fn worker_realization_owner_scan_decision_table<
     .await;
 
     let indexed = r
-        .scan(SessionScanQuery::Reconcilable { after: None })
+        .reconciliation_scan(None)
         .await
         .expect("R3 existing reconciliation index");
     for id in ["affinity-a", "affinity-b", "affinity-c"] {
@@ -1619,10 +1615,7 @@ pub async fn pending_resource_activation_index_is_durable<
     pending = create_session(r, "ws_a", pending, Vec::new()).await;
 
     assert_eq!(
-        r.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-            .await
-            .unwrap()
-            .sessions,
+        r.reconciliation_scan(None).await.unwrap().sessions,
         vec![ScopedPersistedSession {
             workspace_id: "ws_a".into(),
             session: pending.clone(),
@@ -1632,10 +1625,7 @@ pub async fn pending_resource_activation_index_is_durable<
     pending.resources.start_attempt().unwrap();
     pending.resources.commit().unwrap();
     pending = replace_session(r, "ws_a", pending, "test:resource-active", Vec::new()).await;
-    let indexed = r
-        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-        .await
-        .unwrap();
+    let indexed = r.reconciliation_scan(None).await.unwrap();
     assert_eq!(indexed.sessions.len(), 1, "active MCP remains restart work");
     assert!(indexed.sessions[0].session.mcp.needs_reconciliation());
 
@@ -1643,10 +1633,7 @@ pub async fn pending_resource_activation_index_is_durable<
         awaken_session_configuration_contract::mcp::McpAttachmentState::Failed;
     pending = replace_session(r, "ws_a", pending, "test:mcp-failed", Vec::new()).await;
     assert_eq!(
-        r.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-            .await
-            .unwrap()
-            .sessions,
+        r.reconciliation_scan(None).await.unwrap().sessions,
         vec![ScopedPersistedSession {
             workspace_id: "ws_a".into(),
             session: pending.clone(),
@@ -1660,7 +1647,7 @@ pub async fn pending_resource_activation_index_is_durable<
         .complete_terminal_release("conformance cleanup");
     pending = replace_session(r, "ws_a", pending, "test:resource-released", Vec::new()).await;
     assert!(
-        r.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
+        r.reconciliation_scan(None)
             .await
             .unwrap()
             .sessions
@@ -1670,10 +1657,7 @@ pub async fn pending_resource_activation_index_is_durable<
     pending.environment.set_resident("worker-owned-binding");
     pending = replace_session(r, "ws_a", pending, "test:resident-environment", Vec::new()).await;
     assert_eq!(
-        r.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-            .await
-            .unwrap()
-            .sessions,
+        r.reconciliation_scan(None).await.unwrap().sessions,
         vec![ScopedPersistedSession {
             workspace_id: "ws_a".into(),
             session: pending,

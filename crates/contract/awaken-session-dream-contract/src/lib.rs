@@ -3,6 +3,7 @@
 //! Neutral Coordinator Dream request and projection vocabulary.
 
 use async_trait::async_trait;
+use awaken_runtime_contract::agent_bindings::InferenceSpeed;
 use awaken_session_types::{SessionContractErrorDetail, SessionId};
 use serde::{Deserialize, Serialize};
 
@@ -192,19 +193,28 @@ pub enum DreamOutputBehavior {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DreamModelSpeed {
-    Standard,
-    Fast,
-}
-
+/// A Dream model uses the published inference-speed value directly.
+///
+/// S1 typed authoring accepts the canonical SDK value without a projection.
+/// ```
+/// use awaken_runtime_contract::agent_bindings::InferenceSpeed;
+/// use awaken_session_dream_contract::DreamModelConfig;
+/// let model = DreamModelConfig {
+///     id: "claude-sonnet-5".into(),
+///     speed: Some(InferenceSpeed::Standard),
+/// };
+/// let _: Option<InferenceSpeed> = model.speed;
+/// ```
+/// S2 the removed mirror has no compatibility export.
+/// ```compile_fail
+/// use awaken_session_dream_contract::DreamModelSpeed;
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DreamModelConfig {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub speed: Option<DreamModelSpeed>,
+    pub speed: Option<InferenceSpeed>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -630,6 +640,66 @@ mod tests {
             archived_at: None,
             error: None,
             policy_key: None,
+        }
+    }
+
+    #[test]
+    fn dream_model_speed_is_the_existing_sdk_value_on_the_wire_and_in_stored_records() {
+        // Cause/effect table: S1 omitted or null -> canonical None + omitted
+        // output; S2 standard/fast -> the SAME SDK value + exact original
+        // literal; S3 an unknown literal or non-string -> serde rejection.
+        // S1/S2 also round-trip the original durable-record fixture, preserving
+        // its speed and all other fields. Constraint: fast remains representable
+        // here; the application, before readiness/persistence, owns its refusal.
+        for (rule, input, expected) in [
+            ("S1 omitted", None, None),
+            ("S1 null", Some(serde_json::Value::Null), None),
+            (
+                "S2 standard",
+                Some(serde_json::json!("standard")),
+                Some(InferenceSpeed::Standard),
+            ),
+            (
+                "S2 fast",
+                Some(serde_json::json!("fast")),
+                Some(InferenceSpeed::Fast),
+            ),
+        ] {
+            let mut wire = serde_json::json!({"id": "claude-sonnet-5"});
+            if let Some(input) = input {
+                wire["speed"] = input;
+            }
+            let model: DreamModelConfig = serde_json::from_value(wire).expect(rule);
+            let typed: Option<InferenceSpeed> = model.speed;
+            assert_eq!(typed, expected, "{rule} canonical value");
+            let mut expected_wire = serde_json::json!({"id": "claude-sonnet-5"});
+            if let Some(speed) = expected {
+                expected_wire["speed"] = serde_json::to_value(speed).unwrap();
+            }
+            assert_eq!(
+                serde_json::to_value(&model).unwrap(),
+                expected_wire,
+                "{rule}"
+            );
+            let mut original = record();
+            original.model = model;
+            let restored: DreamProcessRecord =
+                serde_json::from_value(serde_json::to_value(&original).unwrap()).unwrap();
+            assert_eq!(restored, original, "{rule} frozen durable value");
+        }
+        for invalid in [
+            serde_json::json!("turbo"),
+            serde_json::json!(0),
+            serde_json::json!(true),
+            serde_json::json!({}),
+        ] {
+            assert!(
+                serde_json::from_value::<DreamModelConfig>(serde_json::json!({
+                    "id": "claude-sonnet-5", "speed": invalid,
+                }))
+                .is_err(),
+                "S3"
+            );
         }
     }
 

@@ -8,7 +8,6 @@
 //! modules these steps call.
 use awaken_provisioning_contract as pc;
 use awaken_session_configuration_contract::resource as session_resource;
-use std::sync::Arc;
 
 use awaken_session_types::RunError;
 
@@ -818,22 +817,5 @@ impl crate::resource_staging::ResourceStaging {
             }
         })?;
         Ok(())
-    }
-}
-
-impl crate::resource_staging::ResourceStaging {
-    /// Compile only the authored Memory binding selected by one frozen Agent.
-    /// Unlike `install`, this terminal-observation seam intentionally does not
-    /// stage File, Repository, Skill, mount, or Environment projections and does
-    /// not publish a resident Session selection.
-    pub async fn compile_frozen_memory_binding(
-        &self,
-        session_thread: &str,
-        manifest: &awaken_session_configuration_contract::resource::SessionResourceManifest,
-        binding_id: &str,
-    ) -> Result<Arc<crate::memory_binding::MemoryBinding>, RunError> {
-        self.memory_binding_compiler()
-            .compile_frozen(session_thread, manifest, binding_id)
-            .await
     }
 }

@@ -1,16 +1,29 @@
 //! Official Managed model configuration wire shapes and neutral projection.
 
+use awaken_runtime_contract::agent_bindings::InferenceSpeed;
 use serde::{Deserialize, Serialize};
 
 /// The resolved `BetaManagedAgentsModelConfig` object. A session/agent's
 /// `model` is this object on the wire, never a bare string (the SDK reads
 /// `agent.model.id`). The single definition of the model-config shape — the agent
 /// registry and session/thread projections all reuse it rather than rebuild it.
+/// M4 typed authoring uses the existing SDK speed value without translation.
+/// ```
+/// use awaken_protocol_managed::types::ModelConfig;
+/// use awaken_runtime_contract::agent_bindings::InferenceSpeed;
+/// let mut model = ModelConfig::new("published-model");
+/// model.speed = Some(InferenceSpeed::Standard);
+/// let _: Option<InferenceSpeed> = model.speed;
+/// ```
+/// M5 the removed protocol mirror has no forwarding export.
+/// ```compile_fail
+/// use awaken_protocol_managed::types::ModelSpeed;
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub speed: Option<ModelSpeed>,
+    pub speed: Option<InferenceSpeed>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<ModelEffort>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -34,16 +47,11 @@ impl ModelConfig {
         id: impl Into<String>,
         inference: awaken_runtime_contract::agent_bindings::InferenceOptions,
     ) -> Self {
-        use awaken_runtime_contract::agent_bindings::{
-            InferenceGeography, InferenceSpeed, ReasoningEffort,
-        };
+        use awaken_runtime_contract::agent_bindings::{InferenceGeography, ReasoningEffort};
 
         Self {
             id: id.into(),
-            speed: inference.speed.map(|value| match value {
-                InferenceSpeed::Standard => ModelSpeed::Standard,
-                InferenceSpeed::Fast => ModelSpeed::Fast,
-            }),
+            speed: inference.speed,
             effort: inference.effort.map(|value| match value {
                 ReasoningEffort::Low => ModelEffort::Low,
                 ReasoningEffort::Medium => ModelEffort::Medium,
@@ -61,7 +69,7 @@ impl ModelConfig {
     #[must_use]
     pub fn inference_options(&self) -> awaken_runtime_contract::agent_bindings::InferenceOptions {
         use awaken_runtime_contract::agent_bindings::{
-            InferenceGeography, InferenceOptions, InferenceSpeed, ReasoningEffort,
+            InferenceGeography, InferenceOptions, ReasoningEffort,
         };
 
         let inference_geo = match self.inference_geo {
@@ -69,10 +77,7 @@ impl ModelConfig {
             Some(ModelInferenceGeo::Us) => Some(InferenceGeography::Us),
         };
         InferenceOptions {
-            speed: self.speed.map(|speed| match speed {
-                ModelSpeed::Standard => InferenceSpeed::Standard,
-                ModelSpeed::Fast => InferenceSpeed::Fast,
-            }),
+            speed: self.speed,
             effort: self.effort.map(|effort| match effort {
                 ModelEffort::Low => ReasoningEffort::Low,
                 ModelEffort::Medium => ReasoningEffort::Medium,
@@ -95,14 +100,6 @@ impl ModelConfig {
 pub enum ModelInferenceGeo {
     Global,
     Us,
-}
-
-/// SDK: inline — `BetaManagedAgentsModelConfig.speed`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelSpeed {
-    Standard,
-    Fast,
 }
 
 /// Responses use the SDK's tagged effort union (`{type: ...}`).
@@ -166,7 +163,7 @@ impl ModelEffortInput {
 pub struct ModelConfigParams {
     pub id: String,
     #[serde(default)]
-    pub speed: Option<ModelSpeed>,
+    pub speed: Option<InferenceSpeed>,
     #[serde(default)]
     pub effort: Option<ModelEffortInput>,
     #[serde(default)]
@@ -208,6 +205,81 @@ impl ModelConfigParams {
             speed: self.speed,
             effort: None,
             inference_geo: self.inference_geo,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_runtime_contract::agent_bindings::{InferenceGeography, ReasoningEffort};
+
+    #[test]
+    fn model_speed_round_trips_the_same_value_without_changing_geography_or_effort() {
+        // Cause/effect table: M1 missing/null speed -> None + omitted output;
+        // M2 standard/fast -> exact SDK value through params, neutral controls,
+        // and response; M3 unknown/non-string -> reject before resolution.
+        // Every accepted row crosses speed with tagged High effort and US geo:
+        // these retain their original non-identity wire translations. Neither
+        // an identity speed mapper nor a second enum participates in the test.
+        for (rule, input, expected) in [
+            ("M1 omitted", None, None),
+            ("M1 null", Some(serde_json::Value::Null), None),
+            (
+                "M2 standard",
+                Some(serde_json::json!("standard")),
+                Some(InferenceSpeed::Standard),
+            ),
+            (
+                "M2 fast",
+                Some(serde_json::json!("fast")),
+                Some(InferenceSpeed::Fast),
+            ),
+        ] {
+            let mut wire = serde_json::json!({
+                "id": "published-model", "effort": {"type": "high"}, "inference_geo": "us",
+            });
+            if let Some(input) = input {
+                wire["speed"] = input;
+            }
+            let params: ModelConfigParams = serde_json::from_value(wire).expect(rule);
+            let config = params.into_resolved();
+            let typed: Option<InferenceSpeed> = config.speed;
+            assert_eq!(typed, expected, "{rule} canonical value");
+            let neutral = config.inference_options();
+            assert_eq!(neutral.speed, expected, "{rule} frozen controls");
+            assert_eq!(neutral.effort, Some(ReasoningEffort::High), "{rule}");
+            assert_eq!(
+                neutral.inference_geo,
+                Some(InferenceGeography::Us),
+                "{rule}"
+            );
+            let restored = ModelConfig::from_inference(config.id.clone(), neutral);
+            let actual = serde_json::to_value(&config).unwrap();
+            assert_eq!(serde_json::to_value(restored).unwrap(), actual, "{rule}");
+            if let Some(expected) = expected {
+                assert_eq!(
+                    actual["speed"],
+                    serde_json::to_value(expected).unwrap(),
+                    "{rule}"
+                );
+            } else {
+                assert!(actual.get("speed").is_none(), "{rule}");
+            }
+        }
+        for invalid in [
+            serde_json::json!("turbo"),
+            serde_json::json!(0),
+            serde_json::json!(true),
+            serde_json::json!({}),
+        ] {
+            assert!(
+                serde_json::from_value::<ModelConfigParams>(serde_json::json!({
+                    "id": "published-model", "speed": invalid,
+                }))
+                .is_err(),
+                "M3"
+            );
         }
     }
 }

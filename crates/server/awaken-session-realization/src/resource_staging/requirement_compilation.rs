@@ -9,7 +9,6 @@ use super::ResourceStaging;
 use awaken_session_configuration_contract::environment_projection;
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
-use std::sync::Arc;
 
 use awaken_session_types::RunError;
 
@@ -144,21 +143,6 @@ impl ResourceStaging {
             })
     }
 
-    /// Compile the one Memory-specific leaf shared by ordinary Session staging
-    /// and post-commit recovery from a frozen dispatch. The caller owns Resource
-    /// selection and may install the result into a resident installed Session; this
-    /// leaf only binds one already-resolved input and never opens an Environment.
-    pub async fn compile_memory_binding(
-        &self,
-        session_thread: &str,
-        workspace: &str,
-        input: &session_resource::ResolvedInput,
-        materialization_reference: Option<String>,
-    ) -> Result<Option<(String, Arc<crate::memory_binding::MemoryBinding>)>, RunError> {
-        self.memory_binding_compiler()
-            .compile(session_thread, workspace, input, materialization_reference)
-            .await
-    }
     pub async fn stage_resource_requirements(
         &self,
         thread: &str,
@@ -215,7 +199,8 @@ impl ResourceStaging {
                 }
             });
             if let Some((binding_id, memory)) = self
-                .compile_memory_binding(thread, workspace, input, materialization_reference)
+                .memory_binding_compiler()
+                .compile(thread, workspace, input, materialization_reference)
                 .await?
             {
                 memory_bindings.insert(binding_id, memory);

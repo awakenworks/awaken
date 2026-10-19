@@ -12,14 +12,12 @@ use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::event::AgentEvent;
-use awaken_agent_contract::page::{UnknownCursor, paginate_by_id};
+use awaken_agent_contract::page::{HistoryPage, UnknownCursor, paginate_by_id};
 use awaken_agent_contract::stream::event::Event;
 use awaken_agent_contract::stream::sink::{Error as SinkError, Sink as StreamSink};
 
 use crate::{Pending, RunError, StepOutcome};
 use awaken_agent_contract::agent::run::Id as RunId;
-
-pub use awaken_agent_contract::page::{CursorParams, HistoryPage};
 
 /// The application error surface consumed by public protocol adapters.
 /// This is an alias, not a second error authority.

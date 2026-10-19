@@ -67,6 +67,42 @@ pub struct ResourceStaging {
 
 impl ResourceStaging {
     /// Original Memory-only roles, without retaining the Session staging owner.
+    ///
+    /// ```no_run
+    /// use awaken_session_realization::resource_staging::ResourceStaging;
+    /// use awaken_session_configuration_contract::resource::{ResolvedInput, SessionResourceManifest};
+    ///
+    /// async fn selected_memory(
+    ///     staging: &ResourceStaging,
+    ///     input: &ResolvedInput,
+    ///     manifest: &SessionResourceManifest,
+    /// ) -> Result<(), awaken_session_types::RunError> {
+    ///     // R1: either resolved or frozen input uses the same selected compiler;
+    ///     // both operations remain available without retaining the staging owner.
+    ///     let compiler = staging.memory_binding_compiler();
+    ///     compiler.compile("session", "workspace", input, None).await?;
+    ///     compiler.compile_frozen("session", manifest, "memory").await?;
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0599
+    /// use awaken_session_realization::resource_staging::ResourceStaging;
+    /// use awaken_session_configuration_contract::resource::ResolvedInput;
+    /// async fn retired_resolved(staging: &ResourceStaging, input: &ResolvedInput) {
+    ///     // R2: a resolved input cannot use the retired forwarding entry point.
+    ///     staging.compile_memory_binding("session", "workspace", input, None).await;
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0599
+    /// use awaken_session_realization::resource_staging::ResourceStaging;
+    /// use awaken_session_configuration_contract::resource::SessionResourceManifest;
+    /// async fn retired_frozen(staging: &ResourceStaging, manifest: &SessionResourceManifest) {
+    ///     // R3 is independent of R2: frozen recovery cannot use its old forwarder.
+    ///     staging.compile_frozen_memory_binding("session", manifest, "memory").await;
+    /// }
+    /// ```
     pub fn memory_binding_compiler(&self) -> crate::memory_binding_compiler::MemoryBindingCompiler {
         crate::memory_binding_compiler::MemoryBindingCompiler::new(
             self.memory.clone(),

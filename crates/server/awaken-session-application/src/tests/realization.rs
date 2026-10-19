@@ -4726,7 +4726,7 @@ async fn terminal_cleanup_rebases_after_competing_root_writer() {
     ));
     assert_eq!(runtime.effective_ids.lock().unwrap().len(), 1);
     assert!(
-        repo.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
+        repo.reconciliation_scan(None)
             .await
             .unwrap()
             .sessions
@@ -5179,10 +5179,7 @@ async fn terminal_cleanup_restart_soak_preserves_authority_and_effect_identity()
             .await
             .unwrap();
         assert!(replay_runtime.intents.lock().unwrap().is_empty(), "E3");
-        let scan = reopened
-            .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-            .await
-            .unwrap();
+        let scan = reopened.reconciliation_scan(None).await.unwrap();
         assert!(scan.quarantined.is_empty(), "E4");
         assert!(
             scan.sessions

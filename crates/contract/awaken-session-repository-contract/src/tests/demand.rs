@@ -11,24 +11,33 @@ type Page = (
 struct ScriptedRepository(Mutex<VecDeque<Page>>);
 
 #[async_trait::async_trait]
-impl SessionRepository for ScriptedRepository {
-    async fn scan(
-        &self,
-        query: SessionScanQuery<'_>,
-    ) -> Result<SessionScan, SessionRepositoryError> {
-        let SessionScanQuery::Reconcilable { after } = query else {
-            panic!("Worker demand must read the canonical reconciliation index")
-        };
-        let (expected, page) = self
-            .0
-            .lock()
-            .unwrap()
-            .pop_front()
-            .expect("unexpected extra scan");
-        assert_eq!(after.map(|cursor| cursor.session_id().as_str()), expected);
-        page
+impl SessionRepositoryReads for ScriptedRepository {
+    async fn get(&self, _: &SessionId) -> Result<PersistedSession, SessionRepositoryError> {
+        panic!("scan already contains authoritative roots")
     }
 
+    async fn owner(&self, _: &SessionId) -> Result<String, SessionRepositoryError> {
+        panic!("scan already contains authoritative owners")
+    }
+
+    async fn scan(
+        &self,
+        _query: SessionScanQuery<'_>,
+    ) -> Result<SessionScan, SessionRepositoryError> {
+        panic!("Worker demand must use canonical reconciliation maintenance")
+    }
+
+    async fn deleted_event_admissions(
+        &self,
+        _: &str,
+        _: &SessionId,
+    ) -> Result<Option<DeletedSessionEventAdmissions>, SessionRepositoryError> {
+        panic!("capacity reads do not admit Events")
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionRepository for ScriptedRepository {
     async fn create(
         &self,
         _: &str,
@@ -53,12 +62,7 @@ impl SessionRepository for ScriptedRepository {
     ) -> Result<SessionMutationResult, SessionRepositoryError> {
         panic!("capacity reads must not mutate Sessions")
     }
-    async fn get(&self, _: &SessionId) -> Result<PersistedSession, SessionRepositoryError> {
-        panic!("scan already contains authoritative roots")
-    }
-    async fn owner(&self, _: &SessionId) -> Result<String, SessionRepositoryError> {
-        panic!("scan already contains authoritative owners")
-    }
+
     async fn idempotency_receipt(
         &self,
         _: &SessionId,
@@ -66,18 +70,26 @@ impl SessionRepository for ScriptedRepository {
     ) -> Result<Option<SessionIdempotencyReceipt>, SessionRepositoryError> {
         panic!("capacity reads do not replay commands")
     }
-    async fn deleted_event_admissions(
-        &self,
-        _: &str,
-        _: &SessionId,
-    ) -> Result<Option<DeletedSessionEventAdmissions>, SessionRepositoryError> {
-        panic!("capacity reads do not admit Events")
-    }
+
     async fn count_environment_phase(
         &self,
         _: SessionEnvironmentPhase,
     ) -> Result<u64, SessionRepositoryError> {
         panic!("capacity reads must not substitute another index")
+    }
+
+    async fn reconciliation_scan(
+        &self,
+        after: Option<&SessionScanCursor>,
+    ) -> Result<SessionScan, SessionRepositoryError> {
+        let (expected, page) = self
+            .0
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("unexpected extra scan");
+        assert_eq!(after.map(|cursor| cursor.session_id().as_str()), expected);
+        page
     }
 }
 

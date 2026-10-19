@@ -1,9 +1,8 @@
 // @formal evidence session_execution.one_physical_attempt_per_thread
 use super::*;
 use awaken_run_ingress::DispatchAttemptRecordReads as _;
-use awaken_run_ingress::{
-    ApplicationError, AttemptExecutionBinding, RunClaim, WorkerExecutionBindingSource,
-};
+use awaken_run_ingress::{AttemptExecutionBinding, RunClaim, WorkerExecutionBindingSource};
+use awaken_session_runtime_contract::ApplicationError;
 use awaken_worker_contract::{WorkerCurrentSource, WorkerIncarnationSource};
 
 use awaken_run_ingress_testkit::worker_http as support;

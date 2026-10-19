@@ -548,6 +548,7 @@ dependencies = [
  "awaken-session-mcp",
  "awaken-session-realization-contract",
  "awaken-session-repository-contract",
+ "awaken-session-runtime-contract",
  "awaken-session-state-contract",
  "awaken-session-store",
  "awaken-session-types",
@@ -1110,6 +1111,7 @@ name = "awaken-dream-application"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-runtime-contract",
  "awaken-session-application-contract",
  "awaken-session-dream-contract",
  "awaken-session-types",
@@ -2967,6 +2969,7 @@ name = "awaken-session-dream-contract"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-runtime-contract",
  "awaken-session-types",
  "serde",
  "serde_json",

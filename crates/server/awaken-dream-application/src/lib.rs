@@ -2,6 +2,7 @@
 // @formal entrypoint dream.public_terminal_requires_exact_session_and_artifact_cleanup_receipts
 //! Coordinator-owned Dream process application.
 
+use awaken_runtime_contract::agent_bindings::InferenceSpeed;
 use awaken_time::WallClockExt as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -12,7 +13,7 @@ use async_trait::async_trait;
 use awaken_session_dream_contract::{
     DREAM_MAX_INSTRUCTIONS_CHARS, DREAM_MAX_SESSIONS, Dream, DreamCleanupAdmission,
     DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig, DreamModelInput,
-    DreamModelSpeed, DreamOutput, DreamOutputBehavior, DreamPage, DreamPolicyApplication,
+    DreamOutput, DreamOutputBehavior, DreamPage, DreamPolicyApplication,
     DreamPolicyApplicationError, DreamPolicyRecord, DreamProcessFailure, DreamProcessRecord,
     DreamProcessStore, DreamStatus, DreamStatusEvent, DreamUsage,
 };
@@ -546,7 +547,7 @@ impl DreamApplication {
             || config.max_sessions > DREAM_MAX_SESSIONS
             || config.min_new_sessions > config.max_sessions
             || !valid_model_reference_shape(&config.model.id)
-            || config.model.speed == Some(DreamModelSpeed::Fast)
+            || config.model.speed == Some(InferenceSpeed::Fast)
             || config
                 .instructions
                 .as_ref()
@@ -1378,7 +1379,7 @@ fn validate_create(
     if matches!(
         &params.model,
         DreamModelInput::Config(DreamModelConfig {
-            speed: Some(DreamModelSpeed::Fast),
+            speed: Some(InferenceSpeed::Fast),
             ..
         })
     ) {
@@ -1534,7 +1535,7 @@ mod tests {
             policy_key: None,
         };
         let application = DreamApplication::with_store(
-            Arc::new(NoopExecutor),
+            Arc::new(NoopExecutor::default()),
             Arc::new(InMemoryDreamProcessStore::default()),
             awaken_time::system_clock(),
         )
@@ -1579,7 +1580,7 @@ mod tests {
         );
 
         let without_source = DreamApplication::with_store(
-            Arc::new(NoopExecutor),
+            Arc::new(NoopExecutor::default()),
             Arc::new(InMemoryDreamProcessStore::default()),
             awaken_time::system_clock(),
         )
@@ -1596,11 +1597,24 @@ mod tests {
         );
     }
 
-    struct NoopExecutor;
+    #[derive(Default)]
+    struct NoopExecutor {
+        readiness_calls: AtomicU64,
+        validation_calls: AtomicU64,
+    }
+
+    #[async_trait]
+    impl DreamModelReadiness for NoopExecutor {
+        async fn is_ready(&self, _workspace: &str, _model: &str) -> Result<bool, String> {
+            self.readiness_calls.fetch_add(1, Ordering::SeqCst);
+            Err("readiness probe unavailable".into())
+        }
+    }
 
     #[async_trait]
     impl DreamExecutor for NoopExecutor {
         async fn validate_inputs(&self, _request: &DreamRequest) -> Result<(), DreamFailure> {
+            self.validation_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
@@ -1616,6 +1630,121 @@ mod tests {
         ) -> Result<(), DreamFailure> {
             unreachable!("projection test runs no Dream")
         }
+    }
+
+    #[tokio::test]
+    async fn canonical_fast_speed_keeps_its_original_pre_effect_error_order() {
+        // Cause/effect table: F1 invalid input cardinality + fast -> original
+        // shape error; F2 invalid model id + fast -> original model error;
+        // F3 valid fast + unavailable readiness -> original fast error BEFORE
+        // readiness, executor validation, id mint, or store access. F4 policy
+        // fast -> original policy error before reads/writes; F5 empty policy
+        // scope + fast -> original scope error first. F6 standard -> the actual
+        // readiness dependency is called and its original Unavailable wins.
+        // Reuse the original NoopExecutor and InMemoryDreamProcessStore. Poison
+        // its original mutex AFTER construction: an unintended store read or
+        // write fails the test; inspecting the poisoned guard below is only a
+        // test oracle, not new product poison recovery or another store.
+        let executor = Arc::new(NoopExecutor::default());
+        let store = Arc::new(InMemoryDreamProcessStore::default());
+        let application = Arc::new(
+            DreamApplication::with_store(
+                executor.clone(),
+                store.clone(),
+                awaken_time::system_clock(),
+            )
+            .await
+            .unwrap(),
+        );
+        application.bind_model_readiness(executor.clone());
+        let poisoned = std::panic::catch_unwind(|| {
+            let _guard = store.0.lock().unwrap();
+            panic!("F test-only store-access tripwire");
+        });
+        assert!(poisoned.is_err(), "original store tripwire installed");
+        let mut fast = valid_params();
+        fast.model = DreamModelInput::Config(DreamModelConfig {
+            id: "claude-sonnet-5".into(),
+            speed: Some(InferenceSpeed::Fast),
+        });
+        let mut invalid_shape = fast.clone();
+        invalid_shape.inputs.clear();
+        let mut invalid_model = fast.clone();
+        invalid_model.model = DreamModelInput::Config(DreamModelConfig {
+            id: String::new(),
+            speed: Some(InferenceSpeed::Fast),
+        });
+        for (rule, params, expected) in [
+            (
+                "F1",
+                invalid_shape,
+                "inputs must contain exactly one memory_store and one sessions input",
+            ),
+            (
+                "F2",
+                invalid_model,
+                "model reference must contain 1 to 256 non-whitespace characters",
+            ),
+            (
+                "F3",
+                fast,
+                "Dream model speed `fast` is not supported by this deployment",
+            ),
+        ] {
+            let error = application.create("workspace", params).await.unwrap_err();
+            assert!(
+                matches!(error, DreamApiError::BadRequest(ref message) if message == expected),
+                "{rule}: {error}"
+            );
+        }
+        let mut policy = DreamPolicyConfig::default();
+        policy.model.speed = Some(InferenceSpeed::Fast);
+        for (rule, workspace, expected) in [
+            (
+                "F4",
+                "workspace",
+                "invalid Dream policy interval, session bounds, model, or instructions",
+            ),
+            ("F5", "", "Workspace and MemoryStore ids must be non-empty"),
+        ] {
+            let error = application
+                .set_policy(workspace, "memory-a", policy.clone())
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, DreamApiError::BadRequest(ref message) if message == expected),
+                "{rule}: {error}"
+            );
+        }
+        assert_eq!(executor.readiness_calls.load(Ordering::SeqCst), 0, "F1-F5");
+        assert_eq!(executor.validation_calls.load(Ordering::SeqCst), 0, "F1-F5");
+        let mut standard = valid_params();
+        standard.model = DreamModelInput::Config(DreamModelConfig {
+            id: "claude-sonnet-5".into(),
+            speed: Some(InferenceSpeed::Standard),
+        });
+        let error = application.create("workspace", standard).await.unwrap_err();
+        assert!(
+            matches!(error, DreamApiError::Unavailable(ref message) if message == "readiness probe unavailable"),
+            "F6: {error}"
+        );
+        assert_eq!(executor.readiness_calls.load(Ordering::SeqCst), 1, "F6");
+        assert_eq!(executor.validation_calls.load(Ordering::SeqCst), 0, "F6");
+        assert_eq!(
+            application.next_id.load(Ordering::SeqCst),
+            1,
+            "no id minted"
+        );
+        assert!(
+            application.cancellations.lock().unwrap().is_empty(),
+            "no worker started"
+        );
+        let records = match store.0.lock() {
+            Err(poison) => poison.into_inner(),
+            Ok(_) => panic!("F original store must remain poisoned"),
+        };
+        assert!(records.processes.is_empty(), "no process persisted");
+        assert!(records.policies.is_empty(), "no policy persisted");
     }
 
     #[tokio::test]
@@ -1779,7 +1908,7 @@ mod tests {
         let mut fast = valid_params();
         fast.model = DreamModelInput::Config(DreamModelConfig {
             id: "claude-sonnet-5".into(),
-            speed: Some(DreamModelSpeed::Fast),
+            speed: Some(InferenceSpeed::Fast),
         });
         assert!(validate_create(&fast).is_err(), "R4");
 
