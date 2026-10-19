@@ -4,9 +4,11 @@
 // @formal reason: admit the exact protocol and authority and remove ambient Git, SSH, proxy, TLS, trace,
 // @formal reason: and credential configuration; local commands remove explicit Repository-selection
 // @formal reason: variables plus Awaken and askpass credential variables, use the caller-provided working
-// @formal reason: directory when supplied, and otherwise execute the caller-selected argument-only local
+// @formal reason: directory when supplied, fence discovery at its parent, and otherwise execute the caller-selected argument-only local
 // @formal reason: operation. Credentials are released only through the exact protocol-plus-authority
-// @formal reason: helper, and this module selects no clone, push, ref, CAS outcome, or receipt. Evidence:
+// @formal reason: helper. Windows deep clones use a short owned network repository followed by an
+// @formal reason: independent credential-free local clone; this module selects no branch, commit,
+// @formal reason: push, ref, CAS outcome, or receipt. Evidence:
 // @formal reason: credential.plaintext_boundary.exact_holder and the parent Git transport decision-table
 // @formal reason: and redirect tests; this is a product-requirement classification, not a direct
 // @formal reason: formal-proof claim.
@@ -17,7 +19,8 @@
 //! configuration; local commands remove explicit Repository-selection variables
 //! plus Awaken and askpass credential variables, use the caller-provided working
 //! directory when supplied, and otherwise execute the caller-selected
-//! argument-only local operation. It owns no clone or push policy, remote-write
+//! argument-only local operation. Windows clone invocation compatibility also
+//! lives here, beneath the caller's exact realization plan. It owns no push policy, remote-write
 //! selection, CAS classification, receipt, queue, or durable state.
 
 use std::path::Path;
@@ -160,6 +163,7 @@ enum GitAuthentication<'a> {
         credential: Option<&'a awaken_provisioning_contract::RepositoryHttpBasicCredential>,
         transport: AdmittedGitTransport,
         alternate_objects: Option<&'a Path>,
+        discovery_ceiling: Option<&'a Path>,
     },
 }
 
@@ -227,12 +231,14 @@ fn compose_git_command(
         .env_remove("GIT_OBJECT_DIRECTORY")
         .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_NAMESPACE");
+        .env_remove("GIT_NAMESPACE")
+        .env_remove("GIT_CEILING_DIRECTORIES");
     let mut isolated_cwd = None;
     if let GitAuthentication::Network {
         credential,
         transport,
         alternate_objects,
+        discovery_ceiling,
     } = authentication
     {
         let isolated_cwd = isolated_cwd.insert(
@@ -322,8 +328,22 @@ fn compose_git_command(
                 .env(GIT_CREDENTIAL_PROTOCOL_ENV, endpoint.protocol)
                 .env(GIT_CREDENTIAL_AUTHORITY_ENV, endpoint.authority);
         }
+        if let Some(ceiling) = discovery_ceiling {
+            command.env(
+                "GIT_CEILING_DIRECTORIES",
+                std::path::absolute(ceiling)
+                    .map_err(|error| SandboxError::backend("compose_git_command", error))?,
+            );
+        }
     } else if let Some(dir) = cwd {
         command.current_dir(dir);
+        // A missing/unrecognizable repository must never select an ancestor's
+        // checkout. The caller supplies this operation's repository root.
+        let absolute = std::path::absolute(dir)
+            .map_err(|error| SandboxError::backend("compose_git_command", error))?;
+        if let Some(parent) = absolute.parent() {
+            command.env("GIT_CEILING_DIRECTORIES", parent);
+        }
     }
     command.args(args);
     Ok((command, isolated_cwd))
@@ -332,6 +352,227 @@ fn compose_git_command(
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::*;
+
+    fn agent_git(repository: &Path, args: &[&str]) -> std::process::Output {
+        // Deliberately bypass git_command_output's process-local longpaths
+        // floor. The published repository must also work for the Agent's Git.
+        let mut command = std::process::Command::new("git");
+        for (name, _) in std::env::vars_os() {
+            if name
+                .to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with("GIT_")
+            {
+                command.env_remove(name);
+            }
+        }
+        let output = command
+            .current_dir(repository)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "NUL")
+            .env("GIT_CEILING_DIRECTORIES", repository.parent().unwrap())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "Agent Git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    }
+
+    #[test]
+    fn staged_clone_over_git_directory_limit_preserves_exact_plan_and_replay() {
+        // R1 ASCII and R2 multibyte paths fit the Windows process-directory
+        // limit but exceed Git's UTF-8 GIT_DIR budget. Each row exercises the
+        // actual staged publication, with default branch, named branch, and
+        // detached commit plans. Retain must preserve subsequent user edits.
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        run_git(Some(&source), &["init", "-q", "--initial-branch=main"]).unwrap();
+        run_git(Some(&source), &["config", "user.name", "fixture"]).unwrap();
+        run_git(
+            Some(&source),
+            &["config", "user.email", "fixture@example.invalid"],
+        )
+        .unwrap();
+        std::fs::write(source.join("a.txt"), b"first").unwrap();
+        run_git(Some(&source), &["add", "a.txt"]).unwrap();
+        run_git(Some(&source), &["commit", "-qm", "first"]).unwrap();
+        let first = git_stdout(Some(&source), &["rev-parse", "HEAD"]).unwrap();
+        run_git(Some(&source), &["checkout", "-qb", "fixture-branch"]).unwrap();
+        std::fs::write(source.join("a.txt"), b"second").unwrap();
+        run_git(Some(&source), &["commit", "-qam", "second"]).unwrap();
+        let second = git_stdout(Some(&source), &["rev-parse", "HEAD"]).unwrap();
+        let url = url::Url::from_directory_path(&source).unwrap().to_string();
+        let unicode_segment = "仓".repeat(16);
+        for (style, workspace_units, unicode) in [
+            ("direct", 170, ""),
+            ("ascii", 210, ""),
+            ("ascii-limit", 214, ""),
+            ("unicode", 190, unicode_segment.as_str()),
+        ] {
+            for (index, branch, commit, expected, bytes) in [
+                (0, None, None, second.trim(), b"second".as_slice()),
+                (1, Some("main"), None, first.trim(), b"first".as_slice()),
+                (
+                    3,
+                    Some("main"),
+                    Some(second.trim()),
+                    second.trim(),
+                    b"second".as_slice(),
+                ),
+                (
+                    2,
+                    None,
+                    Some(first.trim()),
+                    first.trim(),
+                    b"first".as_slice(),
+                ),
+            ] {
+                let prefix = temporary.path().join(format!("{style}-{index}"));
+                let fixed = prefix.to_string_lossy().encode_utf16().count()
+                    + 3
+                    + "jail".len()
+                    + "workspace".len();
+                let segment = format!(
+                    "{unicode}{}",
+                    "x".repeat(workspace_units - fixed - unicode.encode_utf16().count())
+                );
+                let jail = prefix.join(segment).join("jail");
+                let workspace = jail.join("workspace");
+                std::fs::create_dir_all(&workspace).unwrap();
+                assert_eq!(
+                    workspace.to_string_lossy().encode_utf16().count(),
+                    workspace_units
+                );
+                let root = crate::IsolatedRoot::new(&jail);
+                let provision = |intent| {
+                    crate::git_transport::provision_repo_at(
+                        &root,
+                        "workspace/repo",
+                        &url,
+                        branch,
+                        commit,
+                        None,
+                        intent,
+                    )
+                };
+                provision(awaken_provisioning_contract::RepositoryRealizationIntent::Initialize)
+                    .unwrap_or_else(|error| panic!("{style}/{index}: {error}"));
+                let destination = workspace.join("repo");
+                assert_eq!(
+                    git_stdout(Some(&destination), &["rev-parse", "HEAD"])
+                        .unwrap()
+                        .trim(),
+                    expected
+                );
+                assert_eq!(std::fs::read(destination.join("a.txt")).unwrap(), bytes);
+                assert_eq!(
+                    git_stdout(Some(&destination), &["remote", "get-url", "origin"])
+                        .unwrap()
+                        .trim(),
+                    url
+                );
+                assert!(
+                    !destination.join(".git/objects/info/alternates").exists(),
+                    "published objects do not depend on the removed private clone"
+                );
+                assert_eq!(
+                    git_stdout(
+                        Some(&destination),
+                        &["symbolic-ref", "refs/remotes/origin/HEAD"]
+                    )
+                    .unwrap()
+                    .trim(),
+                    "refs/remotes/origin/fixture-branch",
+                    "remote default branch is independent of the selected checkout"
+                );
+                let symbolic = git_stdout(Some(&destination), &["symbolic-ref", "--short", "HEAD"]);
+                if commit.is_some() && branch.is_none() {
+                    assert!(symbolic.is_err(), "exact commit plan stays detached");
+                } else {
+                    assert_eq!(symbolic.unwrap().trim(), branch.unwrap_or("fixture-branch"));
+                }
+                // Each path/checkout row must support ordinary Agent writes,
+                // including new loose objects beyond MAX_PATH. A successful
+                // clone through our process-only flag is insufficient.
+                let agent_output = format!("{}.txt", "agent-output-".repeat(8));
+                assert!(
+                    destination
+                        .join(&agent_output)
+                        .to_string_lossy()
+                        .encode_utf16()
+                        .count()
+                        > 260
+                );
+                std::fs::write(destination.join(&agent_output), b"agent edit\n").unwrap();
+                agent_git(&destination, &["add", "-N", &agent_output]);
+                let diff = agent_git(
+                    &destination,
+                    &["diff", "--no-ext-diff", "--", &agent_output],
+                );
+                assert!(String::from_utf8_lossy(&diff.stdout).contains("+agent edit\n"));
+                assert_eq!(
+                    agent_git(
+                        &destination,
+                        &["config", "--local", "--get", "core.longpaths"]
+                    )
+                    .stdout,
+                    b"true\n"
+                );
+                std::fs::write(destination.join("a.txt"), b"user edit").unwrap();
+                provision(awaken_provisioning_contract::RepositoryRealizationIntent::Retain)
+                    .unwrap();
+                assert_eq!(
+                    std::fs::read(destination.join("a.txt")).unwrap(),
+                    b"user edit"
+                );
+                assert_eq!(
+                    std::fs::read(destination.join(&agent_output)).unwrap(),
+                    b"agent edit\n"
+                );
+                assert_eq!(
+                    std::fs::read_dir(&workspace).unwrap().count(),
+                    1,
+                    "owned stage removed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unrepresentable_clone_directory_is_permanent_and_transport_admission_stays_first() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root_units = temporary.path().to_string_lossy().encode_utf16().count();
+        let parent = temporary.path().join("x".repeat(234 - root_units - 1));
+        std::fs::create_dir_all(&parent).unwrap();
+        let stage = tempfile::Builder::new()
+            .prefix("stage-")
+            .rand_bytes(6)
+            .tempdir_in(&parent)
+            .unwrap();
+        assert_eq!(stage.path().to_string_lossy().encode_utf16().count(), 247);
+        let error = credentialed_git_clone(
+            "https://network-must-not-run.invalid/repo",
+            &stage,
+            None,
+            None,
+        )
+        .expect_err("unsupported working directory rejects before network Git");
+        assert!(matches!(error, SandboxError::Unsupported(_)), "{error}");
+        let error = credentialed_git_clone(
+            "ssh://network-must-not-run.invalid/repo",
+            &stage,
+            None,
+            None,
+        )
+        .expect_err("private file transfer must not bypass external transport admission");
+        assert!(matches!(error, SandboxError::Invalid(_)), "{error}");
+        assert_eq!(std::fs::read_dir(stage.path()).unwrap().count(), 0);
+    }
 
     #[test]
     fn credential_isolated_clone_accepts_git_internal_paths_beyond_max_path() {
@@ -462,6 +703,118 @@ pub(super) fn credentialed_git_run(
     credentialed_git_run_inner(url, args, credential, None)
 }
 
+pub(super) fn credentialed_git_clone(
+    url: &str,
+    stage: &tempfile::TempDir,
+    initial_branch: Option<&str>,
+    credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
+) -> Result<(), SandboxError> {
+    // Admit the original endpoint before considering an internal file transfer.
+    validate_credentialed_git_transport(url, credential)?;
+    let stage_path = std::path::absolute(stage.path())
+        .map_err(|error| SandboxError::backend("credentialed_git_clone", error))?;
+    #[cfg(windows)]
+    {
+        if stage_path
+            .join(".git/objects")
+            .to_string_lossy()
+            .encode_utf16()
+            .count()
+            >= 260
+        {
+            return Err(SandboxError::unsupported(
+                "Windows Git repository discovery requires staging metadata paths shorter than 260 UTF-16 units; use a shorter sandbox root or Repository mount path",
+            ));
+        }
+        // Initial repository discovery probes .git/objects before reading
+        // core.longpaths; reject an unrecognizable stage before network I/O.
+        // Git for Windows also explicitly rejects GIT_DIR UTF-8 byte lengths above
+        // PATH_MAX - 40, independently of core.longpaths. Unicode paths can
+        // cross that budget before their Windows UTF-16 process-directory limit.
+        if stage_path.join(".git").to_string_lossy().len() > 220 {
+            return windows_private_clone(url, stage, initial_branch, credential);
+        }
+    }
+    let mut args = vec!["clone", "--no-checkout"];
+    // Persist the Windows setting in the new repository as well as using the
+    // command floor above. Agent Git runs after publication do not inherit our
+    // process flags and may create long loose-object or working-tree paths.
+    #[cfg(windows)]
+    args.extend(["--config", "core.longpaths=true"]);
+    if let Some(branch) = initial_branch {
+        args.extend(["--branch", branch]);
+    }
+    let path = stage_path.to_string_lossy();
+    args.extend(["--", url, &path]);
+    credentialed_git_run(url, &args, credential)
+}
+
+#[cfg(windows)]
+fn windows_private_clone(
+    url: &str,
+    stage: &tempfile::TempDir,
+    initial_branch: Option<&str>,
+    credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
+) -> Result<(), SandboxError> {
+    let stage_path = std::path::absolute(stage.path())
+        .map_err(|error| SandboxError::backend("credentialed_git_clone", error))?;
+    let private = tempfile::tempdir()
+        .map_err(|error| SandboxError::backend("credentialed_git_clone", error))?;
+    let repository = private.path().join("repository.git");
+    let source = repository.to_string_lossy();
+    let target = stage_path.to_string_lossy();
+    let result = (|| {
+        if source.len() > 220 {
+            return Err(SandboxError::unsupported(
+                "Windows Git network clone requires a temporary Git directory within 220 UTF-8 bytes; use a shorter TEMP directory",
+            ));
+        }
+        let mut network = vec!["clone", "--bare"];
+        let mut local = vec!["clone", "--local", "--no-hardlinks", "--no-checkout"];
+        local.extend(["--config", "core.longpaths=true"]);
+        if let Some(branch) = initial_branch {
+            // Preserve the original remote HEAD in the bare source; only the
+            // final local clone selects the caller's checkout branch.
+            local.extend(["--branch", branch]);
+        }
+        network.extend(["--", url, &source]);
+        credentialed_git_run(url, &network, credential)?;
+        local.extend(["--", &source, &target]);
+        // This file source is an owned, freshly cloned private repository, not
+        // a caller-admitted file URL. Reuse the sanitized network environment
+        // without a credential; ambient URL rewrites/helpers remain excluded.
+        let isolated_local = |args: &[&str]| {
+            git_command_output(
+                None,
+                args,
+                GitAuthentication::Network {
+                    credential: None,
+                    transport: AdmittedGitTransport {
+                        protocol: "file".into(),
+                        credential_endpoint: None,
+                    },
+                    alternate_objects: None,
+                    discovery_ceiling: stage_path.parent(),
+                },
+            )
+            .map(|_| ())
+        };
+        isolated_local(&local)?;
+        isolated_local(&["-C", &target, "remote", "set-url", "origin", url])
+    })();
+    // Neither Git metadata nor object files in the stage depend on this source:
+    // --no-hardlinks copies objects, and the origin was restored before return.
+    match private.close() {
+        Ok(()) => result,
+        Err(cleanup) => Err(match result {
+            Ok(()) => SandboxError::backend("credentialed_git_clone", cleanup),
+            Err(error) => error.map_detail(|detail| {
+                format!("{detail}; remove owned private clone source: {cleanup}")
+            }),
+        }),
+    }
+}
+
 pub(super) fn credentialed_git_run_with_alternate(
     url: &str,
     args: &[impl AsRef<str>],
@@ -486,6 +839,7 @@ fn credentialed_git_run_inner(
             credential,
             transport,
             alternate_objects,
+            discovery_ceiling: None,
         },
     )
     .map(|_| ())
@@ -505,6 +859,7 @@ pub(super) fn credentialed_git_stdout(
                 credential,
                 transport,
                 alternate_objects: None,
+                discovery_ceiling: None,
             },
         )?
         .stdout,
@@ -613,6 +968,7 @@ mod tests {
                         credential: None,
                         transport: validate_credentialed_git_transport(endpoint, None).unwrap(),
                         alternate_objects: None,
+                        discovery_ceiling: None,
                     },
                 )
                 .unwrap(),
@@ -674,6 +1030,7 @@ mod tests {
                     credential: material,
                     transport: validate_credentialed_git_transport(endpoint, material).unwrap(),
                     alternate_objects: None,
+                discovery_ceiling: None,
                 },
             ).unwrap_err().to_string();
             assert!(error.contains("failure-context"));
@@ -684,5 +1041,113 @@ mod tests {
                 if material.is_some() { 2 } else { 0 }
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod repository_scope_tests {
+    use super::*;
+
+    #[test]
+    fn credentialed_clone_uses_the_owned_stage_for_relative_roots() {
+        let source = tempfile::tempdir().unwrap();
+        run_git(Some(source.path()), &["init", "-q"]).unwrap();
+        std::fs::write(source.path().join("a.txt"), b"fixture").unwrap();
+        run_git(Some(source.path()), &["add", "a.txt"]).unwrap();
+        run_git(
+            Some(source.path()),
+            &[
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+        )
+        .unwrap();
+        let url = url::Url::from_directory_path(source.path())
+            .unwrap()
+            .to_string();
+        // Keep process cwd unchanged. A caller's relative root must still
+        // publish here, while network Git runs from a separate isolated cwd.
+        let directory = tempfile::Builder::new()
+            .prefix(".awaken-clone-")
+            .tempdir_in(".")
+            .unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let relative_root = Path::new(directory.path().file_name().unwrap()).join("jail");
+        assert!(relative_root.is_relative());
+        crate::git_transport::provision_repo_at(
+            &crate::IsolatedRoot::new(relative_root),
+            "workspace/repo",
+            &url,
+            None,
+            None,
+            None,
+            awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
+        )
+        .unwrap();
+        let repository = directory.path().join("jail/workspace/repo");
+        assert_eq!(std::fs::read(repository.join("a.txt")).unwrap(), b"fixture");
+        assert_eq!(
+            git_stdout(Some(&repository), &["remote", "get-url", "origin"])
+                .unwrap()
+                .trim(),
+            url
+        );
+        assert_eq!(std::env::current_dir().unwrap(), cwd);
+        directory.close().unwrap();
+    }
+
+    #[test]
+    fn local_repository_commands_never_mutate_an_ancestor_checkout() {
+        // R1 an expected repository is missing beneath a real ancestor repo;
+        // R2 an isolated -C invocation selects the same missing repo. Both
+        // reject, rather than reading/writing the ancestor's origin config.
+        let ancestor = tempfile::tempdir().unwrap();
+        run_git(Some(ancestor.path()), &["init", "-q"]).unwrap();
+        let origin = "https://original.invalid/repository";
+        run_git(Some(ancestor.path()), &["remote", "add", "origin", origin]).unwrap();
+        let child = ancestor.path().join("missing-repository");
+        std::fs::create_dir(&child).unwrap();
+        assert!(git_stdout(Some(&child), &["rev-parse", "--show-toplevel"]).is_err());
+        assert!(
+            run_git(
+                Some(&child),
+                &["remote", "set-url", "origin", "https://wrong.invalid/repo"]
+            )
+            .is_err()
+        );
+        assert!(
+            git_command_output(
+                None,
+                &[
+                    "-C",
+                    child.to_str().unwrap(),
+                    "remote",
+                    "set-url",
+                    "origin",
+                    "https://wrong.invalid/repo"
+                ],
+                GitAuthentication::Network {
+                    credential: None,
+                    transport: AdmittedGitTransport {
+                        protocol: "file".into(),
+                        credential_endpoint: None
+                    },
+                    alternate_objects: None,
+                    discovery_ceiling: child.parent(),
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(
+            git_stdout(Some(ancestor.path()), &["remote", "get-url", "origin"])
+                .unwrap()
+                .trim(),
+            origin
+        );
     }
 }
