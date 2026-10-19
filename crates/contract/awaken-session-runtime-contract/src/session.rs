@@ -808,9 +808,11 @@ mod kani_proofs {
 
 mod execution_recovery;
 pub use execution_recovery::{
-    SessionExecutionClosureReference, SessionExecutionOperationFootprint,
+    SessionExecutionClosureReference, SessionExecutionEvidenceSelection,
+    SessionExecutionOperationFootprint, SessionExecutionOperationInventory,
     SessionExecutionRecoveryGap, SessionExecutionRecoveryObservation,
-    SessionRecoveryPreparationReference, SessionSourceDispatchObservation,
+    SessionExecutionToolOperation, SessionRecoveryPreparationReference,
+    SessionSourceDispatchObservation,
 };
 
 mod execution_observation;

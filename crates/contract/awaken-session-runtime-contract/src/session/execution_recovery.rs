@@ -34,11 +34,52 @@ pub enum SessionExecutionRecoveryObservation {
         // existing strict recovery readers retain their exact wire shape.
         #[serde(default, skip_serializing)]
         operation_footprint: Option<SessionExecutionOperationFootprint>,
+        /// Original operation coordinates for the business owner's reconciliation.
+        /// Protocol adapters explicitly select this expanded read projection.
+        #[serde(default, skip_serializing)]
+        operation_inventory: Option<SessionExecutionOperationInventory>,
         session_revision: u64,
         runtime_commit_cursor: u64,
         thread_ids: Vec<String>,
         closure_records: Vec<SessionExecutionClosureReference>,
     },
+}
+
+/// Select original read details, without authorizing execution or retry.
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionExecutionEvidenceSelection {
+    #[serde(default)]
+    pub include_operation_inventory: bool,
+}
+
+impl SessionExecutionRecoveryObservation {
+    /// Move original details into a caller's read projection. Closure coordinates
+    /// remain unchanged and the default selection retains the existing surface.
+    pub fn take_projection_details(
+        &mut self,
+        selection: SessionExecutionEvidenceSelection,
+    ) -> (
+        Option<SessionExecutionOperationFootprint>,
+        Option<SessionRecoveryPreparationReference>,
+        Option<SessionExecutionOperationInventory>,
+    ) {
+        match self {
+            Self::EffectsClosed {
+                operation_footprint,
+                preparation,
+                operation_inventory,
+                ..
+            } => (
+                operation_footprint.take(),
+                preparation.take(),
+                operation_inventory
+                    .take()
+                    .filter(|_| selection.include_operation_inventory),
+            ),
+            Self::NotProven { .. } => (None, None, None),
+        }
+    }
 }
 
 /// Read-only source-I/O boundary, independent of business-effect closure.
@@ -99,6 +140,50 @@ pub enum SessionExecutionOperationFootprint {
     ResponseOnly,
 }
 
+/// Complete original tool selection when models have no provider-hosted effects.
+/// Opaque model scope remains unproven; these references say nothing about the
+/// settlement or physical closure of the listed tool operations.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SessionExecutionOperationInventory {
+    NotProven {
+        reason: SessionExecutionRecoveryGap,
+    },
+    Recorded {
+        tools: Vec<SessionExecutionToolOperation>,
+    },
+}
+
+/// The original durable ToolBatch operation, without arguments or bearer data.
+/// This reference is not evidence that its business effect succeeded or stopped.
+#[derive(Clone, Debug, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionExecutionToolOperation {
+    pub thread_id: String,
+    pub run_id: String,
+    pub operation_id: String,
+    pub tool_id: String,
+}
+
+impl SessionExecutionToolOperation {
+    /// Every coordinate is required for exact operation-source equality; the
+    /// tool name cannot be borrowed from another Thread, Run or operation.
+    pub fn identity(&self) -> (&str, &str, &str, &str) {
+        (
+            &self.thread_id,
+            &self.run_id,
+            &self.operation_id,
+            &self.tool_id,
+        )
+    }
+}
+
+impl PartialEq for SessionExecutionToolOperation {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity() == other.identity()
+    }
+}
+
 /// Original Session aggregate preparation coordinates, never a cleanup ACK.
 #[derive(Clone, Debug, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -126,6 +211,30 @@ impl PartialEq for SessionRecoveryPreparationReference {
 #[cfg(test)]
 mod recovery_observation_tests {
     use super::*;
+    #[test]
+    fn operation_inventory_reference_requires_every_original_coordinate() {
+        // O1 exact Thread/Run/operation/tool -> equal; O2 changing any single
+        // coordinate -> unequal. Neither equality nor the read reference grants
+        // business replay or physical-disposal authority.
+        let original = SessionExecutionToolOperation {
+            thread_id: "thread".into(),
+            run_id: "run".into(),
+            operation_id: "operation".into(),
+            tool_id: "tool".into(),
+        };
+        assert_eq!(original, original.clone(), "O1");
+        for field in 0..4 {
+            let mut changed = original.clone();
+            match field {
+                0 => changed.thread_id.push_str("-other"),
+                1 => changed.run_id.push_str("-other"),
+                2 => changed.operation_id.push_str("-other"),
+                _ => changed.tool_id.push_str("-other"),
+            }
+            assert_ne!(original, changed, "O2 {field}");
+        }
+    }
+
     #[test]
     fn terminal_source_authorization_keeps_current_dispatch_distinct_from_global_closure() {
         // Cause/effect table over the source reader's closed vocabulary:
