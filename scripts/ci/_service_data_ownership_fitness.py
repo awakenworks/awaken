@@ -15,6 +15,7 @@ from pathlib import Path
 
 import _crate_boundary_workspace
 import _service_lifecycle_fitness
+from _coordinator_authority_fitness import LOCAL_COMMIT_ADAPTER_SOURCE
 
 
 WORKER_SOURCE = "crates/bin/awaken-worker/src"
@@ -63,6 +64,7 @@ RUN_INGRESS_LIB_SOURCE = "crates/server/awaken-dispatch/src/lib.rs"
 RUN_INGRESS_SQLITE_SOURCE = "crates/server/awaken-dispatch/src/sqlite.rs"
 RUNTIME_AUTHORITY_SOURCE = "crates/server/awaken-coordinator/src/runtime_authority.rs"
 RUNTIME_STORE_SOURCE = "crates/server/awaken-session-executor/src/store.rs"
+RUNTIME_COMMIT_SOURCES = (RUNTIME_STORE_SOURCE, LOCAL_COMMIT_ADAPTER_SOURCE)
 RUNTIME_LIB_SOURCE = "crates/runtime/awaken-runtime/src/lib.rs"
 STORE_FS_MANIFEST = "crates/stores/awaken-store-fs/Cargo.toml"
 CAPTURE_STORE_SOURCE = "crates/stores/awaken-captured-content-store/src/lib.rs"
@@ -1427,10 +1429,11 @@ def check_all(repo_root: Path) -> list[str]:
         (repo_root / RUNTIME_AUTHORITY_SOURCE).read_text(encoding="utf-8")
     ):
         errors.append(f"{RUNTIME_AUTHORITY_SOURCE}: {error}")
-    for error in runtime_commit_authority_violations(
-        (repo_root / RUNTIME_STORE_SOURCE).read_text(encoding="utf-8")
-    ):
-        errors.append(f"{RUNTIME_STORE_SOURCE}: {error}")
+    for source in RUNTIME_COMMIT_SOURCES:
+        for error in runtime_commit_authority_violations(
+            (repo_root / source).read_text(encoding="utf-8")
+        ):
+            errors.append(f"{source}: {error}")
     for error in redundant_admin_store_reexport_violations(
         (repo_root / ADMIN_CONFIG_SOURCE).read_text(encoding="utf-8")
     ):

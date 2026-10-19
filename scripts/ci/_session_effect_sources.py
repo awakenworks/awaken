@@ -158,7 +158,7 @@ REQUIRED = {
         "SandboxDisposalPreparation",
         "pub artifact_receipts: Vec<ArtifactPublicationReceipt>",
         "canonical_thread_artifact_receipt_fingerprint",
-        "self.artifact_receipts != canonical_receipts",
+        "self.artifact_receipts != canonical.artifact_receipts",
     ),
     SESSION_REPOSITORY_PUBLICATION: (
         "verified_repository_publication_outcome",

@@ -8,10 +8,11 @@
 // @formal evidence session_run.execution_requires_dispatch_work_and_realization_owner
 // @formal evidence session_time.root_observations_are_revision_bound_and_replay_stable
 // @formal evidence session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
-// awaken-allow(file-limit-ceiling): 7167 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 7165 (legacy oversized test file: split, never grow)
 use super::*;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_credential_contract::CredentialMaterialInput;
 use awaken_session_repository_contract::LifecycleOutbox as _;
 use awaken_session_state_contract::ManagedLifecycleFact;
 use awaken_session_types::SessionId;
@@ -361,20 +362,17 @@ async fn register_retirement_repository(
 
 async fn repository_saga_application(
     registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
-    ingress: Arc<dyn CredentialMaterialIngress>,
+    ingress: Arc<dyn awaken_credential_contract::CredentialMaterialIngress>,
 ) -> SessionApplication {
     let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> =
         authority_repository("Session repository").await;
-    let mut app = application(sessions, Arc::new(RecordingEnvironmentSource::default()));
-    app.set_resource_registry(registry);
-    app.set_credential_material_ingress(ingress);
-    app
+    repository_retirement_application(sessions, registry, ingress)
 }
 
 fn repository_retirement_application(
     sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
     registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
-    ingress: Arc<dyn CredentialMaterialIngress>,
+    ingress: Arc<dyn awaken_credential_contract::CredentialMaterialIngress>,
 ) -> SessionApplication {
     let mut app = application(sessions, Arc::new(RecordingEnvironmentSource::default()));
     app.set_resource_registry(registry);

@@ -421,6 +421,9 @@ mod tests {
 
     #[tokio::test]
     async fn thread_usage_reads_authoritative_state_without_rebuilding_history() {
+        // Adapter-owner rule C3: the same selected Q must serve every authoritative
+        // read after relocation; a stale projection or a State-read error cannot
+        // become a zero-usage fallback or a separately opened child store.
         // Cause/effect graph: C1 root/child identity selects the same parent
         // partition; C2 an authoritative Run is absent/present; C3 State read
         // succeeds/fails; C4 the compatibility history stays stale; C5 a later

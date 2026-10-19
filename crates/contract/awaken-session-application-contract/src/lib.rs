@@ -50,11 +50,7 @@ pub use composition::{
     SessionApplicationBuildError, SessionApplicationConfiguration, SessionExecutionPlacement,
     WorkDispatchFailure, WorkDispatchReconciliation, runtime_placement_for_topology,
 };
-pub use session_services::{
-    CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialInput,
-    CredentialMaterialRetirementCommand, CredentialMaterialRotationCommand, CredentialPlaintext,
-    SessionCredentialAccessRequest, SessionCredentialSource, SessionParticipantProvenance,
-};
+pub use session_services::SessionParticipantProvenance;
 
 mod worker_lease;
 pub use worker_lease::{

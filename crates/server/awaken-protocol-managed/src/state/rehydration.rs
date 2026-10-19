@@ -416,7 +416,12 @@ mod tests {
                         baseline.environment.self_hosted = false;
                         baseline.runtime_placement = placement;
                         persisted.realization = realization.clone();
-                        create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, persisted).await;
+                        create_session_fixture(
+                            repo.as_ref(),
+                            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+                            persisted,
+                        )
+                        .await;
                         cases.push((id, mcp_recovery, resource_recovery));
                     }
                 }

@@ -1385,7 +1385,9 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
     // baseline-only prepare call carries no parallel MCP authority.
     let expected = h
         .vaults
-        .credential_source_id(&vault_id, &cred_id)
+        .application()
+        .credential_access()
+        .credential_source_id("default", &vault_id, &cred_id)
         .await
         .expect("wire credential maps to a domain source");
     {
@@ -1509,7 +1511,9 @@ async fn session_binding_supports_static_bearer_and_normalized_mcp_urls() {
     .expect(StatusCode::OK);
     let expected = h
         .vaults
-        .credential_source_id(&vault_id, &credential_id)
+        .application()
+        .credential_access()
+        .credential_source_id("default", &vault_id, &credential_id)
         .await
         .unwrap();
     let staged = h.staged.lock().unwrap();
@@ -1551,7 +1555,9 @@ async fn session_binding_honors_vault_order_and_leaves_a_miss_unauthenticated() 
         .await;
         sources.push(
             h.vaults
-                .credential_source_id(&vault_id, &credential_id)
+                .application()
+                .credential_access()
+                .credential_source_id("default", &vault_id, &credential_id)
                 .await
                 .unwrap(),
         );
@@ -1694,7 +1700,9 @@ async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
     };
     let source_id = h
         .vaults
-        .credential_source_id(&vault_id, &cred_id)
+        .application()
+        .credential_access()
+        .credential_source_id("default", &vault_id, &cred_id)
         .await
         .unwrap();
     let logical_prefix = format!(

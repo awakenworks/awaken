@@ -31,6 +31,7 @@ from _service_data_ownership_fitness import (
     NON_PRODUCT_APIS,
     RESOURCE_PERSISTENCE,
     RESOURCE_STORE_SOURCE,
+    RUNTIME_COMMIT_SOURCES,
     RUNTIME_HOST_MANIFEST,
     RUNTIME_MEMORY_STORES,
     RUN_INGRESS_FACTORY_SOURCE,
@@ -524,6 +525,16 @@ def selftest() -> None:
     ) == ["Admin API re-exports Config Resolver store contracts or fixtures"]  # O24
     assert runtime_commit_authority_violations("enum HostCommit { Local, Remote }") == []  # O25
     assert runtime_commit_authority_violations("enum CommitPlan { Sqlite }")  # O26
+    # C7 location table: the original HostCommit and the migrated neutral
+    # delegation must both remain scanned by this exact predicate. Injecting a
+    # backend selector into either source must still reject, not gain a waiver.
+    assert RUNTIME_COMMIT_SOURCES == (
+        "crates/server/awaken-session-executor/src/store.rs",
+        "crates/shared/awaken-dispatch-erasure/src/local_commit.rs",
+    )
+    for source in RUNTIME_COMMIT_SOURCES:
+        assert runtime_commit_authority_violations("enum CommitPlan { Sqlite }"), source
+        assert runtime_commit_authority_violations("enum HostCommit { Local, Remote }") == [], source
     assert product_inmem_dependency_violations(
         STORE_FS_MANIFEST, {"dependencies": {"awaken-store-inmem": {}}}
     ) == []  # O27 rebuild projection

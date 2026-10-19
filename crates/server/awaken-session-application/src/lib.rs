@@ -171,11 +171,7 @@ impl SessionRecoveryCandidates {
 
 mod mutation;
 mod recovery_sweep;
-pub use awaken_session_application_contract::{
-    CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialInput,
-    CredentialMaterialRetirementCommand, CredentialMaterialRotationCommand, CredentialPlaintext,
-    SessionCredentialAccessRequest, SessionCredentialSource, SessionParticipantProvenance,
-};
+pub use awaken_session_application_contract::SessionParticipantProvenance;
 pub use mutation::{SessionMutationError, SessionMutations, SnapshotCommit};
 mod event_batch_cutover_validation;
 pub use event_batch_cutover_validation::{

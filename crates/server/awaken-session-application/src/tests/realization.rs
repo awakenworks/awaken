@@ -9,6 +9,7 @@
 // @formal evidence session_run.execution_requires_dispatch_work_and_realization_owner
 // awaken-allow(file-limit-ceiling): 6223 (legacy oversized test file: split, never grow)
 use super::*;
+use awaken_credential_contract::CredentialMaterialInput;
 mod capacity_budget;
 mod cleanup_timing;
 mod initial_preparation;
@@ -5192,23 +5193,22 @@ async fn terminal_cleanup_restart_soak_preserves_authority_and_effect_identity()
     }
 }
 
-/// Cause/effect graph: C1 a baseline is frozen; C2 its explicit Runtime
-/// placement is Local or Worker; C3 the process startup is local or registered.
-/// The realization lease is intentionally absent from the causes: it is an
-/// assignment fence, never placement policy. Effects are E1 local physical
-/// realization or E2 dispatch-only Coordinator projection.
+/// Cause/effect graph: C1 the baseline is Preparing or Frozen; C2 a Frozen
+/// baseline names Local or Worker. E1 is the existing PersistedSession law's
+/// external-owner boolean, evaluated once per row.
 ///
-/// | Rule | Frozen placement | Process placement | Effect |
+/// | Rule | Baseline | Frozen placement | External owner |
 /// |---|---|---|---|
-/// | P1 | preparing | any | E1 (not yet realizable) |
-/// | P2 | local | local/registered | E1 |
-/// | P3 | worker | local/registered | E2 |
-/// | P4 | legacy | local | E1 |
-/// | P5 | legacy | registered | E2 |
+/// | P1 | Preparing | none | false |
+/// | P2 | Frozen | Local | false |
+/// | P3 | Frozen | Worker | true |
 ///
-/// P4/P5 are the one-way upgrade interpretation for rows serialized before
-/// placement existed. New creation is separately asserted never to emit the
-/// legacy value.
+/// C3 local/registered process startup is checked only by the final two
+/// runtime_placement assertions. It is not a domain-law input or a six-row
+/// cross-product: the removed cfg(test) forwarder ignored self, so three
+/// evaluations replace six duplicate probes. This boolean classifies facts;
+/// execution permissions and realization leases retain their existing owners.
+/// The separate Domain Local/Worker x self-hosted four-row table is unchanged.
 #[tokio::test]
 async fn realization_owner_follows_the_frozen_placement_decision_table() {
     let repo = sqlite_session_repository("session repository").await;
@@ -5271,20 +5271,15 @@ async fn realization_owner_follows_the_frozen_placement_decision_table() {
         );
         value
     };
-    for (rule, value, local_expected, registered_expected) in [
-        ("P1", preparing, false, false),
-        ("P2", frozen(SessionRuntimePlacement::Local), false, false),
-        ("P3", frozen(SessionRuntimePlacement::Worker), true, true),
+    for (rule, value, expected) in [
+        ("P1", preparing, false),
+        ("P2", frozen(SessionRuntimePlacement::Local), false),
+        ("P3", frozen(SessionRuntimePlacement::Worker), true),
     ] {
         assert_eq!(
-            local.requires_external_realization(&value),
-            local_expected,
-            "{rule}/local"
-        );
-        assert_eq!(
-            registered.requires_external_realization(&value),
-            registered_expected,
-            "{rule}/registered"
+            value.requires_external_environment_owner(),
+            expected,
+            "{rule}/frozen"
         );
     }
     assert_eq!(local.runtime_placement(), SessionRuntimePlacement::Local);

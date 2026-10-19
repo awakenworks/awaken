@@ -1,6 +1,5 @@
 //! Both real HTTP create entries enter the sole creation Resource finalizer.
 use super::*;
-use awaken_session_application::CredentialMaterialIngress as _;
 
 const REMOTE: &str = "https://github.com/awaken/finalized.git";
 
@@ -232,11 +231,11 @@ async fn both_create_routes_pin_exact_credentials_and_profiled_drift_stays_after
         "F5 same original reference/target/policy/holder"
     );
     let source_id = awaken_credential_contract::CredentialSourceId(reference.id.clone());
-    let next_revision = vaults.rotate_material(awaken_session_application::CredentialMaterialRotationCommand {
+    let next_revision = awaken_credential_contract::CredentialMaterialIngress::rotate_material(vaults.application().credential_access().as_ref(), awaken_credential_contract::CredentialMaterialRotationCommand {
         source_id: source_id.clone(), expected_revision: reference.revision, workspace_id: "default".into(),
         target: awaken_session_configuration_contract::resource::repository_transport_credential_target(REMOTE).unwrap(),
         usage: awaken_session_configuration_contract::resource::repository_transport_credential_usage(),
-        material: awaken_session_application::CredentialMaterialInput::structured("github",
+        material: awaken_credential_contract::CredentialMaterialInput::structured("github",
             awaken_credential_contract::http_basic_material(
                 awaken_agent_contract::RedactedString::new("x-access-token"),
                 awaken_agent_contract::RedactedString::new("rotated-finalizer-fixture-token"))),

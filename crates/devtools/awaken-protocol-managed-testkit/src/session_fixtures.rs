@@ -191,7 +191,7 @@ pub fn persisted_with_mcp_source(
 pub struct RolloutCredentialSource;
 
 #[async_trait::async_trait]
-impl awaken_session_application::SessionCredentialSource for RolloutCredentialSource {
+impl awaken_credential_contract::SessionCredentialSource for RolloutCredentialSource {
     async fn has_vault(&self, _workspace_id: &str, _id: &str) -> Result<bool, String> {
         Ok(true)
     }
@@ -244,7 +244,7 @@ impl awaken_session_application::SessionCredentialSource for RolloutCredentialSo
         &self,
         _source_id: &awaken_credential_contract::CredentialSourceId,
         _workspace_id: &str,
-        _request: awaken_session_application::SessionCredentialAccessRequest,
+        _request: awaken_credential_contract::SessionCredentialAccessRequest,
     ) -> Result<awaken_credential_contract::CredentialAccess, String> {
         Err("not used by MCP rollout fixture".into())
     }

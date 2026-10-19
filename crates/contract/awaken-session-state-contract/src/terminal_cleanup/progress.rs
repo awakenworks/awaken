@@ -51,13 +51,12 @@ impl SessionCleanupRepositoryPreparation {
             workspace_id,
             &plan,
         ));
-        let receipt_fingerprint = crate::stable_fingerprint(&(
-            "session-terminal-repository-preparation-receipt-v1",
+        let receipt_fingerprint = Self::fingerprint(
             session_id,
             workspace_id,
-            cleanup_effect_id.as_str(),
-            plan_fingerprint.as_str(),
-        ));
+            &cleanup_effect_id,
+            &plan_fingerprint,
+        );
         Ok(Self {
             session_id: session_id.clone(),
             workspace_id: workspace_id.to_string(),
@@ -67,18 +66,32 @@ impl SessionCleanupRepositoryPreparation {
         })
     }
 
+    fn fingerprint(
+        session_id: &SessionId,
+        workspace_id: &str,
+        cleanup_effect_id: &str,
+        plan_fingerprint: &str,
+    ) -> String {
+        crate::stable_fingerprint(&(
+            "session-terminal-repository-preparation-receipt-v1",
+            session_id,
+            workspace_id,
+            cleanup_effect_id,
+            plan_fingerprint,
+        ))
+    }
+
     fn verify_identity(
         &self,
         session_id: &SessionId,
         effect_id: &str,
     ) -> Result<(), SessionCleanupError> {
-        let receipt_fingerprint = crate::stable_fingerprint(&(
-            "session-terminal-repository-preparation-receipt-v1",
-            self.session_id.as_str(),
-            self.workspace_id.as_str(),
-            self.cleanup_effect_id.as_str(),
-            self.plan_fingerprint.as_str(),
-        ));
+        let receipt_fingerprint = Self::fingerprint(
+            &self.session_id,
+            &self.workspace_id,
+            &self.cleanup_effect_id,
+            &self.plan_fingerprint,
+        );
         if self.session_id != session_id
             || self.cleanup_effect_id != effect_id
             || self.workspace_id.trim().is_empty()
@@ -172,8 +185,17 @@ impl SessionCleanupPreparation {
     pub fn try_new(
         effect: &SessionTerminalCleanupEffect,
         provider_prepared_effect_fence: awaken_provisioning_contract::SandboxEffectFence,
-        mut artifact_receipts: Vec<ArtifactPublicationReceipt>,
+        artifact_receipts: Vec<ArtifactPublicationReceipt>,
     ) -> Result<Self, SessionCleanupError> {
+        Self::checked_preparation(effect, provider_prepared_effect_fence, artifact_receipts)
+            .map(|(preparation, _)| preparation)
+    }
+
+    fn checked_preparation(
+        effect: &SessionTerminalCleanupEffect,
+        provider_prepared_effect_fence: awaken_provisioning_contract::SandboxEffectFence,
+        mut artifact_receipts: Vec<ArtifactPublicationReceipt>,
+    ) -> Result<(Self, String), SessionCleanupError> {
         let asserted_effect_fence = effect
             .sandbox_effect_fence()
             .map_err(|_| SessionCleanupError::PreparationReceiptMismatch)?;
@@ -202,12 +224,15 @@ impl SessionCleanupPreparation {
             effect.lease.expires_at_unix_ms,
             &provider_prepared_effect_fence,
         ));
-        Ok(Self {
-            effect: effect.clone(),
-            provider_prepared_effect_fence,
-            artifact_receipts,
-            receipt_fingerprint,
-        })
+        Ok((
+            Self {
+                effect: effect.clone(),
+                provider_prepared_effect_fence,
+                artifact_receipts,
+                receipt_fingerprint,
+            },
+            artifact_fingerprint,
+        ))
     }
 
     #[must_use]
@@ -218,34 +243,11 @@ impl SessionCleanupPreparation {
     }
 
     fn verify(&self, effect: &SessionTerminalCleanupEffect) -> Result<(), SessionCleanupError> {
-        let asserted_effect_fence = effect
-            .sandbox_effect_fence()
-            .map_err(|_| SessionCleanupError::PreparationReceiptMismatch)?;
-        if !asserted_effect_fence.same_realization_lease(&self.provider_prepared_effect_fence)
-            || !(asserted_effect_fence
-                .authorizes_effect_successor(&self.provider_prepared_effect_fence)
-                || self
-                    .provider_prepared_effect_fence
-                    .authorizes_effect_successor(&asserted_effect_fence))
-        {
-            return Err(SessionCleanupError::PreparationReceiptMismatch);
-        }
-        let mut canonical_receipts = self.artifact_receipts.clone();
-        let (receipts_are_unique, artifact_fingerprint) =
-            canonical_thread_artifact_receipt_fingerprint(
-                "session-terminal-cleanup-thread-preparation-v1",
-                &effect.command,
-                &mut canonical_receipts,
-            );
-        let canonical_fingerprint = crate::stable_fingerprint(&(
-            "session-terminal-cleanup-thread-preparation-effect-v2",
-            artifact_fingerprint.as_str(),
-            effect.lease.owner.as_str(),
-            effect.lease.runtime_incarnation.as_str(),
-            effect.lease.epoch,
-            effect.lease.expires_at_unix_ms,
-            &self.provider_prepared_effect_fence,
-        ));
+        let (canonical, artifact_fingerprint) = Self::checked_preparation(
+            effect,
+            self.provider_prepared_effect_fence.clone(),
+            self.artifact_receipts.clone(),
+        )?;
         let legacy_fingerprint = crate::stable_fingerprint(&(
             "session-terminal-cleanup-thread-preparation-effect-v1",
             artifact_fingerprint.as_str(),
@@ -254,12 +256,14 @@ impl SessionCleanupPreparation {
             effect.lease.epoch,
             effect.lease.expires_at_unix_ms,
         ));
-        let fingerprint_matches = self.receipt_fingerprint == canonical_fingerprint
-            || (self.provider_prepared_effect_fence == asserted_effect_fence
+        let fingerprint_matches = self.receipt_fingerprint == canonical.receipt_fingerprint
+            || (self.provider_prepared_effect_fence
+                == effect
+                    .sandbox_effect_fence()
+                    .map_err(|_| SessionCleanupError::PreparationReceiptMismatch)?
                 && self.receipt_fingerprint == legacy_fingerprint);
-        if !receipts_are_unique
-            || &self.effect != effect
-            || self.artifact_receipts != canonical_receipts
+        if &self.effect != effect
+            || self.artifact_receipts != canonical.artifact_receipts
             || !fingerprint_matches
         {
             return Err(SessionCleanupError::PreparationReceiptMismatch);
@@ -1164,6 +1168,7 @@ impl SessionCleanupOperation {
 #[cfg(test)]
 pub(in crate::terminal_cleanup) mod tests {
     use super::*;
+    use crate::terminal_cleanup::completion::tests::artifact;
     use awaken_provisioning_contract::{
         RepositoryPublicationExpectation, RepositoryPublicationReceipt,
         RepositoryPublicationRejection,
@@ -1777,57 +1782,304 @@ pub(in crate::terminal_cleanup) mod tests {
         // v1 decodes as exact P=effect for old writers; E2 current v2 binds
         // explicit P; E3 v1 with explicit distinct P is rejected. No Option is
         // retained in the domain value or emitted by a current writer.
-        let mut operation = SessionCleanupOperation::default();
-        assert!(operation.request(&crate::SessionId::from("wire-session")));
-        operation
-            .freeze_targets(&crate::SessionId::from("wire-session"), [], 1, 1)
+        // W1's original empty row remains first. W1A repeats it with canonical
+        // Artifact evidence: legacy decode preserves its stored v1 fingerprint,
+        // never upgrades it to v2 or silently repairs the durable set identity.
+        for artifact_receipts in [
+            Vec::new(),
+            vec![artifact("a", "sha256:a"), artifact("b", "sha256:b")],
+        ] {
+            let mut operation = SessionCleanupOperation::default();
+            assert!(operation.request(&crate::SessionId::from("wire-session")));
+            operation
+                .freeze_targets(&crate::SessionId::from("wire-session"), [], 1, 1)
+                .unwrap();
+            let command = operation
+                .command_for(&crate::SessionId::from("wire-session"), "wire-session")
+                .unwrap();
+            let lease = crate::SessionRealizationLease {
+                owner: "wire-owner".into(),
+                runtime_incarnation: "wire-runtime".into(),
+                epoch: 3,
+                expires_at_unix_ms: 10_000,
+            };
+            let effect = SessionTerminalCleanupEffect::new(command, lease.clone());
+            let asserted = effect.sandbox_effect_fence().unwrap();
+            let mut legacy = SessionCleanupPreparation::try_new(
+                &effect,
+                asserted.clone(),
+                artifact_receipts.clone(),
+            )
             .unwrap();
-        let command = operation
-            .command_for(&crate::SessionId::from("wire-session"), "wire-session")
+            let mut receipts = artifact_receipts;
+            let (_, artifact_fingerprint) = canonical_thread_artifact_receipt_fingerprint(
+                "session-terminal-cleanup-thread-preparation-v1",
+                &effect.command,
+                &mut receipts,
+            );
+            legacy.receipt_fingerprint = crate::stable_fingerprint(&(
+                "session-terminal-cleanup-thread-preparation-effect-v1",
+                artifact_fingerprint.as_str(),
+                lease.owner.as_str(),
+                lease.runtime_incarnation.as_str(),
+                lease.epoch,
+                lease.expires_at_unix_ms,
+            ));
+            let mut legacy_wire = serde_json::to_value(&legacy).unwrap();
+            legacy_wire
+                .as_object_mut()
+                .unwrap()
+                .remove("provider_prepared_effect_fence");
+            let decoded: SessionCleanupPreparation = serde_json::from_value(legacy_wire).unwrap();
+            assert_eq!(decoded.provider_prepared_effect_fence(), &asserted, "W1/E1",);
+            assert_eq!(
+                decoded.receipt_fingerprint, legacy.receipt_fingerprint,
+                "W1/E1 legacy decode must not rekey the preparation set to v2"
+            );
+            assert_eq!(
+                serde_json::from_value::<SessionCleanupPreparation>(
+                    serde_json::to_value(&legacy).unwrap()
+                )
+                .unwrap(),
+                legacy,
+                "W1/E1 an explicit exact predecessor also retains the original v1 value"
+            );
+
+            let renewed = crate::SessionRealizationLease {
+                expires_at_unix_ms: 20_000,
+                ..lease
+            }
+            .sandbox_effect_fence(effect.operation_id())
             .unwrap();
+            let mut forged = serde_json::to_value(&legacy).unwrap();
+            forged["provider_prepared_effect_fence"] = serde_json::to_value(renewed).unwrap();
+            assert!(
+                serde_json::from_value::<SessionCleanupPreparation>(forged).is_err(),
+                "W1/E3",
+            );
+        }
+    }
+
+    #[test]
+    fn preparation_verifier_preserves_canonical_artifacts_and_expected_effect() {
+        // Cause/effect table: P is exact, renewed or foreign; Artifacts are
+        // unique canonical, reversed or duplicate; stored effect/fingerprint
+        // matches or drifts. The constructor may sort inputs, but verification
+        // and Serde must reject noncanonical evidence rather than repair it.
+        // | Rule | provider P | Artifact/effect evidence | Effect |
+        // | C1 | same generation, either renewal direction | canonical | accept v2 unchanged |
+        // | C2 | exact | reversed with original canonical hash | reject verify/decode |
+        // | C3 | exact | duplicate effect, even different content | reject create/verify/decode |
+        // | C4 | exact | stored effect or fingerprint changed | reject against original effect |
+        // | C5 | foreign operation | otherwise exact | original preparation error |
+        // | C6 | v2 P differs from assertion then field omitted | fallback cannot satisfy hash | reject |
+        // | C6a | v2 P already equals assertion then field omitted | exact fallback | accept unchanged |
+        // Existing W1/W1A own v1 exact/omitted/renewed and no-rekey behavior;
+        // the existing root-CAS TP1 table owns first-writer and current lease admission.
+        let command = SessionCleanupCommand::new(
+            &crate::SessionId::from("canonical-preparation"),
+            "canonical-preparation",
+            "root",
+        );
         let lease = crate::SessionRealizationLease {
-            owner: "wire-owner".into(),
-            runtime_incarnation: "wire-runtime".into(),
+            owner: "canonical-owner".into(),
+            runtime_incarnation: "canonical-runtime".into(),
             epoch: 3,
             expires_at_unix_ms: 10_000,
         };
         let effect = SessionTerminalCleanupEffect::new(command, lease.clone());
         let asserted = effect.sandbox_effect_fence().unwrap();
-        let mut legacy =
-            SessionCleanupPreparation::try_new(&effect, asserted.clone(), Vec::new()).unwrap();
-        let mut receipts = Vec::new();
-        let (_, artifact_fingerprint) = canonical_thread_artifact_receipt_fingerprint(
-            "session-terminal-cleanup-thread-preparation-v1",
-            &effect.command,
-            &mut receipts,
+        let artifacts = vec![artifact("b", "sha256:b"), artifact("a", "sha256:a")];
+        let canonical =
+            SessionCleanupPreparation::try_new(&effect, asserted.clone(), artifacts.clone())
+                .unwrap();
+        assert_eq!(
+            canonical.artifact_receipts[0].effect_id, "a",
+            "C1 sorts input once"
         );
-        legacy.receipt_fingerprint = crate::stable_fingerprint(&(
-            "session-terminal-cleanup-thread-preparation-effect-v1",
-            artifact_fingerprint.as_str(),
-            lease.owner.as_str(),
-            lease.runtime_incarnation.as_str(),
-            lease.epoch,
-            lease.expires_at_unix_ms,
-        ));
-        let mut legacy_wire = serde_json::to_value(&legacy).unwrap();
-        legacy_wire
+        for expires_at_unix_ms in [5_000, 20_000] {
+            let provider = crate::SessionRealizationLease {
+                expires_at_unix_ms,
+                ..lease.clone()
+            }
+            .sandbox_effect_fence(effect.operation_id())
+            .unwrap();
+            let receipt =
+                SessionCleanupPreparation::try_new(&effect, provider, artifacts.clone()).unwrap();
+            assert_eq!(
+                receipt.verify(&effect),
+                Ok(()),
+                "C1 either renewal direction"
+            );
+            let encoded = serde_json::to_vec(&receipt).unwrap();
+            let decoded: SessionCleanupPreparation = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(decoded, receipt, "C1 current wire unchanged");
+            assert_eq!(
+                serde_json::to_vec(&decoded).unwrap(),
+                encoded,
+                "C1 exact bytes"
+            );
+            let mut omitted = serde_json::to_value(&receipt).unwrap();
+            omitted
+                .as_object_mut()
+                .unwrap()
+                .remove("provider_prepared_effect_fence");
+            assert!(
+                serde_json::from_value::<SessionCleanupPreparation>(omitted).is_err(),
+                "C6"
+            );
+        }
+        let mut reversed = canonical.clone();
+        reversed.artifact_receipts.reverse();
+        let mut duplicate = canonical.clone();
+        duplicate
+            .artifact_receipts
+            .push(artifact("a", "sha256:other"));
+        assert_eq!(
+            SessionCleanupPreparation::try_new(
+                &effect,
+                asserted.clone(),
+                duplicate.artifact_receipts.clone()
+            ),
+            Err(SessionCleanupError::PreparationReceiptMismatch),
+            "C3 constructor"
+        );
+        let mut changed_effect = canonical.clone();
+        changed_effect.effect.command.thread_id.push_str("-foreign");
+        let mut changed_fingerprint = canonical.clone();
+        changed_fingerprint.receipt_fingerprint.push_str("-forged");
+        let mut foreign = canonical.clone();
+        foreign.provider_prepared_effect_fence =
+            awaken_provisioning_contract::SandboxEffectFence::new(
+                "foreign-operation",
+                lease.owner.clone(),
+                lease.runtime_incarnation.clone(),
+                lease.epoch,
+                lease.expires_at_unix_ms,
+            )
+            .unwrap();
+        assert_eq!(
+            SessionCleanupPreparation::try_new(
+                &effect,
+                foreign.provider_prepared_effect_fence.clone(),
+                artifacts
+            ),
+            Err(SessionCleanupError::PreparationReceiptMismatch),
+            "C5 constructor"
+        );
+        for (rule, receipt) in [
+            ("C2", reversed),
+            ("C3", duplicate),
+            ("C4 effect", changed_effect),
+            ("C4 fingerprint", changed_fingerprint),
+            ("C5", foreign),
+        ] {
+            assert_eq!(
+                receipt.verify(&effect),
+                Err(SessionCleanupError::PreparationReceiptMismatch),
+                "{rule}"
+            );
+            assert!(
+                serde_json::from_value::<SessionCleanupPreparation>(
+                    serde_json::to_value(&receipt).unwrap()
+                )
+                .is_err(),
+                "{rule}/decode"
+            );
+        }
+        let mut exact_omitted = serde_json::to_value(&canonical).unwrap();
+        exact_omitted
             .as_object_mut()
             .unwrap()
             .remove("provider_prepared_effect_fence");
-        let decoded: SessionCleanupPreparation = serde_json::from_value(legacy_wire).unwrap();
-        assert_eq!(decoded.provider_prepared_effect_fence(), &asserted, "W1/E1",);
-
-        let renewed = crate::SessionRealizationLease {
-            expires_at_unix_ms: 20_000,
-            ..lease
-        }
-        .sandbox_effect_fence(effect.operation_id())
-        .unwrap();
-        let mut forged = serde_json::to_value(&legacy).unwrap();
-        forged["provider_prepared_effect_fence"] = serde_json::to_value(renewed).unwrap();
-        assert!(
-            serde_json::from_value::<SessionCleanupPreparation>(forged).is_err(),
-            "W1/E3",
+        assert_eq!(
+            serde_json::from_value::<SessionCleanupPreparation>(exact_omitted).unwrap(),
+            canonical,
+            "C6a v2 missing provider field retains an already-exact predecessor"
         );
+        assert_eq!(
+            serde_json::from_value::<SessionCleanupPreparation>(
+                serde_json::to_value(&canonical).unwrap()
+            )
+            .unwrap(),
+            canonical,
+            "C1 exact provider positive control"
+        );
+    }
+
+    #[test]
+    fn repository_preparation_identity_binds_stored_coordinates_without_replanning() {
+        // R1: SessionId is transparent for empty/ASCII/Unicode strings: changing
+        // a tuple's borrowed representation must retain the original JSON bytes.
+        // R2: exact stored identity verifies even when a later Resource plan differs;
+        // only verify_for_resources may compare that live plan. R3: changed stored
+        // Session/effect/workspace/plan/fingerprint (including nonempty Workspace
+        // and plan drift with the stored hash unchanged) is rejected without fetching
+        // Resources. Empty create inputs retain the original refusal before planning.
+        for raw in ["", "repo-session", "会话/\"opaque\\id"] {
+            let id = crate::SessionId::from(raw);
+            assert_eq!(
+                serde_json::to_vec(&id).unwrap(),
+                serde_json::to_vec(id.as_str()).unwrap(),
+                "R1"
+            );
+        }
+        let id = crate::SessionId::from("stored-repository");
+        let effect_id = cleanup_effect_id(&id);
+        let original = repository_preparation(id.as_str());
+        let mut changed_resources = crate::SessionResourceState::default();
+        changed_resources
+            .repository_retirements
+            .push(publication_intent().input);
+        assert_eq!(
+            original.verify_for_resources(&id, "workspace", &changed_resources),
+            Err(SessionCleanupError::RepositoryPreparationReceiptMismatch),
+            "R2 current-plan gate"
+        );
+        assert_eq!(
+            original.verify_identity(&id, &effect_id),
+            Ok(()),
+            "R2 stored-plan identity"
+        );
+        let mut session = original.clone();
+        session.session_id = "foreign".into();
+        let mut effect = original.clone();
+        effect.cleanup_effect_id.push_str("-foreign");
+        let mut workspace = original.clone();
+        workspace.workspace_id.clear();
+        let mut workspace_drift = original.clone();
+        workspace_drift.workspace_id.push_str("-foreign");
+        let mut plan = original.clone();
+        plan.plan_fingerprint.clear();
+        let mut plan_drift = original.clone();
+        plan_drift.plan_fingerprint.push_str("-foreign");
+        let mut fingerprint = original.clone();
+        fingerprint.receipt_fingerprint.push_str("-forged");
+        for receipt in [
+            session,
+            effect,
+            workspace,
+            workspace_drift,
+            plan,
+            plan_drift,
+            fingerprint,
+        ] {
+            assert_eq!(
+                receipt.verify_identity(&id, &effect_id),
+                Err(SessionCleanupError::RepositoryPreparationReceiptMismatch),
+                "R3"
+            );
+        }
+        for (session, workspace) in [("", "workspace"), ("session", " ")] {
+            assert_eq!(
+                SessionCleanupRepositoryPreparation::new(
+                    &crate::SessionId::from(session),
+                    workspace,
+                    &Default::default()
+                ),
+                Err(SessionCleanupError::RepositoryPreparationReceiptMismatch),
+                "R3 empty create input"
+            );
+        }
     }
 }

@@ -154,7 +154,7 @@ enum RuntimeModelServices {
 #[derive(Clone)]
 struct ControlServices {
     audit: Arc<dyn awaken_config_service::ManagementAuditRepository>,
-    credentials: Arc<dyn awaken_session_application::SessionCredentialSource>,
+    credentials: Arc<dyn awaken_credential_contract::SessionCredentialSource>,
     repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
     webhooks: Arc<dyn awaken_session_application_contract::LifecycleFactDelivery>,
     capture_policy: awaken_data_governance_contract::CapturePolicySources,

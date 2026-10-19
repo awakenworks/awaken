@@ -515,7 +515,7 @@ impl crate::RunAssembly {
         });
         let resource_transition = projection
             .resource_transition(resource_mode.transition_use())
-            .map_err(|error| crate::SessionExecutionError::internal(error.to_string()))?;
+            .map_err(crate::session_execution_error::from_run_error)?;
         let baseline = projection.baseline.clone();
         let init = projection.session_init();
         let environment_projection = environment_projection::project_environment(&init.environment);
@@ -704,7 +704,7 @@ impl crate::RunAssembly {
                         None => std::future::pending().await,
                     }
                 } => return Err(error.into()),
-                result = stage => result.map_err(|error| crate::SessionExecutionError::internal(error.to_string()))?,
+                result = stage => result.map_err(crate::session_execution_error::from_run_error)?,
             }
         }
         if let Some(preparation) = &preparation {

@@ -58,9 +58,15 @@ impl VaultState {
         workspace: &str,
     ) -> Result<Vec<McpCredentialChoice>, CredentialError> {
         let mut choices = Vec::new();
-        for vault in self.application.executable_vaults(workspace).await? {
+        for vault in self
+            .application
+            .credential_access()
+            .executable_vaults(workspace)
+            .await?
+        {
             let credentials = self
                 .application
+                .credential_access()
                 .executable_credentials(workspace, &vault.id)
                 .await?
                 .unwrap_or_default();
@@ -74,7 +80,11 @@ impl VaultState {
                 };
                 let target = awaken_agent_contract::McpTarget::parse_http(credential_url)
                     .map_err(|e| CredentialError::InvalidSource(e.to_string()))?;
-                let source = self.application.source(&credential.source_id).await?;
+                let source = self
+                    .application
+                    .credential_access()
+                    .source(&credential.source_id)
+                    .await?;
                 if inspection_source_admitted(&source, workspace, credential_url).is_err() {
                     continue;
                 }
@@ -152,7 +162,11 @@ impl VaultState {
         source_id: &CredentialSourceId,
         config: awaken_credential_vault::catalog::ManagedMcpOauthRefresh,
     ) -> Option<awaken_session_configuration_contract::RefreshExchangeOutcome> {
-        let (source_id, access) = self.application.refresh_access(source_id, config).await?;
+        let (source_id, access) = self
+            .application
+            .credential_access()
+            .refresh_access(source_id, config)
+            .await?;
         Some(exchange.exchange(source_id, access).await)
     }
 
@@ -189,6 +203,7 @@ impl VaultState {
         let bearer = if let Some(choice) = &choice {
             let source = self
                 .application
+                .credential_access()
                 .source(&CredentialSourceId(choice.source.id.clone()))
                 .await?;
             if u64::try_from(source.version).ok() != Some(choice.source.revision) {
@@ -211,12 +226,18 @@ impl VaultState {
             }
             if !self
                 .application
+                .credential_access()
                 .has_vault(workspace, &choice.vault_id)
                 .await?
             {
                 return Err(CredentialError::NotActive(choice.vault_id.clone()));
             }
-            Some(self.application.open_material(&source).await?)
+            Some(
+                self.application
+                    .credential_access()
+                    .open_material(&source)
+                    .await?,
+            )
         } else {
             None
         };

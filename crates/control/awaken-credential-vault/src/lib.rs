@@ -29,18 +29,21 @@ mod local_material;
 pub mod oauth;
 pub mod repo;
 mod vault_application;
+mod vault_credential_access;
 pub use local_material::{VaultAttemptCredentialDeliverySource, VaultLocalMaterialAuthority};
+pub use vault_credential_access::VaultCredentialAccess;
 
 pub use availability::{AvailabilityLedger, AvailabilityState};
 pub use credential_access::{
-    ExactCredentialAccessRequest, compile_exact_credential_access, publish_exact_credential_access,
+    ExactCredentialAccessRequest, compile_exact_credential_access, mcp_bearer_descriptor,
+    publish_exact_credential_access,
 };
 #[cfg(feature = "oauth-command")]
 pub use oauth::{CommandTokenSource, TokenSource};
 pub use vault_application::{
     ApplicationMcpBearerEntry, ApplicationMcpBearerReceipt, McpCredentialTarget, VaultApplication,
     VaultCommandError, VaultCredentialChange, VaultCredentialDraft, VaultObject,
-    apply_metadata_patch, identity_digest, mcp_bearer_descriptor,
+    apply_metadata_patch, identity_digest,
 };
 
 use std::collections::BTreeMap;

@@ -1527,6 +1527,11 @@ fn recover_terminal_receipts() {
     # injection and prevents one broad marker from masking a missing fence,
     # target freeze, exact settlement, or quiescence edge.
     for rule, relative, marker in (
+        # C7: removing the current stored-vs-canonical Artifact order check
+        # must reject even when the shared canonicalizer remains. This is
+        # source recognition; native C2/C3 own actual malformed-receipt behavior.
+        ("canonical preparation artifact order", SESSION_CLEANUP_PROGRESS,
+         "self.artifact_receipts != canonical.artifact_receipts"),
         ("durable fence", APPLICATION_CLEANUP, '"terminal-cleanup-fence"'),
         (
             "quiescence",

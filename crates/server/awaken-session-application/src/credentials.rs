@@ -5,19 +5,17 @@
 
 use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_credential_contract::{
-    CredentialExecutionPolicy, CredentialSourceId, ModelExposurePolicy, PlaintextHolder,
+    CredentialExecutionPolicy, CredentialMaterialIngress, CredentialSourceId, ModelExposurePolicy,
+    PlaintextHolder, SessionCredentialAccessRequest, SessionCredentialSource,
 };
 use awaken_session_configuration_contract::resource::{
     ResolvedInput, ResolvedInputSource, ResolvedRepositoryCredential, ResolvedSessionResources,
 };
-use awaken_session_state_contract::PersistedSession;
+use awaken_session_state_contract::{PersistedSession, SessionAggregate};
 use awaken_session_types::RunError;
 use std::sync::Arc;
 
-use super::{
-    CredentialMaterialIngress, SessionCredentialAccessRequest, SessionCredentialSource,
-    SessionMutationError, SessionMutations, mutation::repository_failure,
-};
+use super::{SessionMutationError, SessionMutations, mutation::repository_failure};
 
 /// Failure from compiling or migrating exact Session credential pins.
 #[derive(Debug, thiserror::Error)]
@@ -281,6 +279,16 @@ pub(crate) fn repository_preparation(
     error: awaken_session_state_contract::SessionRepositoryError,
 ) -> SessionPreparationError {
     mutation_failure(repository_failure(error))
+}
+
+pub(crate) fn preflight_repository_credential_rotation(
+    root: &SessionAggregate,
+    input: ResolvedInput,
+) -> Result<(), SessionPreparationError> {
+    root.clone()
+        .resources()
+        .replace_desired_repository_credential(input)
+        .map_err(|_| SessionPreparationError::Conflict)
 }
 
 #[cfg(any(test, feature = "test-support"))]

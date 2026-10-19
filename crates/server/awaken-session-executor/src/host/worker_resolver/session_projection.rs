@@ -5,6 +5,7 @@ mod projection_synchronizer;
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod error_projection;
     use crate::host::tests::ManagedSessionRootFixture;
     use crate::host::worker_resolver::test_support::{
         AdoptionModel, ToggleBindingSink, committed_environment, deferred_environment,

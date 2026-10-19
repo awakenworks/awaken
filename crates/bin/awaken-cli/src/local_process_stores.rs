@@ -88,6 +88,7 @@ pub(super) async fn in_memory_split_coordinator() -> (ProcessStores, ControlServ
             control.secrets.clone(),
             control.credentials.clone(),
             stores.clock.clone(),
+            None,
         )
         .with_probe(Arc::new(ExtMcpProbe)),
     );
@@ -118,7 +119,7 @@ pub(super) async fn in_memory_split_coordinator() -> (ProcessStores, ControlServ
         stores,
         ControlServices {
             audit,
-            credentials,
+            credentials: credentials.application().credential_access(),
             repository_credentials,
             webhooks,
             capture_policy: awaken_data_governance_contract::CapturePolicySources {

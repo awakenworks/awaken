@@ -38,6 +38,13 @@ pub struct MaterialEntry {
     pub created: bool,
 }
 
+mod access;
+pub use access::{
+    CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialInput,
+    CredentialMaterialRetirementCommand, CredentialMaterialRotationCommand, CredentialPlaintext,
+    SessionCredentialAccessRequest, SessionCredentialSource,
+};
+
 mod attempt;
 pub use attempt::{
     AttemptCredentialBinding, AttemptCredentialBindingError, AttemptCredentialDelivery,

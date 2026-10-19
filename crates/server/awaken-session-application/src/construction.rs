@@ -6,6 +6,7 @@
 // @formal reason: in tests/construction.rs check refusal ordering and preserved capability identity.
 //! Consume process configuration and complete feature capabilities before sharing.
 
+use awaken_credential_contract::{CredentialMaterialIngress, SessionCredentialSource};
 use awaken_executable_agent_contract::ExecutableAgentProfileSource;
 use awaken_resource_contract::{
     FileCatalog, ResourcePurgeScheduler, ResourceReferenceIndex, ResourceRegistry,
@@ -17,9 +18,9 @@ use awaken_tool_contract::ToolConfigurationCompiler;
 use std::sync::Arc;
 
 use crate::{
-    CredentialMaterialIngress, McpAttachmentRealizer, SessionApplication,
-    SessionApplicationBuildError, SessionApplicationConfiguration, SessionCredentialSource,
-    SessionEnvironments, SessionExecutionAdmission, SessionExecutor, SessionPersistence,
+    McpAttachmentRealizer, SessionApplication, SessionApplicationBuildError,
+    SessionApplicationConfiguration, SessionEnvironments, SessionExecutionAdmission,
+    SessionExecutor, SessionPersistence,
 };
 
 /// Material ingress always includes the matching credential read capability.
@@ -30,9 +31,8 @@ use crate::{
 ///
 /// ```
 /// use std::sync::Arc;
-/// use awaken_session_application::{
-///     CredentialMaterialIngress, SessionCredentialAuthorities, SessionCredentialSource,
-/// };
+/// use awaken_credential_contract::{CredentialMaterialIngress, SessionCredentialSource};
+/// use awaken_session_application::{SessionCredentialAuthorities};
 /// fn read_only(source: Arc<dyn SessionCredentialSource>) -> SessionCredentialAuthorities {
 ///     SessionCredentialAuthorities::read_only(source)
 /// }
@@ -44,7 +44,8 @@ use crate::{
 ///
 /// ```compile_fail,E0599
 /// use std::sync::Arc;
-/// use awaken_session_application::{SessionCredentials, SessionCredentialSource};
+/// use awaken_credential_contract::{SessionCredentialSource};
+/// use awaken_session_application::{SessionCredentials};
 /// fn old_input(source: Arc<dyn SessionCredentialSource>) {
 ///     let _ = SessionCredentials::read_only(source);
 /// }
