@@ -525,7 +525,16 @@ async fn infer_with_retry_inner(
         // The adapter can drop its own transport future and RETURN an error.
         // The outer return observer cannot detect that abandonment. Latch the
         // explicit evidence before any awaited commit, retry or checkpoint work.
-        if !execution.permits_reentry() {
+        let reentry = awaken_runtime_contract::model_operation::ModelReentry::observed(
+            if outcome.is_err() {
+                awaken_runtime_contract::model_operation::ModelOperationPhase::TimedOut
+            } else {
+                awaken_runtime_contract::model_operation::ModelOperationPhase::Returned
+            },
+            effect_scope,
+            execution,
+        );
+        if !reentry.allows_request() {
             quiescence.mark_model_uncertain(effect_scope);
         }
         if let Some(journal) = journal.as_deref_mut() {
@@ -571,31 +580,20 @@ async fn infer_with_retry_inner(
                 permit.failure(retryable);
                 let verdict = policy.decide(
                     class,
-                    execution,
+                    reentry,
                     u32::try_from(attempt).unwrap_or(u32::MAX),
                     logical_deadline.remaining(),
                     crate::retry::jitter_draw(),
                 );
                 tracing::debug!(?class, ?verdict, "inference attempt failed");
-                let snapshot = sink.snapshot();
-                // A transport interruption may leave a confirmed partial. A
-                // terminal but invalid response does not: retaining its text or
-                // tool fragments would poison every retry with the protocol
-                // violation we are trying to recover from. Preserve only a
-                // prefix confirmed by an earlier attempt in that case.
-                let retain_attempt_output = err.retry_preserves_attempt_output();
-                let combined_text = if retain_attempt_output {
-                    format!("{prefix}{}", snapshot.text)
-                } else {
-                    prefix.clone()
-                };
-                let partial_tools = if retain_attempt_output {
-                    snapshot.tools
-                } else {
-                    Vec::new()
-                };
+                // The original output owner drops this attempt's text and
+                // tools unless both execution and response validity permit it.
+                let (combined_text, partial_tools) = sink.snapshot().for_retry(
+                    &prefix,
+                    reentry.allows_retained_output() && err.retry_preserves_attempt_output(),
+                );
 
-                if retryable {
+                if retryable && reentry.allows_retained_output() {
                     let completed = parse_completed(&partial_tools);
                     // Boundary flush (Phase 3): persist the whole in-flight partial
                     // so a crash during recovery resumes here. The runtime still
@@ -715,6 +713,18 @@ const STREAM_CONTINUATION_PROMPT: &str = "Your previous response was interrupted
 struct Snapshot {
     text: String,
     tools: Vec<PartialToolCall>,
+}
+
+impl Snapshot {
+    /// A failed unconfirmed/invalid response cannot become a continuation or
+    /// executable tool. Only an earlier confirmed prefix may survive it.
+    fn for_retry(self, prefix: &str, retain_attempt: bool) -> (String, Vec<PartialToolCall>) {
+        if retain_attempt {
+            (format!("{prefix}{}", self.text), self.tools)
+        } else {
+            (prefix.to_owned(), Vec::new())
+        }
+    }
 }
 
 /// Wraps the live `DeltaSink` to also capture the current attempt's streamed

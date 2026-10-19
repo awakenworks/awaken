@@ -728,6 +728,14 @@ pub enum awaken_runtime_contract::model_operation::ModelOperationPhase
 pub awaken_runtime_contract::model_operation::ModelOperationPhase::Entered
 pub awaken_runtime_contract::model_operation::ModelOperationPhase::Returned
 pub awaken_runtime_contract::model_operation::ModelOperationPhase::TimedOut
+pub enum awaken_runtime_contract::model_operation::ModelReentry
+pub awaken_runtime_contract::model_operation::ModelReentry::Blocked
+pub awaken_runtime_contract::model_operation::ModelReentry::FreshRequest
+pub awaken_runtime_contract::model_operation::ModelReentry::RetainedOutput
+impl awaken_runtime_contract::model_operation::ModelReentry
+pub const fn awaken_runtime_contract::model_operation::ModelReentry::allows_request(self) -> bool
+pub const fn awaken_runtime_contract::model_operation::ModelReentry::allows_retained_output(self) -> bool
+pub const fn awaken_runtime_contract::model_operation::ModelReentry::observed(awaken_runtime_contract::model_operation::ModelOperationPhase, awaken_runtime_contract::model_operation::ModelEffectScope, awaken_runtime_contract::model_operation::ModelExecutionEvidence) -> Self
 pub enum awaken_runtime_contract::model_operation::PreDispatchStage
 pub awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution
 pub awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection
@@ -765,6 +773,7 @@ pub awaken_runtime_contract::model_operation::ModelOperation::phase: awaken_runt
 impl awaken_runtime_contract::model_operation::ModelOperation
 pub fn awaken_runtime_contract::model_operation::ModelOperation::next(core::option::Option<&Self>, awaken_runtime_contract::ModelBinding) -> core::option::Option<Self>
 pub fn awaken_runtime_contract::model_operation::ModelOperation::permits_reentry(core::option::Option<&Self>, bool) -> bool
+pub const fn awaken_runtime_contract::model_operation::ModelOperation::reentry(&self) -> awaken_runtime_contract::model_operation::ModelReentry
 pub struct awaken_runtime_contract::model_operation::ModelOperationContext
 impl awaken_runtime_contract::model_operation::ModelOperationContext
 pub fn awaken_runtime_contract::model_operation::ModelOperationContext::binding(&self) -> &awaken_runtime_contract::ModelBinding
@@ -1155,7 +1164,7 @@ pub awaken_runtime_contract::resilience::RetryPolicy::max_retries: usize
 pub awaken_runtime_contract::resilience::RetryPolicy::overloaded_backoff_base_ms: u64
 pub awaken_runtime_contract::resilience::RetryPolicy::throttled_max_retries: usize
 impl awaken_runtime_contract::resilience::RetryPolicy
-pub fn awaken_runtime_contract::resilience::RetryPolicy::decide(&self, awaken_runtime_contract::resilience::FailureClass, awaken_runtime_contract::model_operation::ModelExecutionEvidence, u32, core::time::Duration, u64) -> awaken_runtime_contract::resilience::RetryVerdict
+pub fn awaken_runtime_contract::resilience::RetryPolicy::decide(&self, awaken_runtime_contract::resilience::FailureClass, awaken_runtime_contract::model_operation::ModelReentry, u32, core::time::Duration, u64) -> awaken_runtime_contract::resilience::RetryVerdict
 impl core::default::Default for awaken_runtime_contract::resilience::RetryPolicy
 pub fn awaken_runtime_contract::resilience::RetryPolicy::default() -> Self
 pub const awaken_runtime_contract::resilience::RETRY_ACTIVE_STATE: u8

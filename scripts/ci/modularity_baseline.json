@@ -305,7 +305,7 @@
     "awaken-runtime::engine/dispatch.rs::recover_tool_batch": 303,
     "awaken-runtime::engine/dispatch.rs::run_concurrent_tool_calls": 326,
     "awaken-runtime::engine/dispatch.rs::run_tool_calls": 331,
-    "awaken-runtime::engine/inference.rs::infer_with_retry_inner": 297,
+    "awaken-runtime::engine/inference.rs::infer_with_retry_inner": 295,
     "awaken-runtime::engine/inference.rs::infer_with_retry_observed": 152,
     "awaken-runtime::engine/resume.rs::drive_resumed": 324,
     "awaken-runtime::engine/run_loop.rs::drive": 509,

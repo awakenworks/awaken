@@ -5,6 +5,9 @@
 //! Run-scoped evidence for actual model executor invocations, not usage or a
 //! provider terminal receipt. The existing ThreadCommit log owns persistence.
 
+mod reentry;
+pub use reentry::{ModelEffectScope, ModelReentry};
+
 use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
@@ -371,31 +374,20 @@ pub struct ModelOperation {
     pub effect_scope: ModelEffectScope,
 }
 
-/// Independent of provider termination and of the business result. A
-/// ResponseOnly adapter owns its response consumer, sends no provider-hosted
-/// actions, and cannot retain tool/state authority after that consumer closes.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelEffectScope {
-    #[default]
-    Opaque,
-    ResponseOnly,
-}
-
-impl ModelEffectScope {
-    pub const fn is_opaque(&self) -> bool {
-        matches!(self, Self::Opaque)
-    }
-}
-
 impl ModelOperation {
-    /// A retained partial requires positive predecessor evidence. Absence is
-    /// admissible only for fresh inference, never as a historical stop proof.
+    /// Retained output requires positive execution evidence; a qualified
+    /// returned response-only observation permits only fresh model inference.
     #[must_use]
     pub fn permits_reentry(previous: Option<&Self>, recovering_checkpoint: bool) -> bool {
         previous.map_or(!recovering_checkpoint, |operation| {
-            operation.execution.permits_reentry()
+            let reentry = operation.reentry();
+            reentry.allows_request() && (!recovering_checkpoint || reentry.allows_retained_output())
         })
+    }
+
+    #[must_use]
+    pub const fn reentry(&self) -> ModelReentry {
+        ModelReentry::observed(self.phase, self.effect_scope, self.execution)
     }
 
     /// Sequence allocation never wraps and does not infer quiescence from any
@@ -739,14 +731,21 @@ fn model_execution_reentry_requires_positive_evidence() {
     let selector: u8 = kani::any();
     let evidence = any_evidence(selector);
     assert_eq!(evidence.permits_reentry(), selector % 3 != 0);
-    // R3 missing journal + retained checkpoint => deny; R4 neither => fresh
-    // entry allowed. Cross R1..R4 with each local phase: phase cannot authorize.
-    // This exhausts the production decision, not persistence or adapter truth.
+    // R3 absent journal + checkpoint => deny; R4 neither => fresh entry.
+    // R5 Unknown + original ResponseOnly + actual Returned => a fresh request
+    // only; retained checkpoint remains denied. Cross all phases/scopes and
+    // checkpoint presence through the production kernel. This does not prove
+    // adapter honesty, async durability or provider completion.
     let present: bool = kani::any();
     let recovering_checkpoint: bool = kani::any();
     let phase_selector: u8 = kani::any();
+    let response_only: bool = kani::any();
     let operation = ModelOperation {
-        effect_scope: Default::default(),
+        effect_scope: if response_only {
+            ModelEffectScope::ResponseOnly
+        } else {
+            ModelEffectScope::Opaque
+        },
         ordinal: NonZeroU64::MIN,
         binding: ModelBinding::proof_representative(false),
         phase: match phase_selector % 3 {
@@ -760,6 +759,7 @@ fn model_execution_reentry_requires_positive_evidence() {
         ModelOperation::permits_reentry(present.then_some(&operation), recovering_checkpoint),
         if present {
             selector % 3 != 0
+                || (response_only && phase_selector % 3 == 1 && !recovering_checkpoint)
         } else {
             !recovering_checkpoint
         }
