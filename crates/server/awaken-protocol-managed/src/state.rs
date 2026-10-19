@@ -36,7 +36,6 @@ mod application;
 pub(crate) use application::agent_mcp_candidate;
 mod constants;
 mod deployment_sessions;
-mod environment;
 mod error;
 mod events;
 pub(crate) use events::{

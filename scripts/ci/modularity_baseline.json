@@ -11,8 +11,8 @@
       "reason": "gather its impls into one module or split it by responsibility when it next changes"
     },
     "awaken-protocol-managed::ManagedState": {
-      "files": 29,
-      "methods": 152,
+      "files": 28,
+      "methods": 149,
       "reason": "W13 step 2 and W20: event projection and orchestration leave; the adapter keeps its wire cache"
     },
     "awaken-runtime::Runtime": {
@@ -21,8 +21,8 @@
       "reason": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock"
     },
     "awaken-session-application::SessionApplication": {
-      "files": 23,
-      "methods": 243,
+      "files": 22,
+      "methods": 234,
       "reason": "W21: one application service per use case, composed by a facade"
     },
     "awaken-session-executor::ExecutorComponents": {
@@ -61,7 +61,7 @@
     "awaken-ext-memory": 1,
     "awaken-local-process": 1,
     "awaken-protocol-acp": 2,
-    "awaken-protocol-managed": 34,
+    "awaken-protocol-managed": 33,
     "awaken-run-executor-a2a": 1,
     "awaken-run-executor-acp": 6,
     "awaken-dispatch": 6,
@@ -280,7 +280,7 @@
     "awaken-model-catalog::lib.rs::provider_driver_descriptors": 170,
     "awaken-model-catalog::lib.rs::reconcile_brokered_projection": 154,
     "awaken-protocol-a2a::router.rs::jsonrpc": 370,
-    "awaken-protocol-managed::routes/deployments/launcher.rs::launch": 183,
+    "awaken-protocol-managed::routes/deployments/launcher.rs::launch": 179,
     "awaken-protocol-managed::routes/sessions/stream.rs::live_sse_stream": 209,
     "awaken-protocol-managed::routes/vaults.rs::create_credential": 181,
     "awaken-protocol-managed::routes/vaults.rs::update_credential": 217,

@@ -560,3 +560,51 @@ async fn compiler_precedes_effects(
     assert_eq!(after.tools, before.tools);
     assert_eq!(runtime.preparations.load(Ordering::SeqCst), effects_before);
 }
+
+#[tokio::test]
+async fn session_observation_keeps_an_absent_runtime_observer_without_effects() {
+    // L2a cause/effect rule: an admitted Session uses the existing Runtime
+    // fixture's neutral None observer. The narrow role must return None without
+    // preparing execution, dispatching Work or mutating the same durable root.
+    // RecordingEnvironmentSource.get remains unreachable: observation must not
+    // reopen that catalog. L1 Some/actual HTTP delivery stays in streaming.rs;
+    // L2b typed rejection is exercised with the real Coordinator Runtime.
+    let store = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let runtime = Arc::new(creation::RecordingCreateRuntime::default());
+    let environments = Arc::new(RecordingEnvironmentSource::default());
+    let application =
+        application_with_runtime(runtime.clone(), store.clone(), environments.clone());
+    let created = application
+        .create_session(creation::creation_command("absent-observer"))
+        .await
+        .unwrap();
+    let preparations = runtime.preparations.load(Ordering::SeqCst);
+    let dispatches = environments.dispatch_calls.load(Ordering::SeqCst);
+    let observed = crate::SessionObservation::subscribe_session_thread_live(
+        &application,
+        &created.session_id,
+        created.session_id.as_str(),
+    )
+    .await
+    .unwrap();
+    assert!(observed.is_none(), "L2a original neutral result");
+    assert_eq!(
+        runtime.preparations.load(Ordering::SeqCst),
+        preparations,
+        "L2a"
+    );
+    assert_eq!(
+        environments.dispatch_calls.load(Ordering::SeqCst),
+        dispatches,
+        "L2a"
+    );
+    assert_eq!(
+        store.get(&created.session_id).await.unwrap(),
+        created,
+        "L2a exact root"
+    );
+}

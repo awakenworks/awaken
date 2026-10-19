@@ -238,10 +238,11 @@ impl SessionApplication {
             .frozen_baseline()
             .ok_or_else(|| RunError::unavailable("Session creation has not completed"))?;
         let root = self.coordination_root_profile(owner_scope, session)?;
-        let source = self
-            .config_source
-            .as_ref()
-            .ok_or_else(|| RunError::unavailable("Agent publication source is unavailable"))?;
+        if !self.queries.has_agent_profile_source() {
+            return Err(RunError::unavailable(
+                "Agent publication source is unavailable",
+            ));
+        }
         let mut roster = Vec::with_capacity(baseline.delegate_ids.len());
         for agent_id in &baseline.delegate_ids {
             let revision = if agent_id == &baseline.agent_id {
@@ -267,8 +268,9 @@ impl SessionApplication {
                         "roster Agent `{agent_id}` revision {revision} is unavailable"
                     ))
                 })?;
-            let snapshot = source
-                .executable_snapshot_at_revision_in(owner_scope, agent_id, revision)
+            let snapshot = self
+                .queries
+                .executable_snapshot_at_revision(owner_scope, agent_id, revision)
                 .ok_or_else(|| {
                     RunError::unavailable(format!(
                         "roster Agent `{agent_id}` executable revision {revision} is unavailable"

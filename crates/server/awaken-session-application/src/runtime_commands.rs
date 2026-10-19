@@ -12,7 +12,6 @@ use awaken_credential_contract::{CredentialMaterialIngressCommand, CredentialMat
 use awaken_time::WallClockExt as _;
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_agent_contract::agent::message::Message;
 use awaken_credential_contract::MaterialEntry;
 use awaken_executable_agent_contract::ExecutableAgentSessionProfile;
 use awaken_session_application_contract::DelegatedRun;
@@ -269,30 +268,6 @@ impl SessionApplication {
             )));
         }
         Ok(())
-    }
-
-    /// Read the committed transcript after enforcing durable Session ownership.
-    /// Protocol projections are deliberately bypassed: the Session aggregate and
-    /// Runtime commit log are the only authorities involved.
-    pub async fn session_transcript(
-        &self,
-        workspace_id: &str,
-        session_id: &str,
-    ) -> Result<Vec<Message>, RunError> {
-        self.queries
-            .read_session_projection(session_id, Some(workspace_id))
-            .await
-            .map_err(|error| match error {
-                crate::SessionProjectionRecoveryError::NotFound => {
-                    RunError::bad_request("Session was not found")
-                }
-                crate::SessionProjectionRecoveryError::Rejected(error) => error,
-                crate::SessionProjectionRecoveryError::Unavailable(message) => {
-                    RunError::unavailable(message)
-                }
-            })?
-            .ok_or_else(|| RunError::bad_request("Session was not found"))?;
-        self.committed_messages(session_id).await
     }
 
     /// Observe one Session's frozen execution selection and committed primary
@@ -757,12 +732,6 @@ impl SessionApplication {
         thread_reads.owns_thread(thread).await
     }
 
-    pub async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, RunError> {
-        let thread_reads = self.runtime().thread_reads();
-
-        thread_reads.committed_messages(thread).await
-    }
-
     /// Read cumulative accounting for one logical Thread through its parent
     /// Session partition. This is the same neutral Runtime authority used by
     /// Session totals; the application does not cache or re-aggregate it.
@@ -775,24 +744,6 @@ impl SessionApplication {
 
         budget_runtime
             .session_thread_usage(session_id, thread_id)
-            .await
-    }
-
-    /// Open the Runtime's existing Thread-scoped live observer. The application
-    /// adds no buffer or subscription registry; it only preserves the
-    /// server/runtime boundary for protocol adapters.
-    pub async fn subscribe_session_thread_live(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<
-        Option<Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>>,
-        RunError,
-    > {
-        let coordination_runtime = self.runtime().coordination();
-
-        coordination_runtime
-            .subscribe_session_thread_live(session_id, thread_id)
             .await
     }
 

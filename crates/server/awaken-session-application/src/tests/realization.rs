@@ -192,6 +192,8 @@ fn terminal_prepare_commands(
     }
 }
 
+// Query selection: include_pending_resources=true retains the exact desired
+// pair across the pending/absent and rollback rows below; it grants no effects.
 #[tokio::test]
 async fn terminal_assignment_preserves_the_complete_retained_resource_transition() {
     // Cause/effect table: C1 legacy empty/File or committed File/Skill/empty;
@@ -783,6 +785,7 @@ async fn skills_only_active_generation_is_preserved_in_the_frozen_projection() {
         awaken_session_state_contract::SessionResourceState::from_active(resources.clone());
 
     let projection = application
+        .queries()
         .frozen_session_projection("workspace".into(), &session, false)
         .await
         .expect("S1 canonical frozen projection");
@@ -808,6 +811,8 @@ async fn rolled_back_resource_generation_recovers_only_the_installed_pair() {
     // Constraint/Invariant: desired-generation watermark never substitutes for
     // the active installed revision/manifest pair. Decision rule: execute G1 and
     // require both frozen and Runtime projections to recover pair (1, manifest 1).
+    // Query selection remains desired=true: absent pending after rollback must
+    // fall back to the installed pair, independently of context materialization.
     let runtime = Arc::new(RecordingResourceRuntime::default());
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
         sqlite_session_repository("session repository").await;
@@ -836,6 +841,7 @@ async fn rolled_back_resource_generation_recovers_only_the_installed_pair() {
     assert_eq!(session.resources.revision, 2, "G1/E1");
 
     let projection = app
+        .queries()
         .frozen_session_projection("workspace".into(), &session, true)
         .await
         .expect("G1 frozen active projection");
@@ -5347,6 +5353,11 @@ pub(super) fn publication_fixture(
     (session, lease, generation_ref.unwrap())
 }
 
+// Query-selection causes for A4: include_pending_resources=false retains active;
+// materialize_request_context=true still refreshes request context. F4/F7 in
+// activation_preserves_completed_receipts_during_same_generation_renewal cover
+// the distinct pending-resource case; A4 below tests active-only convergence
+// under continuous renewal, without introducing another selection oracle.
 #[tokio::test]
 async fn publication_acknowledgement_follows_the_renewal_decision_table() {
     // Cause/effect graph: C1 acknowledgement names the exact active
@@ -5538,8 +5549,8 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
     let queries = application.queries();
     let owner = queries.owner(&SessionId::from(id)).await.unwrap();
     let mut directive = awaken_session_realization_contract::SessionRealizationDirective {
-        projection: application
-            .active_frozen_session_projection(owner.clone(), &initial, true)
+        projection: queries
+            .frozen_runtime_projection(owner.clone(), &initial, true, false)
             .await
             .unwrap(),
         authority: awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(

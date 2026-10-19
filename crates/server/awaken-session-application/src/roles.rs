@@ -426,7 +426,7 @@ pub trait SessionResourceCommands: Send + Sync {
 /// usage read.
 #[async_trait]
 pub trait SessionObservation: Send + Sync {
-    /// See [`SessionApplication::subscribe_session_thread_live`].
+    /// Adapt the selected [`awaken_session_execution_contract::CoordinationRuntime::subscribe_session_thread_live`] result unchanged.
     async fn subscribe_session_thread_live(
         &self,
         session_id: &SessionId,
@@ -453,7 +453,7 @@ pub trait SessionObservation: Send + Sync {
 /// Consumer: a protocol's Deployment admission.
 #[async_trait]
 pub trait DeploymentSessionEnvironment: Send + Sync {
-    /// See [`SessionApplication::deployment_environment`].
+    /// Read the selected [`awaken_executable_environment_contract::SessionEnvironmentProjectionSource::get`] result unchanged.
     async fn deployment_environment(
         &self,
         environment_id: &str,
@@ -462,7 +462,7 @@ pub trait DeploymentSessionEnvironment: Send + Sync {
     /// Read the canonical [`crate::SessionQueries::agent_unavailable`] result.
     fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool;
 
-    /// See [`SessionApplication::deployment_unavailable_delegate`].
+    /// Read the selected [`awaken_executable_agent_contract::ExecutableAgentProfileSource::unavailable_delegate_in`] result unchanged.
     fn deployment_unavailable_delegate(&self, workspace_id: &str, agent_id: &str)
     -> Option<String>;
 }
@@ -832,7 +832,11 @@ impl SessionObservation for SessionApplication {
         session_id: &SessionId,
         thread_id: &str,
     ) -> Result<Option<Box<dyn SessionThreadLiveSubscription>>, RunError> {
-        SessionApplication::subscribe_session_thread_live(self, session_id, thread_id).await
+        let coordination_runtime = self.runtime().coordination();
+
+        coordination_runtime
+            .subscribe_session_thread_live(session_id, thread_id)
+            .await
     }
 
     async fn session_execution_observation(
@@ -858,7 +862,7 @@ impl DeploymentSessionEnvironment for SessionApplication {
         &self,
         environment_id: &str,
     ) -> Result<Option<EnvItem>, ExecutableEnvironmentRegistrationError> {
-        SessionApplication::deployment_environment(self, environment_id).await
+        self.environments.projection.get(environment_id).await
     }
 
     fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
@@ -870,7 +874,7 @@ impl DeploymentSessionEnvironment for SessionApplication {
         workspace_id: &str,
         agent_id: &str,
     ) -> Option<String> {
-        SessionApplication::deployment_unavailable_delegate(self, workspace_id, agent_id)
+        self.queries.unavailable_delegate(workspace_id, agent_id)
     }
 }
 

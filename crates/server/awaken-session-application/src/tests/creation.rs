@@ -2229,6 +2229,7 @@ async fn assert_profiled_publication_revision_rules(
     // The first assertion proves the sole profile source supplies the complete
     // immutable publication; P2 below covers the missing-snapshot Worker rule.
     let historical_projection = available
+        .queries()
         .frozen_session_projection("workspace".into(), &historical, true)
         .await
         .expect("exact historical projection");
@@ -2349,6 +2350,7 @@ async fn assert_profiled_override_projection(
         .await
         .expect("O1 admitted override");
     let override_projection = override_application
+        .queries()
         .frozen_session_projection("workspace".into(), &overridden, true)
         .await
         .expect("O1 frozen projection");
@@ -2926,3 +2928,5 @@ impl awaken_resource_contract::MemoryInvalidator for RecordingMemoryInvalidator 
             .push((store.into(), path.into()));
     }
 }
+
+mod selected_profile_port;

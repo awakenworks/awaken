@@ -31,7 +31,7 @@ source Thread committed messages
 TranscriptSliceSpec ---------> target SessionBaseline
                                       |
                                       v
-SessionApplication projection --materialize--> FrozenSessionProjection.request_context
+SessionQueries projection --materialize---> FrozenSessionProjection.request_context
                                                      |
                                                      v
 RuntimeRunContext.request_context + target committed Thread + current input
@@ -62,6 +62,14 @@ Concurrent source appends cannot change the stored version or selected range.
 Recovery reads committed Thread truth directly through the trusted persisted
 reference; a source Session projection may be archived or deleted without
 changing its retained committed transcript.
+The existing Queries constructor borrows the already-selected Session executor
+only during composition. It retains that executor's original raw Thread read
+role and canonical consistent-prefix projection, never the execution object.
+Frozen prefix reconstruction uses the raw role; protocol evidence continues
+through the validated prefix adapter. Neither is a fallback for the other.
+Current scoped transcript queries still verify the current target Session's
+owner before raw readback; that gate is not reapplied to a historical prefix.
+
 
 ## Cause/Effect Coverage
 
