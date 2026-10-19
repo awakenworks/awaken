@@ -651,7 +651,7 @@ mod tests {
     use awaken_agent_config::ModelSelection;
     use awaken_protocol_managed::types::agent::{AgentUpdateParams, ModelInput};
     use awaken_protocol_managed::types::{
-        ModelConfigParams, ModelEffort, ModelEffortInput, ModelInferenceGeo, ModelSpeed,
+        ModelConfigParams, ModelEffort, ModelEffortInput, ModelInferenceGeo,
     };
     use awaken_runtime_contract::agent_bindings::{
         InferenceGeography, InferenceOptions, InferenceSpeed, ReasoningEffort, ToolExecutionPolicy,
@@ -1243,12 +1243,12 @@ mod tests {
             let mut params = create_params("controlled");
             params.model = ModelInput::Config(ModelConfigParams {
                 id: "claude-opus-4-8".into(),
-                speed: Some(ModelSpeed::Fast),
+                speed: Some(InferenceSpeed::Fast),
                 effort: Some(ModelEffortInput::Tagged(ModelEffort::Xhigh)),
                 inference_geo: Some(ModelInferenceGeo::Us),
             });
             let created = repository.create("workspace-a", params).await.unwrap();
-            assert_eq!(created.model.speed, Some(ModelSpeed::Fast));
+            assert_eq!(created.model.speed, Some(InferenceSpeed::Fast));
             assert_eq!(created.model.effort, Some(ModelEffort::Xhigh));
             let installed = catalog
                 .current("workspace-a", &created.id)
@@ -1271,7 +1271,7 @@ mod tests {
             awaken_time::system_clock(),
         );
         let restored = repository.retrieve("workspace-a", &id, None).await.unwrap();
-        assert_eq!(restored.model.speed, Some(ModelSpeed::Fast));
+        assert_eq!(restored.model.speed, Some(InferenceSpeed::Fast));
         assert_eq!(restored.model.effort, Some(ModelEffort::Xhigh));
         assert_eq!(restored.model.inference_geo, Some(ModelInferenceGeo::Us));
         plane

@@ -23,7 +23,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_session_repository_contract::{LifecycleOutbox, SessionRepository};
+use awaken_session_repository_contract::{
+    LifecycleOutbox, SessionRepository, SessionRepositoryReads,
+};
 #[cfg(test)]
 use awaken_session_state_contract::SessionExecutionState;
 use awaken_session_types::SessionRevision;

@@ -1598,7 +1598,7 @@ async fn closed_interval_usage_keeps_its_committed_value_when_clock_and_activity
             );
         }
         if active {
-            let root = awaken_session_repository_contract::SessionRepository::get(
+            let root = awaken_session_repository_contract::SessionRepositoryReads::get(
                 repository.as_ref(),
                 &session_id,
             )

@@ -1312,11 +1312,7 @@ impl SessionApplication {
             loop {
                 let scan = self
                     .session_repository()
-                    .scan(
-                        awaken_session_state_contract::SessionScanQuery::Reconcilable {
-                            after: cursor.as_ref(),
-                        },
-                    )
+                    .reconciliation_scan(cursor.as_ref())
                     .await
                     .map_err(repository_control)?;
                 let next_cursor = scan.next_cursor;

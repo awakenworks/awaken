@@ -261,6 +261,7 @@ def selftest() -> None:
         {"resource_contract_source": "fn build_resource_component() {}"},
         {"runtime_host_source": "ResourcePlane"},
         {"control_source": "Arc<dyn SessionRepository>"},
+        {"control_source": "Arc<dyn SessionRepositoryReads>"},
         {"worker_source": "pub struct WorkerNodeBuilder; fn build_worker_component() {}"},
     ):
         inputs = dict(

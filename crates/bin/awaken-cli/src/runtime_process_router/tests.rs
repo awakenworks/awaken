@@ -66,10 +66,7 @@ async fn assert_rejected_before_assembly(
         .shutdown(Duration::ZERO)
         .await
         .expect("immediate failed-startup drain");
-    let page = sessions
-        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-        .await
-        .unwrap();
+    let page = sessions.reconciliation_scan(None).await.unwrap();
     assert!(page.sessions.is_empty(), "no Session writes");
     assert!(page.quarantined.is_empty(), "no quarantined partial root");
     assert!(page.next_cursor.is_none(), "the empty result is complete");

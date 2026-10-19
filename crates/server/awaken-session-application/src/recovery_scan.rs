@@ -4,14 +4,14 @@
 // @formal reason: later failures discard the prefix, while downstream root CAS and effect fencing retain
 // @formal reason: their authority. Adjacent page-failure/cancellation tests and ADR-0065 are executable
 // @formal reason: evidence for retention and completion boundaries, not a database snapshot proof.
-//! Read-only reduction of the one canonical recovery scan before effects.
+//! Projection-only reduction of canonical recovery maintenance before effects.
 
 use std::collections::BTreeMap;
 use std::future::Future;
 
 use awaken_session_repository_contract::SessionRepository;
 use {
-    awaken_session_state_contract::{SessionRepositoryError, SessionScan, SessionScanQuery},
+    awaken_session_state_contract::{SessionRepositoryError, SessionScan},
     awaken_session_types::SessionRecoveryQuarantine,
 };
 
@@ -37,9 +37,7 @@ where
     let mut cursor = None;
     loop {
         let page = repository
-            .scan(SessionScanQuery::Reconcilable {
-                after: cursor.as_ref(),
-            })
+            .reconciliation_scan(cursor.as_ref())
             .await
             .map_err(&map_repository_error)?;
         let next_cursor = page.next_cursor.clone();

@@ -10,7 +10,7 @@ use awaken_executable_agent_contract::{
     ExecutableAgentProfileSource, ExecutableAgentSessionProfile,
 };
 use awaken_session_configuration_contract::AgentCapabilities;
-use awaken_session_repository_contract::SessionRepository;
+use awaken_session_repository_contract::SessionRepositoryReads;
 use awaken_session_execution_contract::{CapabilityRuntime, SessionProjectionSource};
 use awaken_session_state_contract::{
     DeletedSessionEventAdmissions, PersistedSession, SessionRepositoryError, SessionScan,
@@ -26,7 +26,7 @@ mod projection_evidence;
 /// Read use cases with their own constructor-injected ports. No execution,
 /// realization or mutation service is reachable through this service.
 pub struct SessionQueries {
-    repository: Arc<dyn SessionRepository>,
+    repository: Arc<dyn SessionRepositoryReads>,
     projection: Arc<dyn SessionProjectionSource>,
     capabilities: Arc<dyn CapabilityRuntime>,
     profiles: Option<Arc<dyn ExecutableAgentProfileSource>>,
@@ -56,7 +56,7 @@ impl SessionQueries {
 
     #[must_use]
     pub fn new(
-        repository: Arc<dyn SessionRepository>,
+        repository: Arc<dyn SessionRepositoryReads>,
         projection: Arc<dyn SessionProjectionSource>,
         capabilities: Arc<dyn CapabilityRuntime>,
         profiles: Option<Arc<dyn ExecutableAgentProfileSource>>,
@@ -82,7 +82,7 @@ impl SessionQueries {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn replace_repository(&mut self, repository: Arc<dyn SessionRepository>) {
+    pub(crate) fn replace_repository(&mut self, repository: Arc<dyn SessionRepositoryReads>) {
         self.repository = repository;
     }
 

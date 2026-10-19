@@ -31,11 +31,6 @@ impl ApplicationError {
     }
 
     #[must_use]
-    pub fn bad_request(message: impl Into<String>) -> Self {
-        Self::invalid(message)
-    }
-
-    #[must_use]
     pub fn conflict(message: impl Into<String>) -> Self {
         Self {
             kind: ApplicationErrorKind::Conflict,

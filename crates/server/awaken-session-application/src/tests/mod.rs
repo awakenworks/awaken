@@ -33,6 +33,7 @@ use {
 };
 
 use super::*;
+use awaken_session_repository_contract::SessionRepositoryReads;
 
 /// Execute the canonical complete-projection effects for a Session Application
 /// test double. Domain mode decisions come from `SessionProjectionInstallMode`;
@@ -3988,6 +3989,87 @@ impl FaultingSessionRepository {
 }
 
 #[async_trait::async_trait]
+impl awaken_session_repository_contract::SessionRepositoryReads for FaultingSessionRepository {
+    async fn get(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<PersistedSession, awaken_session_state_contract::SessionRepositoryError> {
+        self.observed_gets
+            .lock()
+            .unwrap()
+            .push(session_id.to_string());
+        self.get_entered.notify_one();
+        let gate = self
+            .paused_gets
+            .lock()
+            .unwrap()
+            .get(session_id.as_str())
+            .cloned();
+        if let Some(gate) = gate {
+            gate.acquire()
+                .await
+                .expect("test read gate remains open")
+                .forget();
+        }
+        if self
+            .failed_gets
+            .lock()
+            .unwrap()
+            .contains(session_id.as_str())
+        {
+            return Err(
+                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                    "injected Session read failure".into(),
+                ),
+            );
+        }
+        if let Some(session) = self.get_override_once.lock().unwrap().take() {
+            return Ok(session);
+        }
+        if self.get_not_found_once.swap(false, Ordering::SeqCst) {
+            return Err(awaken_session_state_contract::SessionRepositoryError::NotFound);
+        }
+        let result = self.inner.get(session_id).await;
+        self.completed_gets
+            .lock()
+            .unwrap()
+            .push(session_id.to_string());
+        self.get_entered.notify_one();
+        result
+    }
+
+    async fn owner(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<String, awaken_session_state_contract::SessionRepositoryError> {
+        self.inner.owner(session_id).await
+    }
+
+    async fn scan(
+        &self,
+        query: awaken_session_state_contract::SessionScanQuery<'_>,
+    ) -> Result<
+        awaken_session_state_contract::SessionScan,
+        awaken_session_state_contract::SessionRepositoryError,
+    > {
+        self.inner.scan(query).await
+    }
+
+    async fn deleted_event_admissions(
+        &self,
+        owner_scope: &str,
+        session_id: &SessionId,
+    ) -> Result<
+        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
+        awaken_session_state_contract::SessionRepositoryError,
+    > {
+        self.inner
+            .deleted_event_admissions(owner_scope, session_id)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
 impl SessionRepository for FaultingSessionRepository {
     async fn create(
         &self,
@@ -4203,92 +4285,6 @@ impl SessionRepository for FaultingSessionRepository {
         result
     }
 
-    async fn get(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<PersistedSession, awaken_session_state_contract::SessionRepositoryError> {
-        self.observed_gets
-            .lock()
-            .unwrap()
-            .push(session_id.to_string());
-        self.get_entered.notify_one();
-        let gate = self
-            .paused_gets
-            .lock()
-            .unwrap()
-            .get(session_id.as_str())
-            .cloned();
-        if let Some(gate) = gate {
-            gate.acquire()
-                .await
-                .expect("test read gate remains open")
-                .forget();
-        }
-        if self
-            .failed_gets
-            .lock()
-            .unwrap()
-            .contains(session_id.as_str())
-        {
-            return Err(
-                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
-                    "injected Session read failure".into(),
-                ),
-            );
-        }
-        if let Some(session) = self.get_override_once.lock().unwrap().take() {
-            return Ok(session);
-        }
-        if self.get_not_found_once.swap(false, Ordering::SeqCst) {
-            return Err(awaken_session_state_contract::SessionRepositoryError::NotFound);
-        }
-        let result = self.inner.get(session_id).await;
-        self.completed_gets
-            .lock()
-            .unwrap()
-            .push(session_id.to_string());
-        self.get_entered.notify_one();
-        result
-    }
-
-    async fn scan(
-        &self,
-        query: awaken_session_state_contract::SessionScanQuery<'_>,
-    ) -> Result<
-        awaken_session_state_contract::SessionScan,
-        awaken_session_state_contract::SessionRepositoryError,
-    > {
-        let awaken_session_state_contract::SessionScanQuery::Reconcilable { after } = query else {
-            return self.inner.scan(query).await;
-        };
-        let call = self.recovery_scan_count.fetch_add(1, Ordering::SeqCst) + 1;
-        if self.hold_recovery_scan_on_call.load(Ordering::SeqCst) == call {
-            self.recovery_scan_entered.notify_one();
-            self.recovery_scan_release.notified().await;
-        }
-        if self.fail_recovery_scan_once.swap(false, Ordering::SeqCst)
-            || self.fail_recovery_scan_on_call.load(Ordering::SeqCst) == call
-        {
-            return Err(
-                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
-                    "injected recovery scan outage".into(),
-                ),
-            );
-        }
-        let mut scan = self.inner.scan(query).await?;
-        if self.quarantine_recovery_scan_on_call.load(Ordering::SeqCst) == call {
-            scan.quarantined
-                .push(awaken_session_types::SessionRecoveryQuarantine {
-                    session_id: "injected-quarantine".into(),
-                    reason: "injected recovery quarantine".into(),
-                });
-        }
-        if self.stall_recovery_cursor_on_call.load(Ordering::SeqCst) == call {
-            scan.next_cursor = after.cloned();
-        }
-        Ok(scan)
-    }
-
     async fn count_environment_phase(
         &self,
         phase: awaken_session_state_contract::SessionEnvironmentPhase,
@@ -4316,19 +4312,6 @@ impl SessionRepository for FaultingSessionRepository {
         self.inner.count_environment_phase(phase).await
     }
 
-    async fn deleted_event_admissions(
-        &self,
-        owner_scope: &str,
-        session_id: &SessionId,
-    ) -> Result<
-        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
-        awaken_session_state_contract::SessionRepositoryError,
-    > {
-        self.inner
-            .deleted_event_admissions(owner_scope, session_id)
-            .await
-    }
-
     async fn idempotency_receipt(
         &self,
         session_id: &SessionId,
@@ -4350,11 +4333,39 @@ impl SessionRepository for FaultingSessionRepository {
         self.inner.idempotency_receipt(session_id, key).await
     }
 
-    async fn owner(
+    async fn reconciliation_scan(
         &self,
-        session_id: &SessionId,
-    ) -> Result<String, awaken_session_state_contract::SessionRepositoryError> {
-        self.inner.owner(session_id).await
+        after: Option<&awaken_session_state_contract::SessionScanCursor>,
+    ) -> Result<
+        awaken_session_state_contract::SessionScan,
+        awaken_session_state_contract::SessionRepositoryError,
+    > {
+        let call = self.recovery_scan_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.hold_recovery_scan_on_call.load(Ordering::SeqCst) == call {
+            self.recovery_scan_entered.notify_one();
+            self.recovery_scan_release.notified().await;
+        }
+        if self.fail_recovery_scan_once.swap(false, Ordering::SeqCst)
+            || self.fail_recovery_scan_on_call.load(Ordering::SeqCst) == call
+        {
+            return Err(
+                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                    "injected recovery scan outage".into(),
+                ),
+            );
+        }
+        let mut scan = self.inner.reconciliation_scan(after).await?;
+        if self.quarantine_recovery_scan_on_call.load(Ordering::SeqCst) == call {
+            scan.quarantined
+                .push(awaken_session_types::SessionRecoveryQuarantine {
+                    session_id: "injected-quarantine".into(),
+                    reason: "injected recovery quarantine".into(),
+                });
+        }
+        if self.stall_recovery_cursor_on_call.load(Ordering::SeqCst) == call {
+            scan.next_cursor = after.cloned();
+        }
+        Ok(scan)
     }
 }
 

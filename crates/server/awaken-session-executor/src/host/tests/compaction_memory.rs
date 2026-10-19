@@ -438,7 +438,7 @@ impl LlmExecutor for MemLoopModel {
 
 #[tokio::test]
 async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
-    use awaken_session_repository_contract::SessionRepository as _;
+    use awaken_session_repository_contract::SessionRepositoryReads;
     // Test design. Causes: C1 Thread A extracts a durable memory into a shared
     // store; C2 fresh Thread B binds that store and runs. Effects: E1 C1 persists
     // the preference; E2 C2 recalls and uses it. Constraint/Invariant: transfer is

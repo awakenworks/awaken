@@ -12,6 +12,7 @@ use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::event::{AgentEvent, Fact, Transcoder};
+use awaken_agent_contract::page::CursorParams;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use axum::Router;
 use axum::body::Body;
@@ -26,8 +27,8 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use awaken_api_contract::CursorPage;
 use awaken_session_application_contract::{
-    CursorParams, EventForwardingSink, OwnerScopedRunApplication, Pending, RunApplication,
-    RunApplicationError, RunMode, RunResume, paginate_history,
+    EventForwardingSink, OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError,
+    RunMode, RunResume, paginate_history,
 };
 use awaken_tenancy::{ResolvedResourceId, WorkspaceScope};
 

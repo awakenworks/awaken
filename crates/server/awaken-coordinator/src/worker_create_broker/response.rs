@@ -2,8 +2,8 @@
 // @formal reason: The existing broker sends the same exact bytes checked before capture; this is no cleanup receipt.
 //! The exact serialized response crosses the original private HTTP route.
 use awaken_container_contract::K8sCreateResponse;
-use awaken_dispatch::ApplicationError;
 use awaken_sandbox_kubernetes::{CreateReplyProfile, K8S_CREATE_CAPTURE_HEADER};
+use awaken_session_execution_contract::ApplicationError;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 

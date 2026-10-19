@@ -456,7 +456,9 @@ async fn create_rejects_a_supported_but_not_executable_workspace_model() {
     // fails. Effects: E1 C1 returns 400; E2 C2 returns 503 before Dream
     // persistence. Constraint K1 the readiness seam remains the sole model
     // consumer; it owns no executable cache. Decision table: D1 C1=>E1;
-    // D2 C2=>E2.
+    // D2 C2=>E2; D3 fast + failing readiness => original 400 speed error
+    // before readiness's 503, with no Dream persisted. D2 remains the positive
+    // control showing standard actually reaches that same failing dependency.
     let (application, _, _) = state(Outcome::Complete).await;
     application.bind_model_readiness(Arc::new(NoReadyDreamModels));
     let app = support::edge_stamped(dreams_router(application));
@@ -491,6 +493,20 @@ async fn create_rejects_a_supported_but_not_executable_workspace_model() {
         .await
         .expect(StatusCode::OK);
     assert!(listed["data"].as_array().unwrap().is_empty(), "D2/E2");
+    let mut fast = create_body("memory", &["session"]);
+    fast["model"]["speed"] = json!("fast");
+    let rejected = request(&app, "POST", "/v1/dreams", Some(fast))
+        .await
+        .expect(StatusCode::BAD_REQUEST);
+    assert_eq!(
+        rejected["error"]["message"],
+        "Dream model speed `fast` is not supported by this deployment",
+        "D3 original early speed error",
+    );
+    let listed = request(&app, "GET", "/v1/dreams", None)
+        .await
+        .expect(StatusCode::OK);
+    assert!(listed["data"].as_array().unwrap().is_empty(), "D3 zero job");
 }
 
 /// Every wait in a test states a deadline.

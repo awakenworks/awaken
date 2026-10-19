@@ -42,23 +42,27 @@ impl SessionScanCursor {
     }
 }
 
-/// The closed set of durable Session selections a repository answers.
+/// The closed set of SELECT-only durable Session selections a reader answers.
 ///
-/// Each query fixes its own failure policy so a caller cannot choose a weaker
-/// one: only the reconciliation index quarantines undecodable rows and pages;
-/// the remaining queries are complete, unpaged reads that fail closed with
+/// These complete, unpaged queries never maintain quarantine evidence. Each
+/// fails closed with
 /// [`SessionRepositoryError::Corrupt`] on any undecodable row.
+///
+/// S2: SELECT queries remain constructible; the former maintenance selection
+/// cannot be supplied through this read capability. Reconciliation keeps the
+/// existing cursor/result values on its required repository method instead.
+///
+/// ```
+/// use awaken_session_state_contract::SessionScanQuery;
+/// let query = SessionScanQuery::Workspace { workspace_id: "w" };
+/// ```
+///
+/// ```compile_fail,E0599
+/// use awaken_session_state_contract::SessionScanQuery;
+/// let query = SessionScanQuery::Reconcilable { after: None };
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionScanQuery<'a> {
-    /// Sessions carrying any durable Resource, MCP, environment, WorkQueue
-    /// reconciliation work, or unfinished Worker realization ownership, in
-    /// one fixed-size keyset page. The row
-    /// scan preserves the intrinsic Workspace partition and revalidates prior
-    /// quarantine records; application coordinators filter by their owned state
-    /// machine. One index avoids parallel per-feature recovery registries.
-    Reconcilable {
-        after: Option<&'a SessionScanCursor>,
-    },
     /// Every visible aggregate owned by one Workspace, read from durable truth
     /// so a cold protocol projection cache cannot hide existing Sessions.
     Workspace { workspace_id: &'a str },
@@ -85,13 +89,13 @@ pub enum SessionScanQuery<'a> {
     },
 }
 
-/// Complete result of one [`SessionScanQuery`]. Store adapters own row decoding
-/// and durable quarantine, so callers receive healthy Sessions and isolation
-/// evidence from one authority instead of maintaining a parallel registry.
+/// Result of a SELECT-only query or repository reconciliation maintenance.
+/// Store adapters own decoding and quarantine; the same result vocabulary
+/// carries maintained isolation evidence without another recovery registry.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SessionScan {
     pub sessions: Vec<ScopedPersistedSession>,
-    /// Isolation evidence; only [`SessionScanQuery::Reconcilable`] produces it.
+    /// Isolation evidence produced only by repository reconciliation maintenance.
     pub quarantined: Vec<SessionRecoveryQuarantine>,
     /// Exclusive keyset lower bound for the next fixed-size page. `None`
     /// proves this scan reached the end of the current index snapshot; unpaged

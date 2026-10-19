@@ -294,3 +294,45 @@ source/feature/target subject. They do not prove registry publication, the full
 artifact closure of the seven-task consumer, or cross-platform compatibility.
 The controlled-IO test suite runs only under `--self-test`; real qualification
 retains the ordinary lightweight admission-rule check.
+
+### 2026-10-18: Reuse the published inference-speed value
+
+`agent_bindings::InferenceSpeed` remains the current SDK authority for inference
+speed. Dream and Managed model fields use that value directly and remove their
+`DreamModelSpeed` and `ModelSpeed` mirrors and the identity speed translations.
+They introduce no alias, forwarding export, new contract, or runtime mechanism.
+Managed's geography and effort translations remain because their wire and
+neutral forms differ. Dream's create and policy validation still reject `fast`
+at their original pre-effect boundary, with the original error ordering.
+
+This change preserves the complete SDK definition and reviewed deep public
+path at SDK `1.0.0`. Moving that value into `awaken-agent-contract` now while
+deleting the old SDK path would remove a path already present in the immutable
+pre-release SemVer baseline. The eventual value/trait split above therefore
+remains a formal SDK release change; this implementation does not bless a new
+SDK surface or claim that a source migration is SemVer-compatible.
+
+Both `awaken-session-dream-contract` and `awaken-dream-application` gain a direct
+owner dependency on `awaken-runtime-contract`. The former gains the four pure
+SDK contracts `awaken-runtime-contract`, `awaken-tool-contract`,
+`awaken-agent-contract`, and `awaken-time` in its normal internal closure; its
+contract depth grows from 1 to 3. The application already reaches those same
+contracts, so its direct edge adds no transitive crates. No SDK engine,
+provider, Platform implementation, or forbidden engine-SPI use is added.
+The contract-depth ratchet records this particular reviewed growth through its
+existing `--write-baseline --reason` path; no threshold or checker is weakened.
+
+- Reason: remove two copies of one published value while preserving the frozen
+  SDK `1.0.0` definition and public path, as permitted by the Value tier above.
+- Approved by: the user's full v4 duplication-removal authorization and the
+  Codex integration owner's bounded dependency review.
+- Date: 2026-10-18.
+- Remove the growth allowance when: the planned value/trait split moves the
+  shared values to their final SDK owner under the formal release process;
+  lower the measured Dream depth in that same change.
+
+Omission, `null`, `standard`, `fast`, and invalid-literal behavior stay owned by
+the existing model DTOs and SDK serde value. Tests keep the original validation,
+wire, frozen-control, and recovery assertions. The original SDK snapshot check,
+independent consumer, and explicit SemVer runner remain the release oracles;
+ordinary compilation is not their substitute.

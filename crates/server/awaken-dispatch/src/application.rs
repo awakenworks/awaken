@@ -4,10 +4,7 @@
 // @formal evidence session_execution.one_physical_attempt_per_thread
 //! Protocol-neutral application ports used by Coordinator HTTP adapters.
 
-pub use awaken_session_execution_contract::{
-    ApplicationError, ApplicationErrorKind, DurableDispatchStatus, DurableRunOperations,
-    DurableSupersedeResult,
-};
+use awaken_session_execution_contract::ApplicationError;
 use std::sync::Arc;
 
 use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
@@ -1084,6 +1081,7 @@ use awaken_dispatch_execution::PhysicalAttemptReads;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_session_execution_contract::ApplicationErrorKind;
 
     #[test]
     fn complete_receipt_freezes_all_physical_identity_coordinates() {

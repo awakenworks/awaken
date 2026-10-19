@@ -340,13 +340,13 @@ async fn admit_attempt(
     handoff: bool,
 ) -> Result<Value, ApplicationError> {
     if request.return_cause.is_some() {
-        return Err(ApplicationError::bad_request(
+        return Err(ApplicationError::invalid(
             "only physical finish accepts a return cause",
         ));
     }
     let authority = claim_authority(service, worker, request.identity.as_ref(), false).await?;
     if authority.owner != request.claim.owner {
-        return Err(ApplicationError::bad_request(
+        return Err(ApplicationError::invalid(
             "authenticated Worker does not own the physical attempt claim",
         ));
     }
@@ -362,7 +362,7 @@ async fn admit_attempt(
             return Ok(json!({ "admission": awaken_dispatch::AttemptAdmission::Fenced }));
         }
         let snapshot = authority.snapshot.as_ref().ok_or_else(|| {
-            ApplicationError::bad_request("execution binding requires a registered Worker")
+            ApplicationError::invalid("execution binding requires a registered Worker")
         })?;
         // No database transaction/Thread lock is held across provider I/O. The
         // request budget limits waiting, never manufactures an unbound fallback.
@@ -390,7 +390,7 @@ async fn admit_attempt(
     };
     let incarnation_guard = if service.execution_bindings.is_some() {
         let identity = request.identity.as_ref().ok_or_else(|| {
-            ApplicationError::bad_request(
+            ApplicationError::invalid(
                 "registered Worker identity is required for physical admission",
             )
         })?;
@@ -399,9 +399,7 @@ async fn admit_attempt(
             .await
             .map_err(|e| ApplicationError::unavailable(e.to_string()))?
             .ok_or_else(|| {
-                ApplicationError::bad_request(
-                    "Worker incarnation changed before physical admission",
-                )
+                ApplicationError::invalid("Worker incarnation changed before physical admission")
             })?;
         let snapshot = guard.snapshot();
         if snapshot.expires_at_ms <= service.clock.now_ms()
@@ -414,7 +412,7 @@ async fn admit_attempt(
                 .release()
                 .await
                 .map_err(ApplicationError::unavailable)?;
-            return Err(ApplicationError::bad_request(
+            return Err(ApplicationError::invalid(
                 "Worker incarnation closed before physical admission",
             ));
         }
@@ -488,7 +486,7 @@ pub(super) async fn relinquish(
         let authority =
             claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
         if authority.owner != request.claim.owner {
-            return Err(ApplicationError::bad_request(
+            return Err(ApplicationError::invalid(
                 "authenticated worker does not own the relinquished claim",
             ));
         }
@@ -506,7 +504,7 @@ pub(super) async fn relinquish(
                     .await
             }
             (None, true) => {
-                return Err(ApplicationError::bad_request(
+                return Err(ApplicationError::invalid(
                     "a failed attempt is released behind a retry deadline",
                 ));
             }
@@ -529,7 +527,7 @@ pub(super) async fn resolve_session_run_reservation(
         let authority =
             claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
         if authority.owner != request.claim.owner {
-            return Err(ApplicationError::bad_request(
+            return Err(ApplicationError::invalid(
                 "authenticated Worker does not own the Session reservation claim",
             ));
         }
@@ -550,14 +548,14 @@ fn exact_attempt_return_identity<'a>(
     request: &'a AttemptExecutionReq,
 ) -> Result<&'a WorkerIdentity, ApplicationError> {
     let identity = request.identity.as_ref().ok_or_else(|| {
-        ApplicationError::bad_request("registered Worker identity is required for quiescence")
+        ApplicationError::invalid("registered Worker identity is required for quiescence")
     })?;
     // Unlike begin/commit, a quiescence ACK may arrive after the registry or
     // Run lease advanced. Authenticate the exact signed incarnation, then let
     // the Dispatch aggregate clear only its matching predecessor slot.
-    verify_worker_identity(worker, identity).map_err(ApplicationError::bad_request)?;
+    verify_worker_identity(worker, identity).map_err(ApplicationError::invalid)?;
     if identity.lease_owner() != request.claim.owner {
-        return Err(ApplicationError::bad_request(
+        return Err(ApplicationError::invalid(
             "authenticated Worker does not own the quiesced physical attempt",
         ));
     }
@@ -570,16 +568,17 @@ async fn require_attempt_observation_protocol(
     service: &WorkerDispatchService,
     identity: &WorkerIdentity,
 ) -> Result<(), ApplicationError> {
-    let directory = service.directory.as_ref().ok_or_else(|| {
-        ApplicationError::bad_request("entry closure requires a registered Worker")
-    })?;
+    let directory = service
+        .directory
+        .as_ref()
+        .ok_or_else(|| ApplicationError::invalid("entry closure requires a registered Worker"))?;
     let record = directory
         .incarnation(identity)
         .await
         .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-        .ok_or_else(|| ApplicationError::bad_request("Worker incarnation is unknown"))?;
+        .ok_or_else(|| ApplicationError::invalid("Worker incarnation is unknown"))?;
     if !record.snapshot.manifest.supports_current_runtime_protocol() {
-        return Err(ApplicationError::bad_request(
+        return Err(ApplicationError::invalid(
             "Worker cannot attest the current attempt-closure protocol",
         ));
     }
@@ -593,7 +592,7 @@ pub(super) async fn close_attempt(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         if request.return_cause.is_some() {
-            return Err(ApplicationError::bad_request(
+            return Err(ApplicationError::invalid(
                 "only physical finish accepts a return cause",
             ));
         }
@@ -620,7 +619,7 @@ pub(super) async fn record_credential_realization(
         let authority =
             claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
         if authority.owner != request.claim.owner {
-            return Err(ApplicationError::bad_request(
+            return Err(ApplicationError::invalid(
                 "authenticated worker does not own the credential realization claim",
             ));
         }
@@ -628,7 +627,7 @@ pub(super) async fn record_credential_realization(
             .dispatch
             .record_credential_realization(&request.claim, request.receipt)
             .await
-            .map_err(|error| ApplicationError::bad_request(error.to_string()))?;
+            .map_err(|error| ApplicationError::invalid(error.to_string()))?;
         Ok(json!({ "applied": outcome.applied() }))
     }
     .await;
@@ -644,7 +643,7 @@ pub(super) async fn refresh_credential_delivery(
         let authority =
             claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
         if authority.owner != request.claim.owner {
-            return Err(ApplicationError::bad_request(
+            return Err(ApplicationError::invalid(
                 "authenticated worker does not own the credential delivery claim",
             ));
         }
@@ -662,7 +661,7 @@ pub(super) async fn refresh_credential_delivery(
             || binding.selected_plaintext_holder != delivery_request.selected_plaintext_holder
             || binding.claim_epoch != delivery_request.claim_epoch
         {
-            return Err(ApplicationError::bad_request(
+            return Err(ApplicationError::invalid(
                 "credential delivery request differs from the persisted claim binding",
             ));
         }

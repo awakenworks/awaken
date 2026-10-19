@@ -86,7 +86,7 @@ async fn claimed_session_authority(
         .await
         .map_err(RealizationHttpError::from)?;
     if authority.owner != claim.owner {
-        return Err(RealizationHttpError::from(ApplicationError::bad_request(
+        return Err(RealizationHttpError::from(ApplicationError::invalid(
             "authenticated worker does not own the Session claim",
         )));
     }
@@ -97,20 +97,20 @@ async fn claimed_session_authority(
         .map_err(|error| ApplicationError::internal(error.to_string()))
         .map_err(RealizationHttpError::from)?
         .ok_or_else(|| {
-            RealizationHttpError::from(ApplicationError::bad_request("Session claim is stale"))
+            RealizationHttpError::from(ApplicationError::invalid("Session claim is stale"))
         })?;
     if !guard.is_live_at(authority.now_ms) {
-        return Err(RealizationHttpError::from(ApplicationError::bad_request(
+        return Err(RealizationHttpError::from(ApplicationError::invalid(
             "Session claim lease has expired",
         )));
     }
     if guard.request().run_id() != &claim.run_id {
-        return Err(RealizationHttpError::from(ApplicationError::bad_request(
+        return Err(RealizationHttpError::from(ApplicationError::invalid(
             "guarded dispatch does not match the Session claim",
         )));
     }
     if guard.request().session_thread_id().0 != session_id {
-        return Err(RealizationHttpError::from(ApplicationError::bad_request(
+        return Err(RealizationHttpError::from(ApplicationError::invalid(
             "Session target does not match the claimed Run",
         )));
     }
@@ -122,7 +122,7 @@ fn require_primary_session_claim(
 ) -> Result<(), RealizationHttpError> {
     let dispatch = guard.request();
     if dispatch.thread_id() != dispatch.session_thread_id() {
-        return Err(RealizationHttpError::from(ApplicationError::bad_request(
+        return Err(RealizationHttpError::from(ApplicationError::invalid(
             "Agent coordination tools require the claimed primary Session Run",
         )));
     }
@@ -205,7 +205,7 @@ pub(super) async fn session_model_request_admit(
             || request.run_id != *guard.request().run_id()
             || request.thread_id != *guard.request().thread_id()
         {
-            return Err(RealizationHttpError::from(ApplicationError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::invalid(
                 "model-request admission does not match the claimed Session dispatch",
             )));
         }
@@ -237,7 +237,7 @@ pub(super) async fn session_run_activity_admit(
             .await
             .map_err(RealizationHttpError::from)?;
         if authority.owner != request.claim.owner {
-            return Err(RealizationHttpError::from(ApplicationError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::invalid(
                 "authenticated Worker does not own the Session reservation claim",
             )));
         }
@@ -248,7 +248,7 @@ pub(super) async fn session_run_activity_admit(
             .map_err(|error| ApplicationError::internal(error.to_string()))
             .map_err(RealizationHttpError::from)?
             .ok_or_else(|| {
-                RealizationHttpError::from(ApplicationError::bad_request(
+                RealizationHttpError::from(ApplicationError::invalid(
                     "Session Run reservation claim is stale",
                 ))
             })?;
@@ -267,7 +267,7 @@ pub(super) async fn session_run_activity_admit(
             || dispatch.activation.snapshot.root_agent_id.0 != request.agent_id
             || request.mode != expected_mode
         {
-            return Err(RealizationHttpError::from(ApplicationError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::invalid(
                 "Session Run activity admission does not match the claimed reservation",
             )));
         }
@@ -310,7 +310,7 @@ pub(super) async fn session_agent_send(
         if request.command.source_run_id != request.claim.run_id
             || request.command.source_thread_id != *guard.request().thread_id()
         {
-            return Err(RealizationHttpError::from(ApplicationError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::invalid(
                 "Agent message source does not match the claimed primary Run",
             )));
         }
@@ -367,7 +367,7 @@ pub(super) async fn session_agent_settle(
             || Some(request.command.session_activity_epoch) != dispatch.session_activity_epoch
             || request.command.cancellation_requested != guard.cancellation_requested()
         {
-            return Err(RealizationHttpError::from(ApplicationError::bad_request(
+            return Err(RealizationHttpError::from(ApplicationError::invalid(
                 "Agent settlement does not match the claimed Session dispatch",
             )));
         }

@@ -11,7 +11,7 @@ use awaken_session_execution_contract::{
 };
 
 use crate::mutation::session_owner;
-use awaken_session_repository_contract::SessionRepository;
+use awaken_session_repository_contract::SessionRepositoryReads;
 use awaken_session_execution_contract::LiveInboxRuntime;
 use std::sync::Arc;
 
@@ -42,20 +42,20 @@ use std::sync::Arc;
 /// }
 /// ```
 pub struct SessionInputs {
-    repository: Arc<dyn SessionRepository>,
+    repository: Arc<dyn SessionRepositoryReads>,
     inbox: Arc<dyn LiveInboxRuntime>,
 }
 
 impl SessionInputs {
     pub(crate) fn new(
-        repository: Arc<dyn SessionRepository>,
+        repository: Arc<dyn SessionRepositoryReads>,
         inbox: Arc<dyn LiveInboxRuntime>,
     ) -> Self {
         Self { repository, inbox }
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn replace_repository(&mut self, repository: Arc<dyn SessionRepository>) {
+    pub(crate) fn replace_repository(&mut self, repository: Arc<dyn SessionRepositoryReads>) {
         self.repository = repository;
     }
 

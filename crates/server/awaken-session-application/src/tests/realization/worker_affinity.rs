@@ -243,10 +243,7 @@ async fn session_worker_demand_counts_live_affinity_and_terminal_cleanup() {
         expires_at_unix_ms: u64::MAX,
     });
     create(repo.as_ref(), live).await;
-    let indexed = repo
-        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-        .await
-        .unwrap();
+    let indexed = repo.reconciliation_scan(None).await.unwrap();
     assert!(
         indexed
             .sessions

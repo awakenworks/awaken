@@ -8,6 +8,93 @@ use async_trait::async_trait;
 use awaken_session_state_contract::SessionWorkerObligation;
 use std::collections::HashSet;
 
+/// Durable Session observations without root mutation or reconciliation maintenance.
+///
+/// The original Store implements this role directly. `scan` accepts only the
+/// four SELECT-only selections; quarantine maintenance stays on
+/// [`SessionRepository::reconciliation_scan`]. The returned values grant no
+/// execution, claim, cleanup or permission authority.
+///
+/// Capability decision table: R1 the same full Store upcasts to its reader
+/// and the four original observations remain callable. R2-R4 a reader cannot
+/// create, commit or maintain quarantine. These examples prove type capability
+/// only; SQL regression tests own the absence of persistence side effects.
+///
+/// ```
+/// use std::sync::Arc;
+/// use awaken_session_repository_contract::{SessionRepository, SessionRepositoryReads};
+/// use awaken_session_state_contract::SessionScanQuery;
+/// use awaken_session_types::SessionId;
+/// async fn observe(repo: Arc<dyn SessionRepository>, id: &SessionId) {
+///     let reader: Arc<dyn SessionRepositoryReads> = repo;
+///     let _ = reader.get(id).await;
+///     let _ = reader.owner(id).await;
+///     let _ = reader.scan(SessionScanQuery::Workspace { workspace_id: "w" }).await;
+///     let _ = reader.deleted_event_admissions("w", id).await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use awaken_session_repository_contract::SessionRepositoryReads;
+/// use awaken_session_state_contract::{PersistedSession, IdempotencyRecord};
+/// async fn create(reader: &dyn SessionRepositoryReads, root: PersistedSession, identity: IdempotencyRecord) {
+///     reader.create("w", root, identity, Vec::new()).await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use awaken_session_repository_contract::SessionRepositoryReads;
+/// use awaken_session_state_contract::SessionMutation;
+/// async fn commit(reader: &dyn SessionRepositoryReads, mutation: SessionMutation) {
+///     reader.commit("w", mutation).await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use awaken_session_repository_contract::SessionRepositoryReads;
+/// async fn maintain(reader: &dyn SessionRepositoryReads) {
+///     reader.reconciliation_scan(None).await;
+/// }
+/// ```
+#[async_trait]
+pub trait SessionRepositoryReads: Send + Sync {
+    /// The stored configuration for `session_id`. Absence is the typed
+    /// [`SessionRepositoryError::NotFound`] case, never a storage fallback.
+    ///
+    /// Caller: every `SessionApplication` command that reloads aggregate truth.
+    async fn get(&self, session_id: &SessionId)
+    -> Result<PersistedSession, SessionRepositoryError>;
+
+    /// The atomically persisted owner scope of `session_id`. It is a separate
+    /// read because ownership routing must stay answerable for a row whose
+    /// aggregate no longer decodes.
+    ///
+    /// Caller: `SessionApplication` owner-scoped commands, file-content and
+    /// Coordinator application-access authorization.
+    async fn owner(&self, session_id: &SessionId) -> Result<String, SessionRepositoryError>;
+
+    /// Read a complete, unpaged SELECT-only selection. Corrupt rows fail
+    /// closed with [`SessionRepositoryError::Corrupt`]; this role neither
+    /// creates nor clears reconciliation quarantine evidence.
+    ///
+    /// Caller: Session listing, Worker ownership observation, Vault references
+    /// and Managed credential rollout.
+    async fn scan(
+        &self,
+        query: SessionScanQuery<'_>,
+    ) -> Result<SessionScan, SessionRepositoryError>;
+
+    /// Read deletion evidence only inside its persisted owner partition. None
+    /// means no matching tombstone, not proof of non-admission.
+    ///
+    /// Caller: `SessionApplication` Event batch admission after Session deletion.
+    async fn deleted_event_admissions(
+        &self,
+        owner_scope: &str,
+        session_id: &SessionId,
+    ) -> Result<Option<crate::DeletedSessionEventAdmissions>, SessionRepositoryError>;
+}
+
 /// Outbound persistence port of the Session aggregate.
 ///
 /// Every method is required and names a real consumer; a backend that cannot
@@ -15,8 +102,18 @@ use std::collections::HashSet;
 /// atomically by [`Self::create`] and [`Self::commit`] is drained through the
 /// separate [`LifecycleOutbox`](super::LifecycleOutbox) port, which the same
 /// durable store implements.
+///
+/// ```
+/// use awaken_session_repository_contract::SessionRepository;
+/// use awaken_session_state_contract::{PersistedSession, IdempotencyRecord, SessionMutation};
+/// async fn commands(repo: &dyn SessionRepository, root: PersistedSession, identity: IdempotencyRecord, mutation: SessionMutation) {
+///     let _ = repo.create("w", root, identity, Vec::new()).await;
+///     let _ = repo.commit("w", mutation).await;
+///     let _ = repo.reconciliation_scan(None).await;
+/// }
+/// ```
 #[async_trait]
-pub trait SessionRepository: Send + Sync {
+pub trait SessionRepository: SessionRepositoryReads {
     /// Insert one new aggregate together with owner, idempotency and outbox, or
     /// atomically return the exact durable aggregate for an owner-bound replay.
     /// Occupied, tombstoned and mismatched identities are the typed
@@ -60,33 +157,13 @@ pub trait SessionRepository: Send + Sync {
         mutation: SessionMutation,
     ) -> Result<SessionMutationResult, SessionRepositoryError>;
 
-    /// The stored configuration for `session_id`. Absence is the typed
-    /// [`SessionRepositoryError::NotFound`] case, never a storage fallback.
-    ///
-    /// Caller: every `SessionApplication` command that reloads aggregate truth.
-    async fn get(&self, session_id: &SessionId)
-    -> Result<PersistedSession, SessionRepositoryError>;
-
-    /// The atomically persisted owner scope of `session_id`. It is a separate
-    /// read because ownership routing must stay answerable for a row whose
-    /// aggregate no longer decodes.
-    ///
-    /// Caller: `SessionApplication` owner-scoped commands, file-content and
-    /// Coordinator application-access authorization.
-    async fn owner(&self, session_id: &SessionId) -> Result<String, SessionRepositoryError>;
-
-    /// Read durable Sessions selected by one closed query. The per-query
-    /// failure policy is part of the contract (see [`SessionScanQuery`]):
-    /// the reconciliation index isolates corrupt rows into
-    /// [`SessionScan::quarantined`], every other query fails closed with
-    /// [`SessionRepositoryError::Corrupt`].
-    ///
-    /// Caller: `SessionApplication` recovery supervisor and realization control
-    /// (`Reconcilable`), Session Resource listing (`Workspace`), Managed
-    /// credential rollout (`CredentialSourceReferences`).
-    async fn scan(
+    /// Revalidate one page of the canonical reconciliation index, maintaining
+    /// the original row-local quarantine evidence in the same Store.
+    /// Successful EOF, cursor advancement and downstream effect admission stay
+    /// with their existing callers; this method grants no realization lease.
+    async fn reconciliation_scan(
         &self,
-        query: SessionScanQuery<'_>,
+        after: Option<&SessionScanCursor>,
     ) -> Result<SessionScan, SessionRepositoryError>;
 
     /// Capacity observation derived from the same committed Session roots.
@@ -105,7 +182,7 @@ pub trait SessionRepository: Send + Sync {
         &self,
         after: Option<&SessionScanCursor>,
     ) -> Result<SessionScan, SessionRepositoryError> {
-        let mut page = self.scan(SessionScanQuery::Reconcilable { after }).await?;
+        let mut page = self.reconciliation_scan(after).await?;
         page.sessions
             .retain(|scoped| scoped.session.is_run_free_initial_preparation_candidate());
         Ok(page)
@@ -122,16 +199,6 @@ pub trait SessionRepository: Send + Sync {
         session_id: &SessionId,
         key: &str,
     ) -> Result<Option<SessionIdempotencyReceipt>, SessionRepositoryError>;
-
-    /// Read deletion evidence only inside its persisted owner partition. None
-    /// means no matching tombstone, not proof of non-admission.
-    ///
-    /// Caller: `SessionApplication` Event batch admission after Session deletion.
-    async fn deleted_event_admissions(
-        &self,
-        owner_scope: &str,
-        session_id: &SessionId,
-    ) -> Result<Option<crate::DeletedSessionEventAdmissions>, SessionRepositoryError>;
 
     /// Count one typed Environment phase across every canonical live Session
     /// row. It is global, unpaged and decodes every row, so it cannot be a
@@ -156,11 +223,7 @@ async fn session_worker_demand_from_scan<R: SessionRepository + ?Sized>(
     let mut owners = HashSet::new();
     let mut unbound = false;
     loop {
-        let scan = repository
-            .scan(SessionScanQuery::Reconcilable {
-                after: cursor.as_ref(),
-            })
-            .await?;
+        let scan = repository.reconciliation_scan(cursor.as_ref()).await?;
         if !scan.quarantined.is_empty() {
             return Err(SessionRepositoryError::Corrupt(
                 "Session reconciliation scan contains quarantined roots".into(),

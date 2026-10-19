@@ -4,9 +4,11 @@
 // @formal reason: HTTP adapter for durable dispatch operations.
 //! Coordinator-owned HTTP interface for durable Session operations.
 
+use crate::worker_dispatch::respond;
 use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_dispatch::{ApplicationError, ApplicationErrorKind, DurableRunOperations};
+use awaken_session_execution_contract::{ApplicationError, DurableRunOperations};
+
 use awaken_session_application_contract::{
     SessionRunBackgroundApplication, SessionRunReplacementApplication,
 };
@@ -454,19 +456,4 @@ async fn purge(
             .await
             .map(|n| json!({ "purged": n })),
     )
-}
-
-fn respond(result: Result<Value, ApplicationError>) -> (StatusCode, Json<Value>) {
-    match result {
-        Ok(value) => (StatusCode::OK, Json(value)),
-        Err(error) => {
-            let status = match error.kind {
-                ApplicationErrorKind::InvalidRequest => StatusCode::BAD_REQUEST,
-                ApplicationErrorKind::Conflict => StatusCode::CONFLICT,
-                ApplicationErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
-                ApplicationErrorKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-            };
-            (status, Json(json!({ "error": error.message })))
-        }
-    }
 }

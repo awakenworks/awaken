@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::SessionCreationError;
-use awaken_session_repository_contract::SessionRepository;
+use awaken_session_repository_contract::{SessionRepository, SessionRepositoryReads};
 use awaken_session_state_contract::SessionAggregate;
 use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionMutation,
@@ -39,7 +39,7 @@ pub(crate) fn repository_failure(error: SessionRepositoryError) -> SessionMutati
 }
 
 pub(crate) async fn session_owner(
-    repository: &dyn SessionRepository,
+    repository: &dyn SessionRepositoryReads,
     session_id: &awaken_session_types::SessionId,
 ) -> Result<String, SessionMutationError> {
     repository
