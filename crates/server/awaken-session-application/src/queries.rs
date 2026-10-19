@@ -82,11 +82,6 @@ impl SessionQueries {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn replace_repository(&mut self, repository: Arc<dyn SessionRepositoryReads>) {
-        self.repository = repository;
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn set_profiles(&mut self, profiles: Arc<dyn ExecutableAgentProfileSource>) {
         self.profiles = Some(profiles);
     }

@@ -28,7 +28,6 @@ awaken-protocol-mcp.workspace = true
 awaken-session-executor = { workspace = true, features = ["test-support"] }
 awaken-session-mcp.workspace = true
 awaken-installation-workspace.workspace = true
-awaken-dispatch-http.workspace = true
 awaken-config-service.workspace = true
 awaken-ext-builtin-tools.workspace = true
 awaken-ext-memory.workspace = true

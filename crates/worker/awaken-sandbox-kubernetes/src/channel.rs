@@ -5,7 +5,7 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::Api;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-use awaken_sandbox_container::RuntimeError;
+use awaken_container_contract::RuntimeError;
 
 const POD_CHANNEL_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 

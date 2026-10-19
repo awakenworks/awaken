@@ -4,8 +4,11 @@
 //! maps it to the wire crate's `WorkspaceScope`; `create_session` commits the
 //! owned lifecycle fact with the Session and wakes the outbox notifier; the
 //! dispatcher signs and delivers over real HTTP.
+//!
+//! The original real Host keeps its independent execution graph. This test
+//! proves signed outbox delivery; shared Host/App persistence and cached sink
+//! identity remain the separate constructor/binding tests' responsibility.
 
-use awaken_protocol_managed_testkit::ManagedStateFixture as _;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -16,7 +19,6 @@ use awaken_config_resolver::{
 };
 use awaken_coordinator::{prepare_managed_lifecycle_delivery, webhooks};
 use awaken_credential_vault::{InMemorySecretStore, SecretRef, SecretStore};
-use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor};
 use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_webhook::{generate_secret, verify};
@@ -126,13 +128,23 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         .await)
         .build()
         .expect("validated Host dependencies");
-    let managed = Arc::new(
-        ManagedState::with_roles(
-            awaken_session_executor::CoordinatorRoles::of(&host).session_execution(),
+    // Constructor C1 exact real Host roles; C2 original App-only Clock and
+    // Environment; C3 early selected Store => E1 one App/Core and the same
+    // outbox Store, E2 no Fake or extra sink installed into the existing Host.
+    let managed = Arc::new({
+        let session_fixture_runtime =
+            awaken_session_executor::CoordinatorRoles::of(&host).session_execution();
+        let session_fixture_clock = awaken_time::system_clock();
+        awaken_protocol_managed_testkit::managed_state_from_parts(
+            session_fixture_runtime,
+            None,
+            sessions,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
-        .await
-        .with_session_repo(sessions),
-    );
+    });
     prepare_managed_lifecycle_delivery(
         &managed,
         &managed.session_application(),

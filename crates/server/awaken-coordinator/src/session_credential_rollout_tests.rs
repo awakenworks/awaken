@@ -5,8 +5,6 @@
 
 use std::sync::Arc;
 
-use awaken_protocol_managed::ManagedState;
-use awaken_protocol_managed_testkit::ManagedStateFixture as _;
 use awaken_protocol_managed_testkit::{
     RecordingProjectionRefresh, RehydrateFake, RolloutCredentialSource, create_session_fixture,
     ephemeral_session_repo, paired_projection_refresh, persisted_with_mcp_source,
@@ -83,10 +81,20 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
         .await
         .unwrap();
     let state = Arc::new(
-        ManagedState::new_with_mcp(RehydrateFake::default())
-            .await
-            .with_session_repo(repo.clone())
-            .with_credential_source(Arc::new(RolloutCredentialSource)),
+        {
+            let session_fixture_runtime = std::sync::Arc::new(RehydrateFake::default());
+            let session_fixture_clock = awaken_time::system_clock();
+            awaken_protocol_managed_testkit::managed_state_from_parts(
+                session_fixture_runtime.clone(),
+                Some(session_fixture_runtime),
+                repo.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        }
+        .with_credential_source(Arc::new(RolloutCredentialSource)),
     );
     let state =
         SessionCredentialRolloutAdoption::over_managed(&state.session_application(), &state);
@@ -230,11 +238,23 @@ async fn vault_rollout_reports_busy_and_postcommit_failure_then_replays_exact_ev
             .reject_mcp_publication
             .store(case == "postcommit", std::sync::atomic::Ordering::SeqCst);
         let managed = Arc::new(
-            ManagedState::new_with_mcp(runtime.clone())
-                .await
-                .with_session_repo(repo.clone())
-                .with_credential_source(Arc::new(RolloutCredentialSource))
-                .with_executable_projection_refresh(paired_projection_refresh(refresh.clone())),
+            {
+                let session_fixture_runtime = std::sync::Arc::new(runtime.clone());
+                let session_fixture_clock = awaken_time::system_clock();
+                awaken_protocol_managed_testkit::managed_state_from_parts(
+                    session_fixture_runtime.clone(),
+                    Some(session_fixture_runtime),
+                    repo.clone(),
+                    awaken_protocol_managed_testkit::environment_fixture(
+                        session_fixture_clock.clone(),
+                    )
+                    .execution,
+                    session_fixture_clock,
+                    std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+                )
+            }
+            .with_credential_source(Arc::new(RolloutCredentialSource))
+            .with_executable_projection_refresh(paired_projection_refresh(refresh.clone())),
         );
         let state = SessionCredentialRolloutAdoption::over_managed(
             &managed.session_application(),

@@ -33,7 +33,19 @@ pub async fn shared_state_over(
     runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
     repository: std::sync::Arc<dyn awaken_session_repository_contract::SessionStore>,
 ) -> std::sync::Arc<awaken_protocol_managed::ManagedState> {
-    std::sync::Arc::new(state(runtime).await.with_session_repo(repository))
+    std::sync::Arc::new({
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        awaken_protocol_managed_testkit::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    })
 }
 
 /// As [`state`], with the one fixture object also realizing MCP attachments.

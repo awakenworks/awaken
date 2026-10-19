@@ -66,6 +66,10 @@ async fn builder_freezes_normalized_owner_and_preserves_exact_creation_replay() 
     // B8 queries and its root role share that same Repository; reads of an
     // existing or absent root neither prepare Runtime state nor dispatch Work.
     // B9 an owner mismatch is non-disclosing NotFound, never a second root.
+    // Early-selection equivalence: selected Store/Clock and the cached sink
+    // enter the existing builder before any command. Root/replay/read effects
+    // below detect a hidden fallback; the paired public API docs reject later
+    // Repository replacement even when test-support is enabled.
     let store = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
@@ -89,6 +93,8 @@ async fn builder_freezes_normalized_owner_and_preserves_exact_creation_replay() 
     })
     .build()
     .unwrap();
+    crate::lifecycle::tests::assert_composed_identity(&app).await;
+    crate::credentials::tests::assert_composed_identity(&app);
     assert_eq!(app.local_realization_owner(), "runtime-a");
     assert_eq!(app.configuration.local_realization_owner, "runtime-a");
     assert!(Arc::ptr_eq(&sink, &app.environment_binding_sink()));

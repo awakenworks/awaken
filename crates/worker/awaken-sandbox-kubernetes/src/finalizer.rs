@@ -1,12 +1,13 @@
 // @formal entrypoint sandbox.k8s_process_observation_requires_complete_exit
 //! One Kubernetes CAS loop for retaining or releasing an exact finalizer.
 
+use awaken_container_contract::RuntimeError;
 use k8s_openapi::api::core::v1::Pod;
 use kube::Api;
 use kube::api::PostParams;
 
+use super::backend;
 use super::error::{api_conflict, api_not_found};
-use super::{RuntimeError, backend};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ExactFinalizerAdmission {

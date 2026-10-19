@@ -6,6 +6,7 @@
 //! takeover and retained-handle reconstruction live with the existing recovery owner.
 
 use super::*;
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract::{
     SandboxAdoption, SandboxEffectFence, SandboxObservationPurpose, SessionSandbox,
 };

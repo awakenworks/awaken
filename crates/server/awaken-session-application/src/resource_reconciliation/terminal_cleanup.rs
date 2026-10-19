@@ -16,8 +16,9 @@ use awaken_session_state_contract::{
 };
 use awaken_session_types::RunError;
 
-use super::{internal, mutation_failure, repository_control, repository_preparation};
+use super::{internal, repository_control};
 use crate::SessionAggregate;
+use crate::credentials::{mutation_failure, repository_preparation};
 use crate::{SessionApplication, SessionPreparationError, SessionTerminalCleanupDriveOutcome};
 
 /// Compile all target identities and both durable fences from one atomic

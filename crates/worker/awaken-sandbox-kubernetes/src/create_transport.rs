@@ -16,9 +16,9 @@ use http::{Method, Response, StatusCode, header};
 use kube::Client;
 use kube::client::Body;
 
-use super::RequestJoin;
+use awaken_container_contract::RequestJoin;
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract::SandboxEffectFence;
-use awaken_sandbox_container::RuntimeError;
 
 use awaken_container_contract::{K8sCreateRequest, K8sCreateResponse};
 
@@ -504,7 +504,7 @@ mod tests {
             2,
             "E2 exact Pod and claim reobserved"
         );
-        let request = awaken_sandbox_container::CreateTicketRequest::new(
+        let request = awaken_container_contract::CreateTicketRequest::new(
             "old-group",
             "pods",
             "default",
@@ -512,7 +512,7 @@ mod tests {
             "a".repeat(64),
         )
         .unwrap();
-        let ticket = |status| super::super::CreateTicket {
+        let ticket = |status| awaken_container_contract::CreateTicket {
             request: request.clone(),
             status,
             origin: Default::default(),
@@ -521,8 +521,8 @@ mod tests {
         };
         assert_eq!(
             runtime(RequestJoin::Complete(vec![ticket(
-                super::super::TicketStatus::Finished(
-                    super::super::TicketResult::RejectedNoEffect { code: 403 },
+                awaken_container_contract::TicketStatus::Finished(
+                    awaken_container_contract::TicketResult::RejectedNoEffect { code: 403 },
                 )
             )]))
             .missing_handle_terminal_evidence(
@@ -536,10 +536,12 @@ mod tests {
             "H2 definitive refusal"
         );
         for status in [
-            super::super::TicketStatus::Finished(super::super::TicketResult::Created {
-                uid: "old-uid".into(),
-            }),
-            super::super::TicketStatus::InFlight,
+            awaken_container_contract::TicketStatus::Finished(
+                awaken_container_contract::TicketResult::Created {
+                    uid: "old-uid".into(),
+                },
+            ),
+            awaken_container_contract::TicketStatus::InFlight,
         ] {
             assert_eq!(
                 runtime(RequestJoin::Complete(vec![ticket(status)]))
@@ -653,7 +655,7 @@ mod tests {
             }
         });
         let direct = Client::new(service, "default");
-        let request = awaken_sandbox_container::CreateTicketRequest::new(
+        let request = awaken_container_contract::CreateTicketRequest::new(
             "old-group",
             "pods",
             "default",
@@ -661,11 +663,13 @@ mod tests {
             "a".repeat(64),
         )
         .unwrap();
-        let created = super::super::CreateTicket {
+        let created = awaken_container_contract::CreateTicket {
             request,
-            status: super::super::TicketStatus::Finished(super::super::TicketResult::Created {
-                uid: "old-uid".into(),
-            }),
+            status: awaken_container_contract::TicketStatus::Finished(
+                awaken_container_contract::TicketResult::Created {
+                    uid: "old-uid".into(),
+                },
+            ),
             origin: Default::default(),
             isolation_id: String::new(),
             isolation_pending: false,
@@ -760,9 +764,11 @@ mod tests {
             awaken_sandbox_container::MissingHandleTerminalEvidence::Unknown,
             "J2 another created participant"
         );
-        other.status = super::super::TicketStatus::Finished(super::super::TicketResult::Isolated {
-            uid: "reserved-uid".into(),
-        });
+        other.status = awaken_container_contract::TicketStatus::Finished(
+            awaken_container_contract::TicketResult::Isolated {
+                uid: "reserved-uid".into(),
+            },
+        );
         other.isolation_id = "0123456789abcdef0123456789abcdef".into();
         assert_eq!(
             runtime(vec![other])
@@ -817,8 +823,8 @@ mod tests {
         retained_pod.metadata.resource_version = Some("7".into());
         *current.lock().unwrap() = retained_pod.clone();
         let claim_name = super::super::continuation_claim_for_pod(&name).unwrap();
-        let claim_ticket = super::super::CreateTicket {
-            request: awaken_sandbox_container::CreateTicketRequest::new(
+        let claim_ticket = awaken_container_contract::CreateTicket {
+            request: awaken_container_contract::CreateTicketRequest::new(
                 "old-group",
                 "persistentvolumeclaims",
                 "default",
@@ -826,9 +832,11 @@ mod tests {
                 "b".repeat(64),
             )
             .unwrap(),
-            status: super::super::TicketStatus::Finished(super::super::TicketResult::Created {
-                uid: "claim-uid".into(),
-            }),
+            status: awaken_container_contract::TicketStatus::Finished(
+                awaken_container_contract::TicketResult::Created {
+                    uid: "claim-uid".into(),
+                },
+            ),
             origin: Default::default(),
             isolation_id: String::new(),
             isolation_pending: false,

@@ -9,13 +9,12 @@
 //! repository so every protocol drives the same Session authority.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
 
 use awaken_agent_contract::McpTarget;
 use awaken_environment_contract::EnvItem;
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
-use awaken_session_application_contract::LifecycleFactNotifier;
 use awaken_session_configuration_contract::{
     is_native_session_runtime, validate_sandbox_provisioning_runtime,
 };
@@ -42,7 +41,7 @@ mod agent_configuration;
 pub use agent_configuration::{SessionRecoveryPurpose, agent_configuration_from_profile};
 mod construction;
 mod tool_compilation;
-pub use construction::{SessionApplicationBuilder, SessionCredentials, SessionResources};
+pub use construction::{SessionApplicationBuilder, SessionCredentialAuthorities, SessionResources};
 
 mod recovery_scan;
 use recovery_scan::scan_recovery_candidates;
@@ -220,7 +219,9 @@ mod queries;
 pub use awaken_session_execution_contract::{
     CommittedSessionFacts, ProjectionThreadSnapshots, SessionProjectionReadTimings,
 };
-pub use credentials::SessionPreparationError;
+pub use credentials::{SessionCredentials, SessionPreparationError};
+mod lifecycle;
+pub use lifecycle::{SessionDeleteCommand, SessionLifecycle};
 mod lifecycle_supervisor;
 pub use queries::SessionQueries;
 mod mcp;
@@ -240,9 +241,9 @@ pub use resource_reconciliation::{
     SessionResourcePurgeGuard,
 };
 pub use roles::{
-    DeploymentSessionEnvironment, ProfiledSessionCommands, SessionCreation, SessionEventBatches,
-    SessionObservation, SessionProjectionReads, SessionResourceCommands, SessionRootReads,
-    SessionTermination, SessionUpdates,
+    DeploymentSessionEnvironment, ProfiledSessionCommands, SessionCreation,
+    SessionCredentialCommands, SessionEventBatches, SessionObservation, SessionProjectionReads,
+    SessionResourceCommands, SessionRootReads, SessionTermination, SessionUpdates,
 };
 pub use run_admission::{
     CreateProfiledSessionCommand, ProfiledSessionRepositoryInput, RecoveredSessionProjection,
@@ -262,8 +263,8 @@ mod archive_intent;
 mod terminal;
 pub use terminal::{
     SessionArchiveWithRepositoryPublicationCommand, SessionArchiveWithRepositoryPublicationError,
-    SessionArchiveWithRepositoryPublicationOutcome, SessionDeleteCommand,
-    SessionDispositionMutation, SessionRepositoryPublicationSelector,
+    SessionArchiveWithRepositoryPublicationOutcome, SessionDispositionMutation,
+    SessionRepositoryPublicationSelector,
 };
 
 #[cfg(test)]

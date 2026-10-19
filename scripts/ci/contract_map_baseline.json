@@ -42,12 +42,11 @@
     "SandboxExecutionPolicyStore <- awaken-protocol-awaken": 1,
     "SandboxExecutionPolicyStore <- awaken-protocol-managed": 1,
     "SessionRepository <- awaken-resource-worker-http": 1,
-    "SessionStore <- awaken-protocol-managed": 1,
     "SkillStore <- awaken-protocol-managed": 1,
     "SkillStore <- awaken-session-executor": 1
   },
   "fat-trait": {
-    "DurableRunOperations": 15,
+    "DurableRunOperations": 13,
     "Sandbox": 15
   },
   "duplicate-type": {

@@ -72,12 +72,36 @@ async fn failed_terminal_times_survive_archive_and_cold_reconstruction() {
                 persisted,
             )
             .await;
-            let warm = ManagedState::new(runtime.clone())
-                .await
-                .with_session_repo(repository.clone());
-            let replica = ManagedState::new(runtime.clone())
-                .await
-                .with_session_repo(repository.clone());
+            let warm = {
+                let session_fixture_runtime = runtime.clone();
+                let session_fixture_clock = awaken_time::system_clock();
+                crate::state::test_support::managed_state_from_parts(
+                    std::sync::Arc::new(session_fixture_runtime),
+                    None,
+                    repository.clone(),
+                    awaken_protocol_managed_testkit::environment_fixture(
+                        session_fixture_clock.clone(),
+                    )
+                    .execution,
+                    session_fixture_clock,
+                    std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+                )
+            };
+            let replica = {
+                let session_fixture_runtime = runtime.clone();
+                let session_fixture_clock = awaken_time::system_clock();
+                crate::state::test_support::managed_state_from_parts(
+                    std::sync::Arc::new(session_fixture_runtime),
+                    None,
+                    repository.clone(),
+                    awaken_protocol_managed_testkit::environment_fixture(
+                        session_fixture_clock.clone(),
+                    )
+                    .execution,
+                    session_fixture_clock,
+                    std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+                )
+            };
             warm.refresh_committed_events(&id).await.unwrap();
             replica.refresh_committed_events(&id).await.unwrap();
             let events =
@@ -108,9 +132,21 @@ async fn failed_terminal_times_survive_archive_and_cold_reconstruction() {
                 );
             }
             replica.refresh_committed_events(&id).await.unwrap();
-            let cold = ManagedState::new(runtime)
-                .await
-                .with_session_repo(repository);
+            let cold = {
+                let session_fixture_runtime = runtime;
+                let session_fixture_clock = awaken_time::system_clock();
+                crate::state::test_support::managed_state_from_parts(
+                    std::sync::Arc::new(session_fixture_runtime),
+                    None,
+                    repository,
+                    awaken_protocol_managed_testkit::environment_fixture(
+                        session_fixture_clock.clone(),
+                    )
+                    .execution,
+                    session_fixture_clock,
+                    std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+                )
+            };
             cold.refresh_committed_events(&id).await.unwrap();
             for state in [&warm, &replica, &cold] {
                 assert_eq!(events(state), before, "E3 complete DTOs survive release");

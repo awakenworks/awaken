@@ -4,6 +4,7 @@
 
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_control::SandboxControlServiceKind;
 
@@ -12,9 +13,7 @@ use crate::egress::EgressRealizationIdentity;
 use crate::podman_plan::RootfsPlan;
 use crate::provider_contract::{PreparedContainer, PreparedContainerDisposition};
 use crate::resident_hand::ResidentHandConfig;
-pub use crate::runtime_error::RuntimeError;
-#[cfg(feature = "docker")]
-pub(crate) use crate::runtime_error::RuntimeFailure;
+
 use awaken_provisioning_contract::SandboxEffectFence;
 
 /// Stable label every managed Sandbox container/pod carries. The wire value is

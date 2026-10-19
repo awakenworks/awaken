@@ -18,7 +18,7 @@ use kube::Api;
 use kube::api::ListParams;
 
 use super::error::backend;
-use awaken_sandbox_container::RuntimeError;
+use awaken_container_contract::RuntimeError;
 
 const SANDBOX_DENY_POLICY: &str = "awaken-sandbox-default-deny";
 const SANDBOX_OPEN_POLICY: &str = "awaken-sandbox-open-egress";

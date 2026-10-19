@@ -5,7 +5,7 @@
 //! `ExecutorComponents::{list_dispatches, quarantine_retry_exhausted, dead_letters, requeue_dead_letter,
 //! purge_dead_letters, superseded}`
 //! reach the process-shared dispatch queue and project it onto the wire shape the
-//! `durable_ops_router` returns.
+//! `durable_ops_router_with_session_admission` returns.
 //!
 //! Its own test binary: it flips the process-global `SESSION_DEPLOYMENT_INGRESS=durable` and
 //! installs the one-shot shared dispatch store, so it must not share a process with
@@ -18,7 +18,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch::{MemoryDispatchStore, RunDispatch, SubmitOptions};
-use awaken_dispatch_http::durable_ops_router;
+use awaken_dispatch_http::durable_ops_router_with_session_admission;
 use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
@@ -92,6 +92,41 @@ async fn call(router: &Router, method: &str, uri: &str) -> (StatusCode, Value) {
     (status, value)
 }
 
+// Fixture decision rules V0-V2. V0 reuses the original Host's selected roles
+// and the same Dispatch store; V1 composes the existing real Session application
+// through its testkit, never a fake command application or another Dispatch
+// queue; V2 cold monitoring/repair keeps using only DurableRunOperations. The
+// supplied clock is the original router clock, also used by the application
+// fixture. These cases do not execute the command roles; real command admission
+// remains covered by the existing Session application and Coordinator HTTP cases.
+async fn durable_router(
+    host: Arc<awaken_session_executor::ExecutorComponents>,
+    clock: Arc<dyn awaken_time::WallClock>,
+) -> Router {
+    let sessions = awaken_protocol_managed_testkit::session_application_from_parts(
+        awaken_session_executor::CoordinatorRoles::of(&host).session_execution(),
+        None,
+        awaken_protocol_managed_testkit::ephemeral_session_repository().await,
+        awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
+        clock.clone(),
+        Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+    );
+    let workspace_host = host.clone();
+    let agent_host = host.clone();
+    let admission = Arc::new(awaken_session_application::SessionRunApplication::new(
+        host.session_runs().clone(),
+        sessions,
+        move |thread| Ok(workspace_host.capabilities().thread_workspace(thread)?),
+        move |thread| Ok(agent_host.capabilities().thread_agent_projection(thread)?),
+    ));
+    durable_ops_router_with_session_admission(
+        host.session_runs().clone(),
+        admission.clone(),
+        admission,
+        clock,
+    )
+}
+
 fn contains_id(list: &Value, key: &str, id: &str) -> bool {
     list[key]
         .as_array()
@@ -117,7 +152,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
         .with_ephemeral_dispatch(any))
     .build()
     .expect("validated Host dependencies");
-    let router = durable_ops_router(host.session_runs().clone(), awaken_time::system_clock());
+    let router = durable_router(host, awaken_time::system_clock()).await;
     let thread = "t-dur";
     let base = format!("/v1/durable/threads/{thread}");
 
@@ -297,7 +332,7 @@ async fn monitoring_reads_committed_dispatches_without_materializing_a_session()
         .await
         .unwrap();
 
-    let router = durable_ops_router(host.session_runs().clone(), awaken_time::system_clock());
+    let router = durable_router(host, awaken_time::system_clock()).await;
     let base = format!("/v1/durable/threads/{thread}");
     let (status, body) = call(&router, "GET", &format!("{base}/dispatches")).await;
     assert_eq!(status, StatusCode::OK, "R1: {body}");
@@ -327,13 +362,11 @@ async fn every_dispatch_read_and_repair_verb_requires_the_one_durable_capability
      * is covered by the lifecycle test above. D2 C1=F,C2=read=>E2; D3
      * C1=F,C2=repair=>E2. This prevents monitoring from becoming a parallel
      * authority/capability path. */
-    let router = durable_ops_router(
-        awaken_session_executor_testkit::volatile_host(Arc::new(OkModel), "stub")
-            .await
-            .session_runs()
-            .clone(),
+    let router = durable_router(
+        awaken_session_executor_testkit::volatile_host(Arc::new(OkModel), "stub").await,
         awaken_time::system_clock(),
-    );
+    )
+    .await;
     for (method, path) in [
         ("GET", "/v1/durable/threads/direct/dispatches"),
         ("GET", "/v1/durable/threads/direct/superseded"),

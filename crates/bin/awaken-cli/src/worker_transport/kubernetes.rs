@@ -1,6 +1,7 @@
 // @formal entrypoint sandbox.k8s_process_observation_requires_complete_exit
 //! Trusted Kubernetes facts lowered into existing Coordinator ports.
 
+use awaken_container_contract::K8sLedgerBinding;
 use awaken_session_execution_contract::ApplicationError;
 use std::sync::Arc;
 
@@ -14,8 +15,8 @@ use awaken_dispatch::{
 };
 use awaken_dispatch::{NativeAttemptFootprint, NativeAttemptTermination};
 use awaken_sandbox_kubernetes::{
-    K8sLedgerBinding, K8sWorkerCreateLedger, PodProcessBinding, PodProcessObserver,
-    PodProcessStopper, PodProcessTermination,
+    K8sWorkerCreateLedger, PodProcessBinding, PodProcessObserver, PodProcessStopper,
+    PodProcessTermination,
 };
 use awaken_worker_contract::{WorkerRelayTargetError, WorkerRelayTargetObserver};
 use awaken_worker_transport_security::kubernetes::{

@@ -11,7 +11,8 @@ use super::{
     realization,
 };
 use awaken_agent_channel::AgentChannel;
-use awaken_sandbox_container::{ContainerPlan, RuntimeError, SandboxControlBindingRequest};
+use awaken_container_contract::RuntimeError;
+use awaken_sandbox_container::{ContainerPlan, SandboxControlBindingRequest};
 use awaken_sandbox_control::SandboxControlServiceKind;
 use awaken_sandbox_control::{
     REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH, SANDBOX_CONTROL_DIRECTORY_PATH,

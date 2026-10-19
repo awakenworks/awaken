@@ -16,8 +16,18 @@
 //! stdio channel reached either by a direct **network dial** to the Service or, when
 //! a rendezvous is set, by **reverse dial** (the egress-fenced Pod dials the host
 //! out). Compile-verified here; running requires a cluster.
+//! Shared Create capture vocabulary is read from its canonical contract:
+//! ```
+//! let profile = awaken_container_contract::CreateReplyProfile::FreshCreate;
+//! assert_eq!(profile.header_value(), "bounded-create-v1");
+//! ```
+//! The old implementation path is absent, preventing a second export route:
+//! ```compile_fail
+//! let _: awaken_sandbox_kubernetes::CreateReplyProfile;
+//! ```
 #![warn(unreachable_pub)]
 
+use awaken_container_contract::RuntimeError;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -47,9 +57,9 @@ use awaken_sandbox_container::engine::sandbox_scope_identity;
 use awaken_sandbox_container::{ContainerObservationExpectation, ContainerRuntime};
 use awaken_sandbox_container::{
     ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
-    ContainerRealizationNamespace, RuntimeError,
+    ContainerRealizationNamespace,
 };
-use awaken_sandbox_container::{CreateTicket, TicketResult, TicketStatus};
+
 pub(crate) mod api_defaults;
 mod channel;
 mod checkpoint;
@@ -140,12 +150,7 @@ pub use sandbox_control::{
     pod_for_plan_with_control_forwarder,
 };
 
-pub use create_ledger::{
-    CreateReplyProfile, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, K8S_CREATE_CAPTURE_HEADER,
-    K8S_CREATE_WIRE_VERSION, K8sLedgerBinding, K8sWorkerCreateLedger, ORIGINAL_GUARD_FINALIZER,
-    REQUEST_DIGEST_ANNOTATION, RequestJoin, TicketAdmission, WorkerCreateLedgerState,
-    collect_create_body, original_request_metadata_matches,
-};
+pub use create_ledger::{K8sWorkerCreateLedger, WorkerCreateLedgerState, collect_create_body};
 pub use create_transport::K8sCreateTransport;
 pub(crate) use create_transport::brokered_client;
 pub use package_image::K8sPackageImageProvisioner;

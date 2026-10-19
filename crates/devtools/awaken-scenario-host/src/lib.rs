@@ -78,7 +78,6 @@ pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_protocol_managed::{
     default_models, files_router, memory_stores_router, models_router, skills_router,
 };
-pub use awaken_dispatch_http::durable_ops_router;
 pub use awaken_session_executor::{
     ExecutorComponents, HostResume, SessionExecutorBuilder, ThreadEvent, ThreadEventHub,
     advertised_tools,

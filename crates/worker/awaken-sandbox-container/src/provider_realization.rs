@@ -6,6 +6,7 @@
 //! parallel environment-realization path.
 
 use super::*;
+use awaken_container_contract::RuntimeError;
 
 impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     /// Physical restore targets run only the provider keepalive and omit every

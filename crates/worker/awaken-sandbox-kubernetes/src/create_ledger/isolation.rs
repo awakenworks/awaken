@@ -8,6 +8,10 @@
 //! The reservation is deliberately retained: releasing its name before the
 //! original API request joins would allow that request to publish late.
 
+use awaken_container_contract::{
+    CreateTicket, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, ORIGINAL_GUARD_FINALIZER,
+    REQUEST_DIGEST_ANNOTATION, TicketResult, original_request_metadata_matches,
+};
 use k8s_openapi::api::admissionregistration::v1::{
     ValidatingAdmissionPolicy, ValidatingAdmissionPolicyBinding,
     ValidatingAdmissionPolicyBindingSpec, ValidatingAdmissionPolicySpec,
@@ -19,17 +23,11 @@ use kube::{Api, Client};
 use serde_json::json;
 
 use super::state::valid_isolation_id;
-use super::{CreateTicket, TicketResult};
+
 use crate::api_defaults;
 use crate::error::{api_conflict, backend};
-use awaken_sandbox_container::RuntimeError;
+use awaken_container_contract::RuntimeError;
 
-pub const ISOLATION_ID_ANNOTATION: &str = "awaken.dev/create-isolation-id";
-pub const REQUEST_DIGEST_ANNOTATION: &str = "awaken.dev/create-request-digest";
-pub const ISOLATION_LABEL: &str = "awaken.dev/create-isolation";
-/// Retains an original Pod until its exact Create result and terminal disposal
-/// have been joined. The existing Pod-finalizer CAS helper owns release.
-pub const ORIGINAL_GUARD_FINALIZER: &str = "awaken.dev/create-result-guard";
 const FINALIZER: &str = ISOLATION_LABEL;
 const PVC_PROTECTION_FINALIZER: &str = "kubernetes.io/pvc-protection";
 const GATE: &str = "awaken.dev/create-isolation";
@@ -163,26 +161,6 @@ fn exact_reservation_metadata(
             .and_then(|labels| labels.get(ISOLATION_LABEL))
             .map(String::as_str)
             == Some("true")
-}
-
-/// Original-request field law shared by typed ledger observations, provider
-/// reservations and broker JSON results. UID admission, nonce presence and
-/// isolation purpose remain with each caller; this grants no effect authority.
-#[must_use]
-pub fn original_request_metadata_matches(
-    request: &super::CreateTicketRequest,
-    nonce: &str,
-    name: Option<&str>,
-    namespace: Option<&str>,
-    observed_nonce: Option<&str>,
-    request_digest: Option<&str>,
-    not_deleting: bool,
-) -> bool {
-    name == Some(request.name.as_str())
-        && namespace == Some(request.namespace.as_str())
-        && observed_nonce == Some(nonce)
-        && request_digest == Some(request.digest.as_str())
-        && not_deleting
 }
 
 fn request_fields_match(ticket: &CreateTicket, metadata: &ObjectMeta) -> bool {
@@ -419,7 +397,8 @@ pub(crate) async fn release_original_guard(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_sandbox_container::{CreateTicketRequest, TicketStatus};
+    use awaken_container_contract::{CreateTicketRequest, TicketStatus};
+
     use http::{Method, Request, Response};
     use kube::client::Body;
     use serde_json::Value;

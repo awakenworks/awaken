@@ -2309,47 +2309,36 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
     );
 }
 
-/// Superseding a run requires durable ingress; a default (direct-ingress) host
-/// must fail closed rather than silently behave like a plain run.
+/// The retired Host supersede command cannot be expressed in either topology;
+/// SessionRuns' H1 compile-fail rule owns that cause before a runtime can run.
 #[tokio::test]
 async fn supersede_run_without_durable_ingress_fails_closed() {
-    // Test design. Causes: C1 supersede is requested while no durable ingress
-    // authority is configured. Effects: E1 the command fails without cancelling
-    // or starting any Run. Constraint/Invariant: supersession is a durable queue
-    // mutation and has no in-memory fallback. Decision rule: execute C1 and
-    // require fail-closed zero side effects.
+    // Cause/effect coverage R1/H1: keep the original lawful direct Run and its
+    // Awaiting result. The old specialized supersede request is now absent from
+    // SessionRuns (paired owner doctests H0/H1), so no such error value exists.
+    // Its former BadRequest and durable-ingress message assertions are retired,
+    // not reproduced with a different failing input or a test-only old method.
+    // This case name remains registered; H1 provides static API exclusion, not
+    // an additional runtime refusal or canonical Session replacement behavior.
     let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel)).await;
-    // Await first so the supersede path is not short-circuited by the awaiting guard
-    // (supersede is allowed on an awaiting thread; the durable check is what must fire).
     let r1 = host
         .session_runs
         .run(None, "t-sup", user("hi"))
         .await
         .expect("Run 1");
     assert!(matches!(r1.state, RunState::Awaiting));
-
-    let err = host
-        .session_runs
-        .supersede_run(None, "t-sup", user("newest wins"))
-        .await
-        .err()
-        .expect("supersede without durable ingress must fail");
-    assert_eq!(err.kind, SessionExecutionErrorKind::BadRequest);
-    assert!(
-        err.message.contains("durable ingress"),
-        "message names the requirement: {}",
-        err.message
-    );
 }
 
 #[tokio::test]
 async fn managed_session_root_rejects_legacy_host_run_ingress() {
     // Cause/effect graph: C1 the Thread is marked as a Managed Session root;
-    // C2 a caller selects ordinary or superseding Host Run ingress. Effects:
-    // E1 both commands fail as bad requests before context realization; E2 the
-    // dispatch authority remains empty. Decision rules: M1 C1+ordinary=>E1+E2;
-    // M2 C1+supersede=>E1+E2. Constraint: Session Run reservation and its
-    // activity receipt remain the sole Managed-root ingress; no Host fallback.
+    // C2 an ordinary Host Run is selected. M1 C1+C2 -> original BadRequest,
+    // Session-owned ingress message, and empty original dispatch (E1/E2).
+    // The old M2 specialized supersede iteration is statically impossible by
+    // SessionRuns H1 and DurableRunOperations O1 owner doctests: runtime
+    // iterations change 2 -> 1. Keep all still-applicable original assertions,
+    // without claiming two runtime refusals. Canonical Session replacement is
+    // allowed for a valid Managed root and is a separate positive behavior.
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
             .await
@@ -2364,21 +2353,16 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
         .installed_sessions
         .install_run("managed-root", |run| run.session_dispatch = true);
 
-    for result in [
-        host.session_runs
-            .run(None, "managed-root", user("ordinary bypass"))
-            .await,
-        host.session_runs
-            .supersede_run(None, "managed-root", user("supersede bypass"))
-            .await,
-    ] {
-        let error = match result {
-            Ok(_) => panic!("Managed root must reject legacy Host ingress"),
-            Err(error) => error,
-        };
-        assert_eq!(error.kind, SessionExecutionErrorKind::BadRequest, "E1");
-        assert!(error.message.contains("Session-owned Run ingress"), "E1");
-    }
+    let result = host
+        .session_runs
+        .run(None, "managed-root", user("ordinary bypass"))
+        .await;
+    let error = match result {
+        Ok(_) => panic!("Managed root must reject legacy Host ingress"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, SessionExecutionErrorKind::BadRequest, "E1");
+    assert!(error.message.contains("Session-owned Run ingress"), "E1");
     assert!(
         dispatch
             .list_dispatches()

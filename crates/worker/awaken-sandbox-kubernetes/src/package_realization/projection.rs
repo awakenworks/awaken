@@ -16,7 +16,7 @@ use super::{
     SANDBOX_SCOPE_ANNOTATION,
 };
 use crate::api_defaults::normalize_pod_spec;
-use awaken_sandbox_container::RuntimeError;
+use awaken_container_contract::RuntimeError;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::batch::v1::JobSpec;
 use k8s_openapi::api::core::v1::ConfigMap;

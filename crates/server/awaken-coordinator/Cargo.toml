@@ -29,9 +29,6 @@ awaken-ext-skills.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-dispatch = { workspace = true, features = ["durable"] }
 awaken-worker-transport-security.workspace = true
-# The original Create broker retains its sole ledger/CAS/UID decision owner.
-# Physical Worker transport selection is performed by the process root.
-awaken-sandbox-container.workspace = true
 # The broker wire is a pure container contract; ledger/Pod mechanics stay
 # in the existing Kubernetes adapter.
 awaken-container-contract = { workspace = true, optional = true }
@@ -163,8 +160,10 @@ test-support = [
 # wake selector. This is the *wake* channel only and is independent of the crate's
 # non-optional `async-nats` used for the ADR-0045 hand relay — do not conflate them.
 nats = ["awaken-dispatch/nats"]
-# The same Coordinator Create broker; physical Worker selection belongs to the CLI.
-container-k8s = ["dep:awaken-container-contract", "awaken-worker-transport-security/kubernetes", "dep:awaken-sandbox-kubernetes", "dep:kube"]
+# The same Coordinator Create broker, until its concrete ledger/API dependency
+# is inverted through the existing contract boundary. Pod coordinates use the
+# default security codec; physical authentication remains selected by the CLI.
+container-k8s = ["dep:awaken-container-contract", "dep:awaken-sandbox-kubernetes", "dep:kube"]
 
 [dev-dependencies]
 # The relay fixture uses the real root invalidation bus.

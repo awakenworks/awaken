@@ -388,9 +388,19 @@ async fn assert_late_hitl_frontier(
     legacy_closed_interval: bool,
 ) {
     let runtime = LifecycleRuntime::default();
-    let warm = ManagedState::new(runtime.clone())
-        .await
-        .with_session_repo(first);
+    let warm = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            first,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -561,7 +571,19 @@ async fn assert_late_hitl_frontier(
         "R2/E4-E5 complete previously issued prefix"
     );
 
-    let cold = ManagedState::new(runtime).await.with_session_repo(second);
+    let cold = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            second,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     cold.refresh_committed_events(id).await.unwrap();
     assert_eq!(
         serde_json::to_value(cold.list_events(id, None, None, false).unwrap().data).unwrap(),

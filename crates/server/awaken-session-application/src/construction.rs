@@ -23,12 +23,38 @@ use crate::{
 };
 
 /// Material ingress always includes the matching credential read capability.
-pub struct SessionCredentials {
+///
+/// O2/O11: the existing construction choice supplies one original authority
+/// allocation. The command service owns its name and exposes no late capability
+/// constructor. These examples check source capability, not secret access.
+///
+/// ```
+/// use std::sync::Arc;
+/// use awaken_session_application::{
+///     CredentialMaterialIngress, SessionCredentialAuthorities, SessionCredentialSource,
+/// };
+/// fn read_only(source: Arc<dyn SessionCredentialSource>) -> SessionCredentialAuthorities {
+///     SessionCredentialAuthorities::read_only(source)
+/// }
+/// fn read_write<T>(authority: Arc<T>) -> SessionCredentialAuthorities
+/// where T: SessionCredentialSource + CredentialMaterialIngress + 'static {
+///     SessionCredentialAuthorities::read_write(authority)
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use std::sync::Arc;
+/// use awaken_session_application::{SessionCredentials, SessionCredentialSource};
+/// fn old_input(source: Arc<dyn SessionCredentialSource>) {
+///     let _ = SessionCredentials::read_only(source);
+/// }
+/// ```
+pub struct SessionCredentialAuthorities {
     source: Arc<dyn SessionCredentialSource>,
     ingress: Option<Arc<dyn CredentialMaterialIngress>>,
 }
 
-impl SessionCredentials {
+impl SessionCredentialAuthorities {
     #[must_use]
     pub fn read_only(source: Arc<dyn SessionCredentialSource>) -> Self {
         Self {
@@ -97,7 +123,7 @@ pub struct SessionApplicationBuilder {
     environments: SessionEnvironments,
     execution: SessionExecutionAdmission,
     configuration: SessionApplicationConfiguration,
-    credentials: Option<SessionCredentials>,
+    credentials: Option<SessionCredentialAuthorities>,
     resources: Option<SessionResources>,
     profiles: Option<Arc<dyn ExecutableAgentProfileSource>>,
     models: Option<Arc<dyn SessionModelPublicationResolver>>,
@@ -157,7 +183,7 @@ impl SessionApplicationBuilder {
     }
 
     #[must_use]
-    pub fn credentials(mut self, credentials: SessionCredentials) -> Self {
+    pub fn credentials(mut self, credentials: SessionCredentialAuthorities) -> Self {
         self.credentials = Some(credentials);
         self
     }
@@ -213,7 +239,18 @@ impl SessionApplicationBuilder {
                 (Some(value.references), Some(value.files), Some(value.purge))
             });
         let started_at = clock.now().as_unix_nanos();
-        let mutations = crate::SessionMutations::new(store.clone(), clock.clone());
+        let mutations = Arc::new(crate::SessionMutations::new(store.clone(), clock.clone()));
+        let credentials = Arc::new(crate::SessionCredentials::new(
+            mutations.clone(),
+            clock.clone(),
+            credential_source,
+            credential_material_ingress,
+        ));
+        let lifecycle = Arc::new(crate::SessionLifecycle::new(
+            mutations.clone(),
+            clock.clone(),
+            store.clone(),
+        ));
         let queries = Arc::new(crate::SessionQueries::new(
             store.clone(),
             self.runtime.projection_handle(),
@@ -230,8 +267,7 @@ impl SessionApplicationBuilder {
             runtime: self.runtime,
             tool_configuration_compiler: self.tool_configuration_compiler,
             mcp_realizer: self.mcp,
-            credential_source,
-            credential_material_ingress,
+            credentials,
             environments: self.environments,
             config_source: self.profiles,
             model_publication_resolver: self.models,
@@ -241,12 +277,11 @@ impl SessionApplicationBuilder {
             resource_files,
             managed_list_prices: self.prices,
             mutations,
+            lifecycle,
             queries,
             inputs,
             environment_binding_sink,
-            lifecycle_outbox: store,
             executable_projection_refresh: self.refresh,
-            lifecycle_notifier: std::sync::OnceLock::new(),
             execution_admission: self.execution,
             session_preparation_cursors: tokio::sync::Mutex::new(std::collections::BTreeMap::new()),
             runtime_incarnation: format!(
@@ -256,8 +291,6 @@ impl SessionApplicationBuilder {
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ),
             local_realization_locks: Arc::default(),
-            lifecycle_supervisor_started: std::sync::atomic::AtomicBool::new(false),
-            lifecycle_wakeup: tokio::sync::Notify::new(),
             event_batch_cutover_validation: Arc::default(),
         })
     }

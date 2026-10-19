@@ -120,7 +120,7 @@ impl SessionApplication {
                 .await
             {
                 Ok(commit) => {
-                    self.wake_lifecycle_supervisor();
+                    self.lifecycle.request_reconciliation();
                     return Ok(commit.into_session());
                 }
                 Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
@@ -797,7 +797,7 @@ impl SessionApplication {
             })?
             .into_session();
         if ready_fact.is_some() {
-            self.notify_lifecycle_fact();
+            self.lifecycle.notify_fact();
         }
         self.realization_directive(
             owner_scope,
@@ -950,7 +950,7 @@ impl SessionApplication {
                 error => unavailable(error),
             })?;
         if emitted_runtime_interval {
-            self.notify_lifecycle_fact();
+            self.lifecycle.notify_fact();
         }
         Ok(())
     }

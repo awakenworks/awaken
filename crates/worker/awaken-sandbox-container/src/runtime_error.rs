@@ -1,88 +1,7 @@
-//! Container runtime failure classes and their mapping onto the Sandbox port.
+//! Docker source-type classification for the canonical container failure value.
 
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract as pc;
-
-/// A container/pod runtime failure.
-#[derive(Debug, thiserror::Error)]
-pub enum RuntimeError {
-    #[error("container {0:?} not found")]
-    NotFound(String),
-    #[error("container runtime failed: {0}")]
-    Backend(String),
-    /// The backend API rejected the request because the addressed object's
-    /// current state contradicts it (HTTP 409).
-    #[error("container runtime conflict: {0}")]
-    Conflict(String),
-    /// The backend API refused the caller's credentials or authority
-    /// (HTTP 401/403).
-    #[error("container runtime refused authority: {0}")]
-    Unauthorized(String),
-    /// The backend has no room for this request now: a Kubernetes namespace
-    /// quota refused the Create (which therefore had no API effect), or the
-    /// scheduler could not place the Pod within the configured bound
-    /// (ADR-0092). Another Worker, a raised quota or a new node may succeed.
-    #[error("container runtime has no capacity: {0}")]
-    CapacityUnavailable(String),
-    /// The adapter crossed a backend mutation boundary and could not prove
-    /// whether that exact effect converged. Callers must retain every staged
-    /// participant that the physical object may still reference; treating this
-    /// as an ordinary backend rejection would turn response loss into dangling
-    /// host binds or prematurely torn-down Memory mounts.
-    #[error("container runtime effect may have committed: {0}")]
-    MayHaveCommitted(String),
-    /// The current invocation reached another idempotent provider boundary
-    /// after its immutable effect generation was renewed. The caller may retry
-    /// only that same effect with a monotonic fence supplied by the existing
-    /// Session authority; it must retain all staged participants meanwhile.
-    #[error("container runtime effect fence expired before the next provider boundary")]
-    EffectFenceExpired,
-}
-
-impl From<RuntimeError> for pc::SandboxError {
-    /// The runtime adapter already distinguishes absence, a stale fence, and an
-    /// effect whose outcome is unknown; keep those classes at the port.
-    fn from(error: RuntimeError) -> Self {
-        let detail = error.to_string();
-        match error {
-            RuntimeError::NotFound(_) => Self::NotFound(detail),
-            RuntimeError::EffectFenceExpired => Self::FenceRejected(detail),
-            RuntimeError::MayHaveCommitted(_) => Self::Transport(detail),
-            RuntimeError::Conflict(_) => Self::Conflict(detail),
-            RuntimeError::Unauthorized(_) => Self::Unauthorized(detail),
-            RuntimeError::CapacityUnavailable(_) => Self::CapacityUnavailable(detail),
-            RuntimeError::Backend(cause) => Self::backend("container runtime", cause),
-        }
-    }
-}
-
-impl RuntimeError {
-    /// Classify a backend API response by its HTTP status. Only the statuses
-    /// callers act on get their own class; every other response stays a
-    /// mechanism failure.
-    pub fn from_api_status(status: u16, detail: String) -> Self {
-        match status {
-            404 => Self::NotFound(detail),
-            409 => Self::Conflict(detail),
-            401 | 403 => Self::Unauthorized(detail),
-            _ => Self::Backend(detail),
-        }
-    }
-
-    /// Classify an error observed after this invocation crossed its first
-    /// backend mutation boundary. The wrapper is idempotent so nested runtime
-    /// adapters cannot erase the stronger outcome. A capacity refusal keeps its
-    /// class: the refused request itself had no effect, and every participant
-    /// an earlier step created belongs to the same exact effect identity, which
-    /// the next attempt recovers or the existing disposal removes.
-    pub fn after_mutation(self) -> Self {
-        match self {
-            Self::MayHaveCommitted(_) | Self::EffectFenceExpired | Self::CapacityUnavailable(_) => {
-                self
-            }
-            error => Self::MayHaveCommitted(error.to_string()),
-        }
-    }
-}
 
 /// A failure the Docker adapter turns into [`RuntimeError`].
 ///
@@ -194,6 +113,23 @@ mod api_status_classification_tests {
         // observed after a mutation boundary still becomes MayHaveCommitted,
         // because absence/conflict after a possible effect is not proof.
         assert_eq!(port_class("io".into_runtime_error()), "Backend", "M1");
+        // E3: rendered status/quota-looking mechanism text has no typed API
+        // status. Docker's real source trait must keep Backend; a genuine
+        // Docker 403 keeps Unauthorized even when its detail mentions quota.
+        for detail in ["HTTP 404 NotFound", "403 exceeded quota", "409 conflict"] {
+            assert_eq!(port_class(detail.into_runtime_error()), "Backend", "E3");
+        }
+        assert_eq!(
+            port_class(
+                bollard::errors::Error::DockerResponseServerError {
+                    status_code: 403,
+                    message: "exceeded quota".into(),
+                }
+                .into_runtime_error()
+            ),
+            "Unauthorized",
+            "E3: Kubernetes quota overlay does not classify Docker",
+        );
         assert!(matches!(
             RuntimeError::from_api_status(409, "taken".into()).after_mutation(),
             RuntimeError::MayHaveCommitted(_)

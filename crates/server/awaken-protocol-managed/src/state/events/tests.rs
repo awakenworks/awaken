@@ -8,13 +8,13 @@
 // @formal evidence session_event_batch.idempotency_key_appends_at_most_once
 // @formal evidence tool_result.pending_commit_coordinate_is_exact
 // @formal evidence tool_result.terminal_run_rejects_late_result
-// awaken-allow(file-limit-ceiling): 13645 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 13018 (legacy oversized test file: split, never grow)
 use awaken_session_repository_contract::{LifecycleOutbox as _, SessionRepositoryReads};
-use awaken_session_execution_contract::{
-    SessionCoordinationReads as _, StreamingRunRuntime as _, ThreadReadRuntime as _,
-};
+use awaken_session_execution_contract::ThreadReadRuntime as _;
 use awaken_session_types::SessionId;
 mod activation_failure_time;
+mod lifecycle_runtime;
+use lifecycle_runtime::LifecycleRuntime;
 mod budget_reach;
 mod cancelled_model;
 mod damaged_await_health;
@@ -47,8 +47,8 @@ use awaken_tool_contract::tool_batch::ToolBatch;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tower::ServiceExt as _;
 
 #[tokio::test]
@@ -59,9 +59,19 @@ async fn indeterminate_root_projects_one_standard_error_across_warm_and_cold_rea
     // This closes the silent end_turn projection of a watchdog-abandoned model.
     let runtime = LifecycleRuntime::default();
     let repository = Arc::new(ephemeral_session_repo().await);
-    let warm = ManagedState::new(runtime.clone())
-        .await
-        .with_session_repo(repository.clone());
+    let warm = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -110,9 +120,19 @@ async fn indeterminate_root_projects_one_standard_error_across_warm_and_cold_rea
         )
         .await
         .unwrap();
-    let cold = ManagedState::new(runtime)
-        .await
-        .with_session_repo(repository);
+    let cold = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let mut previous = None;
     for state in [&warm, &warm, &cold] {
         state.refresh_committed_events(&session.id).await.unwrap();
@@ -593,9 +613,19 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
     // | P2 | T | T | cold | E1 + E2 + E3 + E4 |
     let runtime = LifecycleRuntime::default();
     let repository = Arc::new(ephemeral_session_repo().await);
-    let warm = ManagedState::new(runtime.clone())
-        .await
-        .with_session_repo(repository.clone());
+    let warm = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -720,9 +750,19 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
         "P1/E2 processed marker"
     );
 
-    let cold = ManagedState::new(runtime)
-        .await
-        .with_session_repo(repository);
+    let cold = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     cold.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
         cold.list_events(&session.id, None, None, false)
@@ -949,847 +989,6 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for AdvisorP
     }
 }
 
-#[derive(Clone, Default)]
-struct LifecycleRuntime {
-    messages: Arc<Mutex<Vec<Message>>>,
-    message_cursors: Arc<Mutex<Vec<u64>>>,
-    audit_events: Arc<Mutex<Vec<awaken_agent_contract::audit::record::Record>>>,
-    lifecycle: Arc<Mutex<Vec<RunLifecycleEvent>>>,
-    state: Arc<Mutex<Vec<awaken_agent_contract::agent::state::Command>>>,
-    state_cursors: Arc<Mutex<Vec<u64>>>,
-    outcome_projections: Arc<
-        Mutex<
-            std::collections::HashMap<
-                String,
-                awaken_session_execution_contract::CommittedOutcomeProjection,
-            >,
-        >,
-    >,
-    /// Causal test hook: expose one complete Outcome commit when its terminal
-    /// projection is observed, modeling a commit between the projection and
-    /// root-snapshot reads without manufacturing a partial transaction.
-    outcome_commit_on_read: Arc<Mutex<Vec<(awaken_agent_contract::agent::state::Command, u64)>>>,
-    /// Pause one existing Runtime read so a real root CAS can win while the
-    /// original transport has already begun cold recovery. No receipt is faked.
-    reads: crate::state::test_support::ReadControl,
-    pending: Arc<Mutex<Option<Pending>>>,
-    /// The audited target of every pause a live ticket opened (see
-    /// `awaken_protocol_managed_testkit::remember_ticket_await_target`).
-    await_targets: Arc<Mutex<awaken_protocol_managed_testkit::AwaitTargets>>,
-    /// Awaiting commits that model a legacy audit row without a target.
-    unaudited_awaits: Arc<Mutex<std::collections::HashSet<RunLifecycleCursor>>>,
-    /// Advance only the committed Thread coordinate for a finite/infinite burst
-    /// at the existing snapshot port; zero preserves every ordinary fixture.
-    projection_version_changes: Arc<AtomicUsize>,
-    split_message_reads: Arc<AtomicUsize>,
-    split_pending_reads: Arc<AtomicUsize>,
-    coordinated_roots: Arc<Mutex<Vec<Option<u64>>>>,
-}
-
-impl LifecycleRuntime {
-    /// Install one atomic committed-message prefix with the exact Runtime
-    /// commit coordinates consumed by the production projector. Keeping the
-    /// two vectors together prevents a test from inventing a transcript that
-    /// no production recovery backend can return.
-    fn replace_committed_messages(&self, entries: Vec<(u64, Message)>) {
-        let (cursors, messages): (Vec<_>, Vec<_>) = entries.into_iter().unzip();
-        *self.messages.lock().unwrap() = messages;
-        *self.message_cursors.lock().unwrap() = cursors;
-    }
-
-    fn push_committed_message(&self, cursor: u64, message: Message) {
-        let mut messages = self.messages.lock().unwrap();
-        let mut cursors = self.message_cursors.lock().unwrap();
-        assert_eq!(
-            messages.len(),
-            cursors.len(),
-            "fixture transcript and commit coordinates must stay aligned"
-        );
-        messages.push(message);
-        cursors.push(cursor);
-    }
-}
-
-#[async_trait]
-impl SessionRuntime for LifecycleRuntime {
-    async fn run(
-        &self,
-        _agent: &str,
-        _thread: &str,
-        _content: Vec<ContentBlock>,
-    ) -> Result<StepOutcome, RunError> {
-        unreachable!()
-    }
-
-    async fn resume(
-        &self,
-        _thread: &str,
-        _tool_use_id: &str,
-        _decision: ToolPermissionDecision,
-    ) -> Result<StepOutcome, RunError> {
-        unreachable!()
-    }
-
-    async fn resume_custom(
-        &self,
-        _thread: &str,
-        _tool_use_id: &str,
-        _content: Vec<ContentBlock>,
-        _is_error: bool,
-    ) -> Result<StepOutcome, RunError> {
-        unreachable!()
-    }
-
-    fn model(&self) -> String {
-        "test-model".into()
-    }
-}
-
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for LifecycleRuntime);
-
-awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for LifecycleRuntime);
-
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for LifecycleRuntime);
-
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for LifecycleRuntime);
-
-awaken_session_execution_contract::neutral_role!(CapabilityRuntime for LifecycleRuntime);
-
-#[async_trait::async_trait]
-impl awaken_session_execution_contract::RealizationRuntime for LifecycleRuntime {
-    fn observe_realization_request(
-        &self,
-    ) -> Result<
-        awaken_lease_contract::authority::AuthorityProofStarted,
-        awaken_session_types::RunError,
-    > {
-        awaken_protocol_managed_testkit::observe_realization_request()
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Reconcile the existing Runtime projections through the given Control
-    /// owner. Local and Worker deployment use one slot-based selection and
-    /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
-    async fn renew_session_realization_projections(
-        &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
-        owner: &str,
-        runtime_incarnation: &str,
-        timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
-    ) -> Result<usize, awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
-            .await
-    }
-
-    async fn install_session_projection(
-        &self,
-        thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
-        awaken_protocol_managed_testkit::complete_session_projection_init(
-            thread,
-            &projection,
-            &mode,
-        )?;
-        Ok(())
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Install a monotonic same-owner/same-incarnation/same-epoch successor of
-    /// an already-installed realization fence. This is the only lease-only
-    /// Runtime mutation; it deliberately carries no projection or phase action.
-    async fn renew_session_realization_lease(
-        &self,
-        thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .renew_session_realization_lease(thread, lease)
-            .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Forget one failed realization fence from disposable Runtime state. The
-    /// aggregate remains the sole lease authority: this hook only prevents a
-    /// later retry from authorizing effects with a lease that Control has
-    /// already failed or may have failed before losing its response.
-    async fn invalidate_session_realization_lease(
-        &self,
-        thread: &str,
-        lease: &crate::session_resource::SessionRealizationLease,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .invalidate_session_realization_lease(thread, lease)
-            .await
-    }
-}
-
-awaken_session_execution_contract::neutral_role!(RealizationEffects for LifecycleRuntime);
-
-#[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for LifecycleRuntime {
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Persist one complete self-affine Session Run as an unclaimable reservation.
-    /// Implementations must use their existing durable Run dispatch authority;
-    /// the default fails closed rather than executing inline.
-    async fn reserve_session_run(
-        &self,
-        command: awaken_session_execution_contract::AdmitSessionRun,
-    ) -> Result<
-        awaken_session_execution_contract::SessionRunReservation,
-        awaken_session_types::RunError,
-    > {
-        awaken_session_execution_contract::NeutralRuntime
-            .reserve_session_run(command)
-            .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Publish one exact reservation only after the Session root committed its
-    /// activity epoch. Ordinary Worker claim/execution remains the sole runner.
-    async fn activate_session_run(
-        &self,
-        delivery: awaken_session_execution_contract::SessionRunDelivery,
-    ) -> Result<awaken_session_execution_contract::SessionRunActivation, awaken_session_types::RunError>
-    {
-        awaken_session_execution_contract::NeutralRuntime
-            .activate_session_run(delivery)
-            .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Register a foreground observer before publishing a delivery, then wait
-    /// for the exact committed Run to become `Awaiting` or `Ended`.
-    ///
-    /// The admission plan is produced only after the Session application has
-    /// committed its exact activity receipt. Recovery-only plans still wait on
-    /// committed Thread truth and never create another reservation/activity.
-    /// Public queued Event acceptance has its own durable command boundary and
-    /// does not wait through this foreground observation port.
-    async fn activate_and_observe_session_run(
-        &self,
-        admission: awaken_session_execution_contract::AdmittedSessionRun,
-        input_message_ids: Vec<String>,
-        sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-    ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
-    {
-        awaken_session_execution_contract::NeutralRuntime
-            .activate_and_observe_session_run(admission, input_message_ids, sink)
-            .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Admit one ordinary child Run after the Session application has validated
-    /// the frozen roster and lifecycle. Implementations must use their canonical
-    /// durable Run ingress; the default fails closed rather than spawning a
-    /// process-local task.
-    async fn admit_coordinated_run(
-        &self,
-        command: awaken_session_execution_contract::CoordinatedRunCommand,
-    ) -> Result<
-        awaken_session_execution_contract::SessionAgentMessageReceipt,
-        awaken_session_types::RunError,
-    > {
-        awaken_session_execution_contract::NeutralRuntime
-            .admit_coordinated_run(command)
-            .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Subscribe to neutral live observations for one already-admitted root or
-    /// child logical Thread. `None` is the fail-closed default: committed events
-    /// remain available, but no Runtime without an exact Thread-scoped observer
-    /// can accidentally leak previews across Threads. This port is a view over
-    /// the Runtime's existing live hub, not another fan-out or replay owner.
-    async fn subscribe_session_thread_live(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<
-        Option<Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>>,
-        awaken_session_types::RunError,
-    > {
-        awaken_session_execution_contract::NeutralRuntime
-            .subscribe_session_thread_live(session_id, thread_id)
-            .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Admit one Session-approved child report as immutable input of the
-    /// deterministic primary Run. Implementations must not stage a parallel
-    /// Outbox/Inbox message for this internal Agent-to-Agent transfer.
-    async fn continue_session_agent_report(
-        &self,
-        command: awaken_session_execution_contract::SessionAgentReportContinuation,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .continue_session_agent_report(command)
-            .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Interrupt one logical child through its parent Session's physical commit
-    /// and dispatch partition. Implementations must not open child-named storage.
-    async fn interrupt_session_thread(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        child_thread_id: &awaken_agent_contract::agent::thread::Id,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .interrupt_session_thread(session_id, child_thread_id)
-            .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Reply to the exact pending tool of a Primary or logical child Thread
-    /// through the Session-affine claim-fenced resume/commit boundary.
-    async fn reply_session_thread_tool(
-        &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .reply_session_thread_tool(delivery)
-            .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Foreground form of [`Self::reply_session_thread_tool`]. The durable
-    /// reply ingress remains identical; implementations additionally register
-    /// before publication and project the next committed Step from Thread
-    /// truth. No inline executor is authorized by this observation policy.
-    async fn reply_and_observe_session_thread_tool(
-        &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
-        stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-    ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
-    {
-        awaken_session_execution_contract::NeutralRuntime
-            .reply_and_observe_session_thread_tool(delivery, stream_sink)
-            .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Stop the parent Run, wait until it can no longer commit a delegation, and
-    /// then read the complete child set from durable runtime authority.
-    async fn quiesce_terminal_delegations(
-        &self,
-        thread: &str,
-    ) -> Result<
-        awaken_session_application_contract::DelegatedRunSnapshot,
-        awaken_session_types::RunError,
-    > {
-        self.interrupt(thread).await?;
-        Ok(awaken_session_application_contract::DelegatedRunSnapshot {
-            delegated_runs: self.delegated_runs(thread).await?,
-            coordinated_thread_ids: Vec::new(),
-            watermark: 0,
-            runtime_commit_cursor: self
-                .session_thread_recovery_snapshot(
-                    &awaken_session_types::SessionId::from(thread),
-                    thread,
-                )
-                .await?
-                .map(|snapshot| snapshot.store_cursor)
-                .unwrap_or_default(),
-        })
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Commit the absorbing archive disposition on one logical child Thread
-    /// through its parent Session partition. Implementations must not mutate a
-    /// protocol cache or open child-named storage.
-    async fn archive_session_thread(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .archive_session_thread(session_id, thread_id)
-            .await
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_session_execution_contract::SessionCoordinationReads for LifecycleRuntime {
-    async fn source_dispatch_observation(
-        &self,
-        _session: &awaken_session_state_contract::PersistedSession,
-    ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
-        Default::default()
-    }
-
-    async fn coordinated_admission_receipt(
-        &self,
-        command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
-    ) -> Result<
-        Option<awaken_session_execution_contract::SessionAgentMessageReceipt>,
-        awaken_session_types::RunError,
-    > {
-        awaken_session_execution_contract::NeutralRuntime
-            .coordinated_admission_receipt(command)
-            .await
-    }
-
-    async fn session_run_state(
-        &self,
-        session_id: &SessionId,
-        run_id: &RunId,
-    ) -> Result<Option<RunState>, RunError> {
-        Ok(self
-            .lifecycle
-            .lock()
-            .unwrap()
-            .iter()
-            .rev()
-            .find(|event| event.thread_id.0 == session_id && &event.run_id == run_id)
-            .map(|event| event.state.clone()))
-    }
-
-    /// Read the runtime-owned, durable child-Run relationships for `thread`.
-    /// Protocol adapters use this only to rebuild disposable projections after a
-    /// restart; the runtime relationship registry remains the sole authority.
-    async fn delegated_runs(
-        &self,
-        thread: &str,
-    ) -> Result<
-        Vec<awaken_session_application_contract::DelegatedRun>,
-        awaken_session_types::RunError,
-    > {
-        awaken_session_execution_contract::NeutralRuntime
-            .delegated_runs(thread)
-            .await
-    }
-
-    async fn coordinated_threads(
-        &self,
-        session_id: &SessionId,
-        observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-    ) -> Result<Vec<CoordinatedThreadLink>, RunError> {
-        if let Some(root) = observed_root {
-            assert_eq!(root.thread_id.0, session_id, "query reuses its own root");
-        }
-        self.coordinated_roots
-            .lock()
-            .unwrap()
-            .push(observed_root.map(|root| root.thread_version));
-        Ok(Vec::new())
-    }
-
-    /// Read and validate the exact committed Awaiting coordinate that a Primary
-    /// or child Thread tool reply intends to answer. The command already carries
-    /// its admission-time Run/correlation identity; this returns only the current
-    /// dispatch activity coordinate. Implementations revalidate the command when
-    /// applying the reply so a concurrent resume or later Run fails closed.
-    async fn session_thread_tool_reply_fence(
-        &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<
-        awaken_session_execution_contract::SessionThreadToolReplyFence,
-        awaken_session_types::RunError,
-    > {
-        awaken_session_execution_contract::NeutralRuntime
-            .session_thread_tool_reply_fence(command)
-            .await
-    }
-
-    /// Validate one model-facing Agent command against the source Run's exact
-    /// committed `ActiveToolBatch`. Implementations must use the same atomic
-    /// Thread recovery prefix as ordinary crash recovery; a process-local tool
-    /// context or authenticated Worker claim alone is not sufficient proof of
-    /// call identity or payload. Success returns the command reconstructed from
-    /// that committed prefix; Session policy consumes that value instead of
-    /// trusting a second copy supplied by the caller. The fail-closed default
-    /// keeps lightweight runtimes from silently becoming a second trusted
-    /// command source.
-    async fn validate_session_agent_message_source(
-        &self,
-        command: &awaken_session_execution_contract::SessionAgentMessageCommand,
-    ) -> Result<
-        awaken_session_execution_contract::SessionAgentMessageCommand,
-        awaken_session_types::RunError,
-    > {
-        awaken_session_execution_contract::NeutralRuntime
-            .validate_session_agent_message_source(command)
-            .await
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_session_execution_contract::StreamingRunRuntime for LifecycleRuntime {
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Run one request with its protocol-projected, backend-neutral content
-    /// owner. Adapters that do not support attributed capture may use the
-    /// compatibility default; runtime hosts override it and persist attribution
-    /// on the durable activation.
-    async fn run_attributed(
-        &self,
-        agent: &str,
-        thread: &str,
-        content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
-        _data_subject_id: Option<String>,
-    ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
-    {
-        self.run(agent, thread, content).await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Run one user request, installing `sink` as the Run's best-effort live-progress
-    /// channel so the adapter can project in-flight `stream::Kind` into
-    /// `event_start`/`event_delta` previews. The committed [`awaken_session_application_contract::StepOutcome`] is
-    /// identical to [`run`](Self::run) — the sink only mirrors in-flight events. The
-    /// default ignores the sink and delegates to `run`, so a host without a
-    /// streaming path (or a test double) is unaffected.
-    async fn run_streaming(
-        &self,
-        agent: &str,
-        thread: &str,
-        content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
-        _sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
-    {
-        self.run(agent, thread, content).await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Streaming counterpart of [`run_attributed`](Self::run_attributed).
-    async fn run_streaming_attributed(
-        &self,
-        agent: &str,
-        thread: &str,
-        content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
-        _data_subject_id: Option<String>,
-        sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
-    {
-        self.run_streaming(agent, thread, content, sink).await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Interrupt the run in flight on `thread` (a `user.interrupt`): cancel it so
-    /// an in-progress outcome ends `interrupted`. A no-op when nothing is running.
-    async fn interrupt(&self, thread: &str) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .interrupt(thread)
-            .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Rebind `thread` to `model` for its subsequent Runs (R5, per-Run override).
-    /// The default is a no-op, so a host without per-thread model routing is
-    /// unaffected; the server impl re-stages the thread's model and evicts the
-    /// cached context so the next Run resolves the new executor.
-    async fn rebind_model(
-        &self,
-        thread: &str,
-        model: &str,
-    ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .rebind_model(thread, model)
-            .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Whether the thread's selected model accepts a system message after the
-    /// conversation has started. Runtimes whose models do not support this can
-    /// fail admission before the Managed adapter persists the inbound event.
-    async fn supports_mid_conversation_system(
-        &self,
-        thread: &str,
-    ) -> Result<bool, awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .supports_mid_conversation_system(thread)
-            .await
-    }
-
-    async fn pending_tool(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
-        self.split_pending_reads.fetch_add(1, Ordering::SeqCst);
-        Ok(self.pending.lock().unwrap().clone())
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for LifecycleRuntime {
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// True when durable truth already exists for `thread`. Session-id minting
-    /// consults this to skip ids a previous process persisted; implementations
-    /// MUST answer without materializing any per-thread state (no context
-    /// build, no cache entry) — probing must be free of side effects. The
-    /// default reports nothing, so an ephemeral host mints densely from 0.
-    async fn owns_thread(&self, thread: &str) -> Result<bool, awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .owns_thread(thread)
-            .await
-    }
-
-    async fn committed_messages(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
-        self.split_message_reads.fetch_add(1, Ordering::SeqCst);
-        Ok(self.messages.lock().unwrap().clone())
-    }
-
-    async fn session_thread_recovery_snapshot(
-        &self,
-        _session_id: &SessionId,
-        thread_id: &str,
-    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
-    {
-        let read_index = self
-            .reads
-            .on_read("recovery")
-            .await
-            .map_err(|_| RunError::unavailable("scripted cold recovery snapshot failure"))?;
-        let lifecycle = self.lifecycle.lock().unwrap().clone();
-        let Some(run_id) = lifecycle
-            .iter()
-            .rev()
-            .find(|event| event.thread_id.0 == thread_id)
-            .map(|event| event.run_id.clone())
-        else {
-            return Ok(None);
-        };
-        let resume_tickets: Vec<awaken_agent_contract::thread::read::recovery::RunResumeTicket> = self
-            .pending
-            .lock()
-            .unwrap()
-            .clone()
-            .map(
-                |pending| awaken_agent_contract::thread::read::recovery::RunResumeTicket {
-                    run_id: run_id.clone(),
-                    ticket: awaken_agent_contract::agent::awaiting::ResumeTicket::new(
-                        format!("ticket:{}", pending.tool_use_id),
-                        run_id.clone(),
-                        ThreadId(thread_id.to_string()),
-                        "test-snapshot",
-                        "test-catalog",
-                        awaken_agent_contract::agent::awaiting::AwaitTarget::ToolCall {
-                            reason: if pending.client_executed {
-                                awaken_agent_contract::agent::awaiting::ToolAwaitReason::ClientExecution
-                            } else {
-                                awaken_agent_contract::agent::awaiting::ToolAwaitReason::Permission
-                            },
-                            call_id: pending.tool_use_id,
-                            tool: awaken_agent_contract::agent::awaiting::PendingTool {
-                                tool_id: pending.name,
-                                arguments: pending.input,
-                            },
-                            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
-                        },
-                    ),
-                },
-            )
-            .into_iter()
-            .collect();
-        let runs = {
-            let mut runs = Vec::<awaken_agent_contract::agent::run::Record>::new();
-            for event in lifecycle
-                .iter()
-                .filter(|event| event.thread_id.0 == thread_id)
-            {
-                if let Some(run) = runs.iter_mut().find(|run| run.id == event.run_id) {
-                    run.state = event.state.clone();
-                } else {
-                    runs.push(awaken_agent_contract::agent::run::Record {
-                        id: event.run_id.clone(),
-                        thread_id: event.thread_id.clone(),
-                        state: event.state.clone(),
-                    });
-                }
-            }
-            runs
-        };
-        let messages = self.messages.lock().unwrap().clone();
-        let message_commit_cursors = self.message_cursors.lock().unwrap().clone();
-        let state = self.state.lock().unwrap().clone();
-        let state_commit_cursors = self.state_cursors.lock().unwrap().clone();
-        let store_cursor = lifecycle
-            .iter()
-            .map(|event| event.source_commit_cursor)
-            .chain(message_commit_cursors.iter().copied())
-            .chain(state_commit_cursors.iter().copied())
-            .max()
-            .unwrap_or_default();
-        // One fixture commit owns transitions and enriched audit payloads.
-        // An explicit row supplies details such as an historical await target
-        // at that exact coordinate; it cannot exist only on a second feed.
-        let mut audit = awaken_protocol_managed_testkit::fixture_thread_audit(
-            &lifecycle,
-            thread_id,
-            u64::MAX,
-            resume_tickets.first().map(|ticket| ticket.ticket.target()),
-            &self.unaudited_awaits.lock().unwrap(),
-            &mut self.await_targets.lock().unwrap(),
-        );
-        for explicit in self.audit_events.lock().unwrap().iter().cloned() {
-            if let Some(existing) = audit.iter_mut().find(|record| {
-                record.sequence == explicit.sequence && record.run_id == explicit.run_id
-            }) {
-                *existing = explicit;
-            } else {
-                audit.push(explicit);
-            }
-        }
-        audit.sort_by_key(|record| record.sequence);
-        Ok(Some(
-            awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
-                commit_timestamps: Default::default(),
-                thread_id: ThreadId(thread_id.to_string()),
-                claimed_run_id: run_id.clone(),
-                runs,
-                latest_run_id: Some(run_id),
-                messages,
-                message_commit_cursors,
-                state,
-                state_commit_cursors,
-                events: audit,
-                resume_tickets,
-                thread_version: lifecycle.len() as u64
-                    + read_index.min(self.projection_version_changes.load(Ordering::SeqCst)) as u64,
-                store_cursor,
-                next_commit_ordinal: 0,
-            },
-        ))
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Read one exact committed Run through the same internally consistent
-    /// logical-Thread prefix. Settlement already owns the immutable Run id from
-    /// its guarded dispatch and must not rediscover it through a process-local
-    /// "latest Run" projection.
-    ///
-    /// The compatibility default filters the existing Thread snapshot. Shared
-    /// durable adapters override this method so a cold replica can query its
-    /// authoritative [`RunRecoverySource`](awaken_agent_contract::thread::read::recovery::RunRecoverySource)
-    /// directly by `run_id`.
-    async fn session_thread_run_recovery_snapshot(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-        run_id: &awaken_agent_contract::agent::run::Id,
-    ) -> Result<
-        Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-        awaken_session_types::RunError,
-    > {
-        awaken_session_execution_contract::select_recovery_snapshot_run(
-            self.session_thread_recovery_snapshot(session_id, thread_id)
-                .await?,
-            run_id,
-        )
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Read the durable disposition of one logical child Thread through its
-    /// parent Session's physical commit partition. Legacy Threads without the
-    /// state cell remain Active.
-    async fn session_thread_disposition(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<awaken_agent_contract::ThreadDisposition, awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .session_thread_disposition(session_id, thread_id)
-            .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-
-    async fn committed_outcome_projection(
-        &self,
-        _thread: &str,
-        outcome_id: &str,
-    ) -> Result<Option<awaken_session_execution_contract::CommittedOutcomeProjection>, RunError> {
-        let projection = self
-            .outcome_projections
-            .lock()
-            .unwrap()
-            .get(outcome_id)
-            .cloned();
-        if projection.is_some() {
-            let committed = std::mem::take(&mut *self.outcome_commit_on_read.lock().unwrap());
-            let (commands, cursors): (Vec<_>, Vec<_>) = committed.into_iter().unzip();
-            self.state.lock().unwrap().extend(commands);
-            self.state_cursors.lock().unwrap().extend(cursors);
-        }
-        Ok(projection)
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for LifecycleRuntime {
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Persist one Outcome aggregate without executing a Worker or Grader Run.
-    /// The opaque id is supplied by the application command so crash replay and
-    /// activity admission share one stable operation identity.
-    async fn prepare_outcome(
-        &self,
-        thread: &str,
-        outcome_id: &str,
-        description: &str,
-        rubric: &str,
-        max_iterations: u32,
-    ) -> Result<u64, awaken_session_types::RunError> {
-        awaken_session_execution_contract::NeutralRuntime
-            .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
-            .await
-    }
-
-    async fn define_outcome(
-        &self,
-        _thread: &str,
-        _description: &str,
-        _rubric: &str,
-        _max_iterations: u32,
-    ) -> Result<OutcomeDrive, RunError> {
-        unreachable!()
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Continue the active Outcome after the ordinary Run resume has committed.
-    /// `None` proves there is no active aggregate; implementations must rebuild
-    /// continuation exclusively from the Thread-owned Outcome state.
-    async fn continue_outcome(
-        &self,
-        thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
-        awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
-            .await
-    }
-}
-
 /// One Thread's exact committed lifecycle and its sole audited target join.
 /// Test consumers use the same snapshot that the projection source would lend.
 fn committed_await_evidence(
@@ -1874,11 +1073,19 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
     // unkeyed requests remain owned by the ordinary cold-admission table.
     let runtime = LifecycleRuntime::default();
     let repository = Arc::new(ephemeral_session_repo().await);
-    let state = Arc::new(
-        ManagedState::new(runtime.clone())
-            .await
-            .with_session_repo(repository),
-    );
+    let state = Arc::new({
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    });
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -2001,11 +1208,19 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
     ] {
         let runtime = LifecycleRuntime::default();
         let repository = Arc::new(ephemeral_session_repo().await);
-        let state = Arc::new(
-            ManagedState::new(runtime.clone())
-                .await
-                .with_session_repo(repository.clone()),
-        );
+        let state = Arc::new({
+            let session_fixture_runtime = runtime.clone();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repository.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        });
         let session = state
             .create_session(
                 serde_json::from_value(serde_json::json!({
@@ -2299,9 +1514,19 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
         .await;
         let runtime = RehydrateFake::default();
         runtime.lifecycle.lock().unwrap().extend(initial_lifecycle);
-        let warm = ManagedState::new(runtime.clone())
-            .await
-            .with_session_repo(repository.clone());
+        let warm = {
+            let session_fixture_runtime = runtime.clone();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repository.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        };
         if !late_lifecycle.is_empty() {
             // AF3/AF4: the first source prefix cannot publish a parent error
             // or terminal that its later exact Run commit would reorder.
@@ -2354,9 +1579,19 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
             }
         }
         let projected = observe(&warm);
-        let cold = ManagedState::new(runtime)
-            .await
-            .with_session_repo(repository);
+        let cold = {
+            let session_fixture_runtime = runtime;
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repository,
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        };
         cold.refresh_committed_events(session_id).await.unwrap();
         assert_eq!(observe(&cold), projected, "E4 warm/cold parity");
         projected
@@ -4589,14 +3824,32 @@ async fn cross_replica_pagination_never_rejects_a_cursor_using_an_older_prefix()
     for thread in [false, true] {
         let runtime = LifecycleRuntime::default();
         let repository = Arc::new(ephemeral_session_repo().await);
-        let lagging = Arc::new(
-            ManagedState::new(runtime.clone())
-                .await
-                .with_session_repo(repository.clone()),
-        );
-        let leading = ManagedState::new(runtime.clone())
-            .await
-            .with_session_repo(repository);
+        let lagging = Arc::new({
+            let session_fixture_runtime = runtime.clone();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repository.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        });
+        let leading = {
+            let session_fixture_runtime = runtime.clone();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repository,
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        };
         let session = lagging
             .create_session(
                 serde_json::from_value(serde_json::json!({
@@ -5504,9 +4757,19 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
     // | X1 | T | T | T | T | T | E6 |
     let runtime = LifecycleRuntime::default();
     let repository = Arc::new(ephemeral_session_repo().await);
-    let warm = ManagedState::new(runtime.clone())
-        .await
-        .with_session_repo(repository.clone());
+    let warm = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -5592,9 +4855,19 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
         "session.usage",
         "session.status_idle",
     ];
-    let cold = ManagedState::new(runtime.clone())
-        .await
-        .with_session_repo(repository.clone());
+    let cold = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     cold.refresh_committed_events(&session.id).await.unwrap();
     let mut observations = Vec::new();
     for (rule, state) in [("W1-W2", &warm), ("C1-C2", &cold)] {
@@ -5787,9 +5060,19 @@ async fn first_interval_lineage_preserves_the_issued_legacy_lifecycle_prefix() {
     // watermark participates.
     let runtime = LifecycleRuntime::default();
     let repository = Arc::new(ephemeral_session_repo().await);
-    let state = ManagedState::new(runtime.clone())
-        .await
-        .with_session_repo(repository.clone());
+    let state = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -5958,9 +5241,21 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
         Box::pin(async move {
             let runtime = LifecycleRuntime::default();
             let repository = Arc::new(ephemeral_session_repo().await);
-            let warm = ManagedState::new(runtime.clone())
-                .await
-                .with_session_repo(repository.clone());
+            let warm = {
+                let session_fixture_runtime = runtime.clone();
+                let session_fixture_clock = awaken_time::system_clock();
+                crate::state::test_support::managed_state_from_parts(
+                    std::sync::Arc::new(session_fixture_runtime),
+                    None,
+                    repository.clone(),
+                    awaken_protocol_managed_testkit::environment_fixture(
+                        session_fixture_clock.clone(),
+                    )
+                    .execution,
+                    session_fixture_clock,
+                    std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+                )
+            };
             let session = warm
                 .create_session(
                     serde_json::from_value(serde_json::json!({
@@ -6218,9 +5513,19 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
         warm.refresh_committed_events(&session_id).await.unwrap();
         warm.refresh_committed_events(&session_id).await.unwrap();
 
-        let cold = ManagedState::new(runtime)
-            .await
-            .with_session_repo(repository);
+        let cold = {
+            let session_fixture_runtime = runtime;
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repository,
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        };
         cold.refresh_committed_events(&session_id).await.unwrap();
         let warm_events = warm
             .list_events(&session_id, None, None, false)
@@ -6305,9 +5610,19 @@ async fn late_compaction_uses_its_state_commit_and_preserves_an_issued_prefix() 
     // fallback.
     let runtime = LifecycleRuntime::default();
     let repository = Arc::new(ephemeral_session_repo().await);
-    let warm = ManagedState::new(runtime.clone())
-        .await
-        .with_session_repo(repository.clone());
+    let warm = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -6371,9 +5686,19 @@ async fn late_compaction_uses_its_state_commit_and_preserves_an_issued_prefix() 
         "L2/E2 suffix: {warm_suffix:?}"
     );
 
-    let cold = ManagedState::new(runtime)
-        .await
-        .with_session_repo(repository);
+    let cold = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     cold.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
         cold.list_events(&session.id, None, None, false)
@@ -6402,9 +5727,19 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
     // together. Neither GET nor recovery executes a model or invents a Message.
     let runtime = LifecycleRuntime::default();
     let repository = Arc::new(ephemeral_session_repo().await);
-    let warm = ManagedState::new(runtime.clone())
-        .await
-        .with_session_repo(repository.clone());
+    let warm = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -6518,9 +5853,19 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
             .any(|event| event.type_str() == "agent.message"),
         "V2 old cursor observes new output"
     );
-    let cold = ManagedState::new(runtime)
-        .await
-        .with_session_repo(repository);
+    let cold = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     cold.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
         cold.list_events(&session.id, None, None, false)
@@ -6567,9 +5912,19 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
     // the transient seed has none and cannot be serialized as historical proof.
     let runtime = LifecycleRuntime::default();
     let repository = Arc::new(ephemeral_session_repo().await);
-    let state = ManagedState::new(runtime.clone())
-        .await
-        .with_session_repo(repository.clone());
+    let state = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -6734,9 +6089,19 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
     );
     // WU2: another Managed instance uses the same original repository and
     // Runtime inputs. Its cold projection must equal the full warm event DTOs.
-    let cold = ManagedState::new(runtime)
-        .await
-        .with_session_repo(repository);
+    let cold = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     cold.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
         serde_json::to_value(
@@ -6780,9 +6145,19 @@ async fn primary_reschedule_projects_one_complete_sequence_warm_and_after_restar
     // | R4 | T | T | T | cold restart | E1-E5 |
     let runtime = LifecycleRuntime::default();
     let repository = Arc::new(ephemeral_session_repo().await);
-    let warm = ManagedState::new(runtime.clone())
-        .await
-        .with_session_repo(repository.clone());
+    let warm = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -6912,9 +6287,19 @@ async fn primary_reschedule_projects_one_complete_sequence_warm_and_after_restar
     warm.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(status_projection(&warm).1, warm_statuses, "R3/E4 replay");
 
-    let cold = ManagedState::new(runtime)
-        .await
-        .with_session_repo(repository);
+    let cold = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     cold.refresh_committed_events(&session.id).await.unwrap();
     let (cold_primary, cold_statuses) = status_projection(&cold);
     assert_eq!(cold_primary, warm_primary, "R4/E5");
@@ -6940,9 +6325,19 @@ async fn ordinary_root_failure_keeps_its_event_id_and_cursor_across_restart() {
     // one deterministic event-id owner; there is no process-local fallback.
     let runtime = RehydrateFake::default();
     let repo = Arc::new(ephemeral_session_repo().await);
-    let state = ManagedState::new(runtime.clone())
-        .await
-        .with_session_repo(repo.clone());
+    let state = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -6997,7 +6392,19 @@ async fn ordinary_root_failure_keeps_its_event_id_and_cursor_across_restart() {
         .list_events(&session.id, Some(&warm_error_id), Some(3), false)
         .expect("R1 warm error cursor");
 
-    let restarted = ManagedState::new(runtime).await.with_session_repo(repo);
+    let restarted = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     restarted.ensure_session(&session.id).await.unwrap();
     let cold_events = restarted
         .list_events(&session.id, None, None, false)
@@ -7059,11 +6466,19 @@ async fn child_reschedule_projects_running_rescheduled_running_idle_live_warm_an
         .unwrap()
         .push("researcher".into());
     let repo = Arc::new(ephemeral_session_repo().await);
-    let state = Arc::new(
-        ManagedState::new(runtime.clone())
-            .await
-            .with_session_repo(repo.clone()),
-    );
+    let state = Arc::new({
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    });
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -7218,7 +6633,19 @@ async fn child_reschedule_projects_running_rescheduled_running_idle_live_warm_an
         "R3/E4"
     );
 
-    let restarted = ManagedState::new(runtime).await.with_session_repo(repo);
+    let restarted = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     restarted
         .ensure_session(&session.id)
         .await
@@ -7278,11 +6705,21 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
         &["researcher", "reviewer", "critic"],
     ));
     let state = Arc::new(
-        ManagedState::new(runtime.clone())
-            .await
-            .with_config_source(profiles.clone())
-            .with_session_repo(repo.clone())
-            .with_managed_list_price_provider(Arc::new(ThreadPriceProvider)),
+        {
+            let session_fixture_runtime = runtime.clone();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repo.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        }
+        .with_config_source(profiles.clone())
+        .with_managed_list_price_provider(Arc::new(ThreadPriceProvider)),
     );
     let session = state
         .create_session(
@@ -7523,10 +6960,20 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
     assert_eq!(stable_projection(&state), warm, "B4/E5 warm idempotence");
     assert_eq!(stable_projection(&state).len(), warm_count, "B4/E5");
 
-    let restarted = ManagedState::new(runtime)
-        .await
-        .with_config_source(profiles)
-        .with_session_repo(repo);
+    let restarted = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_config_source(profiles);
     restarted
         .ensure_session(&session.id)
         .await
@@ -7580,11 +7027,19 @@ async fn ordinary_child_failure_is_error_then_terminated_live_warm_and_cold() {
         .unwrap()
         .push("researcher".into());
     let repo = Arc::new(ephemeral_session_repo().await);
-    let state = Arc::new(
-        ManagedState::new(runtime.clone())
-            .await
-            .with_session_repo(repo.clone()),
-    );
+    let state = Arc::new({
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    });
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -7755,7 +7210,19 @@ async fn ordinary_child_failure_is_error_then_terminated_live_warm_and_cold() {
         "F3/E4"
     );
 
-    let restarted = ManagedState::new(runtime).await.with_session_repo(repo);
+    let restarted = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     restarted
         .ensure_session(&session.id)
         .await
@@ -8147,10 +7614,20 @@ async fn completed_tool_only_child_revisits_withheld_occurrences_before_results(
         "write",
     ));
     let repo = Arc::new(ephemeral_session_repo().await);
-    let warm = ManagedState::new(runtime.clone())
-        .await
-        .with_config_source(profiles.clone())
-        .with_session_repo(repo.clone());
+    let warm = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_config_source(profiles.clone());
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -8395,10 +7872,20 @@ async fn completed_tool_only_child_revisits_withheld_occurrences_before_results(
         "T2/E3 warm replay"
     );
 
-    let cold = ManagedState::new(runtime)
-        .await
-        .with_config_source(profiles)
-        .with_session_repo(repo);
+    let cold = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_config_source(profiles);
     cold.ensure_session(&session.id).await.unwrap();
     let cold_child = cold
         .list_thread_events(&session.id, child_id, None, None)
@@ -8464,10 +7951,20 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
     ));
     let repo = Arc::new(ephemeral_session_repo().await);
     let state = Arc::new(
-        ManagedState::new(runtime.clone())
-            .await
-            .with_config_source(profiles.clone())
-            .with_session_repo(repo.clone()),
+        {
+            let session_fixture_runtime = runtime.clone();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repo.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        }
+        .with_config_source(profiles.clone()),
     );
     let session = state
         .create_session(
@@ -8727,10 +8224,20 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
     let warm_next_page = warm_page.next_page.clone();
 
     let restarted = Arc::new(
-        ManagedState::new(runtime.clone())
-            .await
-            .with_config_source(profiles)
-            .with_session_repo(repo.clone()),
+        {
+            let session_fixture_runtime = runtime.clone();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repo.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        }
+        .with_config_source(profiles),
     );
     restarted.ensure_session(&session.id).await.unwrap();
     let recovered_ids = restarted
@@ -8864,10 +8371,20 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
         "coder",
         &["researcher"],
     ));
-    let warm = ManagedState::new(runtime.clone())
-        .await
-        .with_config_source(profiles.clone())
-        .with_session_repo(repository.clone());
+    let warm = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_config_source(profiles.clone());
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -9037,10 +8554,20 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
         );
     }
 
-    let cold = ManagedState::new(runtime)
-        .await
-        .with_config_source(profiles)
-        .with_session_repo(repository);
+    let cold = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_config_source(profiles);
     cold.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
         cold.list_events(&session.id, None, None, false)
@@ -9107,11 +8634,21 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
         "coder",
         &["researcher"],
     ));
-    let warm = ManagedState::new(runtime.clone())
-        .await
-        .with_config_source(profiles.clone())
-        .with_session_repo(repo.clone())
-        .with_managed_list_price_provider(Arc::new(ThreadPriceProvider));
+    let warm = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_config_source(profiles.clone())
+    .with_managed_list_price_provider(Arc::new(ThreadPriceProvider));
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -9450,10 +8987,20 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
         "B1/C6-C8/E7,R4 terminal usage is priced once across warm replay"
     );
 
-    let cold = ManagedState::new(runtime)
-        .await
-        .with_config_source(profiles)
-        .with_session_repo(repo);
+    let cold = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_config_source(profiles);
     cold.ensure_session(&session.id).await.unwrap();
     assert_eq!(
         signature(
@@ -9530,9 +9077,19 @@ async fn child_assistant_identity_rebuilds_from_committed_coordinates() {
         .lock()
         .unwrap()
         .push("researcher".into());
-    let warm = ManagedState::new(runtime.clone())
-        .await
-        .with_session_repo(repo.clone());
+    let warm = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -9618,7 +9175,19 @@ async fn child_assistant_identity_rebuilds_from_committed_coordinates() {
         managed_assistant_event_id(&session.id, child_id, &child_run.0, 0, 0, "agent.message");
     assert_eq!(projected_id(&warm), expected, "P1/E1");
 
-    let cold = ManagedState::new(runtime).await.with_session_repo(repo);
+    let cold = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     cold.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(projected_id(&cold), expected, "P2/E2");
 }
@@ -9655,9 +9224,19 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
     // | R4 | C1-C3 | cold | 2 active | E2,E3 |
     let repo = Arc::new(ephemeral_session_repo().await);
     let runtime = RehydrateFake::default();
-    let warm = ManagedState::new(runtime.clone())
-        .await
-        .with_session_repo(repo.clone());
+    let warm = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let session = warm
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -9785,9 +9364,19 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
     warm.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(assistant_signature(&warm), expected, "R2/E2-E3");
 
-    let restarted = ManagedState::new(runtime.clone())
-        .await
-        .with_session_repo(repo.clone());
+    let restarted = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     restarted.ensure_session(&session.id).await.unwrap();
     assert_eq!(assistant_signature(&restarted), expected, "R3/E2");
 
@@ -9810,7 +9399,19 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
         "T1"
     );
     assert_eq!(wire(&restarted), timed, "T1/T2 cold full payload");
-    let peer = ManagedState::new(runtime).await.with_session_repo(repo);
+    let peer = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     peer.ensure_session(&session.id).await.unwrap();
     peer.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(wire(&peer), timed, "T1/T2 peer full payload");
@@ -10929,9 +10530,19 @@ async fn cold_historical_awaiting_never_fabricates_empty_requires_action() {
         .lock()
         .unwrap()
         .push("researcher".into());
-    let original = ManagedState::new(runtime.clone())
-        .await
-        .with_session_repo(repo.clone());
+    let original = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let session = original
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -11024,7 +10635,19 @@ async fn cold_historical_awaiting_never_fabricates_empty_requires_action() {
         ),
     ]);
 
-    let restarted = ManagedState::new(runtime).await.with_session_repo(repo);
+    let restarted = {
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     restarted.ensure_session(&session.id).await.unwrap();
     assert_eq!(
         restarted.lifecycle_cursor(&session.id).unwrap(),
@@ -11163,9 +10786,21 @@ async fn closed_permission_wait_retains_aliased_call_on_warm_and_cold_reads() {
             for observed_before_close in [false, true] {
                 let runtime = LifecycleRuntime::default();
                 let repository = Arc::new(ephemeral_session_repo().await);
-                let warm = ManagedState::new(runtime.clone())
-                    .await
-                    .with_session_repo(repository.clone());
+                let warm = {
+                    let session_fixture_runtime = runtime.clone();
+                    let session_fixture_clock = awaken_time::system_clock();
+                    crate::state::test_support::managed_state_from_parts(
+                        std::sync::Arc::new(session_fixture_runtime),
+                        None,
+                        repository.clone(),
+                        awaken_protocol_managed_testkit::environment_fixture(
+                            session_fixture_clock.clone(),
+                        )
+                        .execution,
+                        session_fixture_clock,
+                        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+                    )
+                };
                 let session = warm
                     .create_session(
                         serde_json::from_value(serde_json::json!({
@@ -11261,9 +10896,21 @@ async fn closed_permission_wait_retains_aliased_call_on_warm_and_cold_reads() {
                     *runtime.pending.lock().unwrap() = None;
                     runtime.lifecycle.lock().unwrap().push(terminal);
                 }
-                let cold = ManagedState::new(runtime)
-                    .await
-                    .with_session_repo(repository);
+                let cold = {
+                    let session_fixture_runtime = runtime;
+                    let session_fixture_clock = awaken_time::system_clock();
+                    crate::state::test_support::managed_state_from_parts(
+                        std::sync::Arc::new(session_fixture_runtime),
+                        None,
+                        repository,
+                        awaken_protocol_managed_testkit::environment_fixture(
+                            session_fixture_clock.clone(),
+                        )
+                        .execution,
+                        session_fixture_clock,
+                        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+                    )
+                };
                 let mut prior = None;
                 for state in [&warm, &warm, &cold] {
                     state.refresh_committed_events(&session.id).await.unwrap();
@@ -11799,10 +11446,20 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
         FrozenTestToolFamily::AgentAlwaysAsk,
         "write",
     ));
-    let state = ManagedState::new(runtime.clone())
-        .await
-        .with_config_source(profiles.clone())
-        .with_session_repo(repo.clone());
+    let state = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_config_source(profiles.clone());
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -11955,10 +11612,20 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
         "O2/E2 unresolved sibling retains the source Message"
     );
 
-    let cold = ManagedState::new(runtime.clone())
-        .await
-        .with_config_source(profiles.clone())
-        .with_session_repo(repo.clone());
+    let cold = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_config_source(profiles.clone());
     cold.ensure_session(&session.id).await.unwrap();
     let cold_asks = cold
         .list_events(&session.id, None, None, false)
@@ -12073,10 +11740,20 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
         "O4/E4 fully classified source advances exactly once"
     );
 
-    let cold_sibling = ManagedState::new(runtime.clone())
-        .await
-        .with_config_source(profiles.clone())
-        .with_session_repo(repo);
+    let cold_sibling = {
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_config_source(profiles.clone());
     cold_sibling.ensure_session(&session.id).await.unwrap();
     let cold_events = cold_sibling
         .list_events(&session.id, None, None, false)
@@ -12466,11 +12143,19 @@ async fn durable_outcome_projector_is_warm_cold_restart_and_active_active_stable
     )
     .await;
 
-    let warm = Arc::new(
-        ManagedState::new(runtime.clone())
-            .await
-            .with_session_repo(repository.clone()),
-    );
+    let warm = Arc::new({
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    });
     warm.refresh_committed_events(session_id).await.unwrap();
     assert!(
         warm.list_events(session_id, None, None, false)
@@ -12608,9 +12293,19 @@ async fn durable_outcome_projector_is_warm_cold_restart_and_active_active_stable
     );
 
     for label in ["cold", "restart"] {
-        let rebuilt = ManagedState::new(runtime.clone())
-            .await
-            .with_session_repo(repository.clone());
+        let rebuilt = {
+            let session_fixture_runtime = runtime.clone();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repository.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        };
         rebuilt.refresh_committed_events(session_id).await.unwrap();
         let rebuilt_observation = outcome_observation(&rebuilt);
         assert_eq!(rebuilt_observation, warm_observation, "P4/E4-E5 {label}");
@@ -12663,11 +12358,19 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
             source_run_id: Some(source_run_id.clone()),
         }),
     );
-    let warm = Arc::new(
-        ManagedState::new(runtime.clone())
-            .await
-            .with_session_repo(repository.clone()),
-    );
+    let warm = Arc::new({
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    });
 
     let observe = |state: &ManagedState| {
         let session_events = state
@@ -12757,9 +12460,19 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
     assert_eq!(observe(&warm), initial, "R2/E1-E3");
 
     for label in ["cold", "restart"] {
-        let rebuilt = ManagedState::new(runtime.clone())
-            .await
-            .with_session_repo(repository.clone());
+        let rebuilt = {
+            let session_fixture_runtime = runtime.clone();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repository.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        };
         rebuilt.refresh_committed_events(session_id).await.unwrap();
         assert_eq!(observe(&rebuilt), initial, "R3/E1-E4 {label}");
     }
@@ -12795,9 +12508,19 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
             )),
         ),
     ]);
-    let ordinary = ManagedState::new(ordinary_runtime)
-        .await
-        .with_session_repo(ordinary_repository);
+    let ordinary = {
+        let session_fixture_runtime = ordinary_runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            ordinary_repository,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     ordinary
         .refresh_committed_events(ordinary_session_id)
         .await
@@ -12854,9 +12577,21 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
             ] {
                 let runtime = LifecycleRuntime::default();
                 let repository = Arc::new(ephemeral_session_repo().await);
-                let state = ManagedState::new(runtime.clone())
-                    .await
-                    .with_session_repo(repository.clone());
+                let state = {
+                    let session_fixture_runtime = runtime.clone();
+                    let session_fixture_clock = awaken_time::system_clock();
+                    crate::state::test_support::managed_state_from_parts(
+                        std::sync::Arc::new(session_fixture_runtime),
+                        None,
+                        repository.clone(),
+                        awaken_protocol_managed_testkit::environment_fixture(
+                            session_fixture_clock.clone(),
+                        )
+                        .execution,
+                        session_fixture_clock,
+                        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+                    )
+                };
                 let session = state
                     .create_session(
                         serde_json::from_value(serde_json::json!({
@@ -13095,9 +12830,23 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                             event.id,
                         );
                     }
-                    let cold = ManagedState::new(runtime.clone())
-                        .await
-                        .with_session_repo(repository.clone());
+                    let cold = {
+                        let session_fixture_runtime = runtime.clone();
+                        let session_fixture_clock = awaken_time::system_clock();
+                        crate::state::test_support::managed_state_from_parts(
+                            std::sync::Arc::new(session_fixture_runtime),
+                            None,
+                            repository.clone(),
+                            awaken_protocol_managed_testkit::environment_fixture(
+                                session_fixture_clock.clone(),
+                            )
+                            .execution,
+                            session_fixture_clock,
+                            std::sync::Arc::new(
+                                awaken_ext_builtin_tools::WebToolConfigurationCompiler,
+                            ),
+                        )
+                    };
                     cold.refresh_committed_events(&session.id).await.unwrap();
                     assert_eq!(
                         cold.list_events(&session.id, None, Some(1000), false)
@@ -13207,9 +12956,21 @@ async fn recovered_terminal_errors_are_visible_once_without_releasing_active_ses
                     RunState::Ended(cause.clone()),
                 ),
             ]);
-            let warm = ManagedState::new(runtime.clone())
-                .await
-                .with_session_repo(repository.clone());
+            let warm = {
+                let session_fixture_runtime = runtime.clone();
+                let session_fixture_clock = awaken_time::system_clock();
+                crate::state::test_support::managed_state_from_parts(
+                    std::sync::Arc::new(session_fixture_runtime),
+                    None,
+                    repository.clone(),
+                    awaken_protocol_managed_testkit::environment_fixture(
+                        session_fixture_clock.clone(),
+                    )
+                    .execution,
+                    session_fixture_clock,
+                    std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+                )
+            };
             let observe = |state: &ManagedState| {
                 state
                     .list_events(session_id, None, None, false)
@@ -13236,9 +12997,21 @@ async fn recovered_terminal_errors_are_visible_once_without_releasing_active_ses
             }
             warm.refresh_committed_events(session_id).await.unwrap();
             assert_eq!(observe(&warm), original);
-            let cold = ManagedState::new(runtime)
-                .await
-                .with_session_repo(repository);
+            let cold = {
+                let session_fixture_runtime = runtime;
+                let session_fixture_clock = awaken_time::system_clock();
+                crate::state::test_support::managed_state_from_parts(
+                    std::sync::Arc::new(session_fixture_runtime),
+                    None,
+                    repository,
+                    awaken_protocol_managed_testkit::environment_fixture(
+                        session_fixture_clock.clone(),
+                    )
+                    .execution,
+                    session_fixture_clock,
+                    std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+                )
+            };
             cold.refresh_committed_events(session_id).await.unwrap();
             assert_eq!(observe(&cold), original);
             assert_eq!(

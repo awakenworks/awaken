@@ -935,7 +935,7 @@ mod tests {
         let repository_admission = Arc::new(RecordingRepositoryAdmission::default());
         let app = router_with_authenticator(
             audit,
-            credentials,
+            credentials.clone(),
             repository_admission.clone(),
             delivery.clone(),
             PrivacyPorts {
@@ -947,6 +947,19 @@ mod tests {
                 token_source.clone(),
             )),
         );
+        // Observe only transport paths; original auth and handlers remain authoritative.
+        let credential_requests = Arc::new(Mutex::new(Vec::<String>::new()));
+        let observed_requests = credential_requests.clone();
+        let app = app.layer(middleware::from_fn(move |request: Request, next: Next| {
+            let requests = observed_requests.clone();
+            async move {
+                requests
+                    .lock()
+                    .unwrap()
+                    .push(request.uri().path().to_owned());
+                next.run(request).await
+            }
+        }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -1113,6 +1126,220 @@ mod tests {
             .is_empty(),
             "R9 export"
         );
+
+        {
+            use awaken_credential_vault::repo::CredentialRepo as _;
+            use awaken_protocol_managed_testkit::ManagedStateFixture as _;
+            use awaken_session_application::{
+                McpAttachmentCandidate, McpAttachmentCandidateTarget,
+            };
+            use awaken_session_configuration_contract::mcp::McpAttachmentOrigin;
+            use awaken_session_execution_contract::NeutralRuntime;
+
+            // MCP causes: C1 published pin; C2 source capability installed;
+            // C3 HTTP/stdio; C4 discovery success/miss/error; C5 access result;
+            // C6 published revision matches; C7 any LATER target malformed.
+            // Effects: E1 exact pin, E2 optional None, E3 original mapped error,
+            // E4 exact Control request order, E5 no credential I/O for C7.
+            // The observer passes unchanged requests to real authentication,
+            // handlers and Vault; it cannot fabricate a source or access.
+            // Original transport retries 503 THREE times: one normalizer SPI
+            // access can yield three requests. A rejected static bearer does
+            // not rotate and is tried once. Neither retry law is changed.
+            //
+            // | rule | causes | effects |
+            // | M0 | valid first + malformed later, both C1 edges | E3 URL + E5; M4/M10 are working positive controls |
+            // | M1 | C1 + !C2 | canonical-authority error, zero requests |
+            // | M2 | C1 + C2 + missing source | pin error; access x3, no discovery/fallback |
+            // | M3 | C1 + successful access + !C6 | access once THEN revision error, no discovery |
+            // | M4 | C1 + successful access + C6 | E1; access once, unrelated Vault list ignored |
+            // | M5 | !C1 + !C2 | E2, zero requests |
+            // | M6 | !C1 + C2 + stdio | E2, zero requests |
+            // | M7 | !C1 + HTTP + rejected discovery auth | selection error; source once, no access |
+            // | M8 | !C1 + HTTP + miss | E2; source once, no access |
+            // | M9 | !C1 + selected active child + Disabled source | pin error; source once then access x3; no anonymous fallback |
+            // | M10 | !C1 + HTTP + selected active source | E1; source once then access once |
+            //
+            // M9 deliberately leaves the real Managed child Active. URL
+            // discovery selects it; the original exact-source compiler rejects
+            // its Disabled source. Issuer/state assertions cannot establish
+            // request counts: E4/E5 use the actual Control transport trace.
+            let url = "https://normalizer.example.test/mcp";
+            let (vault_id, source_id, revision, adoption) = credentials
+                .enter_application_mcp_bearer(
+                    "workspace-a",
+                    "normalizer-fixture",
+                    url,
+                    "normalizer-command",
+                    1,
+                    // awaken-allow(secret): test-only material never recorded by the observer.
+                    awaken_agent_contract::RedactedString::new("normalizer-test-bearer"),
+                )
+                .await
+                .unwrap();
+            assert!(
+                adoption.is_converged(),
+                "new source has no predecessor rollout"
+            );
+            // O10: the original M0-M10 table below calls the same unique credential service.
+            let no_authority = awaken_protocol_managed::ManagedState::new(NeutralRuntime)
+                .await
+                .session_application();
+            let selected = awaken_protocol_managed::ManagedState::new(NeutralRuntime)
+                .await
+                .with_credential_source(Arc::new(client.clone()))
+                .session_application();
+            let denied = awaken_protocol_managed::ManagedState::new(NeutralRuntime)
+                .await
+                .with_credential_source(Arc::new(unauthorized.clone()))
+                .session_application();
+            let holder =
+                awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
+                    .mcp_holder;
+            let missing_id = "missing-for-normalizer";
+            let pin_missing = format!(
+                "MCP credential could not be pinned exactly: {}",
+                awaken_credential_vault::CredentialError::SourceNotFound(missing_id.into()),
+            );
+            let pin_disabled = format!(
+                "MCP credential could not be pinned exactly: {}",
+                awaken_credential_vault::CredentialError::NotActive(source_id.0.clone()),
+            );
+            for (rule, application, published, target_url, error, paths, authenticated) in [
+                (
+                    "M1", &no_authority, Some((source_id.0.as_str(), revision)), Some(url),
+                    Some("published MCP credential requires the canonical credential authority".to_owned()),
+                    vec![], false,
+                ),
+                (
+                    "M2", &selected, Some((missing_id, revision)), Some(url),
+                    Some(pin_missing), vec![MCP_ACCESS_PATH; 3], false,
+                ),
+                (
+                    "M3", &selected, Some((source_id.0.as_str(), revision + 1)), Some(url),
+                    Some("published MCP credential revision no longer matches".to_owned()),
+                    vec![MCP_ACCESS_PATH], false,
+                ),
+                (
+                    "M4", &selected, Some((source_id.0.as_str(), revision)), Some(url),
+                    None, vec![MCP_ACCESS_PATH], true,
+                ),
+                ("M5", &no_authority, None, Some(url), None, vec![], false),
+                ("M6", &selected, None, None, None, vec![], false),
+                (
+                    "M7", &denied, None, Some(url),
+                    Some("MCP credential selection failed: Control service rejected bearer credentials".to_owned()),
+                    vec![MCP_SOURCE_PATH], false,
+                ),
+                (
+                    "M8", &selected, None, Some("https://unmatched.example.test/mcp"),
+                    None, vec![MCP_SOURCE_PATH], false,
+                ),
+                (
+                    "M9", &selected, None, Some(url), Some(pin_disabled),
+                    vec![MCP_SOURCE_PATH, MCP_ACCESS_PATH, MCP_ACCESS_PATH, MCP_ACCESS_PATH], false,
+                ),
+                (
+                    "M10", &selected, None, Some(url), None,
+                    vec![MCP_SOURCE_PATH, MCP_ACCESS_PATH], true,
+                ),
+            ] {
+                if rule == "M9" || rule == "M10" {
+                    let mut source = credential_repo.get(&source_id).await.unwrap();
+                    source.status = if rule == "M9" {
+                        awaken_credential_vault::CredentialStatus::Disabled
+                    } else {
+                        awaken_credential_vault::CredentialStatus::Active
+                    };
+                    credential_repo.put(source).await.unwrap();
+                    assert!(
+                        credentials.application()
+                            .credential_of_source("workspace-a", &source_id)
+                            .await.unwrap().unwrap().lifecycle.is_active(),
+                        "{rule}: original Managed child remains Active",
+                    );
+                }
+                let target = match target_url {
+                    Some(url) => McpAttachmentCandidateTarget::HttpUrl(url.into()),
+                    None => McpAttachmentCandidateTarget::SandboxStdio {
+                        command: "normalizer-fixture".into(), args: vec![],
+                    },
+                };
+                let candidates = vec![McpAttachmentCandidate {
+                    name: rule.into(), target, prompts_as_skills: true,
+                    published_credential: published.map(|(id, revision)| (id.into(), revision)),
+                    origin: McpAttachmentOrigin::Session,
+                }];
+                let ordered_vaults = if rule == "M4" {
+                    vec!["unrelated-vault".into()]
+                } else {
+                    vec![vault_id.clone()]
+                };
+                credential_requests.lock().unwrap().clear();
+                let result = application.credentials().normalize_mcp_drafts(
+                    "workspace-a", candidates, &ordered_vaults, &holder,
+                ).await;
+                match error {
+                    Some(message) => {
+                        let error = result.expect_err(rule);
+                        assert_eq!(error.kind, awaken_session_types::RunErrorKind::BadRequest, "{rule}");
+                        assert_eq!(error.message, message, "{rule}: original error projection");
+                    }
+                    None => {
+                        let drafts = result.expect(rule);
+                        assert_eq!(drafts.len(), 1, "{rule}");
+                        assert_eq!(drafts[0].name, rule, "{rule}");
+                        assert!(drafts[0].prompts_as_skills, "{rule}");
+                        assert_eq!(drafts[0].origin, McpAttachmentOrigin::Session, "{rule}");
+                        assert_eq!(drafts[0].credential.is_some(), authenticated, "{rule}");
+                        if let Some(access) = &drafts[0].credential {
+                            assert_eq!(access.credential.id, source_id.0, "{rule}");
+                            assert_eq!(access.credential.revision, revision, "{rule}");
+                        }
+                    }
+                }
+                assert_eq!(credential_requests.lock().unwrap().as_slice(), paths, "{rule}: actual transport order");
+            }
+            for published in [false, true] {
+                let first = McpAttachmentCandidate {
+                    name: "working-first".into(),
+                    target: McpAttachmentCandidateTarget::HttpUrl(url.into()),
+                    prompts_as_skills: false,
+                    published_credential: published.then(|| (source_id.0.clone(), revision)),
+                    origin: McpAttachmentOrigin::Session,
+                };
+                let later = McpAttachmentCandidate {
+                    name: "malformed-later".into(),
+                    target: McpAttachmentCandidateTarget::HttpUrl("not an HTTP URL".into()),
+                    published_credential: None,
+                    ..first.clone()
+                };
+                credential_requests.lock().unwrap().clear();
+                let error = selected
+                    .credentials()
+                    .normalize_mcp_drafts(
+                        "workspace-a",
+                        vec![first, later],
+                        std::slice::from_ref(&vault_id),
+                        &holder,
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    error.kind,
+                    awaken_session_types::RunErrorKind::BadRequest,
+                    "M0 published={published}"
+                );
+                assert_eq!(
+                    error.message, "invalid MCP server URL for `malformed-later`",
+                    "M0 published={published}"
+                );
+                assert!(
+                    credential_requests.lock().unwrap().is_empty(),
+                    "M0 published={published}: all targets normalize before ANY credential request"
+                );
+            }
+        }
 
         *token_source.0.write().expect("token source write") = Arc::from("next-token");
         assert!(

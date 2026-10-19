@@ -1,6 +1,7 @@
 # ADR-0040: Server Durable Ingress Integration and the ADR-0009 Supplement Disposition
 
 - Status: Accepted
+- Amended: 2026-10-19 — one Session-owned product HTTP admission
 - Date: 2026-07-03
 - Amended: 2026-08-29 — Managed Session roots use only Session-owned Run reservations
 - Amended: 2026-09-01 — `SessionCtx` no longer stores an erased ingress, a
@@ -164,3 +165,58 @@ D1–D3 are history; these names no longer match the code:
   `DurableRunOperations` (`crates/contract/awaken-session-execution-contract/src/durable_run_operations.rs`).
 - `awaken-coordinator-local` is now `awaken-coordinator`; the SQLite suite is
   `crates/server/awaken-dispatch/tests/sqlite_dispatch.rs`.
+
+## Amendment 2026-10-19: one product durable command entry
+
+The product HTTP background and superseding commands use the same
+`SessionRunApplication` as public Run protocols. The Coordinator already
+constructs this one application and supplies it to
+`durable_ops_router_with_session_admission`. It preserves the existing
+reservation -> Session activity receipt -> activation sequence; foreground
+and background differ only in whether the caller observes settlement.
+A first Thread id is admitted through the application's existing default
+Session creation, so the historical `/threads/{thread}` wire path does not
+require a second ordinary-Thread product command strategy.
+
+The plain `durable_ops_router` constructor had no production caller. Its three
+test callers only exercised monitoring and repair, never its background or
+superseding command branches. That constructor, its two Legacy strategies,
+their dedicated operation bridges, and their exclusively selected Host command
+methods are removed. No alternate application, queue, factory, permit or
+compatibility alias replaces them. Monitoring and repair still use the same
+`DurableRunOperations` owner and original process Dispatch store.
+
+This supersedes only the older product HTTP-entry description above. Ordinary
+non-Session Runtime Threads, `FullDispatch` identity and ADR-0022 supersession
+remain valid lower-layer behavior. The existing ordinary Host Run driver,
+queue transition kernel, claim/lease/commit authorities and store conformance
+are retained. `SessionCommand` is not an alias for `FullDispatch`.
+
+Platform source migration:
+
+| Removed entry | Existing authoritative replacement |
+|---|---|
+| `durable_ops_router(operations, clock)`, including Coordinator/scenario convenience exports | Import `awaken_dispatch_http::durable_ops_router_with_session_admission` and pass the same existing Session application through its background/replacement roles |
+| `DurableRunOperations::submit_background` and `SessionRuns::submit_background_async` | `SessionRunBackgroundApplication::submit_session_run_background` on the existing `SessionRunApplication` |
+| `DurableRunOperations::supersede`, `DurableSupersedeResult` and `SessionRuns::supersede_run` | `SessionRunReplacementApplication::supersede_session_run`, followed by the unchanged operational superseded projection |
+
+These are Platform paths, not the frozen SDK public paths. The inspected Cloud
+sources have no consumer of the removed Rust entries or their product durable
+command paths; downstream pin/build qualification remains separate. The HTTP
+request/response shapes and existing product E2E assertions stay unchanged.
+Tests use the existing real Session application testkit over the original Host
+roles and the same Dispatch store/clock. The corresponding dev-dependencies are
+explicit rather than hidden behind a fake application or a test queue.
+
+Two old Host test names remain, with the still-valid ordinary Run assertions.
+The Managed-root case now executes its ordinary refusal once; the retired
+supersede iteration is replaced by an owner-attached negative compile case.
+The non-durable case retains its initial Awaiting Run assertion; the deleted
+method can no longer return its former error value, so its kind/message checks
+are retired rather than recreated through another input or a test-only guard.
+Paired positive/negative owner doctests prove the removed Host/operation members
+cannot be selected while the legal ordinary and monitoring members still type
+check. This is stronger API exclusion for the old caller, not a claim that
+canonical Session replacement rejects a valid Managed root or reproduces the
+old Host algorithm's error order. Test comments own the exact cause/effect
+coverage and the explicit reduction in runtime iterations.

@@ -203,11 +203,6 @@ impl SessionMutations {
         &self.repository
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn replace_repository(&mut self, repository: Arc<dyn SessionRepository>) {
-        self.repository = repository;
-    }
-
     /// Shared replacement boundary for application commands and Runtime binding
     /// receipts. Idempotency is compiled before observation; the repository remains
     /// the sole CAS owner. Callers retain their domain-specific retry/error policy.

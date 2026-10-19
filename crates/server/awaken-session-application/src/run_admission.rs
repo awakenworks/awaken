@@ -695,17 +695,8 @@ impl SessionApplication {
             });
         let capabilities = queries.capabilities_for(&session_id)?;
         let capability_tools = SessionToolConfiguration::from_capabilities(&capabilities);
-        let inherited_tools = profile.as_ref().map_or_else(
-            || capability_tools.clone(),
-            |profile| SessionToolConfiguration {
-                toolsets: if profile.toolsets.is_empty() {
-                    capability_tools.toolsets.clone()
-                } else {
-                    profile.toolsets.clone()
-                },
-                client_tools: profile.client_tools.clone(),
-            },
-        );
+        let inherited_tools =
+            crate::tool_compilation::inherit_profile_tools(capability_tools, profile.as_ref());
         let tools = requested_tools.unwrap_or(inherited_tools);
         let skills = profile
             .as_ref()
@@ -740,7 +731,8 @@ impl SessionApplication {
                 })
                 .collect::<Result<Vec<_>, RunError>>()?,
         );
-        let (mcp_candidates, mcp_targets) = Self::normalize_mcp_candidate_targets(mcp_candidates)?;
+        let (mcp_candidates, mcp_targets) =
+            crate::SessionCredentials::normalize_mcp_candidate_targets(mcp_candidates)?;
         let mut environment = self
             .resolve_session_environment(
                 requested_environment_id.as_deref(),
@@ -774,6 +766,7 @@ impl SessionApplication {
             },
         )?;
         let initial_mcp = self
+            .credentials
             .normalize_mcp_drafts(
                 &owner_scope,
                 mcp_candidates,
@@ -818,53 +811,30 @@ impl SessionApplication {
             ));
             repository_configurations.push(configured);
         }
-        let mut resources = match self
-            .resolve_session_inputs(&owner_scope, agent_resources, &repository_attachments)
+        let resources = match self
+            .finalize_creation_inputs(
+                &owner_scope,
+                agent_resources,
+                &repository_attachments,
+                resolved_skills,
+                &environment.credential_realization.resource_holder,
+                |error| SessionCreationError::from(preparation_error(error)),
+            )
             .await
         {
             Ok(resources) => resources,
-            Err(first) => {
+            Err((first, stage)) => {
                 self.compensate_request_repositories(
-    &session_id,
-    &repository_configurations,
-    "Profiled Session Repository compensation remains pending after input resolution",
-)
-.await;
-                return Err(first.into());
+                    &session_id,
+                    &repository_configurations,
+                    &format!(
+                        "Profiled Session Repository compensation remains pending after {stage}"
+                    ),
+                )
+                .await;
+                return Err(first);
             }
         };
-        if let Some(resolved_skills) = resolved_skills {
-            resources = match resources.with_skills(resolved_skills) {
-                Ok(resources) => resources,
-                Err(error) => {
-                    let first = RunError::bad_request(error.to_string());
-                    self.compensate_request_repositories(
-    &session_id,
-    &repository_configurations,
-    "Profiled Session Repository compensation remains pending after Skill binding",
-)
-.await;
-                    return Err(first.into());
-                }
-            };
-        }
-        if let Err(error) = self
-            .pin_repository_credentials(
-                &owner_scope,
-                &environment.credential_realization.resource_holder,
-                &mut resources,
-            )
-            .await
-        {
-            let first = preparation_error(error);
-            self.compensate_request_repositories(
-                &session_id,
-                &repository_configurations,
-                "Profiled Session Repository compensation remains pending after credential pinning",
-            )
-            .await;
-            return Err(first.into());
-        }
         for input in resources.inputs() {
             let crate::session_resource::ResolvedInputSource::Repository {
                 repository_id,
@@ -1312,5 +1282,49 @@ impl awaken_session_application_contract::SessionRunBackgroundApplication
             .activate_admitted_session_run(admitted)
             .await?;
         Ok(run_id)
+    }
+}
+
+#[cfg(test)]
+mod preparation_presentation_tests {
+    use super::*;
+
+    #[test]
+    fn profiled_creation_retains_each_original_preparation_presentation() {
+        // F4 presentation table: every original preparation variant crosses
+        // the existing Profiled projector, then existing From<RunError>.
+        // Requested creation instead keeps Preparation. This is deliberately
+        // independent of current pin-only errors (all Rejected), so future
+        // pin variants cannot silently flatten NotFound/Conflict/outage.
+        for (input, expected) in [
+            (
+                SessionPreparationError::NotFound,
+                RunError::bad_request("Session was not found"),
+            ),
+            (
+                SessionPreparationError::Conflict,
+                RunError::unavailable("Session changed while it was being admitted"),
+            ),
+            (
+                SessionPreparationError::Unavailable("original outage".into()),
+                RunError::unavailable("original outage"),
+            ),
+            (
+                SessionPreparationError::Rejected(RunError::classified(
+                    "original-code",
+                    "original rejection",
+                )),
+                RunError::classified("original-code", "original rejection"),
+            ),
+        ] {
+            let actual = SessionCreationError::from(preparation_error(input));
+            let SessionCreationError::Rejected(actual) = actual else {
+                panic!("Profiled presentation changed")
+            };
+            assert_eq!(
+                (actual.kind, actual.code, actual.message),
+                (expected.kind, expected.code, expected.message)
+            );
+        }
     }
 }

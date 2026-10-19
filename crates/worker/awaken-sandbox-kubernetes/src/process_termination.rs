@@ -10,7 +10,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use serde::{Deserialize, Serialize};
 
 use super::{api_not_found, backend, has_forbidden_sandbox_namespace_shape};
-use awaken_sandbox_container::RuntimeError;
+use awaken_container_contract::RuntimeError;
 
 mod stop;
 pub use stop::PodProcessStopper;
@@ -282,7 +282,7 @@ fn coordinate(value: Option<&str>) -> Option<String> {
 const PROCESS_RETENTION_FINALIZERS: [&str; 3] = [
     WORKER_PROCESS_EVIDENCE_FINALIZER,
     super::continuation::CONTINUATION_CLEANUP_FINALIZER,
-    super::create_ledger::ORIGINAL_GUARD_FINALIZER,
+    awaken_container_contract::ORIGINAL_GUARD_FINALIZER,
 ];
 
 fn retention_finalizer(pod: &Pod) -> Option<&str> {

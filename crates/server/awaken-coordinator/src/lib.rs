@@ -98,7 +98,6 @@ use axum::Router;
 pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_protocol_managed::{ResourcesRouterInput, models_router, resources_router};
 
-pub use awaken_dispatch_http::durable_ops_router;
 #[cfg(feature = "test-support")]
 use awaken_session_executor::SessionExecutorBuilder;
 pub use awaken_session_executor::{
@@ -458,9 +457,7 @@ async fn local_managed_state_over(
             ..Default::default()
         },
     )
-    .credentials(awaken_session_application::SessionCredentials::read_write(
-        vaults,
-    ))
+    .credentials(awaken_session_application::SessionCredentialAuthorities::read_write(vaults))
     .resources(awaken_session_application::SessionResources::catalog(
         catalog,
     ));

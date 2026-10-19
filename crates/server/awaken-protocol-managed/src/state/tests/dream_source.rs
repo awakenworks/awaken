@@ -60,9 +60,19 @@ async fn dream_scans_durable_roots_that_this_replica_never_cached() {
         .await
         .expect("persist durable root");
     }
-    let replica = crate::ManagedState::new(RehydrateFake::default())
-        .await
-        .with_session_repo(repo);
+    let replica = {
+        let session_fixture_runtime = RehydrateFake::default();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     assert!(replica.list_sessions().is_empty(), "C1 cold wire cache");
 
     let eligible = replica

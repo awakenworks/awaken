@@ -9,6 +9,11 @@
 //! transitions decide the bytes to write; they never turn an in-flight API
 //! request, a retry count, or an object 404 into a completion witness.
 
+use awaken_container_contract::RuntimeError;
+use awaken_container_contract::{
+    CreateTicket, CreateTicketRequest, RequestJoin, TicketAdmission, TicketOrigin, TicketResult,
+    TicketStatus,
+};
 mod capacity;
 pub(super) use capacity::future_capacity;
 
@@ -17,9 +22,6 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::backend;
-use awaken_sandbox_container::{
-    CreateTicket, CreateTicketRequest, RuntimeError, TicketOrigin, TicketResult, TicketStatus,
-};
 
 const VERSION: u8 = 1;
 const MAX_TICKETS: usize = 2048;
@@ -43,23 +45,6 @@ pub(super) fn valid_isolation_id(value: &str) -> bool {
 pub(crate) enum GroupAdmission {
     Open,
     Sealed,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TicketAdmission {
-    Forward,
-    InFlight,
-    Finished(TicketResult),
-    Sealed,
-}
-
-/// Complete means only that no earlier admitted Create request can still
-/// materialize. Participant absence/disposal remains a separate provider fact.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "snake_case")]
-pub enum RequestJoin {
-    Unknown,
-    Complete(Vec<CreateTicket>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,11 +78,11 @@ impl WorkerCreateLedgerState {
         }
     }
 
-    pub(super) fn reply_profile(&self) -> super::capture::CreateReplyProfile {
+    pub(super) fn reply_profile(&self) -> awaken_container_contract::CreateReplyProfile {
         if self.capture_policy.is_some() {
-            super::capture::CreateReplyProfile::FreshCreate
+            awaken_container_contract::CreateReplyProfile::FreshCreate
         } else {
-            super::capture::CreateReplyProfile::LegacyRetainedCreate
+            awaken_container_contract::CreateReplyProfile::LegacyRetainedCreate
         }
     }
 

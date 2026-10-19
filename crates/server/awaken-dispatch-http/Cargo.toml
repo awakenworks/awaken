@@ -40,6 +40,9 @@ tokio = { workspace = true, features = ["time"] }
 test-support = []
 
 [dev-dependencies]
+awaken-session-application = { workspace = true, features = ["test-support"] }
+awaken-protocol-managed-testkit.workspace = true
+awaken-ext-builtin-tools.workspace = true
 awaken-executable-environment-contract.workspace = true
 awaken-worker-contract.workspace = true
 awaken-session-executor-testkit.workspace = true

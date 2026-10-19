@@ -4,6 +4,7 @@ use crate::guarded_claim::{
     GuardedClaimPhysical, guarded_claim_physical_state, remove_guarded_claim,
 };
 use awaken_container_contract::K8sContinuationVolume;
+use awaken_container_contract::{CreateTicketRequest, TicketResult, TicketStatus};
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxEffectFence;
 use awaken_sandbox_container::KubernetesGuardedClaimHandle;
@@ -54,7 +55,7 @@ async fn guarded_claim_disposal_requires_live_policy_exact_uid_and_current_autho
         uid: "sentinel-uid".into(),
     });
     guard.isolation_pending = false;
-    guard.origin = awaken_sandbox_container::TicketOrigin::TerminalGuard;
+    guard.origin = awaken_container_contract::TicketOrigin::TerminalGuard;
     let guarded =
         KubernetesGuardedClaimHandle::new("scope", &predecessor, guard, "claim-uid").unwrap();
     let mut claim = runtime

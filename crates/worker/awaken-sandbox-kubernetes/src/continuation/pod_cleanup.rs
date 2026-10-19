@@ -8,8 +8,9 @@ use super::{
 };
 use crate::finalizer::{ExactFinalizerAdmission, update_exact_pod_finalizer};
 use crate::{K8sRuntime, backend, participants};
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract as pc;
-use awaken_sandbox_container::{KubernetesProjectedParticipants, RuntimeError};
+use awaken_sandbox_container::KubernetesProjectedParticipants;
 use k8s_openapi::api::core::v1::Pod;
 use kube::Api;
 use kube::api::PostParams;
@@ -54,7 +55,7 @@ impl PodCleanupAuthorization {
 
     fn retainer(&self) -> &'static str {
         match self {
-            Self::OriginalCreate(_) => crate::create_ledger::ORIGINAL_GUARD_FINALIZER,
+            Self::OriginalCreate(_) => awaken_container_contract::ORIGINAL_GUARD_FINALIZER,
             _ => CONTINUATION_CLEANUP_FINALIZER,
         }
     }
@@ -151,7 +152,7 @@ pub(crate) fn observed_pod_cleanup_authorization(
                 && pod.metadata.deletion_timestamp.is_some()
                 && finalizers
                     .iter()
-                    .any(|value| value == crate::create_ledger::ORIGINAL_GUARD_FINALIZER)
+                    .any(|value| value == awaken_container_contract::ORIGINAL_GUARD_FINALIZER)
         }
         Some(_) => continuation_held,
         None => !continuation_held,
@@ -257,12 +258,12 @@ pub(crate) fn terminal_original_guard_retained(pod: &Pod) -> bool {
     pod.metadata.finalizers.as_ref().is_some_and(|values| {
         values
             .iter()
-            .any(|value| value == crate::create_ledger::ORIGINAL_GUARD_FINALIZER)
+            .any(|value| value == awaken_container_contract::ORIGINAL_GUARD_FINALIZER)
     }) && pod
         .metadata
         .labels
         .as_ref()
-        .and_then(|labels| labels.get(crate::create_ledger::ISOLATION_LABEL))
+        .and_then(|labels| labels.get(awaken_container_contract::ISOLATION_LABEL))
         .is_none()
         && matches!(
             pod.status

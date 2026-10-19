@@ -465,7 +465,7 @@ impl SessionApplication {
         self: std::sync::Arc<Self>,
         cancellation: awaken_runtime_contract::CancellationToken,
     ) -> Result<(), String> {
-        if !self.claim_lifecycle_supervisor() {
+        if !self.lifecycle.claim_supervisor() {
             return Err("Session lifecycle supervisor was already claimed".into());
         }
         // Observe cancellation during initialization and a whole recovery pass,
@@ -875,6 +875,7 @@ impl SessionApplication {
         }
 
         let session = self
+            .credentials
             .ensure_repository_credentials_pinned(&owner_scope, session)
             .await
             .map_err(unavailable)?;

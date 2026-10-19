@@ -3,7 +3,8 @@
 // @formal reason: no credential or Repository authority, consumed only by the Sandbox control projection.
 //! The hosted Repository Gateway coordinate a Kubernetes Sandbox Pod trusts.
 
-use awaken_sandbox_container::{RuntimeError, normalize_hostname};
+use awaken_container_contract::RuntimeError;
+use awaken_sandbox_container::normalize_hostname;
 
 /// Deployment-owned public trust and exact network coordinate for hosted
 /// Repository Git. It carries no credential or Repository authority.
