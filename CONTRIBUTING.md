@@ -19,8 +19,9 @@ commands and their flags by `check_gate_arguments.py`).
   hook entry points. Pre-push always starts the checks, including when a branch
   has no upstream or pushes to a different destination; the Rust and API planners
   select the affected work. Staged-file selection still applies to pre-commit.
-  Shared hooks also support older worktrees that retain the earlier config.
-  A checkout using the current entry must contain its script or the hook fails.
+  The script hook also starts qualification on the first push after another
+  worktree regenerated the shared hook. Missing bootstrap or qualification
+  definitions fail the push.
 - **What is missing on this machine**: `scripts/ci/doctor.sh` reports each
   absent tool and the check group it costs ([`gate_tools.json`](scripts/ci/gate_tools.json)
   declares them all).

@@ -721,7 +721,7 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
     """
     errors = []
     pre_commit = hooks.split("pre-commit:", 1)[-1].split("\npre-push:", 1)[0]
-    pre_push = hooks.split("\npre-push:", 1)[-1] if "\npre-push:" in hooks else ""
+    pre_push = hooks.split("\npush-qualification:", 1)[-1] if "\npush-qualification:" in hooks else ""
     owner = re.search(r"(?m)^    rust-quick:\n((?:      .*\n)+)", pre_commit)
     owner_text = owner.group(1) if owner else ""
     if owner_text.count("run: scripts/ci/check-rust.sh --quick") != 1:

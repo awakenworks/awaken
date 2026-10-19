@@ -29,12 +29,10 @@ output:
 
 glob_matcher: doublestar
 
-# Push scope belongs to the repository's planners. A missing branch upstream or
-# a remote default branch different from the explicit push destination must not
-# let Lefthook guess an empty diff and skip every pre-push command.
-# Worktrees share generated Git hooks. An older checkout without this config key
-# still uses its own Lefthook config; a checkout declaring it requires the script.
-lefthook: $(if grep -q '^lefthook:' lefthook.yml; then printf 'sh scripts/ci/run_lefthook.sh'; else printf lefthook; fi)
+# Script jobs run independently of a guessed push-file list, including when an
+# older worktree just regenerated the shared Git hook. The custom hook below
+# owns qualification; its planners select the affected Rust/API work.
+source_dir: scripts/ci
 
 pre-commit:
   # Cargo, code generation and workspace formatting share the same resource
@@ -59,6 +57,12 @@ pre-commit:
       glob: "{lefthook.yml,scripts/ci/*.py,scripts/ci/check-rust.sh}"
       # <<< generated glob
       run: python3 scripts/ci/generate_hooks.py --check
+
+    hook-bootstrap:
+      # >>> generated glob from _lefthook_fitness.py INPUT_GLOBS — do not edit
+      glob: "{lefthook.yml,scripts/ci/_lefthook_fitness.py,scripts/ci/_native_shell.py,scripts/ci/pre-push/qualify.sh}"
+      # <<< generated glob
+      run: python3 scripts/ci/_lefthook_fitness.py --self-test && python3 scripts/ci/_lefthook_fitness.py --integration-test
 
     # An evidence link replaces its former standalone source classification.
     # Metadata/checker changes must pass the same strict validators as CI:
@@ -423,6 +427,12 @@ commit-msg:
       run: python3 scripts/ci/check_commit_message.py {1}
 
 pre-push:
+  scripts:
+    qualify.sh:
+      runner: bash
+      args: --qualify
+
+push-qualification:
   commands:
     # Keep push latency bounded. Full workspace tests, formal verification,
     # Postgres suites, and frontend tests/build remain explicit checks:
