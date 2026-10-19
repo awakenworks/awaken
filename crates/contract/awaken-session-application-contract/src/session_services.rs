@@ -7,7 +7,7 @@ use awaken_agent_contract::McpTarget;
 use awaken_agent_contract::{RedactedString, StructuredCredentialMaterial};
 use awaken_credential_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding, CredentialRef,
-    CredentialSourceId, CredentialTarget, CredentialUsage, PlaintextHolder,
+    CredentialSourceId, CredentialTarget, CredentialUsage, MaterialEntry, PlaintextHolder,
 };
 
 /// Exact credential execution decision already selected by Session.
@@ -121,14 +121,6 @@ pub struct CredentialMaterialRetirementCommand {
     pub workspace_id: String,
 }
 
-/// Exact secret-free result of Credential material ingress. The provenance
-/// is transient command data; the Credential source remains durable authority.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CredentialMaterialIngressReceipt {
-    pub credential: CredentialRef,
-    pub provenance: SessionParticipantProvenance,
-}
-
 /// Generic write-only Credential material authority.
 ///
 /// Consumers declare provider material, target, and usage; implementations own
@@ -139,7 +131,7 @@ pub trait CredentialMaterialIngress: Send + Sync {
     async fn enter_material(
         &self,
         command: CredentialMaterialIngressCommand,
-    ) -> Result<CredentialMaterialIngressReceipt, String>;
+    ) -> Result<MaterialEntry, String>;
 
     async fn rotate_material(
         &self,

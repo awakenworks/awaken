@@ -459,7 +459,7 @@ pub trait DeploymentSessionEnvironment: Send + Sync {
         environment_id: &str,
     ) -> Result<Option<EnvItem>, ExecutableEnvironmentRegistrationError>;
 
-    /// See [`SessionApplication::deployment_agent_unavailable`].
+    /// Read the canonical [`crate::SessionQueries::agent_unavailable`] result.
     fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool;
 
     /// See [`SessionApplication::deployment_unavailable_delegate`].
@@ -587,7 +587,11 @@ impl SessionEventBatches for SessionApplication {
     }
 
     async fn supports_mid_conversation_system(&self, thread: &str) -> Result<bool, RunError> {
-        SessionApplication::supports_mid_conversation_system(self, thread).await
+        let streaming_runtime = self.runtime().streaming_runs();
+
+        streaming_runtime
+            .supports_mid_conversation_system(thread)
+            .await
     }
 }
 
@@ -858,7 +862,7 @@ impl DeploymentSessionEnvironment for SessionApplication {
     }
 
     fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
-        SessionApplication::deployment_agent_unavailable(self, workspace_id, agent_id)
+        self.queries.agent_unavailable(workspace_id, agent_id)
     }
 
     fn deployment_unavailable_delegate(

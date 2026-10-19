@@ -172,10 +172,9 @@ impl SessionRecoveryCandidates {
 mod mutation;
 mod recovery_sweep;
 pub use awaken_session_application_contract::{
-    CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialIngressReceipt,
-    CredentialMaterialInput, CredentialMaterialRetirementCommand,
-    CredentialMaterialRotationCommand, CredentialPlaintext, SessionCredentialAccessRequest,
-    SessionCredentialSource, SessionParticipantProvenance,
+    CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialInput,
+    CredentialMaterialRetirementCommand, CredentialMaterialRotationCommand, CredentialPlaintext,
+    SessionCredentialAccessRequest, SessionCredentialSource, SessionParticipantProvenance,
 };
 pub use mutation::{SessionMutationError, SessionMutations, SnapshotCommit};
 mod event_batch_cutover_validation;
@@ -184,11 +183,9 @@ pub use event_batch_cutover_validation::{
 };
 include!("application.rs");
 mod activity;
-mod budget;
 mod lifecycle_outbox_relay;
 mod live_inbox;
 pub use activity::SessionActivityError;
-pub use budget::BudgetSettlementOutcome;
 pub use lifecycle_outbox_relay::{
     LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL, LifecycleOutboxRelay, LifecycleOutboxReplay,
 };
@@ -221,7 +218,7 @@ pub use awaken_session_execution_contract::{
 };
 pub use credentials::{SessionCredentials, SessionPreparationError};
 mod lifecycle;
-pub use lifecycle::{SessionDeleteCommand, SessionLifecycle};
+pub use lifecycle::{BudgetSettlementOutcome, SessionDeleteCommand, SessionLifecycle};
 mod lifecycle_supervisor;
 pub use queries::SessionQueries;
 mod mcp;

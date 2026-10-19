@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn list_cost_overflow_is_rejected_without_panicking_or_wrapping() {
-        // Test design — Causes: C1 maximal token counts multiply/add against
+        // B5 test design — Causes: C1 maximal token counts multiply/add against
         // maximal frozen model rates; C2 a maximal runtime request count
         // multiplies a maximal request rate. Effects: both return the stable
         // InvalidSnapshot overflow error without panic or wrapped cost.

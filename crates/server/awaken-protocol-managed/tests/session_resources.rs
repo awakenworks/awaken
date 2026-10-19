@@ -1,5 +1,5 @@
 // @formal evidence session_resources.repository_rotation_requires_original_live_generation
-// awaken-allow(file-limit-ceiling): 6897 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 6895 (legacy oversized test file: split, never grow)
 //! Post-creation session-resource CRUD (`/v1/sessions/{id}/resources`) mirrors the
 //! Managed Agents contract, while whole-manifest replacement is explicitly owned
 //! by `/v1/awaken/sessions/{id}/resources`: only `file` attaches to a live Session;
@@ -813,22 +813,20 @@ impl awaken_session_application::CredentialMaterialIngress for CountingCredentia
     async fn enter_material(
         &self,
         command: awaken_session_application::CredentialMaterialIngressCommand,
-    ) -> Result<awaken_session_application::CredentialMaterialIngressReceipt, String> {
+    ) -> Result<awaken_credential_contract::MaterialEntry, String> {
         self.writes
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.sources
             .lock()
             .unwrap()
             .push(command.source_id.0.clone());
-        Ok(
-            awaken_session_application::CredentialMaterialIngressReceipt {
-                credential: awaken_credential_contract::CredentialRef {
-                    id: command.source_id.0,
-                    revision: 1,
-                },
-                provenance: awaken_session_application::SessionParticipantProvenance::Applied,
+        Ok(awaken_credential_contract::MaterialEntry {
+            credential: awaken_credential_contract::CredentialRef {
+                id: command.source_id.0,
+                revision: 1,
             },
-        )
+            created: true,
+        })
     }
 
     async fn rotate_material(

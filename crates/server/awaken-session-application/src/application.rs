@@ -102,6 +102,57 @@ impl SessionPersistence {
 
 /// Canonical application object shared by wire adapters.
 ///
+/// Role-forwarding source capability table:
+/// W1: absent/available/unavailable selected Agent source keeps the original
+/// Queries boolean. W2: Runtime capability Ok(true), Ok(false), or Err(error)
+/// reaches the Events role unchanged. W3: Managed keeps size -> capability ->
+/// pending-reply refusal order; neither removed wrapper owned a decision or CAS.
+/// The original system-message admission table and Runtime poisoned-read tests
+/// own runtime behavior. These independent examples prove source capability
+/// only; they do not execute that runtime matrix or authorize Session effects.
+///
+/// W4: the old deployment query inherent entry is absent independently.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionApplication;
+/// let _ = SessionApplication::deployment_agent_unavailable;
+/// ```
+///
+/// W5: the old Runtime capability inherent entry is independently absent.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionApplication;
+/// let _ = SessionApplication::supports_mid_conversation_system;
+/// ```
+///
+/// W6: the canonical Query owner and original Deployment role remain available.
+///
+/// ```
+/// use awaken_session_application::{
+///     DeploymentSessionEnvironment, SessionApplication, SessionQueries,
+/// };
+/// fn existing_query(queries: &SessionQueries) -> bool {
+///     queries.agent_unavailable("workspace", "agent")
+/// }
+/// fn selected_role(application: &SessionApplication) -> &dyn DeploymentSessionEnvironment {
+///     application
+/// }
+/// ```
+///
+/// W7: the canonical Streaming role and original Events role remain available.
+///
+/// ```
+/// use awaken_session_application::{SessionApplication, SessionEventBatches};
+/// use awaken_session_execution_contract::StreamingRunRuntime;
+/// use awaken_session_types::RunError;
+/// async fn existing_policy(runs: &dyn StreamingRunRuntime) -> Result<bool, RunError> {
+///     runs.supports_mid_conversation_system("thread").await
+/// }
+/// fn selected_role(application: &SessionApplication) -> &dyn SessionEventBatches {
+///     application
+/// }
+/// ```
+///
 /// Construction capability table: a selected Store/Clock enters the existing
 /// persistence value before construction; a live application has no Store
 /// replacement operation. These examples prove source capability only; the
@@ -126,6 +177,139 @@ impl SessionPersistence {
 ///     application.replace_repository(store);
 /// }
 /// ```
+///
+/// Runtime capability table: Runtime roles remain the command/read owners.
+/// Z1a-Z1j: each old App entry is independently absent (E0599); one failure
+/// cannot mask a different restored facade. Z2a-Z2e: the existing narrow roles
+/// still expose the same operations. These examples prove source capability
+/// only; original Runtime/Session tests own effects, admission, and persistence.
+///
+/// Z1a: the redundant `SessionApplication::coordinated_threads` entry is absent.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionApplication;
+/// let _ = SessionApplication::coordinated_threads;
+/// ```
+///
+/// Z1b: the redundant `SessionApplication::session_thread_disposition` entry is absent.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionApplication;
+/// let _ = SessionApplication::session_thread_disposition;
+/// ```
+///
+/// Z1c: the redundant `SessionApplication::pending_tool` entry is absent.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionApplication;
+/// let _ = SessionApplication::pending_tool;
+/// ```
+///
+/// Z1d: the redundant `SessionApplication::rebind_model` entry is absent.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionApplication;
+/// let _ = SessionApplication::rebind_model;
+/// ```
+///
+/// Z1e: the redundant `SessionApplication::run_streaming_attributed` entry is absent.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionApplication;
+/// let _ = SessionApplication::run_streaming_attributed;
+/// ```
+///
+/// Z1f: the redundant `SessionApplication::resume` entry is absent.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionApplication;
+/// let _ = SessionApplication::resume;
+/// ```
+///
+/// Z1g: the redundant `SessionApplication::resume_custom` entry is absent.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionApplication;
+/// let _ = SessionApplication::resume_custom;
+/// ```
+///
+/// Z1h: the redundant `SessionApplication::define_outcome` entry is absent.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionApplication;
+/// let _ = SessionApplication::define_outcome;
+/// ```
+///
+/// Z1i: the redundant `SessionApplication::continue_outcome` entry is absent.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionApplication;
+/// let _ = SessionApplication::continue_outcome;
+/// ```
+///
+/// Z1j: the redundant `SessionApplication::committed_outcome_projection` entry is absent.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionApplication;
+/// let _ = SessionApplication::committed_outcome_projection;
+/// ```
+///
+/// Z2a: coordinated links remain on the original read role.
+///
+/// ```
+/// use awaken_session_execution_contract::SessionCoordinationReads;
+/// use awaken_session_types::SessionId;
+/// async fn existing_role(reads: &dyn SessionCoordinationReads, session: &SessionId) {
+///     let _ = reads.coordinated_threads(session, None).await;
+/// }
+/// ```
+///
+/// Z2b: Thread disposition and exact Outcome reads keep their original owner.
+///
+/// ```
+/// use awaken_session_execution_contract::ThreadReadRuntime;
+/// use awaken_session_types::SessionId;
+/// async fn existing_role(reads: &dyn ThreadReadRuntime, session: &SessionId) {
+///     let _ = reads.session_thread_disposition(session, "thread").await;
+///     let _ = reads.committed_outcome_projection("thread", "outcome").await;
+/// }
+/// ```
+///
+/// Z2c: streaming operations remain on the original execution role.
+///
+/// ```
+/// use std::sync::Arc;
+/// use awaken_agent_contract::stream::sink::Sink;
+/// use awaken_session_execution_contract::StreamingRunRuntime;
+/// async fn existing_role(runs: &dyn StreamingRunRuntime, sink: Arc<dyn Sink>) {
+///     let _ = runs.pending_tool("thread").await;
+///     let _ = runs.rebind_model("thread", "model").await;
+///     let _ = runs
+///         .run_streaming_attributed("agent", "thread", Vec::new(), None, sink)
+///         .await;
+/// }
+/// ```
+///
+/// Z2d: ticket results remain on the original Runtime role.
+///
+/// ```
+/// use awaken_session_execution_contract::{SessionRuntime, ToolPermissionDecision};
+/// async fn existing_role(runs: &dyn SessionRuntime, decision: ToolPermissionDecision) {
+///     let _ = runs.resume("thread", "call", decision).await;
+///     let _ = runs.resume_custom("thread", "call", Vec::new(), false).await;
+/// }
+/// ```
+///
+/// Z2e: Outcome commands remain on the original Outcome role.
+///
+/// ```
+/// use awaken_session_execution_contract::OutcomeRuntime;
+/// async fn existing_role(outcomes: &dyn OutcomeRuntime) {
+///     let _ = outcomes.define_outcome("thread", "goal", "rubric", 3).await;
+///     let _ = outcomes.continue_outcome("thread").await;
+/// }
+/// ```
+///
 pub struct SessionApplication {
     clock: Arc<dyn awaken_time::WallClock>,
     configuration: SessionApplicationConfiguration,
@@ -397,12 +581,6 @@ impl SessionApplication {
         environment_id: &str,
     ) -> Result<Option<EnvItem>, ExecutableEnvironmentRegistrationError> {
         self.environments.projection.get(environment_id).await
-    }
-
-    /// Whether the Control projection marks an Agent unavailable for launch.
-    #[must_use]
-    pub fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
-        self.queries.agent_unavailable(workspace_id, agent_id)
     }
 
     /// The unavailable delegate that blocks one Deployment launch, if any.

@@ -4,9 +4,13 @@
 //! Exact result sources, shared by root and child wire projection.
 
 use super::{OrderIndex, ThreadIndex};
-use crate::{ProjectionError, ToolResultSource};
+use crate::{
+    CommittedMessageProjection, ProjectionError, RuntimeToolProjectionPhase, ToolResultSource,
+};
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::{RunLifecycleEventKind, agent::content::ContentBlock};
+use awaken_session_application_contract::Pending;
+use std::collections::HashSet;
 
 impl OrderIndex<'_> {
     /// Legacy Messages carry no Run coordinate. Borrow the original matching
@@ -170,14 +174,14 @@ impl OrderIndex<'_> {
         })
     }
 
-    pub fn tool_result_sources(
+    /// Verify once against the original committed Message before any content
+    /// filtering changes block ordinals. Result attribution and transcript
+    /// visibility share this prefix/equality check.
+    fn committed_message(
         &self,
         thread_id: &str,
         message: &Message,
-    ) -> Result<Vec<ToolResultSource>, ProjectionError> {
-        if message.role != Role::Tool {
-            return Ok(Vec::new());
-        }
+    ) -> Result<(&ThreadIndex<'_>, usize), ProjectionError> {
         let thread = self.threads.get(thread_id).ok_or_else(|| {
             ProjectionError::corrupt("tool result has no committed Thread prefix")
         })?;
@@ -186,16 +190,199 @@ impl OrderIndex<'_> {
                 "tool result prefix has misaligned Message coordinates",
             ));
         }
-        let committed = thread
+        let position = thread
             .messages_by_id
             .get(message.id.0.as_str())
             .and_then(|positions| positions.first())
-            .map(|index| &thread.snapshot.messages[*index]);
-        if committed != Some(message) {
+            .copied();
+        if position.map(|position| &thread.snapshot.messages[position]) != Some(message) {
             return Err(ProjectionError::corrupt(
                 "tool result Message differs from its committed prefix",
             ));
         }
+        Ok((
+            thread,
+            position.expect("committed equality proves its position"),
+        ))
+    }
+
+    /// Only the original accepted Pending can establish a source. Its public
+    /// alias is a wire view derived afterwards, never input to source selection.
+    pub(super) fn message_pending_sources(
+        &self,
+        thread: &ThreadIndex<'_>,
+        message: &Message,
+        position: usize,
+    ) -> Result<Vec<(ToolResultSource, Pending, u64)>, ProjectionError> {
+        let mut sources = Vec::new();
+        let run = message.id.assistant_coordinates().map(|(run, _, _)| run);
+        for awaiting in self.evidence.lifecycle.iter().filter(|event| {
+            event.thread_id == thread.snapshot.thread_id
+                && event.kind == RunLifecycleEventKind::Awaiting
+        }) {
+            let Some(pending) = self.evidence.historical_pending.get(&awaiting.cursor) else {
+                continue;
+            };
+            let Some(name) =
+                crate::historical_message_await_name(message, pending, &awaiting.run_id, run)
+            else {
+                continue;
+            };
+            if run.is_none()
+                && thread.snapshot.message_commit_cursors[position] > awaiting.source_commit_cursor
+            {
+                continue;
+            }
+            let ordinal = message.content.iter().position(|block| {
+                matches!(block, ContentBlock::ToolUse { id, .. } if id == &pending.tool_use_id)
+            }).expect("the canonical matching predicate found a ToolUse");
+            if thread
+                .transcript
+                .result_message_index(&message.id.0, ordinal, &pending.tool_use_id)
+                .is_some_and(|result| {
+                    thread.snapshot.message_commit_cursors[result] <= awaiting.source_commit_cursor
+                })
+            {
+                continue;
+            }
+            let source = self.pending_tool_source(awaiting, pending)?;
+            if source.source_id != message.id.0
+                && !(run == Some(awaiting.run_id.0.as_str())
+                    && source.source_id == awaiting.run_id.0)
+            {
+                continue;
+            }
+            let mut public = pending.clone();
+            public.name = name.to_string();
+            sources.push((source, public, awaiting.source_commit_cursor));
+        }
+        Ok(sources)
+    }
+
+    /// One source-qualified transcript selection for root, child and
+    /// coordination. Every lookup uses the original Message and original block
+    /// ordinal; Advisor blocks are removed here before wire encoding can shift
+    /// ordinals. A Run-sourced call belongs only to the synthetic renderer.
+    pub fn project_message(
+        &self,
+        thread_id: &str,
+        message: &Message,
+        projected_tool_sources: &HashSet<(String, String)>,
+    ) -> Result<
+        (
+            CommittedMessageProjection,
+            Vec<Pending>,
+            Vec<ToolResultSource>,
+        ),
+        ProjectionError,
+    > {
+        let (thread, position) = self.committed_message(thread_id, message)?;
+        let pending = self.message_pending_sources(thread, message, position)?;
+        let mut projected = message.clone();
+        let mut fully_classified = true;
+        let mut content = Vec::new();
+        for (ordinal, block) in message.content.iter().enumerate() {
+            match block {
+                ContentBlock::ToolUse { id, .. } => {
+                    if thread
+                        .transcript
+                        .advisor_blocks()
+                        .is_call(&message.id.0, ordinal)
+                    {
+                        continue;
+                    }
+                    let mut phase = thread.transcript.phase(&message.id.0, ordinal, id);
+                    let source = if let Some(result) =
+                        thread
+                            .transcript
+                            .result_message_index(&message.id.0, ordinal, id)
+                    {
+                        let result = &thread.snapshot.messages[result];
+                        let result_ordinal = result
+                            .content
+                            .iter()
+                            .enumerate()
+                            .find_map(|(ordinal, _)| {
+                                thread
+                                    .transcript
+                                    .result_source(&result.id.0, ordinal)
+                                    .filter(|source| {
+                                        source.source_id == message.id.0 && source.call_id == *id
+                                    })
+                                    .map(|_| ordinal)
+                            })
+                            .ok_or_else(|| {
+                                ProjectionError::corrupt(
+                                    "processed ToolUse has no committed result occurrence",
+                                )
+                            })?;
+                        Some(self.tool_result_source(thread, &result.id.0, result_ordinal, id)?)
+                    } else {
+                        let mut selected = None;
+                        for (source, pending, _) in pending
+                            .iter()
+                            .filter(|(_, pending, _)| pending.tool_use_id == *id)
+                        {
+                            if selected.as_ref().is_some_and(|previous| previous != source) {
+                                return Err(ProjectionError::corrupt(
+                                    "ToolUse has conflicting accepted source identities",
+                                ));
+                            }
+                            selected = Some(source.clone());
+                            if phase == RuntimeToolProjectionPhase::Unclassified {
+                                phase = RuntimeToolProjectionPhase::from_pending(
+                                    pending.client_executed,
+                                );
+                            }
+                        }
+                        selected
+                    };
+                    if !phase.is_transcript_visible() {
+                        fully_classified = false;
+                        continue;
+                    }
+                    let source = source.ok_or_else(|| {
+                        ProjectionError::corrupt("classified ToolUse has no exact source")
+                    })?;
+                    if projected_tool_sources.contains(&(source.source_id.clone(), id.clone())) {
+                        continue;
+                    }
+                    if source.source_id != message.id.0 {
+                        return Err(ProjectionError::corrupt(
+                            "synthetic ToolUse source has not been published",
+                        ));
+                    }
+                    content.push(block.clone());
+                }
+                ContentBlock::ToolResult { .. }
+                    if thread
+                        .transcript
+                        .advisor_blocks()
+                        .is_result(&message.id.0, ordinal) => {}
+                _ => content.push(block.clone()),
+            }
+        }
+        projected.content = content;
+        let sources = self.tool_result_sources(thread_id, message)?;
+        Ok((
+            CommittedMessageProjection {
+                message: projected,
+                fully_classified,
+            },
+            pending.into_iter().map(|(_, pending, _)| pending).collect(),
+            sources,
+        ))
+    }
+
+    pub fn tool_result_sources(
+        &self,
+        thread_id: &str,
+        message: &Message,
+    ) -> Result<Vec<ToolResultSource>, ProjectionError> {
+        if message.role != Role::Tool {
+            return Ok(Vec::new());
+        }
+        let (thread, _) = self.committed_message(thread_id, message)?;
         message
             .content
             .iter()
@@ -239,6 +426,14 @@ impl OrderIndex<'_> {
             .ok_or_else(|| {
                 ProjectionError::corrupt("tool result has no exact committed coordinate")
             })?;
+        let result_scope = thread.snapshot.messages[position]
+            .id
+            .tool_result_coordinates();
+        if result_scope.is_some_and(|(_, _, call)| call != call_id) {
+            return Err(ProjectionError::corrupt(
+                "tool result call differs from its encoded batch identity",
+            ));
+        }
         let ordinary = thread.transcript.result_source(result_message_id, ordinal);
         if ordinary.is_some_and(|source| source.call_id != call_id) {
             return Err(ProjectionError::corrupt(
@@ -264,6 +459,9 @@ impl OrderIndex<'_> {
             }) else {
                 continue;
             };
+            if result_scope.is_some_and(|(run, _, _)| run != awaiting.run_id.0) {
+                continue;
+            }
             if !crate::historical::needs_synthetic_awaiting_tool(thread.snapshot, awaiting, pending)
             {
                 continue;
@@ -517,10 +715,13 @@ mod tests {
     }
     #[test]
     fn current_ticket_overlay_reuses_the_first_unmatched_occurrence() {
-        // C1 two unmatched same-id calls; C2 builtin/client current ticket.
-        // R1 all rows => the shared no-ticket index with one current overlay
-        // equals the existing ticket-aware fold; only its first call is visible.
+        // C1 two unmatched same-id calls in one Run; C2 builtin/client
+        // accepted Awaiting. R1 both rows => the unique exact-source selector
+        // classifies only the first FIFO occurrence. The historical test name
+        // remains; its former raw-ticket overlay and duplicate fold are gone.
         let messages = [call(1, "read"), call(2, "read")];
+        let evidence = snapshot(messages.to_vec(), vec![1, 2]);
+        let lifecycle = [awaiting(3, "run")];
         for client_executed in [false, true] {
             let pending = Pending {
                 tool_use_id: "same".into(),
@@ -528,19 +729,28 @@ mod tests {
                 input: serde_json::json!({}),
                 client_executed,
             };
-            let shared = crate::committed_transcript_evidence(&messages, None);
-            let prior = crate::committed_transcript_evidence(&messages, Some(&pending));
-            for (index, message) in messages.iter().enumerate() {
-                let overlay =
-                    shared.project_message(message, &HashSet::new(), None, &[], Some(&pending));
-                let existing = prior.project_message(message, &HashSet::new(), None, &[], None);
-                assert_eq!(overlay.message, existing.message, "R1");
-                assert_eq!(
-                    overlay.fully_classified,
-                    index == 0,
-                    "R1 earliest unmatched"
-                );
-            }
+            with_index(
+                &evidence,
+                &lifecycle,
+                &HashMap::from([(lifecycle[0].cursor, pending)]),
+                |index| {
+                    for (position, message) in messages.iter().enumerate() {
+                        let (selected, _, _) = index
+                            .project_message("thread", message, &HashSet::new())
+                            .unwrap();
+                        let mut expected = message.clone();
+                        if position != 0 {
+                            expected.content.clear();
+                        }
+                        assert_eq!(selected.message, expected, "R1");
+                        assert_eq!(
+                            selected.fully_classified,
+                            position == 0,
+                            "R1 earliest unmatched"
+                        );
+                    }
+                },
+            );
         }
     }
     #[test]
@@ -739,6 +949,26 @@ mod tests {
             ProjectionError::corrupt("pending ToolUse has ambiguous historical Run sources"),
             "R2 typed refusal rather than an arbitrary owner"
         );
+        // R3 corrupt source + exact replay + a Message id spelling the Run id:
+        // neither another replay coordinate nor the existing Run pause anchor
+        // may convert Corrupt into a missing lookup and supply a fallback.
+        // R4 a genuinely unknown source remains Ok(None), as before.
+        let mut replay = prefix.clone();
+        replay.messages[0].id = MessageId("run".into());
+        replay.messages.push(replay.messages[0].clone());
+        replay.message_commit_cursors.push(12);
+        assert_eq!(
+            with_index(&replay, &pauses, &history, |index| index
+                .tool_order("thread", "run", "same")),
+            Err(error),
+            "R3 replay and from_pause cannot mask a corrupt exact source"
+        );
+        assert_eq!(
+            with_index(&replay, &pauses, &history, |index| index
+                .tool_order("thread", "absent", "same")),
+            Ok(None),
+            "R4 missing remains distinct from corrupt"
+        );
     }
     #[test]
     fn legacy_source_cannot_borrow_a_pause_before_its_message_committed() {
@@ -749,6 +979,9 @@ mod tests {
         // when the full prefix now includes its result and the later Run.
         // This pins the lower as well as upper bound of the one shared
         // historical_message_boundaries view; no new legacy selection law.
+        // L3: first visibility uses that same source proof: Message4 waits for
+        // Awaiting5 and Message9 waits for Awaiting10. An earlier matching raw
+        // call cannot move the later occurrence before its own committed proof.
         let mut first = call(1, "read");
         first.id = MessageId("first-legacy-tool".into());
         let mut second = call(2, "read");
@@ -774,6 +1007,168 @@ mod tests {
             })
             .unwrap();
             assert_eq!(source.source_id, message.id.0, "R3 own committed source");
+            let visible = with_index(&prefix, &pauses, &history, |index| {
+                index.message_call_order("thread", &message.id.0, "same")
+            })
+            .unwrap()
+            .expect("L3 exact occurrence has a visible source position");
+            assert_eq!(
+                visible.source_commit_cursor, pause.source_commit_cursor,
+                "L3 visibility belongs to the same own Awaiting as its identity"
+            );
         }
+    }
+
+    #[test]
+    fn synthetic_result_sources_preserve_v2_run_and_call_scope() {
+        // Causes: C1 a synthetic Awaiting has an exact audited target but no
+        // ToolUse Message; C2 result is legacy or canonically batch-scoped;
+        // C3 the encoded Run/call agrees with that target and result block.
+        // Rules V1=C1+legacy => retain the original Run source; V2=C1+valid v2
+        // same Run+call => same source; V3=v2 other Run and no ordinary source
+        // => Corrupt; V4=v2 encoded call differs from block call => Corrupt.
+        // Both negative rows are observed before asserting, so one failure
+        // cannot hide the other. This asserts no additional synthetic Step law.
+        // ToolBatch/MessageId own minting/parsing; with_index/snapshot/result
+        // are the original fixture and selector, not a parallel classifier.
+        use awaken_tool_contract::tool::{ToolCall, ToolRecoveryPolicy};
+        use awaken_tool_contract::tool_batch::ToolBatch;
+
+        let pause = awaiting(10, "run");
+        let pending = Pending {
+            tool_use_id: "same".into(),
+            name: "read".into(),
+            input: serde_json::json!({}),
+            client_executed: false,
+        };
+        let history = HashMap::from([(pause.cursor, pending)]);
+        let mut refused = Vec::new();
+        for (rule, owner, encoded_call, valid) in [
+            ("V1 legacy", None, "same", true),
+            ("V2 same Run/call", Some("run"), "same", true),
+            ("V3 other Run", Some("other-run"), "same", false),
+            ("V4 other encoded call", Some("run"), "other", false),
+        ] {
+            let id = match owner {
+                Some(owner) => ToolBatch::for_step(
+                    RunId(owner.into()),
+                    0,
+                    [(
+                        ToolCall {
+                            call_id: encoded_call.into(),
+                            tool_id: "read".into(),
+                            arguments: serde_json::json!({}),
+                        },
+                        ToolRecoveryPolicy::replay_safe(),
+                    )],
+                )
+                .unwrap()
+                .result_message_id(encoded_call)
+                .unwrap(),
+                None => MessageId::tool_result(encoded_call),
+            };
+            let message = result(&id.0);
+            let prefix = snapshot(vec![message.clone()], vec![30]);
+            let actual = with_index(&prefix, std::slice::from_ref(&pause), &history, |index| {
+                index.tool_result_sources("thread", &message)
+            });
+            if valid {
+                let sources = actual.unwrap();
+                assert_eq!(sources.len(), 1, "{rule} exact source count");
+                assert_eq!(sources[0].source_id, "run", "{rule} original Run");
+                assert_eq!(sources[0].call_id, "same", "{rule} original call");
+                assert_eq!(sources[0].name, "read", "{rule} original family");
+            } else {
+                refused.push((rule, matches!(actual, Err(ProjectionError::Corrupt(_)))));
+            }
+        }
+        assert_eq!(
+            refused,
+            [("V3 other Run", true), ("V4 other encoded call", true)],
+            "v2 synthetic source cannot discard encoded Run/call proof"
+        );
+    }
+    #[test]
+    fn source_filter_preserves_original_advisor_block_ordinals() {
+        // C1 an unclassified call precedes Advisor; C2 classified ordinary
+        // siblings follow it; C3 both ordinary results share the result Message.
+        // R1 C1+C2 => withhold only C1, remove Advisor at its ORIGINAL ordinal,
+        // retain the two ordinary calls in order and keep the Message revisitable.
+        // R2 C3 => exact result sources retain that same order; the wire fold
+        // receives an already-filtered Message and must not reapply shifted maps.
+        use awaken_runtime_contract::resolved::ADVISOR_TOOL_ID;
+        let message = Message::new(
+            MessageId("mixed-call".into()),
+            Role::Assistant,
+            vec![
+                ContentBlock::tool_use("unknown", "read", serde_json::json!({})),
+                ContentBlock::tool_use("advisor", ADVISOR_TOOL_ID, serde_json::json!({})),
+                ContentBlock::tool_use("a", "read", serde_json::json!({})),
+                ContentBlock::tool_use("b", "read", serde_json::json!({})),
+            ],
+        );
+        let result = Message::new(
+            MessageId("mixed-result".into()),
+            Role::Tool,
+            vec![
+                ContentBlock::tool_result("advisor", vec![ContentBlock::text("private")]),
+                ContentBlock::tool_result("a", vec![ContentBlock::text("first")]),
+                ContentBlock::tool_result("b", vec![ContentBlock::text("second")]),
+            ],
+        );
+        let snapshot = snapshot(vec![message.clone(), result.clone()], vec![1, 2]);
+        with_index(&snapshot, &[], &HashMap::new(), |index| {
+            let (selected, _, _) = index
+                .project_message("thread", &message, &HashSet::new())
+                .unwrap();
+            assert!(
+                !selected.fully_classified,
+                "R1 unclassified sibling remains revisitable"
+            );
+            assert!(
+                matches!(&selected.message.content[..], [ContentBlock::ToolUse {id: a, ..}, ContentBlock::ToolUse {id: b, ..}] if a == "a" && b == "b"),
+                "R1 original ordinal filtering"
+            );
+            let (selected_result, _, sources) = index
+                .project_message("thread", &result, &HashSet::new())
+                .unwrap();
+            assert_eq!(
+                sources
+                    .iter()
+                    .map(|source| source.call_id.as_str())
+                    .collect::<Vec<_>>(),
+                ["a", "b"],
+                "R2 original source order"
+            );
+            let facts = crate::fold_transcript(
+                &[selected.message, selected_result.message],
+                None,
+                &HashSet::new(),
+                &Default::default(),
+                &[],
+            );
+            assert_eq!(
+                facts
+                    .iter()
+                    .filter(|fact| matches!(
+                        fact,
+                        awaken_agent_contract::event::Fact::ToolCall { .. }
+                    ))
+                    .count(),
+                2,
+                "R1 wire retains both calls"
+            );
+            assert_eq!(
+                facts
+                    .iter()
+                    .filter(|fact| matches!(
+                        fact,
+                        awaken_agent_contract::event::Fact::ToolResult { .. }
+                    ))
+                    .count(),
+                2,
+                "R2 wire retains both results"
+            );
+        });
     }
 }

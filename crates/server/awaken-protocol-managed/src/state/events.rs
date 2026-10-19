@@ -291,9 +291,6 @@ struct ChildTranscriptProjection<'a> {
     lifecycle_events: &'a [RunLifecycleEvent],
     latest_run_id: Option<&'a awaken_agent_contract::agent::run::Id>,
     latest_run_state: Option<&'a awaken_agent_contract::agent::run::RunState>,
-    pending: Option<&'a Pending>,
-    pending_source_run_id: Option<&'a awaken_agent_contract::agent::run::Id>,
-    historical_pending: &'a std::collections::HashMap<RunLifecycleCursor, Pending>,
 }
 
 /// One borrowed view of the already-read coordination facts consumed by the
@@ -312,7 +309,6 @@ struct DelegationProjectionEvidence<'a> {
     lifecycle_events: &'a [RunLifecycleEvent],
     latest_run_states:
         &'a std::collections::HashMap<String, awaken_agent_contract::agent::run::RunState>,
-    pending: &'a std::collections::HashMap<String, Pending>,
     historical_pending: &'a std::collections::HashMap<RunLifecycleCursor, Pending>,
     dispositions: &'a std::collections::HashMap<String, awaken_agent_contract::ThreadDisposition>,
     usage: &'a std::collections::HashMap<String, Option<crate::types::SessionThreadUsage>>,

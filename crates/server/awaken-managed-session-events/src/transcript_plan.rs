@@ -15,65 +15,11 @@ use std::collections::{HashMap, HashSet};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
-use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind};
-use awaken_session_application_contract::Pending;
+use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
 use awaken_session_execution_contract::{session_agent_report_messages, session_agent_report_text};
 
 use crate::ProjectionError;
-use crate::historical::historical_message_boundaries;
 use crate::transcript::assistant_response_coordinates;
-
-/// One committed Message to fold, with the committed Awaiting history that
-/// classifies its calls and the Run that sources its synthetic identities.
-#[derive(Debug)]
-pub struct MessageFold<'a> {
-    pub message: &'a Message,
-    pub boundaries: Vec<(Pending, &'a RunId)>,
-    pub source_run_id: Option<&'a RunId>,
-}
-
-impl MessageFold<'_> {
-    /// The committed Awaiting targets that classify this Message's calls.
-    #[must_use]
-    pub fn pending_history(&self) -> Vec<&Pending> {
-        self.boundaries.iter().map(|(pending, _)| pending).collect()
-    }
-}
-
-/// Plan the folds of a Thread's not-yet-consumed Messages. Each fold carries
-/// the history selection shared by root and child: a call inherits an earlier
-/// permission only from its own Thread, Run and exact input.
-#[must_use]
-pub fn plan_folds<'a>(
-    thread_id: &str,
-    messages: impl IntoIterator<Item = &'a Message>,
-    coordinates: &HashMap<String, (String, usize, usize)>,
-    historical_pending: &'a HashMap<RunLifecycleCursor, Pending>,
-    lifecycle: &'a [RunLifecycleEvent],
-    pending_source_run_id: Option<&'a RunId>,
-) -> Vec<MessageFold<'a>> {
-    messages
-        .into_iter()
-        .map(|message| {
-            let boundaries = historical_message_boundaries(
-                message,
-                historical_pending,
-                lifecycle,
-                thread_id,
-                coordinates
-                    .get(&message.id.0)
-                    .map(|(run, _, _)| run.as_str()),
-            );
-            let source_run_id =
-                pending_source_run_id.or_else(|| boundaries.first().map(|(_, run)| *run));
-            MessageFold {
-                message,
-                boundaries,
-                source_run_id,
-            }
-        })
-        .collect()
-}
 
 /// One step of a coordinated child's transcript projection, in Message order.
 #[derive(Debug)]
@@ -86,7 +32,7 @@ pub enum ChildTranscriptStep<'a> {
         text: Option<String>,
     },
     /// An ordinary Message whose classified content is folded.
-    Fold(MessageFold<'a>),
+    Fold(&'a Message),
 }
 
 /// The transcript projection of one coordinated child.
@@ -114,8 +60,6 @@ pub struct ChildTranscript<'a> {
     pub lifecycle: &'a [RunLifecycleEvent],
     pub latest_run_id: Option<&'a RunId>,
     pub latest_run_state: Option<&'a RunState>,
-    pub pending_source_run_id: Option<&'a RunId>,
-    pub historical_pending: &'a HashMap<RunLifecycleCursor, Pending>,
 }
 
 /// Plan one coordinated child's transcript projection over the Messages not
@@ -259,17 +203,7 @@ pub fn plan_child_transcript<'a>(
                 continue;
             }
         }
-        let fold = plan_folds(
-            input.thread_id,
-            [message],
-            &coordinates,
-            input.historical_pending,
-            input.lifecycle,
-            input.pending_source_run_id,
-        )
-        .pop()
-        .expect("one Message plans one fold");
-        steps.push(ChildTranscriptStep::Fold(fold));
+        steps.push(ChildTranscriptStep::Fold(message));
     }
     Ok(ChildTranscriptPlan::Ordinary { steps, coordinates })
 }
@@ -312,7 +246,6 @@ mod tests {
         );
         let answer = Message::text(MessageId::assistant(&run, 1), Role::Assistant, "done");
         let messages = vec![tool.clone(), answer.clone()];
-        let history = HashMap::new();
         let plan = |advisor, lifecycle: &[RunLifecycleEvent], state: Option<&RunState>| {
             let input = ChildTranscript {
                 thread_id: "child",
@@ -321,8 +254,6 @@ mod tests {
                 lifecycle,
                 latest_run_id: Some(&run),
                 latest_run_state: state,
-                pending_source_run_id: None,
-                historical_pending: &history,
             };
             match plan_child_transcript(&input, |_| false).unwrap() {
                 ChildTranscriptPlan::Ordinary { steps, .. } => steps
@@ -331,7 +262,7 @@ mod tests {
                         ChildTranscriptStep::Report { text, .. } => {
                             format!("report:{}", text.clone().unwrap_or_default())
                         }
-                        ChildTranscriptStep::Fold(fold) => format!("fold:{}", fold.message.id.0),
+                        ChildTranscriptStep::Fold(message) => format!("fold:{}", message.id.0),
                     })
                     .collect::<Vec<_>>(),
                 ChildTranscriptPlan::Advisor { consume, report } => vec![format!(

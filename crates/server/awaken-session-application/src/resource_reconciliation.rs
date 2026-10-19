@@ -1522,7 +1522,7 @@ impl SessionApplication {
                     .await;
             }
             if let Some(credential) = &configured.credential
-                && credential.provenance == SessionParticipantProvenance::Applied
+                && credential.created
             {
                 retired &= self
                     .credentials

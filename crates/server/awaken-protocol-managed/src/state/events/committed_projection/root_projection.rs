@@ -54,7 +54,6 @@ impl ManagedState {
     ) -> Result<RootProjection, StateError> {
         let all_accepted_lifecycle = &evidence.acceptance.accepted;
         let messages = evidence.root_messages();
-        let historical_pending = &evidence.historical_pending;
         // Harvest what the gate decided before the transcript is projected. The
         // decision is committed audit truth about a call; the transcript alone
         // cannot distinguish a refused call from an executed one whose tool
@@ -78,7 +77,6 @@ impl ManagedState {
         if evidence.acceptance.cursor > record.checkpoint.source.lifecycle_cursor {
             record.checkpoint.source.lifecycle_cursor = evidence.acceptance.cursor;
         }
-        let transcript_evidence = index.transcript_evidence(session_id);
         let new_messages = if evidence.root_blocked(session_id) {
             Vec::new()
         } else {
@@ -91,9 +89,6 @@ impl ManagedState {
                 .cloned()
                 .collect::<Vec<_>>()
         };
-        let root_terminal =
-            awaken_managed_session_events::root_run_boundaries(session_id, all_accepted_lifecycle)
-                .next_back();
         // Each opening is decided from the entire committed lifecycle. A
         // boundary following a boundary without an intervening opening owns
         // its own Running fact on both an incremental and a cold reader.
@@ -108,30 +103,11 @@ impl ManagedState {
         {
             Self::append_run_observation_projections(record, session_id, snapshot)?;
         }
-        let root_pending_source_run_id = root_terminal
-            .filter(|event| event.kind == RunLifecycleEventKind::Awaiting)
-            .map(|event| &event.run_id);
-        let folds = awaken_managed_session_events::plan_folds(
-            session_id,
-            &new_messages,
-            &evidence.root_response_coordinates,
-            historical_pending,
-            all_accepted_lifecycle,
-            root_pending_source_run_id,
-        );
-        for fold in folds {
-            let transcript_evidence = transcript_evidence
-                .expect("a committed root Message belongs to the same ordering index");
-            let message = fold.message;
+        for message in &new_messages {
             let coordinates = evidence.root_response_coordinates.get(&message.id.0);
             let (selected, projected) =
                 super::super::transcript_projection::project_committed_message(
-                    record,
-                    None,
-                    &fold,
-                    index,
-                    None,
-                    transcript_evidence,
+                    record, None, message, index,
                 )?;
             if awaken_managed_session_events::is_public_user_input(
                 message,

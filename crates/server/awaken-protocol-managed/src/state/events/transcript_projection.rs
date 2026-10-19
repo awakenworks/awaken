@@ -25,10 +25,8 @@ fn child_agent_name(record: &SessionRecord, thread_id: &str) -> Result<String, S
 pub(super) fn project_committed_message(
     record: &SessionRecord,
     owner_thread_id: Option<&str>,
-    fold: &awaken_managed_session_events::MessageFold<'_>,
+    message: &awaken_agent_contract::agent::message::Message,
     index: &awaken_managed_session_events::OrderIndex<'_>,
-    current_pending: Option<&Pending>,
-    transcript: &awaken_managed_session_events::CommittedTranscriptEvidence,
 ) -> Result<
     (
         awaken_managed_session_events::CommittedMessageProjection,
@@ -36,25 +34,23 @@ pub(super) fn project_committed_message(
     ),
     StateError,
 > {
-    let message = fold.message;
-    let pending_history = fold.pending_history();
     let tools = record.projected_tool_index_for(owner_thread_id);
-    let selected = transcript.project_message(
-        message,
-        &tools.sources,
-        fold.source_run_id.map(|run| run.0.as_str()),
-        &pending_history,
-        current_pending,
-    );
-    let sources = index
-        .tool_result_sources(owner_thread_id.unwrap_or(&record.session.id), message)
+    let (selected, pending_history, sources) = index
+        .project_message(
+            owner_thread_id.unwrap_or(&record.session.id),
+            message,
+            &tools.sources,
+        )
         .map_err(projection_error)?;
+    let pending_history = pending_history.iter().collect::<Vec<_>>();
     let mut events = project_messages_with_mcp_ids(
         std::slice::from_ref(&selected.message),
         None,
         &tools.all,
         awaken_managed_session_events::ToolFamilies::for_result_sources(&sources),
-        transcript.advisor_blocks(),
+        // Index already removed Advisor blocks at their original ordinals.
+        // Reusing the old map after content filtering would shift ownership.
+        &Default::default(),
         &pending_history,
     );
     ManagedState::qualify_tool_projection(
@@ -81,9 +77,6 @@ impl ManagedState {
             lifecycle_events,
             latest_run_id,
             latest_run_state,
-            pending,
-            pending_source_run_id,
-            historical_pending,
         } = projection;
         let plan = awaken_managed_session_events::plan_child_transcript(
             &awaken_managed_session_events::ChildTranscript {
@@ -93,8 +86,6 @@ impl ManagedState {
                 lifecycle: lifecycle_events,
                 latest_run_id,
                 latest_run_state,
-                pending_source_run_id,
-                historical_pending,
             },
             |message_id| record.message_was_projected(thread_id, message_id),
         )
@@ -149,13 +140,8 @@ impl ManagedState {
         if steps.is_empty() {
             return Ok(());
         }
-        let transcript_evidence = order_index.transcript_evidence(thread_id).ok_or_else(|| {
-            StateError::Run(RunError::internal(
-                "child transcript has no committed prefix",
-            ))
-        })?;
         for step in steps {
-            let fold = match step {
+            let message = match step {
                 ChildTranscriptStep::Report {
                     message,
                     run_id,
@@ -177,17 +163,10 @@ impl ManagedState {
                     record.consume_message(thread_id, &message.id.0);
                     continue;
                 }
-                ChildTranscriptStep::Fold(fold) => fold,
+                ChildTranscriptStep::Fold(message) => message,
             };
-            let message = fold.message;
-            let (selected, projected) = project_committed_message(
-                record,
-                Some(thread_id),
-                &fold,
-                order_index,
-                pending,
-                transcript_evidence,
-            )?;
+            let (selected, projected) =
+                project_committed_message(record, Some(thread_id), message, order_index)?;
             for (ordinal, projected) in projected.into_iter().enumerate() {
                 let kind = projected.kind;
                 let key = match projected.id {

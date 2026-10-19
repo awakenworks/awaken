@@ -11,13 +11,15 @@ use std::collections::HashMap;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
-use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind};
+#[cfg(test)]
+use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
+#[cfg(test)]
 use awaken_session_application_contract::Pending;
 use awaken_session_execution_contract::CoordinatedThreadLink;
 
 use crate::{
     DerivedSessionEvent, EventIdentity, EventPosition, IssuedToolEvent, OrderIndex,
-    coordination_orders, cross_posts, is_coordination_send, plan_folds,
+    coordination_orders, cross_posts, is_coordination_send,
 };
 
 /// Borrowed committed evidence the coordination events are derived from.
@@ -25,10 +27,7 @@ pub struct CoordinationEvidence<'a> {
     pub session_id: &'a str,
     pub root: Option<&'a RunRecoverySnapshot>,
     pub root_blocked: bool,
-    pub root_response_coordinates: &'a HashMap<String, (String, usize, usize)>,
     pub links: &'a [CoordinatedThreadLink],
-    pub lifecycle: &'a [RunLifecycleEvent],
-    pub historical_pending: &'a HashMap<RunLifecycleCursor, Pending>,
     pub order_index: &'a OrderIndex<'a>,
 }
 
@@ -86,7 +85,7 @@ pub fn derive_coordination_events(
                 prefix.session_id,
                 &tool.run_id.0,
                 &pending.tool_use_id,
-            ) {
+            )? {
                 orders.insert(event_id.clone(), order);
             }
             source_events.push(SourceEvent::Use {
@@ -99,41 +98,18 @@ pub fn derive_coordination_events(
         }
     }
     if let Some(root) = prefix.root.filter(|_| !prefix.root_blocked) {
-        let pending_source_run_id = prefix
-            .lifecycle
-            .iter()
-            .rev()
-            .find(|event| {
-                event.thread_id.0 == prefix.session_id
-                    && event.kind == RunLifecycleEventKind::Awaiting
-            })
-            .map(|event| &event.run_id);
-        let transcript = prefix
-            .order_index
-            .transcript_evidence(prefix.session_id)
-            .expect("root committed snapshot is in the same order index");
         let mut seen_messages = std::collections::HashSet::new();
-        for fold in plan_folds(
-            prefix.session_id,
-            &root.messages,
-            prefix.root_response_coordinates,
-            prefix.historical_pending,
-            prefix.lifecycle,
-            pending_source_run_id,
-        ) {
-            let message = fold.message;
+        for message in &root.messages {
             if !seen_messages.insert(message.id.0.as_str()) || message.id.is_agent_thread_report() {
                 continue;
             }
             match message.role {
                 Role::Assistant => {
-                    let projected = transcript.project_message(
+                    let (projected, _, _) = prefix.order_index.project_message(
+                        prefix.session_id,
                         message,
                         &projected_sources,
-                        fold.source_run_id.map(|run| run.0.as_str()),
-                        &fold.pending_history(),
-                        None,
-                    );
+                    )?;
                     for block in &projected.message.content {
                         let ContentBlock::ToolUse { id, name, input } = block else {
                             continue;
@@ -146,7 +122,7 @@ pub fn derive_coordination_events(
                         if let Some(order) =
                             prefix
                                 .order_index
-                                .tool_order(prefix.session_id, &message.id.0, id)
+                                .tool_order(prefix.session_id, &message.id.0, id)?
                         {
                             orders.insert(event_id.clone(), order);
                         }
@@ -264,7 +240,7 @@ fn append_result_events(
         if let Some(order) =
             prefix
                 .order_index
-                .message_call_order(prefix.session_id, &message.id.0, tool_use_id)
+                .message_call_order(prefix.session_id, &message.id.0, tool_use_id)?
         {
             orders.insert(event_id.clone(), order);
         }
@@ -390,10 +366,7 @@ mod tests {
                     session_id: "session",
                     root: Some(&root),
                     root_blocked: blocked,
-                    root_response_coordinates: &HashMap::new(),
                     links: &links,
-                    lifecycle: &[],
-                    historical_pending: &historical_pending,
                     order_index: &index,
                 },
                 |thread, source, call| format!("{thread}|{source}|{call}"),
@@ -502,10 +475,7 @@ mod tests {
                 session_id: "session",
                 root: Some(&root),
                 root_blocked: false,
-                root_response_coordinates: &HashMap::new(),
                 links: &links,
-                lifecycle: &lifecycle,
-                historical_pending: &historical_pending,
                 order_index: &index,
             },
             |thread, source, call| format!("{thread}|{source}|{call}"),

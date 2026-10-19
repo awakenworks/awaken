@@ -506,6 +506,8 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     // participant remains byte-for-byte durable; E6 success reaches Active.
     // Constraint: compensation preserves the first error and provenance is
     // participant-local; a failed command never infers replayed truth is orphaned.
+    // MaterialEntry.created is the original insertion fact: Applied=true, Replayed=false.
+    // S7-S10 keep Registry-independent compensation; S11/S12 keep success/replay ownership.
     //
     // | Rule | C1/C2 | Registry C3 | Vault C4 | Activate C5 | Effect |
     // |---|---|---|---|---|---|
@@ -781,13 +783,12 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
         SessionParticipantProvenance::Applied,
         "S11 Registry provenance"
     );
-    assert_eq!(
+    assert!(
         succeeded
             .credential
             .as_ref()
             .expect("S11 credential")
-            .provenance,
-        SessionParticipantProvenance::Applied,
+            .created,
         "S11 Vault provenance"
     );
     assert_eq!(
@@ -810,13 +811,12 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
         SessionParticipantProvenance::Replayed,
         "S12 Registry provenance"
     );
-    assert_eq!(
-        replayed
+    assert!(
+        !replayed
             .credential
             .as_ref()
             .expect("S12 credential")
-            .provenance,
-        SessionParticipantProvenance::Replayed,
+            .created,
         "S12 Vault provenance"
     );
     assert_eq!(
@@ -4158,7 +4158,7 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
     // documented here remain the only decision source; no parallel ledger is admitted.
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
-    // Cause/effect graph: C1 the one Session budget is reached; C2 a command is
+    // B3 cause/effect graph: C1 the one Session budget is reached; C2 a command is
     // ordinary new coordination or a child tool reply; C3 the reply does/does
     // not match Runtime's exact committed Awaiting ticket. Effects: E1 ordinary
     // activity admission remains budget-blocked; E2 the exact reply opens one
@@ -4282,7 +4282,7 @@ async fn root_activity_cas_is_the_only_budget_admission_choke() {
     // documented here remain the only decision source; no parallel ledger is admitted.
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
-    // Cause/effect graph: C1 the shared budget is reached; C2 the caller only
+    // B3 cause/effect graph: C1 the shared budget is reached; C2 the caller only
     // reads the frozen Agent roster or submits a new child Run; C3 the root CAS
     // has/not opened an activity. Effects: E1 read-only roster access remains
     // available; E2 the new Run fails at the authoritative activity CAS; E3 no
@@ -4858,7 +4858,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     // documented here remain the only decision source; no parallel ledger is admitted.
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
-    // Cause/effect graph: C1 the primary and one first-class Advisor Thread own
+    // B4 cause/effect graph: C1 the primary and one first-class Advisor Thread own
     // distinct committed usage; C2 the Advisor appears once in the Runtime's
     // coordinated links; C3 the model-request gate may also supply that same
     // Thread while its link races projection. Effects: E1 each Thread keeps its
@@ -5175,7 +5175,7 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
     // documented here remain the only decision source; no parallel ledger is admitted.
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
-    // Cause/effect graph: C1 the latest committed root or child Run is live; C2
+    // B1 cause/effect graph: C1 the latest committed root or child Run is live; C2
     // cumulative Session usage is below or at the active cap; C3 the same gate
     // check is replayed. Effects: E1 C2-below admits without provenance; E2
     // C2-at-cap reconciles the root cursor, appends one reach generation, and
@@ -5327,7 +5327,7 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
     // documented here remain the only decision source; no parallel ledger is admitted.
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
-    // Cause/effect graph: C1 the child boundary is Awaiting or terminal; C2 an
+    // B2 cause/effect graph: C1 the child boundary is Awaiting or terminal; C2 an
     // active budget is below or reaches its exact cap; C3 the same committed
     // boundary is redelivered after a crash. Effects: E1 aggregate child usage
     // advances the one Session budget cursor and appends one generic cap
@@ -5529,7 +5529,7 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
     // documented here remain the only decision source; no parallel ledger is admitted.
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
-    // Cause/effect graph: C1 two ordinary children are simultaneously in flight;
+    // B2 cause/effect graph: C1 two ordinary children are simultaneously in flight;
     // C2 both terminal commits are already part of the cumulative usage which
     // exactly reaches the shared cap; C3 their settlement observers race. Effects:
     // E1 root usage is charged once; E2 the transition winner appends one generic
@@ -5926,7 +5926,7 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
     // documented here remain the only decision source; no parallel ledger is admitted.
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
-    // Cause/effect graph: C1 budget absent/active/removed; C2 requested limit
+    // B6 cause/effect graph: C1 budget absent/active/removed; C2 requested limit
     // absent/present; C3 a present limit is greater than exact consumed cost.
     // Effects: E1 absent cannot acquire a budget; E2 active+C3 changes the cap
     // without erasing prior cap-transition history; E3 active+!C3 rejects; E4
@@ -6045,7 +6045,7 @@ async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
     // documented here remain the only decision source; no parallel ledger is admitted.
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
-    // Cause/effect graph: C1 a reached budget is raised or removed; C2 the
+    // B7 cause/effect graph: C1 a reached budget is raised or removed; C2 the
     // committed BudgetReached ticket belongs to the root or a child Thread; C3
     // an exact idempotent update races its replay; C4 Runtime reports the ticket
     // stale before dispatch. Effects: E1 the existing Run/correlation/generation

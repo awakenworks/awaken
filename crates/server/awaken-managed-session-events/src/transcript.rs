@@ -163,8 +163,8 @@ impl PartialEq for ToolResultSource {
 impl Eq for ToolResultSource {}
 
 /// One read-only classification of a committed transcript prefix. This is the
-/// shared root/child evidence seam: ToolResult pairs and the current ResumeTicket
-/// classify exact ToolUse occurrences, while the existing Event log identifies
+/// shared root/child evidence seam: ToolResult pairs classify exact ToolUse
+/// occurrences, while the existing Event log identifies
 /// occurrences that were already emitted during an earlier partial refresh.
 pub struct CommittedTranscriptEvidence {
     advisor_blocks: AdvisorConsultationBlocks,
@@ -176,7 +176,6 @@ pub struct CommittedTranscriptEvidence {
     /// Audit attribution borrows these positions instead of rescanning Messages.
     call_message_indices: std::collections::HashMap<String, Vec<usize>>,
     result_sources: std::collections::HashMap<(String, usize), ToolResultSource>,
-    pending_occurrences: std::collections::HashMap<String, CommittedToolOccurrence>,
 }
 
 pub struct CommittedMessageProjection {
@@ -222,98 +221,22 @@ impl CommittedTranscriptEvidence {
         &self.advisor_blocks
     }
 
-    /// Select only content whose committed disposition is known. Non-tool
-    /// content stays in the source Message and is deduplicated by its existing
-    /// stable public identity at append time. An unclassified ToolUse remains
-    /// unconsumed; a previously emitted occurrence is derived from the existing
-    /// source-qualified Event id rather than a second projection registry.
-    pub fn project_message(
+    /// Classification from the one committed occurrence fold; no current
+    /// target can overlay an unrelated occurrence at this read boundary.
+    pub(crate) fn phase(
         &self,
-        message: &awaken_agent_contract::agent::message::Message,
-        projected_tool_sources: &std::collections::HashSet<(String, String)>,
-        pending_source_id: Option<&str>,
-        pending_history: &[&Pending],
-        current_pending: Option<&Pending>,
-    ) -> CommittedMessageProjection {
-        use awaken_agent_contract::agent::content::ContentBlock;
-
-        let mut projected = message.clone();
-        let mut fully_classified = true;
-        projected.content = message
-            .content
-            .iter()
-            .enumerate()
-            .filter_map(|(block_ordinal, block)| {
-                let ContentBlock::ToolUse { id, name, input } = block else {
-                    return Some(block.clone());
-                };
-                if self
-                    .advisor_blocks
-                    .calls
-                    .contains(&(message.id.0.clone(), block_ordinal))
-                {
-                    return Some(block.clone());
-                }
-                let key = CommittedToolOccurrence {
-                    message_id: message.id.0.clone(),
-                    block_ordinal,
-                    call_id: id.clone(),
-                };
-                let mut disposition = self
-                    .dispositions
-                    .get(&key)
-                    .copied()
-                    .unwrap_or(RuntimeToolProjectionPhase::Unclassified);
-                if disposition == RuntimeToolProjectionPhase::Unclassified
-                    && let Some(pending) =
-                        current_pending.filter(|pending| pending.tool_use_id == *id)
-                    && self.pending_occurrences.get(id) == Some(&key)
-                {
-                    disposition = RuntimeToolProjectionPhase::from_pending(pending.client_executed);
-                }
-                // A closed wait remains committed classification evidence even
-                // when failure/cancellation removed its current ResumeTicket.
-                // The caller has scoped history to this Thread/Run/message;
-                // preserve unmatched sibling intents as Unclassified.
-                if disposition == RuntimeToolProjectionPhase::Unclassified
-                    && let Some(historical) = pending_history.iter().find(|pending| {
-                        pending.tool_use_id == *id
-                            && pending.name == *name
-                            && pending.input == *input
-                    })
-                {
-                    disposition =
-                        RuntimeToolProjectionPhase::from_pending(historical.client_executed);
-                }
-                let is_pending = disposition.is_pending();
-                let already_projected = projected_tool_sources
-                    .contains(&(message.id.0.clone(), id.clone()))
-                    || (is_pending
-                        && pending_source_id.is_some_and(|source_id| {
-                            projected_tool_sources.contains(&(source_id.to_string(), id.clone()))
-                        }));
-                if already_projected {
-                    return None;
-                }
-                if !disposition.is_transcript_visible() {
-                    fully_classified = false;
-                    return None;
-                }
-                match disposition {
-                    RuntimeToolProjectionPhase::PendingClient
-                    | RuntimeToolProjectionPhase::PendingBuiltin => Some(block.clone()),
-                    RuntimeToolProjectionPhase::Processed
-                    | RuntimeToolProjectionPhase::Resolving => Some(block.clone()),
-                    RuntimeToolProjectionPhase::Unclassified => {
-                        unreachable!("transcript visibility checked above")
-                    }
-                }
+        message_id: &str,
+        block_ordinal: usize,
+        call_id: &str,
+    ) -> RuntimeToolProjectionPhase {
+        self.dispositions
+            .get(&CommittedToolOccurrence {
+                message_id: message_id.to_string(),
+                block_ordinal,
+                call_id: call_id.to_string(),
             })
-            .collect();
-        CommittedMessageProjection {
-            message: projected,
-            fully_classified,
-        }
+            .copied()
+            .unwrap_or(RuntimeToolProjectionPhase::Unclassified)
     }
 }
 
@@ -362,11 +285,10 @@ fn result_matches_occurrence(
 
 /// Fold the full committed prefix once into exact occurrence evidence. A result
 /// consumes the earliest unmatched call in its proven batch scope, or the same
-/// provider-local id for an unscoped historical result. The current ticket then
-/// classifies the earliest still-unmatched occurrence.
+/// provider-local id for an unscoped historical result. Awaiting qualification
+/// belongs to the OrderIndex over its exact accepted pause, not a raw ticket.
 pub fn committed_transcript_evidence(
     messages: &[awaken_agent_contract::agent::message::Message],
-    pending: Option<&Pending>,
 ) -> CommittedTranscriptEvidence {
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::Role;
@@ -468,28 +390,8 @@ pub fn committed_transcript_evidence(
             Role::User | Role::System => {}
         }
     }
-    if let Some(pending) = pending
-        && let Some(index) = unmatched
-            .get(&pending.tool_use_id)
-            .into_iter()
-            .flatten()
-            .copied()
-            .find(|index| !occurrences[*index].advisor)
-    {
-        occurrences[index].classification =
-            RuntimeToolProjectionPhase::from_pending(pending.client_executed);
-    }
     let mut dispositions = std::collections::HashMap::new();
     let mut result_message_indices = std::collections::HashMap::new();
-    let pending_occurrences = unmatched
-        .into_iter()
-        .filter_map(|(call, indices)| {
-            indices
-                .into_iter()
-                .find(|index| !occurrences[*index].advisor)
-                .map(|index| (call, occurrences[index].key.clone()))
-        })
-        .collect();
     for occurrence in occurrences
         .into_iter()
         .filter(|occurrence| !occurrence.advisor)
@@ -505,7 +407,6 @@ pub fn committed_transcript_evidence(
         result_message_indices,
         call_message_indices,
         result_sources,
-        pending_occurrences,
     }
 }
 
@@ -569,7 +470,7 @@ fn runtime_tool_projection_phase_is_total_distinct_and_fail_closed() {
 pub fn advisor_consultation_blocks(
     messages: &[awaken_agent_contract::agent::message::Message],
 ) -> AdvisorConsultationBlocks {
-    committed_transcript_evidence(messages, None).advisor_blocks
+    committed_transcript_evidence(messages).advisor_blocks
 }
 
 /// Fold committed Messages into neutral transcript facts: the Runtime's own
@@ -742,7 +643,7 @@ mod tests {
         );
         let exact = [call.clone(), result.clone(), call.clone(), result];
         validate_committed_message_identities(&exact).unwrap();
-        let evidence = committed_transcript_evidence(&exact, None);
+        let evidence = committed_transcript_evidence(&exact);
         assert_eq!(
             evidence.result_message_index(&call.id.0, 0, "call"),
             Some(1),
@@ -812,15 +713,12 @@ mod tests {
                     vec![ContentBlock::text("done")],
                 )],
             );
-            let evidence = committed_transcript_evidence(
-                &[
-                    earlier.clone(),
-                    selected.clone(),
-                    result.clone(),
-                    result.clone(),
-                ],
-                None,
-            );
+            let evidence = committed_transcript_evidence(&[
+                earlier.clone(),
+                selected.clone(),
+                result.clone(),
+                result.clone(),
+            ]);
             assert_eq!(
                 evidence.result_message_index(&earlier.id.0, 0, "same"),
                 None,

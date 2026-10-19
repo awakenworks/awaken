@@ -9,23 +9,18 @@
 
 use crate::SessionProjectionReads as _;
 use awaken_time::WallClockExt as _;
-use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::stream::sink::Sink;
+use awaken_credential_contract::MaterialEntry;
 use awaken_executable_agent_contract::ExecutableAgentSessionProfile;
-use awaken_session_application_contract::{DelegatedRun, Pending, StepOutcome};
+use awaken_session_application_contract::DelegatedRun;
 use awaken_session_budget_contract::SessionUsage;
 use awaken_session_configuration_contract::resource::ResolvedSkillBinding;
-use awaken_session_execution_contract::{
-    CommittedOutcomeProjection, OutcomeDrive, ToolPermissionDecision,
-};
 use awaken_session_types::RunError;
 
 use crate::{
-    CredentialMaterialIngressCommand, CredentialMaterialIngressReceipt, CredentialMaterialInput,
-    SessionParticipantProvenance,
+    CredentialMaterialIngressCommand, CredentialMaterialInput, SessionParticipantProvenance,
 };
 
 use awaken_resource_contract::{SESSION_REPOSITORY_OWNER_KIND, SESSION_REPOSITORY_OWNER_SESSION};
@@ -220,7 +215,7 @@ pub struct ConfiguredSessionRepository {
     pub workspace_id: String,
     pub repository_id: awaken_resource_contract::RepositoryId,
     pub registry_provenance: SessionParticipantProvenance,
-    pub credential: Option<CredentialMaterialIngressReceipt>,
+    pub credential: Option<MaterialEntry>,
 }
 
 use crate::SessionApplication;
@@ -769,22 +764,6 @@ impl SessionApplication {
         thread_reads.committed_messages(thread).await
     }
 
-    /// Derived Managed child links; the Runtime reconstructs these from the
-    /// parent tool facts and ordinary child Thread/dispatch facts.
-    /// A supplied root is borrowed only for a read-only projection; ordinary
-    /// command membership and final-prefix validation still request a fresh read.
-    pub async fn coordinated_threads(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-    ) -> Result<Vec<awaken_session_execution_contract::CoordinatedThreadLink>, RunError> {
-        let coordination_reads = self.runtime().coordination_reads();
-
-        coordination_reads
-            .coordinated_threads(session_id, observed_root)
-            .await
-    }
-
     /// Read cumulative accounting for one logical Thread through its parent
     /// Session partition. This is the same neutral Runtime authority used by
     /// Session totals; the application does not cache or re-aggregate it.
@@ -834,18 +813,6 @@ impl SessionApplication {
             .await
     }
 
-    pub async fn session_thread_disposition(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<awaken_agent_contract::ThreadDisposition, RunError> {
-        let thread_reads = self.runtime().thread_reads();
-
-        thread_reads
-            .session_thread_disposition(session_id, thread_id)
-            .await
-    }
-
     pub async fn archive_session_thread(
         &self,
         session_id: &awaken_session_types::SessionId,
@@ -871,12 +838,6 @@ impl SessionApplication {
             .await
     }
 
-    pub async fn pending_tool(&self, thread: &str) -> Result<Option<Pending>, RunError> {
-        let streaming_runtime = self.runtime().streaming_runs();
-
-        streaming_runtime.pending_tool(thread).await
-    }
-
     pub async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
         let coordination_reads = self.runtime().coordination_reads();
 
@@ -895,70 +856,10 @@ impl SessionApplication {
             .await
     }
 
-    pub async fn rebind_model(&self, thread: &str, model: &str) -> Result<(), RunError> {
-        let streaming_runtime = self.runtime().streaming_runs();
-
-        streaming_runtime.rebind_model(thread, model).await
-    }
-
-    pub async fn run_streaming_attributed(
-        &self,
-        agent: &str,
-        thread: &str,
-        content: Vec<ContentBlock>,
-        data_subject_id: Option<String>,
-        sink: Arc<dyn Sink>,
-    ) -> Result<StepOutcome, RunError> {
-        let streaming_runtime = self.runtime().streaming_runs();
-
-        streaming_runtime
-            .run_streaming_attributed(agent, thread, content, data_subject_id, sink)
-            .await
-    }
-
-    pub async fn resume(
-        &self,
-        thread: &str,
-        tool_use_id: &str,
-        decision: ToolPermissionDecision,
-    ) -> Result<StepOutcome, RunError> {
-        let execution = self.runtime().core();
-
-        execution.resume(thread, tool_use_id, decision).await
-    }
-
-    pub async fn resume_custom(
-        &self,
-        thread: &str,
-        tool_use_id: &str,
-        content: Vec<ContentBlock>,
-        is_error: bool,
-    ) -> Result<StepOutcome, RunError> {
-        let execution = self.runtime().core();
-
-        execution
-            .resume_custom(thread, tool_use_id, content, is_error)
-            .await
-    }
-
     pub async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
         let streaming_runtime = self.runtime().streaming_runs();
 
         streaming_runtime.interrupt(thread).await
-    }
-
-    pub async fn define_outcome(
-        &self,
-        thread: &str,
-        description: &str,
-        rubric: &str,
-        max_iterations: u32,
-    ) -> Result<OutcomeDrive, RunError> {
-        let outcome_runtime = self.runtime().outcomes();
-
-        outcome_runtime
-            .define_outcome(thread, description, rubric, max_iterations)
-            .await
     }
 
     pub async fn prepare_outcome(
@@ -973,34 +874,6 @@ impl SessionApplication {
 
         outcome_runtime
             .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
-            .await
-    }
-
-    pub async fn continue_outcome(&self, thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
-        let outcome_runtime = self.runtime().outcomes();
-
-        outcome_runtime.continue_outcome(thread).await
-    }
-
-    /// Project an exact terminal Outcome through the sole Runtime query port.
-    /// The application owns no Outcome cache or continuation state.
-    pub async fn committed_outcome_projection(
-        &self,
-        thread: &str,
-        outcome_id: &str,
-    ) -> Result<Option<CommittedOutcomeProjection>, RunError> {
-        let thread_reads = self.runtime().thread_reads();
-
-        thread_reads
-            .committed_outcome_projection(thread, outcome_id)
-            .await
-    }
-
-    pub async fn supports_mid_conversation_system(&self, thread: &str) -> Result<bool, RunError> {
-        let streaming_runtime = self.runtime().streaming_runs();
-
-        streaming_runtime
-            .supports_mid_conversation_system(thread)
             .await
     }
 
