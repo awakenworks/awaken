@@ -163,9 +163,9 @@ many ADRs, and some of them pull the code apart. Measured on main `14ef08382e`:
 
 ## Consequences
 
-- Each boundary has one contract crate and each new port one obvious place; the
-  target is about 26 contract crates, reached as the work that separates each boundary
-  finishes.
+- Each boundary has one contract crate and each new port one obvious place. The
+  target map follows the audited boundaries as they are separated; its original
+  estimate of about 26 contracts is not an acceptance criterion.
 - Missing wiring becomes a compile error instead of a run-time `None`.
 - Names state responsibility; the run-loop vocabulary and the mechanism-word rule are
   checked mechanically.
@@ -188,3 +188,41 @@ Web policy fields. The existing `awaken-tool-contract` owns the required compile
 role used by ConfigService and Session Application; Managed wire DTOs belong to
 the existing protocol adapter's `tools` module. See
 [the consumer and ownership inventory](../design/anthropic-alignment-and-sessions.md).
+
+## Amendment — 2026-10-19: aggregate ownership before Contract convergence
+
+The remaining Session convergence concerns its state, events, budget and repository
+contracts. They may become modules of `awaken-session-contract` after the application
+roles and their callers are stable. This is a packaging change: state transitions,
+fencing, root commits and transaction boundaries keep their existing owners.
+Repository, query, input and execution roles stay narrow; a shared crate is not a
+shared service interface. The lightweight `awaken-session-types` stays a leaf.
+
+Two earlier pending merges are withdrawn:
+
+- `awaken-session-dream-contract` remains separate. Dream has its own durable job,
+  state transitions and recovery protocol. Its Session reference does not make its
+  writes part of the Session aggregate transaction, even though both contracts have
+  the `session` bounded context.
+- `awaken-session-environment-contract` remains the Environment provider SPI. Its
+  `environment` bounded context implements environment capabilities; the Session
+  realization contract exposes Session decisions and observations. Implementing
+  those decisions does not transfer ownership of the provider SPI to Session.
+
+The current map consequently has 29 targets and five pending sources; the actual
+workspace still has 33 contract crates. These figures describe this revision, not
+a reduction quota. The container/provisioning merge remains pending until the
+Provider caller roles are stable. Existing SDK release boundaries, including the
+Web policy kernel, remain independently published. An SDK facade may preserve a
+compatible path while internal callers depend directly on the defining crate;
+packaging work must retain public API and independent-consumer evidence.
+
+`_contract_map_fitness.py` enforces a direct, unambiguous merge map: a source has one
+final target, a target is never itself a source, absent targets have pending sources,
+and a merge cannot cross the `bounded_context` values in workspace metadata. The
+metadata and source measurements come from one cached workspace snapshot. This
+context check is necessary but not sufficient: separate aggregates in one context,
+such as Dream and Session, still require an explicit ownership decision. Tests pin
+those decisions and exercise duplicate ownership, self-merges, chains, cycles,
+stale targets and cross-context merges. All CLI baseline-writing modes, including
+`--reason`, must reject an ambiguous map without changing the baseline.
