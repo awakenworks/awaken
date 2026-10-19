@@ -39,7 +39,6 @@ pub(super) struct CandidateEvidence {
     pub(super) transcripts: HashMap<String, Vec<awaken_agent_contract::agent::message::Message>>,
     pub(super) child_latest_run_states:
         HashMap<String, awaken_agent_contract::agent::run::RunState>,
-    pub(super) child_pending: HashMap<String, Pending>,
     pub(super) child_dispositions: HashMap<String, awaken_agent_contract::ThreadDisposition>,
     pub(super) root_response_coordinates: HashMap<String, (String, usize, usize)>,
     pub(super) durable_inbound: Vec<DurableInboundProjection>,
@@ -82,10 +81,7 @@ impl CandidateEvidence {
                 session_id: persisted.session_id.as_str(),
                 root: self.root.as_ref(),
                 root_blocked: self.root_blocked(persisted.session_id.as_str()),
-                root_response_coordinates: &self.root_response_coordinates,
                 links: &self.links,
-                lifecycle: &self.acceptance.accepted,
-                historical_pending: &self.historical_pending,
                 order_index: index,
             },
             managed_tool_event_id,
@@ -187,9 +183,6 @@ impl CandidateEvidence {
             &accepted.historical_pending,
         )
         .map_err(projection_error)?;
-        // A Thread's current answerable call is its latest accepted
-        // lifecycle commit when that commit is an audited pause.
-        let child_pending = accepted.current_pending(children.keys());
         let awaken_managed_session_events::AcceptedLifecycle {
             acceptance,
             historical_pending,
@@ -205,7 +198,6 @@ impl CandidateEvidence {
             outcome_query_incomplete,
             transcripts,
             child_latest_run_states,
-            child_pending,
             child_dispositions,
             root_response_coordinates,
             durable_inbound,
@@ -246,7 +238,6 @@ impl CandidateEvidence {
             transcripts: &self.transcripts,
             lifecycle_events: &self.acceptance.accepted,
             latest_run_states: &self.child_latest_run_states,
-            pending: &self.child_pending,
             historical_pending: &self.historical_pending,
             dispositions: &self.child_dispositions,
             usage: &self.child_thread_usage,

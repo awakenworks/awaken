@@ -1646,3 +1646,143 @@ async fn closed_interval_usage_keeps_its_committed_value_when_clock_and_activity
         }
     }
 }
+
+#[tokio::test]
+async fn current_child_ticket_never_classifies_another_runs_unmatched_call() {
+    // C1 R1 stages assistant Step0, then cancellation wins before tool polling;
+    // the same final commit retains the ToolUse but no result/Awaiting target.
+    // C2 R2 on that active child commits Step0 plus its audited current ticket.
+    // C3 both calls share raw id, name AND input. R1=C1 => old call withheld;
+    // R2=C1+C2+C3 => only R2's exact occurrence is published. Name/input checks
+    // alone cannot distinguish this row. The original same-Run FIFO and current
+    // exact-pending positive cases remain independently exercised.
+    // Native cause: run_loop stages assistant before biased cancellation/tool
+    // select; finalize retains those messages with Cancelled in one commit.
+    // Reuse the original ChildTimeline/RehydrateFake snapshot and reducer: no
+    // fake App/projection, new matcher, fixture constructor or hand-built Run.
+    let mut fixture = ChildTimeline::new(&[]).await;
+    fixture.apply(ChildStep::Link).await;
+    let old_run = ChildTimeline::child_run();
+    let current_run = RunId("current-child-run".into());
+    let input = serde_json::json!({"command":"echo same"});
+    let calls = [&old_run, &current_run].map(|run| {
+        Message::new(
+            MessageId::assistant(run, 0),
+            Role::Assistant,
+            vec![ContentBlock::tool_use("same", "bash", input.clone())],
+        )
+    });
+    fixture.commit_child_message(4, calls[0].clone());
+    fixture.commit_child_lifecycle(
+        4,
+        RunLifecycleEventKind::Cancelled,
+        RunState::Ended(EndCause::Cancelled),
+    );
+    fixture
+        .warm
+        .refresh_committed_events(&fixture.session_id)
+        .await
+        .unwrap();
+    let public_child = ManagedState::public_tool_thread_id(&fixture.session_id, Some(CHILD));
+    let old_id = managed_tool_event_id(&public_child, &calls[0].id.0, "same");
+    assert!(
+        !durable_history(&fixture.warm, &fixture.session_id)
+            .iter()
+            .any(|event| event.0 == old_id),
+        "R1 no own pause/result leaves the old call Unclassified"
+    );
+    fixture
+        .runtime
+        .coordinated
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|link| link.thread_id.0 == CHILD)
+        .unwrap()
+        .latest_run_id = Some(current_run.clone());
+    let pending = Pending {
+        tool_use_id: "same".into(),
+        name: "bash".into(),
+        input,
+        client_executed: false,
+    };
+    let target = awaken_protocol_managed_testkit::tool_call_target(
+        pending.clone(),
+        awaken_agent_contract::agent::awaiting::ToolAwaitReason::Permission,
+    );
+    fixture.commit_child_message(8, calls[1].clone());
+    let mut awaiting = lifecycle(
+        8,
+        CHILD,
+        &current_run,
+        RunLifecycleEventKind::Awaiting,
+        RunState::Awaiting,
+    );
+    awaiting.await_reason = Some(target.reason());
+    fixture.runtime.lifecycle.lock().unwrap().extend([
+        lifecycle(
+            5,
+            CHILD,
+            &current_run,
+            RunLifecycleEventKind::Running,
+            RunState::Running,
+        ),
+        awaiting.clone(),
+    ]);
+    fixture
+        .runtime
+        .await_targets
+        .lock()
+        .unwrap()
+        .insert(awaiting.cursor, target);
+    fixture
+        .runtime
+        .pending_by_thread
+        .lock()
+        .unwrap()
+        .insert(CHILD.into(), pending);
+    let snapshot =
+        awaken_session_execution_contract::ThreadReadRuntime::session_thread_recovery_snapshot(
+            &fixture.runtime,
+            &SessionId::from(&fixture.session_id),
+            CHILD,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        snapshot
+            .runs
+            .iter()
+            .any(|run| run.id == old_run && run.state == RunState::Ended(EndCause::Cancelled)),
+        "C1 committed cancelled record"
+    );
+    assert_eq!(
+        ManagedState::current_recovery_run(&snapshot)
+            .unwrap()
+            .unwrap()
+            .id,
+        current_run,
+        "C2 original recovery law accepts the current R2"
+    );
+    assert_eq!(snapshot.resume_tickets.len(), 1, "C2 one current ticket");
+    assert_eq!(
+        snapshot.resume_tickets[0].run_id, current_run,
+        "C2 ticket belongs to R2"
+    );
+    fixture
+        .warm
+        .refresh_committed_events(&fixture.session_id)
+        .await
+        .unwrap();
+    let events = durable_history(&fixture.warm, &fixture.session_id);
+    let current_id = managed_tool_event_id(&public_child, &calls[1].id.0, "same");
+    assert!(
+        events.iter().any(|event| event.0 == current_id),
+        "R2 positive: own current source is published"
+    );
+    assert!(
+        !events.iter().any(|event| event.0 == old_id),
+        "R2 negative: current ticket cannot classify another Run's unmatched call"
+    );
+}

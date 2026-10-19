@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn budget_reach_uses_the_first_closed_interval_whose_cumulative_usage_crossed_it() {
-    // Cause/effect graph: C1 interval one closes below a transition cursor; C2
+    // B8 cause/effect graph: C1 interval one closes below a transition cursor; C2
     // interval two closes at/above it; C3 the matching interval is still open
     // or absent; C4 tool approval owns C2 and an equal-or-later interval closes
     // on committed BudgetReached; C5 the crossing closes while its exact
@@ -184,7 +184,7 @@ fn budget_reach_uses_the_first_closed_interval_whose_cumulative_usage_crossed_it
 
 #[tokio::test]
 async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_cursor_suffix() {
-    // Cause/effect graph: C1 the budget transition is durable while only a
+    // B8 cause/effect graph: C1 the budget transition is durable while only a
     // below-threshold interval has closed; C2 callers have already received its
     // complete prefix/cursors; C3 a later interval closes with cumulative usage
     // at the transition cursor; C4 an independent ManagedState cold-rebuilds.

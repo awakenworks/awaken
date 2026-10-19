@@ -453,7 +453,6 @@ pub(crate) fn project_messages_with_mcp_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_managed_session_events::committed_transcript_evidence;
 
     #[test]
     fn reused_tool_call_ids_keep_the_current_builtin_or_mcp_result_family() {
@@ -730,28 +729,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn committed_tool_evidence_is_fifo_occurrence_scoped_and_revisitable() {
-        // Cause/effect graph: C1 two Assistant Messages reuse one provider-local
-        // call id; C2 the first occurrence has a matching ToolResult; C3 the
-        // second occurrence owns the current built-in ResumeTicket; C4 a sibling
-        // ToolUse has neither a result nor ticket; C5 the sibling results later;
-        // C6 the current occurrence was already emitted from its source-qualified
-        // id. Effects: E1 C2 is Resolved, E2 C3 is PendingBuiltin, E3 C4 is
-        // withheld and keeps its source Message revisitable, E4 C6 emits neither
-        // duplicate call nor duplicate non-tool identity at append, and E5 after
-        // C5 every occurrence is classified so the Message may be consumed.
-        // K1 Result and ResumeTicket are the only disposition authorities; K2
-        // raw ids never identify an occurrence; K3 this pure evidence fold is
-        // shared by root and child and owns no cursor or stored state.
-        //
-        // | Rule | Prior result | Current ticket | Sibling result | Prior Event | Effect |
-        // |---|---|---|---|---|---|
-        // | F1 | yes | exact | no | no | E1,E2,E3 |
-        // | F2 | yes | exact | no | exact current | E1,E3,E4 |
-        // | F3 | yes | none | yes for both current calls | no | E1,E5 |
+    /// The original F1–F3 Message/Pending data, unchanged. Snapshot creation
+    /// remains the existing RehydrateFake; this only moves the old literals
+    /// out of the now source-qualified regression's execution steps.
+    fn fifo_occurrence_prefix() -> (
+        Vec<awaken_agent_contract::agent::message::Message>,
+        awaken_agent_contract::agent::message::Message,
+        Pending,
+        awaken_agent_contract::agent::message::Message,
+    ) {
         use awaken_agent_contract::agent::message::{Id, Message, Role};
-
         let first = Message::new(
             Id("fifo-first-call".into()),
             Role::Assistant,
@@ -784,10 +771,97 @@ mod tests {
             input: serde_json::json!({"path":"second"}),
             client_executed: false,
         };
-        let prefix = vec![first, first_result, current.clone()];
-        let evidence = committed_transcript_evidence(&prefix, Some(&pending));
-        let selected =
-            evidence.project_message(&current, &std::collections::HashSet::new(), None, &[], None);
+        let results = Message::new(
+            Id("fifo-current-results".into()),
+            Role::Tool,
+            vec![
+                ContentBlock::tool_result("same", vec![ContentBlock::text("second done")]),
+                ContentBlock::tool_result("other", vec![ContentBlock::text("third done")]),
+            ],
+        );
+        (
+            vec![first, first_result, current.clone()],
+            current,
+            pending,
+            results,
+        )
+    }
+
+    #[tokio::test]
+    async fn committed_tool_evidence_is_fifo_occurrence_scoped_and_revisitable() {
+        // Cause/effect graph: C1 two Assistant Messages reuse one provider-local
+        // call id; C2 the first occurrence has a matching ToolResult; C3 the
+        // second occurrence owns the current built-in ResumeTicket; C4 a sibling
+        // ToolUse has neither a result nor ticket; C5 the sibling results later;
+        // C6 the current occurrence was already emitted from its source-qualified
+        // id. Effects: E1 C2 is Resolved, E2 C3 is PendingBuiltin, E3 C4 is
+        // withheld and keeps its source Message revisitable, E4 C6 emits neither
+        // duplicate call nor duplicate non-tool identity at append, and E5 after
+        // C5 every occurrence is classified so the Message may be consumed.
+        // K1 Result and accepted Awaiting audit are disposition authorities;
+        // K2 raw ids never identify an occurrence; K3 the same read-only Index
+        // source selector is shared by root and child, with no new stored state.
+        //
+        // | Rule | Prior result | Current ticket | Sibling result | Prior Event | Effect |
+        // |---|---|---|---|---|---|
+        // | F1 | yes | exact | no | no | E1,E2,E3 |
+        // | F2 | yes | exact | no | exact current | E1,E3,E4 |
+        // | F3 | yes | none | yes for both current calls | no | E1,E5 |
+        let (prefix, current, pending, results) = fifo_occurrence_prefix();
+        // The original F1/F2 assertions now exercise the sole Index source
+        // selector against a real fixture snapshot/audited pause. No raw-ticket
+        // utility branch or self-comparison remains as a second oracle.
+        use awaken_agent_contract::agent::run::RunState;
+        use awaken_agent_contract::{
+            RunId, RunLifecycleEvent, RunLifecycleEventKind, ThreadId, encode_run_lifecycle_cursor,
+        };
+        use awaken_managed_session_events::{OrderEvidence, OrderIndex, ParentTerminalEvidence};
+        use awaken_session_execution_contract::ThreadReadRuntime as _;
+        let runtime = awaken_protocol_managed_testkit::RehydrateFake::default();
+        let lifecycle = [RunLifecycleEvent {
+            cursor: encode_run_lifecycle_cursor(4, 0).unwrap(),
+            source_commit_cursor: 4,
+            thread_id: ThreadId("fifo".into()),
+            run_id: RunId("fifo-run".into()),
+            kind: RunLifecycleEventKind::Awaiting,
+            state: RunState::Awaiting,
+            await_reason: None,
+        }];
+        *runtime.committed.lock().unwrap() = Some(prefix.clone());
+        *runtime.pending.lock().unwrap() = Some(pending);
+        *runtime.lifecycle.lock().unwrap() = lifecycle.to_vec();
+        let snapshot = runtime
+            .session_thread_recovery_snapshot(&"fifo".into(), "fifo")
+            .await
+            .unwrap()
+            .unwrap();
+        let targets =
+            awaken_managed_session_events::audited_await_targets(&lifecycle, |_| Some(&snapshot))
+                .unwrap();
+        let history = targets
+            .into_iter()
+            .map(|(cursor, target)| (cursor, Pending::from_await_target(&target).unwrap()))
+            .collect();
+        let children = Default::default();
+        let evidence = OrderEvidence {
+            session_id: "fifo",
+            updates: None,
+            batches: &[],
+            closed_intervals: &[],
+            budget_reach: &[],
+            parent_terminal: ParentTerminalEvidence::default(),
+            lifecycle: &lifecycle,
+            root: Some(&snapshot),
+            children: &children,
+            links: &[],
+            outcomes: &[],
+            historical_pending: &history,
+        };
+        let index = OrderIndex::new(evidence);
+        let selected = index
+            .project_message("fifo", &current, &std::collections::HashSet::new())
+            .unwrap()
+            .0;
         assert!(!selected.fully_classified, "F1/E3");
         assert!(
             matches!(
@@ -800,34 +874,51 @@ mod tests {
             "F1/E1-E3 exact occurrence selection"
         );
 
-        let selected = evidence.project_message(
-            &current,
-            &std::collections::HashSet::from([(current.id.0.clone(), "same".to_string())]),
-            None,
-            &[],
-            None,
-        );
+        let selected = index
+            .project_message(
+                "fifo",
+                &current,
+                &std::collections::HashSet::from([(current.id.0.clone(), "same".to_string())]),
+            )
+            .unwrap()
+            .0;
         assert!(!selected.fully_classified, "F2/E3");
         assert!(
             matches!(&selected.message.content[..], [ContentBlock::Text { .. }]),
             "F2/E4 only stable non-tool content is revisited"
         );
 
-        let completed = [
-            prefix,
-            vec![Message::new(
-                Id("fifo-current-results".into()),
-                Role::Tool,
-                vec![
-                    ContentBlock::tool_result("same", vec![ContentBlock::text("second done")]),
-                    ContentBlock::tool_result("other", vec![ContentBlock::text("third done")]),
-                ],
-            )],
-        ]
-        .concat();
-        let evidence = committed_transcript_evidence(&completed, None);
-        let selected =
-            evidence.project_message(&current, &std::collections::HashSet::new(), None, &[], None);
+        let completed = [prefix, vec![results]].concat();
+        *runtime.committed.lock().unwrap() = Some(completed);
+        runtime
+            .message_cursors_by_thread
+            .lock()
+            .unwrap()
+            .insert("fifo".into(), vec![1, 2, 3, 5]);
+        let mut resumed = lifecycle.to_vec();
+        resumed.push(RunLifecycleEvent {
+            cursor: encode_run_lifecycle_cursor(6, 0).unwrap(),
+            source_commit_cursor: 6,
+            kind: RunLifecycleEventKind::Resumed,
+            state: RunState::Running,
+            ..lifecycle[0].clone()
+        });
+        *runtime.lifecycle.lock().unwrap() = resumed.clone();
+        *runtime.pending.lock().unwrap() = None;
+        let completed = runtime
+            .session_thread_recovery_snapshot(&"fifo".into(), "fifo")
+            .await
+            .unwrap()
+            .unwrap();
+        let index = OrderIndex::new(OrderEvidence {
+            root: Some(&completed),
+            lifecycle: &resumed,
+            ..evidence
+        });
+        let selected = index
+            .project_message("fifo", &current, &std::collections::HashSet::new())
+            .unwrap()
+            .0;
         assert!(selected.fully_classified, "F3/E5");
         assert_eq!(
             selected
