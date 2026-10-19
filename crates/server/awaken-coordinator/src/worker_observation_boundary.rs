@@ -601,13 +601,17 @@ mod tests {
             &self,
             worker_id: &str,
             _expected: &awaken_dispatch::WorkerCreateLedger,
-        ) -> Result<awaken_dispatch::WorkerCreateLedger, awaken_dispatch::ApplicationError>
-        {
+        ) -> Result<
+            awaken_dispatch::WorkerCreateLedger,
+            awaken_session_execution_contract::ApplicationError,
+        > {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self.mode == 1 {
-                return Err(awaken_dispatch::ApplicationError::unavailable(
-                    "ledger unknown",
-                ));
+                return Err(
+                    awaken_session_execution_contract::ApplicationError::unavailable(
+                        "ledger unknown",
+                    ),
+                );
             }
             if self.mode == 2 {
                 self.directory
@@ -635,13 +639,15 @@ mod tests {
                 },
                 "original-config",
             )
-            .map_err(|e| awaken_dispatch::ApplicationError::internal(e.to_string()))
+            .map_err(|e| awaken_session_execution_contract::ApplicationError::internal(e.to_string()))
         }
         async fn binding_for(
             &self,
             _: &awaken_dispatch::WorkerIdentity,
-        ) -> Result<awaken_dispatch::AttemptExecutionBinding, awaken_dispatch::ApplicationError>
-        {
+        ) -> Result<
+            awaken_dispatch::AttemptExecutionBinding,
+            awaken_session_execution_contract::ApplicationError,
+        > {
             unreachable!("bootstrap never invents an incarnation")
         }
     }

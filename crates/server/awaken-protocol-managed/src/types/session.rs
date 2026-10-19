@@ -24,7 +24,7 @@ pub use tool_evaluation::{AutoEvaluatedPermission, RecordedPermission, ToolEvalu
 mod model_config;
 pub use model_config::{
     ModelConfig, ModelConfigParams, ModelEffort, ModelEffortInput, ModelEffortLevel,
-    ModelInferenceGeo, ModelSpeed,
+    ModelInferenceGeo,
 };
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -1238,7 +1238,9 @@ impl PartialEq for ListEventsResponse {
 
 #[cfg(test)]
 mod tests {
-    use awaken_runtime_contract::agent_bindings::{InferenceGeography, InferenceOptions};
+    use awaken_runtime_contract::agent_bindings::{
+        InferenceGeography, InferenceOptions, InferenceSpeed,
+    };
 
     use super::*;
 
@@ -1385,7 +1387,7 @@ mod tests {
         match o.model_override() {
             ModelOverride::Set(cfg) => {
                 assert_eq!(cfg.id, "claude-opus-4-8");
-                assert_eq!(cfg.speed, Some(ModelSpeed::Fast));
+                assert_eq!(cfg.speed, Some(InferenceSpeed::Fast));
                 assert_eq!(cfg.inference_geo, Some(ModelInferenceGeo::Us));
             }
             other => panic!("expected Set, got {other:?}"),

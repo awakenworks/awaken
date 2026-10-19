@@ -4,8 +4,9 @@
 // @formal reason: known-empty evidence and retain only ordered opaque operation coordinates. This is
 // @formal reason: product-requirement evidence, not a formal proof of SQL atomicity or tombstone
 // @formal reason: retention.
+use awaken_session_event_contract::RetainedEventAdmission;
 use awaken_session_state_contract::{
-    DeletedSessionEventAdmissions, PersistedSession, RetainedEventAdmission, SessionRepositoryError,
+    DeletedSessionEventAdmissions, PersistedSession, SessionRepositoryError,
 };
 use awaken_session_types::SessionRevision;
 

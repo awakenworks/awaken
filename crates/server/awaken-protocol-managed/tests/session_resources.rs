@@ -6,6 +6,7 @@
 //! `github_repository` and `memory_store` bind in the create-time snapshot.
 //! Repository tokens use the official write-only create/update fields and are
 //! sealed into the canonical Vault before a Session snapshot is persisted.
+use awaken_runtime_contract::agent_bindings::InferenceSpeed;
 use awaken_session_application::SessionRootReads as _;
 use awaken_session_execution_contract::ThreadReadRuntime;
 use awaken_session_execution_contract::{SessionCoordinationReads as _, StreamingRunRuntime as _};
@@ -28,7 +29,7 @@ use awaken_executable_agent_contract::{
 use awaken_protocol_managed::types::agent::ModelInput;
 use awaken_protocol_managed::types::session::{
     AgentRef, AgentRefObject, ModelConfigParams, ModelEffortInput, ModelEffortLevel,
-    ModelInferenceGeo, ModelSpeed, SessionCreateParams,
+    ModelInferenceGeo, SessionCreateParams,
 };
 use awaken_protocol_managed::{ManagedState, router as managed_router};
 use awaken_protocol_managed_testkit::CoordinatedRuntimeFake;
@@ -42,6 +43,7 @@ use awaken_resource_contract::{
 use awaken_session_application_contract::StepOutcome;
 use awaken_session_configuration_contract::SessionInit;
 use awaken_session_repository_contract::SessionRepository;
+use awaken_session_repository_contract::SessionRepositoryReads;
 use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime, ToolPermissionDecision};
 use awaken_session_state_contract::{SessionDisposition, SessionExecutionState};
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -1086,7 +1088,7 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
         .create_session(
             session_with_model_input(ModelInput::Config(ModelConfigParams {
                 id: requested.into(),
-                speed: Some(ModelSpeed::Fast),
+                speed: Some(InferenceSpeed::Fast),
                 effort: Some(ModelEffortInput::Level(ModelEffortLevel::High)),
                 inference_geo: Some(ModelInferenceGeo::Us),
             })),
@@ -1542,10 +1544,7 @@ async fn budgeted_session_backends_follow_the_exact_publication_decision_table()
                 "{}: {error}",
                 rule.id
             );
-            let recovery = repo
-                .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-                .await
-                .unwrap();
+            let recovery = repo.reconciliation_scan(None).await.unwrap();
             assert!(recovery.sessions.is_empty(), "{} Session write", rule.id);
             assert!(
                 recovery.quarantined.is_empty(),

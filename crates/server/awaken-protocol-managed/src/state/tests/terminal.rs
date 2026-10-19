@@ -1,6 +1,6 @@
 use super::*;
 pub(in crate::state) use awaken_protocol_managed_testkit::sample_persisted;
-use awaken_session_repository_contract::LifecycleOutbox as _;
+use awaken_session_repository_contract::{LifecycleOutbox as _, SessionRepositoryReads};
 use awaken_session_execution_contract::ToolPermissionDecision;
 use awaken_session_types::SessionId;
 use awaken_tool_contract::tool_batch::ToolBatch;
@@ -216,10 +216,7 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
         .await
         .expect("R1/E1 durable demand is accepted");
     assert_eq!(created.status, SessionStatus::Rescheduling, "R1/E1");
-    let scan = repo
-        .scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-        .await
-        .unwrap();
+    let scan = repo.reconciliation_scan(None).await.unwrap();
     assert_eq!(scan.sessions.len(), 1, "R1/E2");
     let persisted = &scan.sessions[0];
 
@@ -1613,7 +1610,7 @@ async fn archive_persists_release_before_and_after_sandbox_teardown() {
         awaken_session_state_contract::ActivationState::Released
     );
     assert!(
-        repo.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
+        repo.reconciliation_scan(None)
             .await
             .unwrap()
             .sessions
@@ -2473,10 +2470,7 @@ async fn delete_is_best_effort_when_sandbox_teardown_fails() {
         "cleanup failure stays durable for ResourceReclaimer"
     );
     assert_eq!(
-        repo.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-            .await
-            .unwrap()
-            .sessions,
+        repo.reconciliation_scan(None).await.unwrap().sessions,
         vec![awaken_session_state_contract::ScopedPersistedSession {
             workspace_id: DEFAULT_SCOPE.to_string(),
             session: durable,
@@ -2526,10 +2520,7 @@ async fn archive_commits_while_sandbox_teardown_remains_recoverable() {
         "failed cleanup remains visible to lifecycle recovery"
     );
     assert_eq!(
-        repo.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-            .await
-            .unwrap()
-            .sessions,
+        repo.reconciliation_scan(None).await.unwrap().sessions,
         vec![awaken_session_state_contract::ScopedPersistedSession {
             workspace_id: DEFAULT_SCOPE.to_string(),
             session: durable,

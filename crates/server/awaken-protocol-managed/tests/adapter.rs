@@ -27,7 +27,7 @@ use awaken_agent_contract::{
 use awaken_protocol_managed::{ManagedState, managed_session_id_from_idempotency};
 use awaken_session_application_contract::{Pending, StepOutcome};
 use awaken_session_configuration_contract::{AgentCapabilities, BuiltinTool, CustomTool};
-use awaken_session_repository_contract::SessionRepository;
+use awaken_session_repository_contract::SessionRepositoryReads;
 use awaken_session_execution_contract::{
     AdmitSessionRun, CommittedOutcomeProjection, OutcomeDrive, OutcomeIteration, OutcomeReport,
     SessionRunReservation, SessionRuntime, ToolPermissionDecision,

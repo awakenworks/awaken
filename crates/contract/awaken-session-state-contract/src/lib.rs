@@ -85,7 +85,7 @@ pub use environment::{
     transition_environment,
 };
 // These values occur in the root persistence surface; their owner is Event admission.
-pub use awaken_session_event_contract::{DeletedSessionEventAdmissions, RetainedEventAdmission};
+pub use awaken_session_event_contract::DeletedSessionEventAdmissions;
 pub use awaken_session_event_contract::{
     ManagedLifecycleFact, SessionRuntimeInterval, SessionRuntimeIntervalObservation,
     SessionRuntimeIntervalStart,

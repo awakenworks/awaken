@@ -499,7 +499,7 @@ async fn postgres_session_capacity_reference_and_indexed_observation() {
     use awaken_session_configuration_contract::resource::SessionRealizationLease;
     use awaken_session_repository_contract::SessionRepository as _;
     use awaken_session_state_contract::{
-        SessionEnvironmentPhase, SessionEnvironmentState, SessionScanQuery, SessionWorkerObligation,
+        SessionEnvironmentPhase, SessionEnvironmentState, SessionWorkerObligation,
     };
     use awaken_session_store::PostgresManagedSessionRepository;
 
@@ -574,12 +574,7 @@ async fn postgres_session_capacity_reference_and_indexed_observation() {
     let mut owners = std::collections::HashSet::new();
     let mut unbound = false;
     loop {
-        let page = repo
-            .scan(SessionScanQuery::Reconcilable {
-                after: cursor.as_ref(),
-            })
-            .await
-            .unwrap();
+        let page = repo.reconciliation_scan(cursor.as_ref()).await.unwrap();
         assert!(page.quarantined.is_empty(), "P1 canonical fixture");
         for scoped in page.sessions {
             match scoped.session.worker_obligation().unwrap() {

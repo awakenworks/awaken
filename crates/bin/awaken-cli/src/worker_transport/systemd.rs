@@ -5,6 +5,7 @@
 // @formal reason: cannot acknowledge a Run or Session cleanup.
 //! Independent Linux user-service evidence for one exact Worker incarnation.
 
+use awaken_session_execution_contract::ApplicationError;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -14,10 +15,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use awaken_dispatch::{
-    ApplicationError, AttemptExecutionBinding, AttemptStopStatus, ClosedAttemptExecution,
-    ClosedWorkerExecution, NativeAttemptFootprint, NativeAttemptTermination,
-    WorkerExecutionBindingSource, WorkerExecutionStopSource, WorkerIdentity, WorkerProcessExit,
-    WorkerProcessStopStatus,
+    AttemptExecutionBinding, AttemptStopStatus, ClosedAttemptExecution, ClosedWorkerExecution,
+    NativeAttemptFootprint, NativeAttemptTermination, WorkerExecutionBindingSource,
+    WorkerExecutionStopSource, WorkerIdentity, WorkerProcessExit, WorkerProcessStopStatus,
 };
 use awaken_worker_contract::is_local_process_incarnation as incarnation;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};

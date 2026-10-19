@@ -517,6 +517,94 @@ impl PostgresManagedSessionRepository {
     }
 }
 
+#[async_trait::async_trait]
+impl SessionRepositoryReads for PostgresManagedSessionRepository {
+    async fn get(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<PersistedSession, SessionRepositoryError> {
+        let row = sqlx::query(
+            "SELECT aggregate_json, revision \
+             FROM managed_session WHERE session_id = $1",
+        )
+        .bind(session_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        let Some(row) = row else {
+            return Err(SessionRepositoryError::NotFound);
+        };
+        decode(EncodedSessionRow {
+            aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
+            revision: row.try_get("revision").map_err(storage)?,
+        })
+        .map_err(corrupt)
+    }
+
+    async fn owner(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<String, SessionRepositoryError> {
+        let row = sqlx::query("SELECT scope_id FROM managed_session WHERE session_id = $1")
+            .bind(session_id.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(storage)?
+            .ok_or(SessionRepositoryError::NotFound)?;
+        row.try_get("scope_id").map_err(storage)
+    }
+
+    async fn scan(
+        &self,
+        query: awaken_session_state_contract::SessionScanQuery<'_>,
+    ) -> Result<SessionScan, SessionRepositoryError> {
+        use awaken_session_state_contract::SessionScanQuery;
+        match query {
+            SessionScanQuery::WorkerRealizationOwner { worker_id } => {
+                self.scan_worker_realization_owner(worker_id).await
+            }
+            SessionScanQuery::Workspace { workspace_id } => Ok(Self::scoped_scan(
+                workspace_id,
+                self.scan_workspace(workspace_id).await?,
+            )),
+            SessionScanQuery::VaultReferences {
+                workspace_id,
+                vault_id,
+            } => Ok(Self::scoped_scan(
+                workspace_id,
+                self.scan_vault_references(workspace_id, vault_id).await?,
+            )),
+            SessionScanQuery::CredentialSourceReferences {
+                workspace_id,
+                source_id,
+            } => Ok(Self::scoped_scan(
+                workspace_id,
+                self.scan_credential_source_references(workspace_id, source_id)
+                    .await?,
+            )),
+        }
+    }
+
+    async fn deleted_event_admissions(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<
+        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
+        SessionRepositoryError,
+    > {
+        let row = sqlx::query("SELECT deleted_revision, event_admissions_json FROM managed_session_tombstone WHERE session_id=$1 AND scope_id=$2")
+            .bind(session_id.as_str()).bind(owner_scope).fetch_optional(&self.pool).await.map_err(storage)?;
+        row.map(|row| {
+            super::event_admissions::decode(
+                row.try_get("deleted_revision").map_err(storage)?,
+                row.try_get("event_admissions_json").map_err(storage)?,
+            )
+        })
+        .transpose()
+    }
+}
+
 #[async_trait]
 impl SessionRepository for PostgresManagedSessionRepository {
     async fn create(
@@ -788,28 +876,6 @@ impl SessionRepository for PostgresManagedSessionRepository {
         Ok(SessionMutationResult::Applied { new_revision: next })
     }
 
-    async fn get(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-    ) -> Result<PersistedSession, SessionRepositoryError> {
-        let row = sqlx::query(
-            "SELECT aggregate_json, revision \
-             FROM managed_session WHERE session_id = $1",
-        )
-        .bind(session_id.as_str())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage)?;
-        let Some(row) = row else {
-            return Err(SessionRepositoryError::NotFound);
-        };
-        decode(EncodedSessionRow {
-            aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
-            revision: row.try_get("revision").map_err(storage)?,
-        })
-        .map_err(corrupt)
-    }
-
     async fn worker_demand(&self) -> Result<u64, SessionRepositoryError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
@@ -853,38 +919,6 @@ impl SessionRepository for PostgresManagedSessionRepository {
         self.scan_reconcilable(after, true).await
     }
 
-    async fn scan(
-        &self,
-        query: awaken_session_state_contract::SessionScanQuery<'_>,
-    ) -> Result<SessionScan, SessionRepositoryError> {
-        use awaken_session_state_contract::SessionScanQuery;
-        match query {
-            SessionScanQuery::Reconcilable { after } => self.scan_reconcilable(after, false).await,
-            SessionScanQuery::WorkerRealizationOwner { worker_id } => {
-                self.scan_worker_realization_owner(worker_id).await
-            }
-            SessionScanQuery::Workspace { workspace_id } => Ok(Self::scoped_scan(
-                workspace_id,
-                self.scan_workspace(workspace_id).await?,
-            )),
-            SessionScanQuery::VaultReferences {
-                workspace_id,
-                vault_id,
-            } => Ok(Self::scoped_scan(
-                workspace_id,
-                self.scan_vault_references(workspace_id, vault_id).await?,
-            )),
-            SessionScanQuery::CredentialSourceReferences {
-                workspace_id,
-                source_id,
-            } => Ok(Self::scoped_scan(
-                workspace_id,
-                self.scan_credential_source_references(workspace_id, source_id)
-                    .await?,
-            )),
-        }
-    }
-
     async fn count_environment_phase(
         &self,
         phase: SessionEnvironmentPhase,
@@ -925,36 +959,11 @@ impl SessionRepository for PostgresManagedSessionRepository {
         .transpose()
     }
 
-    async fn deleted_event_admissions(
+    async fn reconciliation_scan(
         &self,
-        owner_scope: &str,
-        session_id: &awaken_session_types::SessionId,
-    ) -> Result<
-        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
-        SessionRepositoryError,
-    > {
-        let row = sqlx::query("SELECT deleted_revision, event_admissions_json FROM managed_session_tombstone WHERE session_id=$1 AND scope_id=$2")
-            .bind(session_id.as_str()).bind(owner_scope).fetch_optional(&self.pool).await.map_err(storage)?;
-        row.map(|row| {
-            super::event_admissions::decode(
-                row.try_get("deleted_revision").map_err(storage)?,
-                row.try_get("event_admissions_json").map_err(storage)?,
-            )
-        })
-        .transpose()
-    }
-
-    async fn owner(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-    ) -> Result<String, SessionRepositoryError> {
-        let row = sqlx::query("SELECT scope_id FROM managed_session WHERE session_id = $1")
-            .bind(session_id.as_str())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(storage)?
-            .ok_or(SessionRepositoryError::NotFound)?;
-        row.try_get("scope_id").map_err(storage)
+        after: Option<&awaken_session_state_contract::SessionScanCursor>,
+    ) -> Result<SessionScan, SessionRepositoryError> {
+        self.scan_reconcilable(after, false).await
     }
 }
 

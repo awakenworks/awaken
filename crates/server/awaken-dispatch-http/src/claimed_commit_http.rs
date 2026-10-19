@@ -4,9 +4,7 @@
 
 use std::sync::Arc;
 
-use awaken_dispatch::{
-    ApplicationErrorKind, ClaimedCommitRequest, ClaimedCommitService, WorkerDirectory,
-};
+use awaken_dispatch::{ClaimedCommitRequest, ClaimedCommitService, WorkerDirectory};
 use awaken_dispatch_contract::MAX_CLAIMED_COMMIT_BODY_BYTES;
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, authenticate_worker_request,
@@ -85,14 +83,6 @@ async fn commit_claimed(
             StatusCode::OK,
             Json(serde_json::to_value(receipt).expect("CommitReceipt serializes")),
         ),
-        Err(error) => {
-            let status = match error.kind {
-                ApplicationErrorKind::InvalidRequest => StatusCode::BAD_REQUEST,
-                ApplicationErrorKind::Conflict => StatusCode::CONFLICT,
-                ApplicationErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
-                ApplicationErrorKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-            };
-            (status, Json(json!({ "error": error.message })))
-        }
+        Err(error) => crate::worker_dispatch::respond(Err(error)),
     }
 }

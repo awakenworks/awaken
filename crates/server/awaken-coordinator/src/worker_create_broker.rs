@@ -10,6 +10,7 @@
 //! therefore Unknown rather than manufacturing a cleanup witness.
 
 use awaken_container_contract::{K8sCreateRequest, K8sCreateResponse};
+use awaken_session_execution_contract::ApplicationError;
 use std::sync::Arc;
 
 use awaken_agent_contract::{
@@ -17,8 +18,7 @@ use awaken_agent_contract::{
 };
 use awaken_provisioning_contract::SandboxEffectFence;
 use awaken_dispatch::{
-    ApplicationError, RegisteredWorker, WorkerCreateLedger, WorkerDirectory, WorkerIdentity,
-    WorkerState,
+    RegisteredWorker, WorkerCreateLedger, WorkerDirectory, WorkerIdentity, WorkerState,
 };
 use awaken_sandbox_container::{CreateTicketRequest, TicketResult};
 use awaken_sandbox_kubernetes::{

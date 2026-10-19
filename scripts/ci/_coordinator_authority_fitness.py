@@ -28,6 +28,7 @@ AUTHORITY_IMPLS: dict[str, tuple[str, ...]] = {
         "crates/server/awaken-session-executor/src/store.rs",
     ),
     "SessionRepository": ("crates/stores/awaken-session-store/src/",),
+    "SessionRepositoryReads": ("crates/stores/awaken-session-store/src/",),
     "LifecycleOutbox": ("crates/stores/awaken-session-store/src/",),
 }
 
@@ -188,7 +189,22 @@ def table_violation(
     ]
 
 
+def session_facade_reexports(source: str) -> bool:
+    """The same persistence role must be imported from its actual owner."""
+    return bool(re.search(
+        r"pub\s+use[^;]*(?:\bSessionRepository(?:Reads)?\b|\bLifecycleOutbox\b|\bSessionStore\b|"
+        r"(?:Sqlite|Postgres)ManagedSessionRepository)", source, re.DOTALL))
+
+
 def selftest() -> None:
+    # SR1 canonical SQL owner accepts the reader; SR2 another production owner
+    # refuses it. SR3 direct import accepts, facade or renamed re-export
+    # refuses: a read suffix must not create an ownership/export bypass.
+    assert not implementation_violation("crates/stores/awaken-session-store/src/sqlite.rs", "SessionRepositoryReads")
+    assert implementation_violation("crates/server/awaken-session-executor/src/reader.rs", "SessionRepositoryReads")
+    assert not session_facade_reexports("use awaken_session_repository_contract::SessionRepositoryReads;")
+    assert session_facade_reexports("pub use port::SessionRepositoryReads;")
+    assert session_facade_reexports("pub use port::SessionRepositoryReads as Reads;")
     # Cause/effect graph: C1 the resolver implementation is in Host rather than
     # Dispatch; C2 Dispatch reaches back into the concrete Host. Either cause
     # recreates the extraction cycle/parallel routing owner and must reject.
@@ -321,12 +337,7 @@ def check_all(repo_root: Path, crates_root: Path) -> list[str]:
         crates_root / "server/awaken-session-executor/src/lib.rs",
     ):
         source = facade.read_text(encoding="utf-8")
-        if re.search(
-            r"pub\s+use[^;]*(?:\bSessionRepository\b|\bLifecycleOutbox\b|\bSessionStore\b|"
-            r"(?:Sqlite|Postgres)ManagedSessionRepository)",
-            source,
-            re.DOTALL,
-        ):
+        if session_facade_reexports(source):
             errors.append(
                 f"{facade.relative_to(repo_root)}: Session port/store must be imported "
                 "from the owning Session contract/awaken-session-store, not re-exported by a facade"

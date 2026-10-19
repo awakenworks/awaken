@@ -34,7 +34,7 @@ pub(super) async fn register_worker(
     let result = async {
         verify_worker_id(&worker, &request.registration.worker_id)?;
         if worker.identity().is_some() {
-            return Err(ApplicationError::bad_request(
+            return Err(ApplicationError::invalid(
                 "worker registration requires a bootstrap credential",
             ));
         }
@@ -43,7 +43,7 @@ pub(super) async fn register_worker(
             .manifest
             .supports_current_runtime_protocol()
         {
-            return Err(ApplicationError::bad_request(
+            return Err(ApplicationError::invalid(
                 "Worker manifest does not explicitly support the current runtime protocol",
             ));
         }
@@ -59,7 +59,7 @@ pub(super) async fn register_worker(
                 .map_err(|error| ApplicationError::unavailable(error.to_string()))?
                 .is_some_and(|current| current.snapshot.identity.incarnation_id != incarnation)
             {
-                return Err(ApplicationError::bad_request(
+                return Err(ApplicationError::invalid(
                     "immutable Worker domain has a different historical incarnation; replace the execution domain",
                 ));
             }
@@ -90,7 +90,7 @@ pub(super) async fn register_worker(
                     "worker slot {worker_id} is occupied by generation {generation}"
                 )));
             }
-            Err(error) => return Err(ApplicationError::bad_request(error.to_string())),
+            Err(error) => return Err(ApplicationError::invalid(error.to_string())),
         };
         if record.snapshot.state == awaken_dispatch::WorkerState::Starting
             && let Some(source) = &service.execution_bindings
@@ -126,8 +126,7 @@ pub(super) async fn heartbeat_worker(
     Json(request): Json<HeartbeatWorkerReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_identity(&worker, &request.identity)
-            .map_err(ApplicationError::bad_request)?;
+        verify_worker_identity(&worker, &request.identity).map_err(ApplicationError::invalid)?;
         let worker_directory = directory(&service)?;
         // Placement evidence is read only to decide whether to nudge the one
         // existing Session lifecycle supervisor. The registry mutation below
@@ -145,7 +144,7 @@ pub(super) async fn heartbeat_worker(
             record.snapshot.identity == request.identity
                 && !record.snapshot.manifest.supports_current_runtime_protocol()
         }) {
-            return Err(ApplicationError::bad_request(
+            return Err(ApplicationError::invalid(
                 "Worker manifest does not explicitly support the current runtime protocol",
             ));
         }
@@ -189,8 +188,7 @@ pub(super) async fn drain_worker(
     Json(request): Json<WorkerIdentityReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_identity(&worker, &request.identity)
-            .map_err(ApplicationError::bad_request)?;
+        verify_worker_identity(&worker, &request.identity).map_err(ApplicationError::invalid)?;
         let deadline = request.deadline_ms.unwrap_or_else(|| {
             service
                 .clock
@@ -213,8 +211,7 @@ pub(super) async fn quiesce_worker(
     Json(request): Json<WorkerIdentityReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_identity(&worker, &request.identity)
-            .map_err(ApplicationError::bad_request)?;
+        verify_worker_identity(&worker, &request.identity).map_err(ApplicationError::invalid)?;
         let mutation = directory(&service)?
             .mark_quiesced(&request.identity)
             .await
@@ -234,8 +231,7 @@ pub(super) async fn deregister_worker(
     Json(request): Json<WorkerIdentityReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_identity(&worker, &request.identity)
-            .map_err(ApplicationError::bad_request)?;
+        verify_worker_identity(&worker, &request.identity).map_err(ApplicationError::invalid)?;
         if let Some(session_work) = service.session_work.as_ref() {
             session_work
                 .release_worker_session_work(&request.identity.lease_owner())

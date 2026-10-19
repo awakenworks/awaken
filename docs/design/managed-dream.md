@@ -178,6 +178,39 @@ after preparation commits and remain present on failure or cancellation.
 `speed: "fast"` is rejected at create time because the installed inference
 adapter does not support that option; it is never accepted and silently ignored.
 
+### One inference-speed value
+
+Dream and Managed model fields consume the existing
+`awaken_runtime_contract::agent_bindings::InferenceSpeed` value directly.
+`DreamModelSpeed` and Managed `ModelSpeed` are removed; consumers name the
+canonical type rather than a compatibility alias or a forwarding export. The
+SDK definition, its published Rust path, and its `standard | fast` wire values
+stay unchanged. Optional speed still accepts omission and `null`, and omits an
+absent value when serialized. Unknown literals remain a serde error.
+
+The unchanged mechanisms are the SDK value and serialization, the Dream
+application's create/policy validation, and Managed's geography and effort
+translations. The modified owners are the Dream model field, Managed model
+fields, their consumers, and the identity speed projections. No new runtime
+mechanism, provider, validation authority, or contract crate is introduced.
+
+The dependency cost is explicit: Dream contract and application each add a
+direct dependency on the existing SDK contract. The contract's normal internal
+closure gains `awaken-runtime-contract`, `awaken-tool-contract`,
+`awaken-agent-contract`, and `awaken-time`, all published SDK contracts, and its
+contract depth grows from 1 to 3. The application already reaches that closure
+through its existing Session application contract, so its additional direct
+owner edge does not add transitive crates. This is not contract-depth debt
+elimination. [ADR-0086](../adr/0086-runtime-sdk-public-surface.md) records the
+reasoned growth and the future SDK release boundary for moving values.
+
+At runtime the Dream application still rejects `fast` before model readiness,
+executor validation, or persistence. Policy authoring rejects it before loading
+or writing policy state. Neither path delegates this early rejection to a
+later provider call. Managed preserves speed in its existing publication,
+Session snapshot, and recovery path; its non-identity geography and effort
+translations remain owned by the protocol adapter.
+
 List is newest-first, defaults to 20, caps `limit` at 100, excludes archived
 jobs by default, and supports `page`, repeated `statuses`, `include_archived`,
 `created_at[gt]`, and `created_at[lt]`.

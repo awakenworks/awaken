@@ -4,6 +4,7 @@
 //! fixtures here; this suite does not claim Kubernetes or remote termination.
 mod postgres_support;
 
+use awaken_session_execution_contract::ApplicationError;
 use awaken_worker_contract::WorkerCurrentSource;
 use std::sync::{Arc, Mutex};
 
@@ -13,12 +14,11 @@ use awaken_agent_contract::thread::read::recovery::{
 };
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
-    ApplicationError, AttemptAdmission, AttemptExecutionBinding, AttemptStopStatus,
-    ClosedAttemptExecution, ClosedWorkerExecution, MemoryDispatchStore, PhysicalAttempt,
-    PostgresDispatchStore, RunClaim, RunDispatch, SqliteDispatchStore, WorkerDirectory,
-    WorkerExecutionStopSource, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerProcessExit,
-    WorkerProcessStopStatus, WorkerRegistration, WorkerState,
-    has_active_physical_attempt_for_owner, stop_committed_terminal_attempt,
+    AttemptAdmission, AttemptExecutionBinding, AttemptStopStatus, ClosedAttemptExecution,
+    ClosedWorkerExecution, MemoryDispatchStore, PhysicalAttempt, PostgresDispatchStore, RunClaim,
+    RunDispatch, SqliteDispatchStore, WorkerDirectory, WorkerExecutionStopSource, WorkerHeartbeat,
+    WorkerIdentity, WorkerManifest, WorkerProcessExit, WorkerProcessStopStatus, WorkerRegistration,
+    WorkerState, has_active_physical_attempt_for_owner, stop_committed_terminal_attempt,
     stop_expired_predecessor,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};

@@ -89,6 +89,52 @@ mod session_repository {
         }
     }
 
+    #[async_trait::async_trait]
+    impl awaken_session_repository_contract::SessionRepositoryReads for ConflictInjectingRepo {
+        async fn get(
+            &self,
+            session_id: &awaken_session_types::SessionId,
+        ) -> Result<PersistedSession, awaken_session_state_contract::SessionRepositoryError>
+        {
+            self.reads.on_read("session").await.map_err(|port| {
+                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                    format!("scripted {port} read failure"),
+                )
+            })?;
+            self.inner.get(session_id).await
+        }
+
+        async fn owner(
+            &self,
+            session_id: &awaken_session_types::SessionId,
+        ) -> Result<String, awaken_session_state_contract::SessionRepositoryError> {
+            self.inner.owner(session_id).await
+        }
+
+        async fn scan(
+            &self,
+            query: awaken_session_state_contract::SessionScanQuery<'_>,
+        ) -> Result<
+            awaken_session_state_contract::SessionScan,
+            awaken_session_state_contract::SessionRepositoryError,
+        > {
+            self.inner.scan(query).await
+        }
+
+        async fn deleted_event_admissions(
+            &self,
+            owner_scope: &str,
+            session_id: &awaken_session_types::SessionId,
+        ) -> Result<
+            Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
+            awaken_session_state_contract::SessionRepositoryError,
+        > {
+            self.inner
+                .deleted_event_admissions(owner_scope, session_id)
+                .await
+        }
+    }
+
     #[async_trait]
     impl SessionRepository for ConflictInjectingRepo {
         async fn create(
@@ -142,19 +188,6 @@ mod session_repository {
             self.inner.commit(owner_scope, mutation).await
         }
 
-        async fn get(
-            &self,
-            session_id: &awaken_session_types::SessionId,
-        ) -> Result<PersistedSession, awaken_session_state_contract::SessionRepositoryError>
-        {
-            self.reads.on_read("session").await.map_err(|port| {
-                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
-                    format!("scripted {port} read failure"),
-                )
-            })?;
-            self.inner.get(session_id).await
-        }
-
         async fn idempotency_receipt(
             &self,
             session_id: &awaken_session_types::SessionId,
@@ -166,41 +199,21 @@ mod session_repository {
             self.inner.idempotency_receipt(session_id, key).await
         }
 
-        async fn owner(
-            &self,
-            session_id: &awaken_session_types::SessionId,
-        ) -> Result<String, awaken_session_state_contract::SessionRepositoryError> {
-            self.inner.owner(session_id).await
-        }
-
-        async fn scan(
-            &self,
-            query: awaken_session_state_contract::SessionScanQuery<'_>,
-        ) -> Result<
-            awaken_session_state_contract::SessionScan,
-            awaken_session_state_contract::SessionRepositoryError,
-        > {
-            self.inner.scan(query).await
-        }
-
-        async fn deleted_event_admissions(
-            &self,
-            owner_scope: &str,
-            session_id: &awaken_session_types::SessionId,
-        ) -> Result<
-            Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
-            awaken_session_state_contract::SessionRepositoryError,
-        > {
-            self.inner
-                .deleted_event_admissions(owner_scope, session_id)
-                .await
-        }
-
         async fn count_environment_phase(
             &self,
             phase: awaken_session_state_contract::SessionEnvironmentPhase,
         ) -> Result<u64, awaken_session_state_contract::SessionRepositoryError> {
             self.inner.count_environment_phase(phase).await
+        }
+
+        async fn reconciliation_scan(
+            &self,
+            after: Option<&awaken_session_state_contract::SessionScanCursor>,
+        ) -> Result<
+            awaken_session_state_contract::SessionScan,
+            awaken_session_state_contract::SessionRepositoryError,
+        > {
+            self.inner.reconciliation_scan(after).await
         }
     }
 

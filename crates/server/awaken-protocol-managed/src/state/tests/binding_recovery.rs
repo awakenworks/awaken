@@ -2,6 +2,7 @@ use super::*;
 use crate::state::test_support::{ConflictInjectingRepo, ReadControl};
 pub(in crate::state) use awaken_protocol_managed_testkit::sample_inputs;
 use awaken_protocol_managed_testkit::{RecordingProjectionRefresh, paired_projection_refresh};
+use awaken_session_repository_contract::SessionRepositoryReads;
 use awaken_session_types::SessionId;
 use awaken_tool_contract::tool_batch::ToolBatch;
 
@@ -223,7 +224,7 @@ async fn cold_projection_restores_every_frozen_agent_hidden_axis() {
         .expect("H1 exact cold projection");
     assert_eq!(
         inherited.agent.model.speed,
-        Some(crate::types::ModelSpeed::Fast),
+        Some(awaken_runtime_contract::agent_bindings::InferenceSpeed::Fast),
         "H1/E1"
     );
     assert_eq!(inherited.agent.model.effort, None, "H1/E1");
@@ -1145,7 +1146,7 @@ async fn resource_reclaimer_finishes_terminal_release_after_restart_case() {
         "D3: a successful retry converges the hidden cleanup row to a tombstone"
     );
     assert!(
-        repo.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
+        repo.reconciliation_scan(None)
             .await
             .unwrap()
             .sessions
@@ -1396,11 +1397,7 @@ async fn terminal_root_fences_mcp_recovery_before_runtime_effects() {
     failed.execution = SessionExecutionState::ActivationFailed;
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, failed).await;
     assert_eq!(
-        repo.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
-            .await
-            .unwrap()
-            .sessions
-            .len(),
+        repo.reconciliation_scan(None).await.unwrap().sessions.len(),
         1,
         "T1 indexed"
     );

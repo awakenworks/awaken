@@ -131,7 +131,7 @@ SDK_RELEASE_CONTRACTS = frozenset(
     crate for target, (boundary, pending) in TARGET_MAP.items() if boundary == "SDK release"
     for crate in (target, *pending)
 )
-PERSISTENCE_PORT = re.compile(r"(?:Repository|Store)$")
+PERSISTENCE_PORT = re.compile(r"(?:Repository(?:Reads)?|Store)$")
 COMPOSITION_LAYER = "bootstrap"
 TOOLING_LAYER = "tooling"
 STORAGE_LAYER = "infrastructure"
@@ -734,15 +734,19 @@ def _selftest_aggregate_fields() -> None:
 
 
 def _selftest_persistence_ports() -> None:
+    # P7: a read-only persistence role still belongs to its context. The Reads
+    # suffix cannot hide an edge use; same-context/storage/composition rules
+    # stay P1-P6 and StoreConfig remains a non-port.
     sdk = next(iter(SDK_RELEASE_CONTRACTS))
     sources = (
         _crate("port", "contract", "memory", "pub trait MemoryStore { fn a(&self); }\n"
-               "pub trait MemoryRepository { fn b(&self); }\npub trait StoreConfig { fn c(&self); }\n"),
+               "pub trait MemoryRepository { fn b(&self); }\npub trait MemoryRepositoryReads { fn get(&self); }\n"
+               "pub trait StoreConfig { fn c(&self); }\n"),
         _crate(sdk, "contract", "agent-runtime", "pub trait CheckpointStore { fn d(&self); }\n"),
         _crate("app", "application", "memory", "fn f(s: &dyn MemoryStore) {}\n"),
         _crate("edge", "interface", "protocols",
                "use port::{MemoryStore, StoreConfig};\nfn f<R: MemoryRepository>(s: &dyn MemoryStore) {}\n"
-               "fn g(c: &dyn CheckpointStore) {}\n"),
+               "fn g(c: &dyn CheckpointStore) {}\nfn h(c: &dyn MemoryRepositoryReads) {}\n"),
         _crate("root", "bootstrap", "memory-root", "use port::MemoryStore;\n"),
         _crate("bin", "interface", None, "use port::MemoryStore;\n"),
         _crate("kit", "tooling", "testing", "use port::MemoryStore;\n"),
@@ -758,7 +762,7 @@ def _selftest_persistence_ports() -> None:
     counts, places, _contracts = measure(sources, Path("/w"))
     assert counts["foreign-persistence-port"] == {
         "MemoryRepository <- edge": 1, "MemoryStore <- edge": 1, "MemoryRepository <- memory-pg-store": 1,
-        "MemoryStore <- host": 1}, f"P1-P6 {counts['foreign-persistence-port']}"
+        "MemoryStore <- host": 1, "MemoryRepositoryReads <- edge": 1}, f"P1-P7 {counts['foreign-persistence-port']}"
     assert places["foreign-persistence-port"]["MemoryStore <- edge"] == ["edge/src/lib.rs:1"], "P1 where"
 
 

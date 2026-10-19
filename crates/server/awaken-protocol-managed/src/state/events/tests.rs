@@ -9,7 +9,7 @@
 // @formal evidence tool_result.pending_commit_coordinate_is_exact
 // @formal evidence tool_result.terminal_run_rejects_late_result
 // awaken-allow(file-limit-ceiling): 13645 (legacy oversized test file: split, never grow)
-use awaken_session_repository_contract::LifecycleOutbox as _;
+use awaken_session_repository_contract::{LifecycleOutbox as _, SessionRepositoryReads};
 use awaken_session_execution_contract::{
     SessionCoordinationReads as _, StreamingRunRuntime as _, ThreadReadRuntime as _,
 };

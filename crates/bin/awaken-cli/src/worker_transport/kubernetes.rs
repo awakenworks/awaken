@@ -1,15 +1,16 @@
 // @formal entrypoint sandbox.k8s_process_observation_requires_complete_exit
 //! Trusted Kubernetes facts lowered into existing Coordinator ports.
 
+use awaken_session_execution_contract::ApplicationError;
 use std::sync::Arc;
 
 use super::WorkerTransport;
 #[cfg(test)]
 use awaken_dispatch::classify_native_attempt_termination;
 use awaken_dispatch::{
-    ApplicationError, AttemptExecutionBinding, AttemptStopStatus, ClosedAttemptExecution,
-    ClosedWorkerExecution, WorkerCreateLedger, WorkerExecutionBindingSource,
-    WorkerExecutionStopSource, WorkerIdentity, WorkerProcessStopStatus, WorkerRegistration,
+    AttemptExecutionBinding, AttemptStopStatus, ClosedAttemptExecution, ClosedWorkerExecution,
+    WorkerCreateLedger, WorkerExecutionBindingSource, WorkerExecutionStopSource, WorkerIdentity,
+    WorkerProcessStopStatus, WorkerRegistration,
 };
 use awaken_dispatch::{NativeAttemptFootprint, NativeAttemptTermination};
 use awaken_sandbox_kubernetes::{

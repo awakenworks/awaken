@@ -526,3 +526,31 @@ width. Persisted ids and wire fields do not change.
 The checked local `awaken-cloud` source contains no use of the removed symbols.
 Consumers upgrading a different pin must use the paths above; this source
 inspection does not certify an external Cloud build or SDK publication.
+
+## Implementation note 2026-10-19: one durable application error projection
+
+`awaken-session-execution-contract` remains the sole owner of `ApplicationError`,
+`ApplicationErrorKind`, `DurableRunOperations`, `DurableDispatchStatus` and
+`DurableSupersedeResult`. Native callers use that owner directly; the two
+`awaken-dispatch` forwarding layers are removed. Its pure `bad_request`
+constructor alias is removed in favor of the existing `invalid` constructor.
+The kind, message, private HTTP status and error body remain unchanged.
+
+The existing Worker HTTP `respond` function is the single application-response
+projection. Durable operations and the Claimed Commit error arm reuse it; no
+third helper or error type is introduced. Claimed Commit's earlier identity
+refusal and successful `CommitReceipt` serialization retain their own behavior.
+Success preserves its complete value, and each of the four error kinds retains
+its exact status and single `error` message field. Classified Run errors,
+`SessionExecutionError` and typed realization-control failures keep their
+separate boundary projections and stable codes.
+
+The CLI adds a direct dependency on the existing owner instead of naming its
+Ingress facade. The owner was already in its normal transitive closure through
+Ingress; no implementation or contract node is added by that edge. Guards record
+only actual measured changes without loosening their limits. SDK definitions,
+versions, snapshots and wire/storage formats do not change in this cleanup.
+
+At the checked Cloud continuation source `f6719247` and old main worktree
+`b735ddb3`, none of these five symbols or an Ingress glob is used. This records
+source compatibility impact, not a pinned Cloud build or publication result.
