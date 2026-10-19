@@ -701,6 +701,9 @@ mod tests {
 
     #[tokio::test]
     async fn claimed_child_commit_uses_guarded_parent_partition_and_logical_child_thread() {
+        // Adapter-owner rule C5: the guarded parent partition still selects the
+        // same store before its original operation append; moving delegation
+        // must not use a fixed global resolver or bypass claim/hash validation.
         // Cause/effect graph: C1 operation-id Run matches/mismatches the guarded
         // dispatch; C2 committed Run matches/mismatches it; C3 committed logical
         // Thread matches/mismatches it; C4 dispatch has/has-not a distinct parent

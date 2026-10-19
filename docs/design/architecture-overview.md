@@ -124,7 +124,9 @@ the runtime through explicit contracts.
 ### 1.2 Runtime Host, authority, and protocol responsibilities
 
 `awaken-session-executor` owns execution semantics, Session environments, Worker
-transport adapters, and the `RuntimeAuthority`/`LocalCommit` injection contracts.
+transport adapters, and the `RuntimeAuthority` injection contract. The existing
+`awaken-dispatch-erasure` owns the backend-neutral `LocalCommit` roles and their
+single delegation adapter over the process-selected store and query policy.
 Its default dependency closure contains no SQL/FS commit, dispatch, Session,
 Resource, or Credential store and it has no backend-selection feature.
 

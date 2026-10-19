@@ -13,6 +13,10 @@ from pathlib import Path
 import _crate_boundary_workspace
 
 
+# The original LocalCommitAdapter moved as one unit; this exact module delegates
+# to the selected store and is not a new persistence writer or authority.
+LOCAL_COMMIT_ADAPTER_SOURCE = "crates/shared/awaken-dispatch-erasure/src/local_commit.rs"
+
 AUTHORITY_IMPLS: dict[str, tuple[str, ...]] = {
     # Durable implementations remain in run-ingress. The one Worker-side HTTP
     # adapter implements only Worker roles without storing or deciding authority;
@@ -26,6 +30,7 @@ AUTHORITY_IMPLS: dict[str, tuple[str, ...]] = {
         "crates/stores/awaken-store-sqlite/src/",
         "crates/stores/awaken-store-postgres/src/",
         "crates/server/awaken-session-executor/src/store.rs",
+        LOCAL_COMMIT_ADAPTER_SOURCE,
     ),
     "SessionRepository": ("crates/stores/awaken-session-store/src/",),
     "SessionRepositoryReads": ("crates/stores/awaken-session-store/src/",),
@@ -164,7 +169,10 @@ def attempt_rule_violations(relative: str, source: str) -> list[str]:
 
 
 def _owned_by(relative_path: str, allowed: tuple[str, ...]) -> bool:
-    return any(relative_path == prefix or relative_path.startswith(prefix) for prefix in allowed)
+    return any(
+        relative_path.startswith(prefix) if prefix.endswith("/") else relative_path == prefix
+        for prefix in allowed
+    )
 
 
 def implementation_violation(relative_path: str, trait_name: str) -> list[str]:
@@ -240,6 +248,26 @@ def selftest() -> None:
     assert implementation_violation(
         "crates/server/awaken-session-executor/src/dispatch.rs", "DispatchCommitAuthority"
     )  # R3
+    # R2/C7: the one migrated adapter module accepts its existing role; other
+    # files in that crate or in Executor still reject. The original HostCommit
+    # Local/Remote wrapper remains permitted only at its existing store path.
+    assert implementation_violation(LOCAL_COMMIT_ADAPTER_SOURCE, "OperationCoordinator") == []
+    assert implementation_violation(
+        "crates/shared/awaken-dispatch-erasure/src/other_commit.rs", "OperationCoordinator"
+    )
+    assert implementation_violation(
+        "crates/server/awaken-session-executor/src/other_commit.rs", "OperationCoordinator"
+    )
+    # File/directory owner table: a file allows only equality (F1), never a
+    # legal same-prefix sibling (F2); directory entries ending in '/' allow
+    # descendants (D1), never a similarly spelled sibling directory (D2).
+    for path, permitted in (
+        ("crates/server/awaken-session-executor/src/store.rs", True),
+        (LOCAL_COMMIT_ADAPTER_SOURCE + "_shadow.rs", False),
+        ("crates/stores/awaken-store-sqlite/src/adapter.rs", True),
+        ("crates/stores/awaken-store-sqlite/src_shadow/adapter.rs", False),
+    ):
+        assert (implementation_violation(path, "OperationCoordinator") == []) is permitted, path
     allowed = TABLE_AUTHORITIES[2][2]
     assert table_violation("crates/stores/awaken-session-store/src/lib.rs", "session", allowed) == []
     assert table_violation("crates/server/example/src/lib.rs", "session", allowed)  # R3

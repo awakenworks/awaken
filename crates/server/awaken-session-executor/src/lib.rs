@@ -103,13 +103,14 @@ pub(crate) use awaken_session_realization_contract::ResourceOperationFence;
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::authority::EphemeralRuntimeAuthority;
 pub(crate) use crate::authority::{LocalAuthority, SessionAuthority};
-pub use crate::authority::{
-    LocalCommit, LocalCommitAdapter, LocalCommitQueries, RuntimeAuthority, RuntimeAuthorityError,
-    UpstreamAuthority,
-};
+pub use crate::authority::{RuntimeAuthority, RuntimeAuthorityError, UpstreamAuthority};
+// Internal use of the canonical adapter owner; these are not public compatibility exports.
 pub(crate) use crate::host::HostOutcomeIteration;
 pub use crate::host::{CommittedStepReceipt, HostOutcomeDrive, HostOutcomeReport};
 pub(crate) use crate::installed_session::InstalledSessions;
+use awaken_dispatch_erasure::LocalCommit;
+#[cfg(any(test, feature = "test-support"))]
+use awaken_dispatch_erasure::LocalCommitAdapter;
 // The neutral session substrate and its resume vocabulary.
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
 pub use crate::cache_volume::{

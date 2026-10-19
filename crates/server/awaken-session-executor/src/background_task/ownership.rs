@@ -684,6 +684,9 @@ mod tests {
 
     #[tokio::test]
     async fn missing_malformed_and_projected_authorities_fail_closed() {
+        // Adapter-owner rules C3/C6: relocation must preserve the live query-policy
+        // error and keep the Worker projection unable to mint committed authority;
+        // no new adapter may turn either refusal into cached success.
         // R1 missing cell -> Lost; R2 malformed committed cell -> Unavailable;
         // R3 Worker projection (not live authority) -> cannot mint the receipt
         // required to construct this verifier; R4 live authority read failure ->

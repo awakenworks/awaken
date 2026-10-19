@@ -790,6 +790,7 @@ dependencies = [
  "awaken-data-governance-contract",
  "awaken-deployment-application",
  "awaken-deployment-contract",
+ "awaken-dispatch-erasure",
  "awaken-dream-application",
  "awaken-environment-application",
  "awaken-environment-contract",

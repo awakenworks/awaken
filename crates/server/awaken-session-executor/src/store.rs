@@ -26,101 +26,6 @@ use awaken_agent_contract::thread::read::recovery::{
 };
 use std::sync::Arc;
 
-use crate::{LocalCommitAdapter, LocalCommitQueries};
-
-// All delegation for a Coordinator-owned commit source is centralized here so
-// startup adapters cannot become parallel implementations of persistence
-// authority (ADR-0065/0066 architecture fitness).
-#[async_trait::async_trait]
-impl<S, Q> Coordinator for LocalCommitAdapter<S, Q>
-where
-    S: Coordinator + Send + Sync,
-    Q: Send + Sync,
-{
-    async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
-        self.store.as_ref().commit(commit).await
-    }
-}
-
-#[async_trait::async_trait]
-impl<S, Q> OperationCoordinator for LocalCommitAdapter<S, Q>
-where
-    S: OperationCoordinator + Send + Sync,
-    Q: Send + Sync,
-{
-    async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
-        self.store.as_ref().commit_operation(operation).await
-    }
-}
-
-impl<S, Q> CommittedThreadView for LocalCommitAdapter<S, Q>
-where
-    S: CommittedThreadView,
-    Q: Send + Sync,
-{
-    fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
-        self.store.as_ref().committed_messages(thread_id)
-    }
-
-    fn run(&self, run_id: &RunId) -> Option<RunRecord> {
-        self.store.as_ref().run(run_id)
-    }
-
-    fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
-        self.store.as_ref().latest_run(thread_id)
-    }
-
-    fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
-        self.store.as_ref().resume_ticket(run_id)
-    }
-
-    fn open_wait_for_thread(&self, thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
-        CommittedThreadView::open_wait_for_thread(self.store.as_ref(), thread_id)
-    }
-
-    fn committed_state(
-        &self,
-        thread_id: &ThreadId,
-    ) -> Vec<awaken_agent_contract::agent::state::Command> {
-        self.store.as_ref().committed_state(thread_id)
-    }
-}
-
-#[async_trait::async_trait]
-impl<S, Q> RunRecoverySource for LocalCommitAdapter<S, Q>
-where
-    S: RunRecoverySource + Send + Sync,
-    Q: Send + Sync,
-{
-    async fn recovery_snapshot(
-        &self,
-        thread_id: &ThreadId,
-        claimed_run_id: &RunId,
-    ) -> Result<RunRecoverySnapshot, RecoveryError> {
-        self.store
-            .as_ref()
-            .recovery_snapshot(thread_id, claimed_run_id)
-            .await
-    }
-}
-
-#[async_trait::async_trait]
-impl<S, Q> RunLifecycleFeed for LocalCommitAdapter<S, Q>
-where
-    S: Send + Sync,
-    Q: LocalCommitQueries<S>,
-{
-    async fn events_after(
-        &self,
-        cursor: RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
-        self.queries
-            .events_after(self.store.as_ref(), cursor, limit)
-            .await
-    }
-}
-
 /// One thread's commit boundary: either a `Local` read+write store (an
 /// interchangeable memory/sqlite/fs/postgres backend behind `Arc<dyn LocalCommit>`,
 /// chosen at the process startup) or the `Remote` Worker boundary backed by a
@@ -427,6 +332,9 @@ mod child_projection_tests {
 
     #[test]
     fn independent_children_share_local_truth_but_not_remote_recovery_snapshots() {
+        // Adapter-owner rule C6: moving only LocalCommit delegation leaves this
+        // Local/Remote boundary unchanged: the same local authority is shared,
+        // while independently claimed children retain distinct remote projections.
         // Causes: C1 a database-less parent starts two independently claimed
         // children while its own Run is live; C2 a co-located parent does so.
         // Effects: E1 C1 gets one distinct recovery projection per Run; E2 C2
