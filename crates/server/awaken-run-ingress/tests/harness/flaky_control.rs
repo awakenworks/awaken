@@ -224,6 +224,18 @@ use awaken_run_ingress_contract::DispatchReads as _;
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
 impl awaken_run_ingress_contract::DispatchAttemptRecordReads for FlakyDispatchStore {
+    async fn attempt_admissions_after(
+        &self,
+        cursor: awaken_run_ingress::DispatchCursor,
+        limit: usize,
+        session_thread: &awaken_agent_contract::agent::thread::Id,
+        member_threads: &[awaken_agent_contract::agent::thread::Id],
+    ) -> Result<awaken_run_ingress::DispatchPage, awaken_run_ingress::DispatchError> {
+        self.inner
+            .attempt_admissions_after(cursor, limit, session_thread, member_threads)
+            .await
+    }
+
     async fn attempt_closure_records_after(
         &self,
         cursor: awaken_run_ingress::DispatchCursor,

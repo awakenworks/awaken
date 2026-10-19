@@ -932,39 +932,38 @@ response-loss replay and refusal without Root or Runtime effects.
 
 ## Amendment 2026-10-15: retain physical admission in the original Dispatch log
 
-Whole-execution recovery requires an inventory of every admitted physical
-attempt, not just returned or independently closed attempts. The existing
-Dispatch operation log and its original cursor remain the authority. Each
-physical Install or Replace appends `AttemptAdmitted` with the exact frozen
-Run claim, Worker/provider binding and logical/Session Thread identities in the
-same transaction that installs its physical slot. A failed operation append
-rolls back admission; exact retries and refusals append nothing. Executor entry
-remains downstream of this committed admission.
+Whole-execution recovery inventories every admitted physical attempt through the
+original Dispatch log and cursor. Physical Install or Replace appends
+`AttemptAdmitted` with the frozen claim, Worker/provider binding and logical and
+Session Thread identities in the slot transaction, before executor entry.
+Append failure rolls admission back; exact retries and refusals append nothing.
+Admission is not stop evidence. Missing historical records remain unknown and
+must not be backfilled as containment proof.
 
-This extends the current operation feed and all three storage implementations;
-it adds no queue, recovery state, receipt store or lifecycle owner. Existing
-ordinary-return and independent-closure facts retain their meanings. Admission
-is not stop evidence. Recovery joins admissions and closure evidence using the
-exact original claim and binding, rather than treating an empty closure query
-as a complete inventory. Historical absence of admission records remains
-unknown and must not be backfilled as proof of historical containment.
+### Canonical reads select the frozen scope before pagination
 
-Validation belongs to the shared binding lifecycle decision table (entry,
-exact retries, foreign binding refusal and handoff) and durable transaction
-failure/restart tests. This source change alone does not establish Flow successor
-admission, complete historical recovery or deployed automatic coding acceptance.
+`DispatchAttemptRecordReads`, the smallest Dispatch read leaf, projects original
+admissions and closure facts from one canonical store. Session supplies its frozen
+root and member Threads; Dispatch owns selection, pagination and original cursors.
+Root-parent OR member matches deliberately retain inconsistent affinity for the
+recovery join to reject, including foreign parents and unfrozen children.
+Memory (test support), SQLite and PostgreSQL filter before the logical LIMIT and
+preserve the store's complete-prefix barrier. Known unrelated delivery facts and
+foreign admissions cannot consume the Session budget. Selected malformed or
+unclassifiable records still fail through the existing codec. Only an exhausted
+own-scope inventory yields `ReadBudgetExceeded`; missing inventory stays unknown.
 
-### Canonical observation roles preserve the public diagnostic projection
+Execution joins these admissions, exact original claim/binding closure records
+and committed Thread history. Session consumes the neutral observation through
+its existing Runtime read role; unsupported reads cannot affirm closure. Public
+diagnostics keep their separate semantics. No new queue, log, receipt, lifecycle,
+upward Session-to-Dispatch dependency, cleanup permission or root CAS is added.
 
-The retained attempt-record query is extracted unchanged from Control reads into
-the smallest Dispatch contract leaf, `DispatchAttemptRecordReads`. Execution's
-existing coordination-read implementation reads that leaf and the operational
-feed from one canonical instance, using the current committed projection port
-for Thread history. Session consumes the resulting neutral recovery observation
-through its existing Runtime read role. There is no upward Session-to-Dispatch
-contract dependency or contract bundle. The existing pages retain their separate
-public/internal semantics and original cursors; unsupported readers report
-unproven evidence and cannot silently supply affirmative closure.
+Shared binding tests cover admission, replay, rejection and handoff; durable
+tests cover transaction failure, restart, filtering and original sparse cursors.
+Recovery tests cover more than 65,536 unrelated rows, missing own admissions,
+unfrozen children and genuine own-scope exhaustion. This source qualification
+alone proves neither Flow successor admission nor deployed coding acceptance.
 
 ### Published filesystem handles require their original marker
 
