@@ -44,7 +44,7 @@ impl ScenarioPlatform {
         self
     }
 
-    /// The selected dependencies, completed with the Coordinator's platform
+    /// The selected dependencies, completed with the process composition's platform
     /// Memory mount adapter the way product startup completes them.
     #[must_use]
     pub(crate) fn into_dependencies(
@@ -54,10 +54,10 @@ impl ScenarioPlatform {
         awaken_resource_application::ResourcesApplication,
     ) {
         (
-            awaken_coordinator::with_platform_memory_data_plane(
+            awaken_cli::with_platform_memory_data_plane(
                 self.dependencies,
                 self.deployment.sandbox_tier,
-                &self.resources.authorities(),
+                self.resources.authorities().memory_mount_source(),
                 self.memory_invalidator,
             ),
             self.resources,

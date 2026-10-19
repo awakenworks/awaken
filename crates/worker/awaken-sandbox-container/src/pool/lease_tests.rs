@@ -19,7 +19,8 @@ use awaken_time::UtcTime;
 use super::WarmContainerPool;
 use super::lease::{ClaimOutcome, Hold, RecordKind, WarmCapacityLeasePolicy, WarmCapacityLeases};
 use super::tests::spec;
-use crate::{ContainerEnvironmentProvider, ContainerProvider, ContainerRuntime, RuntimeError};
+use crate::{ContainerProvider, ContainerRuntime, RuntimeError};
+use awaken_provisioning_contract::SandboxProvider;
 
 const T0: u64 = 1_700_000_000_000;
 const TTL: u64 = 60_000;
@@ -329,7 +330,7 @@ async fn replenishment_settled(pool: &WarmContainerPool<FakeDaemon>) {
     }
 }
 
-fn container_id(environment: &Arc<dyn crate::ContainerEnvironment>) -> String {
+fn container_id(environment: &Arc<dyn awaken_provisioning_contract::SessionSandbox>) -> String {
     crate::DecodedContainerHandle::decode(&pc::Sandbox::handle(environment.as_ref()))
         .expect("container handle")
         .payload
@@ -365,7 +366,11 @@ async fn l1_a_live_peers_lease_is_never_reclaimed() {
 
     let creates = daemon.creates();
     let environment = owner
-        .create_unattached_environment(&spec("session", &[]))
+        .claim_for_effect(
+            &spec("session", &[]),
+            awaken_provisioning_contract::SandboxEffect::Unattached,
+            awaken_provisioning_contract::SandboxRealizationIntent::Create,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -563,7 +568,11 @@ async fn l1_a_renewal_that_lands_between_observation_and_claim_keeps_the_lease()
     );
     let creates = daemon.creates();
     let environment = owner
-        .create_unattached_environment(&spec("session", &[]))
+        .claim_for_effect(
+            &spec("session", &[]),
+            awaken_provisioning_contract::SandboxEffect::Unattached,
+            awaken_provisioning_contract::SandboxRealizationIntent::Create,
+        )
         .await
         .unwrap();
     assert_eq!(container_id(&environment), format!("cid-{scope}"), "L1");
@@ -674,7 +683,11 @@ async fn l3_a_checked_out_container_is_never_reclaimed_whatever_its_lease() {
     let dead = worker(&daemon, &clock, 2).await;
     dead.prewarm(&spec("checkout", &[]), 2).await.unwrap();
     let environment = dead
-        .create_unattached_environment(&spec("session", &[]))
+        .claim_for_effect(
+            &spec("session", &[]),
+            awaken_provisioning_contract::SandboxEffect::Unattached,
+            awaken_provisioning_contract::SandboxRealizationIntent::Create,
+        )
         .await
         .unwrap();
     let checked_out = container_id(&environment)
@@ -732,7 +745,11 @@ async fn l3_a_candidate_whose_record_was_claimed_is_never_handed_out() {
     ));
     let creates = daemon.creates();
     let environment = stalled
-        .create_unattached_environment(&spec("session", &[]))
+        .claim_for_effect(
+            &spec("session", &[]),
+            awaken_provisioning_contract::SandboxEffect::Unattached,
+            awaken_provisioning_contract::SandboxRealizationIntent::Create,
+        )
         .await
         .unwrap();
     let session_container = container_id(&environment);
@@ -779,7 +796,11 @@ async fn l4_the_record_exists_before_the_runtime_sees_the_create() {
     let pool = worker(&daemon, &clock, 2).await;
     pool.prewarm(&spec("ordering", &[]), 2).await.unwrap();
     let _environment = pool
-        .create_unattached_environment(&spec("session", &[]))
+        .claim_for_effect(
+            &spec("session", &[]),
+            awaken_provisioning_contract::SandboxEffect::Unattached,
+            awaken_provisioning_contract::SandboxRealizationIntent::Create,
+        )
         .await
         .unwrap();
     replenishment_settled(&pool).await;

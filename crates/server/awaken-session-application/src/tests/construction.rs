@@ -63,6 +63,9 @@ async fn builder_rejects_invalid_configuration_before_observing_or_starting_serv
 async fn builder_freezes_normalized_owner_and_preserves_exact_creation_replay() {
     // B3 legal configuration => one immutable owner and one existing Store/Clock
     // binding. B4 exact create replay => same root, no repeated realization.
+    // B8 queries and its root role share that same Repository; reads of an
+    // existing or absent root neither prepare Runtime state nor dispatch Work.
+    // B9 an owner mismatch is non-disclosing NotFound, never a second root.
     let store = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
@@ -101,6 +104,47 @@ async fn builder_freezes_normalized_owner_and_preserves_exact_creation_replay() 
         .unwrap();
     assert_eq!(created, replay);
     assert_eq!(runtime.preparations.load(Ordering::SeqCst), preparations);
+    let queries = app.queries();
+    assert!(
+        Arc::ptr_eq(&queries, &app.queries()),
+        "B8 one query service"
+    );
+    let roots: Arc<dyn SessionRootReads> = queries.clone();
+    assert_eq!(
+        roots.session(&created.session_id).await.unwrap(),
+        created,
+        "B8"
+    );
+    let owner = roots.owner(&created.session_id).await.unwrap();
+    let projection = queries
+        .read_session_projection(created.session_id.as_str(), Some(&owner))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(projection.session, created, "B8 exact durable projection");
+    assert_eq!(projection.owner_scope, owner, "B8 exact owner");
+    assert!(
+        matches!(
+            queries
+                .read_session_projection(created.session_id.as_str(), Some("foreign-owner"))
+                .await,
+            Err(SessionProjectionRecoveryError::NotFound)
+        ),
+        "B9"
+    );
+    assert!(
+        queries
+            .read_session_projection("absent-builder-session", None)
+            .await
+            .unwrap()
+            .is_none(),
+        "B8 absent"
+    );
+    assert_eq!(
+        runtime.preparations.load(Ordering::SeqCst),
+        preparations,
+        "B8/B9 no effects"
+    );
 }
 
 #[tokio::test]
@@ -143,14 +187,22 @@ async fn builder_enabled_retention_propagates_authority_failure_instead_of_silen
         .unwrap();
         let session = persisted("retention", true, "idle");
         create(store.as_ref(), session.clone()).await;
-        let candidate = app.session_aggregate(&session.session_id).await.unwrap();
+        let candidate = app
+            .mutations
+            .session_aggregate(&session.session_id)
+            .await
+            .unwrap();
         let initial_revision = candidate.revision;
         let result = app
             .commit_resource_snapshot("workspace", candidate, "builder-retention", Vec::new())
             .await;
         assert_eq!(result.is_err(), enabled);
         if enabled {
-            let retained = app.session_aggregate(&session.session_id).await.unwrap();
+            let retained = app
+                .mutations
+                .session_aggregate(&session.session_id)
+                .await
+                .unwrap();
             assert_eq!(
                 retained.revision, initial_revision,
                 "retention failure blocks root CAS"

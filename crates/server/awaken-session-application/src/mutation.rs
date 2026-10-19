@@ -3,7 +3,13 @@
 // @formal evidence session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
 //! Canonical durable Session root mutation boundary.
 
-use super::*;
+use std::sync::Arc;
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::SessionCreationError;
+use awaken_session_repository_contract::SessionRepository;
+use awaken_session_state_contract::SessionAggregate;
 use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionMutation,
     SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,
@@ -32,6 +38,16 @@ pub(crate) fn repository_failure(error: SessionRepositoryError) -> SessionMutati
     }
 }
 
+pub(crate) async fn session_owner(
+    repository: &dyn SessionRepository,
+    session_id: &awaken_session_types::SessionId,
+) -> Result<String, SessionMutationError> {
+    repository
+        .owner(session_id)
+        .await
+        .map_err(repository_failure)
+}
+
 /// What one snapshot commit did to the durable root: the committed aggregate,
 /// whether *this* call applied it, and the original atomic receipt revision.
 ///
@@ -43,7 +59,7 @@ pub(crate) fn repository_failure(error: SessionRepositoryError) -> SessionMutati
 /// so its revision cannot replace the original receipt. All three values leave
 /// the CAS
 /// together, and the only producer is
-/// [`SessionApplication::commit_session_snapshot_with_record`] — a literal is a
+/// [`SessionMutations::commit_session_snapshot_with_record`] — a literal is a
 /// compile error outside this module:
 ///
 /// ```compile_fail,E0451
@@ -150,25 +166,6 @@ pub(crate) fn compile_session_snapshot_idempotency(
     }
 }
 
-/// Shared replacement boundary for application commands and Runtime binding
-/// receipts. Idempotency is compiled before observation; the repository remains
-/// the sole CAS owner. Callers retain their domain-specific retry/error policy.
-pub(crate) async fn commit_observed_snapshot(
-    repository: &dyn SessionRepository,
-    owner_scope: &str,
-    session: &mut SessionAggregate,
-    idempotency: IdempotencyRecord,
-    lifecycle_facts: Vec<ManagedLifecycleFact>,
-    now: u64,
-) -> Result<SessionMutationResult, SessionRepositoryError> {
-    repository
-        .commit(
-            owner_scope,
-            session.compile_mutation(owner_scope, idempotency, lifecycle_facts, now),
-        )
-        .await
-}
-
 pub(crate) fn aggregate_from_snapshot(
     session: PersistedSession,
 ) -> Result<SessionAggregate, SessionRepositoryError> {
@@ -176,13 +173,66 @@ pub(crate) fn aggregate_from_snapshot(
         .map_err(|error| SessionRepositoryError::Corrupt(error.to_string()))
 }
 
-impl SessionApplication {
+/// One root-CAS retry bound shared by commands and binding receipts.
+pub(crate) const ROOT_CAS_ATTEMPTS: usize = 3;
+
+/// The one Session-root mutation component. Use-case services share the
+/// original Repository and Clock; this component does not create a store,
+/// driver, retry queue or alternative idempotency protocol.
+pub struct SessionMutations {
+    repository: Arc<dyn SessionRepository>,
+    clock: Arc<dyn awaken_time::WallClock>,
+    #[cfg(any(test, feature = "test-support"))]
+    mutation_sequence: AtomicU64,
+}
+
+impl SessionMutations {
+    pub(crate) fn new(
+        repository: Arc<dyn SessionRepository>,
+        clock: Arc<dyn awaken_time::WallClock>,
+    ) -> Self {
+        Self {
+            repository,
+            clock,
+            #[cfg(any(test, feature = "test-support"))]
+            mutation_sequence: AtomicU64::new(0),
+        }
+    }
+
+    pub(crate) fn repository(&self) -> &Arc<dyn SessionRepository> {
+        &self.repository
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn replace_repository(&mut self, repository: Arc<dyn SessionRepository>) {
+        self.repository = repository;
+    }
+
+    /// Shared replacement boundary for application commands and Runtime binding
+    /// receipts. Idempotency is compiled before observation; the repository remains
+    /// the sole CAS owner. Callers retain their domain-specific retry/error policy.
+    pub(crate) async fn commit_observed_snapshot(
+        repository: &dyn SessionRepository,
+        owner_scope: &str,
+        session: &mut SessionAggregate,
+        idempotency: IdempotencyRecord,
+        lifecycle_facts: Vec<ManagedLifecycleFact>,
+        now: u64,
+    ) -> Result<SessionMutationResult, SessionRepositoryError> {
+        repository
+            .commit(
+                owner_scope,
+                session.compile_mutation(owner_scope, idempotency, lifecycle_facts, now),
+            )
+            .await
+    }
+
     /// Import one authoritative read into the controlled working candidate.
     pub(crate) async fn session_aggregate(
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<SessionAggregate, SessionRepositoryError> {
-        self.sessions_repo
+        self.repository
             .get(session_id)
             .await
             .and_then(aggregate_from_snapshot)
@@ -195,13 +245,14 @@ impl SessionApplication {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn fresh_mutation_record(
         &self,
+        runtime_incarnation: &str,
         session_id: &str,
         operation: &str,
     ) -> IdempotencyRecord {
         let sequence = self.mutation_sequence.fetch_add(1, Ordering::Relaxed);
         let identity = awaken_agent_contract::stable_fingerprint(&(
             "session-application-mutation-v1",
-            self.runtime_incarnation.as_str(),
+            runtime_incarnation,
             sequence,
             session_id,
             operation,
@@ -212,18 +263,11 @@ impl SessionApplication {
         }
     }
 
-    /// Bounded retries reload the aggregate and rerun its domain command. Callers
-    /// must never merge a stale snapshot after this many conflicts.
-    pub const ROOT_CAS_ATTEMPTS: usize = 3;
-
     pub async fn owner(
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<String, SessionMutationError> {
-        self.sessions_repo
-            .owner(session_id)
-            .await
-            .map_err(repository_failure)
+        session_owner(self.repository.as_ref(), session_id).await
     }
 
     /// Insert one newly compiled Session root. Exact replays return the durable
@@ -240,7 +284,7 @@ impl SessionApplication {
         let now = self.clock.now_ms();
         root.observe_creation(now)?;
         let result = self
-            .sessions_repo
+            .repository
             .create(
                 owner_scope,
                 root.into_session(),
@@ -307,7 +351,7 @@ impl SessionApplication {
         idempotency: &IdempotencyRecord,
         completion: SessionCreationCompletion,
     ) -> Result<Option<PersistedSession>, SessionCreationError> {
-        self.sessions_repo
+        self.repository
             .replay_create(owner_scope, session_id, idempotency)
             .await
             .map_err(SessionCreationError::repository)?
@@ -352,8 +396,8 @@ impl SessionApplication {
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<SnapshotCommit, SessionMutationError> {
         let session_id = session.session_id.clone();
-        let result = commit_observed_snapshot(
-            self.sessions_repo.as_ref(),
+        let result = Self::commit_observed_snapshot(
+            self.repository.as_ref(),
             owner_scope,
             &mut session,
             idempotency,
@@ -368,7 +412,7 @@ impl SessionApplication {
                 .into_applied_snapshot(committed_revision)
                 .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?
         } else {
-            self.sessions_repo
+            self.repository
                 .get(&session_id)
                 .await
                 .map_err(repository_failure)?
@@ -388,7 +432,7 @@ impl SessionApplication {
         owner_scope: &str,
         mutation: SessionMutation,
     ) -> Result<SessionMutationResult, SessionMutationError> {
-        self.sessions_repo
+        self.repository
             .commit(owner_scope, mutation)
             .await
             .map_err(repository_failure)

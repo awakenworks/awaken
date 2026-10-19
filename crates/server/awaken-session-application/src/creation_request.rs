@@ -15,6 +15,7 @@
 //! participants and their compensation, budget pricing, and whether the root
 //! is accepted or awaited — is decided here once for every protocol.
 
+use crate::SessionRootReads as _;
 use awaken_time::WallClockExt as _;
 use std::collections::BTreeMap;
 
@@ -119,15 +120,12 @@ pub trait SessionCreateProtocol: Send + Sync {
         capabilities: &AgentCapabilities,
     ) -> Result<SessionToolConfiguration, RunError>;
 
-    /// Finish every fallible protocol projection of the Session.
-    fn project_before_insert(
+    /// Validate the fallible protocol projection of the already selected
+    /// configuration. A wire adapter cannot rewrite the accepted inputs.
+    fn validate_before_insert(
         &self,
-        owner_scope: &str,
-        profile: Option<&ExecutableAgentSessionProfile>,
-        capabilities: &AgentCapabilities,
-        configuration: awaken_session_configuration_contract::SessionAgentConfiguration,
-        delegates: &[(String, ExecutableAgentSessionProfile)],
-    ) -> Result<awaken_session_configuration_contract::SessionAgentConfiguration, RunError>;
+        configuration: &awaken_session_configuration_contract::SessionAgentConfiguration,
+    ) -> Result<(), RunError>;
 }
 
 /// Why a Session create request was not created.
@@ -261,6 +259,7 @@ impl SessionApplication {
         request: SessionCreateRequest,
         protocol: &P,
     ) -> Result<PersistedSession, SessionCreateRequestError> {
+        let queries = &self.queries;
         let SessionCreateRequest {
             owner_scope,
             explicit_id,
@@ -312,7 +311,7 @@ impl SessionApplication {
                     Some(id) => Ok(id),
                     None => loop {
                         let candidate = protocol.session_id_candidate();
-                        let repository_absent = match self
+                        let repository_absent = match queries
                             .session(&awaken_session_types::SessionId::from(&candidate))
                             .await
                         {
@@ -330,16 +329,12 @@ impl SessionApplication {
             })
             .await?;
         let initial_events = protocol.initial_event_plan(&session_id)?;
-        let profile = super::runtime_commands::selected_session_profile(
-            self,
-            &owner_scope,
-            &agent_id,
-            requested_agent_version,
-        );
+        let profile =
+            queries.selected_session_profile(&owner_scope, &agent_id, requested_agent_version);
         if let Some(version) = requested_agent_version
             && profile.is_none()
         {
-            let message = if self.has_agent_profile_source() {
+            let message = if queries.has_agent_profile_source() {
                 format!(
                     "agent_version_unavailable: Agent `{agent_id}` version {version} is unavailable"
                 )
@@ -352,14 +347,14 @@ impl SessionApplication {
         }
         if profile.is_none()
             && requested_agent_version.is_none()
-            && self.agent_unavailable(&owner_scope, &agent_id)
+            && queries.agent_unavailable(&owner_scope, &agent_id)
         {
             return Err(RunError::bad_request(format!(
                 "agent_unavailable: agent `{agent_id}` cannot start a new session"
             ))
             .into());
         }
-        let capabilities = self.capabilities_for(&session_id)?;
+        let capabilities = queries.capabilities_for(&session_id)?;
         let (tools, clears_all_tools) = compile_creation_tools(
             self.tool_configuration_compiler.as_ref(),
             profile.as_ref(),
@@ -425,8 +420,7 @@ impl SessionApplication {
             .and_then(|model| model.inference.inference_geo);
         let mut accepted_delegates =
             capture_accepted_delegates(profile.as_ref(), selected_geo, |reference| {
-                super::runtime_commands::selected_session_profile(
-                    self,
+                queries.selected_session_profile(
                     &owner_scope,
                     &reference.agent_id,
                     reference.source_revision,
@@ -557,7 +551,9 @@ impl SessionApplication {
             accepted_delegates.extend(capabilities.delegates.iter().map(|id| {
                 (
                     id.clone(),
-                    self.session_profile(&owner_scope, id).unwrap_or_default(),
+                    queries
+                        .selected_session_profile(&owner_scope, id, None)
+                        .unwrap_or_default(),
                 )
             }));
         }
@@ -712,7 +708,7 @@ impl SessionApplication {
         };
         // Finish every fallible protocol projection before the durable root
         // insert: after the root exists the protocol only caches it.
-        let initial_agent_configuration =
+        let mut initial_agent_configuration =
             awaken_session_configuration_contract::SessionAgentConfiguration::creation_presentation_seed(
                 &intent.control,
                 agent_version,
@@ -727,13 +723,16 @@ impl SessionApplication {
                     capabilities.skills.iter().map(AgentSkillBinding::custom).collect()
                 }),
             );
-        let initial_agent_configuration = protocol.project_before_insert(
-            &owner_scope,
-            profile.as_ref(),
-            &capabilities,
-            initial_agent_configuration,
-            &accepted_delegates,
-        )?;
+        initial_agent_configuration.multiagent =
+            crate::agent_configuration::resolve_session_multiagent(
+                profile.as_ref(),
+                &capabilities,
+                Some(&accepted_delegates),
+                |agent_id, revision| {
+                    queries.selected_session_profile(&owner_scope, agent_id, revision)
+                },
+            )?;
+        protocol.validate_before_insert(&initial_agent_configuration)?;
         let command = CreateSessionCommand {
             initial_agent_configuration: Some(Box::new(initial_agent_configuration)),
             owner_scope,

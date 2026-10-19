@@ -23,12 +23,17 @@ use tokio::io::AsyncReadExt;
 
 #[derive(Default)]
 pub struct FakeContainerProvider {
+    /// One typed observation override; None retains the original unavailable
+    /// read. Filesystem test bytes no longer double as provider control state.
+    pub observation: std::sync::Mutex<Option<Result<pc::SandboxObservation, pc::SandboxError>>>,
     pub observations: std::sync::Mutex<
         Vec<(
-            awaken_container_contract::ContainerObservationPurpose,
+            awaken_provisioning_contract::SandboxObservationPurpose,
             pc::SandboxEffectFence,
         )>,
     >,
+    /// A scripted refusal in the original shared Create entry, before a handle exists.
+    pub create_error: std::sync::Mutex<Option<pc::SandboxError>>,
     pub adopts: std::sync::atomic::AtomicUsize,
     pub creates: std::sync::atomic::AtomicUsize,
     pub disposals: Arc<std::sync::atomic::AtomicUsize>,
@@ -169,77 +174,8 @@ impl pc::ProcessHandle for SlowReapProcess {
 }
 
 #[async_trait]
-impl awaken_container_contract::ContainerEnvironmentProvider for FakeContainerProvider {
-    fn adoption_layout(
-        &self,
-        handle: &awaken_provisioning_contract::SandboxHandle,
-    ) -> Result<
-        awaken_container_contract::ContainerAdoptionLayout,
-        awaken_provisioning_contract::SandboxError,
-    > {
-        awaken_sandbox_container::container_adoption_layout(handle)
-    }
-
-    fn physical_incarnation(
-        &self,
-        handle: &awaken_provisioning_contract::SandboxHandle,
-    ) -> Result<String, awaken_provisioning_contract::SandboxError> {
-        awaken_sandbox_container::container_physical_incarnation(handle)
-    }
-
-    async fn create_environment_for_effect(
-        &self,
-        spec: &awaken_provisioning_contract::SandboxSpec,
-        effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
-        authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
-        intent: awaken_container_contract::EnvironmentRealizationIntent,
-    ) -> Result<
-        std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>,
-        awaken_provisioning_contract::SandboxError,
-    > {
-        // The fake allocates synchronously inside the original current-effect
-        // guard. It supplies no physical recovery or Kubernetes participant proof.
-        pc::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
-        if !matches!(
-            intent,
-            awaken_container_contract::EnvironmentRealizationIntent::Create
-        ) {
-            return Err(pc::SandboxError::unsupported(
-                "test double does not implement fenced Environment rebuild",
-            ));
-        }
-        pc::with_current_sandbox_effect(effect_fence, authority, |_| self.create_environment(spec))
-    }
-    async fn adopt_environment_for_effect(
-        &self,
-        _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
-        _effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
-        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
-    ) -> Result<
-        std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>,
-        awaken_provisioning_contract::SandboxError,
-    > {
-        Err(awaken_provisioning_contract::SandboxError::unsupported(
-            "test double does not implement fenced Environment adoption",
-        ))
-    }
-    async fn prepare_terminal_environment_for_effect(
-        &self,
-        _spec: &awaken_provisioning_contract::SandboxSpec,
-        _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
-        _expected_effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
-        _terminal_effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
-        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
-    ) -> Result<
-        Option<std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>>,
-        awaken_provisioning_contract::SandboxError,
-    > {
-        Err(awaken_provisioning_contract::SandboxError::unsupported(
-            "test double does not implement fenced terminal preparation",
-        ))
-    }
-
-    fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
+impl awaken_provisioning_contract::SandboxReadiness for FakeContainerProvider {
+    fn capabilities(&self) -> pc::SandboxCapabilities {
         // Synthetic provider admission for lifecycle tests. Actual containment
         // is validated by the separate Namespace/Docker/Podman service journeys.
         pc::SandboxCapabilities {
@@ -258,13 +194,99 @@ impl awaken_container_contract::ContainerEnvironmentProvider for FakeContainerPr
         }
     }
 
+    fn checkpoint_formats(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
         Ok(())
     }
+}
 
-    async fn observe_environment(
+#[async_trait::async_trait]
+impl awaken_provisioning_contract::SandboxProvider for FakeContainerProvider {
+    type Environment = dyn awaken_provisioning_contract::SessionSandbox;
+
+    fn install_memory_mounter(
         &self,
-        adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
+        _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
+    ) {
+    }
+
+    fn install_secret_broker(
+        &self,
+        _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
+    ) {
+    }
+
+    async fn prewarm_images(
+        &self,
+        _specs: &[awaken_provisioning_contract::SandboxSpec],
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Ok(())
+    }
+
+    fn adoption_layout(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<
+        awaken_provisioning_contract::SandboxAdoptionLayout,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        awaken_sandbox_container::container_adoption_layout(handle)
+    }
+
+    fn validate_closed_observation(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+        observation: &awaken_provisioning_contract::SandboxObservation,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        awaken_sandbox_container::validate_container_closed_observation(handle, observation)
+    }
+
+    fn claim_for_effect<'a>(
+        &'a self,
+        spec: &'a awaken_provisioning_contract::SandboxSpec,
+        effect: awaken_provisioning_contract::SandboxEffect<'a>,
+        intent: awaken_provisioning_contract::SandboxRealizationIntent,
+    ) -> awaken_provisioning_contract::ClaimedEffect<
+        'a,
+        std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
+    > {
+        let claim = awaken_provisioning_contract::EffectClaim::in_process(
+            awaken_provisioning_contract::test_support::retain_abandoned_effect(spec.scope.clone()),
+        );
+        awaken_provisioning_contract::ClaimedEffect::new(claim, async move {
+            intent.admit_under(effect)?;
+            match effect {
+                awaken_provisioning_contract::SandboxEffect::Unattached => {
+                    self.create_environment(spec)
+                }
+                awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority } => {
+                    let effect_fence = fence;
+
+                    // The fake allocates synchronously inside the original current-effect
+                    // guard. It supplies no physical recovery or Kubernetes participant proof.
+                    pc::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
+                    if !matches!(
+                        intent,
+                        awaken_provisioning_contract::SandboxRealizationIntent::Create
+                    ) {
+                        return Err(pc::SandboxError::unsupported(
+                            "test double does not implement fenced Environment rebuild",
+                        ));
+                    }
+                    pc::with_current_sandbox_effect(effect_fence, authority, |_| {
+                        self.create_environment(spec)
+                    })
+                }
+            }
+        })
+    }
+
+    async fn observe(
+        &self,
+        adoption: awaken_provisioning_contract::SandboxAdoption<'_>,
         basis: pc::SandboxObservationBasis<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         if let pc::SandboxObservationBasis::Effect { effect_fence, .. } = basis {
@@ -273,41 +295,69 @@ impl awaken_container_contract::ContainerEnvironmentProvider for FakeContainerPr
                 .unwrap()
                 .push((adoption.observation_purpose, effect_fence.clone()));
         }
-        if self
-            .shared
-            .lock()
-            .unwrap()
-            .contains_key("__ready_observation")
-        {
-            Ok(pc::SandboxObservation::Ready)
-        } else {
+        self.observation.lock().unwrap().clone().unwrap_or_else(|| {
             Err(pc::SandboxError::transport(
                 "fixture observation unavailable",
             ))
+        })
+    }
+
+    async fn adopt_for_effect(
+        &self,
+        adoption: awaken_provisioning_contract::SandboxAdoption<'_>,
+        effect: awaken_provisioning_contract::SandboxEffect<'_>,
+    ) -> Result<
+        std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        match effect {
+            awaken_provisioning_contract::SandboxEffect::Unattached => {
+                self.adopts.fetch_add(1, Ordering::SeqCst);
+                Ok(Arc::new(FakeContainer {
+                    handle: adoption.handle.clone(),
+                    disposals: self.disposals.clone(),
+                    renews: self.renews.clone(),
+                    hand_spawns: self.hand_spawns.clone(),
+                    resident_channel_opens: self.resident_channel_opens.clone(),
+                    fail_hand_spawn_at: self.fail_hand_spawn_at.clone(),
+                    shared: self.shared.clone(),
+                }))
+            }
+            awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority } => {
+                let _adoption = adoption;
+                let _effect_fence = fence;
+                let _authority = authority;
+
+                Err(awaken_provisioning_contract::SandboxError::unsupported(
+                    "test double does not implement fenced Environment adoption",
+                ))
+            }
         }
     }
 
-    async fn create_unattached_environment(
+    async fn prepare_terminal_for_effect(
         &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<Arc<dyn awaken_container_contract::ContainerEnvironment>, pc::SandboxError> {
-        self.create_environment(spec)
+        _spec: &awaken_provisioning_contract::SandboxSpec,
+        _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
+        _expected_effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
+        _terminal_effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
+        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+    ) -> Result<
+        Option<std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test double does not implement fenced terminal preparation",
+        ))
     }
 
-    async fn adopt_unattached_environment(
+    fn restoration(
         &self,
-        adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
-    ) -> Result<Arc<dyn awaken_container_contract::ContainerEnvironment>, pc::SandboxError> {
-        self.adopts.fetch_add(1, Ordering::SeqCst);
-        Ok(Arc::new(FakeContainer {
-            handle: adoption.handle.clone(),
-            disposals: self.disposals.clone(),
-            renews: self.renews.clone(),
-            hand_spawns: self.hand_spawns.clone(),
-            resident_channel_opens: self.resident_channel_opens.clone(),
-            fail_hand_spawn_at: self.fail_hand_spawn_at.clone(),
-            shared: self.shared.clone(),
-        }))
+    ) -> awaken_provisioning_contract::SandboxRestoration<
+        '_,
+        std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
+    > {
+        awaken_provisioning_contract::SandboxRestoration::Unsupported
     }
 }
 
@@ -315,10 +365,13 @@ impl FakeContainerProvider {
     fn create_environment(
         &self,
         spec: &pc::SandboxSpec,
-    ) -> Result<Arc<dyn awaken_container_contract::ContainerEnvironment>, pc::SandboxError> {
+    ) -> Result<Arc<dyn awaken_provisioning_contract::SessionSandbox>, pc::SandboxError> {
         self.creates
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.specs.lock().unwrap().push(spec.clone());
+        if let Some(error) = self.create_error.lock().unwrap().clone() {
+            return Err(error);
+        }
         Ok(Arc::new(FakeContainer {
             handle: current_fake_container_handle(spec),
             disposals: self.disposals.clone(),
@@ -604,7 +657,7 @@ pub fn restart_disposal_authorization(
 }
 
 #[async_trait]
-impl awaken_container_contract::ContainerEnvironment for FakeContainer {
+impl awaken_provisioning_contract::SessionSandbox for FakeContainer {
     async fn owned_process_binding(&self) -> Result<Option<String>, pc::SandboxError> {
         let shared = self.shared.lock().unwrap();
         if shared.contains_key("__process_binding_error") {
@@ -617,8 +670,8 @@ impl awaken_container_contract::ContainerEnvironment for FakeContainer {
 
     async fn checkpoint_upload(
         &self,
-        _access: awaken_container_contract::ContainerCheckpointAccess<'_>,
-        _mutation: awaken_container_contract::ContainerCheckpointMutation<'_>,
+        _access: awaken_provisioning_contract::SandboxCheckpointAccess<'_>,
+        _mutation: awaken_provisioning_contract::SandboxCheckpointMutation<'_>,
     ) -> Result<
         Option<awaken_provisioning_contract::SandboxCheckpointUpload>,
         awaken_provisioning_contract::SandboxError,
@@ -660,7 +713,7 @@ impl awaken_container_contract::ContainerEnvironment for FakeContainer {
     async fn spawn_agent_process(
         &self,
         command: pc::Command,
-    ) -> Result<awaken_container_contract::RuntimeAgentProcess, pc::SandboxError> {
+    ) -> Result<awaken_provisioning_contract::AgentProcess, pc::SandboxError> {
         let (ours, theirs) = tokio::io::duplex(64 * 1024);
         let repository_export = command.argv.iter().any(|part| part == "awaken-repo-push");
         let repository_import = command.argv.iter().any(|part| part == "awaken-repo-clone");
@@ -781,7 +834,7 @@ impl awaken_container_contract::ContainerEnvironment for FakeContainer {
         } else {
             Box::new(DoneProcess::exited("container-exec", exit_code))
         };
-        Ok(awaken_container_contract::RuntimeAgentProcess {
+        Ok(awaken_provisioning_contract::AgentProcess {
             process,
             channel: Box::new(ours),
         })
@@ -790,7 +843,7 @@ impl awaken_container_contract::ContainerEnvironment for FakeContainer {
     async fn read_files(
         &self,
         _root: &str,
-    ) -> Result<Vec<awaken_container_contract::EnvironmentFile>, pc::SandboxError> {
+    ) -> Result<Vec<awaken_provisioning_contract::SandboxFile>, pc::SandboxError> {
         if self
             .shared
             .lock()
@@ -807,7 +860,7 @@ impl awaken_container_contract::ContainerEnvironment for FakeContainer {
             .lock()
             .unwrap()
             .iter()
-            .map(|(path, bytes)| awaken_container_contract::EnvironmentFile {
+            .map(|(path, bytes)| awaken_provisioning_contract::SandboxFile {
                 path: path.clone(),
                 bytes: bytes.clone(),
             })
@@ -890,7 +943,11 @@ pub fn deployment_test_binary(key: &str) -> std::path::PathBuf {
 // the process clock explicitly and never select an ambient clock.
 impl crate::SandboxEnvironmentProvider {
     pub fn container(
-        provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
+        provider: Arc<
+            dyn awaken_provisioning_contract::SandboxProvider<
+                    Environment = dyn awaken_provisioning_contract::SessionSandbox,
+                >,
+        >,
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
@@ -906,8 +963,12 @@ impl crate::SandboxEnvironmentProvider {
     }
 
     pub fn container_with_capacity_and_hand_idle(
-        provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
-        capacity: Option<Arc<dyn awaken_container_contract::ContainerEnvironmentCapacity>>,
+        provider: Arc<
+            dyn awaken_provisioning_contract::SandboxProvider<
+                    Environment = dyn awaken_provisioning_contract::SessionSandbox,
+                >,
+        >,
+        capacity: Option<Arc<dyn awaken_provisioning_contract::SandboxCapacity>>,
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,

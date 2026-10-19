@@ -5,11 +5,12 @@
 //! The provider evidence a Sandbox Pod and its projected objects carry:
 //! effect-fence, attempt and realization annotations and the exact Pod owner.
 
+use awaken_provisioning_contract::SandboxEffectFence;
+use awaken_sandbox_container::RuntimeError;
 use awaken_sandbox_container::engine::{
     ExistingRealization, ExistingRealizationPhase, ExistingRealizationRecovery,
     PhysicalIncarnation, container_effect_fence_from_values,
 };
-use awaken_sandbox_container::{ContainerEffectFence, RuntimeError};
 use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 
@@ -73,7 +74,7 @@ pub(crate) fn observed_pod_incarnation(pod: &Pod) -> Result<PhysicalIncarnation,
 
 pub(crate) fn pod_effect_fence(
     annotations: Option<&std::collections::BTreeMap<String, String>>,
-) -> Result<Option<ContainerEffectFence>, RuntimeError> {
+) -> Result<Option<SandboxEffectFence>, RuntimeError> {
     container_effect_fence_from_values(
         annotations
             .and_then(|values| values.get(SANDBOX_EFFECT_ANNOTATION))
@@ -93,7 +94,7 @@ pub(crate) fn pod_effect_fence(
     )
 }
 
-pub(crate) fn stamp_effect_fence<K>(object: &mut K, effect_fence: &ContainerEffectFence)
+pub(crate) fn stamp_effect_fence<K>(object: &mut K, effect_fence: &SandboxEffectFence)
 where
     K: kube::Resource<DynamicType = ()>,
 {

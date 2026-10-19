@@ -36,14 +36,15 @@ use crate::runtime::{
 use crate::{
     ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
     ContainerRealizationNamespace, ContainerRuntime, ContainerState, MANAGED_SANDBOX_LABEL,
-    PackageImageProvisioner, PreparedContainer, RUNTIME_OWNER_LABEL, RuntimeAgentProcess,
-    RuntimeError, RuntimeRestoreTarget, SANDBOX_ADOPTION_LABEL, SANDBOX_ATTEMPT_LABEL,
+    PackageImageProvisioner, PreparedContainer, RUNTIME_OWNER_LABEL, RuntimeError,
+    RuntimeRestoreTarget, SANDBOX_ADOPTION_LABEL, SANDBOX_ATTEMPT_LABEL,
     SANDBOX_EFFECT_EPOCH_LABEL, SANDBOX_EFFECT_EXPIRY_LABEL, SANDBOX_EFFECT_LABEL,
     SANDBOX_EFFECT_OWNER_LABEL, SANDBOX_EFFECT_RUNTIME_LABEL, SANDBOX_REALIZATION_LABEL,
     SANDBOX_SCOPE_LABEL, container_effect_fence_from_values, container_effect_label_values,
     podman_create_argv, podman_run_argv, restoration_metadata, restoration_plan_fingerprint,
     restore_container_name, runtime_container_name, sandbox_scope_identity,
 };
+use awaken_provisioning_contract::AgentProcess;
 #[cfg(test)]
 use command::rootless_systemd_bus;
 use command::{podman_command, podman_subcommand};
@@ -1219,7 +1220,7 @@ impl ContainerRuntime for PodmanRuntime {
         &self,
         admitted: crate::AdmittedExec,
         command: pc::MaterializedCommand,
-    ) -> Result<RuntimeAgentProcess, RuntimeError> {
+    ) -> Result<AgentProcess, RuntimeError> {
         let container_id = admitted.container_id();
         let (id, pid_file, mut child) = self.exec_process(container_id, command, true)?;
         let stdin = child
@@ -1230,7 +1231,7 @@ impl ContainerRuntime for PodmanRuntime {
             .stdout
             .take()
             .ok_or_else(|| backend("podman agent exec has no stdout"))?;
-        Ok(RuntimeAgentProcess {
+        Ok(AgentProcess {
             process: Box::new(PodmanExecProcess {
                 id,
                 container_id: container_id.to_string(),

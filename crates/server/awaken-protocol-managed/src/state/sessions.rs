@@ -1,9 +1,9 @@
-// @formal entrypoint session.missing_publication_is_available_only_to_noninteractive_frozen_projection
 // @formal entrypoint webhook.outbox_fact_identity_is_stable
 //! Session lifecycle for [`ManagedState`]: create, rehydrate, get/list,
 //! update, delete, and archive.
 
 use super::*;
+use awaken_session_application::SessionRecoveryPurpose;
 use awaken_time::WallClockExt as _;
 
 use super::session_mcp_projection::typed_mcp_servers;
@@ -42,186 +42,7 @@ fn managed_archive_command(
     )
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum RehydrationPurpose {
-    Interactive,
-    CollectionRead,
-    FrozenControl,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RehydrationPublicationDecision {
-    Available,
-    Unpinned,
-    NonInteractiveFrozenProjection,
-    RejectMissingExact,
-}
-
-/// Decide whether projection recovery may proceed without a catalog profile.
-/// Interactive recovery remains fail-closed. Collection reads and controls over
-/// already-frozen work may project only the Session's durable baseline; neither
-/// path restores a Runtime or makes the missing publication executable.
-#[must_use]
-const fn rehydration_publication_decision(
-    purpose: RehydrationPurpose,
-    has_frozen_revision: bool,
-    profile_available: bool,
-) -> RehydrationPublicationDecision {
-    match (profile_available, has_frozen_revision, purpose) {
-        (true, _, _) => RehydrationPublicationDecision::Available,
-        (false, false, _) => RehydrationPublicationDecision::Unpinned,
-        (false, true, RehydrationPurpose::Interactive) => {
-            RehydrationPublicationDecision::RejectMissingExact
-        }
-        (false, true, _) => RehydrationPublicationDecision::NonInteractiveFrozenProjection,
-    }
-}
-
-#[cfg(test)]
-#[test]
-fn rehydration_publication_decision_table_is_exact() {
-    // The three causes form all twelve rows: profile availability dominates;
-    // otherwise only a pinned interactive recovery rejects. This executes the
-    // existing Kani decision surface on native platforms as well.
-    for purpose in [
-        RehydrationPurpose::Interactive,
-        RehydrationPurpose::CollectionRead,
-        RehydrationPurpose::FrozenControl,
-    ] {
-        for pinned in [false, true] {
-            for available in [false, true] {
-                let expected = if available {
-                    RehydrationPublicationDecision::Available
-                } else if !pinned {
-                    RehydrationPublicationDecision::Unpinned
-                } else if purpose == RehydrationPurpose::Interactive {
-                    RehydrationPublicationDecision::RejectMissingExact
-                } else {
-                    RehydrationPublicationDecision::NonInteractiveFrozenProjection
-                };
-                assert_eq!(
-                    rehydration_publication_decision(purpose, pinned, available),
-                    expected
-                );
-            }
-        }
-    }
-}
-
-#[cfg(kani)]
-/// @obligation session.missing_publication_is_available_only_to_noninteractive_frozen_projection
-/// @kani profile=solver-kissat-v1
-/// @proof-input-debt free_symbol rehydration_publication_decision has_frozen_revision
-/// @proof-input-debt free_symbol rehydration_publication_decision profile_available
-#[kani::proof]
-fn missing_agent_publication_is_available_only_to_noninteractive_projection() {
-    let purpose_discriminant: u8 = kani::any();
-    kani::assume(purpose_discriminant < 3);
-    let has_frozen_revision: bool = kani::any();
-    let profile_available: bool = kani::any();
-    let purpose = match purpose_discriminant {
-        0 => RehydrationPurpose::Interactive,
-        1 => RehydrationPurpose::CollectionRead,
-        _ => RehydrationPurpose::FrozenControl,
-    };
-    let decision =
-        rehydration_publication_decision(purpose, has_frozen_revision, profile_available);
-
-    assert_eq!(
-        decision == RehydrationPublicationDecision::NonInteractiveFrozenProjection,
-        purpose != RehydrationPurpose::Interactive && has_frozen_revision && !profile_available
-    );
-    assert_eq!(
-        decision == RehydrationPublicationDecision::RejectMissingExact,
-        purpose == RehydrationPurpose::Interactive && has_frozen_revision && !profile_available
-    );
-}
-
 impl ManagedState {
-    fn resolved_session_multiagent(
-        &self,
-        workspace_id: &str,
-        profile: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
-        caps: &AgentCapabilities,
-        captured: Option<
-            &[(
-                String,
-                awaken_executable_agent_contract::ExecutableAgentSessionProfile,
-            )],
-        >,
-    ) -> Result<Option<awaken_session_configuration_contract::SessionAgentRoster>, StateError> {
-        let delegates = profile.map_or_else(
-            || {
-                caps.delegates
-                    .iter()
-                    .cloned()
-                    .map(
-                        |agent_id| awaken_executable_agent_contract::ExecutableAgentDelegate {
-                            agent_id,
-                            source_revision: None,
-                        },
-                    )
-                    .collect()
-            },
-            |profile| profile.delegates.clone(),
-        );
-        let advisor_model = profile.and_then(|profile| profile.advisor_model.clone());
-        if delegates.is_empty() && advisor_model.is_none() {
-            return Ok(None);
-        }
-        let mut agents = Vec::with_capacity(delegates.len() + usize::from(advisor_model.is_some()));
-        for delegate in delegates {
-            let resolved = if let Some(captured) = captured {
-                captured
-                    .iter()
-                    .find(|(id, value)| {
-                        id == &delegate.agent_id
-                            && delegate
-                                .source_revision
-                                .is_none_or(|revision| value.source_revision == revision)
-                    })
-                    .map(|(_, value)| value.clone())
-            } else {
-                match (profile.is_some(), delegate.source_revision) {
-                    (true, Some(revision)) => self.roles.projection.session_profile_at_revision(
-                        workspace_id,
-                        &delegate.agent_id,
-                        revision,
-                    ),
-                    _ => self
-                        .roles
-                        .projection
-                        .session_profile(workspace_id, &delegate.agent_id),
-                }
-            };
-            let child = match resolved {
-                Some(profile) => agent_configuration_from_profile(&delegate.agent_id, profile),
-                None if profile.is_none() => {
-                    agent_configuration_from_profile(&delegate.agent_id, Default::default())
-                }
-                None => {
-                    return Err(StateError::Run(RunError::bad_request(format!(
-                        "multiagent_unavailable: Agent `{}` publication revision {:?} is unavailable",
-                        delegate.agent_id, delegate.source_revision
-                    ))));
-                }
-            };
-            agents.push(
-                awaken_session_configuration_contract::SessionAgentRosterMember::Agent(Box::new(
-                    child,
-                )),
-            );
-        }
-        if let Some(model) = advisor_model {
-            agents.push(
-                awaken_session_configuration_contract::SessionAgentRosterMember::Advisor(model),
-            );
-        }
-        Ok(Some(
-            awaken_session_configuration_contract::SessionAgentRoster { members: agents },
-        ))
-    }
-
     /// Map the one neutral public status law onto the Managed wire vocabulary.
     pub(super) fn wire_session_status(persisted: &PersistedSession) -> SessionStatus {
         match persisted.public_status() {
@@ -302,6 +123,7 @@ impl ManagedState {
     ) -> Result<PersistedSession, StateError> {
         let session = self
             .application
+            .mutations()
             .commit_session_snapshot_with_outcome(
                 owner_scope,
                 awaken_session_state_contract::SessionAggregate::try_from(session)
@@ -641,7 +463,12 @@ impl ManagedState {
         owner_scope: &str,
         persisted: PersistedSession,
     ) -> Result<Session, StateError> {
-        self.rehydrated_session_for(id, owner_scope, persisted, RehydrationPurpose::Interactive)
+        self.rehydrated_session_for(
+            id,
+            owner_scope,
+            persisted,
+            SessionRecoveryPurpose::Interactive,
+        )
     }
 
     pub(super) fn rehydrated_session_for(
@@ -649,15 +476,13 @@ impl ManagedState {
         id: &str,
         owner_scope: &str,
         persisted: PersistedSession,
-        purpose: RehydrationPurpose,
+        purpose: SessionRecoveryPurpose,
     ) -> Result<Session, StateError> {
-        let baseline = persisted.frozen_baseline().ok_or_else(|| {
-            StateError::Run(RunError::unavailable(
-                "Session root is not finalized and cannot be rehydrated",
-            ))
-        })?;
-        let configuration =
-            rehydrated_agent_configuration(self, id, owner_scope, &persisted, baseline, purpose)?;
+        let (baseline, configuration) = self
+            .roles
+            .projection
+            .recover_agent_configuration(id, owner_scope, &persisted, purpose)
+            .map_err(StateError::Run)?;
         session_from_persisted_root(&persisted, baseline, &configuration)
     }
 
@@ -669,7 +494,7 @@ impl ManagedState {
         &self,
         id: &str,
     ) -> Result<(), StateError> {
-        self.hydrate_session_record(id, RehydrationPurpose::FrozenControl)
+        self.hydrate_session_record(id, SessionRecoveryPurpose::FrozenControl)
             .await
     }
 
@@ -792,7 +617,7 @@ impl ManagedState {
                         session_id.as_str(),
                         scope,
                         session,
-                        RehydrationPurpose::CollectionRead,
+                        SessionRecoveryPurpose::CollectionRead,
                     )?,
                     evidence,
                 ));
@@ -982,23 +807,12 @@ impl awaken_session_application::SessionCreateProtocol for ManagedCreateProtocol
         project::session_tool_configuration(&tools).map_err(RunError::bad_request)
     }
 
-    fn project_before_insert(
+    fn validate_before_insert(
         &self,
-        owner_scope: &str,
-        profile: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
-        capabilities: &AgentCapabilities,
-        mut configuration: awaken_session_configuration_contract::SessionAgentConfiguration,
-        delegates: &[(
-            String,
-            awaken_executable_agent_contract::ExecutableAgentSessionProfile,
-        )],
-    ) -> Result<awaken_session_configuration_contract::SessionAgentConfiguration, RunError> {
-        configuration.multiagent = self
-            .state
-            .resolved_session_multiagent(owner_scope, profile, capabilities, Some(delegates))
-            .map_err(run_error)?;
-        session_agent_from_configuration(&configuration).map_err(run_error)?;
-        Ok(configuration)
+        configuration: &awaken_session_configuration_contract::SessionAgentConfiguration,
+    ) -> Result<(), RunError> {
+        session_agent_from_configuration(configuration).map_err(run_error)?;
+        Ok(())
     }
 }
 
@@ -1032,136 +846,6 @@ fn session_from_persisted_root(
         vault_ids: baseline.mcp_authoring.ordered_vault_ids.clone(),
         deployment_id: persisted.metadata.get("awaken.deployment_id").cloned(),
     })
-}
-
-/// The complete Agent input phase of cold projection. The outer Session
-/// constructor is shared; only legacy input recovery consults the old catalog.
-fn rehydrated_agent_configuration(
-    state: &ManagedState,
-    id: &str,
-    owner_scope: &str,
-    persisted: &PersistedSession,
-    baseline: &awaken_session_configuration_contract::SessionBaseline,
-    purpose: RehydrationPurpose,
-) -> Result<awaken_session_configuration_contract::SessionAgentConfiguration, StateError> {
-    if let Some(configuration) =
-        awaken_session_state_contract::SessionUpdateHistory::agent_configuration(persisted)
-    {
-        return Ok(configuration);
-    }
-    let caps = state
-        .roles
-        .projection
-        .capabilities_for(id)
-        .map_err(StateError::Run)?;
-    let profile = match baseline.agent_revision {
-        Some(revision) => state.roles.projection.session_profile_at_revision(
-            owner_scope,
-            &baseline.agent_id,
-            revision,
-        ),
-        None => state
-            .roles
-            .projection
-            .session_profile(owner_scope, &baseline.agent_id),
-    };
-    let decision = rehydration_publication_decision(
-        purpose,
-        baseline.agent_revision.is_some(),
-        profile.is_some(),
-    );
-    if decision == RehydrationPublicationDecision::RejectMissingExact {
-        let revision = baseline
-            .agent_revision
-            .expect("missing exact decision requires a revision");
-        return Err(StateError::Run(RunError::unavailable(format!(
-            "Agent `{}` publication revision {revision} is unavailable during Session recovery",
-            baseline.agent_id
-        ))));
-    }
-    let multiagent = match decision {
-        RehydrationPublicationDecision::NonInteractiveFrozenProjection => None,
-        RehydrationPublicationDecision::Available | RehydrationPublicationDecision::Unpinned => {
-            state.resolved_session_multiagent(owner_scope, profile.as_ref(), &caps, None)?
-        }
-        RehydrationPublicationDecision::RejectMissingExact => {
-            unreachable!("missing exact publication was rejected before projection")
-        }
-    };
-    let mut configuration =
-        agent_configuration_from_profile(&baseline.agent_id, profile.clone().unwrap_or_default());
-    configuration.version = profile
-        .as_ref()
-        .map(|value| value.source_revision)
-        .or(baseline.agent_revision)
-        .unwrap_or(1)
-        .max(1);
-    configuration.model = awaken_session_configuration_contract::SessionModelChoice {
-        model_id: baseline.model.clone(),
-        inference: baseline
-            .model_override
-            .as_ref()
-            .map(|value| value.inference.clone())
-            .or_else(|| profile.as_ref().map(|value| value.inference.clone()))
-            .unwrap_or_default(),
-        source: awaken_session_configuration_contract::SessionModelSource::Publication,
-    };
-    configuration.system = baseline
-        .system_prompt
-        .resolve(profile.as_ref().and_then(|value| value.system.clone()));
-    configuration.tools = persisted.tools.clone();
-    configuration.mcp_servers = persisted.configured_mcp_servers();
-    configuration.skills = persisted
-        .resources
-        .desired()
-        .skills()
-        .iter()
-        .map(|value| awaken_agent_contract::AgentSkillBinding {
-            kind: value.kind,
-            skill_id: value.skill_id.clone(),
-            version: value.version.to_string(),
-        })
-        .collect();
-    configuration.multiagent = multiagent;
-    Ok(configuration)
-}
-
-pub(crate) fn agent_configuration_from_profile(
-    agent_id: &str,
-    profile: awaken_executable_agent_contract::ExecutableAgentSessionProfile,
-) -> awaken_session_configuration_contract::SessionAgentConfiguration {
-    awaken_session_configuration_contract::SessionAgentConfiguration {
-        agent_id: agent_id.to_owned(),
-        version: profile.source_revision.max(1),
-        model: awaken_session_configuration_contract::SessionModelChoice {
-            model_id: profile
-                .model
-                .or(profile.execution_model_ref)
-                .unwrap_or_default(),
-            inference: profile.inference,
-            source: awaken_session_configuration_contract::SessionModelSource::Publication,
-        },
-        name: profile.name.unwrap_or_else(|| agent_id.to_owned()),
-        description: profile.description,
-        system: profile.system,
-        tools: awaken_session_configuration_contract::SessionToolConfiguration {
-            toolsets: profile.toolsets,
-            client_tools: profile.client_tools,
-        },
-        mcp_servers: profile
-            .mcp_servers
-            .into_iter()
-            .map(
-                |server| awaken_session_configuration_contract::VisibleMcpServer {
-                    name: server.name,
-                    target: server.target,
-                    prompts_as_skills: server.prompts_as_skills,
-                },
-            )
-            .collect(),
-        skills: profile.skills,
-        multiagent: None,
-    }
 }
 
 pub(crate) fn session_agent_from_configuration(
@@ -1242,37 +926,5 @@ mod rehydration_publication_policy_tests {
         assert_eq!(first.workspace_id, second.workspace_id, "M1");
         assert_eq!(first.event_type, second.event_type, "M1");
         assert_eq!(first.runtime_interval, second.runtime_interval, "M1");
-    }
-
-    #[test]
-    fn missing_exact_publication_is_readable_but_not_interactively_recoverable() {
-        // Cause/effect table: C1=exact publication available; C2=operation may
-        // start/resume execution or projects/controls only frozen truth.
-        // E1=available publication is used; E2=interactive recovery without it
-        // rejects; E3=noninteractive projection rebuilds no executable state.
-        // Rules P1 C1=>E1; P2 !C1+interactive=>E2;
-        // P3 !C1+collection-or-frozen-control=>E3.
-        assert_eq!(
-            rehydration_publication_decision(RehydrationPurpose::Interactive, true, false),
-            RehydrationPublicationDecision::RejectMissingExact
-        );
-        assert_eq!(
-            rehydration_publication_decision(RehydrationPurpose::CollectionRead, true, false),
-            RehydrationPublicationDecision::NonInteractiveFrozenProjection
-        );
-        assert_eq!(
-            rehydration_publication_decision(RehydrationPurpose::FrozenControl, true, false),
-            RehydrationPublicationDecision::NonInteractiveFrozenProjection
-        );
-        for purpose in [
-            RehydrationPurpose::Interactive,
-            RehydrationPurpose::CollectionRead,
-            RehydrationPurpose::FrozenControl,
-        ] {
-            assert_eq!(
-                rehydration_publication_decision(purpose, true, true),
-                RehydrationPublicationDecision::Available
-            );
-        }
     }
 }

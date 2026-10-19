@@ -218,7 +218,7 @@ pub fn decide_lease_action(grant: &LeaseGrant, signals: LivenessSignals) -> Leas
 /// The reconciliation outcome: what to do with each live sandbox after a restart.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AdoptionPlan {
-    /// Live sandboxes a run still references — reconnect (`SandboxProvider::adopt`).
+    /// Live sandboxes a run still references — reconnect (`SandboxProvider::adopt_for_effect`).
     pub adopt: Vec<SandboxHandle>,
     /// Live sandboxes nothing references — reap.
     pub reap: Vec<SandboxHandle>,
@@ -735,29 +735,7 @@ mod actuator_tests {
     }
 
     #[async_trait]
-    impl SandboxProvider for FakeProvider {
-        async fn observe(
-            &self,
-            _handle: &crate::SandboxHandle,
-            _basis: crate::SandboxObservationBasis<'_>,
-        ) -> Result<crate::SandboxObservation, crate::SandboxError> {
-            Err(crate::SandboxError::unsupported(
-                "test double does not observe handles",
-            ))
-        }
-        async fn prepare_terminal_for_effect(
-            &self,
-            _spec: &crate::SandboxSpec,
-            _handle: Option<&crate::SandboxHandle>,
-            _expected_effect_fence: Option<&crate::SandboxEffectFence>,
-            _terminal_effect_fence: &crate::SandboxEffectFence,
-            _authority: &dyn crate::CurrentExecutionAuthority,
-        ) -> Result<Option<Box<dyn crate::Sandbox>>, crate::SandboxError> {
-            Err(crate::SandboxError::unsupported(
-                "test double does not prepare terminal cleanup",
-            ))
-        }
-
+    impl crate::SandboxReadiness for FakeProvider {
         fn capabilities(&self) -> SandboxCapabilities {
             SandboxCapabilities {
                 process_tree_supervision: false,
@@ -775,29 +753,96 @@ mod actuator_tests {
             }
         }
 
+        fn checkpoint_formats(&self) -> Vec<String> {
+            Vec::new()
+        }
+
+        async fn probe_ready(&self) -> Result<(), SandboxError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl SandboxProvider for FakeProvider {
+        type Environment = FakeSandbox;
+
+        fn install_memory_mounter(&self, _mounter: Arc<dyn crate::MemoryMounter>) {}
+
+        fn install_secret_broker(&self, _broker: Arc<dyn crate::SecretBroker>) {}
+
+        async fn prewarm_images(&self, _specs: &[SandboxSpec]) -> Result<(), SandboxError> {
+            Ok(())
+        }
+
+        fn adoption_layout(
+            &self,
+            _handle: &SandboxHandle,
+        ) -> Result<crate::SandboxAdoptionLayout, SandboxError> {
+            Err(SandboxError::unsupported(
+                "test double does not reopen layouts",
+            ))
+        }
+
+        fn validate_closed_observation(
+            &self,
+            _handle: &SandboxHandle,
+            _observation: &crate::SandboxObservation,
+        ) -> Result<(), SandboxError> {
+            Err(SandboxError::unsupported(
+                "test double carries no closed evidence",
+            ))
+        }
+
         fn claim_for_effect<'a>(
             &'a self,
             spec: &'a SandboxSpec,
-            effect_fence: &'a crate::SandboxEffectFence,
-            authority: &'a dyn crate::CurrentExecutionAuthority,
-        ) -> crate::ClaimedEffect<'a, Box<dyn Sandbox>> {
+            effect: crate::SandboxEffect<'a>,
+            intent: crate::SandboxRealizationIntent,
+        ) -> crate::ClaimedEffect<'a, Arc<FakeSandbox>> {
             let claim = crate::EffectClaim::in_process(
                 crate::test_support::retain_abandoned_effect(spec.scope.clone()),
             );
             crate::ClaimedEffect::new(claim, async move {
-                crate::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
+                intent.admit_under(effect)?;
+                effect.admit()?;
                 self.create(spec).await
             })
         }
+
+        async fn observe(
+            &self,
+            _adoption: crate::SandboxAdoption<'_>,
+            _basis: crate::SandboxObservationBasis<'_>,
+        ) -> Result<crate::SandboxObservation, crate::SandboxError> {
+            Err(crate::SandboxError::unsupported(
+                "test double does not observe handles",
+            ))
+        }
+
         async fn adopt_for_effect(
             &self,
-            _spec: &SandboxSpec,
-            handle: &SandboxHandle,
-            effect_fence: &crate::SandboxEffectFence,
-            authority: &dyn crate::CurrentExecutionAuthority,
-        ) -> Result<Box<dyn Sandbox>, SandboxError> {
-            crate::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
-            self.adopt(handle).await
+            adoption: crate::SandboxAdoption<'_>,
+            effect: crate::SandboxEffect<'_>,
+        ) -> Result<Arc<FakeSandbox>, SandboxError> {
+            effect.admit()?;
+            self.adopt(adoption.handle).await
+        }
+
+        async fn prepare_terminal_for_effect(
+            &self,
+            _spec: &crate::SandboxSpec,
+            _handle: Option<&crate::SandboxHandle>,
+            _expected_effect_fence: Option<&crate::SandboxEffectFence>,
+            _terminal_effect_fence: &crate::SandboxEffectFence,
+            _authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<Option<Arc<FakeSandbox>>, crate::SandboxError> {
+            Err(crate::SandboxError::unsupported(
+                "test double does not prepare terminal cleanup",
+            ))
+        }
+
+        fn restoration(&self) -> crate::SandboxRestoration<'_, Arc<FakeSandbox>> {
+            crate::SandboxRestoration::Unsupported
         }
     }
 
@@ -805,15 +850,15 @@ mod actuator_tests {
         // Relocated from the Sandbox/SandboxProvider trait: the unfenced ports
         // are no longer a trait obligation or a reachable escape hatch. They stay
         // as this type's own implementation detail, used by its fenced edges.
-        async fn create(&self, _s: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
+        async fn create(&self, _s: &SandboxSpec) -> Result<Arc<FakeSandbox>, SandboxError> {
             Err(SandboxError::unsupported("unused"))
         }
-        async fn adopt(&self, handle: &SandboxHandle) -> Result<Box<dyn Sandbox>, SandboxError> {
+        async fn adopt(&self, handle: &SandboxHandle) -> Result<Arc<FakeSandbox>, SandboxError> {
             self.adopts.fetch_add(1, Ordering::SeqCst);
             if self.fail_adopt_ids.contains(&handle.sandbox_id) {
                 return Err(SandboxError::backend("adopt", "adopt failed"));
             }
-            Ok(Box::new(FakeSandbox {
+            Ok(Arc::new(FakeSandbox {
                 id: handle.sandbox_id.clone(),
                 dispose_fails: self.dispose_fails,
                 disposes: self.disposes.clone(),
@@ -830,6 +875,7 @@ mod actuator_tests {
     // `Sandbox`/`SandboxProvider`, which is what the surviving planner assumes.
     #[tokio::test]
     async fn fixtures_conform_to_the_sandbox_ports() {
+        use crate::SandboxReadiness as _;
         let provider = FakeProvider {
             adopts: Arc::new(AtomicU32::new(0)),
             disposes: Arc::new(AtomicU32::new(0)),
@@ -837,6 +883,17 @@ mod actuator_tests {
             dispose_fails: false,
         };
         assert_eq!(provider.capabilities().isolation, IsolationClass::Container);
+        // Restore capability table U: this provider owns no targets and no
+        // checkpoint codec -> both roles refuse before physical I/O. T is
+        // exercised by the container pool, R by the Local checkpoint test.
+        assert!(
+            provider.restoration().targets().is_err(),
+            "U no target owner"
+        );
+        assert!(
+            provider.restoration().restorable().is_err(),
+            "U no restore codec"
+        );
         assert!(provider.create(&spec_min()).await.is_err());
 
         let sb = provider.adopt(&h("s")).await.unwrap();

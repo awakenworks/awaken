@@ -4,11 +4,11 @@
 //! Backend-erased contracts for Session-owned container environments.
 
 use crate::ContainerHandleCodec as _;
-use awaken_container_contract::ContainerEffect;
 
-/// Source-compatible container name for the provider-neutral effect fence.
-/// The contract crate is the sole field/validation authority.
-pub use pc::SandboxEffectFence as ContainerEffectFence;
+use awaken_provisioning_contract::{
+    SandboxCreateAttempt, SandboxEffect, SandboxEffectFence, SandboxObservationPurpose,
+    SandboxRealizationIntent,
+};
 
 /// Exact physical reservation returned by the backend authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,13 +52,6 @@ impl PreparedContainer {
 }
 
 use awaken_provisioning_contract as pc;
-// The backend-erased port family lives in the provisioning contract; the
-// provider re-exports it under its historical paths.
-pub use awaken_container_contract::{
-    ContainerCreateAttempt, ContainerEnvironment, ContainerEnvironmentAdoption,
-    ContainerEnvironmentProvider, ContainerObservationPurpose, EnvironmentFile,
-    EnvironmentRealizationIntent, restore_ladder_is_consistent,
-};
 
 /// Stable namespace used to discover a provider effect after a Worker process
 /// replacement. Construction is centralized here so adapters cannot disagree
@@ -157,12 +150,10 @@ impl ContainerRealizationIntent {
     /// source handle is decoded by this provider's own codec into the exact
     /// physical incarnation and runtime continuation evidence it replaces. A
     /// handle this codec cannot read fails closed before any backend effect.
-    pub fn from_environment(
-        intent: EnvironmentRealizationIntent,
-    ) -> Result<Self, pc::SandboxError> {
+    pub fn from_environment(intent: SandboxRealizationIntent) -> Result<Self, pc::SandboxError> {
         match intent {
-            EnvironmentRealizationIntent::Create => Ok(Self::Create),
-            EnvironmentRealizationIntent::Rebuild { source } => Ok(Self::Rebuild {
+            SandboxRealizationIntent::Create => Ok(Self::Create),
+            SandboxRealizationIntent::Rebuild { source } => Ok(Self::Rebuild {
                 source_incarnation: source.container_physical_incarnation()?,
                 source_runtime_handle: source.container_payload()?.runtime_handle,
             }),
@@ -202,12 +193,12 @@ impl ContainerRealizationIntent {
 pub struct ContainerRealizationContext<'a> {
     pub scope: &'a str,
     pub adoption_fingerprint: &'a pc::SandboxRealizationFingerprint,
-    pub effect_fence: Option<&'a ContainerEffectFence>,
+    pub effect_fence: Option<&'a SandboxEffectFence>,
     pub intent: &'a ContainerRealizationIntent,
-    pub attempt: &'a ContainerCreateAttempt,
+    pub attempt: &'a SandboxCreateAttempt,
     // Borrow the provider's original effect; this context owns
     // neither a lease nor permission to substitute a newly observed grant.
-    effect: ContainerEffect<'a>,
+    effect: SandboxEffect<'a>,
 }
 
 impl<'a> ContainerRealizationContext<'a> {
@@ -215,9 +206,9 @@ impl<'a> ContainerRealizationContext<'a> {
     pub fn new(
         scope: &'a str,
         adoption_fingerprint: &'a pc::SandboxRealizationFingerprint,
-        effect_fence: Option<&'a ContainerEffectFence>,
+        effect_fence: Option<&'a SandboxEffectFence>,
         intent: &'a ContainerRealizationIntent,
-        attempt: &'a ContainerCreateAttempt,
+        attempt: &'a SandboxCreateAttempt,
     ) -> Self {
         Self {
             scope,
@@ -225,11 +216,11 @@ impl<'a> ContainerRealizationContext<'a> {
             effect_fence,
             intent,
             attempt,
-            effect: ContainerEffect::Unattached,
+            effect: SandboxEffect::Unattached,
         }
     }
 
-    pub fn with_effect(mut self, effect: ContainerEffect<'a>) -> Self {
+    pub fn with_effect(mut self, effect: SandboxEffect<'a>) -> Self {
         self.effect = effect;
         self
     }
@@ -252,7 +243,7 @@ impl<'a> ContainerRealizationContext<'a> {
     #[must_use]
     pub fn with_attempt<'b>(
         &'b self,
-        attempt: &'b ContainerCreateAttempt,
+        attempt: &'b SandboxCreateAttempt,
     ) -> ContainerRealizationContext<'b> {
         ContainerRealizationContext { attempt, ..*self }
     }
@@ -297,12 +288,11 @@ mod realization_context_tests {
             lease_ttl_secs: None,
         };
         let adoption = pc::SandboxRealizationFingerprint::from_spec(&spec);
-        let fence =
-            ContainerEffectFence::new("operation-a", "owner-a", "runtime-a", 1, u64::MAX - 1)
-                .unwrap();
+        let fence = SandboxEffectFence::new("operation-a", "owner-a", "runtime-a", 1, u64::MAX - 1)
+            .unwrap();
         let intent = ContainerRealizationIntent::Create;
-        let attempt = ContainerCreateAttempt::new("attempt-a");
-        let recovery_attempt = ContainerCreateAttempt::new("attempt-recovery");
+        let attempt = SandboxCreateAttempt::new("attempt-a");
+        let recovery_attempt = SandboxCreateAttempt::new("attempt-recovery");
 
         let context = ContainerRealizationContext::new(
             &spec.scope,
@@ -334,7 +324,7 @@ mod realization_context_tests {
         );
 
         let authority = pc::test_support::EffectAuthority::new(&fence);
-        let attached = context.with_effect(ContainerEffect::Fenced {
+        let attached = context.with_effect(SandboxEffect::Fenced {
             fence: &fence,
             authority: &authority,
         });
@@ -347,7 +337,7 @@ mod realization_context_tests {
             ("operation-a", "owner-a", "runtime-a", 2, false),
         ] {
             let projected =
-                ContainerEffectFence::new(operation, owner, incarnation, epoch, u64::MAX).unwrap();
+                SandboxEffectFence::new(operation, owner, incarnation, epoch, u64::MAX).unwrap();
             let projected_context = ContainerRealizationContext {
                 effect_fence: Some(&projected),
                 ..attached
@@ -382,13 +372,13 @@ mod realization_context_tests {
 /// Provisioning but can never prove destructive unavailability.
 #[derive(Debug, Clone, Copy)]
 pub struct ContainerObservationExpectation<'a> {
-    pub purpose: ContainerObservationPurpose,
+    pub purpose: SandboxObservationPurpose,
     pub container_id: &'a str,
     pub adoption_fingerprint: Option<&'a pc::SandboxRealizationFingerprint>,
     pub realization_fingerprint: Option<&'a pc::SandboxRealizationFingerprint>,
     pub runtime_handle: Option<&'a crate::ContainerContinuationHandle>,
     pub effect_fence: Option<&'a pc::SandboxEffectFence>,
-    pub retained_attempt: Option<&'a ContainerCreateAttempt>,
+    pub retained_attempt: Option<&'a SandboxCreateAttempt>,
 }
 
 /// One durable container handle decoded once by its owning codec, so an
@@ -414,7 +404,7 @@ impl<'a> ContainerObservationExpectation<'a> {
     #[must_use]
     pub fn from_decoded(handle: &'a DecodedContainerHandle) -> Self {
         Self {
-            purpose: ContainerObservationPurpose::Recovery,
+            purpose: SandboxObservationPurpose::Recovery,
             container_id: &handle.payload.container_id,
             adoption_fingerprint: handle.adoption_fingerprint.as_ref(),
             realization_fingerprint: handle.realization_fingerprint.as_ref(),

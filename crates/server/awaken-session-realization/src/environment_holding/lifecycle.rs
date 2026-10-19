@@ -238,7 +238,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 &handle,
                 Some(environment.as_ref()),
                 awaken_provisioning_contract::SandboxObservationBasis::Unattached,
-                awaken_session_environment_contract::ObservationPurpose::Recovery,
+                awaken_provisioning_contract::SandboxObservationPurpose::Recovery,
             )
             .await
             .map_err(|error| {
@@ -941,7 +941,7 @@ impl crate::environment_holding::EnvironmentHolding {
             .as_ref()
             .map(|fence| peers.authority.provider_effect_authority(thread, fence))
             .transpose()?;
-        let provider_effect = crate::session_environment::ProviderEffect::from_parts(
+        let provider_effect = awaken_provisioning_contract::SandboxEffect::from_parts(
             effect.provider_fence.as_ref(),
             authority.as_ref().map(|authority| {
                 authority as &dyn awaken_provisioning_contract::CurrentExecutionAuthority
@@ -968,7 +968,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 &handle,
                 retained,
                 provider_effect.observation_basis(&spec),
-                awaken_session_environment_contract::ObservationPurpose::Recovery,
+                awaken_provisioning_contract::SandboxObservationPurpose::Recovery,
             )
             .await
             .map_err(|error| {

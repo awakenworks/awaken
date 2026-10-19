@@ -1,6 +1,6 @@
 use std::fs;
 
-use awaken_session_executor::AcpWorkerProfile;
+use awaken_acp_contract::AcpWorkerProfile;
 
 use super::ResolvedDeployment;
 
@@ -32,7 +32,7 @@ impl ResolvedDeployment {
         } else {
             Some(AcpWorkerProfile::new(
                 routable_cli_ids,
-                awaken_execution_composition::acp_adapter_policy(),
+                awaken_run_executor_acp::acp_adapter_policy(),
             )?)
         };
         self.local_acp_observations = observations;

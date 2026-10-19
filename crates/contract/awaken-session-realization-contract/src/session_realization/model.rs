@@ -559,9 +559,15 @@ impl SessionResourceMaterializationIntent {
 #[derive(Debug, thiserror::Error)]
 pub enum SessionRealizationDriveError {
     #[error(transparent)]
-    Effect(#[from] RunError),
+    Effect(#[from] SessionRealizationEffectFailure),
     #[error(transparent)]
     Control(#[from] SessionRealizationControlFailure),
     #[error("Session realization phase protocol did not converge")]
     DidNotConverge,
+}
+
+impl From<RunError> for SessionRealizationDriveError {
+    fn from(error: RunError) -> Self {
+        Self::Effect(error.into())
+    }
 }

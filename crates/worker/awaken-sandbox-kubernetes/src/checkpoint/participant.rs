@@ -12,7 +12,7 @@
 
 use awaken_provisioning_contract as pc;
 
-use awaken_sandbox_container::{ContainerCheckpointAccess, ContainerCheckpointMutation};
+use awaken_provisioning_contract::{SandboxCheckpointAccess, SandboxCheckpointMutation};
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,8 +26,8 @@ pub(crate) struct ContainerCheckpointParticipant {
 impl ContainerCheckpointParticipant {
     pub(crate) fn apply(
         previous: Option<&Self>,
-        access: ContainerCheckpointAccess<'_>,
-        mutation: ContainerCheckpointMutation<'_>,
+        access: SandboxCheckpointAccess<'_>,
+        mutation: SandboxCheckpointMutation<'_>,
     ) -> Result<Self, pc::SandboxError> {
         access.admit()?;
         let mut next = match previous {
@@ -58,7 +58,7 @@ impl ContainerCheckpointParticipant {
                 }
                 previous.clone()
             }
-            None if matches!(mutation, ContainerCheckpointMutation::Acquire) => Self {
+            None if matches!(mutation, SandboxCheckpointMutation::Acquire) => Self {
                 source_effect_fence: access.source_effect_fence.clone(),
                 request_fingerprint: access.request_fingerprint.to_owned(),
                 terminal: access.is_terminal(),
@@ -72,8 +72,8 @@ impl ContainerCheckpointParticipant {
         };
         next.terminal |= access.is_terminal();
         match mutation {
-            ContainerCheckpointMutation::Acquire => {}
-            ContainerCheckpointMutation::Begin(pending) => {
+            SandboxCheckpointMutation::Acquire => {}
+            SandboxCheckpointMutation::Begin(pending) => {
                 if pending.operation_id() != Some(access.source_effect_fence.operation_id())
                     || pending.request_fingerprint() != access.request_fingerprint
                     || pending.reference().is_some()
@@ -92,7 +92,7 @@ impl ContainerCheckpointParticipant {
                     None => next.upload = Some(pending.clone()),
                 }
             }
-            ContainerCheckpointMutation::Complete(reference) => {
+            SandboxCheckpointMutation::Complete(reference) => {
                 next.upload
                     .as_mut()
                     .ok_or_else(|| {
@@ -177,7 +177,7 @@ pub(crate) mod tests {
                             } else {
                                 EffectAuthority::denied()
                             };
-                            let access = ContainerCheckpointAccess {
+                            let access = SandboxCheckpointAccess {
                                 source_effect_fence: &source,
                                 effect_fence: active,
                                 request_fingerprint: if exact_request {
@@ -188,9 +188,9 @@ pub(crate) mod tests {
                                 authority: &authority,
                             };
                             for (index, mutation) in [
-                                ContainerCheckpointMutation::Acquire,
-                                ContainerCheckpointMutation::Begin(&pending),
-                                ContainerCheckpointMutation::Complete(&reference),
+                                SandboxCheckpointMutation::Acquire,
+                                SandboxCheckpointMutation::Begin(&pending),
+                                SandboxCheckpointMutation::Complete(&reference),
                             ]
                             .into_iter()
                             .enumerate()
@@ -239,7 +239,7 @@ pub(crate) mod tests {
         // is exhaustively covered at SandboxCheckpointUpload, not duplicated.
         let source = pc::SandboxEffectFence::new("suspend", "owner", "boot", 2, 100).unwrap();
         let authority = EffectAuthority::new(&source);
-        let access = ContainerCheckpointAccess {
+        let access = SandboxCheckpointAccess {
             source_effect_fence: &source,
             effect_fence: &source,
             request_fingerprint: "request",
@@ -272,7 +272,7 @@ pub(crate) mod tests {
                 ContainerCheckpointParticipant::apply(
                     Some(&corrupt),
                     access,
-                    ContainerCheckpointMutation::Acquire
+                    SandboxCheckpointMutation::Acquire
                 )
                 .is_err(),
                 "CI1/{pointer}"
@@ -296,11 +296,11 @@ pub(crate) mod tests {
             assert!(
                 ContainerCheckpointParticipant::apply(
                     Some(&stored),
-                    ContainerCheckpointAccess {
+                    SandboxCheckpointAccess {
                         source_effect_fence: &changed,
                         ..access
                     },
-                    ContainerCheckpointMutation::Acquire
+                    SandboxCheckpointMutation::Acquire
                 )
                 .is_err(),
                 "CI3/{axis}"

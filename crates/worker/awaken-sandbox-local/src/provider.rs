@@ -575,7 +575,7 @@ impl LocalProvider {
 
     /// Re-open a local sandbox from its durable handle without erasing any files.
     ///
-    /// This is the concrete counterpart of [`pc::SandboxProvider::adopt`], exposed
+    /// This is the concrete counterpart of [`pc::SandboxProvider::adopt_for_effect`], exposed
     /// for hosts that need the local-tier helpers on [`LocalSandbox`]. A handle is
     /// provider-scoped: accepting a container/k8s handle here would silently place
     /// work on the wrong isolation tier, so the boundary fails closed.
@@ -1029,9 +1029,15 @@ impl LocalProvider {
 }
 
 #[async_trait]
-impl pc::SandboxProvider for LocalProvider {
-    /// Ordinary Workdir owns its filesystem root; a configured execution
-    /// boundary additionally attests the actual installed physical mechanism.
+impl pc::SandboxReadiness for LocalProvider {
+    fn capabilities(&self) -> pc::SandboxCapabilities {
+        Self::capabilities()
+    }
+
+    fn checkpoint_formats(&self) -> Vec<String> {
+        vec!["awaken-fs-tar-v1".into()]
+    }
+
     async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
         #[cfg(target_os = "linux")]
         if let Some(execution) = &self.execution_deployment {
@@ -1058,15 +1064,41 @@ impl pc::SandboxProvider for LocalProvider {
         }
         Ok(())
     }
+}
 
-    fn capabilities(&self) -> pc::SandboxCapabilities {
-        Self::capabilities()
+#[async_trait]
+impl pc::SandboxProvider for LocalProvider {
+    type Environment = dyn pc::Sandbox;
+    fn install_memory_mounter(&self, mounter: std::sync::Arc<dyn pc::MemoryMounter>) {
+        self.install_memory_mounter(mounter);
+    }
+    fn install_secret_broker(&self, broker: std::sync::Arc<dyn pc::SecretBroker>) {
+        self.install_secret_broker(broker);
     }
 
-    fn checkpoint_formats(&self) -> Vec<String> {
-        vec!["awaken-fs-tar-v1".into()]
+    async fn prewarm_images(&self, _specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError> {
+        Ok(())
     }
 
+    fn adoption_layout(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<pc::SandboxAdoptionLayout, pc::SandboxError> {
+        let payload = handle.local_payload()?;
+        Ok(pc::SandboxAdoptionLayout {
+            outputs_path: payload.outputs_path,
+            base_env: payload.base_env,
+            network: None,
+        })
+    }
+    fn validate_closed_observation(
+        &self,
+        handle: &pc::SandboxHandle,
+        observation: &pc::SandboxObservation,
+    ) -> Result<(), pc::SandboxError> {
+        handle.local_payload()?;
+        crate::realization_marker::validate_closed_observation(handle, observation)
+    }
     /// The durable record is the realization marker this creation's own
     /// synchronous prologue writes; `observe_adoption` is the scan that reads
     /// it back. The retention covers the one window the marker cannot: a
@@ -1075,43 +1107,43 @@ impl pc::SandboxProvider for LocalProvider {
     fn claim_for_effect<'a>(
         &'a self,
         spec: &'a pc::SandboxSpec,
-        effect_fence: &'a pc::SandboxEffectFence,
-        authority: &'a dyn pc::CurrentExecutionAuthority,
-    ) -> pc::ClaimedEffect<'a, Box<dyn pc::Sandbox>> {
+        effect: pc::SandboxEffect<'a>,
+        intent: pc::SandboxRealizationIntent,
+    ) -> pc::ClaimedEffect<'a, std::sync::Arc<dyn pc::Sandbox>> {
         let claim = pc::EffectClaim::durable(
             crate::abandoned_realization::REALIZATION_RECONCILER,
             self.abandoned
                 .retain(crate::sandbox_dir(&self.base, &spec.scope)),
         );
         pc::ClaimedEffect::new(claim, async move {
-            Ok(Box::new(
-                self.create_sandbox_for_effect(spec, effect_fence, None, authority)
-                    .await?,
-            ) as Box<dyn pc::Sandbox>)
+            intent.admit_under(effect)?;
+            let sandbox = match effect {
+                pc::SandboxEffect::Unattached => self.create_sandbox(spec).await?,
+                pc::SandboxEffect::Fenced { fence, authority } => {
+                    self.create_sandbox_for_effect(spec, fence, intent.source(), authority)
+                        .await?
+                }
+            };
+            Ok(std::sync::Arc::new(sandbox) as std::sync::Arc<dyn pc::Sandbox>)
         })
     }
 
     async fn observe(
         &self,
-        handle: &pc::SandboxHandle,
+        adoption: pc::SandboxAdoption<'_>,
         basis: pc::SandboxObservationBasis<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        let handle = adoption.handle;
         handle.local_payload()?;
-        let expected_effect_fence = match basis {
-            pc::SandboxObservationBasis::Unattached => None,
-            pc::SandboxObservationBasis::Effect { spec, effect_fence } => {
-                if handle.realization_fingerprint()
-                    != Some(&pc::SandboxRealizationFingerprint::from_spec(spec))
-                {
-                    return Ok(pc::SandboxObservation::Incompatible {
-                        reason:
-                            "Local sandbox handle does not match the effective observation spec"
-                                .into(),
-                    });
-                }
-                Some(effect_fence)
-            }
-        };
+        let expected_effect_fence = adoption.observation_fence(basis)?;
+        if expected_effect_fence.is_some()
+            && handle.realization_fingerprint()
+                != Some(&pc::SandboxRealizationFingerprint::from_spec(adoption.spec))
+        {
+            return Ok(pc::SandboxObservation::Incompatible {
+                reason: "Local sandbox handle does not match the effective observation spec".into(),
+            });
+        }
         crate::realization_marker::observe_adoption(
             &crate::sandbox_dir(&self.base, &handle.sandbox_id),
             handle.realization_fingerprint(),
@@ -1120,18 +1152,19 @@ impl pc::SandboxProvider for LocalProvider {
             expected_effect_fence,
         )
     }
-
     async fn adopt_for_effect(
         &self,
-        spec: &pc::SandboxSpec,
-        handle: &pc::SandboxHandle,
-        effect_fence: &pc::SandboxEffectFence,
-        authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        Ok(Box::new(
-            self.adopt_sandbox_for_effect(spec, handle, effect_fence, authority)
-                .await?,
-        ))
+        adoption: pc::SandboxAdoption<'_>,
+        effect: pc::SandboxEffect<'_>,
+    ) -> Result<std::sync::Arc<dyn pc::Sandbox>, pc::SandboxError> {
+        let sandbox = match effect {
+            pc::SandboxEffect::Unattached => self.adopt_sandbox(adoption.handle).await?,
+            pc::SandboxEffect::Fenced { fence, authority } => {
+                self.adopt_sandbox_for_effect(adoption.spec, adoption.handle, fence, authority)
+                    .await?
+            }
+        };
+        Ok(std::sync::Arc::new(sandbox))
     }
 
     async fn prepare_terminal_for_effect(
@@ -1141,7 +1174,7 @@ impl pc::SandboxProvider for LocalProvider {
         expected_effect_fence: Option<&pc::SandboxEffectFence>,
         terminal_effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<Option<Box<dyn pc::Sandbox>>, pc::SandboxError> {
+    ) -> Result<Option<std::sync::Arc<dyn pc::Sandbox>>, pc::SandboxError> {
         Ok(self
             .prepare_terminal_sandbox_for_effect(
                 spec,
@@ -1151,29 +1184,24 @@ impl pc::SandboxProvider for LocalProvider {
                 authority,
             )
             .await?
-            .map(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
+            .map(|sandbox| std::sync::Arc::new(sandbox) as std::sync::Arc<dyn pc::Sandbox>))
     }
-
-    fn restore_targets(&self) -> Option<&dyn pc::RestoreTargetProvider<Box<dyn pc::Sandbox>>> {
-        Some(self)
-    }
-
-    fn restorable(&self) -> Option<&dyn pc::RestorableProvider<Box<dyn pc::Sandbox>>> {
-        Some(self)
+    fn restoration(&self) -> pc::SandboxRestoration<'_, std::sync::Arc<dyn pc::Sandbox>> {
+        pc::SandboxRestoration::Restorable(self)
     }
 }
 
 #[async_trait]
-impl pc::RestoreTargetProvider<Box<dyn pc::Sandbox>> for LocalProvider {
+impl pc::RestoreTargetProvider<std::sync::Arc<dyn pc::Sandbox>> for LocalProvider {
     async fn acquire_restore(
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
-    ) -> Result<pc::SandboxRestoreTarget<Box<dyn pc::Sandbox>>, pc::SandboxError> {
+    ) -> Result<pc::SandboxRestoreTarget<std::sync::Arc<dyn pc::Sandbox>>, pc::SandboxError> {
         Ok(self
             .acquire_restore_sandbox(spec, request)
             .await?
-            .map_target(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
+            .map_target(|sandbox| std::sync::Arc::new(sandbox) as std::sync::Arc<dyn pc::Sandbox>))
     }
 
     async fn dispose_restored(
@@ -1189,17 +1217,17 @@ impl pc::RestoreTargetProvider<Box<dyn pc::Sandbox>> for LocalProvider {
 }
 
 #[async_trait]
-impl pc::RestorableProvider<Box<dyn pc::Sandbox>> for LocalProvider {
+impl pc::RestorableProvider<std::sync::Arc<dyn pc::Sandbox>> for LocalProvider {
     async fn restore_environment(
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
         store: &dyn pc::SandboxCheckpointStore,
-    ) -> Result<pc::SandboxRestoreResult<Box<dyn pc::Sandbox>>, pc::SandboxError> {
+    ) -> Result<pc::SandboxRestoreResult<std::sync::Arc<dyn pc::Sandbox>>, pc::SandboxError> {
         Ok(self
             .restore_exact_sandbox(spec, request, store)
             .await?
-            .map_target(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
+            .map_target(|sandbox| std::sync::Arc::new(sandbox) as std::sync::Arc<dyn pc::Sandbox>))
     }
 }
 

@@ -169,26 +169,27 @@ async fn mutation_time_receipt_table(
     let app = timed_application(faulting.clone(), 100);
     let original = app.create_session(create).await.unwrap();
     let app = timed_application(faulting.clone(), 200);
-    let owner = app.owner(&original.session_id).await.unwrap();
+    let owner = app.queries().owner(&original.session_id).await.unwrap();
     let mut desired = original.clone();
     desired.title = Some("changed".into());
     let key = receipt("lost-time-ack", &desired);
     faulting.commit_then_conflict_once("lost-time-ack");
     assert!(
         matches!(
-            app.commit_session_snapshot_with_record(
-                &owner,
-                // T7 must reach the real CAS/response-loss fault with one
-                // State authoring fact. Later replay/mismatch rows stay raw.
-                awaken_store_conformance::session_store::record_update(
-                    &original,
-                    desired.clone(),
-                    0
-                ),
-                key.clone(),
-                vec![]
-            )
-            .await,
+            app.mutations
+                .commit_session_snapshot_with_record(
+                    &owner,
+                    // T7 must reach the real CAS/response-loss fault with one
+                    // State authoring fact. Later replay/mismatch rows stay raw.
+                    awaken_store_conformance::session_store::record_update(
+                        &original,
+                        desired.clone(),
+                        0
+                    ),
+                    key.clone(),
+                    vec![]
+                )
+                .await,
             Err(SessionMutationError::Conflict)
         ),
         "T7 reply lost"
@@ -196,6 +197,7 @@ async fn mutation_time_receipt_table(
     let committed = repo.get(&original.session_id).await.unwrap();
     let restarted = timed_application(repo.clone(), 999);
     let commit = restarted
+        .mutations
         .commit_session_snapshot_with_record(
             &owner,
             awaken_session_state_contract::SessionAggregate::try_from(desired.clone())
@@ -214,6 +216,7 @@ async fn mutation_time_receipt_table(
     assert!(
         matches!(
             restarted
+                .mutations
                 .commit_session_snapshot_with_record(
                     &owner,
                     awaken_session_state_contract::SessionAggregate::try_from(desired.clone())
@@ -230,6 +233,7 @@ async fn mutation_time_receipt_table(
     assert!(
         matches!(
             restarted
+                .mutations
                 .commit_session_snapshot_with_record(
                     &owner,
                     awaken_session_state_contract::SessionAggregate::try_from(desired)
@@ -283,7 +287,8 @@ async fn concurrent_root_cas_time_belongs_only_to_the_winner() {
         let prepared = awaken_store_conformance::session_store::record_update(&initial, desired, 0);
         async move {
             gate.wait().await;
-            app.commit_session_snapshot_with_record(&owner, prepared, key, vec![])
+            app.mutations
+                .commit_session_snapshot_with_record(&owner, prepared, key, vec![])
                 .await
         }
     };

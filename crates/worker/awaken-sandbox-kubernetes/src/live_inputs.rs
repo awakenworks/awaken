@@ -2,7 +2,8 @@
 
 use super::projection::PROJECTOR;
 use super::{EXEC_SEQUENCE, K8sRuntime, backend, content_binds, hardened_security_context};
-use awaken_sandbox_container::{BindPlan, ContainerEffectFence, ContainerPlan, RuntimeError};
+use awaken_provisioning_contract::SandboxEffectFence;
+use awaken_sandbox_container::{BindPlan, ContainerPlan, RuntimeError};
 use k8s_openapi::api::core::v1::{Container, EmptyDirVolumeSource, EnvVar, Volume, VolumeMount};
 use kube::api::AttachParams;
 use std::sync::atomic::Ordering;
@@ -12,7 +13,7 @@ pub(super) const VOLUME: &str = "live-inputs";
 
 pub(super) fn append_projection(
     plan: &ContainerPlan,
-    effect_fence: Option<&ContainerEffectFence>,
+    effect_fence: Option<&SandboxEffectFence>,
     volumes: &mut Vec<Volume>,
     agent_mounts: &mut Vec<VolumeMount>,
     sidecars: &mut Vec<Container>,
@@ -29,13 +30,13 @@ pub(super) fn append_projection(
     });
     agent_mounts.push(VolumeMount {
         name: VOLUME.into(),
-        mount_path: awaken_sandbox_container::LIVE_INPUTS_ROOT.into(),
+        mount_path: awaken_container_contract::LIVE_INPUTS_ROOT.into(),
         read_only: Some(true),
         ..Default::default()
     });
     let mut projector_mounts = vec![VolumeMount {
         name: VOLUME.into(),
-        mount_path: awaken_sandbox_container::LIVE_INPUTS_ROOT.into(),
+        mount_path: awaken_container_contract::LIVE_INPUTS_ROOT.into(),
         read_only: Some(false),
         ..Default::default()
     }];
@@ -91,7 +92,7 @@ async fn clear(runtime: &K8sRuntime, container_id: &str) -> Result<(), RuntimeEr
         "-c".into(),
         "root=$1; rm -rf -- \"$root\"/* \"$root\"/.[!.]* \"$root\"/..?*".into(),
         "awaken-input-clear".into(),
-        awaken_sandbox_container::LIVE_INPUTS_ROOT.into(),
+        awaken_container_contract::LIVE_INPUTS_ROOT.into(),
     ];
     exec(runtime, container_id, argv, None).await
 }
@@ -164,7 +165,7 @@ pub(super) async fn project(
     path: &str,
     bytes: &[u8],
 ) -> Result<(), RuntimeError> {
-    awaken_sandbox_container::live_input_relative_path(path)
+    awaken_container_contract::live_input_relative_path(path)
         .ok_or_else(|| backend("live input path escaped its projection root"))?;
     let temp = format!(
         "{path}.awaken-{}.tmp",
@@ -186,7 +187,7 @@ pub(super) async fn remove(
     container_id: &str,
     path: &str,
 ) -> Result<(), RuntimeError> {
-    awaken_sandbox_container::live_input_relative_path(path)
+    awaken_container_contract::live_input_relative_path(path)
         .ok_or_else(|| backend("live input path escaped its projection root"))?;
     let argv = vec![
         "/bin/sh".into(),
@@ -194,7 +195,7 @@ pub(super) async fn remove(
         "target=$1; root=$2; rm -f -- \"$target\"; dir=$(dirname -- \"$target\"); while [ \"$dir\" != \"$root\" ] && [ \"${dir#\"$root\"/}\" != \"$dir\" ]; do rmdir -- \"$dir\" 2>/dev/null || break; dir=$(dirname -- \"$dir\"); done".into(),
         "awaken-input-remove".into(),
         path.into(),
-        awaken_sandbox_container::LIVE_INPUTS_ROOT.into(),
+        awaken_container_contract::LIVE_INPUTS_ROOT.into(),
     ];
     exec(runtime, container_id, argv, None).await
 }
@@ -272,7 +273,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             agent_live.mount_path,
-            awaken_sandbox_container::LIVE_INPUTS_ROOT
+            awaken_container_contract::LIVE_INPUTS_ROOT
         );
         assert_eq!(agent_live.read_only, Some(true));
         assert!(
@@ -316,7 +317,7 @@ mod tests {
          * on the same file-projection path; pass no optional trust input.
          */
         let fence =
-            ContainerEffectFence::new("file-create", "owner", "runtime", 1, u64::MAX).unwrap();
+            SandboxEffectFence::new("file-create", "owner", "runtime", 1, u64::MAX).unwrap();
         let pod = build_pod_with_continuation(
             "file-only",
             &plan(),

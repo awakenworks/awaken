@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 #[tokio::test]
 #[ignore = "isolated PATH participant invoked by native_probe_public_readiness_tracks_host_policy"]
 async fn native_probe_readiness_participant() {
-    use pc::SandboxProvider as _;
+    use pc::SandboxReadiness as _;
     let launcher = std::env::var_os("AWAKEN_PROBE_TEST_LAUNCHER").unwrap();
     let enabled = std::path::PathBuf::from(launcher).with_extension("enabled");
     let root = tempfile::tempdir().unwrap();

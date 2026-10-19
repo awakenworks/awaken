@@ -19,13 +19,11 @@ use awaken_session_environment_contract::HandExecutorFactory;
 use awaken_session_executor::{DeploymentConfig, SessionExecutorBuilder};
 
 mod acp_backend;
-mod acp_policy;
 mod acp_provision;
 mod container;
 mod local;
 mod sandbox_source;
 
-pub use acp_policy::acp_adapter_policy;
 pub use acp_provision::PublishedAcpLaunchResolver;
 pub use sandbox_source::{AcpLaunchRegistry, LaunchSource};
 
@@ -46,8 +44,12 @@ pub use local::{
 /// construction merely to add an infrastructure concern such as checkpointing.
 /// Consumer: [`install_container_environment_components`].
 pub struct ContainerEnvironmentComponents {
-    pub provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
-    pub capacity: Option<Arc<dyn awaken_container_contract::ContainerEnvironmentCapacity>>,
+    pub provider: Arc<
+        dyn awaken_provisioning_contract::SandboxProvider<
+                Environment = dyn awaken_provisioning_contract::SessionSandbox,
+            >,
+    >,
+    pub capacity: Option<Arc<dyn awaken_provisioning_contract::SandboxCapacity>>,
     pub extra_mounts: Vec<awaken_provisioning_contract::MountRequirement>,
     pub cache_volume_initializer: Option<Arc<dyn awaken_session_executor::CacheVolumeInitializer>>,
 }
@@ -101,8 +103,12 @@ pub fn install_container_environment_components(
 pub fn install_container_provider(
     host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
-    provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
-    capacity: Option<Arc<dyn awaken_container_contract::ContainerEnvironmentCapacity>>,
+    provider: Arc<
+        dyn awaken_provisioning_contract::SandboxProvider<
+                Environment = dyn awaken_provisioning_contract::SessionSandbox,
+            >,
+    >,
+    capacity: Option<Arc<dyn awaken_provisioning_contract::SandboxCapacity>>,
     hand_factory: Arc<dyn HandExecutorFactory>,
 ) -> SessionExecutorBuilder {
     install_container_environment_components(

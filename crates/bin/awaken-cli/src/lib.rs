@@ -30,6 +30,7 @@ mod identity;
 mod installation_binding;
 #[cfg(any(test, feature = "test-support"))]
 mod local_process_stores;
+mod memory;
 mod observation_reconcile;
 mod postgres_pools;
 mod process_admin;
@@ -43,6 +44,7 @@ mod worker_observation_wiring;
 mod worker_transport;
 mod worker_transport_security;
 
+pub use memory::with_platform_memory_data_plane;
 pub use worker_transport::WorkerTransport;
 
 use std::sync::Arc;

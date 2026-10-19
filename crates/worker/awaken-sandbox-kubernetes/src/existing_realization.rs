@@ -14,20 +14,20 @@ use super::{
     unenforceable_k8s_limit,
 };
 use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::{SandboxEffectFence, SandboxObservationPurpose};
 use awaken_sandbox_container::engine::{
     ExistingRealization, ExistingRealizationDecision, ExistingRealizationPhase,
     ExistingRealizationRecovery, RebuildContinuityEvidence, existing_realization_decision,
 };
 use awaken_sandbox_container::{
-    ContainerEffectFence, ContainerObservationPurpose, ContainerPlan, ContainerRealizationContext,
-    ContainerRuntime as _, RuntimeError,
+    ContainerPlan, ContainerRealizationContext, ContainerRuntime as _, RuntimeError,
 };
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod};
 
 pub(super) fn create_claim_admission(
     desired: &PersistentVolumeClaim,
     observed: Option<&PersistentVolumeClaim>,
-    expected_fence: &ContainerEffectFence,
+    expected_fence: &SandboxEffectFence,
 ) -> Result<continuation::CreateClaimAdmission, RuntimeError> {
     let Some(observed) = observed else {
         return continuation::create_claim_admission(expected_fence, None);
@@ -236,7 +236,7 @@ pub(super) async fn observed_continuation_disposition(
     pod_name: &str,
     pod: Option<&Pod>,
     runtime_handle: Option<&awaken_sandbox_container::ContainerContinuationHandle>,
-    purpose: ContainerObservationPurpose,
+    purpose: SandboxObservationPurpose,
     effect_fenced: bool,
     effect_fenced_total_absence: bool,
 ) -> Result<ContinuationObservationDisposition, RuntimeError> {
@@ -281,7 +281,7 @@ pub(super) async fn observed_continuation_disposition_for_claim(
     pod_name: &str,
     pod: Option<&Pod>,
     expected_claim_uid: Option<&str>,
-    purpose: ContainerObservationPurpose,
+    purpose: SandboxObservationPurpose,
     effect_fenced: bool,
     effect_fenced_total_absence: bool,
 ) -> Result<ContinuationObservationDisposition, RuntimeError> {

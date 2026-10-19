@@ -15,27 +15,12 @@ use async_trait::async_trait;
 use http::{Method, Response, StatusCode, header};
 use kube::Client;
 use kube::client::Body;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use super::RequestJoin;
-use awaken_sandbox_container::{ContainerEffectFence, RuntimeError};
+use awaken_provisioning_contract::SandboxEffectFence;
+use awaken_sandbox_container::RuntimeError;
 
-/// Ephemeral wire payload. Object bytes may contain credential material and
-/// must never enter the durable ticket ledger, debug logs or error rendering.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct K8sCreateRequest {
-    pub path: String,
-    pub object: Value,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct K8sCreateResponse {
-    pub status: u16,
-    pub object: Value,
-}
+use awaken_container_contract::{K8sCreateRequest, K8sCreateResponse};
 
 #[async_trait]
 pub trait K8sCreateTransport: Send + Sync {
@@ -43,7 +28,7 @@ pub trait K8sCreateTransport: Send + Sync {
     async fn seal_predecessor(
         &self,
         scope: &str,
-        predecessor: &ContainerEffectFence,
+        predecessor: &SandboxEffectFence,
         expected_pod_name: &str,
     ) -> Result<RequestJoin, RuntimeError>;
 }
@@ -106,7 +91,7 @@ mod tests {
     use k8s_openapi::api::core::v1::{ConfigMap, PersistentVolumeClaim};
     use kube::Api;
     use kube::api::PostParams;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -127,7 +112,7 @@ mod tests {
         // The provider ticket remains the
         // only brokered Create admission and close authority.
         let fence =
-            ContainerEffectFence::new("old-effect", "worker", "worker-boot", 1, u64::MAX).unwrap();
+            SandboxEffectFence::new("old-effect", "worker", "worker-boot", 1, u64::MAX).unwrap();
         let fingerprint = serde_json::from_value(json!("fingerprint")).unwrap();
         let intent = awaken_sandbox_container::ContainerRealizationIntent::Create;
         let attempt = awaken_sandbox_container::engine::fresh_create_attempt();
@@ -218,7 +203,7 @@ mod tests {
         async fn seal_predecessor(
             &self,
             _scope: &str,
-            _predecessor: &ContainerEffectFence,
+            _predecessor: &SandboxEffectFence,
             _expected_pod_name: &str,
         ) -> Result<RequestJoin, RuntimeError> {
             self.seal_calls.fetch_add(1, Ordering::SeqCst);
@@ -249,7 +234,7 @@ mod tests {
             credential_file_path: None,
         });
         let fence =
-            ContainerEffectFence::new("old-effect", "worker", "worker-boot", 1, u64::MAX).unwrap();
+            SandboxEffectFence::new("old-effect", "worker", "worker-boot", 1, u64::MAX).unwrap();
         for joined in [RequestJoin::Complete(Vec::new()), RequestJoin::Unknown] {
             let seals = Arc::new(AtomicUsize::new(0));
             let broker = Arc::new(RecordingBroker {
@@ -484,7 +469,7 @@ mod tests {
                 .unwrap()
         };
         let fence =
-            ContainerEffectFence::new("old-effect", "worker", "worker-boot", 1, u64::MAX).unwrap();
+            SandboxEffectFence::new("old-effect", "worker", "worker-boot", 1, u64::MAX).unwrap();
         assert_eq!(
             runtime(RequestJoin::Unknown)
                 .missing_handle_terminal_evidence(
@@ -584,7 +569,7 @@ mod tests {
         // cannot turn a Pod GET into a cleanup receipt. Rules J1=C1+C2+C3->E1,
         // J2=C1+C2+C4->E2, J3=!C1|!C2->E2.
         let fence =
-            ContainerEffectFence::new("old-effect", "worker", "worker-boot", 1, u64::MAX).unwrap();
+            SandboxEffectFence::new("old-effect", "worker", "worker-boot", 1, u64::MAX).unwrap();
         let plan = super::super::ephemeral_plan();
         let base = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
         let runtime_id = base.realization_runtime_id("scope").unwrap();
@@ -615,7 +600,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let current_claim = Arc::new(Mutex::new(None::<PersistentVolumeClaim>));
         let current_volume = Arc::new(Mutex::new(
-            None::<awaken_sandbox_container::K8sContinuationVolume>,
+            None::<awaken_container_contract::K8sContinuationVolume>,
         ));
         let service = tower::service_fn({
             let current = current.clone();
@@ -800,7 +785,7 @@ mod tests {
         // PVC spec, or altered Pod claim binding => Unknown and zero writes.
         // R3=PVC ticket without its original Pod => Unknown; a live claim is
         // never converted to absence by a Pod 404 or a partial Create join.
-        let volume = awaken_sandbox_container::K8sContinuationVolume {
+        let volume = awaken_container_contract::K8sContinuationVolume {
             storage_class_name: None,
             size: "1Gi".into(),
         };
@@ -995,7 +980,7 @@ mod tests {
         async fn seal_predecessor(
             &self,
             _scope: &str,
-            _predecessor: &ContainerEffectFence,
+            _predecessor: &SandboxEffectFence,
             _expected_pod_name: &str,
         ) -> Result<RequestJoin, RuntimeError> {
             Ok(RequestJoin::Unknown)

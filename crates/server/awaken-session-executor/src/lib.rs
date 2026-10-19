@@ -121,7 +121,7 @@ pub use crate::config::{
     platform_plugin_capabilities_with_web_search,
 };
 pub use crate::deployment_config::{
-    AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
+    ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
     PackageImageBuilder, SandboxPackageSettingsInput, SandboxSettings, SandboxTier, StoreKind,
     Wake, default_postgres_max_connections, session_sandbox_base,
 };

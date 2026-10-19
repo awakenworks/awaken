@@ -23,7 +23,8 @@
 use awaken_provisioning_contract as pc;
 
 use crate::exec_attempts::DisposalSeal;
-use crate::{ContainerRuntime, ContainerSandbox, RuntimeAgentProcess};
+use crate::{ContainerRuntime, ContainerSandbox};
+use awaken_provisioning_contract::AgentProcess;
 
 impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
     /// Start an opaque stdio agent as an exec process in this Session environment.
@@ -32,7 +33,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
     pub async fn spawn_agent(
         &self,
         command: pc::Command,
-    ) -> Result<RuntimeAgentProcess, pc::SandboxError> {
+    ) -> Result<AgentProcess, pc::SandboxError> {
         let command = self.materialize_command(command).await?;
         self.claimed_spawn_agent(command)?.await
     }
@@ -43,7 +44,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
     /// [`pc::ClaimedEffect::new`] takes the claim by value, so the attempt is
     /// counted and the retention is minted strictly before the future is built
     /// and therefore before any poll reaches the runtime. A task cancelled
-    /// between the exec starting and the [`RuntimeAgentProcess`] reaching its
+    /// between the exec starting and the [`AgentProcess`] reaching its
     /// caller drops this value unsettled, which is the one transition that runs
     /// the retention and leaves the attempt on record for
     /// [`ContainerSandbox::prepare_disposal`] to reap.
@@ -55,7 +56,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
     fn claimed_spawn_agent(
         &self,
         command: pc::MaterializedCommand,
-    ) -> Result<pc::ClaimedEffect<'_, RuntimeAgentProcess>, pc::SandboxError> {
+    ) -> Result<pc::ClaimedEffect<'_, AgentProcess>, pc::SandboxError> {
         let admitted = self.admit_exec_attempt()?;
         let attempt = admitted.attempt().to_string();
         let execs = self.execs.clone();
@@ -130,7 +131,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
     pub(crate) async fn spawn_machinery_agent(
         &self,
         command: pc::Command,
-    ) -> Result<RuntimeAgentProcess, pc::SandboxError> {
+    ) -> Result<AgentProcess, pc::SandboxError> {
         let command = self.materialize_command(command).await?;
         let admitted = self.execs.admit_machinery(&self.container_id);
         let attempt = admitted.attempt().to_string();

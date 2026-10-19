@@ -2,7 +2,8 @@
 // @formal reason: Original result/response-loss adapter decisions; these mocks do not qualify physical closure.
 use super::super::ephemeral_plan;
 use super::*;
-use awaken_sandbox_container::{ContainerCreateAttempt, ContainerRealizationIntent};
+use awaken_provisioning_contract::SandboxCreateAttempt;
+use awaken_sandbox_container::ContainerRealizationIntent;
 use http::{Request, Response};
 use kube::client::Body;
 use serde_json::json;
@@ -39,7 +40,7 @@ async fn original_projected_create_results_never_borrow_a_later_get_uid() {
         let posts = Arc::new(AtomicUsize::new(0));
         let mut desired = build_configmap("subject", 0, Some("private-input"), None, &owner);
         let fingerprint = serde_json::from_value(json!("frozen-spec")).unwrap();
-        let attempt = ContainerCreateAttempt::new("attempt");
+        let attempt = SandboxCreateAttempt::new("attempt");
         let intent = ContainerRealizationIntent::Create;
         let context =
             ContainerRealizationContext::new("scope", &fingerprint, None, &intent, &attempt);
@@ -124,7 +125,7 @@ async fn direct_complete_original_projection_replays_without_new_creates() {
     );
     let plan = ephemeral_plan();
     let fingerprint = serde_json::from_value(json!("frozen-spec")).unwrap();
-    let attempt = ContainerCreateAttempt::new("attempt");
+    let attempt = SandboxCreateAttempt::new("attempt");
     let intent = ContainerRealizationIntent::Create;
     let context = ContainerRealizationContext::new("scope", &fingerprint, None, &intent, &attempt);
     let mut pod = Pod {
@@ -205,7 +206,7 @@ async fn direct_complete_original_projection_replays_without_new_creates() {
     let authority = pc::test_support::EffectAuthority::denied();
     let denied =
         ContainerRealizationContext::new("scope", &fingerprint, Some(&fence), &intent, &attempt)
-            .with_effect(awaken_container_contract::ContainerEffect::Fenced {
+            .with_effect(awaken_provisioning_contract::SandboxEffect::Fenced {
                 fence: &fence,
                 authority: &authority,
             });
@@ -235,14 +236,14 @@ pub(crate) struct ClosedProjectedRequests {
 impl super::super::K8sCreateTransport for ClosedProjectedRequests {
     async fn create(
         &self,
-        _request: super::super::K8sCreateRequest,
-    ) -> Result<super::super::K8sCreateResponse, RuntimeError> {
+        _request: awaken_container_contract::K8sCreateRequest,
+    ) -> Result<awaken_container_contract::K8sCreateResponse, RuntimeError> {
         panic!("terminal reconstruction must not issue Create")
     }
     async fn seal_predecessor(
         &self,
         _scope: &str,
-        _predecessor: &awaken_sandbox_container::ContainerEffectFence,
+        _predecessor: &awaken_provisioning_contract::SandboxEffectFence,
         _pod: &str,
     ) -> Result<super::super::RequestJoin, RuntimeError> {
         Ok(if self.complete.load(Ordering::SeqCst) {
@@ -304,7 +305,7 @@ async fn complete_original_inline_handoff_recovers_only_its_ticket_bound_set() {
             credential_file_path: None,
         },
     ];
-    let fence = awaken_sandbox_container::ContainerEffectFence::new(
+    let fence = awaken_provisioning_contract::SandboxEffectFence::new(
         "old-rich-effect",
         "old-worker",
         "old-boot",
@@ -314,11 +315,11 @@ async fn complete_original_inline_handoff_recovers_only_its_ticket_bound_set() {
     .unwrap();
     let authority = pc::test_support::EffectAuthority::new(&fence);
     let fingerprint = serde_json::from_value(json!("original-effective-spec")).unwrap();
-    let attempt = ContainerCreateAttempt::new("original-rich-attempt");
+    let attempt = SandboxCreateAttempt::new("original-rich-attempt");
     let intent = ContainerRealizationIntent::Create;
     let context =
         ContainerRealizationContext::new(scope, &fingerprint, Some(&fence), &intent, &attempt)
-            .with_effect(awaken_container_contract::ContainerEffect::Fenced {
+            .with_effect(awaken_provisioning_contract::SandboxEffect::Fenced {
                 fence: &fence,
                 authority: &authority,
             });
@@ -529,7 +530,7 @@ async fn complete_original_inline_handoff_recovers_only_its_ticket_bound_set() {
                 tickets.lock().unwrap().push(other);
             }
             "renewed-expiry" => {
-                requested_fence = awaken_sandbox_container::ContainerEffectFence::new(
+                requested_fence = awaken_provisioning_contract::SandboxEffectFence::new(
                     fence.operation_id(),
                     fence.owner(),
                     fence.runtime_incarnation(),

@@ -3,7 +3,11 @@
 //! backends (lexical / bubblewrap / container) implement these in their own
 //! crates and are selected by [`SandboxCapabilities`].
 
+mod adoption;
+mod capacity;
+mod checkpoint_access;
 mod checkpoint_upload;
+mod effect;
 mod error;
 mod fence;
 mod foundation;
@@ -12,8 +16,16 @@ mod repository_publication;
 mod restore_contract;
 mod restore_wire;
 mod runtime;
+mod session_sandbox;
 
+pub use adoption::{
+    SandboxAdoption, SandboxAdoptionLayout, SandboxCreateAttempt, SandboxObservationPurpose,
+    SandboxRealizationIntent,
+};
+pub use capacity::SandboxCapacity;
+pub use checkpoint_access::{SandboxCheckpointAccess, SandboxCheckpointMutation};
 pub use checkpoint_upload::SandboxCheckpointUpload;
+pub use effect::SandboxEffect;
 pub use fence::{
     RealizationHolder, SandboxEffectFence, SandboxEffectFenceWire, SandboxRealization,
 };
@@ -30,6 +42,7 @@ pub use restore_contract::{
 };
 pub use restore_wire::SandboxRestorationEvidence;
 pub use runtime::*;
+pub use session_sandbox::{AgentProcess, SandboxFile, SessionSandbox};
 
 #[cfg(test)]
 mod restore_wire_tests;
@@ -162,29 +175,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl SandboxProvider for FakeProvider {
-        async fn observe(
-            &self,
-            _handle: &crate::SandboxHandle,
-            _basis: crate::SandboxObservationBasis<'_>,
-        ) -> Result<crate::SandboxObservation, crate::SandboxError> {
-            Err(crate::SandboxError::unsupported(
-                "test double does not observe handles",
-            ))
-        }
-        async fn prepare_terminal_for_effect(
-            &self,
-            _spec: &crate::SandboxSpec,
-            _handle: Option<&crate::SandboxHandle>,
-            _expected_effect_fence: Option<&crate::SandboxEffectFence>,
-            _terminal_effect_fence: &crate::SandboxEffectFence,
-            _authority: &dyn crate::CurrentExecutionAuthority,
-        ) -> Result<Option<Box<dyn crate::Sandbox>>, crate::SandboxError> {
-            Err(crate::SandboxError::unsupported(
-                "test double does not prepare terminal cleanup",
-            ))
-        }
-
+    impl SandboxReadiness for FakeProvider {
         fn capabilities(&self) -> SandboxCapabilities {
             SandboxCapabilities {
                 process_tree_supervision: false,
@@ -202,29 +193,96 @@ mod tests {
             }
         }
 
+        fn checkpoint_formats(&self) -> Vec<String> {
+            Vec::new()
+        }
+
+        async fn probe_ready(&self) -> Result<(), SandboxError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl SandboxProvider for FakeProvider {
+        type Environment = FakeSandbox;
+
+        fn install_memory_mounter(&self, _mounter: Arc<dyn crate::MemoryMounter>) {}
+
+        fn install_secret_broker(&self, _broker: Arc<dyn crate::SecretBroker>) {}
+
+        async fn prewarm_images(&self, _specs: &[SandboxSpec]) -> Result<(), SandboxError> {
+            Ok(())
+        }
+
+        fn adoption_layout(
+            &self,
+            _handle: &SandboxHandle,
+        ) -> Result<crate::SandboxAdoptionLayout, SandboxError> {
+            Err(SandboxError::unsupported(
+                "test double does not reopen layouts",
+            ))
+        }
+
+        fn validate_closed_observation(
+            &self,
+            _handle: &SandboxHandle,
+            _observation: &crate::SandboxObservation,
+        ) -> Result<(), SandboxError> {
+            Err(SandboxError::unsupported(
+                "test double carries no closed evidence",
+            ))
+        }
+
         fn claim_for_effect<'a>(
             &'a self,
             spec: &'a SandboxSpec,
-            effect_fence: &'a crate::SandboxEffectFence,
-            authority: &'a dyn crate::CurrentExecutionAuthority,
-        ) -> crate::ClaimedEffect<'a, Box<dyn Sandbox>> {
+            effect: crate::SandboxEffect<'a>,
+            intent: crate::SandboxRealizationIntent,
+        ) -> crate::ClaimedEffect<'a, Arc<FakeSandbox>> {
             let claim = crate::EffectClaim::in_process(
                 crate::test_support::retain_abandoned_effect(spec.scope.clone()),
             );
             crate::ClaimedEffect::new(claim, async move {
-                crate::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
+                intent.admit_under(effect)?;
+                effect.admit()?;
                 self.create(spec).await
             })
         }
+
+        async fn observe(
+            &self,
+            _adoption: crate::SandboxAdoption<'_>,
+            _basis: crate::SandboxObservationBasis<'_>,
+        ) -> Result<crate::SandboxObservation, crate::SandboxError> {
+            Err(crate::SandboxError::unsupported(
+                "test double does not observe handles",
+            ))
+        }
+
         async fn adopt_for_effect(
             &self,
-            _spec: &SandboxSpec,
-            handle: &SandboxHandle,
-            effect_fence: &crate::SandboxEffectFence,
-            authority: &dyn crate::CurrentExecutionAuthority,
-        ) -> Result<Box<dyn Sandbox>, SandboxError> {
-            crate::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
-            self.adopt(handle).await
+            adoption: crate::SandboxAdoption<'_>,
+            effect: crate::SandboxEffect<'_>,
+        ) -> Result<Arc<FakeSandbox>, SandboxError> {
+            effect.admit()?;
+            self.adopt(adoption.handle).await
+        }
+
+        async fn prepare_terminal_for_effect(
+            &self,
+            _spec: &crate::SandboxSpec,
+            _handle: Option<&crate::SandboxHandle>,
+            _expected_effect_fence: Option<&crate::SandboxEffectFence>,
+            _terminal_effect_fence: &crate::SandboxEffectFence,
+            _authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<Option<Arc<FakeSandbox>>, crate::SandboxError> {
+            Err(crate::SandboxError::unsupported(
+                "test double does not prepare terminal cleanup",
+            ))
+        }
+
+        fn restoration(&self) -> crate::SandboxRestoration<'_, Arc<FakeSandbox>> {
+            crate::SandboxRestoration::Unsupported
         }
     }
 
@@ -232,38 +290,17 @@ mod tests {
         // Relocated from the Sandbox/SandboxProvider trait: the unfenced ports
         // are no longer a trait obligation or a reachable escape hatch. They stay
         // as this type's own implementation detail, used by its fenced edges.
-        async fn create(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
-            Ok(Box::new(FakeSandbox {
+        async fn create(&self, spec: &SandboxSpec) -> Result<Arc<FakeSandbox>, SandboxError> {
+            Ok(Arc::new(FakeSandbox {
                 id: spec.scope.clone(),
                 renews: self.renews.clone(),
             }))
         }
-        async fn adopt(&self, handle: &SandboxHandle) -> Result<Box<dyn Sandbox>, SandboxError> {
-            Ok(Box::new(FakeSandbox {
+        async fn adopt(&self, handle: &SandboxHandle) -> Result<Arc<FakeSandbox>, SandboxError> {
+            Ok(Arc::new(FakeSandbox {
                 id: handle.sandbox_id.clone(),
                 renews: self.renews.clone(),
             }))
-        }
-    }
-
-    fn spec() -> SandboxSpec {
-        SandboxSpec {
-            process_tree_supervision: false,
-            scope: "thread-1".into(),
-            isolation: IsolationClass::Workdir,
-            mounts: Vec::new(),
-            env: Vec::new(),
-            packages: Default::default(),
-            network: NetworkPolicy::Unrestricted,
-            outputs_path: "/mnt/session/outputs".into(),
-            requests: Default::default(),
-            limits: Default::default(),
-            filesystem_continuity: crate::FilesystemContinuity::Retained,
-            lease_ttl_secs: Some(60),
-            control_services: Default::default(),
-            environment: None,
-            command: Vec::new(),
-            deny_tool_egress: false,
         }
     }
 
@@ -299,7 +336,7 @@ mod tests {
         // R2 C1 -> Namespace+transparent+path-fidelity.
         // R3 C2..C8 -> every declared enforcement bit/set is required.
         // R4 R3 and one missing capability -> reject; full vector -> accept.
-        let bare = spec();
+        let bare = crate::test_support::spec("thread-1", Some(60));
         let r1 = SandboxRequirements::from_spec(&bare, false);
         assert_eq!(r1, SandboxRequirements::default(), "R1");
 
@@ -384,7 +421,7 @@ mod tests {
 
     #[test]
     fn satisfies_requires_meeting_or_exceeding_isolation() {
-        let mut s = spec();
+        let mut s = crate::test_support::spec("thread-1", Some(60));
         s.isolation = IsolationClass::Namespace;
         // exact and stronger classes satisfy
         assert!(caps(IsolationClass::Namespace, false).satisfies(&s));
@@ -395,7 +432,7 @@ mod tests {
 
     #[test]
     fn satisfies_requires_network_isolation_for_restricted_egress() {
-        let mut s = spec();
+        let mut s = crate::test_support::spec("thread-1", Some(60));
         s.network = NetworkPolicy::None;
         assert!(!caps(IsolationClass::Workdir, false).satisfies(&s));
         assert!(caps(IsolationClass::Workdir, true).satisfies(&s));
@@ -406,7 +443,7 @@ mod tests {
 
     #[test]
     fn satisfies_requires_resource_limit_enforcement_when_limits_are_set() {
-        let mut s = spec();
+        let mut s = crate::test_support::spec("thread-1", Some(60));
         s.limits.memory_bytes = Some(256 * 1024 * 1024);
         // A tier that can't cgroup fails closed; one that can passes.
         let mut weak = caps(IsolationClass::Workdir, false);
@@ -424,7 +461,7 @@ mod tests {
     fn satisfies_requires_network_isolation_for_an_allowlist_too() {
         // An Allowlist is restricted (rank 1), so it needs network isolation just like
         // `None` — the middle egress class the other satisfies tests skipped.
-        let mut s = spec();
+        let mut s = crate::test_support::spec("thread-1", Some(60));
         s.network = NetworkPolicy::Allowlist {
             hosts: vec!["api.anthropic.com".into()],
         };
@@ -434,7 +471,7 @@ mod tests {
 
     #[test]
     fn satisfies_rejects_isolation_without_enforced_allowlist() {
-        let mut s = spec();
+        let mut s = crate::test_support::spec("thread-1", Some(60));
         s.network = NetworkPolicy::Allowlist {
             hosts: vec!["api.anthropic.com".into()],
         };
@@ -451,32 +488,15 @@ mod tests {
         ready: bool,
     }
     #[async_trait]
-    impl SandboxProvider for ProbeProvider {
-        async fn observe(
-            &self,
-            _handle: &crate::SandboxHandle,
-            _basis: crate::SandboxObservationBasis<'_>,
-        ) -> Result<crate::SandboxObservation, crate::SandboxError> {
-            Err(crate::SandboxError::unsupported(
-                "test double does not observe handles",
-            ))
-        }
-        async fn prepare_terminal_for_effect(
-            &self,
-            _spec: &crate::SandboxSpec,
-            _handle: Option<&crate::SandboxHandle>,
-            _expected_effect_fence: Option<&crate::SandboxEffectFence>,
-            _terminal_effect_fence: &crate::SandboxEffectFence,
-            _authority: &dyn crate::CurrentExecutionAuthority,
-        ) -> Result<Option<Box<dyn crate::Sandbox>>, crate::SandboxError> {
-            Err(crate::SandboxError::unsupported(
-                "test double does not prepare terminal cleanup",
-            ))
-        }
-
+    impl SandboxReadiness for ProbeProvider {
         fn capabilities(&self) -> SandboxCapabilities {
             self.caps.clone()
         }
+
+        fn checkpoint_formats(&self) -> Vec<String> {
+            Vec::new()
+        }
+
         async fn probe_ready(&self) -> Result<(), SandboxError> {
             if self.ready {
                 Ok(())
@@ -484,56 +504,13 @@ mod tests {
                 Err(SandboxError::not_ready("backend not ready"))
             }
         }
-
-        fn claim_for_effect<'a>(
-            &'a self,
-            spec: &'a SandboxSpec,
-            effect_fence: &'a crate::SandboxEffectFence,
-            authority: &'a dyn crate::CurrentExecutionAuthority,
-        ) -> crate::ClaimedEffect<'a, Box<dyn Sandbox>> {
-            let claim = crate::EffectClaim::in_process(
-                crate::test_support::retain_abandoned_effect(spec.scope.clone()),
-            );
-            crate::ClaimedEffect::new(claim, async move {
-                crate::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
-                self.create(spec).await
-            })
-        }
-        async fn adopt_for_effect(
-            &self,
-            _spec: &SandboxSpec,
-            handle: &SandboxHandle,
-            effect_fence: &crate::SandboxEffectFence,
-            authority: &dyn crate::CurrentExecutionAuthority,
-        ) -> Result<Box<dyn Sandbox>, SandboxError> {
-            crate::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
-            self.adopt(handle).await
-        }
-    }
-
-    impl ProbeProvider {
-        // Relocated from the Sandbox/SandboxProvider trait: the unfenced ports
-        // are no longer a trait obligation or a reachable escape hatch. They stay
-        // as this type's own implementation detail, used by its fenced edges.
-        async fn create(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
-            Ok(Box::new(FakeSandbox {
-                id: spec.scope.clone(),
-                renews: Arc::new(AtomicU32::new(0)),
-            }))
-        }
-        async fn adopt(&self, handle: &SandboxHandle) -> Result<Box<dyn Sandbox>, SandboxError> {
-            Ok(Box::new(FakeSandbox {
-                id: handle.sandbox_id.clone(),
-                renews: Arc::new(AtomicU32::new(0)),
-            }))
-        }
     }
 
     #[tokio::test]
     async fn select_provider_picks_the_first_capable_and_ready_backend() {
-        let mut s = spec();
+        let mut s = crate::test_support::spec("thread-1", Some(60));
         s.isolation = IsolationClass::Namespace;
-        let candidates: Vec<Box<dyn SandboxProvider>> = vec![
+        let candidates: Vec<Box<dyn SandboxReadiness>> = vec![
             // capable but not ready → skipped
             Box::new(ProbeProvider {
                 caps: caps(IsolationClass::Container, true),
@@ -551,10 +528,10 @@ mod tests {
 
     #[tokio::test]
     async fn select_provider_fails_closed_rather_than_downgrading() {
-        let mut s = spec();
+        let mut s = crate::test_support::spec("thread-1", Some(60));
         s.isolation = IsolationClass::Container;
         // Only an under-isolating and a not-ready backend are offered.
-        let candidates: Vec<Box<dyn SandboxProvider>> = vec![
+        let candidates: Vec<Box<dyn SandboxReadiness>> = vec![
             Box::new(ProbeProvider {
                 caps: caps(IsolationClass::Namespace, true),
                 ready: true,
@@ -571,8 +548,12 @@ mod tests {
     #[tokio::test]
     async fn select_provider_with_no_candidates_fails_closed() {
         // Boundary: an empty candidate list never downgrades to an unisolated run.
-        let candidates: Vec<Box<dyn SandboxProvider>> = Vec::new();
-        let result = select_provider(&candidates, &spec()).await;
+        let candidates: Vec<Box<dyn SandboxReadiness>> = Vec::new();
+        let result = select_provider(
+            &candidates,
+            &crate::test_support::spec("thread-1", Some(60)),
+        )
+        .await;
         assert!(matches!(result, Err(SelectionError::NoCapableBackend)));
     }
 
@@ -596,7 +577,7 @@ mod tests {
     async fn policy_places_at_the_floor_and_prefers_the_preferred_tier() {
         // require=Namespace floor is met by both Namespace and Container; prefer=Namespace
         // picks the exact preferred tier (not the strongest), and it is not degraded.
-        let candidates: Vec<Box<dyn SandboxProvider>> = vec![
+        let candidates: Vec<Box<dyn SandboxReadiness>> = vec![
             Box::new(ProbeProvider {
                 caps: caps(IsolationClass::Container, true),
                 ready: true,
@@ -608,7 +589,7 @@ mod tests {
         ];
         let sel = select_provider_with_policy(
             &candidates,
-            &spec(),
+            &crate::test_support::spec("thread-1", Some(60)),
             &policy(
                 IsolationClass::Namespace,
                 IsolationClass::Namespace,
@@ -630,13 +611,13 @@ mod tests {
     #[tokio::test]
     async fn policy_fail_closed_refuses_when_the_floor_is_unmet() {
         // require=Container, only Namespace available, FailClosed → never downgrade.
-        let candidates: Vec<Box<dyn SandboxProvider>> = vec![Box::new(ProbeProvider {
+        let candidates: Vec<Box<dyn SandboxReadiness>> = vec![Box::new(ProbeProvider {
             caps: caps(IsolationClass::Namespace, true),
             ready: true,
         })];
         let result = select_provider_with_policy(
             &candidates,
-            &spec(),
+            &crate::test_support::spec("thread-1", Some(60)),
             &policy(
                 IsolationClass::Container,
                 IsolationClass::Container,
@@ -652,7 +633,7 @@ mod tests {
         // require=Container, only Namespace + Workdir available, DegradeWithConsent →
         // the STRONGEST below-floor tier (Namespace) is placed, and degraded_to reports
         // it so the caller emits the audit/metric/marker.
-        let candidates: Vec<Box<dyn SandboxProvider>> = vec![
+        let candidates: Vec<Box<dyn SandboxReadiness>> = vec![
             Box::new(ProbeProvider {
                 caps: caps(IsolationClass::Workdir, true),
                 ready: true,
@@ -664,7 +645,7 @@ mod tests {
         ];
         let sel = select_provider_with_policy(
             &candidates,
-            &spec(),
+            &crate::test_support::spec("thread-1", Some(60)),
             &policy(
                 IsolationClass::Container,
                 IsolationClass::Container,
@@ -687,10 +668,10 @@ mod tests {
     #[tokio::test]
     async fn policy_degrade_with_consent_still_fails_closed_with_no_backend_at_all() {
         // Even DegradeWithConsent cannot place a run with zero ready backends.
-        let candidates: Vec<Box<dyn SandboxProvider>> = Vec::new();
+        let candidates: Vec<Box<dyn SandboxReadiness>> = Vec::new();
         let result = select_provider_with_policy(
             &candidates,
-            &spec(),
+            &crate::test_support::spec("thread-1", Some(60)),
             &policy(
                 IsolationClass::Container,
                 IsolationClass::Container,
@@ -705,9 +686,9 @@ mod tests {
     async fn policy_excludes_a_backend_that_cannot_enforce_the_specs_limits() {
         // A spec asking for cgroup limits must not be placed on a tier that cannot
         // enforce them — even under a strong isolation class, `non_isolation_ok` bars it.
-        let mut s = spec();
+        let mut s = crate::test_support::spec("thread-1", Some(60));
         s.limits.memory_bytes = Some(512 * 1024 * 1024);
-        let candidates: Vec<Box<dyn SandboxProvider>> = vec![Box::new(ProbeProvider {
+        let candidates: Vec<Box<dyn SandboxReadiness>> = vec![Box::new(ProbeProvider {
             caps: SandboxCapabilities {
                 resource_limits: false, // strong isolation but cannot enforce limits
                 ..caps(IsolationClass::Container, true)
@@ -740,9 +721,9 @@ mod tests {
             for ready in [false, true] {
                 for floor in [IsolationClass::Workdir, IsolationClass::Container] {
                     for consent in [false, true] {
-                        let mut spec = spec();
+                        let mut spec = crate::test_support::spec("thread-1", Some(60));
                         spec.process_tree_supervision = true;
-                        let candidates: Vec<Box<dyn SandboxProvider>> =
+                        let candidates: Vec<Box<dyn SandboxReadiness>> =
                             vec![Box::new(ProbeProvider {
                                 caps: SandboxCapabilities {
                                     process_tree_supervision: supervised,
@@ -778,9 +759,9 @@ mod tests {
     async fn policy_excludes_a_backend_that_cannot_meet_the_specs_network() {
         // A restricted-egress spec needs network isolation; a non-isolating backend is
         // excluded from the floor set even if its isolation class qualifies.
-        let mut s = spec();
+        let mut s = crate::test_support::spec("thread-1", Some(60));
         s.network = NetworkPolicy::None;
-        let candidates: Vec<Box<dyn SandboxProvider>> = vec![Box::new(ProbeProvider {
+        let candidates: Vec<Box<dyn SandboxReadiness>> = vec![Box::new(ProbeProvider {
             caps: caps(IsolationClass::Container, false), // no network isolation
             ready: true,
         })];
@@ -882,9 +863,12 @@ mod tests {
     #[tokio::test]
     async fn create_persist_adopt_poll_lease_lifecycle() {
         let renews = Arc::new(AtomicU32::new(0));
-        let provider: Box<dyn SandboxProvider> = Box::new(FakeProvider {
-            renews: renews.clone(),
-        });
+        // Object safety: the one provider port is usable behind `dyn` with
+        // its live Sandbox type named.
+        let provider: Box<dyn SandboxProvider<Environment = FakeSandbox>> =
+            Box::new(FakeProvider {
+                renews: renews.clone(),
+            });
 
         // Create through the fenced edge: it is the provider's only creation
         // obligation now, so the fixture exercises the same port a durable
@@ -893,7 +877,14 @@ mod tests {
             .expect("fixture effect fence");
         let authority = crate::test_support::EffectAuthority::new(&fence);
         let sandbox = provider
-            .claim_for_effect(&spec(), &fence, &authority)
+            .claim_for_effect(
+                &crate::test_support::spec("thread-1", Some(60)),
+                crate::SandboxEffect::Fenced {
+                    fence: &fence,
+                    authority: &authority,
+                },
+                crate::SandboxRealizationIntent::Create,
+            )
             .await
             .unwrap();
         let handle = sandbox.handle();
@@ -903,7 +894,16 @@ mod tests {
         // Recovery: reconnect from the persisted handle alone.
         let recovered: SandboxHandle = serde_json::from_str(&wire).unwrap();
         let sandbox = provider
-            .adopt_for_effect(&spec(), &recovered, &fence, &authority)
+            .adopt_for_effect(
+                crate::SandboxAdoption::new(
+                    &crate::test_support::spec("thread-1", Some(60)),
+                    &recovered,
+                ),
+                crate::SandboxEffect::Fenced {
+                    fence: &fence,
+                    authority: &authority,
+                },
+            )
             .await
             .unwrap();
         assert_eq!(sandbox.id(), "thread-1");
@@ -967,8 +967,9 @@ mod tests {
         assert_eq!(proc.wait().await.unwrap().code, Some(0));
         proc.signal(Signal::Term).await.unwrap();
 
-        // The Workdir fake provider (used by `default_probe_ready_is_ok`) and the
-        // toggleable ProbeProvider both realize the same ports.
+        // The Workdir fake provider (used by `default_probe_ready_is_ok`)
+        // realizes the provider port; the toggleable ProbeProvider states only
+        // the readiness facts selection reads.
         let fp = FakeProvider {
             renews: Arc::new(AtomicU32::new(0)),
         };
@@ -978,11 +979,8 @@ mod tests {
             caps: caps(IsolationClass::Container, true),
             ready: true,
         };
-        assert!(pp.create(&spec()).await.is_ok());
-        assert_eq!(
-            pp.adopt(&SandboxHandle::new("k", "id")).await.unwrap().id(),
-            "id"
-        );
+        assert!(pp.probe_ready().await.is_ok());
+        assert_eq!(pp.capabilities().isolation, IsolationClass::Container);
     }
 
     #[test]
@@ -1144,7 +1142,7 @@ mod tests {
         // or relative runtime directories -> reject before overlap comparison.
         // All rules are pure and run before prewarm/provider/Git effects.
         let repository = ["/workspace/repo"];
-        let mut layout = spec();
+        let mut layout = crate::test_support::spec("thread-1", Some(60));
         validate_repository_sandbox_layout(&repository, &layout).expect("R1");
 
         layout.mounts.push(MountRequirement {
@@ -1299,7 +1297,9 @@ mod tests {
             outputs_path: "/outputs".into(),
             physical_incarnation: "incarnation".into(),
         };
-        let realization_fingerprint = SandboxRealizationFingerprint::from_spec(&spec());
+        let realization_fingerprint = SandboxRealizationFingerprint::from_spec(
+            &crate::test_support::spec("thread-1", Some(60)),
+        );
         let fence =
             SandboxEffectFence::new("handle-round-trip", "test-owner", "runtime-1", 1, u64::MAX)
                 .unwrap();
@@ -1428,7 +1428,10 @@ mod tests {
                     .collect::<Vec<_>>(),
             )
         };
-        let fingerprint = SandboxRealizationFingerprint::from_spec(&spec());
+        let fingerprint = SandboxRealizationFingerprint::from_spec(&crate::test_support::spec(
+            "thread-1",
+            Some(60),
+        ));
         let fence =
             SandboxEffectFence::new("reservation", "test-owner", "runtime-1", 1, u64::MAX).unwrap();
         let current = v2("sandbox", &fingerprint, &fence, &["/workspace/a"]);
@@ -1495,7 +1498,7 @@ mod tests {
         assert!(!legacy.owned_paths_are_monotonic_to(&legacy), "R2 V1->V1");
         assert!(!legacy.owned_paths_are_monotonic_to(&superset), "R2 V1->V2");
 
-        let mut different_spec = spec();
+        let mut different_spec = crate::test_support::spec("thread-1", Some(60));
         different_spec.scope = "different".into();
         let different_spec = v2(
             "sandbox",
@@ -1547,7 +1550,7 @@ mod tests {
         // current Repo => reject; A4 a replacement Repo is nested under the
         // historically realized Repo tree => reject. A3/A4 model crash windows
         // where logical and physical layouts have not advanced atomically.
-        let mut current = spec();
+        let mut current = crate::test_support::spec("thread-1", Some(60));
         current.mounts.push(MountRequirement {
             mount_id: "current-extra".into(),
             source: crate::vocab::MountSource::InlineBytes {

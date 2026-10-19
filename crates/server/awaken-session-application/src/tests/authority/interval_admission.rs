@@ -199,6 +199,7 @@ async fn named_activity_cas_replay_retains_original_raw_identity_before_first_cr
         .transition_execution_at(SessionExecutionState::Terminated, 1000)
         .unwrap();
     let terminal = app
+        .mutations
         .commit_session_snapshot_with_outcome(
             "workspace",
             terminal,

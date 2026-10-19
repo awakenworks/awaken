@@ -25,9 +25,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_memory_store::{MemoryWriter, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::SandboxProvider;
+use awaken_provisioning_contract::{SandboxAdoption, SessionSandbox};
 use awaken_runtime_contract::llm::ToolCall;
+
 use awaken_sandbox_container::{
-    ContainerEnvironment, ContainerEnvironmentAdoption, ContainerEnvironmentProvider,
     ContainerHandleCodec as _, ContainerProvider, ContainerRuntime, ContainerSandbox,
     ResidentHandConfig, SandboxControlService, SandboxControlServiceKind,
     SandboxControlServicePublisher, command_of,
@@ -228,12 +230,14 @@ async fn projected_official_hand_reaps_adopted_exec_descendants() {
     let mut sandbox_spec = managed_input_spec(&scope, "/mnt/session/inputs/reaper-proof", "ready");
     sandbox_spec.environment = Some(container_environment(image));
     let create_fence = effect_fence(&scope, "create", "reaper-owner", 1);
-    let sandbox = ContainerEnvironmentProvider::create_environment_for_effect(
+    let sandbox = SandboxProvider::claim_for_effect(
         &provider,
         &sandbox_spec,
-        &create_fence,
-        &EffectAuthority::new(&create_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create_fence,
+            authority: &EffectAuthority::new(&create_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .expect("create the projected Hand Pod");
@@ -337,7 +341,7 @@ fn grep_binary_argv() -> Vec<String> {
 }
 
 async fn exchange(
-    sandbox: &dyn ContainerEnvironment,
+    sandbox: &dyn SessionSandbox,
     argv: Vec<String>,
 ) -> Result<String, pc::SandboxError> {
     let process = sandbox
@@ -671,10 +675,14 @@ async fn k8s_warm_capacity_reaches_ready_hands_out_and_drains_without_killing_se
 
     assert_eq!(pool.prewarm(&session_spec, 1).await.unwrap(), 1, "E1");
     assert_eq!(pool.ready_len(&session_spec), 1);
-    let environment =
-        ContainerEnvironmentProvider::create_unattached_environment(&pool, &session_spec)
-            .await
-            .expect("E2 bind one Ready warm Pod to the Session");
+    let environment = SandboxProvider::claim_for_effect(
+        &pool,
+        &session_spec,
+        awaken_provisioning_contract::SandboxEffect::Unattached,
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
+    )
+    .await
+    .expect("E2 bind one Ready warm Pod to the Session");
     assert_eq!(pool.ready_len(&session_spec), 0, "E2 consumed capacity");
     assert_eq!(
         environment.status().await.unwrap(),
@@ -1084,12 +1092,14 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
     let first_spec = managed_input_spec(&scope, path_a, "generation-a");
     let next_spec = managed_input_spec(&scope, path_b, "generation-b");
     let create_fence = effect_fence(&scope, "create", "manifest-owner", 1);
-    let first = ContainerEnvironmentProvider::create_environment_for_effect(
+    let first = SandboxProvider::claim_for_effect(
         &provider,
         &first_spec,
-        &create_fence,
-        &EffectAuthority::new(&create_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create_fence,
+            authority: &EffectAuthority::new(&create_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .expect("create the initial Session Pod and project A");
@@ -1100,11 +1110,13 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
     assert_eq!(String::from_utf8_lossy(&read_a.stdout), "generation-a");
 
     drop(first);
-    let recovered = ContainerEnvironmentProvider::adopt_environment_for_effect(
+    let recovered = SandboxProvider::adopt_for_effect(
         &provider,
-        ContainerEnvironmentAdoption::new(&first_spec, &handle),
-        &create_fence,
-        &EffectAuthority::new(&create_fence),
+        SandboxAdoption::new(&first_spec, &handle),
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create_fence,
+            authority: &EffectAuthority::new(&create_fence),
+        },
     )
     .await
     .expect("recover the stable Pod from its frozen spec and exact V2 handle");
@@ -1298,12 +1310,14 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
         ),
     ];
     let create_fence = effect_fence(&scope, "create", "memory-owner", 1);
-    let sandbox = ContainerEnvironmentProvider::create_environment_for_effect(
+    let sandbox = SandboxProvider::claim_for_effect(
         &provider,
         &memory_spec,
-        &create_fence,
-        &EffectAuthority::new(&create_fence),
-        awaken_container_contract::EnvironmentRealizationIntent::Create,
+        awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &create_fence,
+            authority: &EffectAuthority::new(&create_fence),
+        },
+        awaken_provisioning_contract::SandboxRealizationIntent::Create,
     )
     .await
     .expect("create fenced Pod with two MemoryStore volumes");
@@ -1757,10 +1771,10 @@ async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() 
             ResidentHandConfig::new("/usr/local/bin/awaken-sandbox", 7777).unwrap(),
         );
     let adopted = provider_b
-        .adopt_unattached_environment(awaken_sandbox_container::ContainerEnvironmentAdoption::new(
-            &sandbox_spec,
-            &handle,
-        ))
+        .adopt_for_effect(
+            awaken_provisioning_contract::SandboxAdoption::new(&sandbox_spec, &handle),
+            awaken_provisioning_contract::SandboxEffect::Unattached,
+        )
         .await
         .expect("Worker B adopts the same Pod");
     assert_eq!(adopted.handle(), handle, "H2/E4");

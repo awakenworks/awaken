@@ -1,6 +1,6 @@
 // @formal evidence session_time.root_observations_are_revision_bound_and_replay_stable
 //! Direct execution of the existing asynchronous replacement boundary.
-use crate::mutation::commit_observed_snapshot;
+use crate::SessionMutations;
 use awaken_session_repository_contract::SessionRepository;
 use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionCreateResult,
@@ -99,6 +99,8 @@ impl SessionRepository for ObservedCommitPort {
 
 #[test]
 fn observed_commit_future_cause_effect_decision_table() {
+    // Relocation coverage: execute the same canonical future through its sole
+    // SessionMutations owner; no facade forwarding or alternate CAS is retained.
     // Causes: C1 old observation absent/zero/nonzero/MAX; C2 current clock
     // lower/equal/higher; C3 zero/one lifecycle fact; C4 immediate/delayed port;
     // C5 each of four receipts or seven typed repository errors. Effects:
@@ -194,7 +196,7 @@ fn check_observed_commit(old: Option<u64>, now: u64, has_fact: bool, pending_onc
     let mut session = awaken_session_state_contract::SessionAggregate::try_from(session)
         .expect("valid observed candidate");
     {
-        let mut future = std::pin::pin!(commit_observed_snapshot(
+        let mut future = std::pin::pin!(SessionMutations::commit_observed_snapshot(
             &port,
             "workspace",
             &mut session,
@@ -318,6 +320,7 @@ async fn update_replay_keeps_the_original_atomic_receipt_after_a_later_root_writ
                 let before_authoring = later.clone();
                 later.metadata.insert("later".into(), "preserved".into());
                 let advanced = app
+                    .mutations
                     .commit_session_snapshot_with_outcome(
                         "workspace",
                         // U2 owns a real legal metadata CAS; pure fake-port

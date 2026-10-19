@@ -9,7 +9,13 @@ import _crate_boundary_workspace
 
 
 RETIRED_EXECUTION_PATHS = {
-    "AgentContainerProvider": "ContainerEnvironmentProvider is the only Container Environment owner",
+    # Provider convergence R1: SandboxProvider only -> accepted by this scan;
+    # R2: resurrecting the retired container projection anywhere -> refused;
+    # R3: recreating the same effect carrier at the Session adapter -> refused.
+    # The existing whole-source token matcher owns both rows (catalog change).
+    "ContainerEnvironmentProvider": "reuse the sole provisioning-contract SandboxProvider",
+    "ProviderEffect": "reuse the sole provisioning-contract SandboxEffect",
+    "AgentContainerProvider": "SandboxProvider is the only Sandbox provider abstraction",
     "AgentContainerSession": "ContainerEnvironment plus RuntimeAgentProcess is the sole Session execution shape",
     "EnvironmentOwnedProcess": "process termination cannot authorize Environment disposal",
     "open_agent": "create_environment plus spawn_agent_process is the sole Container launch path",

@@ -173,7 +173,7 @@ impl crate::environment_holding::EnvironmentHolding {
             }
         };
         let effect =
-            crate::session_environment::ProviderEffect::from_parts(effect_fence, current_fence)
+            awaken_provisioning_contract::SandboxEffect::from_parts(effect_fence, current_fence)
                 .map_err(RealizationError::from)?;
         effect.admit().map_err(RealizationError::from)?;
         self.providers

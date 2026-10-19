@@ -17,7 +17,7 @@ use crate::vocab::{
     ResourceLimits, ResourceRequests,
 };
 
-/// A validated, normalized plan ready to hand to [`crate::SandboxProvider::create`].
+/// A validated, normalized plan ready to hand to [`crate::SandboxProvider::claim_for_effect`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnvironmentPlan {
     pub scope: String,
@@ -270,42 +270,30 @@ mod tests {
     }
 
     fn spec() -> SandboxSpec {
-        SandboxSpec {
-            process_tree_supervision: false,
-            scope: "thread-1".into(),
-            isolation: IsolationClass::Namespace,
-            mounts: vec![MountRequirement {
-                mount_id: "in".into(),
-                source: MountSource::File {
-                    file_id: "file_x".into(),
-                    content_hash: None,
-                },
-                mount_path: "/workspace/data.csv".into(),
-                access: MountAccess::ReadOnly,
-                lifetime: MountLifetime::PerRun,
-                required: true,
-            }],
-            env: vec![EnvVar {
-                name: "TZ".into(),
-                value: EnvValue::Inline {
-                    value: "UTC".into(),
-                },
-                visibility: EnvVisibility::Process,
-            }],
-            packages: Default::default(),
-            network: NetworkPolicy::Allowlist {
-                hosts: vec!["api.anthropic.com".into()],
+        let mut spec = crate::test_support::spec("thread-1", None);
+        spec.isolation = IsolationClass::Namespace;
+        spec.mounts = vec![MountRequirement {
+            mount_id: "in".into(),
+            source: MountSource::File {
+                file_id: "file_x".into(),
+                content_hash: None,
             },
-            outputs_path: "/mnt/session/outputs".into(),
-            requests: Default::default(),
-            limits: Default::default(),
-            filesystem_continuity: crate::FilesystemContinuity::Retained,
-            lease_ttl_secs: None,
-            control_services: Default::default(),
-            environment: None,
-            command: Vec::new(),
-            deny_tool_egress: false,
-        }
+            mount_path: "/workspace/data.csv".into(),
+            access: MountAccess::ReadOnly,
+            lifetime: MountLifetime::PerRun,
+            required: true,
+        }];
+        spec.env = vec![EnvVar {
+            name: "TZ".into(),
+            value: EnvValue::Inline {
+                value: "UTC".into(),
+            },
+            visibility: EnvVisibility::Process,
+        }];
+        spec.network = NetworkPolicy::Allowlist {
+            hosts: vec!["api.anthropic.com".into()],
+        };
+        spec
     }
 
     #[test]

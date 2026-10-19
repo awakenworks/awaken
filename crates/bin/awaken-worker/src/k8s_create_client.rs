@@ -4,13 +4,15 @@
 // @formal reason: ticket, Session state, Dispatch attempt or cleanup receipt.
 //! Worker-side Kubernetes Create over the already authenticated control plane.
 
+use awaken_container_contract::{K8sCreateRequest, K8sCreateResponse};
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use awaken_sandbox_container::{ContainerEffectFence, RuntimeError};
+use awaken_provisioning_contract::SandboxEffectFence;
+use awaken_sandbox_container::RuntimeError;
 use awaken_sandbox_kubernetes::{
-    CreateReplyProfile, K8S_CREATE_CAPTURE_HEADER, K8S_CREATE_WIRE_VERSION, K8sCreateRequest,
-    K8sCreateResponse, K8sCreateTransport, RequestJoin,
+    CreateReplyProfile, K8S_CREATE_CAPTURE_HEADER, K8S_CREATE_WIRE_VERSION, K8sCreateTransport,
+    RequestJoin,
 };
 use awaken_worker_contract::WorkerIdentity;
 use awaken_worker_transport_security::WorkerUpstream;
@@ -179,7 +181,7 @@ struct SealWire<'a> {
     wire_version: u8,
     identity: &'a WorkerIdentity,
     scope: &'a str,
-    predecessor: &'a ContainerEffectFence,
+    predecessor: &'a SandboxEffectFence,
     expected_pod_name: &'a str,
 }
 
@@ -200,7 +202,7 @@ impl K8sCreateTransport for WorkerK8sCreateClient {
     async fn seal_predecessor(
         &self,
         scope: &str,
-        predecessor: &ContainerEffectFence,
+        predecessor: &SandboxEffectFence,
         expected_pod_name: &str,
     ) -> Result<RequestJoin, RuntimeError> {
         self.post(
@@ -347,7 +349,7 @@ mod tests {
         assert_eq!(response.status, 201, "E3");
         assert_eq!(response.object["metadata"]["uid"], "pod-uid", "E3");
         let predecessor =
-            ContainerEffectFence::new("old-effect", "old-worker", "old-boot", 1, u64::MAX).unwrap();
+            SandboxEffectFence::new("old-effect", "old-worker", "old-boot", 1, u64::MAX).unwrap();
         assert_eq!(
             client
                 .seal_predecessor("scope", &predecessor, "awaken-realization-scope")

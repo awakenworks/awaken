@@ -15,9 +15,9 @@ use crate::package_realization::{
     PACKAGE_REALIZATION_CONTRACT_ANNOTATION, RESOLVED_IMAGE_ANNOTATION, SANDBOX_SCOPE_ANNOTATION,
 };
 use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::{SandboxCreateAttempt, SandboxEffectFence};
 use awaken_sandbox_container::{
-    ContainerCreateAttempt, ContainerEffectFence, ContainerPlan, ContainerRealizationContext,
-    ContainerRealizationIntent, RuntimeError,
+    ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent, RuntimeError,
 };
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::PostParams;
@@ -114,15 +114,15 @@ pub(super) fn verify_interrupted_pod_projection(
     runtime: &K8sRuntime,
     scope: &str,
     plan: &ContainerPlan,
-    predecessor: &ContainerEffectFence,
+    predecessor: &SandboxEffectFence,
     claim_uid: Option<&str>,
     observed: &Pod,
 ) -> Result<
     (
-        ContainerEffectFence,
+        SandboxEffectFence,
         pc::SandboxRealizationFingerprint,
         pc::SandboxRealizationFingerprint,
-        ContainerCreateAttempt,
+        SandboxCreateAttempt,
     ),
     RuntimeError,
 > {
@@ -144,7 +144,7 @@ pub(super) fn verify_interrupted_pod_projection(
         serde_json::Value::String(stamped(SANDBOX_REALIZATION_ANNOTATION)?.clone()),
     )
     .map_err(backend)?;
-    let attempt = ContainerCreateAttempt::new(stamped(SANDBOX_ATTEMPT_ANNOTATION)?.clone());
+    let attempt = SandboxCreateAttempt::new(stamped(SANDBOX_ATTEMPT_ANNOTATION)?.clone());
     let intent = ContainerRealizationIntent::Create;
     let context = ContainerRealizationContext::new(
         scope,
@@ -216,7 +216,12 @@ pub(super) async fn converge(
                 context.attempt.as_str(),
                 &admit,
             )
-            .await?;
+            .await
+            // This original attempt has already materialized the Pod and its
+            // participants. A stale re-read, missing CAS evidence, or refused
+            // DELETE cannot discharge them as a capacity rejection. Reuse the
+            // caller's existing post-mutation retention class.
+            .map_err(RuntimeError::after_mutation)?;
             return Err(error);
         }
         result => result?,
@@ -266,19 +271,33 @@ pub(super) async fn dispose_unscheduled_pod(
         Err(error) if api_not_found(&error) => return Ok(()),
         observed => observed.map_err(backend)?,
     };
-    let Some(version) = pod
+    if pod.metadata.uid.as_deref() != Some(uid) {
+        return Ok(());
+    }
+    let version = pod
         .metadata
         .resource_version
-        .clone()
-        .filter(|_| pod.metadata.uid.as_deref() == Some(uid))
-    else {
-        return Ok(());
-    };
+        .as_deref()
+        .filter(|version| !version.trim().is_empty())
+        .ok_or_else(|| backend("unscheduled Pod has no valid resourceVersion"))?;
+    // The earlier capacity verdict is not the state of this new GET. Reuse
+    // the waiter's canonical Pending + explicit scheduler-refusal projection;
+    // a Running-but-unready Pod is not an unscheduled creation to dispose.
+    if realization::pod_unschedulable(&pod).is_none() {
+        return Err(RuntimeError::Conflict(format!(
+            "Pod `{name}` is no longer Pending and Unschedulable before capacity disposal"
+        )));
+    }
     let projected = participants::retained(&pod)?
         .ok_or_else(|| backend("unscheduled Pod has no original projected-object set"))?;
-    participants::finish_projected(runtime, &projected, name, true, admit).await?;
-    super::lifecycle::begin_exact_pod_delete(runtime, &pod, uid, &version, Some(attempt), admit)
+    participants::validate_bound(runtime, Some(&projected), Some(uid), Some(&pod), true)?;
+    // Seal this observed Pending incarnation before touching its members. A
+    // concurrent scheduler/status update changes RV: the Pod CAS must refuse
+    // before any original ConfigMap/Secret can be deleted. Keep the original
+    // guard until every accepted member DELETE has proved exact-UID absence.
+    super::lifecycle::begin_exact_pod_delete(runtime, &pod, uid, version, Some(attempt), admit)
         .await?;
+    participants::finish_projected(runtime, &projected, name, true, admit).await?;
     if create_ledger::original_guard_release_required(Some(&pod), true)? {
         create_ledger::release_original_guard(&runtime.pods(), name, uid, admit).await?;
     }
@@ -461,7 +480,7 @@ mod tests {
             let plan = super::super::ephemeral_plan();
             let fingerprint = serde_json::from_value(serde_json::json!("frozen-spec")).unwrap();
             let fence =
-                ContainerEffectFence::new("create-effect", "worker", "worker-boot", 1, u64::MAX)
+                SandboxEffectFence::new("create-effect", "worker", "worker-boot", 1, u64::MAX)
                     .unwrap();
             let attempt = awaken_sandbox_container::engine::fresh_create_attempt();
             let intent = ContainerRealizationIntent::Create;

@@ -6,10 +6,11 @@
 use crate::ContainerHandleCodec as _;
 use crate::runtime::container_realization_fingerprint;
 use crate::{
-    ContainerCleanupState, ContainerEnvironmentAdoption, ContainerObservationPurpose,
-    ContainerProvider, ContainerRuntime, ContainerSandbox, MissingHandleTerminalEvidence,
+    ContainerCleanupState, ContainerProvider, ContainerRuntime, ContainerSandbox,
+    MissingHandleTerminalEvidence,
 };
 use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::{SandboxAdoption, SandboxObservationPurpose};
 
 pub(crate) type ContainerHandleV1 = crate::ContainerSandboxHandleV1;
 
@@ -239,7 +240,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     handle,
                     Some(spec),
                     ContainerCleanupState::physical_cleanup_only(),
-                    ContainerObservationPurpose::TerminalCleanup,
+                    SandboxObservationPurpose::TerminalCleanup,
                     &admit,
                 )
                 .await
@@ -264,12 +265,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // the optional prior fence carries no reconstructible participant when
         // a durable handle is present. Root authorization remains the sole
         // policy owner; the runtime re-observes with the terminal fence below.
-        let adoption = ContainerEnvironmentAdoption::new(spec, handle);
+        let adoption = SandboxAdoption::new(spec, handle);
         let observed = self
             .observe_container_adoption(
                 adoption,
                 Some(terminal_effect_fence),
-                ContainerObservationPurpose::TerminalCleanup,
+                SandboxObservationPurpose::TerminalCleanup,
             )
             .await?;
         // Observation is not a grant for staging/control reconstruction.
@@ -290,7 +291,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .adopt_observed_container_with_spec(
                     adoption.handle,
                     adoption.spec,
-                    ContainerObservationPurpose::Recovery,
+                    SandboxObservationPurpose::Recovery,
                     &admit,
                 )
                 .await
@@ -299,7 +300,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .adopt_observed_container_with_spec(
                     adoption.handle,
                     adoption.spec,
-                    ContainerObservationPurpose::TerminalCleanup,
+                    SandboxObservationPurpose::TerminalCleanup,
                     &admit,
                 )
                 .await
@@ -309,7 +310,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     adoption.handle,
                     None,
                     ContainerCleanupState::physical_cleanup_only(),
-                    ContainerObservationPurpose::TerminalCleanup,
+                    SandboxObservationPurpose::TerminalCleanup,
                     &admit,
                 )
                 .await
@@ -318,7 +319,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .adopt_observed_container_with_spec(
                     adoption.handle,
                     adoption.spec,
-                    ContainerObservationPurpose::TerminalCleanup,
+                    SandboxObservationPurpose::TerminalCleanup,
                     &admit,
                 )
                 .await

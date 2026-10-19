@@ -129,6 +129,7 @@ async fn anchor_unsettled_event(
             .expect("anchor exact accepted effect")
     );
     let _fixture = app
+        .mutations
         .commit_session_snapshot_with_outcome(
             "workspace",
             awaken_session_state_contract::SessionAggregate::try_from(session)
@@ -1447,6 +1448,7 @@ async fn root_mutation_cause_effect_decision_table() {
     };
 
     let commit = app
+        .mutations
         .commit_session_snapshot_with_record(
             "workspace",
             // M1 is a genuine authoring CAS; prepare its one State fact.
@@ -1462,6 +1464,7 @@ async fn root_mutation_cause_effect_decision_table() {
     assert!(applied.revision > original.revision, "M1");
 
     let commit = app
+        .mutations
         .commit_session_snapshot_with_record(
             "workspace",
             awaken_session_state_contract::SessionAggregate::try_from(candidate.clone())
@@ -1479,6 +1482,7 @@ async fn root_mutation_cause_effect_decision_table() {
     later.metadata.insert("later".into(), "authority".into());
     later.updated_at_unix_ms = Some(u64::MAX);
     let later = app
+        .mutations
         .commit_session_snapshot_with_outcome(
             "workspace",
             // M5 advances legal current truth before testing receipt priority.
@@ -1500,6 +1504,7 @@ async fn root_mutation_cause_effect_decision_table() {
         runtime_interval: None,
     };
     let commit = app
+        .mutations
         .commit_session_snapshot_with_record(
             "workspace",
             awaken_session_state_contract::SessionAggregate::try_from(candidate.clone())
@@ -1534,6 +1539,7 @@ async fn root_mutation_cause_effect_decision_table() {
     faulting.get_not_found_once.store(true, Ordering::SeqCst);
     assert_eq!(
         replay_app
+            .mutations
             .commit_session_snapshot_with_record(
                 "workspace",
                 awaken_session_state_contract::SessionAggregate::try_from(candidate.clone())
@@ -1561,6 +1567,7 @@ async fn root_mutation_cause_effect_decision_table() {
     );
 
     let stale = app
+        .mutations
         .commit_session_snapshot_with_outcome(
             "workspace",
             awaken_session_state_contract::SessionAggregate::try_from(candidate.clone())
@@ -1572,6 +1579,7 @@ async fn root_mutation_cause_effect_decision_table() {
     assert_eq!(stale, Err(SessionMutationError::Conflict), "M3");
 
     let mismatch = app
+        .mutations
         .commit_session_snapshot_with_record(
             "workspace",
             awaken_session_state_contract::SessionAggregate::try_from(candidate)
@@ -1627,6 +1635,7 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
     };
 
     let inserted = app
+        .mutations
         .create_session_root(
             "workspace",
             CompleteSessionRoot::from_fresh(original.clone()).unwrap(),
@@ -1647,6 +1656,7 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
     let before_authoring = durable.clone();
     durable.title = Some("durable-after-create".into());
     let durable = app
+        .mutations
         .commit_session_snapshot_with_outcome(
             "workspace",
             // C2 requires a legal durable successor, not a new lowering replay.
@@ -1660,6 +1670,7 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
     let mut lowered_again = original.clone();
     lowered_again.title = Some("new-lowering-must-not-win".into());
     let replayed = app
+        .mutations
         .create_session_root(
             "workspace",
             CompleteSessionRoot::from_fresh(lowered_again).unwrap(),
@@ -1682,6 +1693,7 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
         (original, "create-root:another".into(), "another-hash", "C4"),
     ] {
         let result = app
+            .mutations
             .create_session_root(
                 "workspace",
                 CompleteSessionRoot::from_fresh(candidate).unwrap(),
@@ -3016,6 +3028,7 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                     let mut predecessor = origin.clone();
                     predecessor.title = Some("independent committed predecessor".into());
                     let _fixture = app
+                        .mutations
                         .commit_session_snapshot_with_outcome(
                             "workspace",
                             // R1/R2 race against a genuinely committed author.
@@ -3564,6 +3577,7 @@ async fn run_activity_fence_decision_table() {
         let mut failed = still_preparing;
         failed.execution = SessionExecutionState::ActivationFailed;
         let failed = app
+            .mutations
             .commit_session_snapshot_with_outcome(
                 "workspace",
                 awaken_session_state_contract::SessionAggregate::try_from(failed)

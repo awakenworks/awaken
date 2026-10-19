@@ -284,6 +284,8 @@ async fn explicit_missing_root_or_delegate_publication_never_follows_current() {
     // no fallback current query may make the missing exact reference succeed.
     // The original immutable snapshot adapter remains available, so this cause
     // tests profile pin selection rather than an unrelated execution failure.
+    // The shared SessionQueries selector owns this exact/current decision;
+    // these real create rows expose a fallback through its observed read log.
     for missing_agent in ["coordinator", "researcher"] {
         let repo = Arc::new(ephemeral_session_repo().await);
         let profiles = Arc::new(ObservedProfiles::new(false));
@@ -331,6 +333,8 @@ async fn fresh_unpinned_delegate_is_sampled_once_before_head_changes() {
     // SAME captured7, rather than another catalog read. Expected child reads=1
     // and root/child version7. This locks the real create path, not the capture
     // helper alone; the previous duplicate Skill-total query yields reads=2.
+    // The shared selector must retain the original None=current lookup and
+    // the later roster compiler must reuse that first captured value.
     let repo = Arc::new(ephemeral_session_repo().await);
     let profiles = Arc::new(ObservedProfiles::new(true));
     profiles

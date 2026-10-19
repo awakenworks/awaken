@@ -248,8 +248,8 @@ struct WorkerFileConfig {
     sandbox_allow_local_fallback: Option<bool>,
     k8s_namespace: Option<String>,
     k8s_unschedulable_wait_secs: Option<u64>,
-    k8s_continuation_volume: Option<awaken_sandbox_container::K8sContinuationVolume>,
-    k8s_image_prewarm: Option<awaken_sandbox_container::K8sImagePrewarm>,
+    k8s_continuation_volume: Option<awaken_container_contract::K8sContinuationVolume>,
+    k8s_image_prewarm: Option<awaken_container_contract::K8sImagePrewarm>,
     k8s_image_pull_secrets: Option<Vec<String>>,
     acp_clis: Option<Vec<String>>,
     container_image: Option<String>,
@@ -372,9 +372,9 @@ impl WorkerDaemonConfig {
         let acp_clis = file.acp_clis.unwrap_or_default();
         runtime.acp = (!acp_clis.is_empty())
             .then(|| {
-                awaken_session_executor::AcpWorkerProfile::new(
+                awaken_acp_contract::AcpWorkerProfile::new(
                     acp_clis,
-                    awaken_execution_composition::acp_adapter_policy(),
+                    awaken_run_executor_acp::acp_adapter_policy(),
                 )
             })
             .transpose()?;
@@ -510,9 +510,9 @@ impl WorkerDaemonConfig {
             if selected.is_empty() {
                 return Err("no configured host ACP CLI is currently routable".into());
             }
-            let mut profile = awaken_session_executor::AcpWorkerProfile::new(
+            let mut profile = awaken_acp_contract::AcpWorkerProfile::new(
                 selected.clone(),
-                awaken_execution_composition::acp_adapter_policy(),
+                awaken_run_executor_acp::acp_adapter_policy(),
             )?;
             profile.apply_launch_argv(&prepared.routable_launch_argv())?;
             runtime.acp = Some(profile);
@@ -1342,7 +1342,7 @@ mod tests {
             if let Ok(config) = result {
                 assert_eq!(
                     config.runtime.sandbox.k8s_continuation_volume,
-                    Some(awaken_sandbox_container::K8sContinuationVolume {
+                    Some(awaken_container_contract::K8sContinuationVolume {
                         size: "1Gi".into(),
                         storage_class_name: class.map(str::to_owned),
                     }),

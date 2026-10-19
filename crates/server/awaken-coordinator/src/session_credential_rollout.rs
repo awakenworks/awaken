@@ -59,7 +59,7 @@ impl SessionCredentialRolloutAdoption {
         publication: Arc<dyn SessionProjectionPublication>,
     ) -> Self {
         Self {
-            roots: sessions.clone(),
+            roots: sessions.queries(),
             updates: sessions,
             publication,
         }

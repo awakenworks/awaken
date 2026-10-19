@@ -481,25 +481,8 @@ struct ProjectionProbe {
 }
 
 #[async_trait::async_trait]
-impl awaken_container_contract::ContainerEnvironmentProvider for ProjectionProbe {
-    fn adoption_layout(
-        &self,
-        handle: &awaken_provisioning_contract::SandboxHandle,
-    ) -> Result<
-        awaken_container_contract::ContainerAdoptionLayout,
-        awaken_provisioning_contract::SandboxError,
-    > {
-        awaken_sandbox_container::container_adoption_layout(handle)
-    }
-
-    fn physical_incarnation(
-        &self,
-        handle: &awaken_provisioning_contract::SandboxHandle,
-    ) -> Result<String, awaken_provisioning_contract::SandboxError> {
-        awaken_sandbox_container::container_physical_incarnation(handle)
-    }
-
-    fn sandbox_capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
+impl awaken_provisioning_contract::SandboxReadiness for ProjectionProbe {
+    fn capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
         awaken_provisioning_contract::SandboxCapabilities {
             isolation: awaken_provisioning_contract::IsolationClass::Container,
             tool_transparent: true,
@@ -508,39 +491,102 @@ impl awaken_container_contract::ContainerEnvironmentProvider for ProjectionProbe
         }
     }
 
+    fn checkpoint_formats(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
         Ok(())
     }
+}
 
-    async fn create_unattached_environment(
+#[async_trait::async_trait]
+impl awaken_provisioning_contract::SandboxProvider for ProjectionProbe {
+    type Environment = dyn awaken_provisioning_contract::SessionSandbox;
+
+    fn adoption_layout(
         &self,
-        _: &awaken_provisioning_contract::SandboxSpec,
+        handle: &awaken_provisioning_contract::SandboxHandle,
     ) -> Result<
-        Arc<dyn awaken_container_contract::ContainerEnvironment>,
+        awaken_provisioning_contract::SandboxAdoptionLayout,
         awaken_provisioning_contract::SandboxError,
     > {
-        // An unattached creation has no authority source to forward: the
-        // provider port cannot even be handed one.
-        self.boundary.pause().await;
-        Err(awaken_provisioning_contract::SandboxError::backend(
-            "create_unattached_environment",
-            "projection probe finished",
-        ))
+        awaken_sandbox_container::container_adoption_layout(handle)
     }
 
-    async fn adopt_unattached_environment(
+    fn install_memory_mounter(
         &self,
-        _: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
-    ) -> Result<
-        Arc<dyn awaken_container_contract::ContainerEnvironment>,
-        awaken_provisioning_contract::SandboxError,
+        _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
+    ) {
+    }
+
+    fn install_secret_broker(
+        &self,
+        _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
+    ) {
+    }
+
+    async fn prewarm_images(
+        &self,
+        _specs: &[awaken_provisioning_contract::SandboxSpec],
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Ok(())
+    }
+
+    fn validate_closed_observation(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+        observation: &awaken_provisioning_contract::SandboxObservation,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        awaken_sandbox_container::validate_container_closed_observation(handle, observation)
+    }
+
+    fn claim_for_effect<'a>(
+        &'a self,
+        spec: &'a awaken_provisioning_contract::SandboxSpec,
+        effect: awaken_provisioning_contract::SandboxEffect<'a>,
+        intent: awaken_provisioning_contract::SandboxRealizationIntent,
+    ) -> awaken_provisioning_contract::ClaimedEffect<
+        'a,
+        std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
     > {
-        panic!("creation must not adopt")
+        let claim = awaken_provisioning_contract::EffectClaim::in_process(
+            awaken_provisioning_contract::test_support::retain_abandoned_effect(spec.scope.clone()),
+        );
+        awaken_provisioning_contract::ClaimedEffect::new(claim, async move {
+            intent.admit_under(effect)?;
+            match effect {
+                awaken_provisioning_contract::SandboxEffect::Unattached => {
+                    let _ = spec;
+
+                    // An unattached creation has no authority source to forward: the
+                    // provider port cannot even be handed one.
+                    self.boundary.pause().await;
+                    Err(awaken_provisioning_contract::SandboxError::backend(
+                        "create_unattached_environment",
+                        "projection probe finished",
+                    ))
+                }
+                awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority } => {
+                    let _ = spec;
+                    let source = authority;
+                    let _ = intent;
+
+                    self.boundary.pause().await;
+                    let current = source.current_effect_fence(fence)?;
+                    self.replies.lock().unwrap().push(current);
+                    Err(awaken_provisioning_contract::SandboxError::backend(
+                        "create_environment_for_effect",
+                        "projection probe finished",
+                    ))
+                }
+            }
+        })
     }
 
-    async fn observe_environment(
+    async fn observe(
         &self,
-        _: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
+        _: awaken_provisioning_contract::SandboxAdoption<'_>,
         basis: awaken_provisioning_contract::SandboxObservationBasis<'_>,
     ) -> Result<
         awaken_provisioning_contract::SandboxObservation,
@@ -559,45 +605,38 @@ impl awaken_container_contract::ContainerEnvironmentProvider for ProjectionProbe
         Ok(awaken_provisioning_contract::SandboxObservation::Ready)
     }
 
-    async fn adopt_environment_for_effect(
+    async fn adopt_for_effect(
         &self,
-        adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
-        fence: &SandboxEffectFence,
-        source: &dyn CurrentExecutionAuthority,
+        adoption: awaken_provisioning_contract::SandboxAdoption<'_>,
+        effect: awaken_provisioning_contract::SandboxEffect<'_>,
     ) -> Result<
-        Arc<dyn awaken_container_contract::ContainerEnvironment>,
+        std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
         awaken_provisioning_contract::SandboxError,
     > {
-        // Same projection recorder for both provider entrances, no mock lease.
-        self.create_environment_for_effect(
-            adoption.spec,
-            fence,
-            source,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
-        )
-        .await
+        match effect {
+            awaken_provisioning_contract::SandboxEffect::Unattached => {
+                let _ = adoption;
+
+                panic!("creation must not adopt")
+            }
+            awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority } => {
+                let source = authority;
+
+                // Same projection recorder for both provider entrances, no mock lease.
+                self.claim_for_effect(
+                    adoption.spec,
+                    awaken_provisioning_contract::SandboxEffect::Fenced {
+                        fence,
+                        authority: source,
+                    },
+                    awaken_provisioning_contract::SandboxRealizationIntent::Create,
+                )
+                .await
+            }
+        }
     }
 
-    async fn create_environment_for_effect(
-        &self,
-        _: &awaken_provisioning_contract::SandboxSpec,
-        fence: &SandboxEffectFence,
-        source: &dyn CurrentExecutionAuthority,
-        _: awaken_container_contract::EnvironmentRealizationIntent,
-    ) -> Result<
-        Arc<dyn awaken_container_contract::ContainerEnvironment>,
-        awaken_provisioning_contract::SandboxError,
-    > {
-        self.boundary.pause().await;
-        let current = source.current_effect_fence(fence)?;
-        self.replies.lock().unwrap().push(current);
-        Err(awaken_provisioning_contract::SandboxError::backend(
-            "create_environment_for_effect",
-            "projection probe finished",
-        ))
-    }
-
-    async fn prepare_terminal_environment_for_effect(
+    async fn prepare_terminal_for_effect(
         &self,
         _: &awaken_provisioning_contract::SandboxSpec,
         _: Option<&awaken_provisioning_contract::SandboxHandle>,
@@ -605,10 +644,19 @@ impl awaken_container_contract::ContainerEnvironmentProvider for ProjectionProbe
         _: &SandboxEffectFence,
         _: &dyn CurrentExecutionAuthority,
     ) -> Result<
-        Option<Arc<dyn awaken_container_contract::ContainerEnvironment>>,
+        Option<Arc<dyn awaken_provisioning_contract::SessionSandbox>>,
         awaken_provisioning_contract::SandboxError,
     > {
         panic!("creation must not prepare terminal cleanup")
+    }
+
+    fn restoration(
+        &self,
+    ) -> awaken_provisioning_contract::SandboxRestoration<
+        '_,
+        std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
+    > {
+        awaken_provisioning_contract::SandboxRestoration::Unsupported
     }
 }
 

@@ -51,7 +51,7 @@ impl ContainerSkillCache {
 
     pub(super) async fn refresh(
         &self,
-        sandbox: &dyn awaken_container_contract::ContainerEnvironment,
+        sandbox: &dyn awaken_provisioning_contract::SessionSandbox,
     ) -> Result<(), pc::SandboxError> {
         if let ContainerSkillSnapshot::Unavailable(error) = &*self.snapshot.read().unwrap() {
             return Err(pc::SandboxError::backend(

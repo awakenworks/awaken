@@ -16,7 +16,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
     let temp = tempfile::tempdir().unwrap();
     let sandbox_root = temp.path().join("sandboxes");
     let provider = awaken_sandbox_local::NamespaceProvider::new(&sandbox_root);
-    pc::SandboxProvider::probe_ready(&provider)
+    pc::SandboxReadiness::probe_ready(&provider)
         .await
         .expect("Linux namespace substrate");
     let remote = temp.path().join("remote.git");

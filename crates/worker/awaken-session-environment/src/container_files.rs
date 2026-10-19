@@ -101,7 +101,7 @@ pub(super) fn logical_path(logical: &str) -> Result<String, pc::SandboxError> {
 }
 
 pub(super) async fn write(
-    sandbox: &dyn awaken_container_contract::ContainerEnvironment,
+    sandbox: &dyn awaken_provisioning_contract::SessionSandbox,
     logical: &str,
     contents: &[u8],
 ) -> Result<(), pc::SandboxError> {
@@ -178,7 +178,7 @@ pub(super) async fn write(
 }
 
 async fn remove_staged_file(
-    sandbox: &dyn awaken_container_contract::ContainerEnvironment,
+    sandbox: &dyn awaken_provisioning_contract::SessionSandbox,
     stage: &str,
 ) {
     if let Ok(process) = sandbox
@@ -206,7 +206,7 @@ fn require_success(status: pc::ExitStatus, operation: &str) -> Result<(), pc::Sa
 }
 
 pub(super) async fn materialize_read_only_tree(
-    sandbox: &dyn awaken_container_contract::ContainerEnvironment,
+    sandbox: &dyn awaken_provisioning_contract::SessionSandbox,
     subdir: &str,
     files: &[(String, Vec<u8>, bool)],
 ) -> Result<(), pc::SandboxError> {
@@ -230,7 +230,7 @@ pub(super) async fn materialize_read_only_tree(
 }
 
 async fn remove_staged_tree(
-    sandbox: &dyn awaken_container_contract::ContainerEnvironment,
+    sandbox: &dyn awaken_provisioning_contract::SessionSandbox,
     stage: &str,
 ) {
     if let Ok(process) = sandbox.spawn(batch::cleanup_command(stage)).await {
@@ -239,7 +239,7 @@ async fn remove_staged_tree(
 }
 
 pub(super) async fn remove(
-    sandbox: &dyn awaken_container_contract::ContainerEnvironment,
+    sandbox: &dyn awaken_provisioning_contract::SessionSandbox,
     logical: &str,
 ) -> Result<(), pc::SandboxError> {
     let path = logical_path(logical)?;

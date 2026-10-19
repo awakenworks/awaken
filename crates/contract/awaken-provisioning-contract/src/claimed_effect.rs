@@ -29,6 +29,10 @@ use std::task::{Context, Poll};
 
 use crate::SandboxError;
 
+/// The boxed effect a claim guards. Named because the claim, not the
+/// future's spelling, is what a reader of this type needs to see.
+type PendingEffect<'a, T> = Pin<Box<dyn Future<Output = Result<T, SandboxError>> + Send + 'a>>;
+
 /// Whether the claim still stands for an effect that may be in flight.
 ///
 /// Extracted from the two `Drop` bodies that read it so the retention decision
@@ -198,6 +202,33 @@ impl<'a, T> ClaimedEffect<'a, T> {
         }
     }
 
+    /// Project this effect through an asynchronous wrapper while retaining
+    /// its original claim and reconciler for the whole wrapper's lifetime.
+    ///
+    /// The mapper itself runs only on the first poll, so it may validate
+    /// metadata before polling the original physical future. Construction and
+    /// `abandon` never expose that future to the mapper. A dropped or panicking
+    /// wrapper keeps the existing unsettled-drop retention; an `Ok` or `Err`
+    /// settles the same claim through the original in-flight owner.
+    pub fn map_future<U, F>(
+        mut self,
+        mapper: impl FnOnce(PendingEffect<'a, T>) -> F + Send + 'a,
+    ) -> ClaimedEffect<'a, U>
+    where
+        T: 'a,
+        F: Future<Output = Result<U, SandboxError>> + Send + 'a,
+    {
+        let original = self
+            .effect
+            .take()
+            .expect("a claimed effect holds its future until it is awaited or abandoned");
+        // Leave the same settled husk as IntoFuture. The mapper is inside the
+        // new future, so no callback can poll the physical effect before the
+        // one claim has reached its new owner, or invalidate abandon's promise.
+        let claim = std::mem::replace(&mut self.claim, EffectClaim::settled());
+        ClaimedEffect::new(claim, async move { mapper(original).await })
+    }
+
     /// The scan that reads this effect's responsibility record back, when one
     /// exists. Call sites and tests use it to state which reconciler they are
     /// relying on.
@@ -240,15 +271,11 @@ impl<'a, T> IntoFuture for ClaimedEffect<'a, T> {
 }
 
 /// The awaited half of a [`ClaimedEffect`]: the effect is now allowed to run,
-/// The boxed effect a claim guards. Named because the claim, not the
-/// future's spelling, is what a reader of this type needs to see.
-type PendingEffect<'a, T> = Pin<Box<dyn Future<Output = Result<T, SandboxError>> + Send + 'a>>;
-
 /// and this value carries the claim for exactly as long as it may be in flight.
 #[must_use = "a claimed effect must be awaited or explicitly abandoned"]
 pub struct ClaimedEffectInFlight<'a, T> {
     claim: EffectClaim,
-    effect: Pin<Box<dyn Future<Output = Result<T, SandboxError>> + Send + 'a>>,
+    effect: PendingEffect<'a, T>,
 }
 
 impl<T> Future for ClaimedEffectInFlight<'_, T> {

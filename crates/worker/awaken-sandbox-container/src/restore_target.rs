@@ -11,7 +11,8 @@
 //! remains solely in `provider_realization`; durable-handle decoding remains in
 //! `recovery`.
 
-use super::{ContainerPlan, LIVE_INPUTS_ROOT, RootfsPlan, RuntimeError, StagingGuard, pc};
+use super::{ContainerPlan, RootfsPlan, RuntimeError, StagingGuard, pc};
+use awaken_container_contract::LIVE_INPUTS_ROOT;
 
 pub(crate) const RESTORE_EFFECT_LABEL: &str = "awaken.sandbox.restore.effect";
 pub(crate) const RESTORE_GENERATION_LABEL: &str = "awaken.sandbox.restore.generation";

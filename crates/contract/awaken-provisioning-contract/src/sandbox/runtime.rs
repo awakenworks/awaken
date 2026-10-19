@@ -10,10 +10,13 @@ use serde::{Deserialize, Serialize};
 use crate::spec::{Command, SandboxSpec};
 use crate::vocab::{Artifact, MountAccess, MountRequirement, RealizedMount};
 
+use std::sync::Arc;
+
 use super::fence::SandboxEffectFence;
 use super::foundation::*;
 use super::handle::SandboxHandle;
 use super::restore_contract::{SandboxRestoreRequest, SandboxRestoreResult, SandboxRestoreTarget};
+use super::{SandboxAdoption, SandboxAdoptionLayout, SandboxEffect, SandboxRealizationIntent};
 
 mod disposal;
 mod memory_reconciliation;
@@ -313,16 +316,16 @@ pub enum SelectionError {
 
 /// Fail-closed provider selection: the first candidate whose capabilities
 /// [`satisfies`](SandboxCapabilities::satisfies) the spec **and** whose
-/// [`probe_ready`](SandboxProvider::probe_ready) check passes. It never downgrades to
+/// [`probe_ready`](SandboxReadiness::probe_ready) check passes. It never downgrades to
 /// a weaker tier — if nothing qualifies it returns [`SelectionError::NoCapableBackend`]
 /// (the host maps this to a `Gated` outcome), so a spec is never silently placed on an
 /// under-isolating or unavailable backend. This is the deliberate divergence from a
 /// "degrade to a portable scope" policy: in a managed/multi-tenant plane a silent
 /// isolation downgrade is a security regression, not a convenience.
-pub async fn select_provider<'a>(
-    candidates: &'a [Box<dyn SandboxProvider>],
+pub async fn select_provider<'a, P: SandboxReadiness + ?Sized>(
+    candidates: &'a [Box<P>],
     spec: &SandboxSpec,
-) -> Result<&'a dyn SandboxProvider, SelectionError> {
+) -> Result<&'a P, SelectionError> {
     for provider in candidates {
         if provider.capabilities().satisfies(spec) && provider.probe_ready().await.is_ok() {
             return Ok(provider.as_ref());
@@ -364,8 +367,8 @@ pub struct IsolationPolicy {
 /// could not be met and [`OnUnmet::DegradeWithConsent`] allowed it — the weaker
 /// isolation class actually placed on. `degraded_to = Some(..)` obliges the caller to
 /// emit the degradation audit event + metric + run marker (never silent).
-pub struct PolicySelection<'a> {
-    pub provider: &'a dyn SandboxProvider,
+pub struct PolicySelection<'a, P: ?Sized> {
+    pub provider: &'a P,
     pub degraded_to: Option<IsolationClass>,
 }
 
@@ -480,15 +483,15 @@ fn non_isolation_ok(caps: &SandboxCapabilities, spec: &SandboxSpec) -> bool {
 /// `DegradeWithConsent` places on the strongest ready backend *below* the floor and
 /// reports `degraded_to` so the caller records the degradation. A spec is never silently
 /// placed below its floor.
-pub async fn select_provider_with_policy<'a>(
-    candidates: &'a [Box<dyn SandboxProvider>],
+pub async fn select_provider_with_policy<'a, P: SandboxReadiness + ?Sized>(
+    candidates: &'a [Box<P>],
     spec: &SandboxSpec,
     policy: &IsolationPolicy,
-) -> Result<PolicySelection<'a>, SelectionError> {
+) -> Result<PolicySelection<'a, P>, SelectionError> {
     // Ready backends meeting the floor (isolation >= require) and the spec's network.
-    let mut at_or_above: Vec<&dyn SandboxProvider> = Vec::new();
+    let mut at_or_above: Vec<&P> = Vec::new();
     // Ready backends below the floor but network-sound — the degrade candidates.
-    let mut below: Vec<&dyn SandboxProvider> = Vec::new();
+    let mut below: Vec<&P> = Vec::new();
     for provider in candidates {
         let caps = provider.capabilities();
         if !non_isolation_ok(&caps, spec) || provider.probe_ready().await.is_err() {
@@ -617,10 +620,12 @@ mod verification {
     }
 }
 
-/// Realizes environments. The local impl lives in `awaken-sandbox-local`; a
-/// remote/container impl lives in a distributed repo and plugs in here.
+/// What a backend can enforce and whether it is usable right now: the facts
+/// provider selection, Worker readiness and the Worker manifest read. Split
+/// from [`SandboxProvider`] because those callers never realize a Sandbox and
+/// must not depend on which live Sandbox type a provider hands out.
 #[async_trait]
-pub trait SandboxProvider: Send + Sync {
+pub trait SandboxReadiness: Send + Sync {
     /// What this backend can enforce (probed at startup for selection).
     fn capabilities(&self) -> SandboxCapabilities;
 
@@ -628,74 +633,119 @@ pub trait SandboxProvider: Send + Sync {
     /// implements. Worker composition projects these into the existing
     /// `WorkerManifest.checkpoint_formats` authority; no second capability field
     /// is maintained on `SandboxCapabilities`.
-    fn checkpoint_formats(&self) -> Vec<String> {
-        Vec::new()
-    }
+    fn checkpoint_formats(&self) -> Vec<String>;
 
     /// A cheap liveness probe run at selection time: `Ok` iff this backend is
-    /// actually usable *right now* — bwrap/unprivileged-userns available, a container
-    /// daemon reachable, etc. The default assumes readiness; the namespace/container
-    /// providers override it with a real check so `select_provider` fails closed
-    /// (never a silent unisolated run) rather than deferring the failure to `create`.
-    async fn probe_ready(&self) -> Result<(), SandboxError> {
-        Ok(())
-    }
+    /// actually usable *right now* — bwrap/unprivileged-userns available, a
+    /// container daemon reachable, a provider base qualified. Required, so a
+    /// provider states its own readiness and `select_provider` fails closed
+    /// (never a silent unisolated run) rather than deferring the failure to
+    /// creation.
+    async fn probe_ready(&self) -> Result<(), SandboxError>;
+}
 
-    /// Realize one Sandbox only after validating the aggregate-owned physical
-    /// effect fence against the original captured current authority. Re-enter
-    /// that authority after asynchronous preparation and before publishing its
-    /// result; a durable fence or cached receipt alone is not a live grant.
+/// The one provider abstraction: realizes a [`SandboxSpec`] into a live
+/// Sandbox, reopens and observes the durable handles it minted, reconstructs
+/// a terminal Sandbox for fenced disposal, and owns any restore targets.
+///
+/// `Environment` is the live Sandbox type this provider hands out: a
+/// container backend hands out shared [`SessionSandbox`](super::SessionSandbox)s
+/// (`Environment = dyn SessionSandbox`), while filesystem providers expose
+/// their shared base `Sandbox` role. Every provider-owned durable handle payload stays
+/// opaque to callers: [`Self::adoption_layout`] and
+/// [`Self::validate_closed_observation`] are the only readers.
+#[async_trait]
+pub trait SandboxProvider: SandboxReadiness {
+    /// The live Sandbox this provider realizes.
+    type Environment: ?Sized + Sandbox + 'static;
+
+    /// Install the Memory mount adapter after composition; every Sandbox
+    /// realized afterwards mounts Memory through it.
+    fn install_memory_mounter(&self, mounter: Arc<dyn MemoryMounter>);
+
+    /// Install the Secret broker after composition; every Sandbox realized
+    /// afterwards resolves and writes back Secrets through it.
+    fn install_secret_broker(&self, broker: Arc<dyn SecretBroker>);
+
+    /// Prepare only immutable images from canonical mount-less specs. No
+    /// Session filesystem is allocated and success acknowledges demand, not
+    /// readiness. A provider without images has nothing to prepare and says so
+    /// by succeeding.
+    async fn prewarm_images(&self, specs: &[SandboxSpec]) -> Result<(), SandboxError>;
+
+    /// The layout this provider reopens from `handle`. The handle payload is
+    /// opaque outside the provider's own codec, so a Session owner asks here
+    /// before any adoption I/O instead of decoding it.
+    fn adoption_layout(
+        &self,
+        handle: &SandboxHandle,
+    ) -> Result<SandboxAdoptionLayout, SandboxError>;
+
+    /// Validate the physical evidence one closed observation (absence,
+    /// `Terminal`, `Disposing`) carries against the exact incarnation recorded
+    /// in `handle`. Any other observation is not closed evidence and is
+    /// refused.
+    fn validate_closed_observation(
+        &self,
+        handle: &SandboxHandle,
+        observation: &SandboxObservation,
+    ) -> Result<(), SandboxError>;
+
+    /// Realize one Sandbox for `effect`. A fenced effect is validated against
+    /// the original captured current authority, which is re-entered after
+    /// asynchronous preparation and before publishing the result; a durable
+    /// fence or cached receipt alone is not a live grant. A `Rebuild` intent
+    /// requires a fenced effect ([`SandboxRealizationIntent::admit_under`]).
     ///
     /// This is the provider's creation obligation. It carries no default: a
     /// provider that cannot fence creation must fail to compile rather than
     /// inherit a body.
     ///
-    /// It is **synchronous** and returns a [`ClaimedEffect`], which is the
-    /// second half of the same discipline. The fence says the effect is
+    /// It is **synchronous** and returns a [`ClaimedEffect`](crate::ClaimedEffect),
+    /// the second half of the same discipline. The fence says the effect is
     /// authorized; the claim says who is on record for it if the caller goes
     /// away mid-flight. Returning the claim before the first poll is what makes
     /// "sandbox on the host, no responsibility record" unrepresentable rather
     /// than merely discouraged: a provider cannot mint the claim afterwards,
-    /// because [`ClaimedEffect::new`] consumes it. Callers still write
+    /// because `ClaimedEffect::new` consumes it. Callers still write
     /// `.claim_for_effect(..).await` — [`std::future::IntoFuture`] makes the
-    /// call site read exactly as it did — but a caller dropped mid-await now
+    /// call site read like an `async fn` — but a caller dropped mid-await
     /// leaves the claim's retention behind instead of an orphan.
     fn claim_for_effect<'a>(
         &'a self,
         spec: &'a SandboxSpec,
-        effect_fence: &'a SandboxEffectFence,
-        authority: &'a dyn crate::CurrentExecutionAuthority,
-    ) -> crate::ClaimedEffect<'a, Box<dyn Sandbox>>;
+        effect: SandboxEffect<'a>,
+        intent: SandboxRealizationIntent,
+    ) -> crate::ClaimedEffect<'a, Arc<Self::Environment>>;
 
     /// Observe one exact durable handle without renewing, mounting, deleting,
     /// or otherwise adopting it. `basis` says what the observation is for:
     /// [`SandboxObservationBasis::Effect`] revalidates the complete fence and
-    /// the effective spec against immutable realization evidence at an
-    /// aggregate-authorized boundary; [`SandboxObservationBasis::Unattached`]
-    /// inspects a handle no aggregate effect owns and never becomes mutation
-    /// authority. Providers keep backend `NotFound`/terminal evidence separate
-    /// from transport, authorization, and timeout errors.
+    /// the effective spec (which must be `adoption.spec`) against immutable
+    /// realization evidence at an aggregate-authorized boundary;
+    /// [`SandboxObservationBasis::Unattached`] inspects a handle no aggregate
+    /// effect owns and never becomes mutation authority. Providers keep
+    /// backend `NotFound`/terminal evidence separate from transport,
+    /// authorization, and timeout errors.
     async fn observe(
         &self,
-        handle: &SandboxHandle,
+        adoption: SandboxAdoption<'_>,
         basis: SandboxObservationBasis<'_>,
     ) -> Result<SandboxObservation, SandboxError>;
 
-    /// Adopt only after revalidating the exact aggregate-owned effect fence.
-    /// This is the provider's only adoption edge: reconnecting to an already
-    /// realized sandbox from a persisted [`SandboxHandle`] after a host restart
-    /// or across a takeover. Re-enter the supplied
-    /// current authority after waits and before subsequent effects or success;
-    /// the durable fence alone is not a process-local clock or admission proof.
-    /// This is the provider's adoption obligation and carries no default, so a
-    /// provider that cannot fence adoption fails to compile.
+    /// The provider's only adoption edge: reconnect to an already realized
+    /// Sandbox from a persisted handle after a host restart or across a
+    /// takeover. A fenced effect revalidates the exact aggregate-owned fence,
+    /// re-observes the handle without treating an indeterminate backend failure
+    /// as Gone, and re-enters the current authority after waits and before
+    /// success; the durable fence alone is not a process-local clock or
+    /// admission proof. Carries no default, so a provider that cannot fence
+    /// adoption fails to compile.
     async fn adopt_for_effect(
         &self,
-        spec: &SandboxSpec,
-        handle: &SandboxHandle,
-        effect_fence: &SandboxEffectFence,
-        authority: &dyn crate::CurrentExecutionAuthority,
-    ) -> Result<Box<dyn Sandbox>, SandboxError>;
+        adoption: SandboxAdoption<'_>,
+        effect: SandboxEffect<'_>,
+    ) -> Result<Arc<Self::Environment>, SandboxError>;
 
     /// Reconstruct the same Sandbox lifecycle owner solely to finish an exact
     /// terminal physical realization. Unlike ordinary adoption this must not
@@ -707,9 +757,8 @@ pub trait SandboxProvider: Send + Sync {
     /// supplies its current authorization. Re-enter that authority after every
     /// reconstruction wait and before marker/mount/control effects or success,
     /// including exact absence. Never treat the copied fence as a live grant.
-    /// Returning
-    /// `None` is permitted only for provider-proved exact absence or a durable
-    /// Removed tombstone; the default is fail closed.
+    /// Returning `None` is permitted only for provider-proved exact absence or
+    /// a durable Removed tombstone.
     async fn prepare_terminal_for_effect(
         &self,
         spec: &SandboxSpec,
@@ -717,18 +766,49 @@ pub trait SandboxProvider: Send + Sync {
         expected_effect_fence: Option<&SandboxEffectFence>,
         terminal_effect_fence: &SandboxEffectFence,
         authority: &dyn crate::CurrentExecutionAuthority,
-    ) -> Result<Option<Box<dyn Sandbox>>, SandboxError>;
+    ) -> Result<Option<Arc<Self::Environment>>, SandboxError>;
 
-    /// Custody of exact restore targets, when this provider has it. A
-    /// composition root that needs it asks here instead of discovering an
-    /// `Unsupported` error after placement.
-    fn restore_targets(&self) -> Option<&dyn RestoreTargetProvider<Box<dyn Sandbox>>> {
-        None
+    /// The restore rung this provider owns (ADR-0081 capability ladder). A
+    /// caller that needs one refuses at selection time instead of discovering
+    /// an `Unsupported` error at the physical effect.
+    fn restoration(&self) -> SandboxRestoration<'_, Arc<Self::Environment>>;
+}
+
+/// The restore rung one provider owns. Checkpoint restoration always brings
+/// custody of its restore targets, so a provider that restores bytes without
+/// owning the target they land in is unrepresentable.
+pub enum SandboxRestoration<'a, Env: Send + 'static> {
+    /// The provider owns no restore target.
+    Unsupported,
+    /// The provider acquires and disposes exact restore targets; checkpoint
+    /// bytes are restored by the composition's own codec.
+    Targets(&'a dyn RestoreTargetProvider<Env>),
+    /// The provider restores checkpoint bytes into its own restore target.
+    Restorable(&'a dyn RestorableProvider<Env>),
+}
+
+impl<'a, Env: Send + 'static> SandboxRestoration<'a, Env> {
+    /// The restore-target custody this rung carries, or the refusal a caller
+    /// returns before any physical effect.
+    pub fn targets(self) -> Result<&'a dyn RestoreTargetProvider<Env>, SandboxError> {
+        match self {
+            Self::Unsupported => Err(SandboxError::unsupported(
+                "this Sandbox provider does not own exact restore targets",
+            )),
+            Self::Targets(targets) => Ok(targets),
+            Self::Restorable(restorable) => Ok(restorable),
+        }
     }
 
-    /// Complete checkpoint restore, when this provider has it.
-    fn restorable(&self) -> Option<&dyn RestorableProvider<Box<dyn Sandbox>>> {
-        None
+    /// The checkpoint restoration this rung carries, or the refusal a caller
+    /// returns before any physical effect.
+    pub fn restorable(self) -> Result<&'a dyn RestorableProvider<Env>, SandboxError> {
+        match self {
+            Self::Restorable(restorable) => Ok(restorable),
+            Self::Unsupported | Self::Targets(_) => Err(SandboxError::unsupported(
+                "this Sandbox provider does not restore checkpoints",
+            )),
+        }
     }
 }
 
@@ -737,10 +817,8 @@ pub trait SandboxProvider: Send + Sync {
 /// unpublished target under disposal authorization. Checkpoint bytes are not
 /// read here; a composition may restore them through its own codec.
 ///
-/// `Env` is the live environment the provider family hands out: a boxed
-/// [`Sandbox`] for [`SandboxProvider`], a shared container environment for the
-/// container projection. One rung serves both families instead of a mirrored
-/// pair per family.
+/// `Env` is the shared live Sandbox a provider hands out
+/// (`Arc<SandboxProvider::Environment>`).
 #[async_trait]
 pub trait RestoreTargetProvider<Env: Send + 'static>: Send + Sync {
     /// Acquire the one physical target for an aggregate-projected exact restore

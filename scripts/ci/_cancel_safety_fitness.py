@@ -71,9 +71,10 @@ EFFECT_METHODS: dict[str, str] = {
     "realize_mount": "one realized mount inside a local sandbox root",
     "create_container_for_effect": "a container on the runtime (docker/podman/k8s)",
     "create_container": "a container on the runtime (docker/podman/k8s)",
-    "create_environment_for_effect": "a sandbox environment on the provider",
+    # SandboxProvider creation is synchronous claim_for_effect -> ClaimedEffect:
+    # its retained claim exists before the first poll, so there is no unowned
+    # async creation edge to register. The underlying physical calls stay above.
     "create_environment": "a sandbox environment on the provider",
-    "create_unattached_environment": "a sandbox environment no aggregate effect owns",
     "restore_environment": "a sandbox environment restored from a checkpoint",
     "realize_restore_container": "a container restored from a checkpoint",
     "create_or_verify": "a Kubernetes object (Pod, PVC, Secret) via Api::create",
@@ -146,7 +147,7 @@ CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
 # the Session provider -- previously reached through a method named plain
 # `restore` that no registry entry could match -- is now visible beside the
 # container one it always mirrored.
-CANCEL_SAFETY_BASELINE = 52
+CANCEL_SAFETY_BASELINE = 44
 
 FN_HEAD = re.compile(r"\bfn\s+([A-Za-z_]\w*)\s*")
 IMPL_HEAD = re.compile(r"\bimpl\b")

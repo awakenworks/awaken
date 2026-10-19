@@ -18,7 +18,7 @@ async fn windows_workdir_probe_requires_a_plain_local_ntfs_ancestor() {
     let temp = tempfile::tempdir().unwrap();
     let prospective = temp.path().join("future").join("sandboxes");
     let provider = LocalProvider::new(&prospective);
-    pc::SandboxProvider::probe_ready(&provider)
+    pc::SandboxReadiness::probe_ready(&provider)
         .await
         .expect("E1");
     assert!(!prospective.exists(), "E1 read-only probe");
@@ -53,7 +53,7 @@ async fn windows_workdir_probe_requires_a_plain_local_ntfs_ancestor() {
         "E2 fixture must be a real reparse point"
     );
     assert!(
-        pc::SandboxProvider::probe_ready(&LocalProvider::new(&junction))
+        pc::SandboxReadiness::probe_ready(&LocalProvider::new(&junction))
             .await
             .is_err(),
         "E2"

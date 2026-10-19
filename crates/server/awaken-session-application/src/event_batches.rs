@@ -10,6 +10,8 @@
 //! This module coordinates existing owners only. It does not persist an Event
 //! log, execute a Run, or retain a completion registry.
 
+use crate::SessionRootReads as _;
+use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_agent_contract::agent::message::{Id as MessageId, Role};
 use awaken_agent_contract::agent::run::RunState;
 use awaken_session_event_contract::{
@@ -239,6 +241,7 @@ impl SessionApplication {
         request_fingerprint: &str,
     ) -> Result<SessionEventBatchIdempotency, RunError> {
         let session = self
+            .mutations
             .session_aggregate(session_id)
             .await
             .map_err(repository_failure)
@@ -464,7 +467,7 @@ impl SessionApplication {
                 &request_fingerprint,
             );
         }
-        match self.owner(session_id).await {
+        match self.mutations.owner(session_id).await {
             Ok(owner) if owner == owner_scope => {}
             Ok(_) | Err(SessionMutationError::NotFound) => {
                 return Err(RunError {
@@ -516,11 +519,15 @@ impl SessionApplication {
         admission: EventBatchAdmission,
         wake_after_accept: bool,
     ) -> Result<SessionEventBatch, RunError> {
+        let mutations = &self.mutations;
         let thread_reads = self.runtime().thread_reads();
 
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner = self.owner(session_id).await.map_err(mutation_run_error)?;
-            let mut session = self
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
+            let owner = mutations
+                .owner(session_id)
+                .await
+                .map_err(mutation_run_error)?;
+            let mut session = mutations
                 .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
@@ -630,7 +637,7 @@ impl SessionApplication {
                 .events()
                 .append_batch(batch.clone())
                 .map_err(|error| RunError::internal(error.to_string()))?;
-            match self
+            match mutations
                 .commit_session_snapshot_with_outcome(
                     &owner,
                     session,
@@ -645,7 +652,7 @@ impl SessionApplication {
                     }
                     return Ok(batch);
                 }
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {}
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
                 Err(error) => return Err(mutation_run_error(error)),
             }
         }
@@ -690,7 +697,11 @@ impl SessionApplication {
                 if !candidate.interests.event_batches {
                     return result;
                 }
-                let session = match self.session_aggregate(&candidate.session_id).await {
+                let session = match self
+                    .mutations
+                    .session_aggregate(&candidate.session_id)
+                    .await
+                {
                     Ok(session) => session,
                     Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
                         return result;
@@ -843,9 +854,13 @@ impl SessionApplication {
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<bool, RunError> {
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner_scope = self.owner(session_id).await.map_err(mutation_run_error)?;
-            let mut session = self
+        let mutations = &self.mutations;
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
+            let owner_scope = mutations
+                .owner(session_id)
+                .await
+                .map_err(mutation_run_error)?;
+            let mut session = mutations
                 .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
@@ -870,7 +885,7 @@ impl SessionApplication {
             if resolved == 0 {
                 return Ok(true);
             }
-            match self
+            match mutations
                 .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
@@ -880,7 +895,7 @@ impl SessionApplication {
                 .await
             {
                 Ok(_) => return Ok(true),
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {}
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
                 Err(error) => return Err(mutation_run_error(error)),
             }
         }
@@ -1311,10 +1326,14 @@ impl SessionApplication {
         observation: EventObservation,
         superseded_tool_reply: Option<&FailedToolReplyCoordinate>,
     ) -> Result<PersistedSession, RunError> {
+        let mutations = &self.mutations;
         let projection_anchor = observation.anchor();
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner = self.owner(session_id).await.map_err(mutation_run_error)?;
-            let mut session = self
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
+            let owner = mutations
+                .owner(session_id)
+                .await
+                .map_err(mutation_run_error)?;
+            let mut session = mutations
                 .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
@@ -1334,7 +1353,7 @@ impl SessionApplication {
             if !changed {
                 return Ok(session.into_snapshot());
             }
-            match self
+            match mutations
                 .commit_session_snapshot_with_outcome(
                     &owner,
                     session,
@@ -1347,7 +1366,7 @@ impl SessionApplication {
                 .await
             {
                 Ok(commit) => return Ok(commit.into_session()),
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {}
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
                 Err(error) => return Err(mutation_run_error(error)),
             }
         }
@@ -1403,6 +1422,7 @@ impl SessionApplication {
             // its exact predecessor interval/Dispatch receipt instead of a
             // second repair queue or synthetic tool acknowledgement.
             let root = self
+                .queries
                 .session(session_id)
                 .await
                 .map_err(|error| RunError::unavailable(error.to_string()))?;

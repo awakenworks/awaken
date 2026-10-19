@@ -38,7 +38,7 @@ async fn environment(base: &Path, failing_hand: bool) -> SessionEnvironment {
     let environment = provider
         .create_effective_for_effect(
             &spec(),
-            awaken_session_environment_contract::ProviderEffect::Fenced {
+            awaken_provisioning_contract::SandboxEffect::Fenced {
                 fence: &fence,
                 authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                     &fence,

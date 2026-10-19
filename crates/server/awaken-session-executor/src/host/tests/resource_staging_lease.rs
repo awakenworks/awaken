@@ -1146,7 +1146,7 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
         .realizer()
         .create_effective_for_effect(
             &spec,
-            crate::session_environment::ProviderEffect::Fenced {
+            awaken_provisioning_contract::SandboxEffect::Fenced {
                 fence: &fence,
                 authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                     &fence,

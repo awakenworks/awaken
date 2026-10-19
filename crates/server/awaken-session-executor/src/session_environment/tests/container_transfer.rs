@@ -97,15 +97,16 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             .unwrap()
             .sandbox_effect_fence("foreign-fake-create")
             .unwrap();
-        let denied =
-            awaken_container_contract::ContainerEnvironmentProvider::create_environment_for_effect(
-                fake.as_ref(),
-                &spec,
-                &foreign,
+        let denied = awaken_provisioning_contract::SandboxProvider::claim_for_effect(
+            fake.as_ref(),
+            &spec,
+            awaken_provisioning_contract::SandboxEffect::Fenced {
+                fence: &foreign,
                 authority,
-                awaken_container_contract::EnvironmentRealizationIntent::Create,
-            )
-            .await;
+            },
+            awaken_provisioning_contract::SandboxRealizationIntent::Create,
+        )
+        .await;
         assert!(
             matches!(
                 denied,
@@ -113,21 +114,17 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             ),
             "W0a foreign operation"
         );
-        let denied =
-            awaken_container_contract::ContainerEnvironmentProvider::create_environment_for_effect(
-                fake.as_ref(),
-                &spec,
-                fence,
-                authority,
-                awaken_container_contract::EnvironmentRealizationIntent::Rebuild {
-                    source: Box::new(
-                        awaken_session_environment::test_support::current_fake_container_handle(
-                            &spec,
-                        ),
-                    ),
-                },
-            )
-            .await;
+        let denied = awaken_provisioning_contract::SandboxProvider::claim_for_effect(
+            fake.as_ref(),
+            &spec,
+            awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority },
+            awaken_provisioning_contract::SandboxRealizationIntent::Rebuild {
+                source: Box::new(
+                    awaken_session_environment::test_support::current_fake_container_handle(&spec),
+                ),
+            },
+        )
+        .await;
         assert!(
             matches!(
                 denied,
@@ -145,7 +142,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 .realizer()
                 .create_effective_for_effect(
                     &spec,
-                    crate::session_environment::ProviderEffect::from_parts(
+                    awaken_provisioning_contract::SandboxEffect::from_parts(
                         effect.provider_fence.as_ref(),
                         effect.provider_authority.as_deref(),
                     )
@@ -246,7 +243,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 Some(effect.authorization.intent()),
                 "W2 next generation preserves the first Create"
             );
-            fake.shared.lock().unwrap().remove("__ready_observation");
+            *fake.observation.lock().unwrap() = None;
             assert!(
                 host.realization_executor
                     .adopt_bound_session_environment(thread, Some(&binding), &provider, None, false)
@@ -268,10 +265,8 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 Arc::ptr_eq(&retained.environment, &previous),
                 "W1 exact owner retained"
             );
-            fake.shared
-                .lock()
-                .unwrap()
-                .insert("__ready_observation".into(), Vec::new());
+            *fake.observation.lock().unwrap() =
+                Some(Ok(awaken_provisioning_contract::SandboxObservation::Ready));
             host.realization_executor
                 .adopt_bound_session_environment(thread, Some(&binding), &provider, None, false)
                 .await
@@ -329,7 +324,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                     &spec,
                     &foreign,
                     &previous,
-                    crate::session_environment::ProviderEffect::Unattached
+                    awaken_provisioning_contract::SandboxEffect::Unattached
                 )
                 .await
                 .is_err(),
@@ -344,7 +339,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                     &spec,
                     &handle,
                     &previous,
-                    crate::session_environment::ProviderEffect::Unattached
+                    awaken_provisioning_contract::SandboxEffect::Unattached
                 )
                 .await
                 .is_err(),

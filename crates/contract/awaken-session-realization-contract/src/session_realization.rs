@@ -43,8 +43,8 @@ mod effect_failure;
 pub use effect_failure::{
     ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, ENVIRONMENT_PROVISIONING_CODE,
     ENVIRONMENT_REJECTED_CODE, ENVIRONMENT_UNAVAILABLE_CODE, RealizationFailureOutcome,
-    effect_failure_disposition, environment_effect_error, is_environment_effect_code,
-    is_not_ready_code, provisioning_disposition,
+    SessionRealizationEffectFailure, effect_failure_disposition, environment_effect_error,
+    is_environment_effect_code, is_not_ready_code, provisioning_disposition,
 };
 pub use lease_receipt::{ObservedSessionRealizationLease, SessionRealizationLeaseReceipt};
 mod terminal_cleanup_authorization;
@@ -491,7 +491,10 @@ impl<T> WorkerSessionRealizationControl for T where
 pub trait SessionProjectionSynchronizer: Send + Sync {
     fn observe_realization_request(
         &self,
-    ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError>;
+    ) -> Result<
+        awaken_lease_contract::authority::AuthorityProofStarted,
+        SessionRealizationEffectFailure,
+    >;
 
     async fn synchronize_session_projection(
         &self,
@@ -499,7 +502,7 @@ pub trait SessionProjectionSynchronizer: Send + Sync {
         projection: &FrozenSessionProjection,
         lease: &ObservedSessionRealizationLease,
         prepare_session: bool,
-    ) -> Result<(), RunError>;
+    ) -> Result<(), SessionRealizationEffectFailure>;
 
     /// Invalidate only the disposable projection of a failed exact lease. A
     /// retry must reload aggregate truth instead of reusing the fence that the
@@ -508,7 +511,7 @@ pub trait SessionProjectionSynchronizer: Send + Sync {
         &self,
         session_id: &crate::SessionId,
         lease: &SessionRealizationLease,
-    ) -> Result<(), RunError>;
+    ) -> Result<(), SessionRealizationEffectFailure>;
 }
 
 #[cfg(test)]

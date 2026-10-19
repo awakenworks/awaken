@@ -25,7 +25,7 @@ pub fn sandbox_observation(
     expected_fingerprint: Option<&pc::SandboxRealizationFingerprint>,
     expected_fence: Option<&pc::SandboxEffectFence>,
     observed: &[ExistingRealization],
-    retained_attempt: Option<&crate::ContainerCreateAttempt>,
+    retained_attempt: Option<&awaken_provisioning_contract::SandboxCreateAttempt>,
 ) -> Result<pc::SandboxObservation, RuntimeError> {
     if expected_incarnation.is_some() != expected_fingerprint.is_some()
         || expected_incarnation.is_some() != expected_adoption.is_some()

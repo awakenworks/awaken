@@ -649,7 +649,7 @@ impl awaken_session_runtime_contract::RealizationRuntime for CoordinatedRuntimeF
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         complete_session_projection_init(thread, &projection, &mode)?;
         Ok(())
     }

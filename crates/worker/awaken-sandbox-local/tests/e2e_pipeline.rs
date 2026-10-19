@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
-use awaken_provisioning_contract::SandboxProvider;
+use awaken_provisioning_contract::SandboxReadiness;
 mod common;
 use awaken_file_store::{FileStore, InMemoryFileStore};
 use awaken_sandbox_local::{LocalProvider, NamespaceProvider};

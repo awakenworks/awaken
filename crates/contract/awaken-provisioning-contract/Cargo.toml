@@ -24,6 +24,8 @@ awaken-time.workspace = true
 awaken-lease-contract.workspace = true
 # `resilience::Classify` is the one neutral retry/terminal projection; SandboxError opts in.
 awaken-sandbox-control.workspace = true
+# SessionSandbox opens the canonical Agent byte channel.
+awaken-agent-channel.workspace = true
 # Typed File/Memory/Repository input identity. Dependency direction is one-way:
 # Resources names logical inputs; Provisioning owns their sandbox layout.
 awaken-resource-contract.workspace = true

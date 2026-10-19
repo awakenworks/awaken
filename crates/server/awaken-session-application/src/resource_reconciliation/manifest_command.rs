@@ -6,6 +6,7 @@
 //! Recovery and terminal reclamation own the durable sweep; this module owns
 //! only the caller-issued manifest command and the exact receipt it returns.
 
+use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_agent_contract::stable_fingerprint;
 use awaken_session_state_contract::{IdempotencyRecord, SessionExecutionState};
 use awaken_session_types::RunError;
@@ -65,6 +66,7 @@ impl SessionApplication {
             return Err(SessionResourceManifestError::IdempotencyMismatch);
         }
         let session = self
+            .mutations
             .session_aggregate(session_id)
             .await
             .map_err(repository_failure)
@@ -103,7 +105,7 @@ impl SessionApplication {
             return Ok(outcome);
         }
 
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
             match self
                 .replace_session_resource_manifest_once(
                     session_id,
@@ -112,9 +114,7 @@ impl SessionApplication {
                 )
                 .await
             {
-                Err(SessionResourceManifestError::Conflict)
-                    if attempt + 1 < Self::ROOT_CAS_ATTEMPTS =>
-                {
+                Err(SessionResourceManifestError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
                 Ok(outcome) => return self.converge_resource_manifest(outcome).await,
@@ -130,11 +130,12 @@ impl SessionApplication {
         command: &ReplaceSessionResourceManifest,
         command_record: Option<IdempotencyRecord>,
     ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError> {
-        let owner_scope = self
+        let mutations = &self.mutations;
+        let owner_scope = mutations
             .owner(session_id)
             .await
             .map_err(SessionResourceManifestError::mutation)?;
-        let mut session = self
+        let mut session = mutations
             .session_aggregate(session_id)
             .await
             .map_err(repository_failure)
@@ -249,6 +250,7 @@ impl SessionApplication {
             return Ok(outcome);
         }
         let owner_scope = self
+            .mutations
             .owner(&outcome.session.session_id)
             .await
             .map_err(SessionResourceManifestError::mutation)?;

@@ -4,7 +4,8 @@
 //! Published legacy handles retain their metadata while deriving only proven empty API membership.
 
 use super::*;
-use awaken_container_contract::{ContainerEnvironmentAdoption, ContainerEnvironmentProvider};
+use awaken_provisioning_contract::SandboxAdoption;
+use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::ContainerHandleCodec as _;
 
 #[tokio::test]
@@ -95,7 +96,7 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
         let terminal =
             pc::SandboxEffectFence::new("cleanup", "new-owner", "new-boot", 2, u64::MAX - 1)
                 .unwrap();
-        let attempt = ContainerCreateAttempt::new("published-original-attempt");
+        let attempt = SandboxCreateAttempt::new("published-original-attempt");
         let intent = ContainerRealizationIntent::Create;
         let context = ContainerRealizationContext::new(
             &spec.scope,
@@ -208,13 +209,7 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
             spec.outputs_path = "/different-outputs".into();
         }
         let prepared = provider
-            .prepare_terminal_environment_for_effect(
-                &spec,
-                Some(&handle),
-                None,
-                &terminal,
-                &authority,
-            )
+            .prepare_terminal_for_effect(&spec, Some(&handle), None, &terminal, &authority)
             .await;
         assert!(
             state.lock().unwrap().writes.is_empty(),
@@ -238,10 +233,10 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
             assert_eq!(normalized.owned_paths(), handle.owned_paths());
             assert!(
                 provider
-                    .adopt_unattached_environment(ContainerEnvironmentAdoption::new(
-                        &spec,
-                        &normalized
-                    ))
+                    .adopt_for_effect(
+                        SandboxAdoption::new(&spec, &normalized),
+                        awaken_provisioning_contract::SandboxEffect::Unattached
+                    )
                     .await
                     .is_err()
             );
@@ -282,7 +277,7 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
             let writes = state.lock().unwrap().writes.len();
             assert!(
                 provider
-                    .prepare_terminal_environment_for_effect(
+                    .prepare_terminal_for_effect(
                         &spec,
                         Some(&handle),
                         None,
@@ -443,7 +438,7 @@ async fn derived_empty_terminal_handle_revalidates_its_effective_plan() {
                     mount_id: "original-input".into(),
                     source,
                     mount_path: if matches!(row, "managed-file" | "managed-binary") {
-                        format!("{}/original", awaken_sandbox_container::LIVE_INPUTS_ROOT)
+                        format!("{}/original", awaken_container_contract::LIVE_INPUTS_ROOT)
                     } else {
                         "/mnt/config".into()
                     },

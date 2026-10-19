@@ -848,8 +848,10 @@ impl awaken_session_runtime_contract::RealizationRuntime for NoopRuntime {
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
-        install_complete_test_projection(self, thread, projection, mode).await
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        install_complete_test_projection(self, thread, projection, mode)
+            .await
+            .map_err(Into::into)
     }
 
     // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -1258,8 +1260,10 @@ impl awaken_session_runtime_contract::RealizationRuntime for RecordingReplyRunti
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
-        install_complete_test_projection(self, thread, projection, mode).await
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        install_complete_test_projection(self, thread, projection, mode)
+            .await
+            .map_err(Into::into)
     }
 
     // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -1870,15 +1874,17 @@ impl awaken_session_runtime_contract::RealizationRuntime for RecordingAgentAdmis
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         self.installed_projections
             .lock()
             .unwrap()
             .push(projection.clone());
         if self.projection_failure.load(Ordering::SeqCst) {
-            return Err(RunError::unavailable("fixture projection unavailable"));
+            return Err((RunError::unavailable("fixture projection unavailable")).into());
         }
-        install_complete_test_projection(self, thread, projection, mode).await
+        install_complete_test_projection(self, thread, projection, mode)
+            .await
+            .map_err(Into::into)
     }
 
     async fn renew_session_realization_lease(
@@ -2467,8 +2473,10 @@ impl awaken_session_runtime_contract::RealizationRuntime for RecordingBoundaryBu
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
-        install_complete_test_projection(self, thread, projection, mode).await
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        install_complete_test_projection(self, thread, projection, mode)
+            .await
+            .map_err(Into::into)
     }
 
     // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -3108,8 +3116,10 @@ impl awaken_session_runtime_contract::RealizationRuntime for RecordingCleanupRun
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
-        install_complete_test_projection(self, thread, projection, mode).await
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        install_complete_test_projection(self, thread, projection, mode)
+            .await
+            .map_err(Into::into)
     }
 
     // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never

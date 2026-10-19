@@ -982,9 +982,9 @@ mod tests {
         let mut deployment = crate::config::local_test_deployment(directory.path().into());
         deployment.configured_acp_clis = Some(vec!["codex".to_string()]);
         deployment.runtime.acp = Some(
-            awaken_session_executor::AcpWorkerProfile::new(
+            awaken_acp_contract::AcpWorkerProfile::new(
                 ["codex".to_string()],
-                awaken_execution_composition::acp_adapter_policy(),
+                awaken_run_executor_acp::acp_adapter_policy(),
             )
             .unwrap(),
         );

@@ -6,6 +6,7 @@
 //! Durable realization and terminal-cleanup control state machine.
 
 use super::*;
+use crate::mutation::ROOT_CAS_ATTEMPTS;
 use std::sync::Arc;
 use tracing::Instrument as _;
 
@@ -71,13 +72,20 @@ impl SessionApplication {
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<PersistedSession, SessionRealizationControlFailure> {
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner_scope = self.owner(session_id).await.map_err(mutation_control)?;
-            let mut session = self
+        let mutations = &self.mutations;
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
+            let owner_scope = mutations
+                .owner(session_id)
+                .await
+                .map_err(mutation_control)?;
+            let mut session = mutations
                 .session_aggregate(session_id)
                 .await
                 .map_err(repository_control)?;
-            if session.realization_progress.run_free_initial_preparation {
+            if session
+                .realization_progress()
+                .run_free_initial_preparation()
+            {
                 return Ok(session.into_snapshot());
             }
             let external = session.requires_external_environment_owner()
@@ -102,7 +110,7 @@ impl SessionApplication {
                 .assignment()
                 .request_run_free_preparation()
                 .map_err(unavailable)?;
-            match self
+            match mutations
                 .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
@@ -115,7 +123,7 @@ impl SessionApplication {
                     self.wake_lifecycle_supervisor();
                     return Ok(commit.into_session());
                 }
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
                 Err(SessionMutationError::Conflict) => {
@@ -135,7 +143,7 @@ impl SessionApplication {
     ) {
         use awaken_session_realization_contract::realization_observation as observation;
         if observation::enabled() {
-            let root = match self.sessions_repo.get(id).await {
+            let root = match self.mutations.repository().get(id).await {
                 Ok(root) => root,
                 Err(error) => {
                     observation::checkpoint(
@@ -260,7 +268,7 @@ impl SessionApplication {
                     .into(),
             ));
         }
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
             let attempt_span = tracing::info_span!("session.realization.root_cas", attempt);
             let (owner_scope, session) = self
                 .load_realization_root(&command.session_id)
@@ -290,6 +298,7 @@ impl SessionApplication {
             renewed.expires_at_unix_ms = command.requested_expires_at_unix_ms;
             session.assignment().renew(renewed).map_err(unavailable)?;
             match self
+                .mutations
                 .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
@@ -321,7 +330,7 @@ impl SessionApplication {
         command: BeginSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
         validate_target(&command, self.clock.now_ms())?;
-        for attempt in 0..SessionApplication::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
             let (owner_scope, mut session) =
                 self.session_for_realization(&command.session_id).await?;
             // Retained execution carries its original generation even when a
@@ -475,6 +484,7 @@ impl SessionApplication {
                 .claim(lease, counted)
                 .map_err(unavailable)?;
             match self
+                .mutations
                 .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
@@ -493,9 +503,7 @@ impl SessionApplication {
                         )
                         .await;
                 }
-                Err(SessionMutationError::Conflict)
-                    if attempt + 1 < SessionApplication::ROOT_CAS_ATTEMPTS =>
-                {
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
                 Err(SessionMutationError::Conflict) => {
@@ -775,6 +783,7 @@ impl SessionApplication {
             )
         });
         let session = self
+            .mutations
             .commit_session_snapshot_with_outcome(
                 &owner_scope,
                 session,
@@ -803,6 +812,7 @@ impl SessionApplication {
         &self,
         command: FailSessionRealization,
     ) -> Result<(), SessionRealizationControlFailure> {
+        let mutations = &self.mutations;
         if command.reason.trim().is_empty() {
             return Err(SessionRealizationControlFailure::Invalid(
                 "realization failure reason is empty".into(),
@@ -811,7 +821,7 @@ impl SessionApplication {
         // Failure delivery is idempotent even though activation_failed is
         // terminal for every new phase command. Handle that exact replay before
         // the common terminal guard used by begin/activate/acknowledge.
-        match self.session_aggregate(&command.session_id).await {
+        match mutations.session_aggregate(&command.session_id).await {
             Ok(session) if session.execution == SessionExecutionState::ActivationFailed => {
                 return Ok(());
             }
@@ -872,7 +882,7 @@ impl SessionApplication {
         if retry_initial {
             // The retry intent's response carries no applied/replayed
             // distinction: a replay observes the same realization progress.
-            let _outcome = self
+            let _outcome = mutations
                 .commit_session_snapshot_with_outcome(
                     &owner_scope,
                     session,
@@ -927,7 +937,7 @@ impl SessionApplication {
         // exact closing revision together with this terminal transition.
         let lifecycle_facts = Vec::new();
         // Failure is absorbing; the caller reports no applied/replayed bit.
-        let _outcome = self
+        let _outcome = mutations
             .commit_session_snapshot_with_outcome(
                 &owner_scope,
                 session,
@@ -990,6 +1000,7 @@ impl SessionApplication {
         conflict: &TerminalCleanupClaimConflict,
         initial: Option<PersistedSession>,
     ) -> Result<(), SessionRealizationControlFailure> {
+        let mutations = &self.mutations;
         let current = match initial {
             Some(session) => session,
             None => match self
@@ -1004,7 +1015,7 @@ impl SessionApplication {
         };
         let mut current =
             crate::mutation::aggregate_from_snapshot(current).map_err(repository_control)?;
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
             if current.session_id != conflict.session_id
                 || current.realization.as_ref() != Some(&conflict.attempted_lease)
             {
@@ -1017,7 +1028,7 @@ impl SessionApplication {
                     conflict.previous_realization.clone(),
                 )
                 .map_err(unavailable)?;
-            match self
+            match mutations
                 .commit_session_snapshot_with_outcome(
                     &conflict.owner_scope,
                     current,
@@ -1027,8 +1038,8 @@ impl SessionApplication {
                 .await
             {
                 Ok(_) => return Ok(()),
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
-                    current = match self
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
+                    current = match mutations
                         .session_aggregate(&awaken_session_types::SessionId::from(
                             &conflict.session_id,
                         ))
@@ -1202,6 +1213,7 @@ impl SessionApplication {
             Err(error) => return TerminalCleanupRootClaim::Failed(error),
         };
         let committed = match self
+            .mutations
             .commit_session_snapshot_with_outcome(
                 owner_scope,
                 session,
@@ -1269,7 +1281,7 @@ impl SessionApplication {
             ));
         }
         let mut conflicted_claim: Option<Box<TerminalCleanupClaimConflict>> = None;
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
             // Re-read the canonical Worker registry on every root-CAS attempt.
             // A conflict never carries eligibility from the older Session or
             // Worker snapshot into the retry.
@@ -1328,7 +1340,7 @@ impl SessionApplication {
                         }
                         TerminalCleanupRootClaim::Skip => {}
                         TerminalCleanupRootClaim::Conflict(conflict)
-                            if attempt + 1 < Self::ROOT_CAS_ATTEMPTS =>
+                            if attempt + 1 < ROOT_CAS_ATTEMPTS =>
                         {
                             conflicted_claim = Some(conflict);
                             retry_after_conflict = true;
@@ -1374,6 +1386,7 @@ impl SessionApplication {
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<SessionTerminalCleanupAssignment, SessionRealizationControlFailure> {
+        let mutations = &self.mutations;
         let admission = self
             .refresh_executable_projections()
             .await
@@ -1394,12 +1407,12 @@ impl SessionApplication {
             reassign_existing_lease: false,
         };
         validate_realization_target(&target, self.clock.now_ms())?;
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
             let owner_scope = admission
-                .enter(|| self.owner(session_id))
+                .enter(|| mutations.owner(session_id))
                 .await
                 .map_err(mutation_control)?;
-            let session = self
+            let session = mutations
                 .session_aggregate(session_id)
                 .await
                 .map_err(repository_control)?;
@@ -1417,7 +1430,7 @@ impl SessionApplication {
                 TerminalCleanupRootClaim::Skip => {
                     return Err(SessionRealizationControlFailure::NotReady);
                 }
-                TerminalCleanupRootClaim::Conflict(_) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {}
+                TerminalCleanupRootClaim::Conflict(_) if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
                 TerminalCleanupRootClaim::Conflict(_) => {
                     return Err(SessionRealizationControlFailure::Conflict);
                 }

@@ -185,7 +185,7 @@ async fn chunked_fresh_reply_is_bounded_and_explicit_legacy_reply_stays_whole() 
         );
         let (mut client, server) = fixture(router).await;
         client.request_budget = std::time::Duration::from_secs(5);
-        let predecessor = ContainerEffectFence::new("old", "worker", "boot", 1, u64::MAX).unwrap();
+        let predecessor = SandboxEffectFence::new("old", "worker", "boot", 1, u64::MAX).unwrap();
         let result = client
             .seal_predecessor("scope", &predecessor, "awaken-scope")
             .await;

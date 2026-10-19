@@ -43,7 +43,17 @@ fn externally_placed(id: &str, state: &str, run_free: bool) -> PersistedSession 
         panic!("frozen fixture")
     };
     baseline.runtime_placement = SessionRuntimePlacement::Worker;
-    session.realization_progress.run_free_initial_preparation = run_free;
+    if run_free {
+        // W1: set the legal request through its existing assignment owner;
+        // completed Idle history still keeps the flag without gaining demand.
+        let mut aggregate = awaken_session_state_contract::SessionAggregate::try_from(session)
+            .expect("valid external preparation fixture");
+        aggregate
+            .assignment()
+            .request_run_free_preparation()
+            .unwrap();
+        session = aggregate.into_snapshot();
+    }
     session
 }
 
@@ -349,7 +359,7 @@ async fn run_free_request_is_one_idempotent_session_root_transition() {
         .await
         .expect("R1/E1");
     assert!(
-        first.realization_progress.run_free_initial_preparation,
+        first.realization_progress().run_free_initial_preparation(),
         "R1/E1"
     );
     assert!(first.revision.0 > before.revision.0, "R1 one root CAS");
@@ -378,8 +388,8 @@ async fn run_free_request_is_one_idempotent_session_root_transition() {
                 .get(&invalid)
                 .await
                 .unwrap()
-                .realization_progress
-                .run_free_initial_preparation,
+                .realization_progress()
+                .run_free_initial_preparation(),
             "R3/E3"
         );
     }
@@ -391,7 +401,7 @@ async fn run_free_request_is_one_idempotent_session_root_transition() {
         .expect("R4/E4");
     assert_eq!(after.revision, before.revision, "R4/E4");
     assert!(
-        !after.realization_progress.run_free_initial_preparation,
+        !after.realization_progress().run_free_initial_preparation(),
         "R4/E4"
     );
     for blocked in ["terminated", "active"] {
@@ -412,8 +422,8 @@ async fn run_free_request_is_one_idempotent_session_root_transition() {
                 .get(&blocked)
                 .await
                 .unwrap()
-                .realization_progress
-                .run_free_initial_preparation,
+                .realization_progress()
+                .run_free_initial_preparation(),
             "R5/E5"
         );
     }
@@ -444,12 +454,16 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
             .unwrap(),
     );
     let mut local = persisted("local", false, "preparing");
-    local.realization_progress.run_free_initial_preparation = true;
+    // W5/R2: decoded malformed placement, not a newly admitted preparation.
+    let mut local_progress = serde_json::to_value(&local).unwrap();
+    local_progress["realization_progress"]["run_free_initial_preparation"] = true.into();
+    local = serde_json::from_value(local_progress).unwrap();
     create(repo.as_ref(), local).await;
     let mut self_hosted = persisted("self-hosted", true, "preparing");
-    self_hosted
-        .realization_progress
-        .run_free_initial_preparation = true;
+    // W5/R3: preserve the stored self-hosted opt-in for the original rejection.
+    let mut self_hosted_progress = serde_json::to_value(&self_hosted).unwrap();
+    self_hosted_progress["realization_progress"]["run_free_initial_preparation"] = true.into();
+    self_hosted = serde_json::from_value(self_hosted_progress).unwrap();
     create(repo.as_ref(), self_hosted).await;
     create(repo.as_ref(), externally_placed("idle", "idle", true)).await;
     create(

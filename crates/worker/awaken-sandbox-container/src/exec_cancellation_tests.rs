@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 
-use crate::{ContainerSandbox, ContainerState, RuntimeAgentProcess, RuntimeError};
+use crate::{ContainerSandbox, ContainerState, RuntimeError};
+use awaken_provisioning_contract::AgentProcess;
 
 /// How the fake resolves a spawn that the test lets run to completion.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -110,7 +111,7 @@ impl crate::ContainerRuntime for ExecRuntime {
         &self,
         _admitted: crate::AdmittedExec,
         _command: pc::MaterializedCommand,
-    ) -> Result<RuntimeAgentProcess, RuntimeError> {
+    ) -> Result<AgentProcess, RuntimeError> {
         self.spawn_agent_started.notify_waiters();
         // Past this await the exec has begun inside the container: whatever the
         // caller does now, a process may exist.
@@ -123,7 +124,7 @@ impl crate::ContainerRuntime for ExecRuntime {
             SpawnOutcome::Attached => {
                 let (agent, _host) = tokio::io::duplex(64);
                 let (read, write) = tokio::io::split(agent);
-                Ok(RuntimeAgentProcess {
+                Ok(AgentProcess {
                     process: Box::new(ExitedProcess { code: 0 }),
                     channel: Box::new(awaken_agent_channel::SplitChannel::new(read, write)),
                 })

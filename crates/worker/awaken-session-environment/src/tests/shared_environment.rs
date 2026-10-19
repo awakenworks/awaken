@@ -34,7 +34,7 @@ async fn revoked_container_rebinds_only_a_proven_owned_path_successor() {
             &spec(),
             &next,
             &environment,
-            awaken_session_environment_contract::ProviderEffect::Unattached,
+            awaken_provisioning_contract::SandboxEffect::Unattached,
         )
         .await
         .unwrap();
@@ -58,7 +58,7 @@ async fn revoked_container_rebinds_only_a_proven_owned_path_successor() {
                 &spec(),
                 &foreign,
                 &environment,
-                awaken_session_environment_contract::ProviderEffect::Unattached,
+                awaken_provisioning_contract::SandboxEffect::Unattached,
             )
             .await
             .is_err(),
@@ -96,15 +96,14 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
     // A fence without a source cannot even be projected into a provider
     // effect; the denied source reaches the provider and is refused there.
     assert!(
-        awaken_session_environment_contract::ProviderEffect::from_parts(Some(&create_fence), None)
-            .is_err()
+        awaken_provisioning_contract::SandboxEffect::from_parts(Some(&create_fence), None).is_err()
     );
     assert!(
         provider
             .realizer()
             .create_effective_for_effect(
                 &spec(),
-                awaken_session_environment_contract::ProviderEffect::Fenced {
+                awaken_provisioning_contract::SandboxEffect::Fenced {
                     fence: &create_fence,
                     authority: &denied,
                 },
@@ -119,7 +118,7 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
         .realizer()
         .create_effective_for_effect(
             &spec(),
-            awaken_session_environment_contract::ProviderEffect::Fenced {
+            awaken_provisioning_contract::SandboxEffect::Fenced {
                 fence: &create_fence,
                 authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
                     &create_fence,
@@ -177,7 +176,7 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
             &spec(),
             &handle,
             &environment,
-            awaken_session_environment_contract::ProviderEffect::Unattached,
+            awaken_provisioning_contract::SandboxEffect::Unattached,
         )
         .await
         .unwrap();
@@ -222,7 +221,7 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
         .adopt_effective_for_effect(
             &spec(),
             &handle,
-            awaken_session_environment_contract::ProviderEffect::Fenced {
+            awaken_provisioning_contract::SandboxEffect::Fenced {
                 fence: &create_fence,
                 authority: &pc::test_support::EffectAuthority::new(&create_fence),
             },
@@ -592,7 +591,7 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
             &crate::test_support::spec(),
             &environment.lifecycle().handle(),
             &environment,
-            awaken_session_environment_contract::ProviderEffect::Unattached,
+            awaken_provisioning_contract::SandboxEffect::Unattached,
         )
         .await
         .unwrap();

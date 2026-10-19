@@ -28,9 +28,8 @@ pub use awaken_sandbox_control::{
 use std::sync::Arc;
 
 mod cache_volume;
-// The access/mutation values are the container port's vocabulary and live in
-// the container contract beside `ContainerEnvironment::checkpoint_upload`.
-pub use awaken_container_contract::{ContainerCheckpointAccess, ContainerCheckpointMutation};
+// Session roles consume the one provider-neutral provisioning contract.
+use awaken_provisioning_contract::{SandboxCheckpointAccess, SandboxCheckpointMutation};
 mod control;
 use control::ContainerControlPublicationRegistry;
 mod cgroup;
@@ -39,8 +38,6 @@ mod egress;
 pub mod engine;
 mod exec_attempts;
 mod files;
-mod image_warmup;
-pub use image_warmup::K8sImagePrewarm;
 mod handle;
 mod host_evidence;
 mod kubernetes_handle;
@@ -66,7 +63,9 @@ mod sandbox_exec;
 mod secret;
 mod staged_mounts;
 mod writable;
-use awaken_container_contract::ContainerEffect;
+use awaken_provisioning_contract::{
+    AgentProcess, SandboxCreateAttempt, SandboxEffect, SandboxFile, SessionSandbox,
+};
 pub use cgroup::CgroupCaps;
 pub use egress::{
     AllowlistCapability, AllowlistProxy, EgressError, EgressRealization, EgressRealizationIdentity,
@@ -81,27 +80,24 @@ pub use handle::{
     ContainerContinuationHandle, ContainerHandleCodec, ContainerSandboxHandleV1,
     ContainerSandboxHandleV2, HostBindRestorationHandle, KubernetesPodUid,
     SandboxControlIncarnation, container_adoption_layout, container_physical_incarnation,
+    validate_container_closed_observation,
 };
-pub use live_inputs::{LIVE_INPUTS_ROOT, live_input_relative_path};
 pub use packages::package_containerfile;
 #[cfg(any(test, feature = "podman"))]
 pub(crate) use podman_plan::podman_create_argv;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 use podman_plan::{image_of, rootfs_of};
 pub use provider_contract::{
-    ContainerCreateAttempt, ContainerEffectFence, ContainerEnvironment,
-    ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerObservationExpectation,
-    ContainerObservationPurpose, ContainerRealizationContext, ContainerRealizationIntent,
-    ContainerRealizationNamespace, DecodedContainerHandle, EnvironmentFile,
-    EnvironmentRealizationIntent, PreparedContainer, PreparedContainerDisposition,
-    restore_ladder_is_consistent,
+    ContainerObservationExpectation, ContainerRealizationContext, ContainerRealizationIntent,
+    ContainerRealizationNamespace, DecodedContainerHandle, PreparedContainer,
+    PreparedContainerDisposition,
 };
 
 /// Mint the ephemeral witness for one in-process create attempt from this
 /// process's runtime owner identity. Only this provider creates backend objects,
 /// so it is the only minter.
-pub fn fresh_create_attempt() -> ContainerCreateAttempt {
-    ContainerCreateAttempt::new(runtime_owner_id())
+pub fn fresh_create_attempt() -> SandboxCreateAttempt {
+    SandboxCreateAttempt::new(runtime_owner_id())
 }
 pub use resident_hand::ResidentHandConfig;
 #[cfg(any(test, feature = "docker", feature = "podman"))]
@@ -118,9 +114,8 @@ pub(crate) use runtime::{
     CONTAINER_REALIZATION_RECONCILER, MANAGED_SANDBOX_LABEL, runtime_owner_id,
 };
 pub use runtime::{
-    ContainerRuntime, ContainerState, K8sContinuationVolume, MemoryMount,
-    MissingHandleTerminalEvidence, PackageImageProvisioner, RuntimeAgentProcess, RuntimeError,
-    RuntimeRestoreTarget, SandboxControlBindingRequest,
+    ContainerRuntime, ContainerState, MemoryMount, MissingHandleTerminalEvidence,
+    PackageImageProvisioner, RuntimeError, RuntimeRestoreTarget, SandboxControlBindingRequest,
 };
 #[cfg(any(feature = "docker", feature = "podman"))]
 pub(crate) use runtime::{
@@ -1185,9 +1180,9 @@ mod provider;
 pub use provider::ContainerProvider;
 
 /// A realized Session-owned container environment. The opaque agent channel is
-/// returned together with the exact exec process by [`ContainerEnvironment::spawn_agent_process`].
+/// returned together with the exact exec process by [`SessionSandbox::spawn_agent_process`].
 pub struct ContainerSandbox<R: ContainerRuntime> {
-    retained_attempt: Option<ContainerCreateAttempt>,
+    retained_attempt: Option<SandboxCreateAttempt>,
     runtime: Arc<R>,
     id: String,
     container_id: String,
@@ -1241,7 +1236,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
 }
 
 #[async_trait]
-impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R> {
+impl<R: ContainerRuntime + 'static> SessionSandbox for ContainerSandbox<R> {
     async fn owned_process_binding(&self) -> Result<Option<String>, pc::SandboxError> {
         self.runtime
             .owned_process_binding(&self.container_id, self.runtime_handle.as_ref())
@@ -1250,8 +1245,8 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
     }
     async fn checkpoint_upload(
         &self,
-        access: ContainerCheckpointAccess<'_>,
-        mutation: ContainerCheckpointMutation<'_>,
+        access: SandboxCheckpointAccess<'_>,
+        mutation: SandboxCheckpointMutation<'_>,
     ) -> Result<Option<pc::SandboxCheckpointUpload>, pc::SandboxError> {
         access.admit()?;
         let handle = pc::Sandbox::handle(self);
@@ -1269,7 +1264,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
         Ok(result)
     }
 
-    fn retained_create_attempt(&self) -> Option<&ContainerCreateAttempt> {
+    fn retained_create_attempt(&self) -> Option<&SandboxCreateAttempt> {
         self.retained_attempt.as_ref()
     }
 
@@ -1304,7 +1299,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
     async fn spawn_agent_process(
         &self,
         command: pc::Command,
-    ) -> Result<RuntimeAgentProcess, pc::SandboxError> {
+    ) -> Result<AgentProcess, pc::SandboxError> {
         self.spawn_agent(command).await
     }
 
@@ -1315,12 +1310,10 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
             .map_err(pc::SandboxError::from)
     }
 
-    async fn read_files(&self, root: &str) -> Result<Vec<EnvironmentFile>, pc::SandboxError> {
+    async fn read_files(&self, root: &str) -> Result<Vec<SandboxFile>, pc::SandboxError> {
         files::read_files(self, root).await
     }
 }
-
-pub use awaken_container_contract::ContainerEnvironmentCapacity;
 
 struct ContainerCleanupState {
     staging: std::sync::Mutex<Option<StagingGuard>>,
@@ -1830,8 +1823,6 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
 /// here, running requires a Docker daemon.
 #[cfg(feature = "docker")]
 pub mod docker;
-
-pub use awaken_container_contract::REPOSITORY_GATEWAY_CA_PATH;
 
 /// Rootless Podman backend (daemonless CLI fork-exec). Gated behind the `podman`
 /// feature; compile-verified here, running requires the `podman` binary.

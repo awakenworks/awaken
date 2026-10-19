@@ -28,6 +28,7 @@
 //! is only an inert construction placeholder: because the materializer is installed,
 //! an unavailable publication pin fails closed before that executor can run.
 
+use awaken_provisioning_contract::{SandboxProvider, SessionSandbox};
 use futures_util::FutureExt as _;
 use std::sync::Arc;
 
@@ -651,7 +652,11 @@ impl WorkerNodeBuilder {
     pub fn with_session_container_provider(
         self,
         backend: impl Into<String>,
-        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+        provider: Arc<
+            dyn awaken_provisioning_contract::SandboxProvider<
+                    Environment = dyn awaken_provisioning_contract::SessionSandbox,
+                >,
+        >,
     ) -> Self {
         self.with_session_container_provider_and_capacity(backend, provider, None)
     }
@@ -662,8 +667,12 @@ impl WorkerNodeBuilder {
     pub fn with_session_container_provider_and_capacity(
         mut self,
         backend: impl Into<String>,
-        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
-        capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
+        provider: Arc<
+            dyn awaken_provisioning_contract::SandboxProvider<
+                    Environment = dyn awaken_provisioning_contract::SessionSandbox,
+                >,
+        >,
+        capacity: Option<Arc<dyn awaken_provisioning_contract::SandboxCapacity>>,
     ) -> Self {
         self.session_container_provider = Some(InstalledSessionContainerProvider {
             backend: backend.into(),
@@ -930,7 +939,7 @@ impl WorkerNodeBuilder {
             .as_ref()
             .map(|installed| {
                 (
-                    installed.provider.sandbox_capabilities(),
+                    installed.provider.capabilities(),
                     installed.backend.as_str(),
                 )
             })
@@ -1138,8 +1147,8 @@ pub struct WorkerNode {
 
 struct InstalledSessionContainerProvider {
     backend: String,
-    provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
-    capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
+    provider: Arc<dyn SandboxProvider<Environment = dyn SessionSandbox>>,
+    capacity: Option<Arc<dyn awaken_provisioning_contract::SandboxCapacity>>,
     extra_mounts: Vec<awaken_provisioning_contract::MountRequirement>,
     cache_volume_initializer: Option<Arc<dyn awaken_session_executor::CacheVolumeInitializer>>,
 }

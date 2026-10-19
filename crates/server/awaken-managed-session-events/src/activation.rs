@@ -34,10 +34,7 @@ pub fn activation_failure_projection(
     if persisted.execution != SessionExecutionState::ActivationFailed {
         return Ok(ActivationFailureProjection::NotFailed);
     }
-    let source = persisted
-        .realization_progress
-        .failure_source_run_id
-        .as_deref();
+    let source = persisted.realization_progress().failure_source_run_id();
     let source_terminal = source.and_then(|run_id| {
         lifecycle
             .iter()
@@ -53,9 +50,8 @@ pub fn activation_failure_projection(
         return Ok(ActivationFailureProjection::Ready { error: None });
     }
     let message = persisted
-        .realization_progress
-        .last_error
-        .as_deref()
+        .realization_progress()
+        .last_error()
         .filter(|message| !message.trim().is_empty())
         .ok_or_else(|| {
             ProjectionError::corrupt(

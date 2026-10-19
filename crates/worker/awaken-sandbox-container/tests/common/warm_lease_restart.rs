@@ -18,10 +18,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use awaken_lease_testkit::ManualClock;
 use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::pool::{WarmCapacityLeasePolicy, WarmCapacityLeases};
+
 use awaken_sandbox_container::{
-    ContainerEnvironmentProvider, ContainerProvider, ContainerRealizationNamespace,
-    ContainerRuntime, DecodedContainerHandle, WarmContainerPool,
+    ContainerProvider, ContainerRealizationNamespace, ContainerRuntime, DecodedContainerHandle,
+    WarmContainerPool,
 };
 
 fn spec(scope: &str) -> pc::SandboxSpec {
@@ -257,7 +259,11 @@ pub(crate) fn a_restarted_worker_reclaims_only_expired_never_checked_out_capacit
         .expect("worker A leases its warm capacity");
         assert_eq!(pool.prewarm(&spec("warm"), 2).await.expect("prewarm"), 2);
         let environment = pool
-            .create_unattached_environment(&spec("session"))
+            .claim_for_effect(
+                &spec("session"),
+                awaken_provisioning_contract::SandboxEffect::Unattached,
+                awaken_provisioning_contract::SandboxRealizationIntent::Create,
+            )
             .await
             .expect("check out one warm container");
         let id = DecodedContainerHandle::decode(&pc::Sandbox::handle(environment.as_ref()))

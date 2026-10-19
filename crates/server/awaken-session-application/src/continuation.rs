@@ -102,6 +102,7 @@ impl SessionApplication {
         operation: &awaken_session_state_contract::SessionEnvironmentOperation,
     ) -> Result<String, awaken_session_realization_contract::SessionRealizationControlFailure> {
         let session = self
+            .mutations
             .session_aggregate(session_id)
             .await
             .map_err(repository_control)?;
@@ -161,11 +162,12 @@ impl SessionApplication {
         event: SessionEnvironmentEvent,
         now_unix_ms: u64,
     ) -> Result<ContinuationStep, SessionContinuationError> {
-        let owner_scope = self
+        let mutations = &self.mutations;
+        let owner_scope = mutations
             .owner(session_id)
             .await
             .map_err(SessionContinuationError::mutation)?;
-        let mut session = self
+        let mut session = mutations
             .session_aggregate(session_id)
             .await
             .map_err(|error| SessionContinuationError::Repository(error.to_string()))?;
@@ -209,7 +211,7 @@ impl SessionApplication {
             }
             instruction => return Err(SessionContinuationError::not_a_continuation(instruction)),
         };
-        let root = self
+        let root = mutations
             .commit_session_snapshot_with_outcome(&owner_scope, session, reason, Vec::new())
             .await
             .map(crate::SnapshotCommit::into_session)

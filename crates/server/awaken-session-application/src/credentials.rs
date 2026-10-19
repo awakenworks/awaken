@@ -3,6 +3,7 @@
 // @formal reason: Freezes secret-free exact credential inputs for a Session.
 //! Exact Repository credential pinning at the Session application boundary.
 
+use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_credential_contract::{
     CredentialExecutionPolicy, CredentialSourceId, ModelExposurePolicy, PlaintextHolder,
 };
@@ -160,10 +161,11 @@ impl SessionApplication {
         owner_scope: &str,
         session: PersistedSession,
     ) -> Result<PersistedSession, SessionPreparationError> {
+        let mutations = &self.mutations;
         let mut session = crate::mutation::aggregate_from_snapshot(session)
             .map_err(repository_failure)
             .map_err(mutation_failure)?;
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
             let holder = self.resource_plaintext_holder(&session)?;
             let mut active = session.resources.active.clone();
             let mut pending = session.resources.pending.clone();
@@ -183,7 +185,7 @@ impl SessionApplication {
                 return Ok(session.into_snapshot());
             }
             let session_id = session.session_id.clone();
-            match self
+            match mutations
                 .commit_session_snapshot_with_outcome(
                     owner_scope,
                     session,
@@ -193,8 +195,8 @@ impl SessionApplication {
                 .await
             {
                 Ok(commit) => return Ok(commit.into_session()),
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
-                    session = self
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
+                    session = mutations
                         .session_aggregate(&session_id)
                         .await
                         .map_err(repository_failure)

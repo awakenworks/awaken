@@ -1,7 +1,8 @@
 //! One effect-fenced completion marker for initial Kubernetes input projection.
 
 use super::{K8sRuntime, backend};
-use awaken_sandbox_container::{ContainerEffectFence, RuntimeError};
+use awaken_provisioning_contract::SandboxEffectFence;
+use awaken_sandbox_container::RuntimeError;
 use kube::api::AttachParams;
 use tokio::io::AsyncReadExt as _;
 
@@ -12,7 +13,7 @@ pub(super) const PROJECTION_ROOT: &str = "/run/awaken-projection";
 pub(super) const PROJECTION_FENCE_ENV: &str = "AWAKEN_PROJECTION_FENCE";
 const PROJECTION_MARKER: &str = "/run/awaken-projection/complete";
 
-pub(super) fn projection_fence_value(effect_fence: &ContainerEffectFence) -> String {
+pub(super) fn projection_fence_value(effect_fence: &SandboxEffectFence) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"awaken-k8s-projection-fence/v1\0");
     for value in [
@@ -29,7 +30,7 @@ pub(super) fn projection_fence_value(effect_fence: &ContainerEffectFence) -> Str
 
 pub(super) fn gated_agent_command(
     command: &[String],
-    effect_fence: &ContainerEffectFence,
+    effect_fence: &SandboxEffectFence,
 ) -> Vec<String> {
     // The official Sandbox image already carries tini, but Kubernetes replaces
     // its ENTRYPOINT with this projection gate. Restore the same PID-1 reaper
@@ -59,7 +60,7 @@ pub(super) fn gated_agent_command(
 async fn marker_command(
     runtime: &K8sRuntime,
     container_id: &str,
-    effect_fence: &ContainerEffectFence,
+    effect_fence: &SandboxEffectFence,
     script: &str,
 ) -> Result<Vec<u8>, RuntimeError> {
     runtime.validate_effect_fence(effect_fence)?;
@@ -104,7 +105,7 @@ async fn marker_command(
 pub(super) async fn projection_complete(
     runtime: &K8sRuntime,
     container_id: &str,
-    effect_fence: &ContainerEffectFence,
+    effect_fence: &SandboxEffectFence,
 ) -> Result<bool, RuntimeError> {
     let expected = projection_fence_value(effect_fence);
     let observed = marker_command(
@@ -128,7 +129,7 @@ pub(super) async fn projection_complete(
 pub(super) async fn mark_projection_complete(
     runtime: &K8sRuntime,
     container_id: &str,
-    effect_fence: &ContainerEffectFence,
+    effect_fence: &SandboxEffectFence,
 ) -> Result<(), RuntimeError> {
     marker_command(
         runtime,
@@ -150,8 +151,8 @@ mod tests {
         runtime: &str,
         epoch: u64,
         expiry: u64,
-    ) -> ContainerEffectFence {
-        ContainerEffectFence::new(operation, owner, runtime, epoch, expiry).unwrap()
+    ) -> SandboxEffectFence {
+        SandboxEffectFence::new(operation, owner, runtime, epoch, expiry).unwrap()
     }
 
     #[test]

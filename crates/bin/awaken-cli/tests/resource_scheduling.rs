@@ -9,7 +9,8 @@ use async_trait::async_trait;
 use awaken_cli::build_all_in_one_router_with_host_customizer;
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_sandbox_container::{ContainerEnvironment, ContainerEnvironmentProvider};
+
+use awaken_provisioning_contract::SandboxReadiness;
 use awaken_scenario_host::EchoModel;
 use axum::Router;
 use axum::body::Body;
@@ -29,74 +30,12 @@ fn recording_provider_cannot_advertise_process_stop_evidence() {
     let provider = RecordingProvider {
         specs: Arc::new(Mutex::new(Vec::new())),
     };
-    assert!(!provider.sandbox_capabilities().process_tree_supervision);
+    assert!(!provider.capabilities().process_tree_supervision);
 }
 
 #[async_trait]
-impl ContainerEnvironmentProvider for RecordingProvider {
-    fn adoption_layout(
-        &self,
-        handle: &awaken_provisioning_contract::SandboxHandle,
-    ) -> Result<
-        awaken_container_contract::ContainerAdoptionLayout,
-        awaken_provisioning_contract::SandboxError,
-    > {
-        awaken_sandbox_container::container_adoption_layout(handle)
-    }
-
-    fn physical_incarnation(
-        &self,
-        handle: &awaken_provisioning_contract::SandboxHandle,
-    ) -> Result<String, awaken_provisioning_contract::SandboxError> {
-        awaken_sandbox_container::container_physical_incarnation(handle)
-    }
-
-    async fn observe_environment(
-        &self,
-        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-        _basis: awaken_provisioning_contract::SandboxObservationBasis<'_>,
-    ) -> Result<
-        awaken_provisioning_contract::SandboxObservation,
-        awaken_provisioning_contract::SandboxError,
-    > {
-        Err(awaken_provisioning_contract::SandboxError::unsupported(
-            "test double does not observe Environments",
-        ))
-    }
-    async fn adopt_environment_for_effect(
-        &self,
-        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-        _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
-        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
-    ) -> Result<
-        std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
-        awaken_provisioning_contract::SandboxError,
-    > {
-        Err(awaken_provisioning_contract::SandboxError::unsupported(
-            "test double does not implement fenced Environment adoption",
-        ))
-    }
-    async fn prepare_terminal_environment_for_effect(
-        &self,
-        _spec: &awaken_provisioning_contract::SandboxSpec,
-        _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
-        _expected_effect_fence: Option<&awaken_sandbox_container::ContainerEffectFence>,
-        _terminal_effect_fence: &awaken_sandbox_container::ContainerEffectFence,
-        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
-    ) -> Result<
-        Option<std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
-        awaken_provisioning_contract::SandboxError,
-    > {
-        Err(awaken_provisioning_contract::SandboxError::unsupported(
-            "test double does not implement fenced terminal preparation",
-        ))
-    }
-
-    async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
-        Ok(())
-    }
-
-    fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
+impl awaken_provisioning_contract::SandboxReadiness for RecordingProvider {
+    fn capabilities(&self) -> pc::SandboxCapabilities {
         pc::SandboxCapabilities {
             isolation: pc::IsolationClass::Container,
             process_tree_supervision: false,
@@ -113,52 +52,171 @@ impl ContainerEnvironmentProvider for RecordingProvider {
         }
     }
 
-    async fn create_unattached_environment(
-        &self,
-        _spec: &pc::SandboxSpec,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        panic!("managed Session creation must use the fenced provider entrance");
+    fn checkpoint_formats(&self) -> Vec<String> {
+        Vec::new()
     }
 
-    async fn create_environment_for_effect(
+    async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_provisioning_contract::SandboxProvider for RecordingProvider {
+    type Environment = dyn awaken_provisioning_contract::SessionSandbox;
+
+    fn install_memory_mounter(
         &self,
-        spec: &pc::SandboxSpec,
-        fence: &pc::SandboxEffectFence,
-        source: &dyn pc::CurrentExecutionAuthority,
-        intent: awaken_container_contract::EnvironmentRealizationIntent,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        assert!(matches!(
-            intent,
-            awaken_container_contract::EnvironmentRealizationIntent::Create
-        ));
-        pc::with_current_sandbox_effect(fence, source, |_| {
-            let mut specs = self.specs.lock().unwrap();
-            if let Some(prior) = specs.iter().find(|prior| prior.scope == spec.scope) {
-                assert_eq!(
-                    prior.requests, spec.requests,
-                    "retry preserves frozen requests"
-                );
-                assert_eq!(prior.limits, spec.limits, "retry preserves frozen limits");
-            } else {
-                specs.push(spec.clone());
+        _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
+    ) {
+    }
+
+    fn install_secret_broker(
+        &self,
+        _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
+    ) {
+    }
+
+    async fn prewarm_images(
+        &self,
+        _specs: &[awaken_provisioning_contract::SandboxSpec],
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Ok(())
+    }
+
+    fn adoption_layout(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<
+        awaken_provisioning_contract::SandboxAdoptionLayout,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        awaken_sandbox_container::container_adoption_layout(handle)
+    }
+
+    fn validate_closed_observation(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+        observation: &awaken_provisioning_contract::SandboxObservation,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        awaken_sandbox_container::validate_container_closed_observation(handle, observation)
+    }
+
+    fn claim_for_effect<'a>(
+        &'a self,
+        spec: &'a awaken_provisioning_contract::SandboxSpec,
+        effect: awaken_provisioning_contract::SandboxEffect<'a>,
+        intent: awaken_provisioning_contract::SandboxRealizationIntent,
+    ) -> awaken_provisioning_contract::ClaimedEffect<
+        'a,
+        std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
+    > {
+        let claim = awaken_provisioning_contract::EffectClaim::in_process(
+            awaken_provisioning_contract::test_support::retain_abandoned_effect(spec.scope.clone()),
+        );
+        awaken_provisioning_contract::ClaimedEffect::new(claim, async move {
+            intent.admit_under(effect)?;
+            match effect {
+                awaken_provisioning_contract::SandboxEffect::Unattached => {
+                    let _spec = spec;
+
+                    panic!("managed Session creation must use the fenced provider entrance");
+                }
+                awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority } => {
+                    let source = authority;
+
+                    assert!(matches!(
+                        intent,
+                        awaken_provisioning_contract::SandboxRealizationIntent::Create
+                    ));
+                    pc::with_current_sandbox_effect(fence, source, |_| {
+                        let mut specs = self.specs.lock().unwrap();
+                        if let Some(prior) = specs.iter().find(|prior| prior.scope == spec.scope) {
+                            assert_eq!(
+                                prior.requests, spec.requests,
+                                "retry preserves frozen requests"
+                            );
+                            assert_eq!(prior.limits, spec.limits, "retry preserves frozen limits");
+                        } else {
+                            specs.push(spec.clone());
+                        }
+                        Ok(())
+                    })?;
+                    // This test owns projection, not process creation or stop evidence.
+                    // End the probe here; no fabricated SandboxHandle/remote Hand is needed.
+                    Err(pc::SandboxError::backend(
+                        "create_environment_for_effect",
+                        "resource projection probe complete",
+                    ))
+                }
             }
-            Ok(())
-        })?;
-        // This test owns projection, not process creation or stop evidence.
-        // End the probe here; no fabricated SandboxHandle/remote Hand is needed.
-        Err(pc::SandboxError::backend(
-            "create_environment_for_effect",
-            "resource projection probe complete",
+        })
+    }
+
+    async fn observe(
+        &self,
+        _adoption: awaken_provisioning_contract::SandboxAdoption<'_>,
+        _basis: awaken_provisioning_contract::SandboxObservationBasis<'_>,
+    ) -> Result<
+        awaken_provisioning_contract::SandboxObservation,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test double does not observe Environments",
         ))
     }
 
-    async fn adopt_unattached_environment(
+    async fn adopt_for_effect(
         &self,
-        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        Err(pc::SandboxError::invalid(
-            "resource proof does not recover a Session",
+        adoption: awaken_provisioning_contract::SandboxAdoption<'_>,
+        effect: awaken_provisioning_contract::SandboxEffect<'_>,
+    ) -> Result<
+        std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        match effect {
+            awaken_provisioning_contract::SandboxEffect::Unattached => {
+                let _adoption = adoption;
+
+                Err(pc::SandboxError::invalid(
+                    "resource proof does not recover a Session",
+                ))
+            }
+            awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority } => {
+                let _adoption = adoption;
+                let _effect_fence = fence;
+                let _authority = authority;
+
+                Err(awaken_provisioning_contract::SandboxError::unsupported(
+                    "test double does not implement fenced Environment adoption",
+                ))
+            }
+        }
+    }
+
+    async fn prepare_terminal_for_effect(
+        &self,
+        _spec: &awaken_provisioning_contract::SandboxSpec,
+        _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
+        _expected_effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
+        _terminal_effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
+        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+    ) -> Result<
+        Option<std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test double does not implement fenced terminal preparation",
         ))
+    }
+
+    fn restoration(
+        &self,
+    ) -> awaken_provisioning_contract::SandboxRestoration<
+        '_,
+        std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
+    > {
+        awaken_provisioning_contract::SandboxRestoration::Unsupported
     }
 }
 

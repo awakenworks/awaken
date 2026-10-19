@@ -26,7 +26,6 @@ awaken-credential-materializer.workspace = true
 # The one authoritative ACP adapter catalog queried by that policy.
 awaken-run-executor-acp.workspace = true
 # The backend-erased container ports the Session owner holds.
-awaken-container-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-connection-plan.workspace = true
 awaken-time.workspace = true

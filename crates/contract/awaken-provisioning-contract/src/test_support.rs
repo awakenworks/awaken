@@ -220,3 +220,30 @@ impl FenceTamper for SandboxEffectFence {
             .expect("a tampered fixture fence stays admissible");
     }
 }
+
+// Fixture-input partitions: F1 Sandbox admission uses Workdir + Some(60);
+// F2 adoption/effect tables use their original scope + None; F3 the namespace
+// admission setup adds its readonly file/TZ/allowlist; F4 restoration setup
+// retains its own outputs/agent command. Those existing tests own outcomes.
+// This one DTO initializer creates no environment, claim, clock or authority.
+#[cfg(test)]
+pub(crate) fn spec(scope: &str, lease_ttl_secs: Option<u64>) -> crate::SandboxSpec {
+    crate::SandboxSpec {
+        process_tree_supervision: false,
+        scope: scope.into(),
+        isolation: crate::IsolationClass::Workdir,
+        mounts: Vec::new(),
+        env: Vec::new(),
+        packages: Default::default(),
+        network: crate::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
+        limits: Default::default(),
+        filesystem_continuity: crate::FilesystemContinuity::Retained,
+        lease_ttl_secs,
+        control_services: Default::default(),
+        environment: None,
+        command: Vec::new(),
+        deny_tool_egress: false,
+    }
+}

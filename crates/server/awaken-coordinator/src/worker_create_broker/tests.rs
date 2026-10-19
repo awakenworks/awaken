@@ -439,7 +439,7 @@ async fn worker_response_loss_does_not_cancel_the_one_admitted_create() {
         assert_eq!(pod_posts.load(Ordering::SeqCst), 1, "R5 no new API Create");
     }
     *created_pod.lock().unwrap() = Some(original);
-    let predecessor = ContainerEffectFence::new(
+    let predecessor = SandboxEffectFence::new(
         "effect-a",
         &identity.worker_id,
         identity.lease_owner(),

@@ -16,7 +16,7 @@ use awaken_session_executor::{DeploymentConfig, SandboxTier, SessionExecutorBuil
 pub fn local_tier_readiness(
     tier: SandboxTier,
     base: &Path,
-) -> Option<Arc<dyn awaken_provisioning_contract::SandboxProvider>> {
+) -> Option<Arc<dyn awaken_provisioning_contract::SandboxReadiness>> {
     match tier {
         SandboxTier::Local => Some(Arc::new(awaken_sandbox_local::LocalProvider::new(
             base.to_path_buf(),

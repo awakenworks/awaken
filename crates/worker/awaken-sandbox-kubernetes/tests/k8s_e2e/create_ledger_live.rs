@@ -1,8 +1,9 @@
 use super::*;
+use awaken_container_contract::{K8sCreateRequest, K8sCreateResponse};
 use awaken_sandbox_container::{CreateTicketRequest, TicketResult};
 use awaken_sandbox_kubernetes::{
-    ISOLATION_LABEL, K8sCreateRequest, K8sCreateResponse, K8sCreateTransport, K8sLedgerBinding,
-    K8sWorkerCreateLedger, RequestJoin, TicketAdmission,
+    ISOLATION_LABEL, K8sCreateTransport, K8sLedgerBinding, K8sWorkerCreateLedger, RequestJoin,
+    TicketAdmission,
 };
 
 const GUARDED_CLAIM_GROUP: &str = "guarded-claim-effect";
@@ -17,7 +18,7 @@ struct ClaimOnlyBroker {
     ledger_name: String,
     ledger_uid: String,
     scope: String,
-    predecessor: awaken_sandbox_container::ContainerEffectFence,
+    predecessor: awaken_provisioning_contract::SandboxEffectFence,
     created_claim: Arc<Mutex<Option<(String, String)>>>,
 }
 
@@ -101,7 +102,7 @@ impl K8sCreateTransport for ClaimOnlyBroker {
     async fn seal_predecessor(
         &self,
         scope: &str,
-        predecessor: &awaken_sandbox_container::ContainerEffectFence,
+        predecessor: &awaken_provisioning_contract::SandboxEffectFence,
         expected_pod_name: &str,
     ) -> Result<RequestJoin, awaken_sandbox_container::RuntimeError> {
         if scope != self.scope || !predecessor.same_effect_identity(&self.predecessor) {
@@ -235,9 +236,10 @@ async fn first_pod_create_verifies_the_live_api_defaulted_projection() {
     if !require_live_cluster() {
         return;
     }
+    use awaken_provisioning_contract::{SandboxCreateAttempt, SandboxEffectFence};
     use awaken_sandbox_container::{
-        ContainerCreateAttempt, ContainerEffectFence, ContainerPlan, ContainerRealizationContext,
-        ContainerRealizationIntent, NetworkMode, RootfsPlan,
+        ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent, NetworkMode,
+        RootfsPlan,
     };
     use k8s_openapi::api::core::v1::Pod;
     use kube::api::{DeleteParams, ListParams, Preconditions};
@@ -269,7 +271,7 @@ async fn first_pod_create_verifies_the_live_api_defaulted_projection() {
         .await
         .unwrap();
     let fingerprint = serde_json::from_value(serde_json::json!("live-create-projection")).unwrap();
-    let fence = ContainerEffectFence::new(
+    let fence = SandboxEffectFence::new(
         "live-create-projection",
         "worker",
         "worker-boot",
@@ -277,7 +279,7 @@ async fn first_pod_create_verifies_the_live_api_defaulted_projection() {
         u64::MAX,
     )
     .unwrap();
-    let attempt = ContainerCreateAttempt::new(uuid::Uuid::new_v4().to_string());
+    let attempt = SandboxCreateAttempt::new(uuid::Uuid::new_v4().to_string());
     let intent = ContainerRealizationIntent::Create;
     let context =
         ContainerRealizationContext::new(&scope, &fingerprint, Some(&fence), &intent, &attempt);
@@ -788,7 +790,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
             predecessor: claim_fence.clone(),
             created_claim: claim_result.clone(),
         });
-        let volume = awaken_sandbox_container::K8sContinuationVolume {
+        let volume = awaken_container_contract::K8sContinuationVolume {
             storage_class_name: None,
             size: "1Gi".into(),
         };
@@ -806,13 +808,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
             fixture_image(),
             vec!["sh".into(), "-c".into(), "sleep 30".into()],
         );
-        let create_result = ContainerEnvironmentProvider::create_environment_for_effect(
-            &first_provider,
-            &frozen,
-            &claim_fence,
-            &EffectAuthority::new(&claim_fence),
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
-        )
+        let create_result = SandboxProvider::claim_for_effect(&first_provider, &frozen, awaken_provisioning_contract::SandboxEffect::Fenced { fence: &claim_fence, authority: &EffectAuthority::new(&claim_fence) }, awaken_provisioning_contract::SandboxRealizationIntent::Create)
         .await;
         if create_result.is_ok() {
             return Err(io::Error::other("GC1 injected lost Pod Create unexpectedly returned a handle").into());
@@ -859,7 +855,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
         let replacement = ContainerProvider::new(Arc::new(replacement_runtime), fixture_image())
             .with_clock(awaken_time::system_clock());
         let authority = EffectAuthority::new(&terminal_fence);
-        let target = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        let target = SandboxProvider::prepare_terminal_for_effect(
             &replacement,
             &frozen,
             None,
@@ -930,7 +926,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
         if !matches!(late, Err(kube::Error::Api(error)) if error.code == 409) {
             return Err(io::Error::other("GC1 late same-name Pod bypassed the guard").into());
         }
-        if ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        if SandboxProvider::prepare_terminal_for_effect(
             &replacement,
             &frozen,
             None,

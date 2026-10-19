@@ -136,9 +136,9 @@ async fn configured_execution_probe_uses_the_real_boundary_and_keeps_admission_c
     provider
         .install_execution_deployment(deployment.clone())
         .unwrap();
-    pc::SandboxProvider::probe_ready(&provider).await.unwrap();
+    pc::SandboxReadiness::probe_ready(&provider).await.unwrap();
     assert_eq!(provider.execution_deployment(), Some(&deployment));
-    assert!(!pc::SandboxProvider::capabilities(&provider).process_tree_supervision);
+    assert!(!pc::SandboxReadiness::capabilities(&provider).process_tree_supervision);
     let sandbox = provider
         .create_sandbox_for_effect(
             &spec(),

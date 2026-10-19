@@ -1,6 +1,8 @@
 //! Terminal preparation reconstructs only exact physical cleanup: no live control
 //! binding, no ordinary execution, and no rebinding of a closed owner.
 use super::*;
+use awaken_provisioning_contract::SandboxAdoption;
+use awaken_provisioning_contract::SandboxProvider;
 
 #[tokio::test]
 async fn terminal_control_reconstruction_does_not_require_a_live_binding() {
@@ -63,17 +65,19 @@ async fn terminal_control_reconstruction_does_not_require_a_live_binding() {
             }
         });
         assert!(
-            ContainerEnvironmentProvider::adopt_environment_for_effect(
+            SandboxProvider::adopt_for_effect(
                 &provider,
-                ContainerEnvironmentAdoption::new(&desired, &handle),
-                &fence,
-                &authority,
+                SandboxAdoption::new(&desired, &handle),
+                awaken_provisioning_contract::SandboxEffect::Fenced {
+                    fence: &fence,
+                    authority: &authority
+                }
             )
             .await
             .is_err(),
             "TC3 ordinary execution is refused"
         );
-        let cleanup = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        let cleanup = SandboxProvider::prepare_terminal_for_effect(
             &provider,
             &desired,
             Some(&handle),
@@ -114,7 +118,7 @@ async fn terminal_control_reconstruction_does_not_require_a_live_binding() {
         );
         runtime.set_observation(pc::SandboxObservation::Ready);
         assert!(
-            ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+            SandboxProvider::prepare_terminal_for_effect(
                 &provider,
                 &desired,
                 Some(&handle),
@@ -190,7 +194,7 @@ async fn disposing_terminal_preparation_reconstructs_only_physical_cleanup() {
         physical_incarnation: handle.container_physical_incarnation().unwrap().to_string(),
     });
 
-    let cleanup = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+    let cleanup = SandboxProvider::prepare_terminal_for_effect(
         &provider,
         &sandbox_spec,
         Some(&handle),

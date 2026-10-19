@@ -136,41 +136,98 @@ pub(crate) struct UnusedContainerProvider;
 struct CheckpointContainerProvider;
 
 #[async_trait::async_trait]
-impl awaken_sandbox_container::ContainerEnvironmentProvider for CheckpointContainerProvider {
+impl awaken_provisioning_contract::SandboxReadiness for CheckpointContainerProvider {
+    fn capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
+        Default::default()
+    }
+
+    fn checkpoint_formats(&self) -> Vec<String> {
+        vec!["hosted-csi-v1".into()]
+    }
+
+    async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_provisioning_contract::SandboxProvider for CheckpointContainerProvider {
+    type Environment = dyn awaken_provisioning_contract::SessionSandbox;
+
+    fn install_memory_mounter(
+        &self,
+        _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
+    ) {
+    }
+
+    fn install_secret_broker(
+        &self,
+        _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
+    ) {
+    }
+
+    async fn prewarm_images(
+        &self,
+        _specs: &[awaken_provisioning_contract::SandboxSpec],
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Ok(())
+    }
+
     fn adoption_layout(
         &self,
         handle: &awaken_provisioning_contract::SandboxHandle,
     ) -> Result<
-        awaken_container_contract::ContainerAdoptionLayout,
+        awaken_provisioning_contract::SandboxAdoptionLayout,
         awaken_provisioning_contract::SandboxError,
     > {
         awaken_sandbox_container::container_adoption_layout(handle)
     }
 
-    fn physical_incarnation(
+    fn validate_closed_observation(
         &self,
         handle: &awaken_provisioning_contract::SandboxHandle,
-    ) -> Result<String, awaken_provisioning_contract::SandboxError> {
-        awaken_sandbox_container::container_physical_incarnation(handle)
+        observation: &awaken_provisioning_contract::SandboxObservation,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        awaken_sandbox_container::validate_container_closed_observation(handle, observation)
     }
 
-    async fn create_environment_for_effect(
-        &self,
-        _spec: &awaken_provisioning_contract::SandboxSpec,
-        _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
-        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
-        _intent: awaken_container_contract::EnvironmentRealizationIntent,
-    ) -> Result<
-        std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
-        awaken_provisioning_contract::SandboxError,
+    fn claim_for_effect<'a>(
+        &'a self,
+        spec: &'a awaken_provisioning_contract::SandboxSpec,
+        effect: awaken_provisioning_contract::SandboxEffect<'a>,
+        intent: awaken_provisioning_contract::SandboxRealizationIntent,
+    ) -> awaken_provisioning_contract::ClaimedEffect<
+        'a,
+        std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
     > {
-        Err(awaken_provisioning_contract::SandboxError::unsupported(
-            "test double does not implement fenced Environment creation",
-        ))
+        let claim = awaken_provisioning_contract::EffectClaim::in_process(
+            awaken_provisioning_contract::test_support::retain_abandoned_effect(spec.scope.clone()),
+        );
+        awaken_provisioning_contract::ClaimedEffect::new(claim, async move {
+            intent.admit_under(effect)?;
+            match effect {
+                awaken_provisioning_contract::SandboxEffect::Unattached => {
+                    let _spec = spec;
+
+                    unreachable!("builder tests do not create an environment")
+                }
+                awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority } => {
+                    let _spec = spec;
+                    let _effect_fence = fence;
+                    let _authority = authority;
+                    let _intent = intent;
+
+                    Err(awaken_provisioning_contract::SandboxError::unsupported(
+                        "test double does not implement fenced Environment creation",
+                    ))
+                }
+            }
+        })
     }
-    async fn observe_environment(
+
+    async fn observe(
         &self,
-        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        _adoption: awaken_provisioning_contract::SandboxAdoption<'_>,
         _basis: awaken_provisioning_contract::SandboxObservationBasis<'_>,
     ) -> Result<
         awaken_provisioning_contract::SandboxObservation,
@@ -180,28 +237,42 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for CheckpointContai
             "test double does not observe Environments",
         ))
     }
-    async fn adopt_environment_for_effect(
+
+    async fn adopt_for_effect(
         &self,
-        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-        _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
-        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+        adoption: awaken_provisioning_contract::SandboxAdoption<'_>,
+        effect: awaken_provisioning_contract::SandboxEffect<'_>,
     ) -> Result<
-        std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
         awaken_provisioning_contract::SandboxError,
     > {
-        Err(awaken_provisioning_contract::SandboxError::unsupported(
-            "test double does not implement fenced Environment adoption",
-        ))
+        match effect {
+            awaken_provisioning_contract::SandboxEffect::Unattached => {
+                let _adoption = adoption;
+
+                unreachable!("builder tests do not adopt an environment")
+            }
+            awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority } => {
+                let _adoption = adoption;
+                let _effect_fence = fence;
+                let _authority = authority;
+
+                Err(awaken_provisioning_contract::SandboxError::unsupported(
+                    "test double does not implement fenced Environment adoption",
+                ))
+            }
+        }
     }
-    async fn prepare_terminal_environment_for_effect(
+
+    async fn prepare_terminal_for_effect(
         &self,
         _spec: &awaken_provisioning_contract::SandboxSpec,
         _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
-        _expected_effect_fence: Option<&awaken_sandbox_container::ContainerEffectFence>,
-        _terminal_effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _expected_effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
+        _terminal_effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
         _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
     ) -> Result<
-        Option<std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+        Option<std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>>,
         awaken_provisioning_contract::SandboxError,
     > {
         Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -209,32 +280,13 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for CheckpointContai
         ))
     }
 
-    async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
-        Ok(())
-    }
-
-    fn checkpoint_formats(&self) -> Vec<String> {
-        vec!["hosted-csi-v1".into()]
-    }
-
-    async fn create_unattached_environment(
+    fn restoration(
         &self,
-        _spec: &awaken_provisioning_contract::SandboxSpec,
-    ) -> Result<
-        Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
-        awaken_provisioning_contract::SandboxError,
+    ) -> awaken_provisioning_contract::SandboxRestoration<
+        '_,
+        std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
     > {
-        unreachable!("builder tests do not create an environment")
-    }
-
-    async fn adopt_unattached_environment(
-        &self,
-        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-    ) -> Result<
-        Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
-        awaken_provisioning_contract::SandboxError,
-    > {
-        unreachable!("builder tests do not adopt an environment")
+        awaken_provisioning_contract::SandboxRestoration::Unsupported
     }
 }
 
@@ -263,41 +315,100 @@ impl awaken_provisioning_contract::SandboxCheckpointStore for UnusedCheckpointSt
 }
 
 #[async_trait::async_trait]
-impl awaken_sandbox_container::ContainerEnvironmentProvider for UnusedContainerProvider {
+impl awaken_provisioning_contract::SandboxReadiness for UnusedContainerProvider {
+    fn capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
+        Default::default()
+    }
+
+    fn checkpoint_formats(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_provisioning_contract::SandboxProvider for UnusedContainerProvider {
+    type Environment = dyn awaken_provisioning_contract::SessionSandbox;
+
+    fn install_memory_mounter(
+        &self,
+        _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
+    ) {
+    }
+
+    fn install_secret_broker(
+        &self,
+        _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
+    ) {
+    }
+
+    async fn prewarm_images(
+        &self,
+        _specs: &[awaken_provisioning_contract::SandboxSpec],
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Ok(())
+    }
+
     fn adoption_layout(
         &self,
         handle: &awaken_provisioning_contract::SandboxHandle,
     ) -> Result<
-        awaken_container_contract::ContainerAdoptionLayout,
+        awaken_provisioning_contract::SandboxAdoptionLayout,
         awaken_provisioning_contract::SandboxError,
     > {
         awaken_sandbox_container::container_adoption_layout(handle)
     }
 
-    fn physical_incarnation(
+    fn validate_closed_observation(
         &self,
         handle: &awaken_provisioning_contract::SandboxHandle,
-    ) -> Result<String, awaken_provisioning_contract::SandboxError> {
-        awaken_sandbox_container::container_physical_incarnation(handle)
+        observation: &awaken_provisioning_contract::SandboxObservation,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        awaken_sandbox_container::validate_container_closed_observation(handle, observation)
     }
 
-    async fn create_environment_for_effect(
-        &self,
-        _spec: &awaken_provisioning_contract::SandboxSpec,
-        _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
-        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
-        _intent: awaken_container_contract::EnvironmentRealizationIntent,
-    ) -> Result<
-        std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
-        awaken_provisioning_contract::SandboxError,
+    fn claim_for_effect<'a>(
+        &'a self,
+        spec: &'a awaken_provisioning_contract::SandboxSpec,
+        effect: awaken_provisioning_contract::SandboxEffect<'a>,
+        intent: awaken_provisioning_contract::SandboxRealizationIntent,
+    ) -> awaken_provisioning_contract::ClaimedEffect<
+        'a,
+        std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
     > {
-        Err(awaken_provisioning_contract::SandboxError::unsupported(
-            "test double does not implement fenced Environment creation",
-        ))
+        let claim = awaken_provisioning_contract::EffectClaim::in_process(
+            awaken_provisioning_contract::test_support::retain_abandoned_effect(spec.scope.clone()),
+        );
+        awaken_provisioning_contract::ClaimedEffect::new(claim, async move {
+            intent.admit_under(effect)?;
+            match effect {
+                awaken_provisioning_contract::SandboxEffect::Unattached => {
+                    let _spec = spec;
+
+                    Err(awaken_provisioning_contract::SandboxError::unsupported(
+                        "unused test provider",
+                    ))
+                }
+                awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority } => {
+                    let _spec = spec;
+                    let _effect_fence = fence;
+                    let _authority = authority;
+                    let _intent = intent;
+
+                    Err(awaken_provisioning_contract::SandboxError::unsupported(
+                        "test double does not implement fenced Environment creation",
+                    ))
+                }
+            }
+        })
     }
-    async fn observe_environment(
+
+    async fn observe(
         &self,
-        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        _adoption: awaken_provisioning_contract::SandboxAdoption<'_>,
         _basis: awaken_provisioning_contract::SandboxObservationBasis<'_>,
     ) -> Result<
         awaken_provisioning_contract::SandboxObservation,
@@ -307,28 +418,44 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for UnusedContainerP
             "test double does not observe Environments",
         ))
     }
-    async fn adopt_environment_for_effect(
+
+    async fn adopt_for_effect(
         &self,
-        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-        _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
-        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+        adoption: awaken_provisioning_contract::SandboxAdoption<'_>,
+        effect: awaken_provisioning_contract::SandboxEffect<'_>,
     ) -> Result<
-        std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
         awaken_provisioning_contract::SandboxError,
     > {
-        Err(awaken_provisioning_contract::SandboxError::unsupported(
-            "test double does not implement fenced Environment adoption",
-        ))
+        match effect {
+            awaken_provisioning_contract::SandboxEffect::Unattached => {
+                let _adoption = adoption;
+
+                Err(awaken_provisioning_contract::SandboxError::unsupported(
+                    "unused test provider",
+                ))
+            }
+            awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority } => {
+                let _adoption = adoption;
+                let _effect_fence = fence;
+                let _authority = authority;
+
+                Err(awaken_provisioning_contract::SandboxError::unsupported(
+                    "test double does not implement fenced Environment adoption",
+                ))
+            }
+        }
     }
-    async fn prepare_terminal_environment_for_effect(
+
+    async fn prepare_terminal_for_effect(
         &self,
         _spec: &awaken_provisioning_contract::SandboxSpec,
         _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
-        _expected_effect_fence: Option<&awaken_sandbox_container::ContainerEffectFence>,
-        _terminal_effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _expected_effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
+        _terminal_effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
         _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
     ) -> Result<
-        Option<std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+        Option<std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>>,
         awaken_provisioning_contract::SandboxError,
     > {
         Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -336,32 +463,13 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for UnusedContainerP
         ))
     }
 
-    async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
-        Ok(())
-    }
-
-    async fn create_unattached_environment(
+    fn restoration(
         &self,
-        _spec: &awaken_provisioning_contract::SandboxSpec,
-    ) -> Result<
-        Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
-        awaken_provisioning_contract::SandboxError,
+    ) -> awaken_provisioning_contract::SandboxRestoration<
+        '_,
+        std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
     > {
-        Err(awaken_provisioning_contract::SandboxError::unsupported(
-            "unused test provider",
-        ))
-    }
-
-    async fn adopt_unattached_environment(
-        &self,
-        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-    ) -> Result<
-        Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
-        awaken_provisioning_contract::SandboxError,
-    > {
-        Err(awaken_provisioning_contract::SandboxError::unsupported(
-            "unused test provider",
-        ))
+        awaken_provisioning_contract::SandboxRestoration::Unsupported
     }
 }
 
@@ -823,8 +931,11 @@ async fn container_preparation_preserves_existing_provider_and_refuses_foreign_c
             awaken_time::system_clock(),
         )
         .with_deployment_config(configuration);
-        let provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider> =
-            Arc::new(UnusedContainerProvider);
+        let provider: Arc<
+            dyn awaken_provisioning_contract::SandboxProvider<
+                    Environment = dyn awaken_provisioning_contract::SessionSandbox,
+                >,
+        > = Arc::new(UnusedContainerProvider);
         if selected {
             builder = builder.with_session_container_provider("selected", provider.clone());
         }
@@ -1215,9 +1326,9 @@ fn external_credential_resolver_has_one_canonical_resolution_path() {
 fn standard_manifest_advertises_only_installed_credential_mechanisms() {
     let mut acp = deployment();
     acp.acp = Some(
-        awaken_session_executor::AcpWorkerProfile::new(
+        awaken_acp_contract::AcpWorkerProfile::new(
             ["claude".to_string(), "codex".to_string()],
-            awaken_execution_composition::acp_adapter_policy(),
+            awaken_run_executor_acp::acp_adapter_policy(),
         )
         .expect("mixed ACP profile"),
     );
@@ -1736,9 +1847,9 @@ fn configured_container_acp_uses_live_image_probe_targets_only() {
     // | R5 | yes | every catalog row | yes | one exact target per row |
     let mut config = deployment();
     config.acp = Some(
-        awaken_session_executor::AcpWorkerProfile::new(
+        awaken_acp_contract::AcpWorkerProfile::new(
             vec!["gemini".into()],
-            awaken_execution_composition::acp_adapter_policy(),
+            awaken_run_executor_acp::acp_adapter_policy(),
         )
         .unwrap(),
     );
@@ -1760,9 +1871,9 @@ fn configured_container_acp_uses_live_image_probe_targets_only() {
     );
 
     config.acp = Some(
-        awaken_session_executor::AcpWorkerProfile::new(
+        awaken_acp_contract::AcpWorkerProfile::new(
             vec!["gemini".into()],
-            awaken_execution_composition::acp_adapter_policy(),
+            awaken_run_executor_acp::acp_adapter_policy(),
         )
         .unwrap(),
     );
@@ -1791,9 +1902,9 @@ fn configured_container_acp_uses_live_image_probe_targets_only() {
     config.container_image = Some("image@sha256:exact".into());
     let catalog = awaken_run_executor_acp::known_acp_clis();
     config.acp = Some(
-        awaken_session_executor::AcpWorkerProfile::new(
+        awaken_acp_contract::AcpWorkerProfile::new(
             catalog.iter().map(|cli| cli.id.to_owned()),
-            awaken_execution_composition::acp_adapter_policy(),
+            awaken_run_executor_acp::acp_adapter_policy(),
         )
         .unwrap(),
     );

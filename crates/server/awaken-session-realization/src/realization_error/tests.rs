@@ -524,5 +524,19 @@ fn only_a_provision_within_its_deadline_hints_when_to_look_again() {
             );
             assert!(!hint.is_zero(), "{rule}");
         }
+        // H4 all H1-H3 observations cross the projection/driver boundary
+        // through the same Run projection, preserving this exact provider
+        // hint instead of classifying or sampling its deadline a second time.
+        let class = error.disposition().contract_class();
+        let code = error.code().into_owned();
+        let failure =
+            awaken_session_realization_contract::SessionRealizationEffectFailure::from(error);
+        assert_eq!(failure.retry_after(), hint, "H4 {rule} hint");
+        assert_eq!(failure.run_error().code, code, "H4 {rule} code");
+        assert_eq!(
+            awaken_session_realization_contract::effect_failure_disposition(failure.run_error()),
+            class,
+            "H4 {rule} class"
+        );
     }
 }

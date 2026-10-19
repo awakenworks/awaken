@@ -8,6 +8,7 @@
 // @formal entrypoint session_run.execution_requires_dispatch_work_and_realization_owner
 // @formal entrypoint session_time.root_observations_are_revision_bound_and_replay_stable
 // @formal entrypoint session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
+use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_session_application_contract::process_local_executable_projection_admission;
 use awaken_session_state_contract::{
     SessionEnvironmentEffectAuthorization, SessionEnvironmentEffectIntent,
@@ -117,15 +118,16 @@ pub struct SessionApplication {
     resource_references: Option<Arc<dyn awaken_resource_contract::ResourceReferenceIndex>>,
     resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
     managed_list_prices: Option<Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>>,
-    sessions_repo: Arc<dyn SessionRepository>,
+    mutations: crate::SessionMutations,
+    queries: Arc<crate::SessionQueries>,
+    inputs: Arc<crate::SessionInputs>,
     environment_binding_sink: Arc<dyn SessionEnvironmentBindingSink>,
     /// Drain side of the same store's transactional lifecycle outbox. The
     /// application never reads it; it only hands it to the one delivery
     /// consumer bound through [`Self::set_lifecycle_notifier`].
     lifecycle_outbox: Arc<dyn awaken_session_repository_contract::LifecycleOutbox>,
-    /// One process-owned high-water reconciler for the rebuildable Agent and
-    /// Environment projections. It is late-bound by split-process composition;
-    /// AllInOne has no cross-replica projection and leaves it absent.
+    /// The one process-owned high-water reconciler, invoked at lifecycle
+    /// admission boundaries. Query reads never drive it.
     executable_projection_refresh:
         Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
     /// One process-owned wake channel for the durable lifecycle outbox.  This is
@@ -140,8 +142,6 @@ pub struct SessionApplication {
     session_preparation_cursors:
         tokio::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<Option<SessionScanCursor>>>>>,
     runtime_incarnation: String,
-    #[cfg(any(test, feature = "test-support"))]
-    mutation_sequence: AtomicU64,
     lifecycle_supervisor_started: AtomicBool,
     lifecycle_wakeup: tokio::sync::Notify,
     event_batch_cutover_validation: Arc<SessionEventBatchCutoverValidationSource>,
@@ -152,6 +152,12 @@ pub struct SessionApplication {
 static APPLICATION_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
 
 impl SessionApplication {
+    /// The canonical root CAS component shared by all Session use cases.
+    /// This is a constructed component, not a discovered optional capability.
+    pub fn mutations(&self) -> &crate::SessionMutations {
+        &self.mutations
+    }
+
     /// The injected clock port, for an adapter that stamps observations on the
     /// same time line as this application's commands.
     #[must_use]
@@ -275,7 +281,7 @@ impl SessionApplication {
 
     #[must_use]
     pub(crate) fn session_repository(&self) -> &dyn SessionRepository {
-        self.sessions_repo.as_ref()
+        self.mutations.repository().as_ref()
     }
 
     /// Read the Session aggregate's one durable realization-owner authority.
@@ -345,7 +351,7 @@ impl SessionApplication {
     /// transports that must authorize a projection frozen after dispatch.
     #[must_use]
     pub fn session_repository_handle(&self) -> Arc<dyn SessionRepository> {
-        self.sessions_repo.clone()
+        self.mutations.repository().clone()
     }
 
     /// Clone the drain port of the same store for the one lifecycle delivery
@@ -355,6 +361,24 @@ impl SessionApplication {
         &self,
     ) -> Arc<dyn awaken_session_repository_contract::LifecycleOutbox> {
         self.lifecycle_outbox.clone()
+    }
+
+    /// The independently constructed read service, shared with protocol roles.
+    #[must_use]
+    pub fn queries(&self) -> Arc<crate::SessionQueries> {
+        self.queries.clone()
+    }
+
+    /// The selected input use-case service, shared directly with adapters.
+    #[must_use]
+    pub fn inputs(&self) -> Arc<crate::SessionInputs> {
+        self.inputs.clone()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn fixture_queries(&mut self) -> &mut crate::SessionQueries {
+        Arc::get_mut(&mut self.queries)
+            .expect("fixture query ports must be configured before the service is shared")
     }
 
     #[must_use]
@@ -387,9 +411,7 @@ impl SessionApplication {
     /// Whether the Control projection marks an Agent unavailable for launch.
     #[must_use]
     pub fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
-        self.config_source
-            .as_ref()
-            .is_some_and(|source| source.agent_unavailable_in(workspace_id, agent_id))
+        self.queries.agent_unavailable(workspace_id, agent_id)
     }
 
     /// The unavailable delegate that blocks one Deployment launch, if any.
@@ -473,7 +495,7 @@ impl SessionApplication {
     /// Restore every missing Session-to-WorkQueue projection from durable truth.
     pub async fn reconcile_work_dispatches(&self) -> WorkDispatchReconciliation {
         reconcile_work_dispatches(
-            self.sessions_repo.as_ref(),
+            self.mutations.repository().as_ref(),
             self.environments.assignment.as_ref(),
             self.clock.now_ms(),
         )
@@ -490,7 +512,12 @@ impl SessionApplication {
         repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
     ) {
         let persistence = SessionPersistence::new(repo, self.clock.clone());
-        self.sessions_repo = persistence.store.clone();
+        self.mutations.replace_repository(persistence.store.clone());
+        self.fixture_queries()
+            .replace_repository(persistence.store.clone());
+        Arc::get_mut(&mut self.inputs)
+            .expect("fixture input ports must be configured before the service is shared")
+            .replace_repository(persistence.store.clone());
         self.lifecycle_outbox = persistence.store;
         self.environment_binding_sink = persistence.environment_binding_sink;
     }
@@ -597,6 +624,7 @@ impl SessionApplication {
         &mut self,
         source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     ) {
+        self.fixture_queries().set_profiles(source.clone());
         self.config_source = Some(source);
     }
 
@@ -1176,8 +1204,7 @@ impl RepositoryEnvironmentBindingSink {
         } else {
             None
         };
-        const CAS_ATTEMPTS: usize = 3;
-        for attempt in 0..CAS_ATTEMPTS {
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
             let owner = match &admission_owner {
                 Some(owner) => owner.clone(),
                 None => self
@@ -1201,7 +1228,7 @@ impl RepositoryEnvironmentBindingSink {
                 &session,
                 command.operation(),
             );
-            match crate::mutation::commit_observed_snapshot(
+            match crate::SessionMutations::commit_observed_snapshot(
                 self.repo.as_ref(),
                 &owner,
                 &mut session,
@@ -1221,7 +1248,7 @@ impl RepositoryEnvironmentBindingSink {
                         .map_err(session_repository_error)?;
                     return command.readback(committed, &owner, self.clock.now_ms());
                 }
-                Ok(SessionMutationResult::Conflict { .. }) if attempt + 1 < CAS_ATTEMPTS => {}
+                Ok(SessionMutationResult::Conflict { .. }) if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
                 Ok(SessionMutationResult::Conflict { .. }) => break,
                 Ok(SessionMutationResult::IdempotencyMismatch) => {
                     return Err(command.idempotency_mismatch());

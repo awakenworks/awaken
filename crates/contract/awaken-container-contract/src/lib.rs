@@ -1,34 +1,19 @@
-//! Backend-erased ports for Session-owned container environments.
+//! Container-tier vocabulary shared by container backends, the Gateway and the
+//! Session owner: the allowlist capability wire, Kubernetes capacity and
+//! continuation-volume policy, the live-input projection root, and the
+//! Kubernetes Create broker wire.
 //!
-//! This is the container projection of the
-//! [`awaken_provisioning_contract::SandboxProvider`] family:
-//! the same ownership split (an unattached environment versus one owned by an
-//! aggregate effect), the same observation basis, and the same terminal
-//! obligation. It differs only where containers genuinely differ: environments
-//! are shared `Arc<dyn ContainerEnvironment>` values that carry create-attempt
-//! and checkpoint-upload participants, and adoption carries retained attempt
-//! evidence.
-//!
-//! The ports moved here from `awaken-sandbox-container` so that a Session owner
-//! can hold a container provider without linking any container backend. They
-//! are their own contract crate, split from `awaken-provisioning-contract`
-//! whose vocabulary they speak (ADR-0081 split-facade policy). The provider's
-//! durable handle payload stays opaque here: [`ContainerEnvironmentProvider`]
-//! decodes its own handles, so no backend payload vocabulary crosses this seam.
+//! The provider's vocabulary -- realization intent, adoption, observation
+//! purpose, effect ownership, the live [`awaken_provisioning_contract::SessionSandbox`]
+//! and its participants -- is the provisioning contract's; this crate names it
+//! from there. Provider-owned durable handle payloads stay opaque at this seam.
 
-mod checkpoint;
-mod effect;
-mod environment;
+mod create;
 mod host;
 mod k8s_capacity;
 mod policy;
-mod provider;
 
-pub use checkpoint::{ContainerCheckpointAccess, ContainerCheckpointMutation};
-pub use effect::ContainerEffect;
-pub use environment::{
-    ContainerCreateAttempt, ContainerEnvironment, EnvironmentFile, RuntimeAgentProcess,
-};
+pub use create::{K8sCreateRequest, K8sCreateResponse};
 pub use host::{AllowlistCapability, normalize_allowlist_host};
 pub use k8s_capacity::{
     DEFAULT_K8S_UNSCHEDULABLE_WAIT, K8sPodReadiness, K8sPodScheduledCondition, K8sPodWait,
@@ -38,9 +23,4 @@ pub use k8s_capacity::{
 pub use policy::{
     K8sContinuationVolume, K8sImagePrewarm, LIVE_INPUTS_ROOT, REPOSITORY_GATEWAY_CA_PATH,
     live_input_relative_path,
-};
-pub use provider::{
-    ContainerAdoptionLayout, ContainerEnvironmentAdoption, ContainerEnvironmentCapacity,
-    ContainerEnvironmentProvider, ContainerObservationPurpose, EnvironmentRealizationIntent,
-    restore_ladder_is_consistent,
 };

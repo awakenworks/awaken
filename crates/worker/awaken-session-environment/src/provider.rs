@@ -9,9 +9,8 @@
 //! Selection and lifecycle construction for a Session's single environment.
 
 use super::{HandExecutorFactory, SandboxEnvironment, SessionEnvironment, container_files};
-use awaken_sandbox_local::FilesystemHandleCodec as _;
 use awaken_session_environment_contract::ContainerHandResidency;
-use awaken_session_environment_contract::{EnvironmentRealizationKind, ObservationPurpose};
+use awaken_session_environment_contract::EnvironmentRealizationKind;
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
@@ -31,8 +30,12 @@ pub enum SandboxEnvironmentProvider {
         hand_idle_after: std::time::Duration,
     },
     Container {
-        provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
-        capacity: Option<Arc<dyn awaken_container_contract::ContainerEnvironmentCapacity>>,
+        provider: Arc<
+            dyn awaken_provisioning_contract::SandboxProvider<
+                    Environment = dyn awaken_provisioning_contract::SessionSandbox,
+                >,
+        >,
+        capacity: Option<Arc<dyn awaken_provisioning_contract::SandboxCapacity>>,
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: String,
@@ -54,9 +57,8 @@ pub struct WorkdirHandConfig {
     pub(super) idle_after: std::time::Duration,
 }
 
-pub(crate) use awaken_session_environment_contract::{
-    EnvironmentAdoptionLayout as SessionEnvironmentAdoptionLayout, ProviderEffect,
-};
+use awaken_provisioning_contract::SandboxEffect;
+pub(crate) use awaken_session_environment_contract::EnvironmentAdoptionLayout as SessionEnvironmentAdoptionLayout;
 
 impl SandboxEnvironmentProvider {
     /// Whether a TrustedHost Workdir Hand is installed, for the composition
@@ -80,9 +82,9 @@ impl SandboxEnvironmentProvider {
 
     pub(crate) fn capabilities(&self) -> pc::SandboxCapabilities {
         match self {
-            Self::Workdir { provider, .. } => pc::SandboxProvider::capabilities(provider),
-            Self::Namespace { provider, .. } => pc::SandboxProvider::capabilities(provider),
-            Self::Container { provider, .. } => provider.sandbox_capabilities(),
+            Self::Workdir { provider, .. } => pc::SandboxReadiness::capabilities(provider),
+            Self::Namespace { provider, .. } => pc::SandboxReadiness::capabilities(provider),
+            Self::Container { provider, .. } => provider.capabilities(),
         }
     }
 
@@ -142,7 +144,7 @@ impl SandboxEnvironmentProvider {
         }
         if let Some(current) = provider.execution_deployment() {
             return if current == &execution {
-                pc::SandboxProvider::probe_ready(provider).await
+                pc::SandboxReadiness::probe_ready(provider).await
             } else {
                 Err(pc::SandboxError::conflict(
                     "scoped execution deployment changed after installation",
@@ -172,8 +174,12 @@ impl SandboxEnvironmentProvider {
     // Session provider the startup composition installs.
     #[allow(clippy::too_many_arguments)]
     pub fn container_with_capacity_hand_idle_and_residency(
-        provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
-        capacity: Option<Arc<dyn awaken_container_contract::ContainerEnvironmentCapacity>>,
+        provider: Arc<
+            dyn awaken_provisioning_contract::SandboxProvider<
+                    Environment = dyn awaken_provisioning_contract::SessionSandbox,
+                >,
+        >,
+        capacity: Option<Arc<dyn awaken_provisioning_contract::SandboxCapacity>>,
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
@@ -304,25 +310,17 @@ impl SandboxEnvironmentProvider {
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
     ) -> Result<SessionEnvironmentAdoptionLayout, pc::SandboxError> {
-        let mut spec = self.effective_spec(spec)?;
-        match self {
-            Self::Workdir { .. } => {
-                let payload = handle.local_payload()?;
-                spec.outputs_path.clone_from(&payload.outputs_path);
-                spec.env.clone_from(&payload.base_env);
+        let spec = self.effective_spec(spec)?;
+        let layout = match self {
+            Self::Workdir { provider, .. } => {
+                pc::SandboxProvider::adoption_layout(provider, handle)?
             }
-            Self::Namespace { .. } => {
-                let payload = handle.namespace_payload(NamespaceProvider::provider_kind())?;
-                spec.outputs_path.clone_from(&payload.outputs_path);
-                spec.env.clone_from(&payload.base_env);
-                spec.network.clone_from(&payload.network);
+            Self::Namespace { provider, .. } => {
+                pc::SandboxProvider::adoption_layout(provider, handle)?
             }
-            Self::Container { provider, .. } => {
-                let layout = provider.adoption_layout(handle)?;
-                spec.outputs_path = layout.outputs_path;
-                spec.env = layout.base_env;
-            }
-        }
+            Self::Container { provider, .. } => provider.adoption_layout(handle)?,
+        };
+        let spec = layout.apply_to(spec);
         Ok(SessionEnvironmentAdoptionLayout {
             spec,
             historical_owned_paths: handle.owned_paths().map(<[String]>::to_vec),
@@ -332,20 +330,20 @@ impl SandboxEnvironmentProvider {
     pub(crate) async fn create_effective_for_effect(
         &self,
         spec: &pc::SandboxSpec,
-        effect: ProviderEffect<'_>,
+        effect: SandboxEffect<'_>,
         source_handle: Option<&pc::SandboxHandle>,
         kind: EnvironmentRealizationKind,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         effect.admit()?;
         let environment = match self {
             Self::Workdir { provider, hand } => match effect {
-                ProviderEffect::Fenced { fence, authority } => provider
+                SandboxEffect::Fenced { fence, authority } => provider
                     .create_sandbox_for_effect(spec, fence, source_handle, authority)
                     .await
                     .map(|sandbox| {
                         SandboxEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
                     }),
-                ProviderEffect::Unattached => provider.create_sandbox(spec).await.map(|sandbox| {
+                SandboxEffect::Unattached => provider.create_sandbox(spec).await.map(|sandbox| {
                     SandboxEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
                 }),
             },
@@ -355,12 +353,12 @@ impl SandboxEnvironmentProvider {
                 hand_bin,
                 hand_idle_after,
             } => match effect {
-                ProviderEffect::Fenced { fence, authority } => {
+                SandboxEffect::Fenced { fence, authority } => {
                     provider
                         .create_sandbox_for_effect(spec, fence, source_handle, authority)
                         .await
                 }
-                ProviderEffect::Unattached => provider.create_sandbox(spec).await,
+                SandboxEffect::Unattached => provider.create_sandbox(spec).await,
             }
             .map(|sandbox| {
                 SandboxEnvironment::namespace(
@@ -379,13 +377,13 @@ impl SandboxEnvironmentProvider {
                 clock,
                 ..
             } => {
-                let capabilities = provider.sandbox_capabilities();
+                let capabilities = provider.capabilities();
                 // The container provider decodes its own source handle into the
                 // exact physical incarnation a Rebuild replaces; Workdir and
                 // Namespace rebuilds are owned by their realization-marker path.
                 let intent = match kind {
                     EnvironmentRealizationKind::Create => {
-                        awaken_container_contract::EnvironmentRealizationIntent::Create
+                        awaken_provisioning_contract::SandboxRealizationIntent::Create
                     }
                     EnvironmentRealizationKind::Rebuild => {
                         let source = source_handle.ok_or_else(|| {
@@ -393,27 +391,40 @@ impl SandboxEnvironmentProvider {
                                 "Container Environment rebuild lacks its source binding",
                             )
                         })?;
-                        awaken_container_contract::EnvironmentRealizationIntent::Rebuild {
+                        awaken_provisioning_contract::SandboxRealizationIntent::Rebuild {
                             source: Box::new(source.clone()),
                         }
                     }
                 };
                 let environment = match effect {
-                    ProviderEffect::Fenced { fence, authority } => {
+                    SandboxEffect::Fenced { fence, authority } => {
                         provider
-                            .create_environment_for_effect(spec, fence, authority, intent)
+                            .claim_for_effect(
+                                spec,
+                                awaken_provisioning_contract::SandboxEffect::Fenced {
+                                    fence,
+                                    authority,
+                                },
+                                intent,
+                            )
                             .await?
                     }
-                    ProviderEffect::Unattached => {
+                    SandboxEffect::Unattached => {
                         if matches!(
                             intent,
-                            awaken_container_contract::EnvironmentRealizationIntent::Rebuild { .. }
+                            awaken_provisioning_contract::SandboxRealizationIntent::Rebuild { .. }
                         ) {
                             return Err(pc::SandboxError::fence_rejected(
                                 "a container rebuild requires an aggregate effect fence",
                             ));
                         }
-                        provider.create_unattached_environment(spec).await?
+                        provider
+                            .claim_for_effect(
+                                spec,
+                                awaken_provisioning_contract::SandboxEffect::Unattached,
+                                awaken_provisioning_contract::SandboxRealizationIntent::Create,
+                            )
+                            .await?
                     }
                 };
                 SandboxEnvironment::container(
@@ -509,9 +520,8 @@ impl SandboxEnvironmentProvider {
         handle: &'a pc::SandboxHandle,
         retained: Option<&'a super::SessionEnvironment>,
         allow_monotonic_retained: bool,
-    ) -> Result<awaken_container_contract::ContainerEnvironmentAdoption<'a>, pc::SandboxError> {
-        let mut adoption =
-            awaken_container_contract::ContainerEnvironmentAdoption::new(spec, handle);
+    ) -> Result<awaken_provisioning_contract::SandboxAdoption<'a>, pc::SandboxError> {
+        let mut adoption = awaken_provisioning_contract::SandboxAdoption::new(spec, handle);
         if let Some(environment) = retained {
             let environment = own_environment(environment)?;
             let super::SandboxEnvironment::Container { sandbox, .. } = environment else {
@@ -546,31 +556,34 @@ impl SandboxEnvironmentProvider {
         handle: &pc::SandboxHandle,
         retained: Option<&super::SessionEnvironment>,
         basis: pc::SandboxObservationBasis<'_>,
-        purpose: ObservationPurpose,
+        purpose: pc::SandboxObservationPurpose,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         match self {
             Self::Workdir { provider, .. } => {
-                pc::SandboxProvider::observe(provider, handle, basis).await
+                pc::SandboxProvider::observe(
+                    provider,
+                    pc::SandboxAdoption::new(spec, handle),
+                    basis,
+                )
+                .await
             }
             Self::Namespace { provider, .. } => {
-                pc::SandboxProvider::observe(provider, handle, basis).await
+                pc::SandboxProvider::observe(
+                    provider,
+                    pc::SandboxAdoption::new(spec, handle),
+                    basis,
+                )
+                .await
             }
             Self::Container { provider, .. } => {
                 let mut adoption = Self::container_observation_adoption(
                     spec,
                     handle,
                     retained,
-                    purpose == ObservationPurpose::Recovery,
+                    purpose == pc::SandboxObservationPurpose::Recovery,
                 )?;
-                adoption.observation_purpose = match purpose {
-                    ObservationPurpose::Recovery => {
-                        awaken_container_contract::ContainerObservationPurpose::Recovery
-                    }
-                    ObservationPurpose::TerminalCleanup => {
-                        awaken_container_contract::ContainerObservationPurpose::TerminalCleanup
-                    }
-                };
-                provider.observe_environment(adoption, basis).await
+                adoption.observation_purpose = purpose;
+                provider.observe(adoption, basis).await
             }
         }
     }
@@ -586,56 +599,16 @@ impl SandboxEnvironmentProvider {
         handle: &pc::SandboxHandle,
         observation: &pc::SandboxObservation,
     ) -> Result<(), pc::SandboxError> {
-        match observation {
-            pc::SandboxObservation::DefinitivelyUnavailable {
-                physical_incarnation,
-            } => match self {
-                Self::Workdir { .. } | Self::Namespace { .. } if physical_incarnation.is_none() => {
-                    Ok(())
-                }
-                Self::Workdir { .. } | Self::Namespace { .. } => Err(pc::SandboxError::conflict(
-                    "filesystem sandbox absence carried a foreign physical incarnation",
-                )),
-                Self::Container { provider, .. } => {
-                    let expected = provider.physical_incarnation(handle)?;
-                    if physical_incarnation.as_deref() == Some(expected.as_str()) {
-                        Ok(())
-                    } else {
-                        Err(pc::SandboxError::conflict(
-                            "container unavailable observation does not match the durable incarnation",
-                        ))
-                    }
-                }
-            },
-            pc::SandboxObservation::Terminal {
-                physical_incarnation,
+        match self {
+            Self::Workdir { provider, .. } => {
+                pc::SandboxProvider::validate_closed_observation(provider, handle, observation)
             }
-            | pc::SandboxObservation::Disposing {
-                physical_incarnation,
-            } => {
-                let expected = match self {
-                    Self::Workdir { .. } | Self::Namespace { .. } => {
-                        handle.filesystem_physical_incarnation()?.ok_or_else(|| {
-                            pc::SandboxError::unsupported(
-                                "legacy filesystem handle has no physical incarnation",
-                            )
-                        })?
-                    }
-                    Self::Container { provider, .. } => provider.physical_incarnation(handle)?,
-                };
-                if *physical_incarnation == expected {
-                    Ok(())
-                } else {
-                    Err(pc::SandboxError::conflict(
-                        "terminal sandbox observation does not match the durable incarnation",
-                    ))
-                }
+            Self::Namespace { provider, .. } => {
+                pc::SandboxProvider::validate_closed_observation(provider, handle, observation)
             }
-            pc::SandboxObservation::Ready
-            | pc::SandboxObservation::Provisioning { .. }
-            | pc::SandboxObservation::Incompatible { .. } => Err(pc::SandboxError::invalid(
-                "sandbox observation does not carry closed physical evidence",
-            )),
+            Self::Container { provider, .. } => {
+                provider.validate_closed_observation(handle, observation)
+            }
         }
     }
 
@@ -652,7 +625,7 @@ impl SandboxEnvironmentProvider {
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
         retained: &SessionEnvironment,
-        effect: ProviderEffect<'_>,
+        effect: SandboxEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         let retained_role = retained;
         let retained = own_environment(retained)?;
@@ -674,7 +647,7 @@ impl SandboxEnvironmentProvider {
         if matches!(retained, SandboxEnvironment::Workdir { sandbox, .. } if sandbox.has_scoped_execution())
         {
             if !matches!(self, Self::Workdir { provider, .. } if provider.execution_deployment().is_some())
-                || matches!(effect, ProviderEffect::Unattached)
+                || matches!(effect, SandboxEffect::Unattached)
             {
                 return Err(pc::SandboxError::fence_rejected(
                     "scoped rebind requires its deployment and current adoption authority",
@@ -748,7 +721,7 @@ impl SandboxEnvironmentProvider {
         &self,
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
-        effect: ProviderEffect<'_>,
+        effect: SandboxEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         self.adopt_effective_with_retained(spec, handle, None, effect)
             .await
@@ -759,18 +732,18 @@ impl SandboxEnvironmentProvider {
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
         retained: Option<&SessionEnvironment>,
-        effect: ProviderEffect<'_>,
+        effect: SandboxEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         effect.admit()?;
         let environment = match self {
             Self::Workdir { provider, hand } => match effect {
-                ProviderEffect::Fenced { fence, authority } => provider
+                SandboxEffect::Fenced { fence, authority } => provider
                     .adopt_sandbox_for_effect(spec, handle, fence, authority)
                     .await
                     .map(|sandbox| {
                         SandboxEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
                     }),
-                ProviderEffect::Unattached => provider
+                SandboxEffect::Unattached => provider
                     .adopt_sandbox_with_spec(spec, handle)
                     .await
                     .map(|sandbox| {
@@ -783,12 +756,12 @@ impl SandboxEnvironmentProvider {
                 hand_bin,
                 hand_idle_after,
             } => match effect {
-                ProviderEffect::Fenced { fence, authority } => {
+                SandboxEffect::Fenced { fence, authority } => {
                     provider
                         .adopt_sandbox_for_effect(spec, handle, fence, authority)
                         .await
                 }
-                ProviderEffect::Unattached => {
+                SandboxEffect::Unattached => {
                     provider
                         .adopt_sandbox_with_control_services(handle, &spec.control_services)
                         .await
@@ -811,16 +784,27 @@ impl SandboxEnvironmentProvider {
                 clock,
                 ..
             } => {
-                let capabilities = provider.sandbox_capabilities();
+                let capabilities = provider.capabilities();
                 let adoption = Self::container_observation_adoption(spec, handle, retained, true)?;
                 let environment = match effect {
-                    ProviderEffect::Fenced { fence, authority } => {
+                    SandboxEffect::Fenced { fence, authority } => {
                         provider
-                            .adopt_environment_for_effect(adoption, fence, authority)
+                            .adopt_for_effect(
+                                adoption,
+                                awaken_provisioning_contract::SandboxEffect::Fenced {
+                                    fence,
+                                    authority,
+                                },
+                            )
                             .await?
                     }
-                    ProviderEffect::Unattached => {
-                        provider.adopt_unattached_environment(adoption).await?
+                    SandboxEffect::Unattached => {
+                        provider
+                            .adopt_for_effect(
+                                adoption,
+                                awaken_provisioning_contract::SandboxEffect::Unattached,
+                            )
+                            .await?
                     }
                 };
                 effect.admit()?;
@@ -853,10 +837,11 @@ impl SandboxEnvironmentProvider {
     ) -> Result<pc::SandboxHandle, pc::SandboxError> {
         match self {
             Self::Workdir { provider, .. } => {
-                let restored = pc::RestorableProvider::<Box<dyn pc::Sandbox>>::restore_environment(
-                    provider, spec, request, store,
-                )
-                .await?;
+                let restored =
+                    pc::RestorableProvider::<std::sync::Arc<dyn pc::Sandbox>>::restore_environment(
+                        provider, spec, request, store,
+                    )
+                    .await?;
                 let handle = restored.target().handle();
                 request.verify_handle(spec, &handle)?;
                 Ok(handle)
@@ -870,7 +855,7 @@ impl SandboxEnvironmentProvider {
                 ..
             } => {
                 let spec = container_spec(spec, extra_mounts)?;
-                let restorable = provider.restorable().ok_or_else(|| {
+                let restorable = provider.restoration().restorable().map_err(|_| {
                     pc::SandboxError::unsupported(
                         "container provider does not implement checkpoint restore",
                     )
@@ -947,9 +932,9 @@ impl SandboxEnvironmentProvider {
                 clock,
                 ..
             } => {
-                let capabilities = provider.sandbox_capabilities();
+                let capabilities = provider.capabilities();
                 let environment = provider
-                    .prepare_terminal_environment_for_effect(
+                    .prepare_terminal_for_effect(
                         spec,
                         handle,
                         expected_effect_fence,
@@ -987,7 +972,7 @@ impl SandboxEnvironmentProvider {
     ) -> Result<(), pc::SandboxError> {
         match self {
             Self::Workdir { provider, .. } => {
-                pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
+                pc::RestoreTargetProvider::<std::sync::Arc<dyn pc::Sandbox>>::dispose_restored(
                     provider,
                     spec,
                     request,
@@ -1006,8 +991,9 @@ impl SandboxEnvironmentProvider {
             } => {
                 let spec = container_spec(spec, extra_mounts)?;
                 provider
-                    .restore_targets()
-                    .ok_or_else(|| {
+                    .restoration()
+                    .targets()
+                    .map_err(|_| {
                         pc::SandboxError::unsupported(
                             "container provider does not implement exact restored-target disposal",
                         )
@@ -1046,7 +1032,7 @@ impl awaken_session_environment_contract::EnvironmentRealizer for SandboxEnviron
     async fn create_effective_for_effect(
         &self,
         spec: &pc::SandboxSpec,
-        effect: ProviderEffect<'_>,
+        effect: SandboxEffect<'_>,
         source_handle: Option<&pc::SandboxHandle>,
         kind: EnvironmentRealizationKind,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
@@ -1077,7 +1063,7 @@ impl awaken_session_environment_contract::EnvironmentAdoption for SandboxEnviron
         handle: &pc::SandboxHandle,
         retained: Option<&SessionEnvironment>,
         basis: pc::SandboxObservationBasis<'_>,
-        purpose: ObservationPurpose,
+        purpose: pc::SandboxObservationPurpose,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         SandboxEnvironmentProvider::observe_effective(self, spec, handle, retained, basis, purpose)
             .await
@@ -1095,7 +1081,7 @@ impl awaken_session_environment_contract::EnvironmentAdoption for SandboxEnviron
         &self,
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
-        effect: ProviderEffect<'_>,
+        effect: SandboxEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         SandboxEnvironmentProvider::adopt_effective_for_effect(self, spec, handle, effect).await
     }
@@ -1105,7 +1091,7 @@ impl awaken_session_environment_contract::EnvironmentAdoption for SandboxEnviron
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
         retained: &SessionEnvironment,
-        effect: ProviderEffect<'_>,
+        effect: SandboxEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         SandboxEnvironmentProvider::rebind_retained(self, spec, handle, retained, effect).await
     }
@@ -1241,8 +1227,8 @@ mod provider_effect_tests {
         let authority = pc::test_support::EffectAuthority::new(&fence);
         let spec = crate::test_support::spec();
         for authority in [None, Some(&authority as &dyn pc::CurrentExecutionAuthority)] {
-            let effect = ProviderEffect::from_parts(None, authority).expect("P1");
-            assert!(matches!(effect, ProviderEffect::Unattached), "P1");
+            let effect = SandboxEffect::from_parts(None, authority).expect("P1");
+            assert!(matches!(effect, SandboxEffect::Unattached), "P1");
             assert!(
                 matches!(
                     effect.observation_basis(&spec),
@@ -1251,7 +1237,7 @@ mod provider_effect_tests {
                 "P1 basis"
             );
         }
-        let effect = ProviderEffect::from_parts(Some(&fence), Some(&authority)).expect("P2");
+        let effect = SandboxEffect::from_parts(Some(&fence), Some(&authority)).expect("P2");
         assert!(
             matches!(
                 effect.observation_basis(&spec),
@@ -1262,7 +1248,7 @@ mod provider_effect_tests {
         );
         assert!(
             matches!(
-                ProviderEffect::from_parts(Some(&fence), None),
+                SandboxEffect::from_parts(Some(&fence), None),
                 Err(pc::SandboxError::FenceRejected(_))
             ),
             "P3"

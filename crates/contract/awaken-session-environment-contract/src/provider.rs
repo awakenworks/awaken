@@ -11,7 +11,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 
-use crate::{EnvironmentAdoptionLayout, ProviderEffect, SessionEnvironment};
+use crate::{EnvironmentAdoptionLayout, SessionEnvironment};
+use awaken_provisioning_contract::SandboxEffect;
 
 /// What one realization does relative to the Session's previous environment.
 /// Consumer: a provider whose Rebuild replaces a physical incarnation.
@@ -21,15 +22,6 @@ pub enum EnvironmentRealizationKind {
     Create,
     /// Replace the environment named by the effect's source binding.
     Rebuild,
-}
-
-/// Why the Host observes a durable environment handle. Observation never
-/// authorizes a mutation; the purpose only selects what evidence a provider
-/// may report. Consumers: environment recovery and terminal cleanup.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ObservationPurpose {
-    Recovery,
-    TerminalCleanup,
 }
 
 /// Realizing a fresh environment. Consumers: Session realization, the Worker
@@ -52,7 +44,7 @@ pub trait EnvironmentRealizer: Send + Sync {
     async fn create_effective_for_effect(
         &self,
         spec: &pc::SandboxSpec,
-        effect: ProviderEffect<'_>,
+        effect: SandboxEffect<'_>,
         source_handle: Option<&pc::SandboxHandle>,
         kind: EnvironmentRealizationKind,
     ) -> Result<SessionEnvironment, pc::SandboxError>;
@@ -60,6 +52,34 @@ pub trait EnvironmentRealizer: Send + Sync {
 
 /// Reopening an environment from its durable handle. Consumers: environment
 /// lifecycle recovery, terminal preparation.
+///
+/// Observation purpose belongs to the Sandbox contract. Type-ownership rules:
+/// O1 both purposes are accepted directly by this role; O2 the retired Session
+/// spelling must not resolve. These compile-only cases execute no observation
+/// or effect; the adapter's purpose/fence table owns runtime behavior.
+///
+/// ```no_run
+/// # use awaken_provisioning_contract as pc;
+/// # use awaken_session_environment_contract::EnvironmentAdoption;
+/// # async fn inspect(
+/// #     provider: &dyn EnvironmentAdoption,
+/// #     spec: &pc::SandboxSpec,
+/// #     handle: &pc::SandboxHandle,
+/// # ) {
+/// for purpose in [
+///     pc::SandboxObservationPurpose::Recovery,
+///     pc::SandboxObservationPurpose::TerminalCleanup,
+/// ] {
+///     let _ = provider.observe_effective(
+///         spec, handle, None, pc::SandboxObservationBasis::Unattached, purpose,
+///     ).await;
+/// }
+/// # }
+/// ```
+///
+/// ```compile_fail
+/// use awaken_session_environment_contract::ObservationPurpose;
+/// ```
 #[async_trait]
 pub trait EnvironmentAdoption: Send + Sync {
     /// The exact layout this provider will reopen `handle` with, so the Host
@@ -78,7 +98,7 @@ pub trait EnvironmentAdoption: Send + Sync {
         handle: &pc::SandboxHandle,
         retained: Option<&SessionEnvironment>,
         basis: pc::SandboxObservationBasis<'_>,
-        purpose: ObservationPurpose,
+        purpose: pc::SandboxObservationPurpose,
     ) -> Result<pc::SandboxObservation, pc::SandboxError>;
 
     /// Validate the physical evidence one closed observation carries against
@@ -94,7 +114,7 @@ pub trait EnvironmentAdoption: Send + Sync {
         &self,
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
-        effect: ProviderEffect<'_>,
+        effect: SandboxEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError>;
 
     /// Rebuild only the revoked process bindings of a retained environment
@@ -104,7 +124,7 @@ pub trait EnvironmentAdoption: Send + Sync {
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
         retained: &SessionEnvironment,
-        effect: ProviderEffect<'_>,
+        effect: SandboxEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError>;
 }
 
@@ -256,7 +276,7 @@ impl SessionEnvironmentProvider {
         self.realizer
             .create_effective_for_effect(
                 &spec,
-                ProviderEffect::Unattached,
+                SandboxEffect::Unattached,
                 None,
                 EnvironmentRealizationKind::Create,
             )
@@ -272,7 +292,7 @@ impl SessionEnvironmentProvider {
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         let layout = self.adoption.effective_adoption_layout(spec, handle)?;
         self.adoption
-            .adopt_effective_for_effect(&layout.spec, handle, ProviderEffect::Unattached)
+            .adopt_effective_for_effect(&layout.spec, handle, SandboxEffect::Unattached)
             .await
     }
 

@@ -1,6 +1,8 @@
 //! One provider-owned classification for a missing durable container handle.
 
 use super::*;
+use awaken_provisioning_contract::SandboxObservationPurpose;
+use awaken_provisioning_contract::SandboxProvider;
 
 #[tokio::test]
 async fn handle_free_terminal_cleanup_accepts_only_runtime_proven_total_absence() {
@@ -37,7 +39,7 @@ async fn handle_free_terminal_cleanup_accepts_only_runtime_proven_total_absence(
             u64::MAX,
         )
         .unwrap();
-        let outcome = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        let outcome = SandboxProvider::prepare_terminal_for_effect(
             &provider,
             &requested,
             None,
@@ -99,7 +101,7 @@ async fn exact_created_pod_reenters_the_existing_handle_bound_terminal_path() {
     )
     .unwrap();
     let authority = pc::test_support::EffectAuthority::new(&terminal);
-    let environment = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+    let environment = SandboxProvider::prepare_terminal_for_effect(
         &provider,
         &empty,
         None,
@@ -120,7 +122,7 @@ async fn exact_created_pod_reenters_the_existing_handle_bound_terminal_path() {
     );
     assert_eq!(
         runtime.st.lock().unwrap().observation_purposes,
-        vec![ContainerObservationPurpose::TerminalCleanup],
+        vec![SandboxObservationPurpose::TerminalCleanup],
         "P1 ordinary terminal observation is reused"
     );
     let prepared = environment
@@ -156,18 +158,17 @@ async fn exact_created_pod_reenters_the_existing_handle_bound_terminal_path() {
     let retained_provider = provider_without_broker(retained_runtime.clone());
     let mut retained = empty.clone();
     retained.filesystem_continuity = pc::FilesystemContinuity::Retained;
-    let retained_environment =
-        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
-            &retained_provider,
-            &retained,
-            None,
-            Some(&create),
-            &terminal,
-            &authority,
-        )
-        .await
-        .unwrap()
-        .expect("P4 exact created Pod/PVC may still be Provisioning");
+    let retained_environment = SandboxProvider::prepare_terminal_for_effect(
+        &retained_provider,
+        &retained,
+        None,
+        Some(&create),
+        &terminal,
+        &authority,
+    )
+    .await
+    .unwrap()
+    .expect("P4 exact created Pod/PVC may still be Provisioning");
     let retained_handle = retained_environment.handle().clone();
     assert!(matches!(
         retained_handle.container_payload().unwrap().runtime_handle.as_ref(),
@@ -190,7 +191,7 @@ async fn exact_created_pod_reenters_the_existing_handle_bound_terminal_path() {
         .expect("P4 original physical disposal");
     assert_eq!(retained_runtime.st.lock().unwrap().removals.len(), 1);
     assert!(
-        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        SandboxProvider::prepare_terminal_for_effect(
             &retained_provider,
             &retained,
             Some(&retained_handle),
@@ -206,7 +207,7 @@ async fn exact_created_pod_reenters_the_existing_handle_bound_terminal_path() {
     let mut rich = empty.clone();
     rich.mounts = spec("created-pod-terminal").mounts;
     assert!(
-        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        SandboxProvider::prepare_terminal_for_effect(
             &provider,
             &rich,
             None,
@@ -224,7 +225,7 @@ async fn exact_created_pod_reenters_the_existing_handle_bound_terminal_path() {
         "P2 zero additional observation"
     );
     assert!(
-        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        SandboxProvider::prepare_terminal_for_effect(
             &provider, &empty, None, None, &terminal, &authority,
         )
         .await
@@ -302,7 +303,7 @@ async fn guarded_claim_uses_the_existing_two_phase_terminal_owner() {
     frozen.env.clear();
     frozen.filesystem_continuity = pc::FilesystemContinuity::Retained;
     let authority = pc::test_support::EffectAuthority::new(&terminal);
-    let environment = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+    let environment = SandboxProvider::prepare_terminal_for_effect(
         &provider,
         &frozen,
         None,
@@ -364,7 +365,7 @@ async fn guarded_claim_uses_the_existing_two_phase_terminal_owner() {
     let mut rich = frozen;
     rich.mounts = spec(scope).mounts;
     assert!(
-        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        SandboxProvider::prepare_terminal_for_effect(
             &provider,
             &rich,
             None,

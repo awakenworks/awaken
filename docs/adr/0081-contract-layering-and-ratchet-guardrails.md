@@ -401,17 +401,17 @@ bindings. A new hand-listed backend-path checker was rejected by the scope
 derivation gate and removed, so it cannot become a second, silently stale
 conformance inventory.
 
-`ContainerEnvironmentProvider` is also not a deprecated competitor to
-`SandboxProvider`. `ContainerProvider<R>` already implements the neutral
-`SandboxProvider` and its restore-target rung. The container projection exists
-for values the Runtime Host genuinely needs but the neutral contract must not
-name: shared `Arc<dyn ContainerEnvironment>` participants, retained create or
-checkpoint-upload attempts, warm capacity, and post-composition Memory/Secret
-installation. Both projections delegate to the same `ContainerProvider` kernels
-for plan derivation, observation, adoption, restore-target acquisition and
-disposal. Deleting either projection would either leak container vocabulary into
-the neutral contract or force the Host to reconstruct participant state on a
-second path.
+The October 18 [single-provider amendment to ADR-0041](0041-sandbox-execution-environment-provider.md#amendment-2026-10-18-one-provider-port)
+supersedes the earlier container projection. `SandboxProvider` now carries an
+associated shared environment role, retaining the original create-attempt,
+checkpoint-upload, warm-capacity and Memory/Secret participants through the
+provider-neutral contract. `ContainerProvider<R>` implements that one port;
+`ContainerEnvironmentProvider` is removed without a compatibility alias.
+Creation, observation, adoption, restoration and disposal still use the original
+provider kernels and aggregate grants. The Session adapter consumes the same
+`SandboxEffect` carrier rather than maintaining another ownership projection.
+The Session's enriched adoption layout remains its own contract value; it does
+not duplicate the provider's historical output/environment/network layout.
 
 #### Dynamic behavior
 

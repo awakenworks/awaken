@@ -290,6 +290,14 @@ impl ManagedSessionRootFixture {
         &self,
         managed: &Arc<crate::ExecutorComponents>,
     ) -> Arc<awaken_session_application::SessionApplication> {
+        self.application_with_configuration(managed, Default::default())
+    }
+
+    fn application_with_configuration(
+        &self,
+        managed: &Arc<crate::ExecutorComponents>,
+        configuration: awaken_session_application::SessionApplicationConfiguration,
+    ) -> Arc<awaken_session_application::SessionApplication> {
         self.application
             .get_or_init(|| {
                 let catalog = Arc::new(
@@ -321,6 +329,7 @@ impl ManagedSessionRootFixture {
                         environments,
                         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
                     )
+                    .configuration(configuration)
                     .build()
                     .expect("valid fixture Session application"),
                 )
@@ -616,5 +625,208 @@ impl ManagedSessionRootFixture {
         )
         .await?;
         Ok(projection)
+    }
+}
+
+#[cfg(test)]
+mod retry_hint_tests {
+    use super::*;
+    use crate::host::worker_resolver::test_support::{
+        available_local_environment_binding, eager_environment,
+        empty_frozen_projection_for_snapshot_at_placement, managed_test_host, test_activation,
+    };
+    use awaken_session_environment::SandboxEnvironmentProvider;
+    use awaken_session_environment::test_support::{
+        FakeContainerProvider, FakeHandExecutorFactory,
+    };
+    use awaken_session_repository_contract::SessionRepository as _;
+    use std::sync::atomic::Ordering;
+
+    #[tokio::test]
+    async fn local_install_preserves_the_real_provider_hint_before_neutral_error_projection() {
+        // L3-L6 use the actual provider adapter, R adoption, RunAssembly install,
+        // LocalProjectionSynchronizer, phase driver and Root failure CAS.
+        // C1 the same Root has a committed first Create/binding; C2 provider
+        // observation has a live / absent / elapsed provisioning deadline, or
+        // returns a capacity-typed observation error without a hint.
+        // L3 live => original Defer gets Some(wait<=6s); L4/L5 absent/elapsed
+        // => bounded Retry and None; L6 failed observation => Retry/None with
+        // ObservationIndeterminate, never proof of a Create capacity refusal. Every row
+        // preserves the exact driver hint at the original Defer, observes
+        // once, creates nothing
+        // beyond its original Create, adopts/disposes nothing, retains the
+        // original binding and cannot install a Session context. The frozen
+        // provider observation deliberately uses another wall-time epoch:
+        // wrapping it must not resample a host clock or classify it again.
+        use awaken_provisioning_contract::{
+            ProvisioningDeadline, SandboxError, SandboxObservation,
+        };
+        use awaken_session_types::{SessionId, SessionRuntimePlacement};
+        for (rule, observation, hinted, deferred) in [
+            (
+                "L3",
+                Ok(SandboxObservation::Provisioning {
+                    deadline: Some(ProvisioningDeadline::new(10_000, 4_000)),
+                }),
+                true,
+                true,
+            ),
+            (
+                "L4",
+                Ok(SandboxObservation::Provisioning { deadline: None }),
+                false,
+                false,
+            ),
+            (
+                "L5",
+                Ok(SandboxObservation::Provisioning {
+                    deadline: Some(ProvisioningDeadline::new(10_000, 10_000)),
+                }),
+                false,
+                false,
+            ),
+            (
+                "L6",
+                Err(SandboxError::capacity_unavailable("provider quota")),
+                false,
+                false,
+            ),
+        ] {
+            let fake = Arc::new(FakeContainerProvider::default());
+            let provider = SandboxEnvironmentProvider::container(
+                fake.clone(),
+                Vec::new(),
+                Arc::new(FakeHandExecutorFactory),
+                "awaken-sandbox",
+            )
+            .into_session_provider();
+            let roots = ManagedSessionRootFixture::new().await;
+            let host = roots
+                .configure(
+                    crate::SessionExecutorBuilder::ephemeral(
+                        Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                        "stub",
+                    )
+                    .await
+                    .with_session_environment_provider(provider),
+                )
+                .build()
+                .unwrap();
+            let managed = managed_test_host(host.clone());
+            // Each row has its own Provider, Host and Store. Use the original
+            // container fixture's exact Session identity rather than forging a
+            // binding for another Session, which correctly rejects before I/O.
+            let thread = "session-container".to_string();
+            let activation = test_activation(&thread, "initial-create");
+            let mut projection = empty_frozen_projection_for_snapshot_at_placement(
+                "workspace",
+                eager_environment(),
+                &activation.snapshot,
+                SessionRuntimePlacement::Local,
+            );
+            projection.agent_publication = Some(activation.snapshot.clone());
+            let initial = roots
+                .install_projection(&managed, &thread, projection.clone())
+                .await
+                .unwrap();
+            let binding = available_local_environment_binding(&host, &thread, &initial).await;
+            *fake.observation.lock().unwrap() = Some(observation);
+            let app = roots.application_with_configuration(
+                &managed,
+                awaken_session_application::SessionApplicationConfiguration {
+                    execution_placement:
+                        awaken_session_application::SessionExecutionPlacement::LocalWorker,
+                    local_realization_owner: "runtime-host-test".into(),
+                    ..Default::default()
+                },
+            );
+            let error = app
+                .realize_session(&SessionId::from(thread.clone()))
+                .await
+                .unwrap_err();
+            let awaken_session_realization_contract::SessionRealizationDriveError::Effect(effect) =
+                error
+            else {
+                panic!("{rule} expected original provider effect: {error}");
+            };
+            assert_eq!(
+                fake.observations.lock().unwrap().len(),
+                1,
+                "{rule} real provider observation entered; original effect: {effect:?}"
+            );
+            assert_eq!(
+                effect.retry_after().is_some(),
+                hinted,
+                "{rule} original provider hint was not flattened through executor error: {effect:?}"
+            );
+            if let Some(wait) = effect.retry_after() {
+                assert!(
+                    wait <= std::time::Duration::from_secs(6),
+                    "{rule} reporting only shortens the original hint"
+                );
+                assert_eq!(
+                    effect.run_error().code,
+                    awaken_session_realization_contract::ENVIRONMENT_PROVISIONING_CODE,
+                    "{rule} original NotReady classification"
+                );
+            }
+            if rule == "L6" {
+                assert_eq!(
+                    effect.run_error().code,
+                    awaken_session_realization::realization_error::PendingState::ObservationIndeterminate.code(),
+                    "L6 a failed read remains indeterminate regardless of its provider error variant"
+                );
+            }
+            let driver_hint = effect.retry_after();
+            let claim = awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
+                awaken_session_realization_contract::SessionRealizationDriveError::Effect(effect),
+            );
+            match (deferred, claim) {
+                (true, awaken_dispatch_execution::Error::ResolutionNotReady(wait)) => assert_eq!(
+                    wait.retry_after(),
+                    driver_hint,
+                    "{rule} original Defer receives exact driver hint"
+                ),
+                (false, awaken_dispatch_execution::Error::Execution(_)) => {}
+                (_, other) => panic!("{rule} wrong original claim disposition: {other:?}"),
+            }
+            assert_eq!(
+                fake.creates.load(Ordering::SeqCst),
+                1,
+                "{rule} only original Create"
+            );
+            assert_eq!(
+                fake.adopts.load(Ordering::SeqCst),
+                0,
+                "{rule} no adoption effect"
+            );
+            assert_eq!(
+                fake.disposals.load(Ordering::SeqCst),
+                0,
+                "{rule} no disposal"
+            );
+            let root = roots
+                .repository
+                .get(&SessionId::from(thread.clone()))
+                .await
+                .unwrap();
+            assert_eq!(
+                root.environment.binding(),
+                Some(binding.as_str()),
+                "{rule} original durable binding retained"
+            );
+            assert!(
+                !root.terminal_cleanup.is_fenced(),
+                "{rule} no cleanup success invented"
+            );
+            assert_eq!(
+                host.run_assembly
+                    .installed_sessions
+                    .read(&thread, |slot| slot.run.context.is_none())
+                    .unwrap(),
+                Some(true),
+                "{rule} failed adoption never installs context"
+            );
+        }
     }
 }

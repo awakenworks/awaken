@@ -18,7 +18,6 @@ isolates = ["awaken-credential-materializer"]
 awaken-lease-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-authority-clock.workspace = true
-awaken-container-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-credential-materializer.workspace = true
 awaken-ext-memory.workspace = true

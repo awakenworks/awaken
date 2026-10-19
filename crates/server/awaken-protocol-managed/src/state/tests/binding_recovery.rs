@@ -869,6 +869,8 @@ async fn cold_workspace_list_isolates_a_missing_preview_publication() {
     // R2 C2+C3 => list a read-only frozen projection without restoring Runtime.
     // R3 C2+interactive recovery => fail closed; a collection read must never
     // make the missing publication executable.
+    // No profile source is installed: these are the source-absent selection
+    // rows, retaining the same unpinned/frozen/interactive outcomes.
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
         Arc::new(ephemeral_session_repo().await);
     create_session_fixture(

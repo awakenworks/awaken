@@ -46,7 +46,7 @@ async fn current_private_wire_refuses_missing_or_wrong_version_before_provider_e
             let mut wire = if path == PATH {
                 json!({"identity":identity,"create":{"path":"/api/v1/namespaces/sandbox-ns/pods","object":{"metadata":{"name":"pod"}}}})
             } else {
-                json!({"identity":identity,"scope":"scope","predecessor":ContainerEffectFence::new("old","worker","boot",1,u64::MAX).unwrap(),"expected_pod_name":"awaken-scope"})
+                json!({"identity":identity,"scope":"scope","predecessor":SandboxEffectFence::new("old","worker","boot",1,u64::MAX).unwrap(),"expected_pod_name":"awaken-scope"})
             };
             if let Some(version) = version {
                 wire["wire_version"] = version.into();

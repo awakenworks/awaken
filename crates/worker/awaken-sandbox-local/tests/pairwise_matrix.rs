@@ -90,7 +90,7 @@ trait UnownedProvisioning: Send + Sync {
 #[async_trait::async_trait]
 impl UnownedProvisioning for LocalProvider {
     fn capabilities(&self) -> pc::SandboxCapabilities {
-        pc::SandboxProvider::capabilities(self)
+        pc::SandboxReadiness::capabilities(self)
     }
     async fn create_unowned(
         &self,
@@ -103,7 +103,7 @@ impl UnownedProvisioning for LocalProvider {
 #[async_trait::async_trait]
 impl UnownedProvisioning for NamespaceProvider {
     fn capabilities(&self) -> pc::SandboxCapabilities {
-        pc::SandboxProvider::capabilities(self)
+        pc::SandboxReadiness::capabilities(self)
     }
     async fn create_unowned(
         &self,

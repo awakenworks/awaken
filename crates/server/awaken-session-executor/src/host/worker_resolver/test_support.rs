@@ -135,13 +135,35 @@ pub(super) fn empty_frozen_projection(
     workspace_id: &str,
     environment: awaken_session_configuration_contract::EnvironmentSnapshot,
 ) -> awaken_session_realization_contract::FrozenSessionProjection {
-    empty_frozen_projection_with_model(workspace_id, environment, "agent-a", "stub", None, None)
+    empty_frozen_projection_with_model(
+        workspace_id,
+        environment,
+        "agent-a",
+        "stub",
+        None,
+        None,
+        awaken_session_types::SessionRuntimePlacement::Worker,
+    )
 }
 
 pub(crate) fn empty_frozen_projection_for_snapshot(
     workspace_id: &str,
     environment: awaken_session_configuration_contract::EnvironmentSnapshot,
     snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+) -> awaken_session_realization_contract::FrozenSessionProjection {
+    empty_frozen_projection_for_snapshot_at_placement(
+        workspace_id,
+        environment,
+        snapshot,
+        awaken_session_types::SessionRuntimePlacement::Worker,
+    )
+}
+
+pub(crate) fn empty_frozen_projection_for_snapshot_at_placement(
+    workspace_id: &str,
+    environment: awaken_session_configuration_contract::EnvironmentSnapshot,
+    snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+    placement: awaken_session_types::SessionRuntimePlacement,
 ) -> awaken_session_realization_contract::FrozenSessionProjection {
     let primary = snapshot.resolved_spec.model_binding.clone();
     let runtime = primary.binding().identity().2.to_owned();
@@ -162,6 +184,7 @@ pub(crate) fn empty_frozen_projection_for_snapshot(
         &model,
         Some(runtime),
         Some(model_override),
+        placement,
     )
 }
 
@@ -208,11 +231,12 @@ fn empty_frozen_projection_with_model(
     model: &str,
     runtime: Option<String>,
     model_override: Option<awaken_session_configuration_contract::SessionModelOverride>,
+    placement: awaken_session_types::SessionRuntimePlacement,
 ) -> awaken_session_realization_contract::FrozenSessionProjection {
     let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
         awaken_session_configuration_contract::SessionBaselineInputs {
             environment,
-            runtime_placement: awaken_session_types::SessionRuntimePlacement::Worker,
+            runtime_placement: placement,
             mcp_authoring: Default::default(),
             agent_id: agent_id.into(),
             agent_revision: None,
@@ -332,7 +356,7 @@ pub(crate) async fn available_local_environment_binding(
                     &spec,
                 )
                 .expect("validate exact available-Environment fixture spec");
-            let provider_effect = crate::session_environment::ProviderEffect::from_parts(
+            let provider_effect = awaken_provisioning_contract::SandboxEffect::from_parts(
                 effect.provider_fence.as_ref(),
                 effect.provider_authority.as_deref(),
             )

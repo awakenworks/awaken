@@ -772,41 +772,102 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     struct SecureExternalProvider;
 
     #[async_trait::async_trait]
-    impl awaken_container_contract::ContainerEnvironmentProvider for SecureExternalProvider {
+    impl awaken_provisioning_contract::SandboxReadiness for SecureExternalProvider {
+        fn capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
+            managed_test_container_capabilities()
+        }
+
+        fn checkpoint_formats(&self) -> Vec<String> {
+            Vec::new()
+        }
+
+        async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_provisioning_contract::SandboxProvider for SecureExternalProvider {
+        type Environment = dyn awaken_provisioning_contract::SessionSandbox;
+
         fn adoption_layout(
             &self,
             handle: &awaken_provisioning_contract::SandboxHandle,
         ) -> Result<
-            awaken_container_contract::ContainerAdoptionLayout,
+            awaken_provisioning_contract::SandboxAdoptionLayout,
             awaken_provisioning_contract::SandboxError,
         > {
             awaken_sandbox_container::container_adoption_layout(handle)
         }
 
-        fn physical_incarnation(
+        fn install_memory_mounter(
             &self,
-            handle: &awaken_provisioning_contract::SandboxHandle,
-        ) -> Result<String, awaken_provisioning_contract::SandboxError> {
-            awaken_sandbox_container::container_physical_incarnation(handle)
+            _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
+        ) {
         }
 
-        async fn create_environment_for_effect(
+        fn install_secret_broker(
             &self,
-            _spec: &awaken_provisioning_contract::SandboxSpec,
-            _effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
-            _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
-            _intent: awaken_container_contract::EnvironmentRealizationIntent,
-        ) -> Result<
-            std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>,
-            awaken_provisioning_contract::SandboxError,
-        > {
-            Err(awaken_provisioning_contract::SandboxError::unsupported(
-                "test double does not implement fenced Environment creation",
-            ))
+            _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
+        ) {
         }
-        async fn observe_environment(
+
+        async fn prewarm_images(
             &self,
-            _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
+            _specs: &[awaken_provisioning_contract::SandboxSpec],
+        ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+            Ok(())
+        }
+
+        fn validate_closed_observation(
+            &self,
+            handle: &awaken_provisioning_contract::SandboxHandle,
+            observation: &awaken_provisioning_contract::SandboxObservation,
+        ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+            awaken_sandbox_container::validate_container_closed_observation(handle, observation)
+        }
+
+        fn claim_for_effect<'a>(
+            &'a self,
+            spec: &'a awaken_provisioning_contract::SandboxSpec,
+            effect: awaken_provisioning_contract::SandboxEffect<'a>,
+            intent: awaken_provisioning_contract::SandboxRealizationIntent,
+        ) -> awaken_provisioning_contract::ClaimedEffect<
+            'a,
+            std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
+        > {
+            let claim = awaken_provisioning_contract::EffectClaim::in_process(
+                awaken_provisioning_contract::test_support::retain_abandoned_effect(
+                    spec.scope.clone(),
+                ),
+            );
+            awaken_provisioning_contract::ClaimedEffect::new(claim, async move {
+                intent.admit_under(effect)?;
+                match effect {
+                    awaken_provisioning_contract::SandboxEffect::Unattached => {
+                        let _spec = spec;
+
+                        Err(awaken_provisioning_contract::SandboxError::unsupported(
+                            "H20 exercises pre-environment MCP staging only",
+                        ))
+                    }
+                    awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority } => {
+                        let _spec = spec;
+                        let _effect_fence = fence;
+                        let _authority = authority;
+                        let _intent = intent;
+
+                        Err(awaken_provisioning_contract::SandboxError::unsupported(
+                            "test double does not implement fenced Environment creation",
+                        ))
+                    }
+                }
+            })
+        }
+
+        async fn observe(
+            &self,
+            _adoption: awaken_provisioning_contract::SandboxAdoption<'_>,
             _basis: awaken_provisioning_contract::SandboxObservationBasis<'_>,
         ) -> Result<
             awaken_provisioning_contract::SandboxObservation,
@@ -816,20 +877,36 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
                 "test double does not observe Environments",
             ))
         }
-        async fn adopt_environment_for_effect(
+
+        async fn adopt_for_effect(
             &self,
-            _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
-            _effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
-            _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+            adoption: awaken_provisioning_contract::SandboxAdoption<'_>,
+            effect: awaken_provisioning_contract::SandboxEffect<'_>,
         ) -> Result<
-            std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>,
+            std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
             awaken_provisioning_contract::SandboxError,
         > {
-            Err(awaken_provisioning_contract::SandboxError::unsupported(
-                "test double does not implement fenced Environment adoption",
-            ))
+            match effect {
+                awaken_provisioning_contract::SandboxEffect::Unattached => {
+                    let _adoption = adoption;
+
+                    Err(awaken_provisioning_contract::SandboxError::unsupported(
+                        "H20 exercises pre-environment MCP staging only",
+                    ))
+                }
+                awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority } => {
+                    let _adoption = adoption;
+                    let _effect_fence = fence;
+                    let _authority = authority;
+
+                    Err(awaken_provisioning_contract::SandboxError::unsupported(
+                        "test double does not implement fenced Environment adoption",
+                    ))
+                }
+            }
         }
-        async fn prepare_terminal_environment_for_effect(
+
+        async fn prepare_terminal_for_effect(
             &self,
             _spec: &awaken_provisioning_contract::SandboxSpec,
             _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
@@ -837,7 +914,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             _terminal_effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
             _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
         ) -> Result<
-            Option<std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>>,
+            Option<std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>>,
             awaken_provisioning_contract::SandboxError,
         > {
             Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -845,36 +922,13 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             ))
         }
 
-        async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
-            Ok(())
-        }
-
-        fn sandbox_capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
-            managed_test_container_capabilities()
-        }
-
-        async fn create_unattached_environment(
+        fn restoration(
             &self,
-            _spec: &awaken_provisioning_contract::SandboxSpec,
-        ) -> Result<
-            Arc<dyn awaken_container_contract::ContainerEnvironment>,
-            awaken_provisioning_contract::SandboxError,
+        ) -> awaken_provisioning_contract::SandboxRestoration<
+            '_,
+            std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
         > {
-            Err(awaken_provisioning_contract::SandboxError::unsupported(
-                "H20 exercises pre-environment MCP staging only",
-            ))
-        }
-
-        async fn adopt_unattached_environment(
-            &self,
-            _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
-        ) -> Result<
-            Arc<dyn awaken_container_contract::ContainerEnvironment>,
-            awaken_provisioning_contract::SandboxError,
-        > {
-            Err(awaken_provisioning_contract::SandboxError::unsupported(
-                "H20 exercises pre-environment MCP staging only",
-            ))
+            awaken_provisioning_contract::SandboxRestoration::Unsupported
         }
     }
 

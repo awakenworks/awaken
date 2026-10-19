@@ -298,7 +298,7 @@ pub struct PersistedSession {
     pub realization: Option<SessionRealizationLease>,
     /// Initial Environment realization retry state. Kept inside the Session
     /// root so a reclaimed Worker claim cannot reset the failure budget.
-    pub realization_progress: crate::SessionRealizationProgress,
+    pub(crate) realization_progress: crate::SessionRealizationProgress,
     /// The only durable execution-state authority. The retained serialized key
     /// keeps historical aggregate JSON readable through the store codec.
     #[serde(rename = "status")]
@@ -312,6 +312,36 @@ pub struct PersistedSession {
 }
 
 impl PersistedSession {
+    /// Stored retry observations. Assignment commands own their changes.
+    ///
+    /// Root boundary decision table: C1 a caller owns/borrows a snapshot;
+    /// C2 it requests a shared read, whole replacement, or mutable access.
+    /// E1 shared observations remain available; E2 both writes are rejected.
+    /// Historical root decoding remains the original import boundary and does
+    /// not grant a repository mutation or predecessor-validation capability.
+    /// ```
+    /// use awaken_session_state_contract::{PersistedSession, SessionRealizationProgress};
+    /// fn inspect(session: &PersistedSession) -> &SessionRealizationProgress {
+    ///     session.realization_progress()
+    /// }
+    /// ```
+    /// ```compile_fail,E0616
+    /// # use awaken_session_state_contract::PersistedSession;
+    /// fn reset(session: &mut PersistedSession) {
+    ///     session.realization_progress = Default::default();
+    /// }
+    /// ```
+    /// ```compile_fail,E0308
+    /// # use awaken_session_state_contract::{PersistedSession, SessionRealizationProgress};
+    /// fn mutate(session: &mut PersistedSession) {
+    ///     let _: &mut SessionRealizationProgress = session.realization_progress();
+    /// }
+    /// ```
+    #[must_use]
+    pub const fn realization_progress(&self) -> &crate::SessionRealizationProgress {
+        &self.realization_progress
+    }
+
     /// Immutable first-effect provenance; absence is historical unknown.
     #[must_use]
     pub fn environment_materialization(&self) -> Option<&crate::SessionEnvironmentMaterialization> {
