@@ -3,6 +3,9 @@
 //! A gated tool call runs only when the gate allows; a denied call never
 //! executes even though the tool is registered and visible (G9/G21).
 
+#[path = "tools/response_reentry.rs"]
+mod response_reentry;
+
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -36,23 +39,51 @@ use awaken_tool_contract::tool::{
 /// First inference asks for a tool call; the second ends with text.
 struct ToolThenText {
     calls: AtomicUsize,
+    interrupted_response: Option<awaken_runtime_contract::model_operation::ModelEffectScope>,
 }
 
 impl ToolThenText {
     fn new() -> Self {
         Self {
             calls: AtomicUsize::new(0),
+            interrupted_response: None,
         }
     }
 }
 
 #[async_trait::async_trait]
 impl LlmExecutor for ToolThenText {
+    fn effect_scope(
+        &self,
+        _request: &ChatRequest,
+    ) -> awaken_runtime_contract::model_operation::ModelEffectScope {
+        self.interrupted_response.unwrap_or_default()
+    }
+
+    async fn infer_streaming(
+        &self,
+        request: ChatRequest,
+        sink: &dyn awaken_runtime_contract::llm::DeltaSink,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let result = self.infer(request).await;
+        if result.is_err() {
+            sink.on_text("unconfirmed EOF text").await;
+            sink.on_tool_call_delta("must-not-run", "echo", r#"{"text":"duplicate"}"#)
+                .await;
+        }
+        result
+    }
+
     async fn infer(
         &self,
         _request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        if n == 1 && self.interrupted_response.is_some() {
+            return Err(awaken_runtime_contract::llm::Error::Provider(
+                "unexpected response EOF".into(),
+            ));
+        }
         let output = if n == 0 {
             AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "call-1".to_string(),

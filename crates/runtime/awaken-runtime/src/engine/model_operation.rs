@@ -98,7 +98,7 @@ pub(super) async fn recover_checkpoint(
             RunToolCapability::project_recorded(&mut store, capability);
             for operation in recorded
                 .iter()
-                .filter(|operation| !operation.execution.permits_reentry())
+                .filter(|operation| !operation.reentry().allows_request())
             {
                 context
                     .physical_quiescence

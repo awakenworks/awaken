@@ -774,7 +774,9 @@ fact never becomes a successful model result or a provider termination receipt.
 `ModelOperation.effect_scope` is supplied by the exact concrete adapter and
 frozen in the entry commit. Legacy/custom/hosted-action calls remain opaque.
 Only the qualified DeepSeek mappings without server tools are response-only.
-Unknown invocations still cannot be retried or consumed as complete responses.
+Unknown invocations cannot be consumed as complete responses. The bounded
+returned-response-only retry exception is defined in the
+[2026-10-19 amendment](#amendment-2026-10-19-returned-response-only-model-requests).
 
 Static ownership remains:
 
@@ -1077,3 +1079,43 @@ through its Worker composition. Source compatibility does not replace Root's
 pinned Cloud build. Cargo feature unification and the CLI's shared executable
 package can still compile Kube; this source partition is not zero binary
 implementation closure or a physical deployment proof.
+## Amendment 2026-10-19: returned response-only model requests
+
+Provider outcome and safe model reentry are separate observations. The existing
+Run-scoped ModelOperation journal keeps `execution=Unknown` when a response body
+ends without a protocol terminal fact. Its original `Returned` phase, committed
+only after the owned response consumer closes, may nevertheless permit a fresh
+model request when the pre-entry adapter capability was `ResponseOnly`.
+With Unknown evidence, legacy/opaque scope, Entered/TimedOut calls and cancelled
+consumers retain the
+existing refusal. No provider termination receipt is inferred or rewritten.
+
+The existing Runtime retry owner consumes one derived ModelReentry value from
+that journal vocabulary. Positive execution evidence retains confirmed partial
+recovery; returned response-only uncertainty permits only a fresh request and
+discards the failed call's unconfirmed text and tool fragments. It cannot
+synthesize ToolUse or salvage a checkpoint from that uncertain call. Existing
+claims, evidence commits, retry counts, logical deadlines and cancellation
+remain mandatory. Earlier committed tool results are not replayed.
+
+This is a value projection and a bounded extension of the existing inference
+loop, not a second journal, queue, whole-Run replay or business-operation recovery
+policy. Kernel decision tables and the existing Kani obligation distinguish
+remote evidence from local response closure; Runtime and real adapter-boundary
+fixtures cover retry, unconfirmed-output rejection and original operation ids.
+Source qualification does not establish that a deployed cohort or its business
+acceptance passed.
+
+Known transport failure is not an unknown error family. Provider adapters retain
+safe response-body diagnostics (including the nested I/O kind when available)
+in the existing failure message, independently of execution evidence. Once the
+existing Runtime policy exhausts a qualified model request, its ordinary
+Inference failure remains authoritative. Managed projects known `provider_error`
+(including InvalidResponse) and `timeout` failures through the existing
+`model_request_failed_error` with `exhausted`, preserving that message and
+Session usability. Known binding, malformed-input, missing-model and filtered
+content refusals join the existing permanent model failures with `terminal`; an
+unrecognized fault retains the generic fallback. The separate
+ExecutionUnknown projection and its terminal status remain reserved for the
+existing indeterminate execution path. No adapter-owned retry or additional
+persistent error store is introduced.

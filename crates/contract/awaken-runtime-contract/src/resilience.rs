@@ -20,7 +20,9 @@
 use std::time::Duration;
 
 use crate::llm::{Error, ModelInferenceBudget};
+#[cfg(test)]
 use crate::model_operation::ModelExecutionEvidence;
+use crate::model_operation::ModelReentry;
 
 /// The routing vocabulary lives beneath every contract that classifies
 /// failures; the inference [`Error`] projection stays here with its owner.
@@ -268,7 +270,7 @@ impl RetryPolicy {
     pub fn decide(
         &self,
         class: FailureClass,
-        evidence: ModelExecutionEvidence,
+        reentry: ModelReentry,
         failed_attempt: u32,
         remaining: Duration,
         jitter: u64,
@@ -276,7 +278,7 @@ impl RetryPolicy {
         if class == FailureClass::Cancelled {
             return RetryVerdict::Stop(RetryStop::Cancelled);
         }
-        if !evidence.permits_reentry() {
+        if !reentry.allows_request() {
             return RetryVerdict::Stop(RetryStop::ExecutionUncertain);
         }
         if !class.is_retryable() {
@@ -626,7 +628,11 @@ mod tests {
             assert_eq!(
                 row.policy.decide(
                     row.class,
-                    row.evidence,
+                    ModelReentry::observed(
+                        crate::model_operation::ModelOperationPhase::Returned,
+                        crate::model_operation::ModelEffectScope::Opaque,
+                        row.evidence,
+                    ),
                     row.attempt,
                     row.remaining,
                     row.jitter
@@ -651,6 +657,63 @@ mod tests {
                     "{nominal}/{draw}: {pause}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn returned_response_only_retry_keeps_cancellation_count_and_deadline_gates() {
+        use crate::model_operation::{ModelEffectScope, ModelOperationPhase};
+        // R1 qualified returned uncertainty => fresh request only, never output
+        // salvage. Cross C1 cancellation/permanent/transient with C2 retry
+        // count and C3 logical deadline: R2 cancellation, R3 permanent refusal,
+        // R4 spent count and R5 spent deadline all still stop. No remote receipt
+        // is created, and this table invokes the original RetryPolicy owner.
+        let reentry = ModelReentry::observed(
+            ModelOperationPhase::Returned,
+            ModelEffectScope::ResponseOnly,
+            ModelExecutionEvidence::Unknown,
+        );
+        assert!(reentry.allows_request());
+        assert!(!reentry.allows_retained_output());
+        let p = RetryPolicy {
+            backoff_base_ms: 0,
+            ..RetryPolicy::default()
+        };
+        for (class, count, remaining, expected) in [
+            (
+                FailureClass::Transient,
+                0,
+                Duration::from_secs(3600),
+                RetryVerdict::Retry {
+                    after: Duration::ZERO,
+                },
+            ),
+            (
+                FailureClass::Cancelled,
+                0,
+                Duration::from_secs(3600),
+                RetryVerdict::Stop(RetryStop::Cancelled),
+            ),
+            (
+                FailureClass::Permanent,
+                0,
+                Duration::from_secs(3600),
+                RetryVerdict::Stop(RetryStop::NotRetryable),
+            ),
+            (
+                FailureClass::Transient,
+                2,
+                Duration::from_secs(3600),
+                RetryVerdict::Stop(RetryStop::AttemptsExhausted),
+            ),
+            (
+                FailureClass::Transient,
+                0,
+                Duration::ZERO,
+                RetryVerdict::Stop(RetryStop::DeadlineExhausted),
+            ),
+        ] {
+            assert_eq!(p.decide(class, reentry, count, remaining, 0), expected);
         }
     }
 }

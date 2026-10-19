@@ -18,6 +18,7 @@
 //! fault into a wire fault lives with the fault, so a caller cannot invent a
 //! retry status beside it.
 
+use awaken_managed_session_events::RunFault;
 use serde::Serialize;
 
 /// SDK: none — the HTTP error envelope is the API's own transport shape, not a
@@ -108,12 +109,10 @@ impl SessionError {
     }
 
     /// The Managed error of one neutral Run fault.
-    pub(crate) fn from_fault(fault: &awaken_managed_session_events::RunFault) -> Self {
+    pub(crate) fn from_fault(fault: &RunFault) -> Self {
         match fault {
-            awaken_managed_session_events::RunFault::Failed { code, message } => {
-                Self::classify(code, message.clone())
-            }
-            awaken_managed_session_events::RunFault::ExecutionUnknown => Self::execution_unknown(),
+            RunFault::Failed { code, message } => Self::classify(code, message.clone()),
+            RunFault::ExecutionUnknown => Self::execution_unknown(),
         }
     }
 
@@ -165,9 +164,11 @@ impl SessionError {
             // These are model-owned, non-retryable failures. In particular,
             // billing exhaustion must not lose its model origin or look like
             // ordinary retry exhaustion at the Managed boundary.
-            "context_overflow" | "unauthorized" | "usage_limit" | "login_required" => {
+            "binding_rejected" | "context_overflow" | "invalid_request" | "unauthorized"
+            | "usage_limit" | "login_required" | "model_not_found" | "content_filtered" => {
                 ("model_request_failed_error", RetryStatus::Terminal)
             }
+            "provider_error" | "timeout" => ("model_request_failed_error", RetryStatus::Exhausted),
             "activation_failed" => ("unknown_error", RetryStatus::Terminal),
             _ => ("unknown_error", RetryStatus::Exhausted),
         };
@@ -208,6 +209,16 @@ mod tests {
     /// | R5   | rate_limited              | irrelevant        | model_rate_limited_error        | absent          | exhausted    |
     /// | R6   | overloaded                | irrelevant        | model_overloaded_error          | absent          | exhausted    |
     /// | R7   | usage_limit               | irrelevant        | model_request_failed_error      | absent          | terminal     |
+    /// | R8   | provider_error            | irrelevant        | model_request_failed_error      | absent          | exhausted    |
+    /// | R9   | timeout                   | irrelevant        | model_request_failed_error      | absent          | exhausted    |
+    /// | R10  | binding_rejected          | irrelevant        | model_request_failed_error      | absent          | terminal     |
+    /// | R11  | invalid_request           | irrelevant        | model_request_failed_error      | absent          | terminal     |
+    /// | R12  | model_not_found           | irrelevant        | model_request_failed_error      | absent          | terminal     |
+    /// | R13  | content_filtered          | irrelevant        | model_request_failed_error      | absent          | terminal     |
+    /// R8/R9 a classified, exhausted model request preserves its cause and
+    /// stays usable; it is not the separate ExecutionUnknown/terminal decision.
+    /// R10-R13 known permanent model refusals stay terminal, never retry-exhausted.
+    /// R14 unrecognized faults retain the existing generic fallback.
     /// R5-R7 distinguish rate, overload and hard usage causes at the existing
     /// classifier. All three have no MCP server field; a terminal Run with an
     /// exhausted retry budget must not be advertised as retrying.
@@ -270,10 +281,70 @@ mod tests {
                 None,
                 RetryStatus::Terminal,
             ),
+            (
+                "R8",
+                "provider_error",
+                "response body failed: UnexpectedEof",
+                "model_request_failed_error",
+                None,
+                RetryStatus::Exhausted,
+            ),
+            (
+                "R9",
+                "timeout",
+                "model request deadline exceeded",
+                "model_request_failed_error",
+                None,
+                RetryStatus::Exhausted,
+            ),
+            (
+                "R10",
+                "binding_rejected",
+                "model binding is unavailable",
+                "model_request_failed_error",
+                None,
+                RetryStatus::Terminal,
+            ),
+            (
+                "R11",
+                "invalid_request",
+                "model request is malformed",
+                "model_request_failed_error",
+                None,
+                RetryStatus::Terminal,
+            ),
+            (
+                "R12",
+                "model_not_found",
+                "model no longer exists",
+                "model_request_failed_error",
+                None,
+                RetryStatus::Terminal,
+            ),
+            (
+                "R13",
+                "content_filtered",
+                "provider refused this content",
+                "model_request_failed_error",
+                None,
+                RetryStatus::Terminal,
+            ),
+            (
+                "R14",
+                "future_unknown_fault",
+                "not a classified model failure",
+                "unknown_error",
+                None,
+                RetryStatus::Exhausted,
+            ),
         ];
         for (rule, code, message, kind, server, retry_status) in cases {
             let error = SessionError::classify(code, message);
             assert_eq!(error.kind, kind, "{rule} kind");
+            assert_eq!(
+                error.message, message,
+                "{rule} concrete cause survives projection"
+            );
             assert_eq!(error.mcp_server_name.as_deref(), server, "{rule} server");
             assert_eq!(error.retry_status, retry_status, "{rule} retry_status");
             // The property every row shares, and the one the wire depends on:
