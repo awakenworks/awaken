@@ -1,10 +1,11 @@
 use super::*;
-use awaken_container_contract::{K8sCreateRequest, K8sCreateResponse};
-use awaken_sandbox_container::{CreateTicketRequest, TicketResult};
-use awaken_sandbox_kubernetes::{
-    ISOLATION_LABEL, K8sCreateTransport, K8sLedgerBinding, K8sWorkerCreateLedger, RequestJoin,
-    TicketAdmission,
+use awaken_container_contract::{
+    CreateTicketRequest, ISOLATION_LABEL, K8sLedgerBinding, RequestJoin, TicketAdmission,
+    TicketResult,
 };
+use awaken_container_contract::{K8sCreateRequest, K8sCreateResponse};
+
+use awaken_sandbox_kubernetes::{K8sCreateTransport, K8sWorkerCreateLedger};
 
 const GUARDED_CLAIM_GROUP: &str = "guarded-claim-effect";
 
@@ -40,8 +41,8 @@ impl K8sCreateTransport for ClaimOnlyBroker {
     async fn create(
         &self,
         request: K8sCreateRequest,
-    ) -> Result<K8sCreateResponse, awaken_sandbox_container::RuntimeError> {
-        use awaken_sandbox_container::RuntimeError;
+    ) -> Result<K8sCreateResponse, awaken_container_contract::RuntimeError> {
+        use awaken_container_contract::RuntimeError;
         use k8s_openapi::api::core::v1::PersistentVolumeClaim;
         use kube::Api;
         use kube::api::PostParams;
@@ -104,7 +105,7 @@ impl K8sCreateTransport for ClaimOnlyBroker {
         scope: &str,
         predecessor: &awaken_provisioning_contract::SandboxEffectFence,
         expected_pod_name: &str,
-    ) -> Result<RequestJoin, awaken_sandbox_container::RuntimeError> {
+    ) -> Result<RequestJoin, awaken_container_contract::RuntimeError> {
         if scope != self.scope || !predecessor.same_effect_identity(&self.predecessor) {
             return Ok(RequestJoin::Unknown);
         }
@@ -632,7 +633,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
                 let observed = tickets.iter().filter_map(|ticket| {
                     if ticket.isolation_pending { return None; }
                     match &ticket.status {
-                        awaken_sandbox_container::TicketStatus::Finished(TicketResult::Isolated { uid }) =>
+                        awaken_container_contract::TicketStatus::Finished(TicketResult::Isolated { uid }) =>
                             Some((ticket.request.resource.clone(), uid.clone())),
                         _ => None,
                     }
@@ -754,7 +755,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
             if tickets.len() == requests.len()
                 && tickets.iter().all(|ticket|
                     !ticket.isolation_pending &&
-                    matches!(&ticket.status, awaken_sandbox_container::TicketStatus::Finished(TicketResult::Isolated { uid })
+                    matches!(&ticket.status, awaken_container_contract::TicketStatus::Finished(TicketResult::Isolated { uid })
                         if isolated.get(&ticket.request.resource) == Some(uid))))
         {
             return Err(io::Error::other("isolation replay changed the joined UID").into());
@@ -1246,7 +1247,7 @@ async fn original_create_guard_keeps_a_deleted_pod_visible_until_exact_release()
         let original: Pod = serde_json::from_value(serde_json::json!({
             "metadata": {
                 "name": "original-pod", "namespace": name,
-                "finalizers": [awaken_sandbox_kubernetes::ORIGINAL_GUARD_FINALIZER]
+                "finalizers": [awaken_container_contract::ORIGINAL_GUARD_FINALIZER]
             },
             "spec": {
                 "automountServiceAccountToken": false,
@@ -1267,7 +1268,7 @@ async fn original_create_guard_keeps_a_deleted_pod_visible_until_exact_release()
         let retained = pods.get("original-pod").await?;
         if retained.metadata.uid.as_deref() != Some(&uid)
             || retained.metadata.deletion_timestamp.is_none()
-            || !retained.metadata.finalizers.as_ref().is_some_and(|values| values.iter().any(|value| value == awaken_sandbox_kubernetes::ORIGINAL_GUARD_FINALIZER))
+            || !retained.metadata.finalizers.as_ref().is_some_and(|values| values.iter().any(|value| value == awaken_container_contract::ORIGINAL_GUARD_FINALIZER))
         {
             return Err(io::Error::other("original Pod disappeared before its result guard was released").into());
         }
@@ -1396,7 +1397,7 @@ async fn guarded_deleting_original_runs_authorized_pvc_disposal() {
         let claim_uid=claim.metadata.uid.clone().ok_or_else(||std::io::Error::other("created claim has no UID"))?;
         let pod:Pod=serde_json::from_value(serde_json::json!({
             "metadata":{"name":pod_name,"namespace":ns,
-                "finalizers":[awaken_sandbox_kubernetes::ORIGINAL_GUARD_FINALIZER],
+                "finalizers":[awaken_container_contract::ORIGINAL_GUARD_FINALIZER],
                 "annotations":{"awaken.dev/continuation-claim-uid":claim_uid,
                     "awaken.dev/sandbox-attempt":"live-original-attempt"}},
             "spec":{"automountServiceAccountToken":false,"restartPolicy":"Never",

@@ -65,15 +65,25 @@ async fn lifecycle_test_state() -> (
 ) {
     let repository = support::session_repository("open Session repository").await;
     let notifier = Arc::new(CountingLifecycleNotifier::default());
-    let state = support::state_with_mcp(PreparingFake {
-        captured: Arc::new(Mutex::new(Vec::new())),
-        staged: Arc::new(Mutex::new(Vec::new())),
-        observed_durable: Arc::new(Mutex::new(Vec::new())),
-        repo: None,
-        fail_with: None,
-    })
-    .await
-    .with_session_repo(repository.clone())
+    let state = {
+        let session_fixture_runtime = std::sync::Arc::new(PreparingFake {
+            captured: Arc::new(Mutex::new(Vec::new())),
+            staged: Arc::new(Mutex::new(Vec::new())),
+            observed_durable: Arc::new(Mutex::new(Vec::new())),
+            repo: None,
+            fail_with: None,
+        });
+        let session_fixture_clock = awaken_time::system_clock();
+        awaken_protocol_managed_testkit::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repository.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
     .with_lifecycle_notifier(notifier.clone());
     (state, repository, notifier)
 }
@@ -1050,14 +1060,22 @@ async fn hot_harness_with_repo(
     repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
 ) -> HotHarness {
     let runtime_state = Arc::new(Mutex::new(HotRuntimeState::default()));
-    let managed = Arc::new(
-        support::state_with_mcp(HotRuntime {
+    let managed = Arc::new({
+        let session_fixture_runtime = std::sync::Arc::new(HotRuntime {
             state: runtime_state.clone(),
             repo: repo.clone(),
-        })
-        .await
-        .with_session_repo(repo.clone()),
-    );
+        });
+        let session_fixture_clock = awaken_time::system_clock();
+        awaken_protocol_managed_testkit::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    });
     HotHarness {
         app: router(managed.clone()),
         managed,
@@ -1077,16 +1095,26 @@ async fn harness(fail_with: Option<fn() -> RunError>) -> Harness {
     let observed_durable = Arc::new(Mutex::new(Vec::new()));
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
         support::session_repository("open Session repository").await;
-    let state = support::state_with_mcp(PreparingFake {
-        captured: captured.clone(),
-        staged: staged.clone(),
-        observed_durable: observed_durable.clone(),
-        repo: Some(repo.clone()),
-        fail_with,
-    })
-    .await
-    .with_vaults(vaults.clone())
-    .with_session_repo(repo.clone());
+    let state = {
+        let session_fixture_runtime = std::sync::Arc::new(PreparingFake {
+            captured: captured.clone(),
+            staged: staged.clone(),
+            observed_durable: observed_durable.clone(),
+            repo: Some(repo.clone()),
+            fail_with,
+        });
+        let session_fixture_clock = awaken_time::system_clock();
+        awaken_protocol_managed_testkit::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_vaults(vaults.clone());
     let app = router(Arc::new(state)).merge(vault_router(vaults.clone()));
     Harness {
         app,
@@ -1099,7 +1127,7 @@ async fn harness(fail_with: Option<fn() -> RunError>) -> Harness {
 }
 
 /// Cause/effect decision table for the shared bind-time credential check:
-/// R1: a referenced vault is unknown -> reject with `VaultNotFound` before minting;
+/// O3/R1: unknown vault -> `VaultNotFound` before minting, via the credential role;
 /// R2: no vault is referenced -> accept without consulting secret material.
 /// The credential source is the only dependency, so these two rules cover every
 /// branch and prove that pre-flight validation remains fail-closed after the port split.
@@ -1328,6 +1356,10 @@ async fn create_mcp_credential(
 
 #[tokio::test]
 async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape() {
+    // Construction C1 selected durable Store; C2 one original Runtime Arc
+    // supplies both execution and MCP => the existing real bind/stage/root
+    // assertions below observe one graph. No late Store selector or second
+    // Runtime/MCP fixture is allowed to repair a failed construction.
     let h = harness(None).await;
     let (vault_id, cred_id) = vault_with_mcp_oauth(&h).await;
 

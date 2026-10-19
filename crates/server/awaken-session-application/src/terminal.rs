@@ -23,8 +23,8 @@ use awaken_session_state_contract::{
 };
 
 use super::{
-    SessionApplication, SessionMutationError, SessionPreparationError, SnapshotCommit,
-    mutation::repository_failure, resource_reconciliation::mutation_failure,
+    SessionApplication, SessionDeleteCommand, SessionMutationError, SessionPreparationError,
+    SnapshotCommit, credentials::mutation_failure, mutation::repository_failure,
 };
 
 /// One durable disposition transition and whether *this* call committed it.
@@ -145,78 +145,11 @@ impl From<SessionMutationError> for SessionArchiveWithRepositoryPublicationError
     }
 }
 
-#[cfg(test)]
-mod publication_error_tests {
-    use super::*;
-
-    #[test]
-    fn canonical_mutation_error_mapping_retains_every_publication_outcome() {
-        // DT-PUBLICATION-ERROR: owner or repository read/CAS reports C1 missing,
-        // C2 conflict, C3 changed retry identity, or C4 unavailable. R1 -> missing;
-        // R2/R3 -> conflict; R4 -> unavailable with the original message. Every
-        // call site uses this conversion, while lost-root-CAS tests own retries.
-        for (cause, expected) in [
-            (
-                SessionMutationError::NotFound,
-                SessionArchiveWithRepositoryPublicationError::NotFound,
-            ),
-            (
-                SessionMutationError::Conflict,
-                SessionArchiveWithRepositoryPublicationError::Conflict,
-            ),
-            (
-                SessionMutationError::IdempotencyMismatch,
-                SessionArchiveWithRepositoryPublicationError::Conflict,
-            ),
-            (
-                SessionMutationError::Unavailable("owner unavailable".into()),
-                SessionArchiveWithRepositoryPublicationError::Unavailable(
-                    "owner unavailable".into(),
-                ),
-            ),
-        ] {
-            let actual = SessionArchiveWithRepositoryPublicationError::from(cause);
-            assert_eq!(
-                std::mem::discriminant(&actual),
-                std::mem::discriminant(&expected)
-            );
-            assert_eq!(actual.to_string(), expected.to_string());
-        }
-    }
-}
-
-fn pending_event_batch_error() -> SessionPreparationError {
+pub(crate) fn pending_event_batch_error() -> SessionPreparationError {
     SessionPreparationError::Rejected(RunError::unavailable_classified(
         "session_event_batch_pending",
         "Session Event batch effects must settle before a terminal transition",
     ))
-}
-
-/// Protocol-neutral request to commit the durable Session Delete fence.
-/// Application code, not an edge adapter, derives the canonical lifecycle fact.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionDeleteCommand {
-    session_id: awaken_session_types::SessionId,
-    /// A test's fixed request instant. Production commands carry none: the
-    /// application stamps the request on its own clock when it admits it.
-    requested_at_unix_s: Option<i64>,
-}
-
-impl SessionDeleteCommand {
-    #[must_use]
-    pub fn new(session_id: impl Into<awaken_session_types::SessionId>) -> Self {
-        Self {
-            session_id: session_id.into(),
-            requested_at_unix_s: None,
-        }
-    }
-    #[cfg(test)]
-    pub(crate) fn at_for_test(session_id: &str, requested_at_unix_s: i64) -> Self {
-        Self {
-            session_id: session_id.into(),
-            requested_at_unix_s: Some(requested_at_unix_s),
-        }
-    }
 }
 
 impl SessionApplication {
@@ -297,7 +230,7 @@ impl SessionApplication {
                 return Err(SessionArchiveWithRepositoryPublicationError::NotFound);
             }
             if session.has_incomplete_event_batches() {
-                self.wake_lifecycle_supervisor();
+                self.lifecycle.request_reconciliation();
                 return Err(SessionArchiveWithRepositoryPublicationError::Pending(
                     "Session Event batch effects must settle before Repository publication".into(),
                 ));
@@ -368,9 +301,9 @@ impl SessionApplication {
         let mut transition =
             transition.ok_or(SessionArchiveWithRepositoryPublicationError::Conflict)?;
         if transition.transitioned {
-            self.notify_lifecycle_fact();
+            self.lifecycle.notify_fact();
         }
-        self.wake_lifecycle_supervisor();
+        self.lifecycle.request_reconciliation();
         let pending_reason = self
             .release_terminal_resources(&transition.owner_scope, command.session_id.as_str())
             .await
@@ -511,7 +444,7 @@ impl SessionApplication {
             .commit_archive(session_id, archived_at, fact, admission)
             .await?;
         if transition.transitioned {
-            self.notify_lifecycle_fact();
+            self.lifecycle.notify_fact();
         }
         // Archive is linearized by the durable terminal fence above. Physical
         // Runtime/Resource cleanup is a recoverable saga. Public archive returns
@@ -519,7 +452,7 @@ impl SessionApplication {
         // its verified cleanup below. Wake the lifecycle owner before the eager
         // attempt so caller cancellation cannot strand the intent; the attempt
         // only shortens convergence when the current projector is available.
-        self.wake_lifecycle_supervisor();
+        self.lifecycle.request_reconciliation();
         let cleanup = self
             .release_terminal_resources(&transition.owner_scope, session_id.as_str())
             .await;
@@ -556,9 +489,9 @@ impl SessionApplication {
         self: &std::sync::Arc<Self>,
         command: SessionDeleteCommand,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
-        let transition = self.commit_delete_intent(command).await?;
-        self.notify_lifecycle_fact();
-        self.wake_lifecycle_supervisor();
+        let transition = self.lifecycle.commit_delete_intent(command).await?;
+        self.lifecycle.notify_fact();
+        self.lifecycle.request_reconciliation();
         let application = std::sync::Arc::clone(self);
         let owner_scope = transition.owner_scope.clone();
         let session_id = transition.session.session_id.clone();
@@ -643,7 +576,7 @@ impl SessionApplication {
                 // authoritative Runtime boundary. Keep the root nonterminal
                 // and let the existing lifecycle supervisor finish the batch;
                 // otherwise terminal state would make that work undiscoverable.
-                self.wake_lifecycle_supervisor();
+                self.lifecycle.request_reconciliation();
                 return Err(pending_event_batch_error());
             }
             admission
@@ -678,63 +611,44 @@ impl SessionApplication {
         }
         Err(SessionPreparationError::Conflict)
     }
+}
 
-    /// Commit the hidden delete intent and Resource release intent atomically.
-    pub async fn commit_delete_intent(
-        &self,
-        command: SessionDeleteCommand,
-    ) -> Result<SessionDispositionMutation, SessionPreparationError> {
-        let mutations = &self.mutations;
-        let session_id = command.session_id.as_str();
-        for attempt in 0..ROOT_CAS_ATTEMPTS {
-            let owner_scope = mutations
-                .owner(&awaken_session_types::SessionId::from(session_id))
-                .await
-                .map_err(mutation_failure)?;
-            let mut session = mutations
-                .session_aggregate(&awaken_session_types::SessionId::from(session_id))
-                .await
-                .map_err(repository_failure)
-                .map_err(mutation_failure)?;
-            // The aggregate owns the complete Delete admission rule. Calling
-            // it before the pending-batch gate makes a hidden durable replay
-            // absorbing without duplicating disposition interpretation here;
-            // a rejected first request mutates only this detached candidate.
-            let Some(delete_fact) = session
-                .lifecycle()
-                .request_delete(
-                    &owner_scope,
-                    command.requested_at_unix_s.unwrap_or_else(|| {
-                        i64::try_from(self.clock.now().duration_since_epoch().as_secs())
-                            .unwrap_or(i64::MAX)
-                    }),
-                    self.clock.now_ms(),
-                )
-                .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?
-            else {
-                return Ok(SessionDispositionMutation::unchanged(
-                    owner_scope,
-                    session.into_snapshot(),
-                ));
-            };
-            if session.has_incomplete_event_batches() {
-                self.wake_lifecycle_supervisor();
-                return Err(pending_event_batch_error());
-            }
-            let facts = vec![delete_fact];
-            match mutations
-                .commit_session_snapshot_with_outcome(&owner_scope, session, "delete-intent", facts)
-                .await
-            {
-                Ok(commit) => {
-                    return Ok(SessionDispositionMutation::committed(owner_scope, commit));
-                }
-                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
-                    continue;
-                }
-                Err(error) => return Err(mutation_failure(error)),
-            }
+#[cfg(test)]
+mod publication_error_tests {
+    use super::*;
+
+    #[test]
+    fn canonical_mutation_error_mapping_retains_every_publication_outcome() {
+        // DT-PUBLICATION-ERROR: owner or repository read/CAS reports C1 missing,
+        // C2 conflict, C3 changed retry identity, or C4 unavailable. R1 -> missing;
+        // R2/R3 -> conflict; R4 -> unavailable with the original message. Every
+        // call site uses this conversion, while lost-root-CAS tests own retries.
+        for (cause, expected) in [
+            (
+                SessionMutationError::NotFound,
+                SessionArchiveWithRepositoryPublicationError::NotFound,
+            ),
+            (
+                SessionMutationError::Conflict,
+                SessionArchiveWithRepositoryPublicationError::Conflict,
+            ),
+            (
+                SessionMutationError::IdempotencyMismatch,
+                SessionArchiveWithRepositoryPublicationError::Conflict,
+            ),
+            (
+                SessionMutationError::Unavailable("owner unavailable".into()),
+                SessionArchiveWithRepositoryPublicationError::Unavailable(
+                    "owner unavailable".into(),
+                ),
+            ),
+        ] {
+            let actual = SessionArchiveWithRepositoryPublicationError::from(cause);
+            assert_eq!(
+                std::mem::discriminant(&actual),
+                std::mem::discriminant(&expected)
+            );
+            assert_eq!(actual.to_string(), expected.to_string());
         }
-        Err(SessionPreparationError::Conflict)
     }
 }

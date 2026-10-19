@@ -276,6 +276,7 @@ async fn every_disposition_command_reports_a_lost_root_cas_as_a_replay() {
                 }
                 _ => {
                     delayed
+                        .lifecycle
                         .commit_delete_intent(SessionDeleteCommand::at_for_test(&delayed_id, 11))
                         .await
                 }
@@ -304,7 +305,8 @@ async fn every_disposition_command_reports_a_lost_root_cas_as_a_replay() {
                     .await
             }
             _ => {
-                app.commit_delete_intent(SessionDeleteCommand::at_for_test(&session_id, 11))
+                app.lifecycle
+                    .commit_delete_intent(SessionDeleteCommand::at_for_test(&session_id, 11))
                     .await
             }
         }

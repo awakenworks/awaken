@@ -59,7 +59,8 @@ class DeadlineTests(unittest.TestCase):
         return [sys.executable, "-c", GROUP_CODE, str(coordinate),
                 str(int(leader_ignores)), str(int(child_ignores))]
 
-    def cargo_fixture(self, root, command, *, status=0, delay=0.4, arguments=(), admit=False, ready=False):
+    def cargo_fixture(self, root, command, *, status=0, delay=0.4, arguments=(), admit=False, ready=False,
+                      shell_flags=(), redirected=False):
         # This fixture owns only admission and Cargo's documented argv protocol;
         # it delegates execution/cleanup to the actual shared deadline owner.
         cargo = root / "cargo"
@@ -82,8 +83,12 @@ esac
                            TMPDIR=str(root), FIXTURE_ADMISSION_DELAY=str(delay),
                            FIXTURE_ADMISSION_STATUS=str(status), FIXTURE_READY=str(int(ready)))
         environment.pop("FIXTURE_ADMITTED", None)
+        invocation = 'source "$1"; shift; run_with_deadline "$@"'
+        if redirected:
+            environment["FIXTURE_CALL_LOG"] = str(root / "call.log")
+            invocation += ' >"$FIXTURE_CALL_LOG" 2>&1'
         result = subprocess.run(
-            ["bash", "-c", 'source "$1"; shift; run_with_deadline "$@"',
+            ["bash", *shell_flags, "-c", invocation,
              "deadline-fixture", str(HELPER), *(["--admit"] if admit else []), "0.25",
              *([] if admit else ["cargo", "fixture"]),
              *command, *arguments],
@@ -124,6 +129,35 @@ esac
             )
             self.assertEqual(result.returncode, 75, result.stderr)
             self.assertFalse(marker.exists())
+
+    def test_redirected_errexit_preserves_admission_and_execution_results(self):
+        # C1 direct helper call has a shell redirection; C2 errexit is enabled,
+        # with or without nounset; C3 admission either refuses or admits the
+        # command; C4 the admitted command succeeds or returns 23/75/101.
+        # Rules R1 refusal => exact 75 and no execution; R2 admitted => exact
+        # command status/output and one execution. Every row must remove only
+        # its temporary Cargo entry. Bash's redirected-errexit unwind otherwise
+        # drops function locals before EXIT and replaces the real result with a
+        # cleanup failure. Existing A1-A4 cover queue timing and actual timeout;
+        # these rows isolate the missing shell-call boundary with the same owner.
+        for shell_flags in (("-e",), ("-e", "-u")):
+            for admission, execution in ((75, 0), (0, 0), (0, 23), (0, 75), (0, 101)):
+                with self.subTest(flags=shell_flags, admission=admission, execution=execution), \
+                     tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    marker = root / "executed"
+                    result = self.cargo_fixture(
+                        root,
+                        ["bash", "-c", 'printf executed; : >"$1"; exit "$2"', "command"],
+                        status=admission, delay=0, admit=True,
+                        arguments=(str(marker), str(execution)),
+                        shell_flags=shell_flags, redirected=True,
+                    )
+                    self.assertEqual(result.returncode, admission or execution, result.stderr)
+                    self.assertEqual(result.stdout, "")
+                    self.assertEqual(result.stderr, "", "cleanup must not escape the owned log")
+                    self.assertEqual(marker.exists(), admission == 0)
+                    self.assertEqual((root / "call.log").read_text(), "executed" if admission == 0 else "")
 
     def test_non_cargo_job_uses_the_existing_admission_and_deadline(self):
         # J1 an explicit whole job uses the same external Cargo entry: admission

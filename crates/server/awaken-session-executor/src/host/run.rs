@@ -31,7 +31,6 @@ struct HostRunDelivery<'a> {
     agent: Option<&'a str>,
     thread: &'a str,
     input: Vec<Message>,
-    supersede: bool,
     sink: Option<Arc<dyn StreamSink>>,
     data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
     ingress_scope: RunIngressScope,
@@ -43,7 +42,6 @@ impl<'a> HostRunDelivery<'a> {
             agent,
             thread,
             input,
-            supersede: false,
             sink: None,
             data_subject_id: None,
             ingress_scope: RunIngressScope::HostCommand,
@@ -56,11 +54,6 @@ impl<'a> HostRunDelivery<'a> {
             ingress_scope: RunIngressScope::ThreadExtension,
             ..Self::command(agent, thread, input)
         }
-    }
-
-    fn superseding(mut self) -> Self {
-        self.supersede = true;
-        self
     }
 
     fn with_stream_sink(mut self, sink: Arc<dyn StreamSink>) -> Self {
@@ -256,21 +249,6 @@ impl crate::SessionRuns {
         .await
     }
 
-    /// Submit a Run that *supersedes* the Thread's prior pending/awaiting work
-    /// (ADR-0022, slice E): the newest submission wins, stale dispatches are marked
-    /// superseded and never claimed again, then the new run is driven. Requires
-    /// durable ingress. Unlike `run` it does not fail closed on an awaiting
-    /// thread — superseding an awaiting run is the point.
-    pub async fn supersede_run(
-        &self,
-        agent: Option<&str>,
-        thread: &str,
-        input: Vec<Message>,
-    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
-        self.deliver_run(HostRunDelivery::command(agent, thread, input).superseding())
-            .await
-    }
-
     /// Test-only projection seam for Host behavior whose precondition is an
     /// already-admitted Session. It reuses the complete ordinary delivery
     /// implementation while withholding Session affinity; Session admission,
@@ -294,7 +272,6 @@ impl crate::SessionRuns {
             agent,
             thread,
             input,
-            supersede,
             sink,
             data_subject_id,
             ingress_scope,
@@ -317,15 +294,9 @@ impl crate::SessionRuns {
             .await
             .map_err(SessionExecutionError::internal)?
             .is_some()
-            && !supersede
         {
             return Err(SessionExecutionError::bad_request(
                 "thread is awaiting a tool decision",
-            ));
-        }
-        if supersede && !ctx.delivery.is_durable() {
-            return Err(SessionExecutionError::bad_request(
-                "supersede requires durable ingress (set typed durable ingress)",
             ));
         }
         // Recall is injected by the memory plugin's BeforeInference hook (request-only,
@@ -362,7 +333,6 @@ impl crate::SessionRuns {
             .map(|message| message.id.0.clone())
             .collect::<Vec<_>>();
         let executor = crate::run_exec::BoundRunExecutor::new(self, ctx.clone())
-            .with_supersede(supersede)
             .with_stream_sink(sink)
             .retain_active_until_settled();
         let executor = if ingress_scope == RunIngressScope::ThreadExtension {
@@ -602,63 +572,6 @@ impl crate::SessionRuns {
             .filter(|row| row.state == awaken_dispatch_contract::DispatchState::Superseded)
             .map(|row| row.run_id.0)
             .collect())
-    }
-
-    /// Enqueue a run for the process dispatch pool to drive autonomously (ADR-0011,
-    /// slice E follow-up): prepare the activation and hand it to the pool via
-    /// `DispatchPool::submit` (durable enqueue + wake), returning immediately with
-    /// the run id. The pool drains it out of band — no foreground request drives it
-    /// — so the caller observes completion by polling committed truth. Requires
-    /// durable ingress (`typed durable ingress`), which spawns the pool.
-    pub async fn submit_background_async(
-        &self,
-        agent: Option<&str>,
-        thread: &str,
-        input: Vec<Message>,
-    ) -> Result<String, SessionExecutionError> {
-        // Cause/effect table for durable background admission:
-        // B1 cold Thread + enqueue => freeze/validate an environment-free
-        //    dispatch; only the later claim owner may realize the Environment.
-        // B2 resident Thread + enqueue => reuse its exact retained projection.
-        // B3 recovery scan racing either rule => the shared lifecycle owner
-        //    still sees one durable identity; admission creates no competing
-        //    physical candidate. Calling `ctx_for` here violated B1 by realizing
-        //    before the queue commit and let the local pool become a second
-        //    effect owner.
-        let ctx = self
-            .run_assembly
-            .ctx_for_session_coordination(thread, agent)
-            .await?;
-        let mut messages: Vec<Message> = Vec::new();
-        messages.extend(input);
-        let (uid, mut activation) = ctx
-            .runtime
-            .prepare(&ctx.config, thread.to_string(), messages);
-        // Stamp the Thread's per-Run model override (R2/R5) off the fingerprinted
-        // snapshot, so the claiming worker resolves the effective model itself.
-        activation.model_ref_override = self.agent.inference_routing.override_for(thread)?;
-        activation.run_id = uid.clone();
-        let request = self.run_assembly.prepare_dispatch(activation).fresh()?;
-        match self.dispatch_pool_or_err() {
-            // Normal server: the local pool claims and drives it.
-            Ok(pool) => pool
-                .submit_dispatch(request)
-                .await
-                .map_err(|e| SessionExecutionError::internal(e.to_string()))?,
-            // Coordinator-only durable server (no local pool): enqueue straight into
-            // the shared store so a remote database-less worker drains it over the
-            // dispatch transport. Non-durable keeps the original "enable the pool" error.
-            Err(e) if self.execution.ingress.is_durable() => {
-                let _ = e;
-                let store = self.coordinator_dispatch()?;
-                store
-                    .enqueue(request)
-                    .await
-                    .map_err(|e| SessionExecutionError::internal(e.to_string()))?;
-            }
-            Err(e) => return Err(e),
-        }
-        Ok(uid.0)
     }
 
     /// Rebuild the sole durable resume target for a foreground root Run whose

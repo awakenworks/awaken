@@ -239,11 +239,19 @@ mod tests {
         // deletion frame; D9 => the same canonical producer frame, no invented
         // timestamp. The retained root deliberately stays before physical
         // cleanup: this proves logical deletion, never remote quiescence.
-        let state = ManagedState::new(crate::state::test_support::RehydrateFake::default())
-            .await
-            .with_session_repo(Arc::new(
-                crate::state::test_support::ephemeral_session_repo().await,
-            ));
+        let state = {
+            let session_fixture_runtime = crate::state::test_support::RehydrateFake::default();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                Arc::new(crate::state::test_support::ephemeral_session_repo().await),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        };
         let owner = awaken_tenancy::DEFAULT_WORKSPACE_ID;
         assert!(
             state
@@ -273,6 +281,7 @@ mod tests {
         );
         state
             .application
+            .lifecycle()
             .commit_delete_intent(awaken_session_application::SessionDeleteCommand::new(
                 &session.id,
             ))

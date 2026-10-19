@@ -31,9 +31,12 @@ async fn original_guard_handoff_refuses_unproved_source_or_restore_authority() {
                 }
                 "isolated" => {
                     pod.metadata.labels = Some(
-                        [(create_ledger::ISOLATION_LABEL.into(), "true".into())]
-                            .into_iter()
-                            .collect(),
+                        [(
+                            awaken_container_contract::ISOLATION_LABEL.into(),
+                            "true".into(),
+                        )]
+                        .into_iter()
+                        .collect(),
                     )
                 }
                 "foreign-uid" => pod.metadata.uid = Some("foreign-pod".into()),

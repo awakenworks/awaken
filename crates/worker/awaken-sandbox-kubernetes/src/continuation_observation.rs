@@ -3,8 +3,8 @@
 //! Classification of one combined Pod/claim continuation observation before
 //! the observer or the cleanup path interprets it.
 
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract::SandboxObservationPurpose;
-use awaken_sandbox_container::RuntimeError;
 
 use super::{backend, continuation};
 

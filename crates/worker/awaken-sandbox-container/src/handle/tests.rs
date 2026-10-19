@@ -1,5 +1,8 @@
 use super::*;
 use crate::kubernetes_handle::{KubernetesProjectedKind, KubernetesProjectedObject};
+use awaken_container_contract::{
+    CreateTicket, CreateTicketRequest, TicketOrigin, TicketResult, TicketStatus,
+};
 
 #[test]
 fn original_projected_set_cutover_preserves_history_and_rejects_partial_evidence() {
@@ -668,7 +671,7 @@ fn guarded_claim_handle_keeps_one_typed_terminal_incarnation() {
     // fence and the exact serialized wire; E2 C3 refuses before a physical-
     // incarnation claim. Rules H1=C1+C2+C4->E1, H2=C3->E2. Ordinary adoption
     // is owned by the K8s runtime purpose table, not duplicated in this test.
-    use crate::{CreateTicket, CreateTicketRequest, TicketOrigin, TicketResult, TicketStatus};
+
     let predecessor = awaken_provisioning_contract::SandboxEffectFence::new(
         "old-effect",
         "old-worker",

@@ -96,7 +96,7 @@ impl ManagedState {
         StateError,
     > {
         let current = session.resources.desired();
-        let mut parsed = resources
+        let parsed = resources
             .iter()
             .map(crate::types::resource::ResourceInput::to_input_request)
             .collect::<Vec<_>>();
@@ -107,34 +107,14 @@ impl ManagedState {
             .map_err(StateError::Run)?;
         awaken_session_application::admit_file_count(&parsed).map_err(StateError::Run)?;
 
-        // Derive all paths and validate the complete set before Repository/Vault
-        // side effects. This is the atomic command's fail-fast boundary.
-        let mut used_mounts = parsed
-            .iter()
-            .filter(|resource| !resource.derived_memory_mount)
-            .map(|resource| resource.mount_path.trim_start_matches('/').to_string())
-            .collect::<std::collections::BTreeSet<_>>();
-        for resource in &mut parsed {
-            if resource.derived_memory_mount {
-                let awaken_session_application::SessionInputTarget::MemoryStore(memory_store_id) =
-                    &resource.target
-                else {
-                    unreachable!("only MemoryStore inputs derive a Managed mount path")
-                };
-                let definition = self
-                    .roles
-                    .resources
-                    .session_memory_store(owner_scope, memory_store_id.as_str())
-                    .await
-                    .map_err(StateError::Run)?;
-                resource.mount_path = awaken_session_application::unique_memory_mount_path(
-                    &definition.name,
-                    memory_store_id.as_str(),
-                    &used_mounts,
-                );
-                used_mounts.insert(resource.mount_path.trim_start_matches('/').to_string());
-            }
-        }
+        // Reuse the application's one definition/path normalization before
+        // this manifest's original identity, layout and participant decisions.
+        let parsed = self
+            .roles
+            .resources
+            .normalize_session_input_mounts(owner_scope, &parsed, &[])
+            .await
+            .map_err(StateError::Run)?;
         let provisional = parsed
             .iter()
             .enumerate()
@@ -690,7 +670,7 @@ impl ManagedState {
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
         let persisted = self
             .roles
-            .resources
+            .credentials
             .rotate_repository_credential(
                 &awaken_session_types::SessionId::from(id),
                 &owner_scope,

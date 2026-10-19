@@ -4,8 +4,8 @@
 //! Canonical bounded image, metadata and fingerprint identities.
 
 use super::{K8sPackageRealizationError, MAX_EVIDENCE_TEXT_BYTES};
-use awaken_sandbox_container::RuntimeError;
-use awaken_sandbox_container::RuntimeError::Backend;
+use awaken_container_contract::RuntimeError;
+use awaken_container_contract::RuntimeError::Backend;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
 pub(super) fn destination_repository<'a>(

@@ -175,11 +175,19 @@ async fn read_cut_fixture(with_child: bool) -> (RehydrateFake, Arc<ManagedState>
         0,
         runtime.reads.clone(),
     ));
-    let state = Arc::new(
-        ManagedState::new(runtime.clone())
-            .await
-            .with_session_repo(repository),
-    );
+    let state = Arc::new({
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    });
     let id = if with_child {
         let session = state
             .create_session(
@@ -581,9 +589,19 @@ async fn historical_usage_prefix_failure_preserves_warm_frame_and_repair_rebuild
     let runtime = LifecycleRuntime::default();
     let repository = Arc::new(ephemeral_session_repo().await);
     let replica = || async {
-        let state = ManagedState::new(runtime.clone())
-            .await
-            .with_session_repo(repository.clone());
+        let state = {
+            let session_fixture_runtime = runtime.clone();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repository.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        };
         state.disable_warm_cold_oracle();
         state
     };

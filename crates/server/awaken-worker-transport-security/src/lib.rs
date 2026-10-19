@@ -6,7 +6,6 @@
 //! and test compositions behind a trusted network. Managed deployments replace it
 //! with WorkerLease/mTLS verification without changing dispatch semantics.
 
-#[cfg(feature = "kubernetes")]
 pub mod kubernetes;
 
 use std::collections::{BTreeMap, HashMap, HashSet};

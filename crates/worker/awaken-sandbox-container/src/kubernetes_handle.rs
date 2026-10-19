@@ -2,13 +2,9 @@
 // @formal reason: Pure original-result wire values belong to the same Container codec; both the codec
 // @formal reason: and the physical adapter consume this sole definition. No runtime or state service is introduced.
 //! Original projected Kubernetes-object wire facts owned by the Container codec.
+use awaken_container_contract::{CreateTicket, TicketResult, TicketStatus};
 use awaken_provisioning_contract as pc;
 use serde::{Deserialize, Serialize};
-
-mod create_ticket;
-pub use create_ticket::{
-    CreateTicket, CreateTicketRequest, TicketOrigin, TicketResult, TicketStatus,
-};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -292,7 +288,7 @@ impl KubernetesGuardedClaimHandle {
         predecessor: &awaken_provisioning_contract::SandboxEffectFence,
         guard: CreateTicket,
         claim_uid: &str,
-    ) -> Result<Self, crate::RuntimeError> {
+    ) -> Result<Self, awaken_container_contract::RuntimeError> {
         if scope.is_empty()
             || scope.trim() != scope
             || claim_uid.trim().is_empty()
@@ -305,7 +301,7 @@ impl KubernetesGuardedClaimHandle {
                     if !uid.trim().is_empty() && uid.trim() == uid
             )
         {
-            return Err(crate::RuntimeError::Backend(
+            return Err(awaken_container_contract::RuntimeError::Backend(
                 "guarded Kubernetes claim lacks exact terminal evidence".into(),
             ));
         }

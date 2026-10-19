@@ -3386,30 +3386,22 @@ async fn completion_sink_is_signalled_for_an_awaiting_run() {
     pool.shutdown().await;
 }
 
-/// Claim renewal cause/effect graph and FMECA. Causes: C1 a claimed Run is still
-/// driving; C2 execution exceeds the base lease; C3 a peer tries to recover it.
-/// Effects: E1 the exact claim is renewed; E2 the peer cannot reclaim; E3 renewal
-/// stops when drive settles. Decision rule R1=C1+C2+C3=>E1+E2, then !C1=>E3.
-/// Failure mode: caller-owned renewal omitted foreground child Runs and could
-/// duplicate effects after lease expiry (critical); the worker-owned guard makes
-/// every pool/service/foreground drive follow this one rule.
-#[tokio::test]
+/// C1 Pool drive, C2 450ms exceeds TTL100, C3 peer recovery, C4 observed renewal.
+/// R1 C1+C2+C3+C4 => same claim and 30 peer refusals. Establish C4 from the
+/// first actual write, then advance both controlled clocks. Pool retains one
+/// guard; Worker gets cancellation. RG1 checks stop-after-settlement, RG4/RG5/RG7
+/// check lost proof. Keep original lease/release/commit/shutdown, no new heartbeat.
+#[tokio::test(start_paused = true)]
 async fn every_drive_renews_its_exact_claim_until_settlement() {
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, _ran, entered) = blocking_tool_runtime_with_entry_signal(release.clone());
-    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let clock = Arc::new(ManualClock::new(0));
+    let store = Arc::new(FlakyDispatchStore::new(0, clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
-    let worker = Arc::new(
-        DispatchWorker::new(runtime, store.clone(), commit.clone(), "pool").with_lease_ms(100),
-    );
-    let resolver = Arc::new(MapResolver {
-        store: store.clone(),
-        workers: HashMap::from([(harness::THREAD.to_string(), worker)]),
-    });
-    let clock = system_clock();
-    // A short lease proves the worker derives a safe renewal cadence for the
-    // exact drive; the pool owns no parallel heartbeat.
     let lease_ms = 100;
+    let worker = Arc::new(
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "pool").with_lease_ms(lease_ms),
+    );
     let pool = DispatchPool::spawn(
         store.clone(),
         clock.clone(),
@@ -3419,19 +3411,20 @@ async fn every_drive_renews_its_exact_claim_until_settlement() {
             poll_interval: Duration::from_millis(10),
             ..Default::default()
         },
-        resolver,
+        Arc::new(FlakyResolver { worker }),
         1,
     )
     .expect("valid test Pool binding");
 
     pool.submit(activation("run-1")).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), entered.notified())
-        .await
-        .expect("the drive entered the blocked tool while holding the pool's lease");
-
-    // Across a window far beyond the base lease, a thief owner can never reclaim it —
-    // the renewal loop keeps the lease from expiring.
-    for _ in 0..30 {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        entered.notified().await;
+        assert!(wait_for(|| store.renewal_attempts() > 0).await);
+    })
+    .await
+    .expect("the drive entered the blocked tool while holding the pool's lease");
+    let first_renewals = store.renewal_attempts();
+    for step in 0..30 {
         assert!(
             store
                 .claim("thief", lease_ms, &Default::default())
@@ -3440,7 +3433,13 @@ async fn every_drive_renews_its_exact_claim_until_settlement() {
                 .is_none(),
             "the renewed lease is never reclaimable while the run is in-flight"
         );
-        tokio::time::sleep(Duration::from_millis(15)).await;
+        clock.set((step + 1) * 15);
+        tokio::time::advance(Duration::from_millis(15)).await;
+        let required = first_renewals + ((step + 1) * 15 / (lease_ms / 3)) as usize;
+        assert!(
+            yield_until(|| store.renewal_attempts() >= required).await,
+            "each complete renewal interval has an observed write"
+        );
     }
 
     release.add_permits(1);

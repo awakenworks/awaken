@@ -22,6 +22,34 @@ use crate::host::capability;
 /// `SessionRuntime` and `StreamingRunRuntime` roles, the protocol-neutral
 /// `RunApplication` (AI SDK, AG-UI, A2A), the durable-ingress verbs, and the
 /// Run-driving parts of coordination, budgets and Outcomes.
+///
+/// Causes/effects H0-H2: the ordinary Host Run member remains available (H0),
+/// while the two retired product command shortcuts cannot be selected (H1/H2).
+/// The paired examples use the same real receiver/import; the async functions
+/// are never invoked, so compiler checks cannot enqueue or realize anything.
+/// These static rules replace the supersede-only causes in the original Host
+/// negative cases, not the ordinary Managed-root runtime refusal.
+///
+/// ```
+/// use awaken_session_executor::SessionRuns;
+/// async fn ordinary_run_remains_available(runs: &SessionRuns) {
+///     let _ = runs.run(None, "thread", Vec::new()).await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use awaken_session_executor::SessionRuns;
+/// async fn no_legacy_supersede(runs: &SessionRuns) {
+///     let _ = runs.supersede_run(None, "thread", Vec::new()).await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use awaken_session_executor::SessionRuns;
+/// async fn no_legacy_background(runs: &SessionRuns) {
+///     let _ = runs.submit_background_async(None, "thread", Vec::new()).await;
+/// }
+/// ```
 pub struct SessionRuns {
     pub(crate) installed_sessions: Arc<crate::InstalledSessions>,
     pub(crate) authority: Arc<dyn crate::SessionAuthority>,

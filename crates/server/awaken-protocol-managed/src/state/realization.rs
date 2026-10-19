@@ -369,9 +369,21 @@ mod tests {
         .await
         .unwrap();
         (
-            ManagedState::new_with_mcp(NoopRuntime)
-                .await
-                .with_session_repo(repo.clone()),
+            {
+                let session_fixture_runtime = std::sync::Arc::new(NoopRuntime);
+                let session_fixture_clock = awaken_time::system_clock();
+                crate::state::test_support::managed_state_from_parts(
+                    session_fixture_runtime.clone(),
+                    Some(session_fixture_runtime),
+                    repo.clone(),
+                    awaken_protocol_managed_testkit::environment_fixture(
+                        session_fixture_clock.clone(),
+                    )
+                    .execution,
+                    session_fixture_clock,
+                    std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+                )
+            },
             repo,
         )
     }

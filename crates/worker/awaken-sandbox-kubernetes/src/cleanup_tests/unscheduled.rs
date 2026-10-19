@@ -17,7 +17,9 @@ fn retain_unscheduled_original(state: &Mutex<ApiState>, namespace: &str) {
 
 fn mark_original_pending_unschedulable(pod: &mut Pod) {
     // Status/guard setup only; the existing accepted participants stay intact.
-    pod.metadata.finalizers = Some(vec![create_ledger::ORIGINAL_GUARD_FINALIZER.into()]);
+    pod.metadata.finalizers = Some(vec![
+        awaken_container_contract::ORIGINAL_GUARD_FINALIZER.into(),
+    ]);
     pod.status = Some(serde_json::from_value(json!({
         "phase":"Pending", "conditions":[{
             "type":"PodScheduled", "status":"False", "reason":"Unschedulable", "message":"no capacity"

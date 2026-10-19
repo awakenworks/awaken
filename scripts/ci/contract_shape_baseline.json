@@ -16,8 +16,10 @@
     },
     "awaken-container-contract": {
       "depth": 3,
+      "catch_all_errors": 1,
       "growth_reasons": {
-        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it"
+        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it",
+        "catch_all_errors": "Design: move the existing seven-class Container failure value and its unique provisioning projection to the existing container contract; Backend(String) is preserved rather than renamed, and typed Docker/Kubernetes source classification remains in adapters. Approver: root, user-authorized duplication elimination. Date: 2026-10-18. Remove when: the existing mechanism-detail variant can be replaced under an explicitly reviewed error-contract migration without losing source uncertainty or caller classifications."
       }
     },
     "awaken-credential-contract": {

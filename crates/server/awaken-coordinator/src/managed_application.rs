@@ -42,7 +42,7 @@ pub(crate) fn bind_committed_progress_wakeup(
     host.session_application_bindings()
         .bind_lifecycle_reconciliation_wakeup(Arc::new(move || {
             if let Some(application) = application.upgrade() {
-                application.request_lifecycle_reconciliation();
+                application.lifecycle().request_reconciliation();
             }
         }))
 }

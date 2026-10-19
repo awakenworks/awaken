@@ -15,10 +15,12 @@ use super::{
     projected_content_delete_preconditions, verify_projected_content,
 };
 use super::{lifecycle, projection_verification, realization};
-use awaken_provisioning_contract as pc;
-use awaken_sandbox_container::{
-    BindPlan, ContainerPlan, ContainerRealizationContext, RuntimeError,
+use awaken_container_contract::RuntimeError;
+use awaken_container_contract::{
+    ISOLATION_ID_ANNOTATION, REQUEST_DIGEST_ANNOTATION, original_request_metadata_matches,
 };
+use awaken_provisioning_contract as pc;
+use awaken_sandbox_container::{BindPlan, ContainerPlan, ContainerRealizationContext};
 use awaken_sandbox_container::{
     KubernetesProjectedKind as Kind, KubernetesProjectedObject, KubernetesProjectedParticipants,
 };
@@ -432,17 +434,14 @@ pub(super) async fn verify_joined_original(
     runtime: &K8sRuntime,
     pod: &Pod,
     plan: &ContainerPlan,
-    original_pod: &super::CreateTicket,
-    tickets: &[super::CreateTicket],
+    original_pod: &awaken_container_contract::CreateTicket,
+    tickets: &[awaken_container_contract::CreateTicket],
     projected: &KubernetesProjectedParticipants,
     original: (
         &ContainerRealizationContext<'_>,
         &pc::SandboxRealizationFingerprint,
     ),
 ) -> Result<(), RuntimeError> {
-    use super::create_ledger::{
-        ISOLATION_ID_ANNOTATION, REQUEST_DIGEST_ANNOTATION, original_request_metadata_matches,
-    };
     if original_pod.request.validate().is_err()
         || projected.namespace() != runtime.namespace
         || projected.restoration().is_some()
@@ -453,7 +452,8 @@ pub(super) async fn verify_joined_original(
             "original joined projection has another namespace, Pod or origin",
         ));
     }
-    let metadata_matches = |ticket: &super::CreateTicket, metadata: &ObjectMeta| {
+    let metadata_matches = |ticket: &awaken_container_contract::CreateTicket,
+                            metadata: &ObjectMeta| {
         !ticket.isolation_id.is_empty()
             && original_request_metadata_matches(
                 &ticket.request,
@@ -515,7 +515,7 @@ pub(super) async fn verify_joined_original(
             || ticket.isolation_pending
             || ticket.isolation_id.is_empty()
             || ticket.request.validate().is_err()
-            || !matches!(&ticket.status, super::TicketStatus::Finished(super::TicketResult::Created { uid }) if uid == &object.uid)
+            || !matches!(&ticket.status, awaken_container_contract::TicketStatus::Finished(awaken_container_contract::TicketResult::Created { uid }) if uid == &object.uid)
             || object.owner_references_fingerprint != owner_fingerprint
         {
             return Err(backend("original projected ticket UID or owner differs"));

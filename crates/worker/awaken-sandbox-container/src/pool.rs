@@ -1079,15 +1079,18 @@ mod tests {
 
     #[async_trait]
     impl ContainerRuntime for RecordingRuntime {
-        async fn prewarm_images(&self, images: &[String]) -> Result<(), crate::RuntimeError> {
+        async fn prewarm_images(
+            &self,
+            images: &[String],
+        ) -> Result<(), awaken_container_contract::RuntimeError> {
             self.image_demands.lock().unwrap().push(images.to_vec());
             Ok(())
         }
-        async fn probe_ready(&self) -> Result<(), crate::RuntimeError> {
+        async fn probe_ready(&self) -> Result<(), awaken_container_contract::RuntimeError> {
             self.ready
                 .load(Ordering::SeqCst)
                 .then_some(())
-                .ok_or_else(|| crate::RuntimeError::Backend("not ready".into()))
+                .ok_or_else(|| awaken_container_contract::RuntimeError::Backend("not ready".into()))
         }
 
         fn enforces_network_none(&self) -> bool {
@@ -1098,7 +1101,7 @@ mod tests {
             &self,
             id: &str,
             _plan: &crate::ContainerPlan,
-        ) -> Result<String, crate::RuntimeError> {
+        ) -> Result<String, awaken_container_contract::RuntimeError> {
             self.creates.fetch_add(1, Ordering::SeqCst);
             if self.block_create.load(Ordering::SeqCst) {
                 self.create_started.notify_waiters();
@@ -1116,7 +1119,7 @@ mod tests {
             context: &crate::ContainerRealizationContext<'_>,
             _plan: &crate::ContainerPlan,
             realization_fingerprint: Option<&pc::SandboxRealizationFingerprint>,
-        ) -> Result<(), crate::RuntimeError> {
+        ) -> Result<(), awaken_container_contract::RuntimeError> {
             // This fake explicitly represents a runtime whose fenced
             // admission succeeds; R3 then measures whether the pool delegates
             // to its one effect-aware create path without consuming capacity.
@@ -1140,7 +1143,7 @@ mod tests {
             context: &crate::ContainerRealizationContext<'_>,
             plan: &crate::ContainerPlan,
             _realization_fingerprint: &pc::SandboxRealizationFingerprint,
-        ) -> Result<crate::PreparedContainer, crate::RuntimeError> {
+        ) -> Result<crate::PreparedContainer, awaken_container_contract::RuntimeError> {
             self.realization_phases
                 .lock()
                 .unwrap()
@@ -1167,15 +1170,15 @@ mod tests {
             _plan: &crate::ContainerPlan,
             _realization_fingerprint: &pc::SandboxRealizationFingerprint,
             prepared_locator: &str,
-        ) -> Result<String, crate::RuntimeError> {
+        ) -> Result<String, awaken_container_contract::RuntimeError> {
             Ok(prepared_locator.to_owned())
         }
 
         async fn open_channel(
             &self,
             _container_id: &str,
-        ) -> Result<Box<dyn crate::AgentChannel>, crate::RuntimeError> {
-            Err(crate::RuntimeError::Backend(
+        ) -> Result<Box<dyn crate::AgentChannel>, awaken_container_contract::RuntimeError> {
+            Err(awaken_container_contract::RuntimeError::Backend(
                 "not used by warmup test".into(),
             ))
         }
@@ -1183,7 +1186,7 @@ mod tests {
         async fn inspect(
             &self,
             _container_id: &str,
-        ) -> Result<crate::ContainerState, crate::RuntimeError> {
+        ) -> Result<crate::ContainerState, awaken_container_contract::RuntimeError> {
             Ok(if self.ready.load(Ordering::SeqCst) {
                 crate::ContainerState::Running
             } else {
@@ -1191,7 +1194,10 @@ mod tests {
             })
         }
 
-        async fn wait(&self, _container_id: &str) -> Result<pc::ExitStatus, crate::RuntimeError> {
+        async fn wait(
+            &self,
+            _container_id: &str,
+        ) -> Result<pc::ExitStatus, awaken_container_contract::RuntimeError> {
             Ok(pc::ExitStatus {
                 code: Some(0),
                 signaled: false,
@@ -1201,7 +1207,7 @@ mod tests {
         async fn poll(
             &self,
             _container_id: &str,
-        ) -> Result<Option<pc::ExitStatus>, crate::RuntimeError> {
+        ) -> Result<Option<pc::ExitStatus>, awaken_container_contract::RuntimeError> {
             Ok(None)
         }
 
@@ -1209,14 +1215,14 @@ mod tests {
             &self,
             _container_id: &str,
             _signal: pc::Signal,
-        ) -> Result<(), crate::RuntimeError> {
+        ) -> Result<(), awaken_container_contract::RuntimeError> {
             Ok(())
         }
 
         async fn artifacts(
             &self,
             _container_id: &str,
-        ) -> Result<Vec<pc::Artifact>, crate::RuntimeError> {
+        ) -> Result<Vec<pc::Artifact>, awaken_container_contract::RuntimeError> {
             Ok(Vec::new())
         }
 
@@ -1224,22 +1230,31 @@ mod tests {
             &self,
             _container_id: &str,
             _artifact_id: &str,
-        ) -> Result<Vec<u8>, crate::RuntimeError> {
-            Err(crate::RuntimeError::Backend(
+        ) -> Result<Vec<u8>, awaken_container_contract::RuntimeError> {
+            Err(awaken_container_contract::RuntimeError::Backend(
                 "not used by warmup test".into(),
             ))
         }
 
-        async fn touch_lease(&self, _container_id: &str) -> Result<(), crate::RuntimeError> {
+        async fn touch_lease(
+            &self,
+            _container_id: &str,
+        ) -> Result<(), awaken_container_contract::RuntimeError> {
             Ok(())
         }
 
-        async fn remove(&self, _container_id: &str) -> Result<(), crate::RuntimeError> {
+        async fn remove(
+            &self,
+            _container_id: &str,
+        ) -> Result<(), awaken_container_contract::RuntimeError> {
             self.removes.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
-        async fn remove_unreceipted_scope(&self, scope: &str) -> Result<(), crate::RuntimeError> {
+        async fn remove_unreceipted_scope(
+            &self,
+            scope: &str,
+        ) -> Result<(), awaken_container_contract::RuntimeError> {
             self.unreceipted_removals
                 .lock()
                 .unwrap()

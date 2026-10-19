@@ -14,10 +14,11 @@ use crate::package_realization::stamp_sandbox_release_annotations;
 use crate::package_realization::{
     PACKAGE_REALIZATION_CONTRACT_ANNOTATION, RESOLVED_IMAGE_ANNOTATION, SANDBOX_SCOPE_ANNOTATION,
 };
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::{SandboxCreateAttempt, SandboxEffectFence};
 use awaken_sandbox_container::{
-    ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent, RuntimeError,
+    ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
 };
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::PostParams;

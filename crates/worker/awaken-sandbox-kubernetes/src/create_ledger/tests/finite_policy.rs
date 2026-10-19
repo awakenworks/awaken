@@ -1,4 +1,8 @@
 use super::*;
+use awaken_container_contract::{
+    CreateReplyProfile, CreateTicketRequest, K8sLedgerBinding, TicketAdmission, TicketResult,
+    TicketStatus,
+};
 
 fn binding<'a>(
     ledger: &'a K8sWorkerCreateLedger,

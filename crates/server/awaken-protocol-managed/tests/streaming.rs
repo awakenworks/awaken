@@ -42,16 +42,32 @@ async fn independent_replicas() -> (CoordinatedRuntimeFake, Arc<ManagedState>, A
             .await
             .unwrap(),
     );
-    let a = Arc::new(
-        support::state(runtime.clone())
-            .await
-            .with_session_repo(repository.clone()),
-    );
-    let b = Arc::new(
-        support::state(runtime.clone())
-            .await
-            .with_session_repo(repository),
-    );
+    let a = Arc::new({
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        awaken_protocol_managed_testkit::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    });
+    let b = Arc::new({
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        awaken_protocol_managed_testkit::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    });
     (runtime, a, b)
 }
 use axum::Router;
@@ -413,11 +429,19 @@ async fn accepted_followup_running_keeps_its_get_cursor_when_child_run_commits_l
             .await
             .unwrap(),
     );
-    let state = Arc::new(
-        support::state(runtime.clone())
-            .await
-            .with_session_repo(repository.clone()),
-    );
+    let state = Arc::new({
+        let session_fixture_runtime = runtime.clone();
+        let session_fixture_clock = awaken_time::system_clock();
+        awaken_protocol_managed_testkit::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    });
     let id = state_create(&state).await;
     state_send_user(&state, &runtime, &id, "first").await;
     let prior = state.list_events(&id, None, None, false).unwrap().data;
@@ -502,7 +526,19 @@ async fn accepted_followup_running_keeps_its_get_cursor_when_child_run_commits_l
         "R2 no duplicate broadcast"
     );
 
-    let cold = Arc::new(support::state(runtime).await.with_session_repo(repository));
+    let cold = Arc::new({
+        let session_fixture_runtime = runtime;
+        let session_fixture_clock = awaken_time::system_clock();
+        awaken_protocol_managed_testkit::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repository,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    });
     let cold_events = http_json(
         &router(cold.clone()),
         "GET",

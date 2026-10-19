@@ -1,10 +1,14 @@
+use awaken_container_contract::{
+    CreateTicketRequest, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, K8S_CREATE_WIRE_VERSION,
+    ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION, RequestJoin, TicketResult,
+};
 mod capture_tests;
 mod closed_worker;
 mod fixture;
 use super::*;
+use awaken_container_contract::K8S_CREATE_CAPTURE_HEADER;
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{WorkerHeartbeat, WorkerManifest, WorkerRegistration};
-use awaken_sandbox_kubernetes::K8S_CREATE_CAPTURE_HEADER;
 use awaken_worker_contract::WorkerIncarnationSource as _;
 use awaken_worker_registry::MemoryWorkerDirectory;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WORKER_ID_HEADER};

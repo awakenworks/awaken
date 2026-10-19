@@ -1,5 +1,6 @@
 //! Original Worker closure reuses the registered provider ledger before release.
 use super::*;
+use awaken_container_contract::{CreateTicketRequest, RequestJoin, TicketAdmission};
 use awaken_dispatch::{
     AttemptExecutionBinding, DispatchClaims, DispatchControlReads, DispatchEnqueue,
     DispatchExecution, WorkerDirectory,

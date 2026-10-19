@@ -48,7 +48,7 @@ pub(super) async fn run_lifecycle_loop(
     loop {
         let recovery_trigger = tokio::select! {
             () = cancellation.cancelled() => break,
-            _ = application.lifecycle_wakeup.notified() => {
+            _ = application.lifecycle.notified() => {
                 let delay = external_wake_coalescing_delay(
                     next_recovery.saturating_duration_since(awaken_time::mono::now()),
                     external_wake_cooldown

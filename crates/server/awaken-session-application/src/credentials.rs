@@ -12,10 +12,11 @@ use awaken_session_configuration_contract::resource::{
 };
 use awaken_session_state_contract::PersistedSession;
 use awaken_session_types::RunError;
+use std::sync::Arc;
 
 use super::{
-    SessionApplication, SessionCredentialAccessRequest, SessionMutationError,
-    mutation::repository_failure, resource_reconciliation::mutation_failure,
+    CredentialMaterialIngress, SessionCredentialAccessRequest, SessionCredentialSource,
+    SessionMutationError, SessionMutations, mutation::repository_failure,
 };
 
 /// Failure from compiling or migrating exact Session credential pins.
@@ -31,7 +32,50 @@ pub enum SessionPreparationError {
     Unavailable(String),
 }
 
-impl SessionApplication {
+/// Exact credential preparation and Session Repository binding commands.
+///
+/// The Builder supplies the same mandatory root-CAS and Clock handles as the
+/// other Session use cases. Source and ingress retain their original optional
+/// feature configuration; this owner introduces no durable credential state.
+pub struct SessionCredentials {
+    mutations: Arc<SessionMutations>,
+    clock: Arc<dyn awaken_time::WallClock>,
+    credential_source: Option<Arc<dyn SessionCredentialSource>>,
+    credential_material_ingress: Option<Arc<dyn CredentialMaterialIngress>>,
+}
+
+impl SessionCredentials {
+    pub(crate) fn new(
+        mutations: Arc<SessionMutations>,
+        clock: Arc<dyn awaken_time::WallClock>,
+        credential_source: Option<Arc<dyn SessionCredentialSource>>,
+        credential_material_ingress: Option<Arc<dyn CredentialMaterialIngress>>,
+    ) -> Self {
+        Self {
+            mutations,
+            clock,
+            credential_source,
+            credential_material_ingress,
+        }
+    }
+
+    pub(crate) fn mutations(&self) -> &SessionMutations {
+        &self.mutations
+    }
+
+    pub(crate) fn clock(&self) -> &dyn awaken_time::WallClock {
+        self.clock.as_ref()
+    }
+
+    #[must_use]
+    pub(crate) fn credential_source(&self) -> Option<&dyn SessionCredentialSource> {
+        self.credential_source.as_deref()
+    }
+
+    #[must_use]
+    pub(crate) fn credential_material_ingress(&self) -> Option<&dyn CredentialMaterialIngress> {
+        self.credential_material_ingress.as_deref()
+    }
     pub fn resource_plaintext_holder(
         &self,
         session: &PersistedSession,
@@ -219,5 +263,63 @@ impl SessionApplication {
             }
         }
         Err(SessionPreparationError::Conflict)
+    }
+}
+
+pub(crate) fn mutation_failure(error: SessionMutationError) -> SessionPreparationError {
+    match error {
+        SessionMutationError::NotFound => SessionPreparationError::NotFound,
+        SessionMutationError::Conflict => SessionPreparationError::Conflict,
+        SessionMutationError::IdempotencyMismatch => SessionPreparationError::Unavailable(
+            "Session idempotency key was reused with another payload".into(),
+        ),
+        SessionMutationError::Unavailable(message) => SessionPreparationError::Unavailable(message),
+    }
+}
+
+pub(crate) fn repository_preparation(
+    error: awaken_session_state_contract::SessionRepositoryError,
+) -> SessionPreparationError {
+    mutation_failure(repository_failure(error))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl crate::SessionApplication {
+    pub fn set_credential_source(&mut self, source: Arc<dyn SessionCredentialSource>) {
+        Arc::get_mut(&mut self.credentials)
+            .expect("credential fixtures must finish before the service is shared")
+            .credential_source = Some(source);
+    }
+
+    pub fn set_credential_material_ingress(&mut self, ingress: Arc<dyn CredentialMaterialIngress>) {
+        Arc::get_mut(&mut self.credentials)
+            .expect("credential fixtures must finish before the service is shared")
+            .credential_material_ingress = Some(ingress);
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    /// O1: adding a command holder must preserve the one Mutations/Clock
+    /// allocation. O2: a Builder without credential authorities remains valid;
+    /// it does not acquire a source or ingress by extracting this service.
+    /// The original construction test exercises create/replay and shared sink,
+    /// repository, counter and Notify identities after these private checks.
+    pub(crate) fn assert_composed_identity(app: &crate::SessionApplication) {
+        let credentials = app.credentials();
+        assert!(std::sync::Arc::ptr_eq(&app.credentials, &credentials));
+        assert!(std::sync::Arc::ptr_eq(
+            &app.mutations,
+            &credentials.mutations
+        ));
+        assert!(std::sync::Arc::ptr_eq(&app.clock, &credentials.clock));
+        let role: std::sync::Arc<dyn crate::SessionCredentialCommands> = credentials.clone();
+        assert_eq!(
+            std::sync::Arc::as_ptr(&role) as *const (),
+            std::sync::Arc::as_ptr(&credentials) as *const (),
+            "O1 the Managed credential role is the original component allocation"
+        );
+        assert!(credentials.credential_source.is_none());
+        assert!(credentials.credential_material_ingress.is_none());
     }
 }

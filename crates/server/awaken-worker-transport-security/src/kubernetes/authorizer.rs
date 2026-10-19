@@ -5,8 +5,15 @@
 // @formal reason: the scalar transport proof does not prove file I/O, token rotation or TLS internals.
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use super::*;
+use awaken_worker_contract::WorkerIdentity;
+
+use super::{IDENTITY_HEADER, KubernetesPodIdentity, MAX_TOKEN_BYTES, REGISTER_PATH};
+use crate::{
+    RemoteCredentialPosture, RemoteIdentityPosture, WORKER_ID_HEADER, WorkerRequestAuthorizer,
+    WorkerUpstream, classify_remote_endpoint, select_remote_worker_transport,
+};
 
 /// Rereads the kubelet-rotated projected token on each request. The same object
 /// implements bootstrap and registration-bound requests through the existing

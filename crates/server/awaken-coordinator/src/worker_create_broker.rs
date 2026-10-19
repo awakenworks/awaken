@@ -9,6 +9,11 @@
 //! cannot cancel that task; losing the Coordinator process leaves InFlight and
 //! therefore Unknown rather than manufacturing a cleanup witness.
 
+use awaken_container_contract::{
+    CreateReplyProfile, CreateTicketRequest, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL,
+    K8S_CREATE_WIRE_VERSION, K8sLedgerBinding, ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION,
+    RequestJoin, TicketAdmission, TicketResult, original_request_metadata_matches,
+};
 use awaken_container_contract::{K8sCreateRequest, K8sCreateResponse};
 use awaken_session_execution_contract::ApplicationError;
 use std::sync::Arc;
@@ -20,12 +25,8 @@ use awaken_provisioning_contract::SandboxEffectFence;
 use awaken_dispatch::{
     RegisteredWorker, WorkerCreateLedger, WorkerDirectory, WorkerIdentity, WorkerState,
 };
-use awaken_sandbox_container::{CreateTicketRequest, TicketResult};
-use awaken_sandbox_kubernetes::{
-    CreateReplyProfile, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, K8S_CREATE_WIRE_VERSION,
-    K8sLedgerBinding, K8sWorkerCreateLedger, ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION,
-    RequestJoin, TicketAdmission, collect_create_body, original_request_metadata_matches,
-};
+
+use awaken_sandbox_kubernetes::{K8sWorkerCreateLedger, collect_create_body};
 use awaken_time::{WallClock, WallClockExt};
 use awaken_worker_transport_security::kubernetes::KubernetesPodIdentity;
 use awaken_worker_transport_security::{
@@ -570,7 +571,7 @@ impl K8sCreateBroker {
                     || ticket.isolation_pending
                     || !matches!(
                         &ticket.status,
-                        awaken_sandbox_container::TicketStatus::Finished(existing)
+                        awaken_container_contract::TicketStatus::Finished(existing)
                             if existing == &result
                     )
                 {

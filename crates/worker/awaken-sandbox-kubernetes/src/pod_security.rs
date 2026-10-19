@@ -50,7 +50,7 @@ pub(super) fn admit_network(
     network: &awaken_sandbox_container::NetworkMode,
     restricted_policy: bool,
     allowlist_policy: bool,
-) -> Result<(), awaken_sandbox_container::RuntimeError> {
+) -> Result<(), awaken_container_contract::RuntimeError> {
     let admitted = match network {
         awaken_sandbox_container::NetworkMode::Open => true,
         awaken_sandbox_container::NetworkMode::None => restricted_policy,
@@ -59,7 +59,7 @@ pub(super) fn admit_network(
     if admitted {
         Ok(())
     } else {
-        Err(awaken_sandbox_container::RuntimeError::Backend(
+        Err(awaken_container_contract::RuntimeError::Backend(
             "k8s adapter cannot prove an installed network-isolation policy".into(),
         ))
     }

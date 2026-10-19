@@ -7,6 +7,7 @@ use super::{
     SANDBOX_ADOPTION_ANNOTATION, SANDBOX_ATTEMPT_ANNOTATION, SANDBOX_REALIZATION_ANNOTATION,
     participants, realization,
 };
+use awaken_container_contract::RuntimeError;
 use awaken_sandbox_container::ContainerContinuationHandle;
 use k8s_openapi::api::core::v1::{
     PersistentVolumeClaim, PersistentVolumeClaimSpec, Pod, VolumeResourceRequirements,
@@ -21,7 +22,7 @@ use super::names::{continuation_claim_for_pod, continuation_claim_name};
 use super::pod_projection::CONTINUATION_VOLUME;
 use super::{
     ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent, K8sRuntime,
-    RuntimeError, SandboxEffectFence, backend, stamp_effect_fence, stamp_realization,
+    SandboxEffectFence, backend, stamp_effect_fence, stamp_realization,
 };
 
 pub(super) const ORPHANED_LIVE_CLAIM_ERROR: &str =
@@ -1522,14 +1523,17 @@ fn original_guard_retention_requires_a_terminal_unisolated_original() {
             for label in [None, Some("true"), Some("false")] {
                 let mut pod = Pod::default();
                 pod.metadata.finalizers =
-                    guard.then(|| vec![super::create_ledger::ORIGINAL_GUARD_FINALIZER.into()]);
+                    guard.then(|| vec![awaken_container_contract::ORIGINAL_GUARD_FINALIZER.into()]);
                 pod.status =
                     Some(serde_json::from_value(serde_json::json!({"phase":phase})).unwrap());
                 if let Some(value) = label {
                     pod.metadata.labels = Some(
-                        [(super::create_ledger::ISOLATION_LABEL.into(), value.into())]
-                            .into_iter()
-                            .collect(),
+                        [(
+                            awaken_container_contract::ISOLATION_LABEL.into(),
+                            value.into(),
+                        )]
+                        .into_iter()
+                        .collect(),
                     );
                 }
                 assert_eq!(

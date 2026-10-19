@@ -5,8 +5,9 @@
 //! the shared existing-realization decision before any adapter effect.
 use super::{
     ExistingRealization, ExistingRealizationDecision, ExistingRealizationPhase,
-    ExistingRealizationRecovery, RebuildContinuityEvidence, RuntimeError,
+    ExistingRealizationRecovery, RebuildContinuityEvidence,
 };
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract as pc;
 
 const fn observation_admitted(

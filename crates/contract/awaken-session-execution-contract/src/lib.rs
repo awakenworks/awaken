@@ -64,7 +64,6 @@ pub use coordination::{
 };
 pub use durable_run_operations::{
     ApplicationError, ApplicationErrorKind, DurableDispatchStatus, DurableRunOperations,
-    DurableSupersedeResult,
 };
 pub use run_admission::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunActivityReceiptPlan,

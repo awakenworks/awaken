@@ -4,6 +4,7 @@
 //! Provider-neutral admission and resolution for the one live Managed File tree.
 
 use super::*;
+use awaken_container_contract::RuntimeError;
 
 static HOST_PROJECTION_SEQUENCE: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);

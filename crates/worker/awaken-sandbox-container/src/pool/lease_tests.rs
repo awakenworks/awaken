@@ -5,6 +5,7 @@
 //! forgotten, exactly as a killed process runs no destructor) and the second —
 //! a fresh incarnation — reclaims. Time is a [`ManualClock`]; nothing waits.
 
+use awaken_container_contract::RuntimeError;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,7 +20,7 @@ use awaken_time::UtcTime;
 use super::WarmContainerPool;
 use super::lease::{ClaimOutcome, Hold, RecordKind, WarmCapacityLeasePolicy, WarmCapacityLeases};
 use super::tests::spec;
-use crate::{ContainerProvider, ContainerRuntime, RuntimeError};
+use crate::{ContainerProvider, ContainerRuntime};
 use awaken_provisioning_contract::SandboxProvider;
 
 const T0: u64 = 1_700_000_000_000;

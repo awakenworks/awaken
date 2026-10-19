@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::error::{api_conflict, backend};
-use awaken_sandbox_container::RuntimeError;
+use awaken_container_contract::RuntimeError;
 
 const REALIZATION_DIGEST_ANNOTATION: &str = "awaken.dev/realization-digest";
 const POD_READY_TIMEOUT: Duration = Duration::from_secs(120);

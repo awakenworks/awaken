@@ -150,10 +150,20 @@ async fn accepted_a_and_b_snapshots_survive_catalog_withdrawal_and_cold_peer() {
     let repo = Arc::new(ephemeral_session_repo().await);
     let profiles = Arc::new(ObservedProfiles::new(false));
     let runtime = RehydrateFake::default();
-    let state = ManagedState::new_with_mcp(runtime.clone())
-        .await
-        .with_config_source(profiles.clone())
-        .with_session_repo(repo.clone());
+    let state = {
+        let session_fixture_runtime = std::sync::Arc::new(runtime.clone());
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_config_source(profiles.clone());
     let a = state
         .create_session(request(serde_json::json!("coordinator")), DEFAULT_SCOPE)
         .await
@@ -251,10 +261,20 @@ async fn accepted_a_and_b_snapshots_survive_catalog_withdrawal_and_cold_peer() {
             .is_err()
     );
     let reads = profiles.reads();
-    let cold = ManagedState::new_with_mcp(runtime)
-        .await
-        .with_config_source(profiles.clone())
-        .with_session_repo(repo.clone());
+    let cold = {
+        let session_fixture_runtime = std::sync::Arc::new(runtime);
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_config_source(profiles.clone());
     for accepted in warmed {
         state.ensure_session(&accepted.id).await.unwrap();
         cold.ensure_session(&accepted.id).await.unwrap();
@@ -298,10 +318,20 @@ async fn explicit_missing_root_or_delegate_publication_never_follows_current() {
             .lock()
             .unwrap()
             .insert((missing_agent.into(), 7));
-        let state = ManagedState::new_with_mcp(RehydrateFake::default())
-            .await
-            .with_config_source(profiles.clone())
-            .with_session_repo(repo.clone());
+        let state = {
+            let session_fixture_runtime = std::sync::Arc::new(RehydrateFake::default());
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                session_fixture_runtime.clone(),
+                Some(session_fixture_runtime),
+                repo.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        }
+        .with_config_source(profiles.clone());
         let error = state
             .create_session(
                 request(serde_json::json!({
@@ -343,10 +373,20 @@ async fn fresh_unpinned_delegate_is_sampled_once_before_head_changes() {
     profiles
         .advance_after_child_read
         .store(true, Ordering::SeqCst);
-    let state = ManagedState::new_with_mcp(RehydrateFake::default())
-        .await
-        .with_config_source(profiles.clone())
-        .with_session_repo(repo.clone());
+    let state = {
+        let session_fixture_runtime = std::sync::Arc::new(RehydrateFake::default());
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_config_source(profiles.clone());
     let accepted = state
         .create_session(request(serde_json::json!("coordinator")), DEFAULT_SCOPE)
         .await
@@ -401,10 +441,20 @@ async fn historic_missing_accepted_agent_keeps_tools_update_recovery_pending() {
     let profiles = Arc::new(ObservedProfiles::new(false));
     profiles.original.0.store(8, Ordering::SeqCst);
     let runtime = RehydrateFake::default();
-    let state = ManagedState::new_with_mcp(runtime.clone())
-        .await
-        .with_config_source(profiles.clone())
-        .with_session_repo(repo.clone());
+    let state = {
+        let session_fixture_runtime = std::sync::Arc::new(runtime.clone());
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_config_source(profiles.clone());
     state
         .ensure_session(before.session_id.as_str())
         .await
@@ -480,10 +530,20 @@ async fn historic_missing_accepted_agent_keeps_tools_update_recovery_pending() {
         .unwrap();
     assert_eq!(receipt.committed_revision, committed.revision);
     assert_eq!(receipt.payload_hash, "historic-tools-command");
-    let cold = ManagedState::new_with_mcp(runtime)
-        .await
-        .with_config_source(profiles)
-        .with_session_repo(repo.clone());
+    let cold = {
+        let session_fixture_runtime = std::sync::Arc::new(runtime);
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_config_source(profiles);
     assert!(
         cold.ensure_session(before.session_id.as_str())
             .await

@@ -101,14 +101,38 @@ impl SessionPersistence {
 }
 
 /// Canonical application object shared by wire adapters.
+///
+/// Construction capability table: a selected Store/Clock enters the existing
+/// persistence value before construction; a live application has no Store
+/// replacement operation. These examples prove source capability only; the
+/// original constructor/binding tests exercise the actual selected ports.
+///
+/// ```
+/// use std::sync::Arc;
+/// use awaken_session_application::SessionPersistence;
+/// use awaken_session_repository_contract::SessionStore;
+/// fn select(store: Arc<dyn SessionStore>, clock: Arc<dyn awaken_time::WallClock>)
+///     -> SessionPersistence
+/// {
+///     SessionPersistence::new(store, clock)
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use std::sync::Arc;
+/// use awaken_session_application::SessionApplication;
+/// use awaken_session_repository_contract::SessionStore;
+/// fn replace_live(application: &mut SessionApplication, store: Arc<dyn SessionStore>) {
+///     application.replace_repository(store);
+/// }
+/// ```
 pub struct SessionApplication {
     clock: Arc<dyn awaken_time::WallClock>,
     configuration: SessionApplicationConfiguration,
     runtime: crate::SessionExecutor,
     tool_configuration_compiler: Arc<dyn ToolConfigurationCompiler>,
     mcp_realizer: Arc<dyn McpAttachmentRealizer>,
-    credential_source: Option<Arc<dyn SessionCredentialSource>>,
-    credential_material_ingress: Option<Arc<dyn CredentialMaterialIngress>>,
+    credentials: Arc<crate::SessionCredentials>,
     environments: SessionEnvironments,
     config_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
     model_publication_resolver:
@@ -118,23 +142,15 @@ pub struct SessionApplication {
     resource_references: Option<Arc<dyn awaken_resource_contract::ResourceReferenceIndex>>,
     resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
     managed_list_prices: Option<Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>>,
-    mutations: crate::SessionMutations,
+    mutations: Arc<crate::SessionMutations>,
+    lifecycle: Arc<crate::SessionLifecycle>,
     queries: Arc<crate::SessionQueries>,
     inputs: Arc<crate::SessionInputs>,
     environment_binding_sink: Arc<dyn SessionEnvironmentBindingSink>,
-    /// Drain side of the same store's transactional lifecycle outbox. The
-    /// application never reads it; it only hands it to the one delivery
-    /// consumer bound through [`Self::set_lifecycle_notifier`].
-    lifecycle_outbox: Arc<dyn awaken_session_repository_contract::LifecycleOutbox>,
     /// The one process-owned high-water reconciler, invoked at lifecycle
     /// admission boundaries. Query reads never drive it.
     executable_projection_refresh:
         Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
-    /// One process-owned wake channel for the durable lifecycle outbox.  This is
-    /// late-bound because scenario composition shares an already-`Arc`'d
-    /// application, and write-once so a second outbox consumer cannot replace
-    /// the canonical supervisor after traffic starts.
-    lifecycle_notifier: OnceLock<Arc<dyn LifecycleFactNotifier>>,
     /// One complete set of immutable execution observations.
     execution_admission: SessionExecutionAdmission,
     /// Disposable keyset position for one bounded preparation-candidate page
@@ -142,8 +158,6 @@ pub struct SessionApplication {
     session_preparation_cursors:
         tokio::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<Option<SessionScanCursor>>>>>,
     runtime_incarnation: String,
-    lifecycle_supervisor_started: AtomicBool,
-    lifecycle_wakeup: tokio::sync::Notify,
     event_batch_cutover_validation: Arc<SessionEventBatchCutoverValidationSource>,
     /// Process-local mutual exclusion for the co-located realization driver.
     local_realization_locks: Arc<crate::realization::LocalRealizationLocks>,
@@ -156,6 +170,18 @@ impl SessionApplication {
     /// This is a constructed component, not a discovered optional capability.
     pub fn mutations(&self) -> &crate::SessionMutations {
         &self.mutations
+    }
+
+    /// The independently held exact credential command owner.
+    #[must_use]
+    pub fn credentials(&self) -> Arc<crate::SessionCredentials> {
+        self.credentials.clone()
+    }
+
+    /// The independently held lifecycle command and signal owner.
+    #[must_use]
+    pub fn lifecycle(&self) -> Arc<crate::SessionLifecycle> {
+        self.lifecycle.clone()
     }
 
     /// The injected clock port, for an adapter that stamps observations on the
@@ -176,22 +202,6 @@ impl SessionApplication {
     #[cfg(test)]
     pub fn requires_external_realization(&self, session: &PersistedSession) -> bool {
         session.requires_external_environment_owner()
-    }
-
-    /// Claim the one lifecycle supervisor for this application instance.
-    pub fn claim_lifecycle_supervisor(&self) -> bool {
-        claim_once(&self.lifecycle_supervisor_started)
-    }
-
-    pub(crate) fn wake_lifecycle_supervisor(&self) {
-        self.lifecycle_wakeup.notify_one();
-    }
-
-    /// Signal that committed Runtime progress may unblock retained Session work.
-    /// Process composition connects its completion observer here; the
-    /// application remains the sole owner of reconciliation state and effects.
-    pub fn request_lifecycle_reconciliation(&self) {
-        self.wake_lifecycle_supervisor();
     }
 
     #[must_use]
@@ -253,16 +263,6 @@ impl SessionApplication {
     #[must_use]
     pub(crate) fn mcp_realizer(&self) -> &dyn McpAttachmentRealizer {
         self.mcp_realizer.as_ref()
-    }
-
-    #[must_use]
-    pub(crate) fn credential_source(&self) -> Option<&dyn SessionCredentialSource> {
-        self.credential_source.as_deref()
-    }
-
-    #[must_use]
-    pub(crate) fn credential_material_ingress(&self) -> Option<&dyn CredentialMaterialIngress> {
-        self.credential_material_ingress.as_deref()
     }
 
     #[must_use]
@@ -352,15 +352,6 @@ impl SessionApplication {
     #[must_use]
     pub fn session_repository_handle(&self) -> Arc<dyn SessionRepository> {
         self.mutations.repository().clone()
-    }
-
-    /// Clone the drain port of the same store for the one lifecycle delivery
-    /// consumer installed by Coordinator composition.
-    #[must_use]
-    pub fn lifecycle_outbox_handle(
-        &self,
-    ) -> Arc<dyn awaken_session_repository_contract::LifecycleOutbox> {
-        self.lifecycle_outbox.clone()
     }
 
     /// The independently constructed read service, shared with protocol roles.
@@ -507,22 +498,6 @@ impl SessionApplication {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn replace_repository(
-        &mut self,
-        repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
-    ) {
-        let persistence = SessionPersistence::new(repo, self.clock.clone());
-        self.mutations.replace_repository(persistence.store.clone());
-        self.fixture_queries()
-            .replace_repository(persistence.store.clone());
-        Arc::get_mut(&mut self.inputs)
-            .expect("fixture input ports must be configured before the service is shared")
-            .replace_repository(persistence.store.clone());
-        self.lifecycle_outbox = persistence.store;
-        self.environment_binding_sink = persistence.environment_binding_sink;
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
     pub fn replace_environment_source(&mut self, source: impl Into<SessionEnvironments>) {
         self.environments = source.into();
     }
@@ -538,17 +513,6 @@ impl SessionApplication {
     /// The frozen dispatch, Worker roster and placement compiler for this process.
     pub fn execution_admission(&self) -> &SessionExecutionAdmission {
         &self.execution_admission
-    }
-
-    /// Bind the one lifecycle-outbox wake channel. Duplicate composition is an
-    /// error instead of silently replacing (or running alongside) its owner.
-    pub fn set_lifecycle_notifier(
-        &self,
-        notifier: Arc<dyn LifecycleFactNotifier>,
-    ) -> Result<(), &'static str> {
-        self.lifecycle_notifier
-            .set(notifier)
-            .map_err(|_| "Session lifecycle notifier is already installed")
     }
 
     pub(crate) fn worker_observation_source(&self) -> Option<&dyn WorkerIncarnationSource> {
@@ -607,16 +571,6 @@ impl SessionApplication {
     ) {
         self.resource_references = Some(references);
         self.resource_files = Some(files);
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn set_credential_source(&mut self, source: Arc<dyn SessionCredentialSource>) {
-        self.credential_source = Some(source);
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn set_credential_material_ingress(&mut self, ingress: Arc<dyn CredentialMaterialIngress>) {
-        self.credential_material_ingress = Some(ingress);
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -937,7 +891,7 @@ async fn self_hosted_work_environment(
 #[async_trait::async_trait]
 impl awaken_session_application_contract::SessionWorkerLeaseAuthority for SessionApplication {
     fn request_lifecycle_reconciliation(&self) {
-        SessionApplication::request_lifecycle_reconciliation(self);
+        self.lifecycle.request_reconciliation();
     }
 
     async fn acquire_session_work(

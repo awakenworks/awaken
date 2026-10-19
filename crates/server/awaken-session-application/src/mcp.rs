@@ -9,7 +9,7 @@ use {
     awaken_session_configuration_contract::mcp::{McpAttachmentDraft, McpAttachmentOrigin},
 };
 
-use super::SessionApplication;
+use super::SessionCredentials;
 
 #[derive(Clone, Debug)]
 pub struct McpAttachmentCandidate {
@@ -27,7 +27,7 @@ pub enum McpAttachmentCandidateTarget {
     Normalized(McpTarget),
 }
 
-impl SessionApplication {
+impl SessionCredentials {
     /// Normalize endpoint identity without selecting credentials. Environment
     /// resolution consumes these targets first; its frozen MCP holder then owns
     /// the one credential compilation decision.
@@ -88,36 +88,18 @@ impl SessionApplication {
                 &target,
                 &usage,
             );
-            let credential = match candidate.published_credential {
+            let selected = match candidate.published_credential {
                 Some((id, revision)) => {
-                    let source_id = awaken_credential_contract::CredentialSourceId(id.clone());
-                    let access = if let Some(credentials) = self.credential_source() {
-                        let access = credentials
-                            .mcp_access_for_source(
-                                &source_id,
-                                workspace_id,
-                                &target,
-                                selected_holder,
-                                &binding,
-                            )
-                            .await
-                            .map_err(|error| {
-                                RunError::bad_request(format!(
-                                    "MCP credential could not be pinned exactly: {error}"
-                                ))
-                            })?;
-                        if access.credential.revision != revision {
-                            return Err(RunError::bad_request(
-                                "published MCP credential revision no longer matches",
-                            ));
-                        }
-                        access
-                    } else {
-                        return Err(RunError::bad_request(
+                    let credentials = self.credential_source().ok_or_else(|| {
+                        RunError::bad_request(
                             "published MCP credential requires the canonical credential authority",
-                        ));
-                    };
-                    Some(access)
+                        )
+                    })?;
+                    Some((
+                        credentials,
+                        awaken_credential_contract::CredentialSourceId(id),
+                        Some(revision),
+                    ))
                 }
                 None => match self.credential_source() {
                     Some(credentials) => {
@@ -132,28 +114,35 @@ impl SessionApplication {
                                 })?,
                             None => None,
                         };
-                        match source_id {
-                            Some(source_id) => Some(
-                                credentials
-                                    .mcp_access_for_source(
-                                        &source_id,
-                                        workspace_id,
-                                        &target,
-                                        selected_holder,
-                                        &binding,
-                                    )
-                                    .await
-                                    .map_err(|error| {
-                                        RunError::bad_request(format!(
-                                            "MCP credential could not be pinned exactly: {error}"
-                                        ))
-                                    })?,
-                            ),
-                            None => None,
-                        }
+                        source_id.map(|source_id| (credentials, source_id, None))
                     }
                     None => None,
                 },
+            };
+            let credential = if let Some((credentials, source_id, published_revision)) = selected {
+                let access = credentials
+                    .mcp_access_for_source(
+                        &source_id,
+                        workspace_id,
+                        &target,
+                        selected_holder,
+                        &binding,
+                    )
+                    .await
+                    .map_err(|error| {
+                        RunError::bad_request(format!(
+                            "MCP credential could not be pinned exactly: {error}"
+                        ))
+                    })?;
+                if published_revision.is_some_and(|revision| access.credential.revision != revision)
+                {
+                    return Err(RunError::bad_request(
+                        "published MCP credential revision no longer matches",
+                    ));
+                }
+                Some(access)
+            } else {
+                None
             };
             drafts.push(McpAttachmentDraft {
                 name,

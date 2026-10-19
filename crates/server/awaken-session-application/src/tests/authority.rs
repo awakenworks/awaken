@@ -8,7 +8,7 @@
 // @formal evidence session_run.execution_requires_dispatch_work_and_realization_owner
 // @formal evidence session_time.root_observations_are_revision_bound_and_replay_stable
 // @formal evidence session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
-// awaken-allow(file-limit-ceiling): 7500 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 7167 (legacy oversized test file: split, never grow)
 use super::*;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -16,8 +16,14 @@ use awaken_session_repository_contract::LifecycleOutbox as _;
 use awaken_session_state_contract::ManagedLifecycleFact;
 use awaken_session_types::SessionId;
 mod coordinated_resources;
+mod creation_inputs;
+mod credential_ingress;
+use credential_ingress::FaultInjectingCredentialMaterialIngress;
 mod first_materialization;
+mod input_mounts;
 mod interval_admission;
+mod resource_registry;
+use resource_registry::FaultInjectingResourceRegistry;
 mod lost_root_cas_replay;
 mod session_updates;
 mod unattempted_archive_witness;
@@ -353,340 +359,6 @@ async fn register_retirement_repository(
         .expect("activate retirement fixture");
 }
 
-/// Fault-only decorator; the composed Resource Registry remains the sole state
-/// and validation authority used by every test rule below.
-struct FaultInjectingResourceRegistry {
-    inner: Arc<dyn awaken_resource_contract::ResourceRegistry>,
-    registration_calls: AtomicUsize,
-    activation_calls: AtomicUsize,
-    registration_failures: AtomicUsize,
-    activation_failures: AtomicUsize,
-}
-
-impl FaultInjectingResourceRegistry {
-    fn new(inner: Arc<dyn awaken_resource_contract::ResourceRegistry>) -> Self {
-        Self {
-            inner,
-            registration_calls: AtomicUsize::new(0),
-            activation_calls: AtomicUsize::new(0),
-            registration_failures: AtomicUsize::new(0),
-            activation_failures: AtomicUsize::new(0),
-        }
-    }
-
-    fn fail_next_registration(&self) {
-        self.registration_failures.store(1, Ordering::SeqCst);
-    }
-
-    fn fail_next_activation(&self) {
-        self.activation_failures.store(1, Ordering::SeqCst);
-    }
-
-    fn consume_failure(counter: &AtomicUsize) -> bool {
-        counter
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok()
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_resource_contract::ResourceInventory for FaultInjectingResourceRegistry {
-    async fn list_repositories(
-        &self,
-        workspace_id: &str,
-    ) -> Result<
-        Vec<awaken_resource_contract::RepositoryDefinition>,
-        awaken_resource_contract::ResourceRegistryError,
-    > {
-        self.inner.list_repositories(workspace_id).await
-    }
-
-    async fn find_memory_store(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<
-        Option<awaken_resource_contract::MemoryStoreDefinition>,
-        awaken_resource_contract::ResourceRegistryError,
-    > {
-        self.inner.find_memory_store(workspace_id, id).await
-    }
-
-    async fn list_memory_stores(
-        &self,
-        workspace_id: &str,
-    ) -> Result<
-        Vec<awaken_resource_contract::MemoryStoreDefinition>,
-        awaken_resource_contract::ResourceRegistryError,
-    > {
-        self.inner.list_memory_stores(workspace_id).await
-    }
-
-    async fn find_memory_store_config(
-        &self,
-        workspace_id: &str,
-        id: &str,
-        version: awaken_resource_contract::ConfigVersion,
-    ) -> Result<
-        Option<awaken_resource_contract::MemoryStoreConfigVersion>,
-        awaken_resource_contract::ResourceRegistryError,
-    > {
-        self.inner
-            .find_memory_store_config(workspace_id, id, version)
-            .await
-    }
-
-    async fn find_repository(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<
-        Option<awaken_resource_contract::RepositoryDefinition>,
-        awaken_resource_contract::ResourceRegistryError,
-    > {
-        self.inner.find_repository(workspace_id, id).await
-    }
-
-    async fn find_repository_config(
-        &self,
-        workspace_id: &str,
-        id: &str,
-        version: awaken_resource_contract::ConfigVersion,
-    ) -> Result<
-        Option<awaken_resource_contract::RepositoryConfigVersion>,
-        awaken_resource_contract::ResourceRegistryError,
-    > {
-        self.inner
-            .find_repository_config(workspace_id, id, version)
-            .await
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_resource_contract::ResourceAdministration for FaultInjectingResourceRegistry {
-    async fn register_repository_idempotent(
-        &self,
-        command: awaken_resource_contract::RegisterRepository,
-    ) -> Result<
-        awaken_resource_contract::RepositoryDefinition,
-        awaken_resource_contract::ResourceRegistryError,
-    > {
-        self.inner.register_repository_idempotent(command).await
-    }
-
-    async fn register_memory_store_idempotent(
-        &self,
-        command: awaken_resource_contract::RegisterMemoryStore,
-    ) -> Result<
-        awaken_resource_contract::MemoryStoreDefinition,
-        awaken_resource_contract::ResourceRegistryError,
-    > {
-        self.inner.register_memory_store_idempotent(command).await
-    }
-
-    async fn register_memory_store(
-        &self,
-        command: awaken_resource_contract::RegisterMemoryStore,
-    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-        self.inner.register_memory_store(command).await
-    }
-
-    async fn update_memory_store_profile(
-        &self,
-        command: awaken_resource_contract::UpdateMemoryStoreProfile,
-    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-        self.inner.update_memory_store_profile(command).await
-    }
-
-    async fn publish_memory_store_config(
-        &self,
-        command: awaken_resource_contract::PublishMemoryStoreConfig,
-    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-        self.inner.publish_memory_store_config(command).await
-    }
-
-    async fn change_memory_store_state(
-        &self,
-        command: awaken_resource_contract::ChangeMemoryStoreState,
-    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-        self.inner.change_memory_store_state(command).await
-    }
-
-    async fn register_repository(
-        &self,
-        command: awaken_resource_contract::RegisterRepository,
-    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-        self.registration_calls.fetch_add(1, Ordering::SeqCst);
-        if Self::consume_failure(&self.registration_failures) {
-            return Err(
-                awaken_resource_contract::ResourceRegistryError::AuthorityUnavailable {
-                    detail: "injected registration failure".into(),
-                },
-            );
-        }
-        self.inner.register_repository(command).await
-    }
-
-    async fn publish_repository_config(
-        &self,
-        command: awaken_resource_contract::PublishRepositoryConfig,
-    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-        self.inner.publish_repository_config(command).await
-    }
-
-    async fn change_repository_state(
-        &self,
-        command: awaken_resource_contract::ChangeRepositoryState,
-    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-        if command.state == awaken_resource_contract::ResourceState::Active {
-            self.activation_calls.fetch_add(1, Ordering::SeqCst);
-            if Self::consume_failure(&self.activation_failures) {
-                return Err(
-                    awaken_resource_contract::ResourceRegistryError::AuthorityUnavailable {
-                        detail: "injected activation failure".into(),
-                    },
-                );
-            }
-        }
-        self.inner.change_repository_state(command).await
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_resource_contract::ExecutionResourceResolver for FaultInjectingResourceRegistry {
-    async fn resolve_memory_store(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<
-        awaken_resource_contract::MemoryStoreConfigVersion,
-        awaken_resource_contract::ResourceRegistryError,
-    > {
-        self.inner.resolve_memory_store(workspace_id, id).await
-    }
-
-    async fn resolve_repository(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<
-        awaken_resource_contract::RepositoryConfigVersion,
-        awaken_resource_contract::ResourceRegistryError,
-    > {
-        self.inner.resolve_repository(workspace_id, id).await
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_resource_contract::LiveResourceBindingVerifier for FaultInjectingResourceRegistry {
-    async fn verify_memory_binding(
-        &self,
-        workspace_id: &str,
-        id: &str,
-        version: awaken_resource_contract::ConfigVersion,
-    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-        self.inner
-            .verify_memory_binding(workspace_id, id, version)
-            .await
-    }
-
-    async fn verify_repository_binding(
-        &self,
-        workspace_id: &str,
-        id: &str,
-        version: awaken_resource_contract::ConfigVersion,
-    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-        self.inner
-            .verify_repository_binding(workspace_id, id, version)
-            .await
-    }
-}
-
-/// Fault-only ingress port. Its set exists only to project Applied/Replayed and
-/// retirement observations for the cause/effect rules; production Vault state
-/// and replay remain owned by the composed credential implementation.
-#[derive(Default)]
-struct FaultInjectingCredentialMaterialIngress {
-    calls: AtomicUsize,
-    failures: AtomicUsize,
-    retirement_failures: AtomicUsize,
-    entered_sources: Mutex<BTreeSet<String>>,
-    retirements: Mutex<Vec<awaken_credential_contract::CredentialRef>>,
-}
-
-impl FaultInjectingCredentialMaterialIngress {
-    fn fail_next(&self) {
-        self.failures.store(1, Ordering::SeqCst);
-    }
-
-    fn fail_next_retirement(&self) {
-        self.retirement_failures.store(1, Ordering::SeqCst);
-    }
-
-    fn seed_replayed_source(&self, repository_id: &str) {
-        self.entered_sources
-            .lock()
-            .unwrap()
-            .insert(format!("{repository_id}:credential"));
-    }
-
-    fn retirements(&self) -> Vec<awaken_credential_contract::CredentialRef> {
-        self.retirements.lock().unwrap().clone()
-    }
-}
-
-#[async_trait::async_trait]
-impl CredentialMaterialIngress for FaultInjectingCredentialMaterialIngress {
-    async fn enter_material(
-        &self,
-        command: CredentialMaterialIngressCommand,
-    ) -> Result<CredentialMaterialIngressReceipt, String> {
-        let source_id = command.source_id;
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        if FaultInjectingResourceRegistry::consume_failure(&self.failures) {
-            Err("injected credential ingress failure".into())
-        } else {
-            let provenance = if self
-                .entered_sources
-                .lock()
-                .unwrap()
-                .insert(source_id.0.clone())
-            {
-                SessionParticipantProvenance::Applied
-            } else {
-                SessionParticipantProvenance::Replayed
-            };
-            Ok(CredentialMaterialIngressReceipt {
-                credential: awaken_credential_contract::CredentialRef {
-                    id: source_id.0,
-                    revision: 1,
-                },
-                provenance,
-            })
-        }
-    }
-
-    async fn rotate_material(
-        &self,
-        _command: CredentialMaterialRotationCommand,
-    ) -> Result<u64, String> {
-        Err("rotation is outside this registration test".into())
-    }
-
-    async fn retire_material(
-        &self,
-        command: CredentialMaterialRetirementCommand,
-    ) -> Result<(), String> {
-        if FaultInjectingResourceRegistry::consume_failure(&self.retirement_failures) {
-            return Err("injected credential retirement failure".into());
-        }
-        self.retirements.lock().unwrap().push(command.credential);
-        Ok(())
-    }
-}
-
 async fn repository_saga_application(
     registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     ingress: Arc<dyn CredentialMaterialIngress>,
@@ -824,7 +496,7 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
 
 #[tokio::test]
 async fn token_repository_registration_is_one_recoverable_registry_vault_saga() {
-    // Cause/effect graph: C1 token/ref exclusivity and C2 the pure Repository
+    // O8 cause/effect: C1 token/ref exclusivity and C2 the pure Repository
     // aggregate validation pass/fail before effects; C3 Registry registration
     // fails, Applies, or Replays; C4 Vault ingress fails, Applies, or Replays;
     // C5 activation succeeds/fails. Effects: E1 C1/C2 failure writes neither
@@ -1161,7 +833,7 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
 
 #[tokio::test]
 async fn repository_retirement_requires_durable_owner_before_any_vault_effect() {
-    // Retirement-authority cause/effect graph: C1 the canonical Session
+    // O9 retirement-authority cause/effect: C1 the canonical Session
     // namespace has a matching durable owner marker, a mismatching/absent marker,
     // or no surviving definition; C2 the exact removed input carries an inline
     // credential pin; C3 the Session is Worker-placed and otherwise Active.
@@ -1249,7 +921,7 @@ async fn repository_retirement_requires_durable_owner_before_any_vault_effect() 
 
 #[tokio::test]
 async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_cas() {
-    // Cleanup/reintroduction cause/effect graph: C1 an exact owned Repository
+    // O9 cleanup/reintroduction cause/effect: C1 an exact owned Repository
     // retirement is durable; C2 exact credential retirement fails once; C3 a
     // same-id manifest command races while the intent remains; C4 the process
     // and SQLite connection restart; C5 the retry succeeds. Effects: E1 failure
@@ -2593,12 +2265,14 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
         "L1/L2 completed archive cleanup does not retire Work twice"
     );
     let archived_delete = app
+        .lifecycle
         .commit_delete_intent(SessionDeleteCommand::new("archive-race"))
         .await
         .expect("L8 archived Session is deletable");
     assert!(archived_delete.transitioned(), "L8");
     assert!(archived_delete.session.is_hidden(), "L8");
     let failed_delete = app
+        .lifecycle
         .commit_delete_intent(SessionDeleteCommand::new("delete-failed"))
         .await
         .expect("L9 failed Session is deletable");
@@ -2669,6 +2343,7 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
         )
         .await;
     let delete = app
+        .lifecycle
         .commit_delete_intent(SessionDeleteCommand::new("batch-before-delete"))
         .await;
     for (rule, result) in [("B1", archive), ("B2", force), ("B3", delete)] {
@@ -2717,7 +2392,8 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
         .transitioned()
     );
     assert!(
-        app.commit_delete_intent(SessionDeleteCommand::new("batch-before-delete"))
+        app.lifecycle
+            .commit_delete_intent(SessionDeleteCommand::new("batch-before-delete"))
             .await
             .expect("B4 delete retry")
             .transitioned()
@@ -2803,6 +2479,7 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                 repo.commit_then_conflict_once("delete-intent");
             }
             let transition = app
+                .lifecycle
                 .commit_delete_intent(SessionDeleteCommand::new(&session_id))
                 .await
                 .unwrap();
@@ -2893,6 +2570,7 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                     "D4 stable cleanup operation"
                 );
                 let replay = cold
+                    .lifecycle
                     .commit_delete_intent(SessionDeleteCommand::new(&session_id))
                     .await
                     .unwrap();
@@ -2943,6 +2621,7 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                 "D5 tombstone remains owner scoped"
             );
             let absent = cold
+                .lifecycle
                 .commit_delete_intent(SessionDeleteCommand::new(&session_id))
                 .await;
             assert!(matches!(absent, Err(SessionPreparationError::NotFound)));
@@ -2998,6 +2677,7 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                 let delayed = app.clone();
                 let loser = tokio::spawn(async move {
                     delayed
+                        .lifecycle
                         .commit_delete_intent(SessionDeleteCommand::at_for_test(
                             session_id, loser_time,
                         ))
@@ -3046,6 +2726,7 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                 let before_root = durable.get(&SessionId::from(session_id)).await.unwrap();
                 let before = deletion_observation(durable.as_ref(), session_id, "workspace").await;
                 let winner = app
+                    .lifecycle
                     .commit_delete_intent(SessionDeleteCommand::at_for_test(
                         session_id,
                         winner_time,

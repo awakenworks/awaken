@@ -4,6 +4,7 @@
 //! This remains a child of `podman`, retaining access to the private adapter
 //! seams and the original cause/effect decision tables.
 
+use awaken_container_contract::RuntimeError;
 #[cfg(unix)]
 use std::ffi::OsString;
 use std::sync::atomic::{AtomicBool, Ordering};

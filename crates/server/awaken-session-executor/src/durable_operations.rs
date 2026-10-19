@@ -5,24 +5,13 @@
 
 use awaken_agent_contract::agent::message::Message;
 use awaken_session_execution_contract::{
-    ApplicationError, DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult,
+    ApplicationError, DurableDispatchStatus, DurableRunOperations,
 };
 
 use crate::session_execution_error::to_durable_error;
 
 #[async_trait::async_trait]
 impl DurableRunOperations for crate::SessionRuns {
-    async fn submit_background(
-        &self,
-        agent: Option<&str>,
-        thread: &str,
-        messages: Vec<Message>,
-    ) -> Result<String, ApplicationError> {
-        self.submit_background_async(agent, thread, messages)
-            .await
-            .map_err(to_durable_error)
-    }
-
     async fn cancel(&self, thread: &str, run_id: &str) -> Result<(), ApplicationError> {
         self.cancel_durable(thread, run_id)
             .await
@@ -51,23 +40,6 @@ impl DurableRunOperations for crate::SessionRuns {
         self.stage_decision(thread, allow)
             .await
             .map_err(to_durable_error)
-    }
-
-    async fn supersede(
-        &self,
-        agent: Option<&str>,
-        thread: &str,
-        messages: Vec<Message>,
-    ) -> Result<DurableSupersedeResult, ApplicationError> {
-        let run = self
-            .supersede_run(agent, thread, messages)
-            .await
-            .map_err(to_durable_error)?;
-        let superseded = self.superseded(thread).await.map_err(to_durable_error)?;
-        Ok(DurableSupersedeResult {
-            state: format!("{:?}", run.state),
-            superseded,
-        })
     }
 
     async fn messages(&self, thread: &str) -> Result<Vec<Message>, ApplicationError> {

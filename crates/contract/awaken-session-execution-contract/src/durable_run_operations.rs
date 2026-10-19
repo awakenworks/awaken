@@ -56,12 +56,6 @@ impl ApplicationError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DurableSupersedeResult {
-    pub state: String,
-    pub superseded: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableDispatchStatus {
     pub run_id: String,
     pub status: String,
@@ -70,25 +64,39 @@ pub struct DurableDispatchStatus {
 }
 
 /// Coordinator application dependency for the private durable operations API.
+///
+/// The operational role keeps monitoring and control, while product command
+/// admission belongs to the existing Session application roles. Cause/effect
+/// rules O0-O2: the same receiver/import compiles for a lawful read (O0), but
+/// cannot select either retired Legacy command (O1/O2), before any queue effect.
+///
+/// ```
+/// use awaken_session_execution_contract::DurableRunOperations;
+/// async fn operational_read_remains_available(operations: &dyn DurableRunOperations) {
+///     let _ = operations.superseded("thread").await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use awaken_session_execution_contract::DurableRunOperations;
+/// async fn no_legacy_supersede(operations: &dyn DurableRunOperations) {
+///     let _ = operations.supersede(None, "thread", Vec::new()).await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use awaken_session_execution_contract::DurableRunOperations;
+/// async fn no_legacy_background(operations: &dyn DurableRunOperations) {
+///     let _ = operations.submit_background(None, "thread", Vec::new()).await;
+/// }
+/// ```
 #[async_trait::async_trait]
 pub trait DurableRunOperations: Send + Sync {
-    async fn submit_background(
-        &self,
-        agent: Option<&str>,
-        thread: &str,
-        messages: Vec<Message>,
-    ) -> Result<String, ApplicationError>;
     async fn cancel(&self, thread: &str, run_id: &str) -> Result<(), ApplicationError>;
     async fn pause(&self, thread: &str, run_id: Option<&str>) -> Result<String, ApplicationError>;
     async fn resume(&self, thread: &str, text: String) -> Result<String, ApplicationError>;
     async fn wake(&self, thread: &str, run_id: &str) -> Result<(), ApplicationError>;
     async fn deliver(&self, thread: &str, allow: bool) -> Result<String, ApplicationError>;
-    async fn supersede(
-        &self,
-        agent: Option<&str>,
-        thread: &str,
-        messages: Vec<Message>,
-    ) -> Result<DurableSupersedeResult, ApplicationError>;
     async fn messages(&self, thread: &str) -> Result<Vec<Message>, ApplicationError>;
     async fn superseded(&self, thread: &str) -> Result<Vec<String>, ApplicationError>;
     async fn dispatches(

@@ -329,7 +329,8 @@ scoped_step "fuzz-consumer" "update the fuzz targets to the changed contract sur
 # SDK tasks are an independent, minimal-feature application graph. A green
 # workspace build or API snapshot cannot substitute for this consumer behavior.
 scoped_step "sdk-consumer" "keep the public SDK usable from an ordinary external application" \
-  "$(consumed_packages examples/sdk-consumer/Cargo.toml)" python3 scripts/ci/check_sdk_consumer.py
+  "$(consumed_packages examples/sdk-consumer/Cargo.toml)" \
+  python3 scripts/ci/check_sdk_consumer.py
 
 # Compile-surface decision table: CR2 a database-less Worker consumes Ingress
 # without durable/test support -> compile its production library warning-free;

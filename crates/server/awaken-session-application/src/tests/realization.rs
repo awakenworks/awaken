@@ -1372,6 +1372,7 @@ async fn assert_file_resource_and_credential_policy_rules(
     );
 
     let rotation = app
+        .credentials()
         .rotate_repository_credential(
             &SessionId::from("resource-files"),
             "workspace",
@@ -4820,6 +4821,7 @@ async fn terminal_cleanup_stale_loser_accepts_the_winners_tombstone() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let transition = application
+        .lifecycle
         .commit_delete_intent(SessionDeleteCommand::new("cleanup-tombstone-race"))
         .await
         .expect("delete fence");

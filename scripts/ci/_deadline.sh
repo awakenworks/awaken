@@ -39,7 +39,16 @@ run_with_deadline() (
     cargo_deadline_dir=$(mktemp -d "${TMPDIR:-/tmp}/awaken-cargo-deadline.XXXXXX")
     trap 'rm -f -- "$cargo_deadline_dir/cargo-awaken-ci-deadline"; rmdir -- "$cargo_deadline_dir"' EXIT
     ln -s "$deadline_dir/deadline.py" "$cargo_deadline_dir/cargo-awaken-ci-deadline"
-    PATH="$cargo_deadline_dir:$PATH" cargo awaken-ci-deadline "$seconds" -- "$@"
+    # A redirected call under errexit can unwind this function's locals before
+    # Bash runs EXIT. Finish inside this subshell so cleanup retains its exact
+    # owned path and cannot mask an admission or command failure.
+    local cargo_deadline_status
+    if PATH="$cargo_deadline_dir:$PATH" cargo awaken-ci-deadline "$seconds" -- "$@"; then
+      cargo_deadline_status=0
+    else
+      cargo_deadline_status=$?
+    fi
+    exit "$cargo_deadline_status"
   else
     python3 "$deadline_dir/deadline.py" "$seconds" -- "$@"
   fi

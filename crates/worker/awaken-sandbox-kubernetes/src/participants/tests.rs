@@ -2,6 +2,8 @@
 // @formal reason: Original result/response-loss adapter decisions; these mocks do not qualify physical closure.
 use super::super::ephemeral_plan;
 use super::*;
+use awaken_container_contract::RuntimeError;
+use awaken_container_contract::{CreateTicket, CreateTicketRequest, TicketResult, TicketStatus};
 use awaken_provisioning_contract::SandboxCreateAttempt;
 use awaken_sandbox_container::ContainerRealizationIntent;
 use http::{Request, Response};
@@ -228,7 +230,7 @@ async fn direct_complete_original_projection_replays_without_new_creates() {
 // Same tests-owned transport for the decision matrix and the provider protocol
 // cases. Complete is an injected closure fact, never a Registry qualification.
 pub(crate) struct ClosedProjectedRequests {
-    pub(crate) tickets: Arc<std::sync::Mutex<Vec<super::super::CreateTicket>>>,
+    pub(crate) tickets: Arc<std::sync::Mutex<Vec<awaken_container_contract::CreateTicket>>>,
     pub(crate) complete: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -245,11 +247,11 @@ impl super::super::K8sCreateTransport for ClosedProjectedRequests {
         _scope: &str,
         _predecessor: &awaken_provisioning_contract::SandboxEffectFence,
         _pod: &str,
-    ) -> Result<super::super::RequestJoin, RuntimeError> {
+    ) -> Result<awaken_container_contract::RequestJoin, RuntimeError> {
         Ok(if self.complete.load(Ordering::SeqCst) {
-            super::super::RequestJoin::Complete(self.tickets.lock().unwrap().clone())
+            awaken_container_contract::RequestJoin::Complete(self.tickets.lock().unwrap().clone())
         } else {
-            super::super::RequestJoin::Unknown
+            awaken_container_contract::RequestJoin::Unknown
         })
     }
 }
@@ -276,7 +278,7 @@ async fn complete_original_inline_handoff_recovers_only_its_ticket_bound_set() {
     // unlike real member absence (R2) or real Pod absence (Unknown).
     // The fixture RESULTS are produced through realize/publish, not hand-made.
     use awaken_sandbox_container::ContainerRuntime as _;
-    use awaken_sandbox_container::{CreateTicket, CreateTicketRequest, TicketResult, TicketStatus};
+
     use std::collections::BTreeMap;
     use std::sync::Mutex;
     let mut source = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
@@ -332,13 +334,12 @@ async fn complete_original_inline_handoff_recovers_only_its_ticket_bound_set() {
     pod.metadata.uid = Some("original-rich-pod-uid".into());
     pod.metadata.resource_version = Some("7".into());
     let nonce = "0123456789abcdef0123456789abcdef";
-    pod.metadata
-        .annotations
-        .as_mut()
-        .unwrap()
-        .insert(super::super::ISOLATION_ID_ANNOTATION.into(), nonce.into());
     pod.metadata.annotations.as_mut().unwrap().insert(
-        super::super::REQUEST_DIGEST_ANNOTATION.into(),
+        awaken_container_contract::ISOLATION_ID_ANNOTATION.into(),
+        nonce.into(),
+    );
+    pod.metadata.annotations.as_mut().unwrap().insert(
+        awaken_container_contract::REQUEST_DIGEST_ANNOTATION.into(),
         "a".repeat(64),
     );
     let pod_name = pod.metadata.name.clone().unwrap();
@@ -390,9 +391,10 @@ async fn complete_original_inline_handoff_recovers_only_its_ticket_bound_set() {
                     let uid = format!("original-{name}-uid");
                     body["metadata"]["uid"] = uid.clone().into();
                     body["metadata"]["namespace"] = "default".into();
-                    body["metadata"]["annotations"][super::super::ISOLATION_ID_ANNOTATION] =
-                        nonce.into();
-                    body["metadata"]["annotations"][super::super::REQUEST_DIGEST_ANNOTATION] =
+                    body["metadata"]["annotations"]
+                        [awaken_container_contract::ISOLATION_ID_ANNOTATION] = nonce.into();
+                    body["metadata"]["annotations"]
+                        [awaken_container_contract::REQUEST_DIGEST_ANNOTATION] =
                         "b".repeat(64).into();
                     let resource = path.rsplit('/').next().unwrap();
                     tickets.lock().unwrap().push(CreateTicket {

@@ -67,6 +67,30 @@ impl ManagedState {
     /// Session application created during process startup. `capture_policy`
     /// is the Host's (`ExecutorComponents::content_capture_policy`), so the Session
     /// `content_capture` projection decides exactly as its Runs do.
+    ///
+    /// Fixture construction table: C1 a complete App and selected Environment
+    /// arrive -> the original constructor accepts them; C2 a later Repository
+    /// selector -> the old mutable entrypoint is absent, even with test-support.
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use awaken_protocol_managed::ManagedState;
+    /// fn project(
+    ///     app: Arc<awaken_session_application::SessionApplication>,
+    ///     env: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
+    ///     capture: awaken_data_governance_contract::CapturePolicy,
+    /// ) -> ManagedState {
+    ///     ManagedState::from_application(app, env, capture)
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0599
+    /// use std::sync::Arc;
+    /// use awaken_protocol_managed::ManagedState;
+    /// fn replace_live(state: ManagedState, store: Arc<dyn awaken_session_repository_contract::SessionStore>) {
+    ///     let _ = state.with_session_repo(store);
+    /// }
+    /// ```
     pub fn from_application(
         application: Arc<SessionApplication>,
         environments: Arc<EnvironmentExecutionApplication>,
@@ -183,7 +207,8 @@ impl ManagedState {
     pub fn with_lifecycle_notifier(self, notifier: Arc<dyn LifecycleFactNotifier>) -> Self {
         self.configure_application(|application| {
             application
-                .set_lifecycle_notifier(notifier)
+                .lifecycle()
+                .set_notifier(notifier)
                 .expect("ManagedState fixture lifecycle notifier is bound once");
         })
     }
@@ -201,19 +226,6 @@ impl ManagedState {
             environments,
             ..this
         }
-    }
-
-    /// Replace the already-explicit Session repository. This is primarily useful
-    /// for fixture overrides applied before sharing; there is no implicit default.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn with_session_repo(
-        self,
-        repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
-    ) -> Self {
-        self.configure_application(|application| {
-            application.replace_repository(repo);
-        })
     }
 
     /// Inject the sole versioned Managed reference-price authority. Budgeted

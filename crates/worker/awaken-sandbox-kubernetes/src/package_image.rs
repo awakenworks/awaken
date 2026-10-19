@@ -3,6 +3,7 @@
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Kubernetes-native realization of immutable Environment package images.
 
+use awaken_container_contract::RuntimeError;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -28,7 +29,7 @@ use crate::{
     K8sCreateTransport, backend, brokered_client, create_or_verify_exact, sandbox_network_labels,
     stamp_realization,
 };
-use awaken_sandbox_container::{ForwardProxy, PackageImageProvisioner, RuntimeError};
+use awaken_sandbox_container::{ForwardProxy, PackageImageProvisioner};
 
 pub(crate) const DEFAULT_K8S_BUILDKIT_IMAGE: &str = "moby/buildkit:v0.30.0-rootless";
 // A cold desktop/multimedia image installs hundreds of Debian packages. On a

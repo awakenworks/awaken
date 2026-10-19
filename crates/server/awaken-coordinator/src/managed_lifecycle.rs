@@ -74,11 +74,12 @@ pub fn prepare_managed_lifecycle_delivery(
     };
     let notifier = Arc::new(LifecycleOutboxRelay::new(
         delivery,
-        application.lifecycle_outbox_handle(),
+        application.lifecycle().outbox_handle(),
     ));
     let notifier_port: Arc<dyn LifecycleFactNotifier> = notifier.clone();
     application
-        .set_lifecycle_notifier(notifier_port)
+        .lifecycle()
+        .set_notifier(notifier_port)
         .map_err(ManagedLifecycleCompositionError::Notifier)?;
     if let Some(deployments) = deployments {
         let deployment_notifier: Arc<dyn LifecycleFactNotifier> = notifier.clone();
@@ -172,7 +173,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let outbox = state.session_application().lifecycle_outbox_handle();
+        let outbox = state.session_application().lifecycle().outbox_handle();
         let pending = outbox.pending_lifecycle().await.unwrap();
         let fact = pending
             .iter()
@@ -402,7 +403,7 @@ mod tests {
             "L4/E5 application rejects a second outbox owner before it starts"
         );
 
-        let repository = state.session_application().lifecycle_outbox_handle();
+        let repository = state.session_application().lifecycle().outbox_handle();
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if repository.pending_lifecycle().await.unwrap().is_empty() {

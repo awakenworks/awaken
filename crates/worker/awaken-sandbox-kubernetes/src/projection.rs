@@ -1,8 +1,8 @@
 //! One effect-fenced completion marker for initial Kubernetes input projection.
 
 use super::{K8sRuntime, backend};
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract::SandboxEffectFence;
-use awaken_sandbox_container::RuntimeError;
 use kube::api::AttachParams;
 use tokio::io::AsyncReadExt as _;
 
