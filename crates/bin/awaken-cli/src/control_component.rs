@@ -362,7 +362,7 @@ pub(super) async fn prepare_control_routers(
         Some(authenticator) => {
             awaken_coordinator::control_service_boundary::router_with_authenticator(
                 component.management_audit.clone(),
-                component.vault_state.clone(),
+                component.vault_state.application().credential_access(),
                 component.repository_credentials.clone(),
                 webhook_delivery,
                 privacy_ports(&component),

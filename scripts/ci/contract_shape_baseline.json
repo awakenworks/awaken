@@ -93,7 +93,7 @@
       "catch_all_errors": 1
     },
     "awaken-session-application-contract": {
-      "depth": 4,
+      "depth": 3,
       "growth_reasons": {
         "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it; then: Session credential services moved from the concrete application into its consumer-shaped application contract. Exact credential grants, execution policy and holder bindings retain their one definition in Credential contract, making depth 4 necessary. Configuration and quarantine observations now use Session Types, and the Environment query uses an associated Snapshot; remove both incidental dependencies rather than retaining depth 6. The two same-boundary contract merges remove real crates and dependency edges; no size, default capability, fat-trait or context-order allowance is raised."
       }

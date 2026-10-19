@@ -35,11 +35,14 @@
 //! here and the port receives the resolved secret, never a vault ref. Without a
 //! probe — and always for `environment_variable` / `static_bearer`, which have no
 //! MCP handshake to probe — `status` stays `unknown` (never a false `valid`).
-//! [`VaultState::mcp_credential_source_for_url`] is the seam a session uses to
-//! bind an MCP server to a vault credential by URL. Once selected,
-//! [`VaultState::mcp_access_for_source`] compiles the sole exact credential and
-//! refresh/reseal execution value.
+//! [`awaken_credential_vault::VaultCredentialAccess`] owns Session credential
+//! selection and exact access independently of this wire surface and its rollout target.
 
+use crate::types::vault::CredentialMcpProbe;
+use crate::types::vault::CredentialRefreshResult;
+use crate::types::vault::CredentialValidation;
+use crate::types::vault::CredentialValidationStatus;
+use awaken_session_configuration_contract::McpProbeStatus;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -65,7 +68,7 @@ use awaken_credential_vault::{
     OAUTH_REFRESH_TOKEN_SLOT, SecretStore, VaultApplication, VaultCommandError,
     VaultCredentialChange, VaultCredentialDraft, VaultObject,
 };
-use awaken_session_application::{SessionCredentialAccessRequest, SessionCredentialSource};
+
 use awaken_time::WallClock;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -77,14 +80,14 @@ use crate::common::scope::RequiredWorkspaceScope;
 use crate::routes::{ManagedJson, ManagedQuery, sha256_identity};
 use crate::types::vault::{
     Credential, CredentialAuth, CredentialCreateParams, CredentialCreateWire,
-    CredentialInjectionLocation, CredentialInjectionLocationParams, CredentialMcpProbe,
-    CredentialNetworking, CredentialRefreshResult, CredentialUpdateAuth, CredentialUpdateParams,
-    CredentialValidation, CredentialValidationStatus, DeletedCredential, DeletedVault, ListQuery,
+    CredentialInjectionLocation, CredentialInjectionLocationParams, CredentialNetworking,
+    CredentialUpdateAuth, CredentialUpdateParams, DeletedCredential, DeletedVault, ListQuery,
     McpOauthRefreshResponse, TokenEndpointAuthParams, TokenEndpointAuthResponse,
     TokenEndpointAuthUpdate, Vault, VaultCreateParams, VaultUpdateParams,
 };
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 
+#[cfg(test)]
 mod credential_material_ingress;
 
 fn application_mcp_target_fingerprint(
@@ -130,17 +133,9 @@ fn mcp_credential_descriptor(
     ))
 }
 
-use awaken_session_configuration_contract::{McpProbe, McpProbeStatus};
+use awaken_session_configuration_contract::McpProbe;
 
 // ---- State ------------------------------------------------------------------
-
-fn auth_mcp_server_url(auth: &AuthRecord) -> Option<&str> {
-    match auth {
-        AuthRecord::StaticBearer { mcp_server_url }
-        | AuthRecord::McpOauth { mcp_server_url, .. } => Some(mcp_server_url),
-        AuthRecord::EnvironmentVariable { .. } => None,
-    }
-}
 
 fn create_injection_location(
     requested: Option<CredentialInjectionLocationParams>,
@@ -162,6 +157,21 @@ mod mcp_inspection;
 use mcp_inspection::validate_credential;
 pub use mcp_inspection::{McpCredentialChoice, McpInspectionView};
 
+/// The wire surface is not a credential access role.
+///
+/// I2-S: installing old State as Source must not recreate the strong rollout cycle.
+/// ```compile_fail,E0277
+/// use awaken_credential_contract::SessionCredentialSource;
+/// fn source<T: SessionCredentialSource>() {}
+/// source::<awaken_protocol_managed::VaultState>();
+/// ```
+///
+/// I2-I independently rejects the old Ingress return edge.
+/// ```compile_fail,E0277
+/// use awaken_credential_contract::CredentialMaterialIngress;
+/// fn ingress<T: CredentialMaterialIngress>() {}
+/// ingress::<awaken_protocol_managed::VaultState>();
+/// ```
 pub struct VaultState {
     /// The Vault use cases: every store, clock and orchestration step.
     application: VaultApplication,
@@ -183,9 +193,10 @@ impl VaultState {
         secrets: Arc<dyn SecretStore>,
         repository: Arc<dyn ManagedCredentialRepository>,
         clock: Arc<dyn WallClock>,
+        material_delivery: Option<awaken_credential_contract::CredentialMaterialDelivery>,
     ) -> Self {
         Self {
-            application: VaultApplication::new(secrets, repository, clock),
+            application: VaultApplication::new(secrets, repository, clock, material_delivery),
             probe: None,
             refresh_exchange: None,
         }
@@ -268,187 +279,6 @@ impl VaultState {
         self
     }
 
-    /// Install the one deployment-owned plaintext delivery mechanism.
-    /// Selection, revision, holder, usage and target binding remain
-    /// Vault/Session facts.
-    #[must_use]
-    pub fn with_material_delivery(
-        mut self,
-        delivery: awaken_credential_contract::CredentialMaterialDelivery,
-    ) -> Self {
-        self.application = self.application.with_material_delivery(delivery);
-        self
-    }
-
-    /// The neutral credential-domain row id for a wire credential id, if it lives
-    /// in `vault_id`. This is the seam a session uses to bind a vault credential to
-    /// a run: the resolver takes this `CredentialSourceId`, never the wire id.
-    /// Limited to the standalone installation Workspace; it cannot discover
-    /// another Workspace by id.
-    pub async fn credential_source_id(
-        &self,
-        vault_id: &str,
-        credential_id: &str,
-    ) -> Option<CredentialSourceId> {
-        self.application
-            .credential_source_id(crate::state::DEFAULT_SCOPE, vault_id, credential_id)
-            .await
-    }
-
-    /// The vault→MCP binding seam. Scan active vaults in caller-supplied order
-    /// for an active `mcp_oauth` or `static_bearer` credential whose normalized
-    /// server URL equals `url`. Vault order is the precedence contract; id order
-    /// is only a defensive tie-breaker inside one vault.
-    pub async fn mcp_credential_source_for_url(
-        &self,
-        workspace_id: &str,
-        vault_ids: &[String],
-        url: &str,
-    ) -> Result<Option<CredentialSourceId>, awaken_credential_vault::CredentialError> {
-        let Ok(requested) = awaken_agent_contract::McpTarget::identity(url) else {
-            return Ok(None);
-        };
-        for vault_id in vault_ids {
-            let Some(credentials) = self
-                .application
-                .executable_credentials(workspace_id, vault_id)
-                .await?
-            else {
-                continue;
-            };
-            if let Some(credential) = credentials.into_iter().find(|credential| {
-                auth_mcp_server_url(&credential.auth)
-                    .and_then(|url| awaken_agent_contract::McpTarget::identity(url).ok())
-                    .is_some_and(|candidate| candidate == requested)
-            }) {
-                return Ok(Some(credential.source_id));
-            }
-        }
-        Ok(None)
-    }
-
-    /// Compile one exact, secret-free execution pin for a previously selected
-    /// credential source. The open deployment reads only the active revision;
-    /// an installed hosted issuer may open that exact material solely to attach
-    /// the existing recipient-bound envelope to the returned secret-free pin.
-    pub async fn credential_access_for_source(
-        &self,
-        source_id: &CredentialSourceId,
-        workspace_id: &str,
-        request: SessionCredentialAccessRequest,
-    ) -> Result<
-        awaken_credential_contract::CredentialAccess,
-        awaken_credential_vault::CredentialError,
-    > {
-        let SessionCredentialAccessRequest {
-            target,
-            usage,
-            policy,
-            selected_holder,
-            binding,
-        } = request;
-        self.application
-            .exact_access(source_id, |now_unix_ms| {
-                awaken_credential_vault::ExactCredentialAccessRequest {
-                    workspace_id: Some(workspace_id),
-                    target: Some(target),
-                    usage,
-                    policy,
-                    selected_holder: &selected_holder,
-                    binding: &binding,
-                    now_unix_ms,
-                }
-            })
-            .await
-            .map(|(_, access)| access)
-    }
-
-    /// Compile one exact, secret-free execution pin for a previously selected
-    /// MCP credential. Without a hosted issuer this reads only the revision and
-    /// opaque references; with one it seals that exact revision for the holder.
-    pub async fn mcp_access_for_source(
-        &self,
-        source_id: &CredentialSourceId,
-    ) -> Result<
-        awaken_credential_contract::CredentialAccess,
-        awaken_credential_vault::CredentialError,
-    > {
-        let holder = awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
-            .mcp_holder;
-        let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
-            name: "authorization".into(),
-            scheme: Some("Bearer".into()),
-        };
-        let binding = awaken_credential_contract::CredentialMaterialBinding::for_target(
-            "unscoped-control",
-            &source_id.0,
-            &usage,
-        );
-        let source = self.application.source(source_id).await?;
-        let record = self
-            .application
-            .credential_of_source(&source.workspace_id, source_id)
-            .await?
-            .ok_or_else(|| {
-                awaken_credential_vault::CredentialError::InvalidSource(
-                    "MCP credential source has no authoritative Managed child".into(),
-                )
-            })?;
-        let url = match record.auth {
-            AuthRecord::StaticBearer { mcp_server_url }
-            | AuthRecord::McpOauth { mcp_server_url, .. } => mcp_server_url,
-            AuthRecord::EnvironmentVariable { .. } => {
-                return Err(awaken_credential_vault::CredentialError::InvalidSource(
-                    "credential source is not owned by an MCP authorization".into(),
-                ));
-            }
-        };
-        let target = awaken_agent_contract::McpTarget::parse_http(&url).map_err(|_| {
-            awaken_credential_vault::CredentialError::InvalidSource(
-                "MCP credential target is invalid".into(),
-            )
-        })?;
-        self.compile_mcp_access_for_source(source_id, None, &target, &holder, &binding)
-            .await
-    }
-
-    /// The single MCP execution-pin compiler. `workspace_id` narrows admission
-    /// at the existing exact row read; refresh projection is identical for
-    /// scoped and unscoped trusted callers.
-    async fn compile_mcp_access_for_source(
-        &self,
-        source_id: &CredentialSourceId,
-        workspace_id: Option<&str>,
-        target: &awaken_agent_contract::McpTarget,
-        selected_holder: &awaken_credential_contract::PlaintextHolder,
-        binding: &awaken_credential_contract::CredentialMaterialBinding,
-    ) -> Result<
-        awaken_credential_contract::CredentialAccess,
-        awaken_credential_vault::CredentialError,
-    > {
-        let target_url = target.http_url().ok_or_else(|| {
-            awaken_credential_vault::CredentialError::InvalidSource(
-                "MCP credentials require an HTTP target".into(),
-            )
-        })?;
-        let target_audience = awaken_agent_contract::McpTarget::identity(target_url)
-            .map_err(|_| {
-                awaken_credential_vault::CredentialError::InvalidSource(
-                    "MCP credential target is invalid".into(),
-                )
-            })?
-            .canonical_url();
-        self.application
-            .mcp_access(
-                source_id,
-                workspace_id,
-                target_audience,
-                selected_holder,
-                binding,
-            )
-            .await
-    }
-
     fn project_vault(record: &VaultRecord) -> Vault {
         Vault {
             id: record.id.clone(),
@@ -522,57 +352,6 @@ impl VaultState {
             vault_id: record.vault_id.clone(),
             display_name: record.display_name.clone(),
         }
-    }
-}
-
-#[async_trait::async_trait]
-impl SessionCredentialSource for VaultState {
-    async fn has_vault(&self, workspace_id: &str, id: &str) -> Result<bool, String> {
-        self.application
-            .has_vault(workspace_id, id)
-            .await
-            .map_err(|error| error.to_string())
-    }
-
-    async fn mcp_credential_source_for_url(
-        &self,
-        workspace_id: &str,
-        vault_ids: &[String],
-        url: &str,
-    ) -> Result<Option<CredentialSourceId>, String> {
-        VaultState::mcp_credential_source_for_url(self, workspace_id, vault_ids, url)
-            .await
-            .map_err(|error| error.to_string())
-    }
-
-    async fn mcp_access_for_source(
-        &self,
-        source_id: &CredentialSourceId,
-        workspace_id: &str,
-        target: &awaken_agent_contract::McpTarget,
-        selected_holder: &awaken_credential_contract::PlaintextHolder,
-        binding: &awaken_credential_contract::CredentialMaterialBinding,
-    ) -> Result<awaken_credential_contract::CredentialAccess, String> {
-        self.compile_mcp_access_for_source(
-            source_id,
-            Some(workspace_id),
-            target,
-            selected_holder,
-            binding,
-        )
-        .await
-        .map_err(|error| error.to_string())
-    }
-
-    async fn credential_access_for_source(
-        &self,
-        source_id: &CredentialSourceId,
-        workspace_id: &str,
-        request: SessionCredentialAccessRequest,
-    ) -> Result<awaken_credential_contract::CredentialAccess, String> {
-        VaultState::credential_access_for_source(self, source_id, workspace_id, request)
-            .await
-            .map_err(|error| error.to_string())
     }
 }
 

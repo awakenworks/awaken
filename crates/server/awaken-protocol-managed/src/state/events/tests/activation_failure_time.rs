@@ -68,7 +68,7 @@ async fn failed_terminal_times_survive_archive_and_cold_reconstruction() {
             }
             crate::state::test_support::create_session_fixture(
                 repository.as_ref(),
-                DEFAULT_SCOPE,
+                awaken_tenancy::DEFAULT_WORKSPACE_ID,
                 persisted,
             )
             .await;

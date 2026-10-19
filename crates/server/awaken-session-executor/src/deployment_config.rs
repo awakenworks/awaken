@@ -901,19 +901,6 @@ mod verification {
     }
 }
 
-/// One parser for the positive deployment axis and its legacy negated alias.
-/// An explicit new value wins, matching the CLI validation layer.
-#[cfg(test)]
-fn local_pool_disabled(run_local_pool: Option<&str>, legacy_disable: Option<&str>) -> bool {
-    match run_local_pool {
-        Some(value) => matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "false" | "0" | "no"
-        ),
-        None => legacy_disable == Some("1"),
-    }
-}
-
 /// The default dispatch owner: `<hostname>-<pid>`, distinct per process and node so
 /// the lease is owner-scoped (single-owner-per-run, ADR-0019/0024).
 #[cfg(test)]
@@ -1201,18 +1188,6 @@ mod tests {
                 "Kubernetes requires both registry and builder evidence"
             );
         }
-    }
-
-    #[test]
-    fn local_pool_axis_matches_the_cli_and_new_name_wins() {
-        for value in ["false", "0", "no", "FALSE"] {
-            assert!(local_pool_disabled(Some(value), None), "{value}");
-        }
-        for value in ["true", "1", "yes"] {
-            assert!(!local_pool_disabled(Some(value), Some("1")), "{value}");
-        }
-        assert!(local_pool_disabled(None, Some("1")));
-        assert!(!local_pool_disabled(None, None));
     }
 
     #[test]

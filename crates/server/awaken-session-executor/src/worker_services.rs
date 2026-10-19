@@ -73,12 +73,6 @@ impl ExecutorComponents {
     ) -> Arc<dyn FileContentSource<crate::ResourceOperationFence>> {
         self.resources.file_content_source.clone()
     }
-
-    pub fn worker_artifact_publisher(
-        &self,
-    ) -> Arc<dyn awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>> {
-        self.realization_executor.effects().artifacts().publisher()
-    }
 }
 
 #[async_trait::async_trait]

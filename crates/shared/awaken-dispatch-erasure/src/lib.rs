@@ -2,11 +2,12 @@
 // @formal surface obligation=ingress.epoch_reclaim
 // @formal surface obligation=ingress.settle_fence
 // @formal reason: Backend-neutral dispatch role delegation, not a claim or SQL owner.
-//! Required dispatch roles bound once for Host, Worker and Coordinator.
+//! Required dispatch roles and local commit adapters bound once at process startup.
 //!
 //! Process composition injects an existing `Dispatch` implementation and its
-//! required local or remote roles. This crate
-//! delegates to that implementation; it owns no queue, backend selection, clock,
+//! required local or remote roles. Local commit adapters retain the already-selected
+//! store and query policy without opening a backend. This crate
+//! delegates to those implementations; it owns no queue, backend selection, clock,
 //! wake, claim transition or Worker. Ingress remains the sole SQL/NATS factory.
 //!
 //! The trait-object indirection is deliberate: delegating through `dyn Dispatch`
@@ -17,8 +18,10 @@
 
 mod binding;
 mod bundle;
+mod local_commit;
 pub use binding::{DispatchBinding, DispatchTopology};
 pub use bundle::{Dispatch, DurableDispatch, RemoteDispatch};
+pub use local_commit::{LocalCommit, LocalCommitAdapter, LocalCommitQueries, ProjectedQueries};
 use std::sync::Arc;
 
 use async_trait::async_trait;

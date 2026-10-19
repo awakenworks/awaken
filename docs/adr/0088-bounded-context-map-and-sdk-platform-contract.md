@@ -569,3 +569,13 @@ Config, so the obsolete `execution -> config` context-pair allowance and the
 SessionExecutor upward-edge exception are removed. This narrows the dependency
 graph; it does not create an Execution-owned copy of the configuration catalog,
 change the published discovery wire shape or alter Runtime plugin activation.
+
+## Implementation note 2026-10-20: preserve Resource projection faults
+
+Frozen projection installation consumes typed Run errors from the Resource
+transition and staging owners through that same inverse projector. Missing
+prior generations remain unavailable, invalid transitions remain request
+faults, and Skill staging retains its owner code. Converting these values to
+an Internal message would create a second classification path. Caller-level
+tests exercise the actual installation boundary before correlated inputs are
+published; no new failure class or retry policy is introduced.

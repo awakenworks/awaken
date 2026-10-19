@@ -371,6 +371,7 @@ async fn local_managed_state_over(
         secrets.clone(),
         credentials.clone(),
         clock.clone(),
+        None,
     ));
     // The Session aggregate lives in the same `sessions.db` as the Memory
     // extraction intents: the composition that built this Host selected its
@@ -457,7 +458,11 @@ async fn local_managed_state_over(
             ..Default::default()
         },
     )
-    .credentials(awaken_session_application::SessionCredentialAuthorities::read_write(vaults))
+    .credentials(
+        awaken_session_application::SessionCredentialAuthorities::read_write(
+            vaults.application().credential_access(),
+        ),
+    )
     .resources(awaken_session_application::SessionResources::catalog(
         catalog,
     ));

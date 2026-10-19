@@ -8,6 +8,7 @@
 //! collaborator, preventing a second orchestration boundary in protocol state.
 
 use crate::SessionProjectionReads as _;
+use awaken_credential_contract::{CredentialMaterialIngressCommand, CredentialMaterialInput};
 use awaken_time::WallClockExt as _;
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -19,9 +20,7 @@ use awaken_session_budget_contract::SessionUsage;
 use awaken_session_configuration_contract::resource::ResolvedSkillBinding;
 use awaken_session_types::RunError;
 
-use crate::{
-    CredentialMaterialIngressCommand, CredentialMaterialInput, SessionParticipantProvenance,
-};
+use crate::SessionParticipantProvenance;
 
 use awaken_resource_contract::{SESSION_REPOSITORY_OWNER_KIND, SESSION_REPOSITORY_OWNER_SESSION};
 

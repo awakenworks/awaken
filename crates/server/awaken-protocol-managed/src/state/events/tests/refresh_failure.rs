@@ -241,7 +241,7 @@ async fn read_cut_fixture(with_child: bool) -> (RehydrateFake, Arc<ManagedState>
         let (persisted, _) = retained_outcome_fixture(id, "refresh-outcome", 1);
         crate::state::test_support::create_session_fixture(
             inner.as_ref(),
-            DEFAULT_SCOPE,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
             persisted,
         )
         .await;

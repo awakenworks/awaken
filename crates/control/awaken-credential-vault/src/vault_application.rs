@@ -5,8 +5,7 @@
 // @formal entrypoint credential.managed_vault_replacement_rejects_stale_and_non_successor_revisions
 // @formal entrypoint credential.managed_rollout_abstract_ack_requires_every_target_adoption
 //! The Vault use cases of the credential context: Vault and credential
-//! lifecycle commands, credential material ingress, application MCP bearer
-//! entry, rollout delivery and exact credential access, over one secret store,
+//! lifecycle commands, application MCP bearer entry and rollout delivery, over one secret store,
 //! one credential repository and one wall clock.
 //!
 //! A protocol adapter maps its wire shapes onto these commands and projects
@@ -14,35 +13,32 @@
 //! target normalization stays with the caller (it is Session vocabulary): the
 //! commands take the canonical audience and target fingerprint it computed.
 
+use sha2::Digest;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::{
-    CredentialAccess, CredentialDescriptor, CredentialMaterialDelivery,
-    CredentialMaterialDescriptor, CredentialPurpose, CredentialRef, CredentialRefreshAccess,
-    CredentialSourceId, CredentialTarget, CredentialTargetContract, CredentialUsage, MaterialEntry,
-    OPAQUE_SECRET_MATERIAL_TYPE, TokenEndpointAuth,
+    CredentialDescriptor, CredentialMaterialDelivery, CredentialSourceId,
 };
 use awaken_time::WallClock;
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 
 use crate::catalog::{
-    ManagedCredentialAdmissionError, ManagedCredentialAuth, ManagedMcpOauthRefresh, ManagedVault,
-    ManagedVaultCredential, ManagedVaultMutationError, request_managed_vault_deletion,
+    ManagedCredentialAdmissionError, ManagedCredentialAuth, ManagedVault, ManagedVaultCredential,
+    ManagedVaultMutationError, request_managed_vault_deletion,
 };
+use crate::credential_access::mcp_bearer_descriptor;
 use crate::repo::{
-    ApplicationMcpBearerCommand, CredentialMaterialPatch, CredentialRetirement,
-    ManagedCredentialCreateCommand, ManagedCredentialCreationError, ManagedCredentialOperation,
-    ManagedCredentialRepository, application_mcp_material_ref, application_mcp_operation_id,
-    create_managed_credential, prepare_application_mcp_bearer_rotation,
-    reconcile_managed_credential_rollout, reconcile_managed_vault_deletion,
-    retire_managed_credential, revoke_credential_exact, rotate_credential_materials_exact,
-    update_managed_credential, update_managed_credential_prepared,
+    ApplicationMcpBearerCommand, CredentialMaterialPatch, ManagedCredentialCreateCommand,
+    ManagedCredentialCreationError, ManagedCredentialOperation, ManagedCredentialRepository,
+    application_mcp_material_ref, application_mcp_operation_id, create_managed_credential,
+    prepare_application_mcp_bearer_rotation, reconcile_managed_credential_rollout,
+    reconcile_managed_vault_deletion, retire_managed_credential, update_managed_credential,
+    update_managed_credential_prepared,
 };
 use crate::{
-    CredentialCreateParams, CredentialError, CredentialKind, CredentialSource, CredentialStatus,
-    ExactCredentialAccessRequest, OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretStore,
+    CredentialCreateParams, CredentialError, CredentialKind, CredentialSource, SecretStore,
 };
 use awaken_credential_contract::{
     ManagedCredentialAdoptionProgress, ManagedCredentialRolloutTarget,
@@ -127,7 +123,7 @@ pub struct VaultCredentialChange {
 pub struct VaultApplication {
     secrets: Arc<dyn SecretStore>,
     repository: Arc<dyn ManagedCredentialRepository>,
-    material_delivery: Option<CredentialMaterialDelivery>,
+    credential_access: Arc<crate::VaultCredentialAccess>,
     rollout_target: RwLock<Option<Arc<dyn ManagedCredentialRolloutTarget>>>,
     /// The one wall clock this owner samples: object creation/update/archive
     /// and deletion-request instants, validation instants, and the `now` of
@@ -142,23 +138,27 @@ impl VaultApplication {
         secrets: Arc<dyn SecretStore>,
         repository: Arc<dyn ManagedCredentialRepository>,
         clock: Arc<dyn WallClock>,
+        material_delivery: Option<CredentialMaterialDelivery>,
     ) -> Self {
+        let credential_access = Arc::new(crate::VaultCredentialAccess::new(
+            secrets.clone(),
+            repository.clone(),
+            clock.clone(),
+            material_delivery,
+        ));
         Self {
             secrets,
             repository,
-            material_delivery: None,
+            credential_access,
             rollout_target: RwLock::new(None),
             clock,
         }
     }
 
-    /// Install the one deployment-owned plaintext delivery mechanism.
-    /// Selection, revision, holder, usage and target binding remain
-    /// Vault/Session facts.
+    /// The one credential access owner, shared by Source and Ingress at composition.
     #[must_use]
-    pub fn with_material_delivery(mut self, delivery: CredentialMaterialDelivery) -> Self {
-        self.material_delivery = Some(delivery);
-        self
+    pub fn credential_access(&self) -> Arc<crate::VaultCredentialAccess> {
+        self.credential_access.clone()
     }
 
     /// Sample the owner clock once. The epoch itself is the system clock's
@@ -819,334 +819,6 @@ impl VaultApplication {
         )
         .await?)
     }
-
-    // ---- Reads for Session binding and MCP inspection ------------------------
-
-    /// Whether `id` names an active vault that may be attached to a new Session.
-    /// Archived vaults remain retrievable for audit but are not executable.
-    pub async fn has_vault(&self, workspace_id: &str, id: &str) -> Result<bool, CredentialError> {
-        Ok(self
-            .repository
-            .get_vault(workspace_id, id)
-            .await?
-            .is_some_and(|vault| vault.accepts_child_mutation()))
-    }
-
-    /// The Workspace's Vaults that accept credential use, in repository order.
-    pub async fn executable_vaults(
-        &self,
-        workspace_id: &str,
-    ) -> Result<Vec<ManagedVault>, CredentialError> {
-        let mut vaults = self.repository.list_vaults(workspace_id).await?;
-        vaults.retain(ManagedVault::accepts_child_mutation);
-        Ok(vaults)
-    }
-
-    /// The active credentials of one Vault in ascending id order, or `None`
-    /// when the Vault does not accept credential use.
-    pub async fn executable_credentials(
-        &self,
-        workspace_id: &str,
-        vault_id: &str,
-    ) -> Result<Option<Vec<ManagedVaultCredential>>, CredentialError> {
-        if !self.has_vault(workspace_id, vault_id).await? {
-            return Ok(None);
-        }
-        let mut credentials = self
-            .repository
-            .list_vault_credentials(workspace_id, vault_id)
-            .await?;
-        credentials.retain(|credential| credential.lifecycle.is_active());
-        credentials.sort_by(|left, right| left.id.cmp(&right.id));
-        Ok(Some(credentials))
-    }
-
-    /// The neutral credential-domain row id of an active credential in
-    /// `vault_id`: the resolver takes this `CredentialSourceId`, never the wire
-    /// id.
-    pub async fn credential_source_id(
-        &self,
-        workspace_id: &str,
-        vault_id: &str,
-        credential_id: &str,
-    ) -> Option<CredentialSourceId> {
-        self.repository
-            .get_vault_credential(workspace_id, credential_id)
-            .await
-            .ok()
-            .flatten()
-            .filter(|credential| {
-                credential.vault_id == vault_id && credential.lifecycle.is_active()
-            })
-            .map(|credential| credential.source_id)
-    }
-
-    /// The credential source row.
-    pub async fn source(
-        &self,
-        source_id: &CredentialSourceId,
-    ) -> Result<CredentialSource, CredentialError> {
-        self.repository.get(source_id).await
-    }
-
-    /// The authoritative Managed child of a credential source.
-    pub async fn credential_of_source(
-        &self,
-        workspace_id: &str,
-        source_id: &CredentialSourceId,
-    ) -> Result<Option<ManagedVaultCredential>, CredentialError> {
-        self.repository
-            .get_vault_credential_by_source(workspace_id, source_id)
-            .await
-    }
-
-    /// Open the active material of one source for an exact, caller-owned use
-    /// (an MCP inspection the Vault owner admitted). Never returned to a wire.
-    pub async fn open_material(
-        &self,
-        source: &CredentialSource,
-    ) -> Result<RedactedString, CredentialError> {
-        crate::materialize(source, self.secrets.as_ref()).await
-    }
-
-    // ---- Exact credential access ---------------------------------------------
-
-    /// Compile one exact, secret-free execution pin for a previously selected
-    /// credential source. The open deployment reads only the active revision;
-    /// an installed hosted issuer may open that exact material solely to attach
-    /// the existing recipient-bound envelope to the returned secret-free pin.
-    /// `now_unix_ms` is sampled here; the request carries everything else.
-    pub async fn exact_access<'r>(
-        &self,
-        source_id: &CredentialSourceId,
-        request: impl FnOnce(u64) -> ExactCredentialAccessRequest<'r>,
-    ) -> Result<(CredentialSource, CredentialAccess), CredentialError> {
-        let now_unix_ms = self.clock_reading_ms()?;
-        let source = self.repository.get(source_id).await?;
-        let access = crate::publish_exact_credential_access(
-            &source,
-            request(now_unix_ms),
-            self.material_delivery
-                .as_ref()
-                .map(|delivery| (self.secrets.as_ref(), delivery)),
-        )
-        .await?;
-        Ok((source, access))
-    }
-
-    /// The exact MCP execution pin for `audience`, with the OAuth refresh
-    /// instruction of the same revision attached when the credential holds
-    /// one. `workspace_id` narrows admission at the exact row read.
-    pub async fn mcp_access(
-        &self,
-        source_id: &CredentialSourceId,
-        workspace_id: Option<&str>,
-        audience: String,
-        selected_holder: &awaken_credential_contract::PlaintextHolder,
-        binding: &awaken_credential_contract::CredentialMaterialBinding,
-    ) -> Result<CredentialAccess, CredentialError> {
-        let (source, mut access) = self
-            .exact_access(source_id, |now_unix_ms| ExactCredentialAccessRequest {
-                workspace_id,
-                target: Some(CredentialTarget::new(
-                    CredentialPurpose::McpAuthorization,
-                    audience,
-                )),
-                usage: bearer_usage(),
-                policy: awaken_credential_contract::CredentialExecutionPolicy::self_hosted_mcp(),
-                selected_holder,
-                binding,
-                now_unix_ms,
-            })
-            .await?;
-        let revision = access.credential.revision;
-        let refresh = self
-            .repository
-            .get_vault_credential_by_source(&source.workspace_id, source_id)
-            .await?
-            .and_then(|record| match record.auth {
-                ManagedCredentialAuth::McpOauth { refresh, .. } => refresh,
-                _ => None,
-            });
-        if let Some(refresh) = refresh {
-            access = access.with_refresh(oauth_refresh_access(&source, revision, refresh)?);
-        }
-        Ok(access)
-    }
-
-    /// The exact refresh/reseal instruction of a credential's current
-    /// revision, or `None` when the persisted row cannot compile one.
-    pub async fn refresh_access(
-        &self,
-        source_id: &CredentialSourceId,
-        config: ManagedMcpOauthRefresh,
-    ) -> Option<(CredentialSourceId, CredentialRefreshAccess)> {
-        let source = self.repository.get(source_id).await.ok()?;
-        let revision = u64::try_from(source.version).ok()?;
-        let access = oauth_refresh_access(&source, revision, config).ok()?;
-        Some((source.id, access))
-    }
-
-    // ---- Consumer-neutral material ingress -----------------------------------
-
-    /// Enter one described material idempotently under `source_id`.
-    pub async fn enter_material(
-        &self,
-        source_id: CredentialSourceId,
-        workspace_id: &str,
-        descriptor: CredentialDescriptor,
-        material: RedactedString,
-    ) -> Result<MaterialEntry, String> {
-        let entry = crate::repo::enter_credential_idempotent_described(
-            source_id,
-            CredentialCreateParams {
-                workspace_id: workspace_id.to_string(),
-                kind: CredentialKind::Vault,
-                provider_id: None,
-                env_key: None,
-                secret: Some(material),
-                oauth_command: None,
-            },
-            None,
-            descriptor,
-            self.secrets.as_ref(),
-            self.repository.as_ref(),
-            self.clock.as_ref(),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-        let revision = u64::try_from(entry.source.version)
-            .map_err(|_| "credential revision exceeds the Session range".to_string())?;
-        Ok(MaterialEntry {
-            credential: CredentialRef {
-                id: entry.source.id.0,
-                revision,
-            },
-            created: entry.created,
-        })
-    }
-
-    /// Rotate the material of `source_id` from exactly `expected_revision`;
-    /// a replay of the completed rotation with the same material succeeds.
-    pub async fn rotate_material(
-        &self,
-        source_id: &CredentialSourceId,
-        expected_revision: u64,
-        workspace_id: &str,
-        expected_descriptor: &CredentialDescriptor,
-        material: RedactedString,
-    ) -> Result<u64, String> {
-        let current = self
-            .repository
-            .get(source_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        if current.workspace_id != workspace_id
-            || current.descriptor.as_ref() != Some(expected_descriptor)
-        {
-            return Err("credential binding is unavailable in this Workspace".into());
-        }
-        let expected_version = i64::try_from(expected_revision)
-            .map_err(|_| "credential revision exceeds the Vault range".to_string())?;
-        let completed_version = expected_version
-            .checked_add(1)
-            .ok_or_else(|| "credential revision exceeds the Vault range".to_string())?;
-        if current.version == completed_version {
-            if current.status != CredentialStatus::Active {
-                return Err("credential is not active".into());
-            }
-            let sealed = crate::materialize(&current, self.secrets.as_ref())
-                .await
-                .map_err(|error| error.to_string())?;
-            if sealed.expose_secret() != material.expose_secret() {
-                return Err("credential revision changed before material rotation".into());
-            }
-            return u64::try_from(current.version)
-                .map_err(|_| "credential revision exceeds the Session range".into());
-        }
-        if current.version != expected_version {
-            return Err("credential revision changed before material rotation".into());
-        }
-        let rotated = rotate_credential_materials_exact(
-            source_id,
-            expected_version,
-            CredentialMaterialPatch {
-                primary: Some(material),
-                auxiliary: BTreeMap::new(),
-                descriptor: None,
-            },
-            self.secrets.as_ref(),
-            self.repository.as_ref(),
-            self.clock.as_ref(),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-        u64::try_from(rotated.version)
-            .map_err(|_| "credential revision exceeds the Session range".into())
-    }
-
-    /// Retire the exact credential revision `credential`; a replay of the
-    /// completed retirement succeeds.
-    pub async fn retire_material(
-        &self,
-        credential: CredentialRef,
-        workspace_id: &str,
-    ) -> Result<(), String> {
-        let source_id = CredentialSourceId(credential.id);
-        let source = self
-            .repository
-            .get(&source_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        if source.workspace_id != workspace_id {
-            return Err("credential binding is unavailable in this Workspace".into());
-        }
-        let expected = i64::try_from(credential.revision)
-            .map_err(|_| "credential revision exceeds the Vault range".to_string())?;
-        let completed = expected
-            .checked_add(1)
-            .ok_or_else(|| "credential revision exceeds the Vault range".to_string())?;
-        if source.version == completed
-            && source.status == CredentialStatus::Archived
-            && source.material_ref.is_none()
-            && source.auxiliary_material_refs.is_empty()
-        {
-            return Ok(());
-        }
-        revoke_credential_exact(
-            &source_id,
-            expected,
-            CredentialRetirement::Archive,
-            self.secrets.as_ref(),
-            self.repository.as_ref(),
-            self.clock.as_ref(),
-        )
-        .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
-    }
-}
-
-/// The `Authorization: Bearer` usage every MCP credential is bound to.
-fn bearer_usage() -> CredentialUsage {
-    CredentialUsage::HttpHeader {
-        name: "authorization".into(),
-        scheme: Some("Bearer".into()),
-    }
-}
-
-/// The descriptor of an opaque bearer authorizing the MCP endpoint
-/// `audience`.
-#[must_use]
-pub fn mcp_bearer_descriptor(audience: &str) -> CredentialDescriptor {
-    CredentialDescriptor::new(
-        audience.to_owned(),
-        CredentialMaterialDescriptor::secret(OPAQUE_SECRET_MATERIAL_TYPE),
-        [CredentialTargetContract::new(
-            CredentialTarget::new(CredentialPurpose::McpAuthorization, audience.to_owned()),
-            bearer_usage(),
-        )],
-    )
 }
 
 /// A domain-separated, length-framed SHA-256 identity. Persisted Vault, source
@@ -1195,58 +867,6 @@ pub fn apply_metadata_patch(
     }
 }
 
-/// Compile the exact OAuth refresh/reseal instruction for one credential
-/// revision from its persisted refresh configuration and sealed material refs.
-fn oauth_refresh_access(
-    source: &CredentialSource,
-    revision: u64,
-    refresh: ManagedMcpOauthRefresh,
-) -> Result<CredentialRefreshAccess, CredentialError> {
-    let source_id = &source.id;
-    let access_token_ref = source
-        .material_ref
-        .as_ref()
-        .ok_or_else(|| CredentialError::MissingMaterialRef(source_id.0.clone()))?
-        .0
-        .clone();
-    let refresh_token_ref = source
-        .auxiliary_material_ref(OAUTH_REFRESH_TOKEN_SLOT)
-        .ok_or_else(|| {
-            CredentialError::MissingMaterialRef(format!(
-                "{}:{OAUTH_REFRESH_TOKEN_SLOT}",
-                source_id.0
-            ))
-        })?
-        .0
-        .clone();
-    let client_secret_ref = match refresh.token_endpoint_auth {
-        TokenEndpointAuth::None => None,
-        TokenEndpointAuth::ClientSecretBasic | TokenEndpointAuth::ClientSecretPost => Some(
-            source
-                .auxiliary_material_ref(OAUTH_CLIENT_SECRET_SLOT)
-                .ok_or_else(|| {
-                    CredentialError::MissingMaterialRef(format!(
-                        "{}:{OAUTH_CLIENT_SECRET_SLOT}",
-                        source_id.0
-                    ))
-                })?
-                .0
-                .clone(),
-        ),
-    };
-    Ok(CredentialRefreshAccess::new(
-        revision,
-        refresh.token_endpoint,
-        refresh.client_id,
-        refresh.token_endpoint_auth,
-        client_secret_ref,
-        refresh_token_ref,
-        access_token_ref,
-        refresh.scope,
-        refresh.resource,
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1260,6 +880,7 @@ mod tests {
             Arc::new(crate::InMemorySecretStore::new()),
             repository.clone(),
             awaken_time::system_clock(),
+            None,
         );
         let current = ManagedVault {
             id: "vault-delete-race".into(),

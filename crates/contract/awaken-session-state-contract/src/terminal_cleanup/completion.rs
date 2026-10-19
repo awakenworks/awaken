@@ -234,12 +234,15 @@ impl VerifiedSessionCleanupReceipt {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::terminal_cleanup) mod tests {
     use super::*;
     use awaken_resource_contract::FileRecord;
     use serde_json::json;
 
-    fn artifact(effect_id: &str, content_id: &str) -> ArtifactPublicationReceipt {
+    pub(in crate::terminal_cleanup) fn artifact(
+        effect_id: &str,
+        content_id: &str,
+    ) -> ArtifactPublicationReceipt {
         ArtifactPublicationReceipt {
             effect_id: effect_id.into(),
             content_id: content_id.into(),

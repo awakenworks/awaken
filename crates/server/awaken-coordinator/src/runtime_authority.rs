@@ -23,10 +23,10 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleFeed, RunLifecycleFeedError, RunLifecyclePage,
 };
+use awaken_dispatch_erasure::{LocalCommit, LocalCommitAdapter, LocalCommitQueries};
 use awaken_dispatch::{AnyCoordinatorDispatch, WakeSignal};
 use awaken_session_executor::{
-    DeploymentConfig, DispatchBackend, LocalCommit, LocalCommitAdapter, LocalCommitQueries,
-    RuntimeAuthority, RuntimeAuthorityError, StoreKind, Wake,
+    DeploymentConfig, DispatchBackend, RuntimeAuthority, RuntimeAuthorityError, StoreKind, Wake,
 };
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_postgres::PostgresCommitCoordinator;
@@ -692,6 +692,9 @@ mod tests {
 
     #[test]
     fn postgres_local_commit_factory_keeps_the_query_policy_erased() {
+        // Adapter-owner rules C4/C7: moving the same delegation to shared erasure
+        // must preserve this private Postgres query selection and public inlet;
+        // canonical imports compile without restoring an Executor compatibility path.
         // Factory-boundary cause/effect decision table:
         // | Cause | Effect |
         // | Coordinator opens Postgres itself | DurableRuntimeAuthority calls the factory |
@@ -810,6 +813,9 @@ mod tests {
     /// second projection instead of trying to synchronize it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn local_commit_authority_reuses_one_projection_per_thread() {
+        // Adapter-owner rule C1: shared erasure retains the same store Arc and Q.
+        // Moving the adapter must not reopen a backend or move these single-flight
+        // and path-selection decisions out of the existing Coordinator owner.
         for (backend, rule) in [(StoreKind::Sqlite, "H1"), (StoreKind::Fs, "H2")] {
             let root = tempfile::tempdir().expect("local authority root");
             let mut deployment = DeploymentConfig::ephemeral();
@@ -906,6 +912,9 @@ mod tests {
     /// | I4 | same x128 | blocked then success | no | E1,E3 |
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn local_commit_initialization_decision_table() {
+        // Adapter-owner rule C2: same/different Thread, cancellation and failed
+        // initialization keep the original registry/budget and exactly one published
+        // store; migration changes only the delegation's source owner.
         let initialization = Arc::new(LocalCommitInitialization::new(2));
         let entered = Arc::new(tokio::sync::Barrier::new(3));
         let release = Arc::new(tokio::sync::Barrier::new(3));

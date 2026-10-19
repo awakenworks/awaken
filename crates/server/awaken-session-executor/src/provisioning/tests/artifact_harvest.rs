@@ -457,8 +457,11 @@ async fn live_container_artifact_harvest_reads_one_complete_batch() {
     let thread = "container-artifact-batch";
     install_batch_artifact_environment(host.as_ref(), thread, "workspace-a").await;
 
-    let harvested = host
-        .harvest_thread_artifacts(thread)
+    // B1/C3 uses the installed R harvester's ordinary entry, so the same
+    // claim and publication authority own the complete batch.
+    let artifact_harvester = host.realization_executor.effects().artifacts();
+    let harvested = artifact_harvester
+        .harvest(thread)
         .await
         .expect("B1 harvest one batch");
 
@@ -552,12 +555,15 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
     std::fs::create_dir_all(output.parent().unwrap()).unwrap();
     std::fs::write(&output, b"durable report").unwrap();
 
-    let first = host
-        .harvest_thread_artifacts("session-artifacts")
+    // R1/R2 run directly through the same installed R owner; R3/R4 below
+    // retain the aggregate-authorized terminal preparation and disposal path.
+    let artifact_harvester = host.realization_executor.effects().artifacts();
+    let first = artifact_harvester
+        .harvest("session-artifacts")
         .await
         .unwrap();
-    let retry = host
-        .harvest_thread_artifacts("session-artifacts")
+    let retry = artifact_harvester
+        .harvest("session-artifacts")
         .await
         .unwrap();
     assert_eq!(first.receipts.len(), 1);
@@ -1143,12 +1149,15 @@ async fn artifact_harvest_has_one_file_authority_and_no_magic_bundle_gate() {
     std::fs::create_dir_all(output.parent().unwrap()).unwrap();
     std::fs::write(&output, b"diff --git a/a b/a\n").unwrap();
 
-    let first = host
-        .harvest_thread_artifacts("plain-files")
+    // R1-R4 share this installed R harvester and its ordinary claim lookup;
+    // no separate File publisher, capture mode, or revision policy is selected.
+    let artifact_harvester = host.realization_executor.effects().artifacts();
+    let first = artifact_harvester
+        .harvest("plain-files")
         .await
         .expect("R1/E1+E2");
-    let replay = host
-        .harvest_thread_artifacts("plain-files")
+    let replay = artifact_harvester
+        .harvest("plain-files")
         .await
         .expect("R2/E1+E2+E3");
     assert_eq!(first.receipts.len(), 1, "R1/E1");
@@ -1168,7 +1177,7 @@ async fn artifact_harvest_has_one_file_authority_and_no_magic_bundle_gate() {
         b"diff --git a/a b/a\n".as_slice(),
     ] {
         std::fs::write(&output, bytes).unwrap();
-        let harvested = host.harvest_thread_artifacts("plain-files").await.unwrap();
+        let harvested = artifact_harvester.harvest("plain-files").await.unwrap();
         let capture = application
             .artifact_capture("workspace-a", "plain-files")
             .await
@@ -1204,7 +1213,8 @@ async fn artifact_harvest_has_one_file_authority_and_no_magic_bundle_gate() {
     );
     std::fs::remove_file(&output).unwrap();
     assert!(
-        host.harvest_thread_artifacts("plain-files")
+        artifact_harvester
+            .harvest("plain-files")
             .await
             .unwrap()
             .receipts
@@ -1596,7 +1606,10 @@ async fn artifact_capture_failures_do_not_publish_partial_or_rebased_sets() {
         dependencies.resources.artifact_publisher = publisher.clone();
         let host = (dependencies).build().expect("validated Host dependencies");
         install_batch_artifact_environment(&host, "capture-fault", "workspace-a").await;
-        let result = host.harvest_thread_artifacts("capture-fault").await;
+        // F1-F6 exercise the same installed R harvester's ordinary entry;
+        // the fault matrix still owns scan/publication/CAS and typed errors.
+        let artifact_harvester = host.realization_executor.effects().artifacts();
+        let result = artifact_harvester.harvest("capture-fault").await;
         assert_eq!(result.is_ok(), success, "{mode}: {result:?}");
         // F6 classification survives the real Host boundary: IO/response loss
         // stays indeterminate; a bad observation stays corrupt; a known CAS

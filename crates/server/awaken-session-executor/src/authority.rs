@@ -10,195 +10,26 @@
 use crate::memory_binding::SessionMemoryReferenceEncoder;
 use std::sync::Arc;
 
+use crate::LocalCommit;
+#[cfg(any(test, feature = "test-support"))]
+use crate::LocalCommitAdapter;
+#[cfg(test)]
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
+#[cfg(test)]
 use awaken_agent_contract::agent::message::Message;
+#[cfg(test)]
 use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord};
+#[cfg(test)]
 use awaken_agent_contract::agent::state::Command as StateCommand;
+#[cfg(test)]
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
-use awaken_agent_contract::thread::commit::coordinator::{Coordinator, OperationCoordinator};
-use awaken_agent_contract::thread::read::checkpoint::CheckpointReader;
-use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+#[cfg(test)]
 use awaken_agent_contract::thread::read::lifecycle::{
-    RunLifecycleCursor, RunLifecycleFeedError, RunLifecyclePage, checkpoint_lifecycle_events_after,
+    RunLifecycleCursor, RunLifecycleFeedError, RunLifecyclePage,
 };
-use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
-
-/// One local authoritative commit boundary selected by the Coordinator.
-///
-/// This configures the canonical commit, committed-view, recovery, and lifecycle
-/// ports rather than mirroring their methods in a second facade. It adds only
-/// queries whose authoritative implementations may require asynchronous shared
-/// storage reads.
-#[async_trait::async_trait]
-pub trait LocalCommit:
-    Coordinator
-    + OperationCoordinator
-    + CommittedThreadView
-    + RunRecoverySource
-    + awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed
-    + Send
-    + Sync
-{
-    async fn authoritative_run(&self, run_id: &RunId) -> Result<Option<RunRecord>, String>;
-
-    /// Read the latest Run for one logical Thread from the authority selected by
-    /// this adapter. Shared stores must not answer from a process-local
-    /// compatibility projection.
-    async fn authoritative_latest_run(
-        &self,
-        thread_id: &ThreadId,
-    ) -> Result<Option<RunRecord>, String>;
-
-    async fn authoritative_committed_messages(
-        &self,
-        thread_id: &ThreadId,
-    ) -> Result<Vec<Message>, String>;
-
-    /// Read the complete committed state from the selected authority. Shared
-    /// stores must bypass a process-local projection because peer commits can
-    /// advance usage, tool, and lifecycle cells after this process starts.
-    async fn authoritative_committed_state(
-        &self,
-        thread_id: &ThreadId,
-    ) -> Result<Vec<StateCommand>, String>;
-
-    async fn authoritative_open_wait_for_thread(
-        &self,
-        thread: &ThreadId,
-    ) -> Result<Option<(RunId, ResumeTicket)>, String>;
-}
-
-/// The only policy seam added by [`LocalCommitAdapter`]. It selects whether
-/// asynchronous authoritative reads can use the adapter's committed projection
-/// or must query shared durable truth. It never commits or stores data.
-#[async_trait::async_trait]
-pub trait LocalCommitQueries<S>: Send + Sync {
-    async fn authoritative_run(
-        &self,
-        store: &S,
-        run_id: &RunId,
-    ) -> Result<Option<RunRecord>, String>;
-
-    async fn authoritative_latest_run(
-        &self,
-        store: &S,
-        thread_id: &ThreadId,
-    ) -> Result<Option<RunRecord>, String>;
-
-    async fn authoritative_committed_messages(
-        &self,
-        store: &S,
-        thread_id: &ThreadId,
-    ) -> Result<Vec<Message>, String>;
-
-    async fn authoritative_committed_state(
-        &self,
-        store: &S,
-        thread_id: &ThreadId,
-    ) -> Result<Vec<StateCommand>, String>;
-
-    async fn authoritative_open_wait_for_thread(
-        &self,
-        store: &S,
-        thread: &ThreadId,
-    ) -> Result<Option<(RunId, ResumeTicket)>, String>;
-
-    async fn events_after(
-        &self,
-        store: &S,
-        cursor: RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<RunLifecyclePage, RunLifecycleFeedError>;
-}
-
-/// One canonical delegation adapter for a Coordinator-owned commit source.
-/// Implementations of the commit/read/recovery ports live in `store.rs`, the
-/// architecture-approved adapter owner; process startups only select queries.
-pub struct LocalCommitAdapter<S, Q> {
-    pub(crate) store: Arc<S>,
-    pub(crate) queries: Q,
-}
-
-impl<S, Q> LocalCommitAdapter<S, Q> {
-    #[must_use]
-    pub fn with_queries(store: Arc<S>, queries: Q) -> Self {
-        Self { store, queries }
-    }
-}
-
-/// Query policy for single-process stores whose committed projection is the
-/// authoritative read view.
-pub struct ProjectedQueries;
-
-impl<S> LocalCommitAdapter<S, ProjectedQueries> {
-    #[must_use]
-    pub fn projected(store: S) -> Self {
-        Self::projected_shared(Arc::new(store))
-    }
-
-    /// Share one store with its other read roles without exposing or copying
-    /// the private projection query policy into a downstream composition.
-    #[must_use]
-    pub fn projected_shared(store: Arc<S>) -> Self {
-        Self::with_queries(store, ProjectedQueries)
-    }
-}
-
-#[async_trait::async_trait]
-impl<S> LocalCommitQueries<S> for ProjectedQueries
-where
-    S: CheckpointReader + CommittedThreadView + Send + Sync,
-{
-    async fn authoritative_run(
-        &self,
-        store: &S,
-        run_id: &RunId,
-    ) -> Result<Option<RunRecord>, String> {
-        Ok(store.run(run_id))
-    }
-
-    async fn authoritative_latest_run(
-        &self,
-        store: &S,
-        thread_id: &ThreadId,
-    ) -> Result<Option<RunRecord>, String> {
-        Ok(store.latest_run(thread_id))
-    }
-
-    async fn authoritative_committed_messages(
-        &self,
-        store: &S,
-        thread_id: &ThreadId,
-    ) -> Result<Vec<Message>, String> {
-        Ok(store.committed_messages(thread_id))
-    }
-
-    async fn authoritative_committed_state(
-        &self,
-        store: &S,
-        thread_id: &ThreadId,
-    ) -> Result<Vec<StateCommand>, String> {
-        Ok(store.committed_state(thread_id))
-    }
-
-    async fn authoritative_open_wait_for_thread(
-        &self,
-        store: &S,
-        thread: &ThreadId,
-    ) -> Result<Option<(RunId, ResumeTicket)>, String> {
-        Ok(CommittedThreadView::open_wait_for_thread(store, thread))
-    }
-
-    async fn events_after(
-        &self,
-        store: &S,
-        cursor: RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
-        checkpoint_lifecycle_events_after(store, cursor, limit).await
-    }
-}
+#[cfg(test)]
+use awaken_dispatch_erasure::{LocalCommitQueries, ProjectedQueries};
 
 /// Test query policy for making committed State diverge from the underlying
 /// compatibility projection without constructing another store or observer.
@@ -292,55 +123,6 @@ impl LocalCommitQueries<awaken_store_inmem::MemoryCommitCoordinator> for Scripte
         limit: usize,
     ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
         ProjectedQueries.events_after(store, cursor, limit).await
-    }
-}
-
-#[async_trait::async_trait]
-impl<S, Q> LocalCommit for LocalCommitAdapter<S, Q>
-where
-    S: Coordinator + OperationCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync,
-    Q: LocalCommitQueries<S>,
-{
-    async fn authoritative_run(&self, run_id: &RunId) -> Result<Option<RunRecord>, String> {
-        self.queries
-            .authoritative_run(self.store.as_ref(), run_id)
-            .await
-    }
-
-    async fn authoritative_latest_run(
-        &self,
-        thread_id: &ThreadId,
-    ) -> Result<Option<RunRecord>, String> {
-        self.queries
-            .authoritative_latest_run(self.store.as_ref(), thread_id)
-            .await
-    }
-
-    async fn authoritative_committed_messages(
-        &self,
-        thread_id: &ThreadId,
-    ) -> Result<Vec<Message>, String> {
-        self.queries
-            .authoritative_committed_messages(self.store.as_ref(), thread_id)
-            .await
-    }
-
-    async fn authoritative_committed_state(
-        &self,
-        thread_id: &ThreadId,
-    ) -> Result<Vec<StateCommand>, String> {
-        self.queries
-            .authoritative_committed_state(self.store.as_ref(), thread_id)
-            .await
-    }
-
-    async fn authoritative_open_wait_for_thread(
-        &self,
-        thread: &ThreadId,
-    ) -> Result<Option<(RunId, ResumeTicket)>, String> {
-        self.queries
-            .authoritative_open_wait_for_thread(self.store.as_ref(), thread)
-            .await
     }
 }
 
