@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
+use awaken_environment_contract::EnvironmentRevision;
 use awaken_lease_contract::fence::Epoch;
 #[cfg(test)]
 use awaken_session_application_contract::SessionWorkOwnership;
@@ -625,9 +626,103 @@ pub trait WorkMetadataPatch: Send + Sync {
     ) -> Result<Option<WorkItem>, WorkQueueError>;
 }
 
+/// The complete queue effect of one immutable executable registration revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnvironmentWorkRevisionOperation {
+    /// Self-hosted revisions need one healthcheck. Cloud revisions retire only
+    /// healthchecks; Session work remains owned by its frozen Session revision.
+    Register { healthcheck: bool },
+    /// Archive retires healthchecks but retains Session Work and its exact lease.
+    /// Permanent deletion is a distinct guarded lifecycle operation.
+    Withdraw,
+}
+
+/// Storage-atomic result of applying the complete registration revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnvironmentWorkRevisionOutcome {
+    Applied,
+    AlreadyApplied,
+    Superseded,
+}
+
+/// Exact input defect before an authored queue revision can be applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum EnvironmentWorkRevisionInputError {
+    /// A registration command must identify an Environment.
+    #[error("Environment queue registration requires a nonempty id")]
+    MissingEnvironmentId,
+    /// Authored Environment revisions start at one.
+    #[error("Environment queue registration requires a nonzero revision")]
+    ZeroRevision,
+}
+
+/// Admission failure for the versioned registration operation only.
+/// Legacy queue operations retain their existing `WorkQueueError` contract.
+#[derive(Debug, thiserror::Error)]
+pub enum EnvironmentWorkRevisionError {
+    /// The command cannot identify an authored registration revision.
+    #[error(transparent)]
+    Invalid(#[from] EnvironmentWorkRevisionInputError),
+    /// The exact revision already records a different complete queue operation.
+    #[error(
+        "Environment queue revision {revision:?} already records {current:?}, not {proposed:?}"
+    )]
+    Conflict {
+        /// The immutable revision shared by both conflicting commands.
+        revision: EnvironmentRevision,
+        /// The complete operation already retained by the backend.
+        current: EnvironmentWorkRevisionOperation,
+        /// The different operation the caller attempted to apply.
+        proposed: EnvironmentWorkRevisionOperation,
+    },
+    /// The existing queue backend could not read or atomically commit its facts.
+    #[error(transparent)]
+    Storage(#[from] WorkQueueError),
+}
+
+/// Decide admission from the watermark read under the queue's mutation lock.
+/// Callers must commit the queue effect and new watermark in that same boundary.
+/// No timestamp, queue row, or current catalog scan can manufacture a revision.
+pub fn admit_environment_work_revision(
+    environment_id: &str,
+    revision: EnvironmentRevision,
+    operation: EnvironmentWorkRevisionOperation,
+    current: Option<(EnvironmentRevision, EnvironmentWorkRevisionOperation)>,
+) -> Result<EnvironmentWorkRevisionOutcome, EnvironmentWorkRevisionError> {
+    if environment_id.trim().is_empty() {
+        return Err(EnvironmentWorkRevisionInputError::MissingEnvironmentId.into());
+    }
+    if revision.0 == 0 {
+        return Err(EnvironmentWorkRevisionInputError::ZeroRevision.into());
+    }
+    match current {
+        Some((current, _)) if revision < current => Ok(EnvironmentWorkRevisionOutcome::Superseded),
+        Some((current, previous)) if revision == current => {
+            if previous == operation {
+                Ok(EnvironmentWorkRevisionOutcome::AlreadyApplied)
+            } else {
+                Err(EnvironmentWorkRevisionError::Conflict {
+                    revision,
+                    current: previous,
+                    proposed: operation,
+                })
+            }
+        }
+        _ => Ok(EnvironmentWorkRevisionOutcome::Applied),
+    }
+}
+
 /// Environment registration convergence and withdrawal cleanup. Kept out of Worker and query roles.
 #[async_trait]
 pub trait EnvironmentWorkLifecycle: Send + Sync {
+    /// Apply one exact registration/withdrawal with its queue effect and
+    /// retained watermark atomically. Withdrawal never deletes the watermark.
+    async fn apply_environment_revision(
+        &self,
+        env_id: &str,
+        revision: EnvironmentRevision,
+        operation: EnvironmentWorkRevisionOperation,
+    ) -> Result<EnvironmentWorkRevisionOutcome, EnvironmentWorkRevisionError>;
     /// Seed a `healthcheck` work item (its inner id is the work id); returns it.
     async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError>;
     /// Return the one healthcheck for an Environment, creating it when absent.
@@ -1022,5 +1117,73 @@ fn session_utc_projection_domain_is_total_exact_and_idempotent() {
         assert_eq!(value, MAX_RFC3339_NANOS);
     } else {
         assert_eq!(value, input);
+    }
+}
+
+#[cfg(test)]
+mod environment_revision_tests {
+    use super::*;
+    #[test]
+    fn registration_revision_decision_is_complete_and_monotonic() {
+        use EnvironmentWorkRevisionOperation::{Register, Withdraw};
+        use EnvironmentWorkRevisionOutcome::{AlreadyApplied, Applied, Superseded};
+        for previous in [
+            Register { healthcheck: true },
+            Register { healthcheck: false },
+            Withdraw,
+        ] {
+            for proposed in [
+                Register { healthcheck: true },
+                Register { healthcheck: false },
+                Withdraw,
+            ] {
+                assert_eq!(
+                    admit_environment_work_revision(
+                        "env",
+                        EnvironmentRevision(1),
+                        proposed,
+                        Some((EnvironmentRevision(2), previous))
+                    )
+                    .unwrap(),
+                    Superseded
+                );
+                assert_eq!(
+                    admit_environment_work_revision(
+                        "env",
+                        EnvironmentRevision(3),
+                        proposed,
+                        Some((EnvironmentRevision(2), previous))
+                    )
+                    .unwrap(),
+                    Applied
+                );
+                let same = admit_environment_work_revision(
+                    "env",
+                    EnvironmentRevision(2),
+                    proposed,
+                    Some((EnvironmentRevision(2), previous)),
+                );
+                if previous == proposed {
+                    assert_eq!(same.unwrap(), AlreadyApplied);
+                } else {
+                    assert!(matches!(same,
+                        Err(EnvironmentWorkRevisionError::Conflict { revision, current, proposed: actual })
+                        if revision == EnvironmentRevision(2) && current == previous && actual == proposed
+                    ));
+                }
+            }
+        }
+        assert!(matches!(
+            admit_environment_work_revision("env", EnvironmentRevision(0), Withdraw, None),
+            Err(EnvironmentWorkRevisionError::Invalid(
+                EnvironmentWorkRevisionInputError::ZeroRevision
+            ))
+        ));
+        assert!(matches!(
+            admit_environment_work_revision(" ", EnvironmentRevision(1), Withdraw, None),
+            Err(EnvironmentWorkRevisionError::Invalid(
+                EnvironmentWorkRevisionInputError::MissingEnvironmentId
+            ))
+        ));
     }
 }

@@ -2,7 +2,7 @@
 // @formal reason: Deliver and acknowledge the exact authority-committed Environment revision intent.
 //! Replay authority-committed registration intents into the executable projection.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use awaken_environment_contract::{
     BUILTIN_LOCAL_ENVIRONMENT_ID, EnvItem, EnvironmentDefinitionQueries,
@@ -72,6 +72,49 @@ impl EnvironmentRegistrationDelivery {
         Ok(ExecutableEnvironmentRegistration::new(item, sandbox_policy))
     }
 
+    async fn registration_for_intent(
+        &self,
+        intent: &EnvironmentRegistrationIntent,
+    ) -> Result<ExecutableEnvironmentRegistration, EnvironmentApplicationError> {
+        let item = self
+            .queries
+            .get_revision(&intent.environment_id, intent.revision)
+            .await?
+            .ok_or_else(|| {
+                EnvironmentApplicationError::RegistrationInvariant(format!(
+                    "missing revision {}@{}",
+                    intent.environment_id, intent.revision.0
+                ))
+            })?;
+        if item.id != intent.environment_id
+            || item.revision != intent.revision
+            || EnvironmentRegistrationIntent::for_item(&item).operation != intent.operation
+        {
+            return Err(EnvironmentApplicationError::RegistrationInvariant(format!(
+                "revision facts disagree with intent {}@{}",
+                intent.environment_id, intent.revision.0
+            )));
+        }
+        self.registration(item).await
+    }
+
+    async fn acknowledge(
+        &self,
+        intent: &EnvironmentRegistrationIntent,
+    ) -> Result<(), EnvironmentApplicationError> {
+        if !self
+            .outbox
+            .mark_registration_intent_delivered(intent)
+            .await?
+        {
+            return Err(EnvironmentApplicationError::RegistrationInvariant(format!(
+                "missing intent {}@{}",
+                intent.environment_id, intent.revision.0
+            )));
+        }
+        Ok(())
+    }
+
     async fn deliver_intent(
         &self,
         intent: EnvironmentRegistrationIntent,
@@ -82,18 +125,8 @@ impl EnvironmentRegistrationDelivery {
         }
         match intent.operation {
             EnvironmentRegistrationOperation::Register => {
-                let item = self
-                    .queries
-                    .get_revision(&intent.environment_id, intent.revision)
-                    .await?
-                    .ok_or_else(|| {
-                        EnvironmentApplicationError::RegistrationInvariant(format!(
-                            "missing revision {}@{}",
-                            intent.environment_id, intent.revision.0
-                        ))
-                    })?;
                 self.registrar
-                    .register(self.registration(item).await?)
+                    .register(self.registration_for_intent(&intent).await?)
                     .await?;
             }
             EnvironmentRegistrationOperation::Withdraw => {
@@ -105,15 +138,60 @@ impl EnvironmentRegistrationDelivery {
                     .await?;
             }
         }
-        if !self
+        self.acknowledge(&intent).await
+    }
+
+    async fn latest_intent(
+        &self,
+        environment_id: &str,
+    ) -> Result<EnvironmentRegistrationIntent, EnvironmentApplicationError> {
+        let current = self.queries.get(environment_id).await?.ok_or_else(|| {
+            EnvironmentApplicationError::RegistrationInvariant(format!(
+                "missing current definition {environment_id}"
+            ))
+        })?;
+        let intent = self
             .outbox
-            .mark_registration_intent_delivered(&intent)
+            .registration_intent(environment_id, current.revision)
             .await?
+            .ok_or_else(|| {
+                EnvironmentApplicationError::RegistrationInvariant(format!(
+                    "missing current intent {environment_id}@{}",
+                    current.revision.0
+                ))
+            })?;
+        let expected = EnvironmentRegistrationIntent::for_item(&current);
+        if intent.environment_id != environment_id
+            || current.id != environment_id
+            || intent.revision != current.revision
+            || intent.operation != expected.operation
         {
             return Err(EnvironmentApplicationError::RegistrationInvariant(format!(
-                "missing intent {}@{}",
+                "current definition disagrees with intent {environment_id}@{}",
+                current.revision.0
+            )));
+        }
+        Ok(intent)
+    }
+
+    async fn restore_history(
+        &self,
+        intent: &EnvironmentRegistrationIntent,
+        acknowledge: bool,
+    ) -> Result<(), EnvironmentApplicationError> {
+        if intent.operation != EnvironmentRegistrationOperation::Register {
+            // Archive is terminal. An older Withdraw cannot precede a newer
+            // authored definition and must not be silently treated as history.
+            return Err(EnvironmentApplicationError::RegistrationInvariant(format!(
+                "nonterminal historical withdrawal {}@{}",
                 intent.environment_id, intent.revision.0
             )));
+        }
+        self.registrar
+            .restore_historical_registration(self.registration_for_intent(intent).await?)
+            .await?;
+        if acknowledge {
+            self.acknowledge(intent).await?;
         }
         Ok(())
     }
@@ -165,14 +243,68 @@ impl EnvironmentRegistrationDelivery {
         filter: EnvironmentRegistrationIntentFilter,
         replay_delivered: bool,
     ) -> Result<u64, EnvironmentApplicationError> {
-        let intents = self.outbox.registration_intents(filter).await?;
+        let mut batches = BTreeMap::<String, Vec<EnvironmentRegistrationIntent>>::new();
+        for intent in self.outbox.registration_intents(filter).await? {
+            if intent.requires_delivery(replay_delivered) {
+                batches
+                    .entry(intent.environment_id.clone())
+                    .or_default()
+                    .push(intent);
+            }
+        }
         let mut delivered = 0_u64;
         let mut first_error = None;
-        for intent in intents {
-            match self.deliver_intent(intent, replay_delivered).await {
-                Ok(()) => delivered = delivered.saturating_add(1),
-                Err(error) if first_error.is_none() => first_error = Some(error),
-                Err(_) => {}
+        for (environment_id, intents) in batches {
+            // Pending may contain only an old Register while the true newest
+            // Withdraw is already acknowledged. Read the exact authoritative
+            // current intent, never infer latest from the selected subset.
+            let latest = match self.latest_intent(&environment_id).await {
+                Ok(intent) => Some(intent),
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    None
+                }
+            };
+            let current_ready = if let Some(intent) = &latest {
+                match self.deliver_intent(intent.clone(), true).await {
+                    Ok(()) => true,
+                    Err(error) => {
+                        first_error.get_or_insert(error);
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+            for intent in intents {
+                if let Some(latest) = &latest {
+                    if intent.revision == latest.revision && intent.operation == latest.operation {
+                        if current_ready {
+                            delivered = delivered.saturating_add(1);
+                        }
+                        continue;
+                    }
+                    if intent.revision >= latest.revision {
+                        first_error.get_or_insert_with(|| {
+                            EnvironmentApplicationError::RegistrationInvariant(format!(
+                                "selected intent is ahead of current {environment_id}@{}",
+                                intent.revision.0
+                            ))
+                        });
+                        continue;
+                    }
+                }
+                // Failed current build/delivery cannot starve frozen Sessions:
+                // restore old exact catalog facts and builds without admission
+                // or queue effects. Keep Pending until current convergence also
+                // succeeds, so its retry obligation survives an earlier ack.
+                match self.restore_history(&intent, current_ready).await {
+                    Ok(()) if current_ready => delivered = delivered.saturating_add(1),
+                    Ok(()) => {}
+                    Err(error) => {
+                        first_error.get_or_insert(error);
+                    }
+                }
             }
         }
         match first_error {
@@ -182,8 +314,8 @@ impl EnvironmentRegistrationDelivery {
     }
 
     /// Rebuild an empty executable projection from the durable intent log. This
-    /// is a startup recovery mode of the same outbox drainer, not a scan that
-    /// re-derives work from mutable Environment rows.
+    /// is a startup recovery mode of the same outbox drainer. Current definitions
+    /// select an exact committed intent; they never synthesize a queue operation.
     pub async fn recover_registration_intents(&self) -> Result<u64, EnvironmentApplicationError> {
         self.registrar
             .register(default_environment_registration())

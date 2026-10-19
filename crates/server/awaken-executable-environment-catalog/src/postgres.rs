@@ -25,11 +25,13 @@ use crate::schema::{NS, executable_environment_catalog_bundle};
 use crate::{ExecutableEnvironmentCatalog, LocalExecutableEnvironmentRegistrar};
 
 const REGISTRATION_KIND: &str = "registration";
+const HISTORICAL_REGISTRATION_KIND: &str = "history_registration";
 const WITHDRAWAL_KIND: &str = "withdrawal";
 
 #[derive(Clone, Debug, PartialEq)]
 enum CatalogCommand {
     Registration(Box<ExecutableEnvironmentRegistration>),
+    HistoricalRegistration(Box<ExecutableEnvironmentRegistration>),
     Withdrawal(ExecutableEnvironmentWithdrawal),
 }
 
@@ -41,6 +43,11 @@ impl CatalogCommand {
                 command.definition.revision.0,
                 REGISTRATION_KIND,
             ),
+            Self::HistoricalRegistration(command) => (
+                &command.definition.id,
+                command.definition.revision.0,
+                HISTORICAL_REGISTRATION_KIND,
+            ),
             Self::Withdrawal(command) => (
                 &command.environment_id,
                 command.lifecycle_revision.0,
@@ -49,9 +56,18 @@ impl CatalogCommand {
         }
     }
 
+    fn registration_facts(&self) -> Option<&ExecutableEnvironmentRegistration> {
+        match self {
+            Self::Registration(command) | Self::HistoricalRegistration(command) => Some(command),
+            Self::Withdrawal(_) => None,
+        }
+    }
+
     fn encode(&self) -> Result<String, ExecutableEnvironmentRegistrationError> {
         match self {
-            Self::Registration(command) => serde_json::to_string(command),
+            Self::Registration(command) | Self::HistoricalRegistration(command) => {
+                serde_json::to_string(command)
+            }
             Self::Withdrawal(command) => serde_json::to_string(command),
         }
         .map_err(storage)
@@ -69,6 +85,9 @@ impl CatalogCommand {
             REGISTRATION_KIND => {
                 Self::Registration(Box::new(serde_json::from_str(encoded).map_err(storage)?))
             }
+            HISTORICAL_REGISTRATION_KIND => Self::HistoricalRegistration(Box::new(
+                serde_json::from_str(encoded).map_err(storage)?,
+            )),
             WITHDRAWAL_KIND => Self::Withdrawal(serde_json::from_str(encoded).map_err(storage)?),
             other => return Err(storage(format!("unknown catalog command kind `{other}`"))),
         };
@@ -111,6 +130,26 @@ impl CatalogCommandLog for PostgresCatalogCommandLog {
             .map_err(|_| storage("executable Environment revision exceeds i64 storage"))?;
         let encoded = command.encode()?;
         let mut transaction = self.pool.begin().await.map_err(storage)?;
+        if command.registration_facts().is_some() {
+            // Both command modes retain one immutable (id, revision) fact.
+            // A separate kind must not bypass same-revision conflict checking.
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(format!(
+                    "environment-registration:{environment_id}:{revision}"
+                ))
+                .execute(&mut *transaction)
+                .await
+                .map_err(storage)?;
+            let siblings: Vec<String> = sqlx::query_scalar(
+                "SELECT command_json FROM executable_environment_command WHERE environment_id=$1 AND lifecycle_revision=$2 AND command_kind IN ('registration','history_registration')"
+            ).bind(environment_id).bind(revision).fetch_all(&mut *transaction).await.map_err(storage)?;
+            if siblings.iter().any(|existing| existing != &encoded) {
+                return Err(ExecutableEnvironmentRegistrationError::Conflict(
+                    "Environment revision already has different immutable registration facts"
+                        .into(),
+                ));
+            }
+        }
         let inserted: Option<i64> = sqlx::query_scalar(
             "INSERT INTO executable_environment_command \
              (environment_id, lifecycle_revision, command_kind, command_json) \
@@ -220,6 +259,23 @@ impl DurableRegistrar {
         })
     }
 
+    async fn restore_historical_registration(
+        &self,
+        registration: ExecutableEnvironmentRegistration,
+    ) -> Result<(), ExecutableEnvironmentRegistrationError> {
+        let _guard = self.refresh.lock().await;
+        self.catalog
+            .preview_historical_registration(&registration)?;
+        self.log
+            .append(&CatalogCommand::HistoricalRegistration(Box::new(
+                registration.clone(),
+            )))
+            .await?;
+        self.local
+            .restore_historical_registration(registration)
+            .await
+    }
+
     async fn register(
         &self,
         registration: ExecutableEnvironmentRegistration,
@@ -302,6 +358,14 @@ async fn replay_commands(
                     .register(*command)
                     .await
                     .map_err(|error| storage(format!("replay persisted registration: {error}")))?;
+            }
+            CatalogCommand::HistoricalRegistration(command) => {
+                local
+                    .restore_historical_registration(*command)
+                    .await
+                    .map_err(|error| {
+                        storage(format!("replay persisted historical registration: {error}"))
+                    })?;
             }
             CatalogCommand::Withdrawal(command) => {
                 local
@@ -430,6 +494,15 @@ impl PostgresExecutableEnvironmentRegistrar {
 
 #[async_trait]
 impl ExecutableEnvironmentRegistrar for PostgresExecutableEnvironmentRegistrar {
+    async fn restore_historical_registration(
+        &self,
+        registration: ExecutableEnvironmentRegistration,
+    ) -> Result<(), ExecutableEnvironmentRegistrationError> {
+        self.inner
+            .restore_historical_registration(registration)
+            .await
+    }
+
     async fn register(
         &self,
         registration: ExecutableEnvironmentRegistration,
@@ -479,6 +552,19 @@ mod tests {
             command: &CatalogCommand,
         ) -> Result<u64, ExecutableEnvironmentRegistrationError> {
             let mut commands = self.commands.lock().unwrap();
+            if let Some(proposed) = command.registration_facts()
+                && commands.iter().any(|existing| {
+                    existing.command.registration_facts().is_some_and(|stored| {
+                        stored.definition.id == proposed.definition.id
+                            && stored.definition.revision == proposed.definition.revision
+                            && stored != proposed
+                    })
+                })
+            {
+                return Err(ExecutableEnvironmentRegistrationError::Conflict(
+                    "different registration facts across command modes".into(),
+                ));
+            }
             if let Some(existing) = commands
                 .iter()
                 .find(|existing| existing.command.identity() == command.identity())
@@ -864,6 +950,189 @@ mod tests {
         pool.close().await;
         admin
             .execute(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE").as_str())
+            .await
+            .unwrap();
+        admin.close().await;
+    }
+
+    #[tokio::test]
+    async fn durable_history_replay_is_distinct_from_admission_and_allows_later_promotion() {
+        // D1 history-only append survives full hydration and incremental peer
+        // refresh without admission. D2 explicit register promotes the same fact.
+        // D3 conflicts across command modes fail before log append. D4 replay
+        // after a terminal withdrawal retains exact histories without admission.
+        let log = Arc::new(MemoryCommandLog::default());
+        let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let writer = registrar(log.clone(), catalog.clone()).await;
+        let peer_catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let peer = registrar(log.clone(), peer_catalog.clone()).await;
+        let exact = registration();
+        writer
+            .restore_historical_registration(exact.clone())
+            .await
+            .unwrap();
+        peer.refresh_projection().await.unwrap();
+        assert!(peer_catalog.current("env-a").is_none(), "D1 incremental");
+        assert_eq!(
+            peer_catalog.at_revision("env-a", EnvironmentRevision(1)),
+            Some(exact.clone()),
+            "D1"
+        );
+        let reopened_catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let reopened = registrar(log.clone(), reopened_catalog.clone()).await;
+        assert!(reopened_catalog.current("env-a").is_none(), "D1 full");
+        assert_eq!(
+            reopened.register(exact.clone()).await.unwrap(),
+            ExecutableEnvironmentRegistrationOutcome::RegisteredCurrent,
+            "D2"
+        );
+        peer.refresh_projection().await.unwrap();
+        assert_eq!(peer_catalog.current("env-a"), Some(exact.clone()), "D2");
+        let before = log.commands.lock().unwrap().len();
+        assert!(
+            matches!(
+                writer
+                    .restore_historical_registration(registration_at(1, "changed"))
+                    .await,
+                Err(ExecutableEnvironmentRegistrationError::Conflict(_))
+            ),
+            "D3 history after normal"
+        );
+        assert!(
+            matches!(
+                log.append(&CatalogCommand::Registration(Box::new(registration_at(
+                    1, "changed"
+                ))))
+                .await,
+                Err(ExecutableEnvironmentRegistrationError::Conflict(_))
+            ),
+            "D3 cross-mode log fence"
+        );
+        assert_eq!(log.commands.lock().unwrap().len(), before, "D3 no append");
+        reopened
+            .withdraw(ExecutableEnvironmentWithdrawal {
+                environment_id: "env-a".into(),
+                lifecycle_revision: EnvironmentRevision(3),
+            })
+            .await
+            .unwrap();
+        reopened
+            .restore_historical_registration(registration_at(2, "old-frozen"))
+            .await
+            .unwrap();
+        let final_catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let _final = registrar(log, final_catalog.clone()).await;
+        assert!(final_catalog.current("env-a").is_none(), "D4");
+        assert_eq!(
+            final_catalog.at_revision("env-a", EnvironmentRevision(1)),
+            Some(exact),
+            "D4"
+        );
+        assert!(
+            final_catalog
+                .at_revision("env-a", EnvironmentRevision(2))
+                .is_some(),
+            "D4"
+        );
+    }
+
+    #[tokio::test]
+    async fn postgres_history_command_reopens_without_admission_and_fences_cross_mode_conflicts() {
+        // P1 exact history in the real SQL log reopens without admission.
+        // P2 separate replicas race conflicting modes at one identity: exactly
+        // one immutable fact can commit. P3 normal exact promotion survives reopen.
+        let Some(database_url) = std::env::var("AWAKEN_TEST_DATABASE_URL").ok() else {
+            eprintln!("[skip] AWAKEN_TEST_DATABASE_URL unset for PostgreSQL history replay");
+            return;
+        };
+        let admin = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(3))
+            .connect(&database_url)
+            .await
+            .expect("explicit PostgreSQL fixture must be available");
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let schema = format!("t_env_history_{}_{}", std::process::id(), unique);
+        admin
+            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .await
+            .unwrap();
+        let search_schema = schema.clone();
+        let pool = PgPoolOptions::new()
+            .max_connections(3)
+            .after_connect(move |connection, _| {
+                let statement = format!("SET search_path = {search_schema}");
+                Box::pin(async move {
+                    connection.execute(statement.as_str()).await?;
+                    Ok(())
+                })
+            })
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let writer =
+            PostgresExecutableEnvironmentRegistrar::with_pool(pool.clone(), catalog.clone())
+                .await
+                .unwrap();
+        let exact = registration();
+        writer
+            .restore_historical_registration(exact.clone())
+            .await
+            .unwrap();
+        let reopened_catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let reopened = PostgresExecutableEnvironmentRegistrar::with_pool(
+            pool.clone(),
+            reopened_catalog.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(reopened_catalog.current("env-a").is_none(), "P1");
+        assert_eq!(
+            reopened_catalog.at_revision("env-a", EnvironmentRevision(1)),
+            Some(exact.clone()),
+            "P1"
+        );
+        let history = registration_at(2, "history-fact");
+        let normal = registration_at(2, "normal-conflicting-fact");
+        let (left, right) = tokio::join!(
+            writer.restore_historical_registration(history),
+            reopened.register(normal)
+        );
+        assert_ne!(left.is_ok(), right.is_ok(), "P2 exactly one fact wins");
+        assert!(
+            matches!(
+                left.as_ref().err().or(right.as_ref().err()),
+                Some(ExecutableEnvironmentRegistrationError::Conflict(_))
+            ),
+            "P2 explicit conflict"
+        );
+        assert_eq!(
+            writer.register(exact.clone()).await.unwrap(),
+            ExecutableEnvironmentRegistrationOutcome::RegisteredCurrent,
+            "P3 local history promotion"
+        );
+        let final_catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let final_registrar =
+            PostgresExecutableEnvironmentRegistrar::with_pool(pool.clone(), final_catalog.clone())
+                .await
+                .unwrap();
+        // A winning normal revision 2 may legitimately supersede revision 1.
+        assert!(
+            final_catalog.current("env-a").is_some(),
+            "P3 promotion was persisted"
+        );
+        assert_eq!(
+            final_catalog.at_revision("env-a", EnvironmentRevision(1)),
+            Some(exact),
+            "P3 exact history"
+        );
+        drop((writer, reopened, final_registrar));
+        pool.close().await;
+        admin
+            .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
             .await
             .unwrap();
         admin.close().await;

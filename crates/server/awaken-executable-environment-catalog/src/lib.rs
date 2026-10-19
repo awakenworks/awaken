@@ -19,8 +19,9 @@ mod schema;
 
 pub use http::{
     EXECUTABLE_ENVIRONMENT_PUBLISH_PERMISSION, EXECUTABLE_ENVIRONMENT_REGISTER_PATH,
-    EXECUTABLE_ENVIRONMENT_WITHDRAW_PATH, EXECUTABLE_ENVIRONMENT_WITHDRAW_PERMISSION,
-    HttpExecutableEnvironmentRegistrar, executable_environment_registration_router,
+    EXECUTABLE_ENVIRONMENT_RESTORE_HISTORY_PATH, EXECUTABLE_ENVIRONMENT_WITHDRAW_PATH,
+    EXECUTABLE_ENVIRONMENT_WITHDRAW_PERMISSION, HttpExecutableEnvironmentRegistrar,
+    executable_environment_registration_router,
     executable_environment_registration_router_with_authenticator,
 };
 pub use postgres::PostgresExecutableEnvironmentRegistrar;
@@ -95,26 +96,37 @@ impl ExecutableEnvironmentCatalog {
             .cloned()
     }
 
+    /// Retain one immutable fact without granting current admission.
+    fn retain_registration_locked(
+        state: &mut CatalogState,
+        registration: &ExecutableEnvironmentRegistration,
+    ) -> Result<bool, ExecutableEnvironmentRegistrationError> {
+        registration.validate()?;
+        let key = (
+            registration.definition.id.clone(),
+            registration.definition.revision,
+        );
+        if let Some(existing) = state.revisions.get(&key) {
+            if existing != registration {
+                return Err(ExecutableEnvironmentRegistrationError::Conflict(format!(
+                    "Environment `{}` revision {} already has fingerprint `{}`",
+                    key.0, key.1.0, existing.fingerprint,
+                )));
+            }
+            return Ok(false);
+        }
+        state.revisions.insert(key, registration.clone());
+        Ok(true)
+    }
+
     fn register_locked(
         state: &mut CatalogState,
         registration: ExecutableEnvironmentRegistration,
     ) -> Result<ExecutableEnvironmentRegistrationOutcome, ExecutableEnvironmentRegistrationError>
     {
-        registration.validate()?;
+        Self::retain_registration_locked(state, &registration)?;
         let id = registration.definition.id.clone();
         let revision = registration.definition.revision;
-        let key = (id.clone(), revision);
-        if let Some(existing) = state.revisions.get(&key) {
-            return if existing == &registration {
-                Ok(ExecutableEnvironmentRegistrationOutcome::AlreadyRegistered)
-            } else {
-                Err(ExecutableEnvironmentRegistrationError::Conflict(format!(
-                    "Environment `{id}` revision {} already has fingerprint `{}`",
-                    revision.0, existing.fingerprint
-                )))
-            };
-        }
-        state.revisions.insert(key, registration.clone());
         let advances = state
             .current
             .get(&id)
@@ -128,9 +140,28 @@ impl ExecutableEnvironmentCatalog {
                 },
             );
             Ok(ExecutableEnvironmentRegistrationOutcome::RegisteredCurrent)
+        } else if state.current.get(&id).is_some_and(|current| {
+            current.lifecycle_revision == revision
+                && current.registration.as_ref() == Some(&registration)
+        }) {
+            Ok(ExecutableEnvironmentRegistrationOutcome::AlreadyRegistered)
         } else {
             Ok(ExecutableEnvironmentRegistrationOutcome::RegisteredHistorical)
         }
+    }
+
+    fn preview_historical_registration(
+        &self,
+        registration: &ExecutableEnvironmentRegistration,
+    ) -> Result<(), ExecutableEnvironmentRegistrationError> {
+        let mut state = self
+            .state
+            .read()
+            .map_err(|_| {
+                ExecutableEnvironmentRegistrationError::Storage("catalog lock poisoned".into())
+            })?
+            .clone();
+        Self::retain_registration_locked(&mut state, registration).map(|_| ())
     }
 
     fn withdraw_locked(
@@ -195,6 +226,31 @@ impl ExecutableEnvironmentCatalog {
 }
 
 #[async_trait]
+impl awaken_executable_environment_contract::ExecutableEnvironmentLifecycleSource
+    for ExecutableEnvironmentCatalog
+{
+    async fn current_lifecycle(
+        &self,
+        environment_id: &str,
+    ) -> Result<
+        Option<awaken_executable_environment_contract::ExecutableEnvironmentLifecycle>,
+        ExecutableEnvironmentRegistrationError,
+    > {
+        use awaken_executable_environment_contract::ExecutableEnvironmentLifecycle;
+        let state = self.state.read().map_err(|_| {
+            ExecutableEnvironmentRegistrationError::Storage("catalog lock poisoned".into())
+        })?;
+        Ok(state.current.get(environment_id).map(|entry| {
+            if entry.registration.is_some() {
+                ExecutableEnvironmentLifecycle::Active
+            } else {
+                ExecutableEnvironmentLifecycle::Archived
+            }
+        }))
+    }
+}
+
+#[async_trait]
 impl ExecutableEnvironmentRegistrationSource for ExecutableEnvironmentCatalog {
     async fn current_registrations(
         &self,
@@ -235,6 +291,17 @@ impl LocalExecutableEnvironmentRegistrar {
 
 #[async_trait]
 impl ExecutableEnvironmentRegistrar for LocalExecutableEnvironmentRegistrar {
+    async fn restore_historical_registration(
+        &self,
+        registration: ExecutableEnvironmentRegistration,
+    ) -> Result<(), ExecutableEnvironmentRegistrationError> {
+        let mut state = self.catalog.state.write().map_err(|_| {
+            ExecutableEnvironmentRegistrationError::Storage("catalog lock poisoned".into())
+        })?;
+        ExecutableEnvironmentCatalog::retain_registration_locked(&mut state, &registration)
+            .map(|_| ())
+    }
+
     async fn register(
         &self,
         registration: ExecutableEnvironmentRegistration,
@@ -376,6 +443,11 @@ mod tests {
                 .is_some(),
             "O2"
         );
+        assert_eq!(
+            registrar.register(registration(1, "one")).await.unwrap(),
+            ExecutableEnvironmentRegistrationOutcome::RegisteredHistorical,
+            "O2 replay retains history without current admission"
+        );
 
         let (left, right) = tokio::join!(
             registrar.register(registration(3, "three")),
@@ -415,7 +487,7 @@ mod tests {
         );
         assert_eq!(
             registrar.register(registration(3, "three")).await.unwrap(),
-            ExecutableEnvironmentRegistrationOutcome::AlreadyRegistered,
+            ExecutableEnvironmentRegistrationOutcome::RegisteredHistorical,
             "O5"
         );
         assert!(catalog.current("env-a").is_none(), "O5");
@@ -424,6 +496,134 @@ mod tests {
                 .at_revision("env-a", EnvironmentRevision(4))
                 .is_some(),
             "O5 history"
+        );
+    }
+
+    #[tokio::test]
+    async fn history_restore_never_grants_current_but_exact_registration_can_promote() {
+        // H1 empty catalog + history -> exact-readable, no admission.
+        // H2 exact duplicate -> idempotent; H3 changed facts -> conflict.
+        // H4 normal same revision after H1 -> current, not an early duplicate.
+        // H5 newer withdrawal + more history -> terminal admission stays absent.
+        let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let registrar = LocalExecutableEnvironmentRegistrar::new(catalog.clone());
+        let exact = registration(1, "frozen");
+        registrar
+            .restore_historical_registration(exact.clone())
+            .await
+            .unwrap();
+        registrar
+            .restore_historical_registration(exact.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog.at_revision("env-a", EnvironmentRevision(1)),
+            Some(exact.clone()),
+            "H1/H2"
+        );
+        assert!(catalog.current("env-a").is_none(), "H1/H2");
+        assert!(
+            matches!(
+                registrar
+                    .restore_historical_registration(registration(1, "changed"))
+                    .await,
+                Err(ExecutableEnvironmentRegistrationError::Conflict(_))
+            ),
+            "H3"
+        );
+        assert_eq!(
+            registrar.register(exact.clone()).await.unwrap(),
+            ExecutableEnvironmentRegistrationOutcome::RegisteredCurrent,
+            "H4"
+        );
+        assert_eq!(catalog.current("env-a"), Some(exact.clone()), "H4");
+        registrar
+            .withdraw(ExecutableEnvironmentWithdrawal {
+                environment_id: "env-a".into(),
+                lifecycle_revision: EnvironmentRevision(3),
+            })
+            .await
+            .unwrap();
+        registrar
+            .restore_historical_registration(registration(2, "another-frozen"))
+            .await
+            .unwrap();
+        assert!(catalog.current("env-a").is_none(), "H5");
+        assert_eq!(
+            catalog.at_revision("env-a", EnvironmentRevision(1)),
+            Some(exact),
+            "H5"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_uses_only_the_same_current_catalog_fact() {
+        use awaken_executable_environment_contract::{
+            ExecutableEnvironmentLifecycle as Lifecycle, ExecutableEnvironmentLifecycleSource as _,
+        };
+        let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let registrar = LocalExecutableEnvironmentRegistrar::new(catalog.clone());
+        registrar
+            .withdraw(ExecutableEnvironmentWithdrawal {
+                environment_id: "withdraw-only".into(),
+                lifecycle_revision: EnvironmentRevision(2),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog.current_lifecycle("withdraw-only").await.unwrap(),
+            Some(Lifecycle::Archived),
+            "a committed withdrawal establishes identity before any history delivery"
+        );
+        assert!(
+            catalog
+                .registration_at_revision("withdraw-only", EnvironmentRevision(1))
+                .await
+                .unwrap()
+                .is_none(),
+            "withdrawal must not fabricate history"
+        );
+        assert_eq!(catalog.current_lifecycle("env-a").await.unwrap(), None);
+        registrar
+            .restore_historical_registration(registration(1, "history"))
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog.current_lifecycle("env-a").await.unwrap(),
+            None,
+            "history alone is not Archived authority"
+        );
+        registrar
+            .withdraw(ExecutableEnvironmentWithdrawal {
+                environment_id: "env-a".into(),
+                lifecycle_revision: EnvironmentRevision(2),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog.current_lifecycle("env-a").await.unwrap(),
+            Some(Lifecycle::Archived),
+            "an authenticated current withdrawal is a lifecycle fact without prior active history"
+        );
+        assert!(
+            catalog
+                .current_registration("env-a")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        registrar
+            .register(registration(1, "history"))
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog.current_lifecycle("env-a").await.unwrap(),
+            Some(Lifecycle::Archived)
+        );
+        registrar.register(registration(3, "newer")).await.unwrap();
+        assert_eq!(
+            catalog.current_lifecycle("env-a").await.unwrap(),
+            Some(Lifecycle::Active)
         );
     }
 }

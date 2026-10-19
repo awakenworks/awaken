@@ -399,22 +399,36 @@ impl CoordinatorEnvironmentRegistrar {
 
 #[async_trait::async_trait]
 impl ExecutableEnvironmentRegistrar for CoordinatorEnvironmentRegistrar {
+    async fn restore_historical_registration(
+        &self,
+        registration: ExecutableEnvironmentRegistration,
+    ) -> Result<(), ExecutableEnvironmentRegistrationError> {
+        // Retained frozen Sessions require history even if latest queue/build
+        // convergence fails. This path can never advance a queue watermark.
+        self.delegate
+            .restore_historical_registration(registration)
+            .await
+    }
+
     async fn register(
         &self,
         registration: ExecutableEnvironmentRegistration,
     ) -> Result<ExecutableEnvironmentRegistrationOutcome, ExecutableEnvironmentRegistrationError>
     {
         let environment_id = registration.definition.id.clone();
-        let self_hosted = registration.definition.is_self_hosted();
+        let revision = registration.definition.revision;
+        let healthcheck = registration.definition.is_self_hosted();
+        // Historical revisions must still rebuild immutable catalog snapshots.
+        // Delegate includes image-build convergence; no watermark precedes it.
         let outcome = self.delegate.register(registration).await?;
-        if self_hosted {
-            self.work
-                .ensure_healthcheck(&environment_id)
-                .await
-                .map_err(|error| {
-                    ExecutableEnvironmentRegistrationError::Unavailable(error.to_string())
-                })?;
+        if outcome == ExecutableEnvironmentRegistrationOutcome::RegisteredHistorical {
+            return Ok(outcome);
         }
+        // A current duplicate must still repair an interrupted queue update.
+        self.work.apply_environment_revision(
+            &environment_id, revision,
+            awaken_executable_environment_contract::EnvironmentWorkRevisionOperation::Register { healthcheck },
+        ).await.map_err(registration_revision_error)?;
         Ok(outcome)
     }
 
@@ -424,14 +438,37 @@ impl ExecutableEnvironmentRegistrar for CoordinatorEnvironmentRegistrar {
     ) -> Result<ExecutableEnvironmentWithdrawalOutcome, ExecutableEnvironmentRegistrationError>
     {
         let environment_id = withdrawal.environment_id.clone();
+        let revision = withdrawal.lifecycle_revision;
         let outcome = self.delegate.withdraw(withdrawal).await?;
+        if outcome == ExecutableEnvironmentWithdrawalOutcome::HistoricalNoop {
+            return Ok(outcome);
+        }
         self.work
-            .remove_env(&environment_id)
+            .apply_environment_revision(
+                &environment_id,
+                revision,
+                awaken_executable_environment_contract::EnvironmentWorkRevisionOperation::Withdraw,
+            )
             .await
-            .map_err(|error| {
-                ExecutableEnvironmentRegistrationError::Unavailable(error.to_string())
-            })?;
+            .map_err(registration_revision_error)?;
         Ok(outcome)
+    }
+}
+
+fn registration_revision_error(
+    error: awaken_executable_environment_contract::EnvironmentWorkRevisionError,
+) -> ExecutableEnvironmentRegistrationError {
+    use awaken_executable_environment_contract::EnvironmentWorkRevisionError;
+    match error {
+        EnvironmentWorkRevisionError::Invalid(reason) => {
+            ExecutableEnvironmentRegistrationError::Invalid(reason.to_string())
+        }
+        conflict @ EnvironmentWorkRevisionError::Conflict { .. } => {
+            ExecutableEnvironmentRegistrationError::Conflict(conflict.to_string())
+        }
+        EnvironmentWorkRevisionError::Storage(error) => {
+            ExecutableEnvironmentRegistrationError::Unavailable(error.to_string())
+        }
     }
 }
 
@@ -1493,6 +1530,32 @@ mod tests {
 
     #[async_trait::async_trait]
     impl EnvironmentWorkLifecycle for FailingConvergenceQueue {
+        async fn apply_environment_revision(
+            &self,
+            env: &str,
+            revision: awaken_environment_contract::EnvironmentRevision,
+            operation: awaken_executable_environment_contract::EnvironmentWorkRevisionOperation,
+        ) -> Result<
+            awaken_executable_environment_contract::EnvironmentWorkRevisionOutcome,
+            awaken_executable_environment_contract::EnvironmentWorkRevisionError,
+        > {
+            let fail = match operation {
+                awaken_executable_environment_contract::EnvironmentWorkRevisionOperation::Register { .. } => self.fail_ensure.load(Ordering::SeqCst),
+                awaken_executable_environment_contract::EnvironmentWorkRevisionOperation::Withdraw => self.fail_remove.load(Ordering::SeqCst),
+            };
+            if fail {
+                Err(WorkQueueError::Storage(
+                    match operation {
+                    awaken_executable_environment_contract::EnvironmentWorkRevisionOperation::Register { .. } => "ensure outage",
+                    awaken_executable_environment_contract::EnvironmentWorkRevisionOperation::Withdraw => "remove outage",
+                }.into(),
+                ).into())
+            } else {
+                self.inner
+                    .apply_environment_revision(env, revision, operation)
+                    .await
+            }
+        }
         async fn enqueue_healthcheck(&self, env: &str) -> Result<String, WorkQueueError> {
             self.inner.enqueue_healthcheck(env).await
         }
@@ -1681,10 +1744,36 @@ mod tests {
             ExecutableEnvironmentWithdrawalOutcome::AlreadyWithdrawn,
             "C4"
         );
-        assert!(work.list("converge").await.unwrap().is_empty(), "C4");
+        let remaining = work.list("converge").await.unwrap();
+        assert_eq!(
+            remaining.len(),
+            1,
+            "C4 archive keeps the Session, removes healthcheck"
+        );
+        assert!(matches!(
+            remaining[0].data,
+            awaken_executable_environment_contract::WorkPayload::Session { .. }
+        ));
     }
 
     struct FailingRegistrationSource;
+
+    #[async_trait::async_trait]
+    impl awaken_executable_environment_contract::ExecutableEnvironmentLifecycleSource
+        for FailingRegistrationSource
+    {
+        async fn current_lifecycle(
+            &self,
+            _environment_id: &str,
+        ) -> Result<
+            Option<awaken_executable_environment_contract::ExecutableEnvironmentLifecycle>,
+            ExecutableEnvironmentRegistrationError,
+        > {
+            Err(ExecutableEnvironmentRegistrationError::Storage(
+                "catalog outage".into(),
+            ))
+        }
+    }
 
     #[async_trait::async_trait]
     impl ExecutableEnvironmentRegistrationSource for FailingRegistrationSource {
@@ -1903,4 +1992,225 @@ mod tests {
             "RN build policy remains independent"
         );
     }
+    struct FailingCatalogBoundary {
+        inner: LocalExecutableEnvironmentRegistrar,
+        before: AtomicBool,
+        after: AtomicBool,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl ExecutableEnvironmentRegistrar for FailingCatalogBoundary {
+        async fn restore_historical_registration(
+            &self,
+            registration: ExecutableEnvironmentRegistration,
+        ) -> Result<(), ExecutableEnvironmentRegistrationError> {
+            self.inner
+                .restore_historical_registration(registration)
+                .await
+        }
+        async fn register(
+            &self,
+            registration: ExecutableEnvironmentRegistration,
+        ) -> Result<ExecutableEnvironmentRegistrationOutcome, ExecutableEnvironmentRegistrationError>
+        {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.before.load(Ordering::SeqCst) {
+                return Err(ExecutableEnvironmentRegistrationError::Unavailable(
+                    "before catalog".into(),
+                ));
+            }
+            let outcome = self.inner.register(registration).await?;
+            // Same outer-boundary failure position as BuildAware's ensure_registration.
+            if self.after.load(Ordering::SeqCst) {
+                return Err(ExecutableEnvironmentRegistrationError::Unavailable(
+                    "after catalog/build boundary".into(),
+                ));
+            }
+            Ok(outcome)
+        }
+        async fn withdraw(
+            &self,
+            withdrawal: ExecutableEnvironmentWithdrawal,
+        ) -> Result<ExecutableEnvironmentWithdrawalOutcome, ExecutableEnvironmentRegistrationError>
+        {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let outcome = self.inner.withdraw(withdrawal).await?;
+            if self.after.load(Ordering::SeqCst) {
+                return Err(ExecutableEnvironmentRegistrationError::Unavailable(
+                    "after catalog".into(),
+                ));
+            }
+            Ok(outcome)
+        }
+    }
+    #[tokio::test]
+    async fn catalog_and_build_failure_never_advance_queue_registration_and_retry_reexecutes_delegate()
+     {
+        for before in [false, true] {
+            let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+            let work = Arc::new(InMemoryWorkQueue::new(awaken_time::system_clock()));
+            let delegate = Arc::new(FailingCatalogBoundary {
+                inner: LocalExecutableEnvironmentRegistrar::new(catalog.clone()),
+                before: AtomicBool::new(before),
+                after: AtomicBool::new(!before),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            });
+            let registrar = CoordinatorEnvironmentRegistrar::new(delegate.clone(), work.clone());
+            let exact = registration("failed-catalog", 2, EnvironmentConfig::SelfHosted);
+            assert!(registrar.register(exact.clone()).await.is_err());
+            assert!(work.list("failed-catalog").await.unwrap().is_empty());
+            delegate.before.store(false, Ordering::SeqCst);
+            delegate.after.store(false, Ordering::SeqCst);
+            registrar.register(exact.clone()).await.unwrap();
+            registrar.register(exact).await.unwrap();
+            assert_eq!(
+                delegate.calls.load(Ordering::SeqCst),
+                3,
+                "AlreadyApplied never skips catalog/build"
+            );
+            assert_eq!(work.list("failed-catalog").await.unwrap().len(), 1);
+            let withdrawal = ExecutableEnvironmentWithdrawal {
+                environment_id: "failed-catalog".into(),
+                lifecycle_revision: EnvironmentRevision(3),
+            };
+            delegate.after.store(true, Ordering::SeqCst);
+            assert!(registrar.withdraw(withdrawal.clone()).await.is_err());
+            assert_eq!(
+                work.list("failed-catalog").await.unwrap().len(),
+                1,
+                "failed delegate cannot advance watermark or purge"
+            );
+            delegate.after.store(false, Ordering::SeqCst);
+            registrar.withdraw(withdrawal).await.unwrap();
+            assert!(work.list("failed-catalog").await.unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn archived_session_work_and_bearer_continue_through_application_roles() {
+        let work = Arc::new(InMemoryWorkQueue::new(awaken_time::system_clock()));
+        let session = work
+            .enqueue_session("archived", &"existing".into())
+            .await
+            .unwrap();
+        let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let registrar = CoordinatorEnvironmentRegistrar::new(
+            Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
+            work.clone(),
+        );
+        registrar
+            .register(registration("archived", 1, EnvironmentConfig::SelfHosted))
+            .await
+            .unwrap();
+        let app = EnvironmentExecutionApplication::new(work, catalog);
+        let claim = app
+            .work_consumer()
+            .claim("archived", "owner", "poller", 0, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claim.item.id, session);
+        let token = claim.sessions_token.unwrap();
+        let before = app
+            .session_access()
+            .authenticate(&token, 1)
+            .await
+            .unwrap()
+            .unwrap();
+        registrar
+            .withdraw(ExecutableEnvironmentWithdrawal {
+                environment_id: "archived".into(),
+                lifecycle_revision: EnvironmentRevision(2),
+            })
+            .await
+            .unwrap();
+        assert!(
+            app.work_queries()
+                .get("archived", &session)
+                .await
+                .expect("archive must admit existing Session Work operations")
+                .is_some()
+        );
+        assert_eq!(
+            app.session_access().authenticate(&token, 1).await.unwrap(),
+            Some(before.clone())
+        );
+        assert_eq!(app.work_queries().list("archived").await.unwrap().len(), 1);
+        let stats = app.work_queries().stats("archived", 1).await.unwrap();
+        assert_eq!(stats.depth, 0, "the retained Session is already claimed");
+        assert_eq!(stats.pending, 1, "archive retains the in-flight Session");
+        let patched = app
+            .work_metadata()
+            .apply(
+                "archived",
+                &session,
+                BTreeMap::from([("archive".into(), Some("retained".into()))]),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            patched.metadata.get("archive").map(String::as_str),
+            Some("retained")
+        );
+        assert!(
+            app.get("archived").await.unwrap().is_none(),
+            "new current admission stays withdrawn"
+        );
+        assert!(
+            app.snapshot_exact("archived", 1, None)
+                .await
+                .unwrap()
+                .is_none(),
+            "history must not admit a new Session"
+        );
+        assert!(matches!(
+            app.work_consumer()
+                .heartbeat(
+                    "archived",
+                    &session,
+                    "wrong-owner",
+                    2,
+                    LeaseHeartbeat::unconditional()
+                )
+                .await
+                .unwrap(),
+            HeartbeatResult::PreconditionFailed
+        ));
+        assert!(matches!(
+            app.session_work_leases()
+                .heartbeat(&before, 2, LeaseHeartbeat::unconditional())
+                .await
+                .unwrap(),
+            HeartbeatResult::Accepted(_)
+        ));
+        assert!(
+            app.session_work_leases()
+                .acknowledge(&before)
+                .await
+                .unwrap()
+                .is_accepted()
+        );
+        assert!(
+            app.session_work_leases()
+                .stop(&before)
+                .await
+                .unwrap()
+                .is_accepted()
+        );
+        assert!(
+            app.session_access()
+                .authenticate(&token, 3)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            app.work_queries().list("unknown").await,
+            Err(EnvironmentExecutionError::EnvironmentNotFound)
+        ));
+    }
 }
+
+#[cfg(test)]
+mod revision_errors_tests;
