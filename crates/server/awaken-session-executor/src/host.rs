@@ -183,22 +183,3 @@ pub struct ExecutorComponents {
     /// The edges back into the Session application built over this Host.
     pub(crate) session_application: SessionApplicationBindings,
 }
-
-impl ExecutorComponents {
-    /// Persist every Agent-authored output before the environment can be disposed.
-    /// The `(Session, logical path, content)` harvest key makes retries idempotent;
-    /// Files API reads only this durable catalog and never scan the Sandbox.
-    pub async fn harvest_thread_artifacts(
-        &self,
-        thread: &str,
-    ) -> Result<
-        crate::artifact_harvest::HarvestedArtifacts,
-        awaken_resource_contract::ArtifactPublicationError,
-    > {
-        self.realization_executor
-            .effects()
-            .artifacts()
-            .harvest(thread)
-            .await
-    }
-}

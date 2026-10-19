@@ -2946,7 +2946,6 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-credential-contract",
  "awaken-lease-contract",
  "awaken-runtime-contract",
  "awaken-session-budget-contract",

@@ -381,13 +381,6 @@ impl SessionApplication {
         runtime_placement_for_topology(self.configuration.execution_placement)
     }
 
-    /// Resolve the sole physical-realization owner from the immutable baseline.
-    #[must_use]
-    #[cfg(test)]
-    pub fn requires_external_realization(&self, session: &PersistedSession) -> bool {
-        session.requires_external_environment_owner()
-    }
-
     #[must_use]
     pub(crate) fn runtime(&self) -> &crate::SessionExecutor {
         &self.runtime

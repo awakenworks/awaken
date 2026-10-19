@@ -448,7 +448,7 @@ struct ControlSurface {
     mcp_export: Router,
     reconciler: Option<Arc<dyn awaken_config_service::PublicationBindingReconciler>>,
     admin_execs: Vec<Arc<dyn awaken_tool_contract::RawTool>>,
-    credential_source: Arc<dyn awaken_session_application::SessionCredentialSource>,
+    credential_source: Arc<dyn awaken_credential_contract::SessionCredentialSource>,
     repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
     audit_plane: ManagementAuditPlane,
     webhook_stores: Option<(
@@ -481,8 +481,8 @@ fn assemble_control_surface(
                 mcp_export,
                 reconciler: Some(component.publication_reconciler),
                 admin_execs: component.admin_tools,
-                credential_source: component.vault_state.clone()
-                    as Arc<dyn awaken_session_application::SessionCredentialSource>,
+                credential_source: component.vault_state.application().credential_access()
+                    as Arc<dyn awaken_credential_contract::SessionCredentialSource>,
                 repository_credentials: component.repository_credentials.clone(),
                 audit_plane: component.management_audit,
                 webhook_stores: Some((
@@ -693,9 +693,9 @@ fn assemble_session_plane(
     // The canonical Coordinator component owns Runtime background drain.
     // This process does not register a second drain for the same Host.
     let credentials = match control.vault_state.as_ref() {
-        Some(vault) => {
-            awaken_session_application::SessionCredentialAuthorities::read_write(vault.clone())
-        }
+        Some(vault) => awaken_session_application::SessionCredentialAuthorities::read_write(
+            vault.application().credential_access(),
+        ),
         None => awaken_session_application::SessionCredentialAuthorities::read_only(
             control.credential_source.clone(),
         ),

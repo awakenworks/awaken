@@ -1,126 +1,13 @@
-// @formal surface requirement=credential.lifecycle.credential_lifecycle
-// @formal reason: Static owner: generic write-only Credential material projection over the canonical
-// @formal reason: VaultState. Dynamic path: a consumer supplies provider, target, usage, and typed
-// @formal reason: material; the adapter delegates idempotent creation, exact-revision rotation, and
-// @formal reason: retirement to the existing Vault WAL and CAS, and accepts response-loss replay only for
-// @formal reason: one-ahead active byte-identical material. Evidence:
-// @formal reason: credential.lifecycle.credential_lifecycle and the adjacent consumer-neutral ingress
-// @formal reason: decision-table test; this is a product-requirement classification, not a direct
-// @formal reason: formal-proof claim.
-//! Generic write-only Credential material ingress over the canonical Vault.
-//!
-//! This adapter owns no consumer configuration, material, or source state. It
-//! compiles a caller-declared provider/target/usage/material tuple and delegates
-//! sealing, idempotent creation, exact-revision rotation, and retirement to the
-//! existing Credential WAL/CAS operations of the credential context's
-//! `VaultApplication`.
-
-use awaken_credential_contract::{
-    CredentialDescriptor, CredentialMaterialDescriptor, CredentialTargetContract, MaterialEntry,
-    OPAQUE_SECRET_MATERIAL_TYPE,
-};
-use awaken_session_application::{
-    CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialInput,
-    CredentialMaterialRetirementCommand, CredentialMaterialRotationCommand, CredentialPlaintext,
-};
+// @formal surface exclude=test_support_adapter
+// @formal owner crates/control/awaken-credential-vault/src/vault_credential_access.rs
+// @formal reason: The original consumer-neutral ingress regression remains at its historical
+// @formal reason: module path; all production commands moved to the credential access owner.
+//! Consumer-neutral ingress regression over the canonical Vault access owner.
 
 use super::VaultState;
-
-#[async_trait::async_trait]
-impl CredentialMaterialIngress for VaultState {
-    async fn enter_material(
-        &self,
-        command: CredentialMaterialIngressCommand,
-    ) -> Result<MaterialEntry, String> {
-        let CredentialMaterialIngressCommand {
-            source_id,
-            workspace_id,
-            target,
-            usage,
-            material,
-        } = command;
-        let (provider, material_descriptor, material) = encode_material(material)?;
-        let descriptor = CredentialDescriptor::new(
-            provider,
-            material_descriptor,
-            [CredentialTargetContract::new(target, usage)],
-        );
-        self.application
-            .enter_material(source_id, &workspace_id, descriptor, material)
-            .await
-    }
-
-    async fn rotate_material(
-        &self,
-        command: CredentialMaterialRotationCommand,
-    ) -> Result<u64, String> {
-        let CredentialMaterialRotationCommand {
-            source_id,
-            expected_revision,
-            workspace_id,
-            target,
-            usage,
-            material,
-        } = command;
-        let (provider, material_descriptor, encoded_material) = encode_material(material)?;
-        let expected_descriptor = CredentialDescriptor::new(
-            provider,
-            material_descriptor,
-            [CredentialTargetContract::new(target, usage)],
-        );
-        self.application
-            .rotate_material(
-                &source_id,
-                expected_revision,
-                &workspace_id,
-                &expected_descriptor,
-                encoded_material,
-            )
-            .await
-    }
-
-    async fn retire_material(
-        &self,
-        command: CredentialMaterialRetirementCommand,
-    ) -> Result<(), String> {
-        let CredentialMaterialRetirementCommand {
-            credential,
-            workspace_id,
-        } = command;
-        self.application
-            .retire_material(credential, &workspace_id)
-            .await
-    }
-}
-
-fn encode_material(
-    material: CredentialMaterialInput,
-) -> Result<
-    (
-        String,
-        CredentialMaterialDescriptor,
-        awaken_agent_contract::RedactedString,
-    ),
-    String,
-> {
-    let descriptor = match &material.plaintext {
-        CredentialPlaintext::Opaque(_) => {
-            CredentialMaterialDescriptor::secret(OPAQUE_SECRET_MATERIAL_TYPE)
-        }
-        CredentialPlaintext::Structured(structured) => CredentialMaterialDescriptor::structured(
-            structured.type_id.clone(),
-            structured.fields.keys().cloned(),
-        ),
-    };
-    let encoded = match material.plaintext {
-        CredentialPlaintext::Opaque(value) => value,
-        CredentialPlaintext::Structured(structured) => {
-            awaken_credential_vault::encode_structured_material(structured)
-                .map_err(|error| error.to_string())?
-        }
-    };
-    Ok((material.provider, descriptor, encoded))
-}
+use awaken_credential_contract::{
+    CredentialMaterialIngressCommand, CredentialMaterialInput, CredentialMaterialRotationCommand,
+};
 
 #[cfg(test)]
 mod tests {
@@ -214,6 +101,7 @@ mod tests {
             secrets.clone(),
             repository.clone(),
             awaken_time::system_clock(),
+            None,
         );
         let source_id = CredentialSourceId("credential:repository:exact".into());
         let exact_target =
@@ -230,16 +118,18 @@ mod tests {
         let other_provider_source =
             CredentialSourceId("credential:repository:other-provider".into());
         let empty_inventory = secrets.inventory().await.expect("V5 inventory");
-        vault
-            .enter_material(enter(
+        awaken_credential_contract::CredentialMaterialIngress::enter_material(
+            vault.application().credential_access().as_ref(),
+            enter(
                 other_provider_source.clone(),
                 "workspace-a",
                 other_target.clone(),
                 "git-example",
                 "other-token",
-            ))
-            .await
-            .expect("V5/E5");
+            ),
+        )
+        .await
+        .expect("V5/E5");
         assert_ne!(secrets.inventory().await.unwrap(), empty_inventory, "V5/E5");
         assert_eq!(
             repository
@@ -258,16 +148,18 @@ mod tests {
         // WAL publishes one source and returns created=true; M2 an exact retry
         // => the same credential with created=false, no source or material change.
         // This is the original insertion winner, not Session/Registry provenance.
-        let entered = vault
-            .enter_material(enter(
+        let entered = awaken_credential_contract::CredentialMaterialIngress::enter_material(
+            vault.application().credential_access().as_ref(),
+            enter(
                 source_id.clone(),
                 "workspace-a",
                 exact_target.clone(),
                 "github",
                 "token-1",
-            ))
-            .await
-            .expect("V1/E1");
+            ),
+        )
+        .await
+        .expect("V1/E1");
         assert!(entered.created, "M1 current command owns the new material");
         let source = repository.get(&source_id).await.expect("V1 source");
         assert!(source.provider_id.is_none(), "V1/E1 one provider authority");
@@ -284,16 +176,18 @@ mod tests {
         );
 
         let before = secrets.inventory().await.expect("V2 inventory");
-        let replayed = vault
-            .enter_material(enter(
+        let replayed = awaken_credential_contract::CredentialMaterialIngress::enter_material(
+            vault.application().credential_access().as_ref(),
+            enter(
                 source_id.clone(),
                 "workspace-a",
                 exact_target.clone(),
                 "github",
                 "token-1",
-            ))
-            .await
-            .expect("M2 exact replay");
+            ),
+        )
+        .await
+        .expect("M2 exact replay");
         assert!(
             !replayed.created,
             "M2 earlier durable truth owns the material"
@@ -306,16 +200,18 @@ mod tests {
         );
         assert_eq!(secrets.inventory().await.unwrap(), before, "M2 material");
         assert!(
-            vault
-                .enter_material(enter(
+            awaken_credential_contract::CredentialMaterialIngress::enter_material(
+                vault.application().credential_access().as_ref(),
+                enter(
                     source_id.clone(),
                     "workspace-a",
                     other_target.clone(),
                     "github",
                     "token-2",
-                ))
-                .await
-                .is_err(),
+                )
+            )
+            .await
+            .is_err(),
             "V2/E2"
         );
         assert_eq!(secrets.inventory().await.unwrap(), before, "V2/E2");
@@ -330,17 +226,12 @@ mod tests {
             ("V3-target", "workspace-a", other_target),
         ] {
             assert!(
-                vault
-                    .rotate_material(rotate(
-                        source_id.clone(),
-                        1,
-                        workspace,
-                        target,
-                        "github",
-                        "token-3",
-                    ))
-                    .await
-                    .is_err(),
+                awaken_credential_contract::CredentialMaterialIngress::rotate_material(
+                    vault.application().credential_access().as_ref(),
+                    rotate(source_id.clone(), 1, workspace, target, "github", "token-3",)
+                )
+                .await
+                .is_err(),
                 "{rule}/E3"
             );
             assert_eq!(secrets.inventory().await.unwrap(), before, "{rule}/E3");
@@ -351,15 +242,18 @@ mod tests {
             );
         }
 
-        let exact_revision = vault
-            .rotate_material(rotate(
-                source_id.clone(),
-                1,
-                "workspace-a",
-                exact_target.clone(),
-                "github",
-                "token-4",
-            ))
+        let exact_revision =
+            awaken_credential_contract::CredentialMaterialIngress::rotate_material(
+                vault.application().credential_access().as_ref(),
+                rotate(
+                    source_id.clone(),
+                    1,
+                    "workspace-a",
+                    exact_target.clone(),
+                    "github",
+                    "token-4",
+                ),
+            )
             .await
             .expect("V6/E6 exact rotation");
         assert_eq!(exact_revision, 2, "V6/E6 completed revision");
@@ -369,15 +263,18 @@ mod tests {
             "V6/E6"
         );
         let exact_rotation_inventory = secrets.inventory().await.unwrap();
-        let replay_revision = vault
-            .rotate_material(rotate(
-                source_id.clone(),
-                1,
-                "workspace-a",
-                exact_target.clone(),
-                "github",
-                "token-4",
-            ))
+        let replay_revision =
+            awaken_credential_contract::CredentialMaterialIngress::rotate_material(
+                vault.application().credential_access().as_ref(),
+                rotate(
+                    source_id.clone(),
+                    1,
+                    "workspace-a",
+                    exact_target.clone(),
+                    "github",
+                    "token-4",
+                ),
+            )
             .await
             .expect("V7/E7 exact crash replay");
         assert_eq!(replay_revision, 2, "V7/E7 completed revision");
@@ -392,17 +289,19 @@ mod tests {
             "V7/E7 exact revision remains"
         );
         assert!(
-            vault
-                .rotate_material(rotate(
+            awaken_credential_contract::CredentialMaterialIngress::rotate_material(
+                vault.application().credential_access().as_ref(),
+                rotate(
                     source_id.clone(),
                     1,
                     "workspace-a",
                     exact_target.clone(),
                     "github",
                     "must-not-write",
-                ))
-                .await
-                .is_err(),
+                )
+            )
+            .await
+            .is_err(),
             "V8/E8"
         );
         assert_eq!(
@@ -416,31 +315,36 @@ mod tests {
             "V8/E8 exact revision remains"
         );
 
-        let third_revision = vault
-            .rotate_material(rotate(
-                source_id.clone(),
-                2,
-                "workspace-a",
-                exact_target.clone(),
-                "github",
-                "token-5",
-            ))
+        let third_revision =
+            awaken_credential_contract::CredentialMaterialIngress::rotate_material(
+                vault.application().credential_access().as_ref(),
+                rotate(
+                    source_id.clone(),
+                    2,
+                    "workspace-a",
+                    exact_target.clone(),
+                    "github",
+                    "token-5",
+                ),
+            )
             .await
             .expect("V9 setup advances to revision 3");
         assert_eq!(third_revision, 3, "V9 setup");
         let drift_inventory = secrets.inventory().await.unwrap();
         assert!(
-            vault
-                .rotate_material(rotate(
+            awaken_credential_contract::CredentialMaterialIngress::rotate_material(
+                vault.application().credential_access().as_ref(),
+                rotate(
                     source_id.clone(),
                     1,
                     "workspace-a",
                     exact_target.clone(),
                     "github",
                     "token-5",
-                ))
-                .await
-                .is_err(),
+                )
+            )
+            .await
+            .is_err(),
             "V9/E9"
         );
         assert_eq!(
@@ -471,17 +375,19 @@ mod tests {
         .expect("V4 legacy fixture");
         let legacy_before = secrets.inventory().await.unwrap();
         assert!(
-            vault
-                .rotate_material(rotate(
+            awaken_credential_contract::CredentialMaterialIngress::rotate_material(
+                vault.application().credential_access().as_ref(),
+                rotate(
                     legacy.id.clone(),
                     1,
                     "workspace-a",
                     exact_target,
                     "github",
                     "must-not-write",
-                ))
-                .await
-                .is_err(),
+                )
+            )
+            .await
+            .is_err(),
             "V4/E4"
         );
         assert_eq!(secrets.inventory().await.unwrap(), legacy_before, "V4/E4");

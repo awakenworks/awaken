@@ -330,3 +330,124 @@ async fn vault_rollout_reports_busy_and_postcommit_failure_then_replays_exact_ev
         }
     }
 }
+
+#[tokio::test]
+async fn vault_rollout_graph_releases_each_credential_return_edge() {
+    // D1-D3 cause/effect graph: the real over_managed target strongly retains
+    // both updates App and publication Managed. App retains Source AND Ingress.
+    // Removing only one return edge would keep the old Vault/target graph alive.
+    // Each independent row constructs the actual graph, then drops every local
+    // target/App/Managed/Vault owner: D1 no capability escapes => all expire;
+    // D2 only Source escapes => graph expires, Source still reads the same Vault;
+    // D3 only Ingress escapes => graph expires, first/replay share exact backend
+    // truth (created true/false). Drop the last capability => Access expires.
+    // Weak is observation only, never production ownership or strong_count.
+    // Session storage is actual SQLite; Vault is the existing in-memory domain
+    // backend. These rows prove that concrete graph's release, not credential
+    // SQL/PG, background task shutdown, or physical resource cleanup. This
+    // fixture starts no router/supervisor task; no cancellation substitutes drop.
+    use awaken_credential_contract::{
+        CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialInput,
+        CredentialSourceId, SessionCredentialSource, http_basic_material,
+    };
+    use awaken_credential_vault::{InMemorySecretStore, repo::InMemoryCredentialRepo};
+    use awaken_protocol_managed::VaultState;
+
+    for escaped in ["D1 none", "D2 source", "D3 ingress"] {
+        let clock = awaken_time::system_clock();
+        let vault = Arc::new(VaultState::new(
+            Arc::new(InMemorySecretStore::new()),
+            Arc::new(InMemoryCredentialRepo::new()),
+            clock.clone(),
+            None,
+        ));
+        let (vault_id, _, _, _) = vault
+            .enter_application_mcp_bearer(
+                "workspace-a",
+                "application-a",
+                "https://mcp.example.test",
+                "drop-graph-command",
+                1,
+                awaken_agent_contract::RedactedString::new("drop-secret"),
+            )
+            .await
+            .unwrap();
+        let runtime = Arc::new(RehydrateFake::default());
+        let managed = Arc::new(
+            awaken_protocol_managed_testkit::managed_state_from_parts(
+                runtime.clone(),
+                Some(runtime),
+                Arc::new(ephemeral_session_repo().await),
+                awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
+                clock,
+                Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+            .with_vaults(vault.clone()),
+        );
+        let application = managed.session_application();
+        let target = SessionCredentialRolloutAdoption::over_managed(&application, &managed);
+        let weak_target = Arc::downgrade(&target);
+        vault.application().set_rollout_target(target);
+        let access = vault.application().credential_access();
+        let weak_access = Arc::downgrade(&access);
+        let source: Option<Arc<dyn SessionCredentialSource>> =
+            (escaped == "D2 source").then(|| access.clone() as Arc<dyn SessionCredentialSource>);
+        let ingress: Option<Arc<dyn CredentialMaterialIngress>> =
+            (escaped == "D3 ingress").then(|| access.clone() as Arc<dyn CredentialMaterialIngress>);
+        let weak_vault = Arc::downgrade(&vault);
+        let weak_application = Arc::downgrade(&application);
+        let weak_managed = Arc::downgrade(&managed);
+        drop(access);
+        drop(application);
+        drop(managed);
+        drop(vault);
+        assert!(weak_vault.upgrade().is_none(), "{escaped}: Vault released");
+        assert!(
+            weak_target.upgrade().is_none(),
+            "{escaped}: actual target released"
+        );
+        assert!(
+            weak_application.upgrade().is_none(),
+            "{escaped}: updates App released"
+        );
+        assert!(
+            weak_managed.upgrade().is_none(),
+            "{escaped}: publication Managed released"
+        );
+        if let Some(source) = source.as_ref() {
+            assert!(weak_access.upgrade().is_some(), "D2 retains Access only");
+            assert!(source.has_vault("workspace-a", &vault_id).await.unwrap());
+        }
+        if let Some(ingress) = ingress.as_ref() {
+            assert!(weak_access.upgrade().is_some(), "D3 retains Access only");
+            let command = || {
+                CredentialMaterialIngressCommand {
+                source_id: CredentialSourceId("drop-graph-ingress".into()),
+                workspace_id: "workspace-a".into(),
+                target: awaken_session_configuration_contract::resource::repository_transport_credential_target(
+                    "https://github.com/example/repository.git",
+                ).unwrap(),
+                usage: awaken_session_configuration_contract::resource::repository_transport_credential_usage(),
+                material: CredentialMaterialInput::structured("github", http_basic_material(
+                    awaken_agent_contract::RedactedString::new("x-access-token"),
+                    awaken_agent_contract::RedactedString::new("drop-graph-token"),
+                )),
+            }
+            };
+            let first = ingress.enter_material(command()).await.unwrap();
+            let replay = ingress.enter_material(command()).await.unwrap();
+            assert!(first.created);
+            assert!(!replay.created);
+            assert_eq!(first.credential, replay.credential);
+        }
+        if escaped == "D1 none" {
+            assert!(weak_access.upgrade().is_none(), "D1 no capability escapes");
+        }
+        drop(source);
+        drop(ingress);
+        assert!(
+            weak_access.upgrade().is_none(),
+            "{escaped}: final capability released"
+        );
+    }
+}

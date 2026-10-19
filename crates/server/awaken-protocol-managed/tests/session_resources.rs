@@ -1,5 +1,5 @@
 // @formal evidence session_resources.repository_rotation_requires_original_live_generation
-// awaken-allow(file-limit-ceiling): 6895 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 6850 (legacy oversized test file: split, never grow)
 //! Post-creation session-resource CRUD (`/v1/sessions/{id}/resources`) mirrors the
 //! Managed Agents contract, while whole-manifest replacement is explicitly owned
 //! by `/v1/awaken/sessions/{id}/resources`: only `file` attaches to a live Session;
@@ -17,7 +17,10 @@ mod creation_inputs;
 #[path = "session_resources/input_mounts.rs"]
 mod input_mounts;
 use accepting_fake::AcceptingFake;
+#[path = "session_resources/credential_ingress.rs"]
+mod credential_ingress;
 mod support;
+use credential_ingress::CountingCredentialMaterialIngress;
 #[path = "session_resources/tool_inheritance.rs"]
 mod tool_inheritance;
 #[path = "session_resources/unattempted_profiled_release.rs"]
@@ -798,56 +801,6 @@ impl awaken_session_budget_contract::ManagedListPriceProvider for RecordingListP
             runtime_rates: Default::default(),
             fingerprint: "budget-backend-test-fingerprint".into(),
         })
-    }
-}
-
-#[derive(Default)]
-struct CountingCredentialMaterialIngress {
-    writes: std::sync::atomic::AtomicUsize,
-    retirements: std::sync::atomic::AtomicUsize,
-    sources: std::sync::Mutex<Vec<String>>,
-}
-
-#[async_trait::async_trait]
-impl awaken_session_application::CredentialMaterialIngress for CountingCredentialMaterialIngress {
-    async fn enter_material(
-        &self,
-        command: awaken_session_application::CredentialMaterialIngressCommand,
-    ) -> Result<awaken_credential_contract::MaterialEntry, String> {
-        self.writes
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.sources
-            .lock()
-            .unwrap()
-            .push(command.source_id.0.clone());
-        Ok(awaken_credential_contract::MaterialEntry {
-            credential: awaken_credential_contract::CredentialRef {
-                id: command.source_id.0,
-                revision: 1,
-            },
-            created: true,
-        })
-    }
-
-    async fn rotate_material(
-        &self,
-        command: awaken_session_application::CredentialMaterialRotationCommand,
-    ) -> Result<u64, String> {
-        self.writes
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        command
-            .expected_revision
-            .checked_add(1)
-            .ok_or_else(|| "repository credential revision overflow".into())
-    }
-
-    async fn retire_material(
-        &self,
-        _command: awaken_session_application::CredentialMaterialRetirementCommand,
-    ) -> Result<(), String> {
-        self.retirements
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(())
     }
 }
 
@@ -2921,12 +2874,14 @@ async fn repository_access_compiler_follows_the_decision_table() {
             &("repository-a", 1_u64, &target),
             &usage,
         );
-        let vaults = support::vault(secrets, credentials);
-        let actual = vaults
+        let access = support::vault(secrets, credentials)
+            .application()
+            .credential_access();
+        let actual = access
             .credential_access_for_source(
                 &source_id,
                 "workspace-a",
-                awaken_session_application::SessionCredentialAccessRequest {
+                awaken_credential_contract::SessionCredentialAccessRequest {
                     target: target.clone(),
                     usage,
                     policy: awaken_credential_contract::CredentialExecutionPolicy::exact(

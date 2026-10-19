@@ -1508,7 +1508,7 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
         persisted.updated_at_unix_ms = Some(900);
         crate::state::test_support::create_session_fixture(
             repository.as_ref(),
-            DEFAULT_SCOPE,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
             persisted,
         )
         .await;
@@ -6865,7 +6865,7 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
         .expect("B1-B3 first transition");
     state
         .commit_session_snapshot(
-            DEFAULT_SCOPE,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
             persisted,
             "test-shared-budget-child-provenance",
             Vec::new(),
@@ -12138,7 +12138,7 @@ async fn durable_outcome_projector_is_warm_cold_restart_and_active_active_stable
         retained_outcome_fixture(session_id, "outcome-projector-batch", 2);
     crate::state::test_support::create_session_fixture(
         repository.as_ref(),
-        DEFAULT_SCOPE,
+        awaken_tenancy::DEFAULT_WORKSPACE_ID,
         persisted,
     )
     .await;
@@ -12345,7 +12345,7 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
     let (persisted, outcome_id) = retained_outcome_fixture(session_id, "errored-outcome-batch", 1);
     crate::state::test_support::create_session_fixture(
         repository.as_ref(),
-        DEFAULT_SCOPE,
+        awaken_tenancy::DEFAULT_WORKSPACE_ID,
         persisted,
     )
     .await;
@@ -12481,7 +12481,7 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
     let ordinary_repository = Arc::new(ephemeral_session_repo().await);
     crate::state::test_support::create_session_fixture(
         ordinary_repository.as_ref(),
-        DEFAULT_SCOPE,
+        awaken_tenancy::DEFAULT_WORKSPACE_ID,
         crate::state::tests::sample_persisted(ordinary_session_id),
     )
     .await;
@@ -12934,7 +12934,7 @@ async fn recovered_terminal_errors_are_visible_once_without_releasing_active_ses
             persisted.execution = execution;
             crate::state::test_support::create_session_fixture(
                 repository.as_ref(),
-                DEFAULT_SCOPE,
+                awaken_tenancy::DEFAULT_WORKSPACE_ID,
                 persisted,
             )
             .await;

@@ -1,9 +1,10 @@
 //! Original registration/retirement fault fixture; no production state lives here.
 use super::resource_registry::FaultInjectingResourceRegistry;
-use crate::{
+use awaken_credential_contract::{
     CredentialMaterialIngress, CredentialMaterialIngressCommand,
     CredentialMaterialRetirementCommand, CredentialMaterialRotationCommand,
 };
+
 use awaken_credential_contract::MaterialEntry;
 use std::collections::BTreeSet;
 use std::sync::Mutex;

@@ -221,19 +221,18 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         clock,
     } = dependencies;
     let request_scoped_execution_workspace = remote_iam.is_some();
-    let managed_credentials = credentials.clone();
-    let credentials: Arc<dyn CredentialRepo> = credentials;
 
-    let mut vault_state =
-        VaultState::new(secrets.clone(), managed_credentials.clone(), clock.clone());
+    let mut vault_state = VaultState::new(
+        secrets.clone(),
+        credentials.clone(),
+        clock.clone(),
+        credential_material_delivery,
+    );
     if let Some(probe) = mcp_probe {
         vault_state = vault_state.with_probe(probe);
     }
     if let Some(exchange) = mcp_refresh_exchange {
         vault_state = vault_state.with_refresh_exchange(exchange);
-    }
-    if let Some(delivery) = credential_material_delivery {
-        vault_state = vault_state.with_material_delivery(delivery);
     }
     let vault_state = Arc::new(vault_state);
     let mcp_catalog =
@@ -243,7 +242,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     recover_and_supervise_credentials(
         secrets.clone(),
         credentials.clone(),
-        managed_credentials.clone(),
+        credentials.clone(),
         vault_state.clone(),
         clock.clone(),
         &service_lifecycle,

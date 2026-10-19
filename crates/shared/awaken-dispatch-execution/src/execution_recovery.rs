@@ -1149,7 +1149,7 @@ mod tests {
             } else {
                 let reason = match rule {
                     2 | 5 => Gap::HistoryMissing,
-                    6 | 7 | 8 => Gap::InventoryIncomplete,
+                    6..=8 => Gap::InventoryIncomplete,
                     _ => Gap::IdentityMismatch,
                 };
                 assert_eq!(observed, Err(reason), "I{rule}");

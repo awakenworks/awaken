@@ -5,14 +5,14 @@
 // @formal reason: SessionApplication.
 //! Managed protocol access to the canonical Session application.
 
+#[cfg(any(test, feature = "test-support"))]
+use awaken_credential_contract::{CredentialMaterialIngress, SessionCredentialSource};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use awaken_environment_application::execution::EnvironmentExecutionApplication;
 use awaken_session_application::SessionApplication;
-#[cfg(any(test, feature = "test-support"))]
-use awaken_session_application::{CredentialMaterialIngress, SessionCredentialSource};
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_application_contract::LifecycleFactNotifier;
 
@@ -276,9 +276,10 @@ impl ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_vaults(self, vaults: Arc<VaultState>) -> Self {
+        let access = vaults.application().credential_access();
         self.configure_application(|application| {
-            application.set_credential_source(vaults.clone());
-            application.set_credential_material_ingress(vaults);
+            application.set_credential_source(access.clone());
+            application.set_credential_material_ingress(access);
         })
     }
 
@@ -296,7 +297,7 @@ impl ManagedState {
     }
 
     /// Wire the same secret-free credential selection through either the
-    /// local VaultState adapter or the authenticated split-service adapter.
+    /// local VaultCredentialAccess adapter or the authenticated split-service adapter.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_credential_source(self, source: Arc<dyn SessionCredentialSource>) -> Self {

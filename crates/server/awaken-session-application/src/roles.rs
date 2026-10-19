@@ -19,6 +19,7 @@
 //! its owning command. Termination-only role lowering selects the existing
 //! archive kernel without extending the broad inherent application surface.
 
+use awaken_credential_contract::CredentialMaterialInput;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -41,15 +42,14 @@ use awaken_session_types::SessionId;
 
 use crate::{
     CommittedSessionFacts, ConfiguredSessionRepository, CreateProfiledSessionCommand,
-    CredentialMaterialInput, ProjectionThreadSnapshots, RecoveredSessionProjection,
-    ReplaceSessionResourceManifest, SessionApplication,
-    SessionArchiveWithRepositoryPublicationCommand, SessionArchiveWithRepositoryPublicationError,
-    SessionArchiveWithRepositoryPublicationOutcome, SessionCreateProtocol, SessionCreateRequest,
-    SessionCreateRequestError, SessionCreationError, SessionDeleteCommand,
-    SessionDispositionMutation, SessionEventBatchIdempotency, SessionExecutionObservation,
-    SessionMutationError, SessionPreparationError, SessionProjectionRecoveryError,
-    SessionRepositoryResourceInput, SessionResourceManifestError, SessionResourceManifestOutcome,
-    SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
+    ProjectionThreadSnapshots, RecoveredSessionProjection, ReplaceSessionResourceManifest,
+    SessionApplication, SessionArchiveWithRepositoryPublicationCommand,
+    SessionArchiveWithRepositoryPublicationError, SessionArchiveWithRepositoryPublicationOutcome,
+    SessionCreateProtocol, SessionCreateRequest, SessionCreateRequestError, SessionCreationError,
+    SessionDeleteCommand, SessionDispositionMutation, SessionEventBatchIdempotency,
+    SessionExecutionObservation, SessionMutationError, SessionPreparationError,
+    SessionProjectionRecoveryError, SessionRepositoryResourceInput, SessionResourceManifestError,
+    SessionResourceManifestOutcome, SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
 };
 
 /// Create a Session from a protocol-lowered request, and replay a create.
@@ -883,7 +883,8 @@ impl DeploymentSessionEnvironment for SessionApplication {
 /// rotation cases exercise the same commands through the directly held service.
 ///
 /// ```
-/// use awaken_session_application::{CredentialMaterialInput, SessionCredentialCommands};
+/// use awaken_credential_contract::{CredentialMaterialInput};
+/// use awaken_session_application::{SessionCredentialCommands};
 /// use awaken_session_types::SessionId;
 /// use awaken_resource_contract::BindingId;
 /// async fn binding_commands(role: &dyn SessionCredentialCommands, material: CredentialMaterialInput) {
@@ -902,7 +903,8 @@ impl DeploymentSessionEnvironment for SessionApplication {
 /// ```
 ///
 /// ```compile_fail,E0599
-/// use awaken_session_application::{CredentialMaterialInput, SessionResourceCommands};
+/// use awaken_credential_contract::{CredentialMaterialInput};
+/// use awaken_session_application::{SessionResourceCommands};
 /// use awaken_session_types::SessionId;
 /// use awaken_resource_contract::BindingId;
 /// async fn old_resource_role(role: &dyn SessionResourceCommands, material: CredentialMaterialInput) {
@@ -920,7 +922,8 @@ impl DeploymentSessionEnvironment for SessionApplication {
 /// ```
 ///
 /// ```compile_fail,E0599
-/// use awaken_session_application::{CredentialMaterialInput, SessionApplication};
+/// use awaken_credential_contract::{CredentialMaterialInput};
+/// use awaken_session_application::{SessionApplication};
 /// use awaken_session_types::SessionId;
 /// use awaken_resource_contract::BindingId;
 /// async fn old_application(application: &SessionApplication, material: CredentialMaterialInput) {

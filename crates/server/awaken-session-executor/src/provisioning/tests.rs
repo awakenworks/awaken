@@ -1369,15 +1369,20 @@ async fn reverse_channels_are_safe_noops_without_a_live_session() {
                 ..Default::default()
             },
         );
+    // R0: staged-only or absent Session + the installed R owner's ordinary
+    // harvest => empty receipts; its current-claim lookup is not bypassed.
+    let artifact_harvester = host.realization_executor.effects().artifacts();
     assert!(
-        host.harvest_thread_artifacts("t")
+        artifact_harvester
+            .harvest("t")
             .await
             .unwrap()
             .receipts
             .is_empty()
     );
     assert!(
-        host.harvest_thread_artifacts("never-seen")
+        artifact_harvester
+            .harvest("never-seen")
             .await
             .unwrap()
             .receipts

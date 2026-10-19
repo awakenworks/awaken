@@ -26,8 +26,8 @@
       "reason": "W21: one application service per use case, composed by a facade"
     },
     "awaken-session-executor::ExecutorComponents": {
-      "files": 6,
-      "methods": 30,
+      "files": 5,
+      "methods": 28,
       "reason": "slice H: each of the eleven session-runtime roles gets one owning component (plan 10.3 item 11)"
     },
     "awaken-session-executor::RunAssembly": {
@@ -260,7 +260,7 @@
     "awaken-config-service::registration_reconciliation.rs::reconcile_registrations_for_execution_workspace": 158,
     "awaken-control::authz.rs::management_guard": 186,
     "awaken-control::authz/profiles.rs::workspace_authorization_profile": 198,
-    "awaken-control::component.rs::build_control_component": 257,
+    "awaken-control::component.rs::build_control_component": 256,
     "awaken-control::credential_refresh.rs::run_exchange": 162,
     "awaken-control::lib.rs::control_router": 180,
     "awaken-control::webhook_authoring.rs::put_subscription": 157,

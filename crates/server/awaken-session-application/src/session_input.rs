@@ -36,8 +36,8 @@ impl RepositoryAccessToken {
 
     /// The write-only material this token seals as.
     #[must_use]
-    pub fn into_credential_material(self) -> super::CredentialMaterialInput {
-        super::CredentialMaterialInput::structured(
+    pub fn into_credential_material(self) -> awaken_credential_contract::CredentialMaterialInput {
+        awaken_credential_contract::CredentialMaterialInput::structured(
             "github",
             awaken_credential_contract::http_basic_material(
                 awaken_agent_contract::RedactedString::new("x-access-token"),

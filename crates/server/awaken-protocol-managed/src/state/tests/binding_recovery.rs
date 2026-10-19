@@ -230,7 +230,11 @@ async fn cold_projection_restores_every_frozen_agent_hidden_axis() {
     baseline.mcp_authoring.ordered_vault_ids = vec!["vault-a".into(), "vault-b".into()];
 
     let inherited = state
-        .rehydrated_session("cold-hidden-axes", DEFAULT_SCOPE, persisted.clone())
+        .rehydrated_session(
+            "cold-hidden-axes",
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+            persisted.clone(),
+        )
         .expect("H1 exact cold projection");
     assert_eq!(
         inherited.agent.model.speed,
@@ -270,7 +274,11 @@ async fn cold_projection_restores_every_frozen_agent_hidden_axis() {
     *baseline.system_prompt =
         awaken_session_configuration_contract::SessionSystemPromptSelection::Clear;
     let cleared = state
-        .rehydrated_session("cold-hidden-axes", DEFAULT_SCOPE, persisted.clone())
+        .rehydrated_session(
+            "cold-hidden-axes",
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+            persisted.clone(),
+        )
         .expect("H2 exact cold projection");
     assert_eq!(cleared.agent.model.speed, None, "H2/E2 replace, not merge");
     assert_eq!(
@@ -291,7 +299,11 @@ async fn cold_projection_restores_every_frozen_agent_hidden_axis() {
             "session-only system".into(),
         );
     let replaced = state
-        .rehydrated_session("cold-hidden-axes", DEFAULT_SCOPE, persisted)
+        .rehydrated_session(
+            "cold-hidden-axes",
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+            persisted,
+        )
         .expect("H3 exact cold projection");
     assert_eq!(
         replaced.agent.system.as_deref(),
@@ -311,7 +323,7 @@ async fn immediate_environment_binding_sink_is_durable_and_idempotent() {
     let repo = Arc::new(ephemeral_session_repo().await);
     create_session_fixture(
         repo.as_ref(),
-        DEFAULT_SCOPE,
+        awaken_tenancy::DEFAULT_WORKSPACE_ID,
         sample_persisted("binding-now"),
     )
     .await;
@@ -351,7 +363,7 @@ async fn immediate_binding_cas_retries_once_then_fails_closed_at_the_bound() {
         let inner = Arc::new(ephemeral_session_repo().await);
         create_session_fixture(
             inner.as_ref(),
-            DEFAULT_SCOPE,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
             sample_persisted(&format!("binding-{conflicts}")),
         )
         .await;
@@ -508,7 +520,7 @@ async fn rehydrated_session_restores_persisted_config() {
         }])
         .expect("valid durable client tool fixture");
     let session = state
-        .rehydrated_session("sesn_1", DEFAULT_SCOPE, persisted)
+        .rehydrated_session("sesn_1", awaken_tenancy::DEFAULT_WORKSPACE_ID, persisted)
         .expect("valid durable projection");
     assert_eq!(session.agent.id, "coder");
     assert_eq!(session.agent.model.id, "kimi-k2");
@@ -594,7 +606,12 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         epoch: 3,
         expires_at_unix_ms: 0,
     });
-    create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, persisted).await;
+    create_session_fixture(
+        repo.as_ref(),
+        awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        persisted,
+    )
+    .await;
 
     // Fresh state (empty cache) sharing the durable repo — simulates a restart.
     let runtime = RehydrateFake::default();
@@ -990,7 +1007,12 @@ async fn committed_event_refresh_merges_peer_messages_exactly_once() {
     // | warm  | same peer message| repeated     | no duplicate           |
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
         Arc::new(ephemeral_session_repo().await);
-    create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, sample_persisted("sesn_peer")).await;
+    create_session_fixture(
+        repo.as_ref(),
+        awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        sample_persisted("sesn_peer"),
+    )
+    .await;
     let runtime = RehydrateFake::default();
     let first = Message::text(
         awaken_agent_contract::agent::message::Id("peer-first".into()),
@@ -1089,7 +1111,12 @@ async fn protocol_defaults_preparer_rehydrates_the_exact_durable_baseline() {
 async fn session_id_mint_namespaces_restart_away_from_repository_truth() {
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
         Arc::new(ephemeral_session_repo().await);
-    create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, sample_persisted("sesn_0")).await;
+    create_session_fixture(
+        repo.as_ref(),
+        awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        sample_persisted("sesn_0"),
+    )
+    .await;
     let restarted = {
         let session_fixture_runtime = EndSessionRecorder::default();
         let session_fixture_clock = awaken_time::system_clock();
@@ -1188,7 +1215,7 @@ async fn resource_reconciler_retries_and_commits_a_crash_interrupted_activation(
         )
         .unwrap();
     pending.resources.start_attempt().unwrap();
-    create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, pending).await;
+    create_session_fixture(repo.as_ref(), awaken_tenancy::DEFAULT_WORKSPACE_ID, pending).await;
 
     let runtime = RehydrateFake::default();
     let restored = runtime.restored.clone();
@@ -1307,13 +1334,13 @@ async fn resource_reclaimer_never_tears_down_a_live_session_environment_case() {
         session
             .environment
             .set_resident(format!("binding-{status}"));
-        create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, session).await;
+        create_session_fixture(repo.as_ref(), awaken_tenancy::DEFAULT_WORKSPACE_ID, session).await;
     }
     let mut deleted = sample_persisted("sesn_deleted_empty");
     deleted.disposition = SessionDisposition::Deleting;
     deleted.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
     deleted.resources = Default::default();
-    create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, deleted).await;
+    create_session_fixture(repo.as_ref(), awaken_tenancy::DEFAULT_WORKSPACE_ID, deleted).await;
 
     let runtime = RehydrateFake::default();
     let applied = runtime.restored.clone();
@@ -1388,7 +1415,7 @@ async fn cold_rehydrate_preserves_a_running_sessions_resource_generation() {
             "sesn_running_rehydrate",
         ));
     running.environment.set_resident("running-binding");
-    create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, running).await;
+    create_session_fixture(repo.as_ref(), awaken_tenancy::DEFAULT_WORKSPACE_ID, running).await;
 
     let runtime = RehydrateFake::default();
     let applied = runtime.restored.clone();
@@ -1535,7 +1562,7 @@ async fn terminal_root_fences_mcp_recovery_before_runtime_effects() {
         Arc::new(ephemeral_session_repo().await);
     let mut failed = sample_persisted("sesn_failed_mcp");
     failed.execution = SessionExecutionState::ActivationFailed;
-    create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, failed).await;
+    create_session_fixture(repo.as_ref(), awaken_tenancy::DEFAULT_WORKSPACE_ID, failed).await;
     assert_eq!(
         repo.reconciliation_scan(None).await.unwrap().sessions.len(),
         1,
@@ -1586,7 +1613,12 @@ async fn startup_mcp_recovery_adopts_the_durable_environment_before_staging() {
         Arc::new(ephemeral_session_repo().await);
     let mut persisted = sample_persisted("sesn_startup_mcp");
     persisted.environment.set_resident("durable-k8s-binding");
-    create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, persisted).await;
+    create_session_fixture(
+        repo.as_ref(),
+        awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        persisted,
+    )
+    .await;
 
     let runtime = RehydrateFake::default();
     let order = runtime.order.clone();
@@ -1691,7 +1723,12 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
             .expect("local realization lease")
             .expires_at_unix_ms = 0;
         state
-            .commit_session_snapshot(DEFAULT_SCOPE, after_attach, "expire-test-owner", Vec::new())
+            .commit_session_snapshot(
+                awaken_tenancy::DEFAULT_WORKSPACE_ID,
+                after_attach,
+                "expire-test-owner",
+                Vec::new(),
+            )
             .await
             .expect("expire the crashed Runtime owner");
 
@@ -1738,7 +1775,7 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
             .expires_at_unix_ms = 0;
         restarted
             .commit_session_snapshot(
-                DEFAULT_SCOPE,
+                awaken_tenancy::DEFAULT_WORKSPACE_ID,
                 after_delete,
                 "expire-second-test-owner",
                 Vec::new(),

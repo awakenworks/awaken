@@ -128,7 +128,7 @@ async fn roots(
     repo: &impl awaken_session_repository_contract::SessionStore,
 ) -> Vec<PersistedSession> {
     repo.scan(SessionScanQuery::Workspace {
-        workspace_id: DEFAULT_SCOPE,
+        workspace_id: awaken_tenancy::DEFAULT_WORKSPACE_ID,
     })
     .await
     .unwrap()
@@ -165,7 +165,10 @@ async fn accepted_a_and_b_snapshots_survive_catalog_withdrawal_and_cold_peer() {
     }
     .with_config_source(profiles.clone());
     let a = state
-        .create_session(request(serde_json::json!("coordinator")), DEFAULT_SCOPE)
+        .create_session(
+            request(serde_json::json!("coordinator")),
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        )
         .await
         .unwrap();
     profiles.original.0.store(8, Ordering::SeqCst);
@@ -177,7 +180,7 @@ async fn accepted_a_and_b_snapshots_survive_catalog_withdrawal_and_cold_peer() {
             "input_schema": {"type": "object"}},
             {"type": "mcp_toolset", "mcp_server_name": "accepted-b"}],
         "mcp_servers": [{"type": "url", "name": "accepted-b", "url": "https://accepted-b.example.test/mcp"}]
-    })), DEFAULT_SCOPE).await.unwrap();
+    })), awaken_tenancy::DEFAULT_WORKSPACE_ID).await.unwrap();
     assert_eq!(a.agent.name, "coordinator-v7");
     assert_eq!(a.agent.version, 7);
     assert_eq!(
@@ -256,7 +259,10 @@ async fn accepted_a_and_b_snapshots_survive_catalog_withdrawal_and_cold_peer() {
     profiles.withdrawn.store(true, Ordering::SeqCst);
     assert!(
         state
-            .create_session(request(serde_json::json!("coordinator")), DEFAULT_SCOPE)
+            .create_session(
+                request(serde_json::json!("coordinator")),
+                awaken_tenancy::DEFAULT_WORKSPACE_ID
+            )
             .await
             .is_err()
     );
@@ -337,7 +343,7 @@ async fn explicit_missing_root_or_delegate_publication_never_follows_current() {
                 request(serde_json::json!({
                     "type": "agent", "id": "coordinator", "version": 7
                 })),
-                DEFAULT_SCOPE,
+                awaken_tenancy::DEFAULT_WORKSPACE_ID,
             )
             .await
             .expect_err("missing exact publication cannot admit current head8");
@@ -388,7 +394,10 @@ async fn fresh_unpinned_delegate_is_sampled_once_before_head_changes() {
     }
     .with_config_source(profiles.clone());
     let accepted = state
-        .create_session(request(serde_json::json!("coordinator")), DEFAULT_SCOPE)
+        .create_session(
+            request(serde_json::json!("coordinator")),
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        )
         .await
         .unwrap();
     assert_eq!(accepted.agent.version, 7);
@@ -433,7 +442,7 @@ async fn historic_missing_accepted_agent_keeps_tools_update_recovery_pending() {
         wire.as_object_mut().unwrap().remove(field);
     }
     let legacy: PersistedSession = serde_json::from_value(wire).unwrap();
-    create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, legacy).await;
+    create_session_fixture(repo.as_ref(), awaken_tenancy::DEFAULT_WORKSPACE_ID, legacy).await;
     let before = repo
         .get(&SessionId::from("historic-missing-accepted"))
         .await

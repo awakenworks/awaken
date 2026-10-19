@@ -7,13 +7,14 @@
 //! crates. This module only serializes secret-free commands and results so a
 //! split Coordinator never receives Control database handles or a seal key.
 
+use awaken_credential_contract::{SessionCredentialAccessRequest, SessionCredentialSource};
 use std::sync::Arc;
 use std::time::Duration;
 
 use awaken_agent_config::{AuditedConfigWrite, ManagementAuditEntry, ManagementAuditRecord};
 use awaken_config_service::{ManagementAuditPlane, ManagementAuditRepository};
 use awaken_credential_contract::CredentialSourceId;
-use awaken_session_application::{SessionCredentialAccessRequest, SessionCredentialSource};
+
 use awaken_session_state_contract::ManagedLifecycleFact;
 use awaken_tenancy::ScopeId;
 use axum::extract::{Request, State};
@@ -929,13 +930,14 @@ mod tests {
             Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
             credential_repo.clone(),
             awaken_time::system_clock(),
+            None,
         ));
         let delivery = Arc::new(RecordingDelivery::default());
         let token_source = Arc::new(RotatingTokenSource(RwLock::new(Arc::from("correct-token"))));
         let repository_admission = Arc::new(RecordingRepositoryAdmission::default());
         let app = router_with_authenticator(
             audit,
-            credentials.clone(),
+            credentials.application().credential_access(),
             repository_admission.clone(),
             delivery.clone(),
             PrivacyPorts {
@@ -1253,7 +1255,7 @@ mod tests {
                     };
                     credential_repo.put(source).await.unwrap();
                     assert!(
-                        credentials.application()
+                        credentials.application().credential_access()
                             .credential_of_source("workspace-a", &source_id)
                             .await.unwrap().unwrap().lifecycle.is_active(),
                         "{rule}: original Managed child remains Active",

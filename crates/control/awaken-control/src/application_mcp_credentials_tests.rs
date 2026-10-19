@@ -103,6 +103,7 @@ async fn hosted_application_bearer_http_contract_is_stable_and_rotatable() {
         secrets.clone(),
         credentials.clone(),
         awaken_time::system_clock(),
+        None,
     ));
     let app = application_mcp_credentials_router(state.clone());
     let body = |url: &str, generation: u64, token: &str| {

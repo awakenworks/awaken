@@ -1417,7 +1417,7 @@ async fn activation_failure_remains_deletable_after_projection_cache_loss() {
         Arc::new(ephemeral_session_repo().await);
     let mut failed = sample_persisted("sesn_failed_delete");
     failed.execution = SessionExecutionState::ActivationFailed;
-    create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, failed).await;
+    create_session_fixture(repo.as_ref(), awaken_tenancy::DEFAULT_WORKSPACE_ID, failed).await;
 
     let restarted = {
         let session_fixture_runtime = EndSessionFailer;
@@ -1627,7 +1627,12 @@ async fn archive_session_does_not_require_a_retired_agent_publication_after_rest
             },
         ),
     );
-    create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, persisted).await;
+    create_session_fixture(
+        repo.as_ref(),
+        awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        persisted,
+    )
+    .await;
 
     let runtime = EndSessionRecorder::default();
     let ended = runtime.ended.clone();
@@ -2600,7 +2605,7 @@ async fn delete_is_best_effort_when_sandbox_teardown_fails() {
     assert_eq!(
         repo.reconciliation_scan(None).await.unwrap().sessions,
         vec![awaken_session_state_contract::ScopedPersistedSession {
-            workspace_id: DEFAULT_SCOPE.to_string(),
+            workspace_id: awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
             session: durable,
         }]
     );
@@ -2660,7 +2665,7 @@ async fn archive_commits_while_sandbox_teardown_remains_recoverable() {
     assert_eq!(
         repo.reconciliation_scan(None).await.unwrap().sessions,
         vec![awaken_session_state_contract::ScopedPersistedSession {
-            workspace_id: DEFAULT_SCOPE.to_string(),
+            workspace_id: awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
             session: durable,
         }]
     );

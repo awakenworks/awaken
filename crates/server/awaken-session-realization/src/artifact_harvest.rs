@@ -79,12 +79,6 @@ impl ArtifactHarvester {
         }
     }
 
-    pub fn publisher(
-        &self,
-    ) -> Arc<dyn awaken_resource_contract::ArtifactPublisher<ResourceOperationFence>> {
-        self.publisher.clone()
-    }
-
     pub fn current_claim(
         &self,
         thread: &str,

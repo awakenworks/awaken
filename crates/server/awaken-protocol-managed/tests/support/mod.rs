@@ -7,7 +7,7 @@ pub fn vault(
     credentials: std::sync::Arc<dyn awaken_credential_vault::repo::ManagedCredentialRepository>,
 ) -> awaken_protocol_managed::VaultState {
     let clock = awaken_time::system_clock();
-    awaken_protocol_managed::VaultState::new(secrets, credentials, clock)
+    awaken_protocol_managed::VaultState::new(secrets, credentials, clock, None)
 }
 
 /// A volatile `ManagedState` over the testkit's stores behind their ports.

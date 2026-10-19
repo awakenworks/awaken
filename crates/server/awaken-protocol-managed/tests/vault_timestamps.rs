@@ -52,6 +52,7 @@ fn harness() -> Harness {
         Arc::new(InMemorySecretStore::new()),
         credentials.clone(),
         clock.clone(),
+        None,
     );
     Harness {
         app: vault_router(Arc::new(state)),

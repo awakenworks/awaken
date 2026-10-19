@@ -300,7 +300,7 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
         .unwrap()
         .expect("B1 durable reach");
     warm.commit_session_snapshot(
-        DEFAULT_SCOPE,
+        awaken_tenancy::DEFAULT_WORKSPACE_ID,
         persisted,
         "test-budget-prefix-below",
         Vec::new(),
@@ -350,7 +350,7 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
         .closed_runtime_intervals
         .push(interval("crossing", 5, 19, 20, &session.id));
     warm.commit_session_snapshot(
-        DEFAULT_SCOPE,
+        awaken_tenancy::DEFAULT_WORKSPACE_ID,
         persisted,
         "test-budget-prefix-crossing",
         Vec::new(),

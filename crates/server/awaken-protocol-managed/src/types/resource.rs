@@ -24,7 +24,7 @@ impl RepositoryAuthorizationToken {
     #[must_use]
     pub(crate) fn into_credential_material(
         self,
-    ) -> awaken_session_application::CredentialMaterialInput {
+    ) -> awaken_credential_contract::CredentialMaterialInput {
         self.into_access_token().into_credential_material()
     }
 }
@@ -318,7 +318,7 @@ mod tests {
             serde_json::from_value(json!("github-token")).expect("G1 token");
         let material = token.into_credential_material();
         assert_eq!(material.provider, "github", "G1/E1");
-        let awaken_session_application::CredentialPlaintext::Structured(material) =
+        let awaken_credential_contract::CredentialPlaintext::Structured(material) =
             material.plaintext
         else {
             panic!("G1/E2 expected structured material")

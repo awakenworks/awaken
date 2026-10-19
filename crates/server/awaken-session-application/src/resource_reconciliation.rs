@@ -6,10 +6,14 @@
 // @formal entrypoint session_resources.repository_rotation_requires_original_live_generation
 // @formal entrypoint session_resources.restart_retries_same_pending_revision
 // @formal entrypoint session_resources.terminal_session_never_reactivates
-// awaken-allow(file-limit-ceiling): 1588
+// awaken-allow(file-limit-ceiling): 1582
 //! Durable Session Resource recovery and terminal reclamation.
 
+use crate::credentials::preflight_repository_credential_rotation;
 use crate::mutation::ROOT_CAS_ATTEMPTS;
+use awaken_credential_contract::{
+    CredentialMaterialInput, CredentialMaterialRetirementCommand, CredentialMaterialRotationCommand,
+};
 use awaken_resource_contract::{ResourceReference, ResourceReferenceKind, ResourceReferenceRecord};
 use awaken_session_configuration_contract::resource::{
     ResolvedInput, ResolvedInputSource, ResolvedSessionResources, SessionRealizationLease,
@@ -24,8 +28,7 @@ use awaken_session_types::{RunError, SessionRevision};
 use awaken_time::WallClockExt as _;
 
 use super::{
-    ConfiguredSessionRepository, CredentialMaterialInput, CredentialMaterialRetirementCommand,
-    CredentialMaterialRotationCommand, SessionApplication, SessionMutationError,
+    ConfiguredSessionRepository, SessionApplication, SessionMutationError,
     SessionParticipantProvenance, SessionPreparationError, SessionReconciliation,
     SessionReconciliationFailure, SessionRecoveryCandidates, SessionRepositoryOwner,
     credentials::{mutation_failure, repository_preparation},
@@ -220,16 +223,6 @@ impl SessionResourceManifestError {
 
 pub(crate) fn internal(error: impl std::fmt::Display) -> SessionPreparationError {
     SessionPreparationError::Rejected(RunError::internal(error.to_string()))
-}
-
-fn preflight_repository_credential_rotation(
-    root: &SessionAggregate,
-    input: ResolvedInput,
-) -> Result<(), SessionPreparationError> {
-    root.clone()
-        .resources()
-        .replace_desired_repository_credential(input)
-        .map_err(|_| SessionPreparationError::Conflict)
 }
 
 async fn reconcile_terminal_resource_candidate(

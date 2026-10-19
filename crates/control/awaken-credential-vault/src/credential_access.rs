@@ -14,8 +14,10 @@
 
 use awaken_credential_contract::CredentialEnvelopeValidation;
 use awaken_credential_contract::{
-    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding,
-    CredentialMaterialSource, CredentialRef, CredentialTarget, CredentialUsage, PlaintextHolder,
+    CredentialAccess, CredentialDescriptor, CredentialExecutionPolicy, CredentialMaterialBinding,
+    CredentialMaterialDescriptor, CredentialMaterialSource, CredentialPurpose, CredentialRef,
+    CredentialTarget, CredentialTargetContract, CredentialUsage, OPAQUE_SECRET_MATERIAL_TYPE,
+    PlaintextHolder,
 };
 
 use crate::{CredentialError, CredentialMaterialOrigin, CredentialSource, CredentialStatus};
@@ -188,8 +190,30 @@ pub async fn publish_exact_credential_access(
     Ok(access)
 }
 
+/// The `Authorization: Bearer` usage every MCP credential is bound to.
+pub(crate) fn bearer_usage() -> CredentialUsage {
+    CredentialUsage::HttpHeader {
+        name: "authorization".into(),
+        scheme: Some("Bearer".into()),
+    }
+}
+
+/// The descriptor of an opaque bearer authorizing the MCP endpoint
+/// `audience`.
+#[must_use]
+pub fn mcp_bearer_descriptor(audience: &str) -> CredentialDescriptor {
+    CredentialDescriptor::new(
+        audience.to_owned(),
+        CredentialMaterialDescriptor::secret(OPAQUE_SECRET_MATERIAL_TYPE),
+        [CredentialTargetContract::new(
+            CredentialTarget::new(CredentialPurpose::McpAuthorization, audience.to_owned()),
+            bearer_usage(),
+        )],
+    )
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::BTreeMap;
 
     use awaken_credential_contract::{
@@ -634,11 +658,11 @@ mod tests {
             "O4/E3"
         );
     }
-    struct PublicationProbe {
-        reads: std::sync::atomic::AtomicUsize,
-        deliveries: std::sync::atomic::AtomicUsize,
-        handles: bool,
-        fail: bool,
+    pub(crate) struct PublicationProbe {
+        pub(crate) reads: std::sync::atomic::AtomicUsize,
+        pub(crate) deliveries: std::sync::atomic::AtomicUsize,
+        pub(crate) handles: bool,
+        pub(crate) fail: bool,
     }
 
     #[async_trait::async_trait]
@@ -676,6 +700,18 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_credential_contract::CredentialEnvelopeIssuer for PublicationProbe {
+        async fn issue(
+            &self,
+            _: awaken_credential_contract::CredentialEnvelopeIssuance,
+        ) -> Result<awaken_credential_contract::CredentialEnvelope, String> {
+            self.deliveries
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(awaken_credential_contract::CredentialMaterialError::Unavailable.to_string())
         }
     }
 
