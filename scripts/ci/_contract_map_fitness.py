@@ -6,8 +6,11 @@ string literals and `cfg(test)` code are not scanned):
 * `target-map` (a hard rule, not a ratchet): every crate of layer `contract` is
   a target contract of `TARGET_MAP` or is listed there as merging into one. A
   crate listed as merging that no longer exists is an error too, so the list of
-  pending merges only shrinks. The map encodes plan 9.14: 27 target contracts,
-  of which `awaken-session-contract` is the only new name.
+  pending merges only shrinks. Merge sources have exactly one target, targets
+  never merge into other targets, and members of a merge share a bounded context
+  (read from the same workspace metadata snapshot). Absent targets must have
+  pending sources. The map follows plan 9.14 and ADR-0091's amendments;
+  `awaken-session-contract` is the only planned new name.
 * `contract-crates`: the number of contract crates.
 * `optional-role`: a method declared in a contract trait, or an inherent method
   of a contract type, returning `Option<&dyn ...>` or `Option<Arc<dyn ...>>`,
@@ -95,16 +98,21 @@ TARGET_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     "awaken-session-types": ("Session", ()),
     "awaken-session-contract": ("Session", (
         "awaken-session-state-contract", "awaken-session-event-contract", "awaken-session-budget-contract",
-        "awaken-session-dream-contract", "awaken-session-repository-contract",
+        "awaken-session-repository-contract",
     )),
+    # Dream owns its own aggregate, durable job and recovery protocol. Sharing
+    # the Session context does not make it part of the Session transaction.
+    "awaken-session-dream-contract": ("Session", ()),
     "awaken-session-configuration-contract": ("Session", ()),
     "awaken-session-application-contract": ("Session", ()),
     "awaken-session-execution-contract": ("Session", ()),
-    "awaken-session-realization-contract": ("Session", ("awaken-session-environment-contract",)),
+    "awaken-session-realization-contract": ("Session", ()),
     "awaken-deployment-contract": ("Deployment", ()),
     "awaken-dispatch-contract": ("Dispatch", ()),
     "awaken-executable-agent-contract": ("Dispatch", ()),
     "awaken-environment-contract": ("Environment and Worker", ()),
+    # Provider SPI belongs to Environment, not Session realization decisions.
+    "awaken-session-environment-contract": ("Environment and Worker", ()),
     "awaken-executable-environment-contract": ("Environment and Worker", ()),
     "awaken-acp-contract": ("Environment and Worker", ()),
     "awaken-agent-channel": ("Environment and Worker", ()),
@@ -166,21 +174,46 @@ _PUBLIC_TUPLE_FIELD = re.compile(r"pub\b(?!\s*\()")
 _PUBLIC_TYPE = re.compile(r"\bpub\s+(?:unsafe\s+)?(?:struct|enum|trait|type)\s+([A-Za-z_]\w*)")
 
 
-def target_map_errors(contracts: set[str], target_map=TARGET_MAP) -> list[str]:
-    merging = {crate: target for target, (_boundary, pending) in target_map.items() for crate in pending}
+def target_map_errors(contracts: set[str], target_map=TARGET_MAP, *, contexts: dict | None = None) -> list[str]:
+    owners: dict[str, list[str]] = defaultdict(list)
+    for target, (_boundary, pending) in target_map.items():
+        for crate in pending:
+            owners[crate].append(target)
+    merging = set(owners)
     errors = [
         _architecture_ratchet.diagnostic(
             "target-map", crate, "listed boundary", "unlisted contract",
             f"add the code to the target contract of its boundary, or record the new boundary in "
             f"{Path(__file__).name}::TARGET_MAP with its plan section (ADR-0091 D2)")
-        for crate in sorted(contracts - set(target_map) - set(merging))
+        for crate in sorted(contracts - set(target_map) - merging)
     ]
     errors += [
         _architecture_ratchet.diagnostic(
             "target-map", crate, "pending merge", "absent crate",
-            f"remove its completed merge into {merging[crate]} from {Path(__file__).name}::TARGET_MAP in this commit")
-        for crate in sorted(set(merging) - contracts)
+            f"remove its completed merge into {', '.join(owners[crate])} from {Path(__file__).name}::TARGET_MAP in this commit")
+        for crate in sorted(merging - contracts)
     ]
+    for crate, targets in sorted(owners.items()):
+        if len(targets) != 1 or crate in target_map:
+            errors.append(_architecture_ratchet.diagnostic(
+                "target-map", crate, "one final owner", f"merge owners {targets}, target={crate in target_map}",
+                "keep one direct merge destination; remove duplicate ownership, self-merges and merge chains"))
+    for target, (boundary, pending) in sorted(target_map.items()):
+        if not boundary.strip():
+            errors.append(_architecture_ratchet.diagnostic(
+                "target-map", target, "named boundary", "empty boundary", "name the caller/implementer boundary (ADR-0091 D2)"))
+        if target not in contracts and not pending:
+            errors.append(_architecture_ratchet.diagnostic(
+                "target-map", target, "existing target or pending sources", "absent target",
+                "remove the stale target or name its existing merge sources"))
+        # Metadata is authoritative for context, rather than the display labels
+        # above. An uncreated target inherits the context of its pending sources.
+        known = {name: contexts[name] for name in (target, *pending)
+                 if contexts is not None and contexts.get(name) is not None}
+        if len(set(known.values())) > 1:
+            errors.append(_architecture_ratchet.diagnostic(
+                "target-map", target, "one bounded context", str(known),
+                "retain separate contracts across contexts; shared callers do not transfer ownership (ADR-0091 D2)"))
     return errors
 
 
@@ -439,28 +472,30 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
 
 
 @lru_cache(maxsize=2)
-def _workspace(crates: Path = _crate_boundary_workspace.CRATES) -> tuple[Counts, Places, set[str]]:
-    return measure(_architecture_ratchet.crate_sources(crates), _crate_boundary_workspace.REPO_ROOT)
+def _workspace(crates: Path = _crate_boundary_workspace.CRATES) -> tuple[Counts, Places, set[str], dict]:
+    sources = _architecture_ratchet.crate_sources(crates)
+    counts, places, contracts = measure(sources, _crate_boundary_workspace.REPO_ROOT)
+    return counts, places, contracts, {crate.name: crate.metadata.get("bounded_context") for crate in sources}
 
 
 def _measure_workspace() -> tuple[Counts, Places]:
-    counts, places, _contracts = _workspace()
+    counts, places, _contracts, _contexts = _workspace()
     return counts, places
 
 
-def hard_errors(counts: Counts, contracts: set[str], baseline: dict) -> list[str]:
-    return target_map_errors(contracts) + fat_trait_errors(counts, baseline)
+def hard_errors(counts: Counts, contracts: set[str], baseline: dict, contexts: dict | None = None) -> list[str]:
+    return target_map_errors(contracts, contexts=contexts) + fat_trait_errors(counts, baseline)
 
 
 def _workspace_hard_errors(previous: dict) -> list[str]:
-    counts, _places, contracts = _workspace()
-    return hard_errors(counts, contracts, previous)
+    counts, _places, contracts, contexts = _workspace()
+    return hard_errors(counts, contracts, previous, contexts)
 
 
 def check_all(crates: Path, baseline_path: Path = BASELINE) -> list[str]:
-    counts, places, contracts = _workspace(crates)
+    counts, places, contracts, contexts = _workspace(crates)
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-    errors = hard_errors(counts, contracts, baseline)
+    errors = hard_errors(counts, contracts, baseline, contexts)
     errors += _architecture_ratchet.compare(
         RULES, counts, places, baseline, baseline_path.name,
         lower_advice=f"python3 scripts/ci/{Path(__file__).name} --tighten to lower {baseline_path.name} in this commit")
@@ -474,7 +509,10 @@ def selftest() -> None:
     | T1   | contract crate is a target or merges into one                         | accept |
     | T2   | contract crate on neither side of the map                             | error |
     | T3   | crate listed as merging no longer exists                              | error: remove it |
-    | T4   | the map holds 26 targets, `awaken-session-contract` its only new name, at most 12 pending merges | holds |
+    | T4   | audited SDK, Session aggregate, Dream and Environment SPI boundaries | retained |
+    | T5   | duplicate source, several owners, self-merge, chain or cycle          | hard error |
+    | T6   | absent target without pending sources, or an empty boundary           | hard error |
+    | T7   | existing/new target absorbs sources from different bounded contexts | hard error |
     | O1   | trait method / inherent method returns `Option<&dyn R>` / `Option<Arc<dyn R>>` | counted as Owner::method |
     | O2   | the same in an `impl Trait for T` block; `Option<&T>`; `Option<Box<dyn R>>` | not counted |
     | B1   | `pub trait` without a method (bundle, marker, associated items only)  | counted |
@@ -505,16 +543,7 @@ def selftest() -> None:
     | A5   | ratchet: a public field added (recorded or new struct) / one removed   | error: grown / error: lower the baseline |
     | A6   | AGGREGATE_STATE_CRATES are on TARGET_MAP (a target or merging into one) | holds |
     """
-    pending = {"t": ("b", ("old",))}
-    assert target_map_errors({"t", "old"}, pending) == [], "T1"
-    assert "listed boundary -> unlisted contract" in target_map_errors({"t", "old", "new"}, pending)[0], "T2"
-    assert "pending merge -> absent crate" in target_map_errors({"t"}, pending)[0], "T3"
-    merging = [crate for _boundary, merged in TARGET_MAP.values() for crate in merged]
-    # Plan 9.14 listed 12 pending merges. The 2026-10-15 amendment retains
-    # the existing pure Web SDK as its own target without creating a crate.
-    assert len(TARGET_MAP) == 27 and len(merging) == len(set(merging)) <= 11, "T4"
-    assert TARGET_MAP["awaken-web-policy-contract"] == ("SDK release", ()), "T4 Web owner"
-    assert TARGET_MAP["awaken-runtime-contract"] == ("SDK release", ()), "T4 neutral Runtime"
+    _selftest_target_map()
     code = (
         "pub trait Session: Send {\n"
         "    fn realization(&self) -> Option<&dyn Realization> { None }\n"
@@ -559,6 +588,41 @@ def selftest() -> None:
     _selftest_aggregate_fields()
     _selftest_baseline_snapshot()
     print("_contract_map_fitness selftest: the decision tables hold")
+
+
+def _selftest_target_map() -> None:
+    pending = {"t": ("b", ("old",))}
+    assert target_map_errors({"t", "old"}, pending) == [], "T1 existing target"
+    assert target_map_errors({"old"}, pending) == [], "T1 planned target"
+    assert target_map_errors({"t"}, {"t": ("b", ())}) == [], "T1 completed merge"
+    assert "listed boundary -> unlisted contract" in target_map_errors({"t", "old", "new"}, pending)[0], "T2"
+    assert "pending merge -> absent crate" in target_map_errors({"t"}, pending)[0], "T3"
+    assert TARGET_MAP["awaken-web-policy-contract"] == ("SDK release", ()), "T4 Web owner"
+    assert TARGET_MAP["awaken-runtime-contract"] == ("SDK release", ()), "T4 neutral Runtime"
+    assert TARGET_MAP["awaken-session-dream-contract"] == ("Session", ()), "T4 Dream aggregate"
+    assert TARGET_MAP["awaken-session-environment-contract"] == ("Environment and Worker", ()), "T4 Environment SPI"
+    assert TARGET_MAP["awaken-session-realization-contract"] == ("Session", ()), "T4 realization decisions"
+    assert set(TARGET_MAP["awaken-session-contract"][1]) == {
+        "awaken-session-state-contract", "awaken-session-event-contract",
+        "awaken-session-budget-contract", "awaken-session-repository-contract"}, "T4 Session aggregate only"
+    for mapping in (
+        {"t": ("b", ("old", "old"))},
+        {"t": ("b", ("old",)), "other": ("b", ("old",))},
+        {"t": ("b", ("t",))},
+        {"t": ("b", ("old",)), "old": ("b", ("older",))},
+        {"t": ("b", ("old",)), "old": ("b", ("t",))},
+    ):
+        errors = target_map_errors({"t", "other", "old", "older"}, mapping)
+        assert any("one final owner" in error for error in errors), f"T5 {mapping}: {errors}"
+    assert "absent target" in target_map_errors(set(), {"typo": ("b", ())})[0], "T6 stale target"
+    assert "empty boundary" in target_map_errors({"t"}, {"t": ("  ", ())})[0], "T6 unnamed boundary"
+    assert target_map_errors({"t", "old"}, pending, contexts={"t": "session", "old": "session"}) == [], "T7 same context"
+    errors = target_map_errors({"t", "old"}, pending, contexts={"t": "session", "old": "environment"})
+    assert len(errors) == 1 and "one bounded context" in errors[0], "T7 existing target changes context"
+    planned = {"future": ("same display label", ("session", "environment"))}
+    errors = target_map_errors({"session", "environment"}, planned,
+                               contexts={"session": "session", "environment": "environment"})
+    assert len(errors) == 1 and "one bounded context" in errors[0], "T7 new target cannot hide mixed contexts"
 
 
 def _crate(name: str, layer: str, context: str | None, code: str) -> _architecture_ratchet.CrateSource:
@@ -734,13 +798,13 @@ def _selftest_baseline_snapshot() -> None:
     contracts = set(TARGET_MAP) | {name for _, pending in TARGET_MAP.values() for name in pending}
     original_read = Path.read_text
 
-    def invoke(argv, previous=held, hypothetical=reasoned, count=13):
+    def invoke(argv, previous=held, hypothetical=reasoned, count=13, target_map=None, sources=()):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "baseline.json"
             if previous is not None:
                 path.write_text(json.dumps(previous) + "\n")
             before = path.read_bytes() if path.exists() else None
-            reads, measured = [], []
+            reads, measured, acquired = [], [], []
             def read(target, *args, **kwargs):
                 if target == path:
                     reads.append(target)
@@ -749,10 +813,14 @@ def _selftest_baseline_snapshot() -> None:
             def measure_fixture(_sources, _root):
                 measured.append(True)
                 return ({"fat-trait": {"Wide": count}} if count else {}), {}, contracts
+            def acquire(_crates):
+                acquired.append(True)
+                return sources
             output, errors = io.StringIO(), io.StringIO()
             _workspace.cache_clear()
-            with patch.dict(globals(), {"__name__": "__main__", "BASELINE": path, "measure": measure_fixture}), \
-                    patch.object(_architecture_ratchet, "crate_sources", lambda _crates: ()), \
+            with patch.dict(TARGET_MAP, target_map if target_map is not None else dict(TARGET_MAP), clear=True), \
+                    patch.dict(globals(), {"__name__": "__main__", "BASELINE": path, "measure": measure_fixture}), \
+                    patch.object(_architecture_ratchet, "crate_sources", acquire), \
                     patch.object(Path, "read_text", read), patch.object(sys, "argv", [__file__, *argv]), \
                     contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
                 try:
@@ -762,6 +830,7 @@ def _selftest_baseline_snapshot() -> None:
             _workspace.cache_clear()
             after = path.read_bytes() if path.exists() else None
             assert len(reads) <= 1 and len(measured) <= 1, "D10 one record and cached workspace snapshot"
+            assert len(acquired) == len(measured), "T7 contexts and counts share one corpus acquisition"
             return status, before, after, reads, measured, errors.getvalue()
 
     modes = ([], ["--check"], ["--tighten"], ["--write-baseline"], ["--write-baseline", "--reason", "reviewed"])
@@ -796,6 +865,28 @@ def _selftest_baseline_snapshot() -> None:
     for argv, previous in ((["--unknown"], held), ([], None), (["--tighten"], None)):
         status, before, after, reads, measured, _ = invoke(argv, previous)
         assert status in (1, 2) and before == after and not reads and not measured, "D10f admission before IO"
+    # The target map is a hard boundary, independent of numeric ratchets. Every
+    # writer/reason mode must leave the original record untouched on ambiguity.
+    ambiguous = dict(TARGET_MAP)
+    ambiguous["awaken-session-types"] = ("Session", ("awaken-session-state-contract",))
+    for argv in modes:
+        status, before, after, reads, measured, errors = invoke(argv, target_map=ambiguous)
+        assert status == 1 and before == after and len(reads) == len(measured) == 1 \
+            and "one final owner" in errors, "T5 CLI writers cannot admit duplicate merge ownership"
+    for argv in (["--write-baseline"], ["--write-baseline", "--reason", "first record"]):
+        status, before, after, _reads, _measured, errors = invoke(argv, None, count=0, target_map=ambiguous)
+        assert status == 1 and before is None and after is None and "one final owner" in errors, \
+            "T5 CLI first record cannot admit duplicate merge ownership"
+    mixed = dict(TARGET_MAP)
+    del mixed["awaken-session-environment-contract"]
+    boundary, pending = mixed["awaken-session-contract"]
+    mixed["awaken-session-contract"] = (boundary, (*pending, "awaken-session-environment-contract"))
+    sources = (_crate("awaken-session-state-contract", "contract", "session", ""),
+               _crate("awaken-session-environment-contract", "contract", "environment", ""))
+    for argv in modes:
+        status, before, after, _reads, _measured, errors = invoke(argv, target_map=mixed, sources=sources)
+        assert status == 1 and before == after and "one bounded context" in errors, \
+            "T7 CLI uses workspace metadata in every baseline mode"
 
 
 if __name__ == "__main__":

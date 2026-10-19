@@ -607,7 +607,7 @@ def _selftest_diagnostics() -> None:
             current = ({rule.name: {"key": 1}}, {})
             if owner is _contract_map_fitness:
                 contracts = set(owner.TARGET_MAP) | {name for _, pending in owner.TARGET_MAP.values() for name in pending}
-                callback, result = "_workspace", (*current, contracts)
+                callback, result = "_workspace", (*current, contracts, {})
             else:
                 callback, result = "_measure_workspace", current
             with patch.object(owner, callback, lambda _crates: result):
