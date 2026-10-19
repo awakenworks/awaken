@@ -167,6 +167,41 @@ pub async fn assert_binding_lifecycle(
         serde_json::to_value(&expected_a).unwrap(),
         "B10 exact entry tuple"
     );
+    // I1 the selected original inventory skips earlier delivery operations
+    // before LIMIT=1, keeps the exact physical tuple and global cursor; I2 an
+    // unrelated scope is empty, with its original cursor retained. The same
+    // assertions execute through Memory, SQLite, PostgreSQL and erasure.
+    let root = ThreadId("bound-attempt".into());
+    let page = store
+        .attempt_admissions_after(
+            awaken_dispatch::DispatchCursor::default(),
+            1,
+            &root,
+            std::slice::from_ref(&root),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.events.len(), 1, "I1");
+    assert_eq!(
+        serde_json::to_value(&page.events[0].operation).unwrap()["attempt"],
+        serde_json::to_value(&expected_a).unwrap(),
+        "I1 original tuple"
+    );
+    let foreign = ThreadId("unrelated-inventory".into());
+    let empty = store
+        .attempt_admissions_after(
+            page.next_cursor,
+            1,
+            &foreign,
+            std::slice::from_ref(&foreign),
+        )
+        .await
+        .unwrap();
+    assert!(empty.events.is_empty(), "I2 no scope borrowing");
+    assert_eq!(
+        empty.next_cursor, page.next_cursor,
+        "I2 no fabricated cursor"
+    );
     clock.set(0);
     store.renew_lease(&a, 0).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;

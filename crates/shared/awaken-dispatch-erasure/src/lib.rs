@@ -652,6 +652,19 @@ impl SessionContinuationOutbox for AnyCoordinatorDispatch {
 
 #[async_trait::async_trait]
 impl awaken_dispatch_contract::DispatchAttemptRecordReads for AnyCoordinatorDispatch {
+    async fn attempt_admissions_after(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+        session_thread: &ThreadId,
+        member_threads: &[ThreadId],
+    ) -> Result<DispatchPage, DispatchError> {
+        delegate_owner!(
+            self,
+            attempt_admissions_after(cursor, limit, session_thread, member_threads)
+        )
+    }
+
     async fn attempt_closure_records_after(
         &self,
         cursor: DispatchCursor,

@@ -632,6 +632,20 @@ pub trait DispatchControlClaims: Send + Sync {
 /// Original physical-attempt records; a read role, never closure authority.
 #[async_trait]
 pub trait DispatchAttemptRecordReads: Send + Sync {
+    /// Complete original admission inventory selected by a frozen Session root
+    /// or member Thread, before the logical page limit. Parent and member matches
+    /// are a union: the consumer must still reject inconsistent affinity. The
+    /// view retains original global cursors and the store's committed-prefix
+    /// barrier; it grants neither closure nor execution authority.
+    /// Storage failures remain unknown, never a fabricated empty inventory.
+    async fn attempt_admissions_after(
+        &self,
+        cursor: crate::DispatchCursor,
+        limit: usize,
+        session_thread: &ThreadId,
+        member_threads: &[ThreadId],
+    ) -> Result<crate::DispatchPage, DispatchError>;
+
     /// Read retained ordinary acknowledgements and independent closure facts from the one original operation
     /// storage. Missing records remain unknown; these are not an inventory of
     /// all old execution or a cleanup/placement grant. Filtering precedes the

@@ -1768,21 +1768,13 @@ impl DispatchOperationalFeed for MemoryDispatchStore {
         limit: usize,
         run: Option<&RunId>,
     ) -> Result<DispatchPage, DispatchError> {
-        let events = lock(&self.state)?
-            .operation_page(
-                cursor,
-                limit,
-                run,
-                crate::dispatch::OperationReadPurpose::Diagnostics,
-            )
-            .into_iter()
-            .filter_map(crate::dispatch::StoredDispatchEvent::diagnostic)
-            .collect::<Vec<_>>();
-        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
-        Ok(DispatchPage {
-            events,
-            next_cursor,
-        })
+        let events = lock(&self.state)?.operation_page(
+            cursor,
+            limit,
+            run,
+            crate::dispatch::OperationReadPurpose::Diagnostics,
+        );
+        Ok(crate::dispatch::diagnostic_page(cursor, events))
     }
 }
 
@@ -1790,6 +1782,26 @@ use awaken_dispatch_contract::DispatchCommitAuthority as _;
 
 #[async_trait::async_trait]
 impl awaken_dispatch_contract::DispatchAttemptRecordReads for MemoryDispatchStore {
+    async fn attempt_admissions_after(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+        session_thread: &ThreadId,
+        member_threads: &[ThreadId],
+    ) -> Result<DispatchPage, DispatchError> {
+        crate::dispatch::validate_admission_scope(session_thread, member_threads)?;
+        let events = lock(&self.state)?.operation_page(
+            cursor,
+            limit,
+            None,
+            crate::dispatch::OperationReadPurpose::Admissions {
+                session_thread,
+                member_threads,
+            },
+        );
+        Ok(crate::dispatch::diagnostic_page(cursor, events))
+    }
+
     async fn attempt_closure_records_after(
         &self,
         cursor: DispatchCursor,

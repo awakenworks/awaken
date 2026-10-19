@@ -7,20 +7,33 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn idle_interruption_cannot_cancel_a_run_admitted_during_its_commit_read() {
-    delayed_interruption_preserves_the_successor(false).await;
+    for fail_read in [false, true] {
+        delayed_interruption_preserves_the_successor(false, fail_read).await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn selected_interruption_cannot_cancel_the_successor_of_a_completed_run() {
-    delayed_interruption_preserves_the_successor(true).await;
+    for fail_read in [false, true] {
+        delayed_interruption_preserves_the_successor(true, fail_read).await;
+    }
 }
 
-async fn delayed_interruption_preserves_the_successor(start_with_active_run: bool) {
+async fn delayed_interruption_preserves_the_successor(
+    start_with_active_run: bool,
+    fail_read: bool,
+) {
     // C1 the resident Session is idle when interruption selects local control;
     // C2 its real commit-read seam waits; C3 a real later Run enters inference
     // in the same resident Runtime; C4 C2 resumes. E1 C4 must not cancel C3.
     // No claim/token is manufactured: Host admission and DirectAttemptDriver
     // install the later Run and its token through their production path.
+    // C5 the original read fails. Decision table: R1 idle + successful read ->
+    // no cancellation; R2 selected original + successful read -> only original
+    // token cancelled; R3/R4 either selection + C5 -> propagate the error and
+    // signal neither token. All four rows preserve the real successor.
+    // Each row owns a distinct sandbox identity: a new authority cannot adopt
+    // the previous row's retained filesystem through an unfenced name reuse.
     let provider_gate = Arc::new(tokio::sync::Notify::new());
     let provider_entered = Arc::new(tokio::sync::Notify::new());
     let model = Arc::new(GatedModel {
@@ -39,10 +52,11 @@ async fn delayed_interruption_preserves_the_successor(start_with_active_run: boo
     dependencies.execution.ingress = crate::RunIngress::Direct;
     let host = dependencies.build().expect("complete Host composition");
     let _managed = install_test_dispatch_runtime(&host);
-    let thread = if start_with_active_run {
-        "completed-interrupt-later-run"
-    } else {
-        "idle-interrupt-later-run"
+    let thread = match (start_with_active_run, fail_read) {
+        (false, false) => "idle-interrupt-later-run",
+        (false, true) => "idle-interrupt-failed-read-later-run",
+        (true, false) => "completed-interrupt-later-run",
+        (true, true) => "completed-interrupt-failed-read-later-run",
     };
     let ctx = host
         .run_assembly
@@ -95,7 +109,13 @@ async fn delayed_interruption_preserves_the_successor(start_with_active_run: boo
                 .interrupt_with_commit_read(thread, async move {
                     read_entered.notify_one();
                     release_read.notified().await;
-                    Ok(commit)
+                    if fail_read {
+                        Err(SessionExecutionError::unavailable(
+                            "injected original commit read failure",
+                        ))
+                    } else {
+                        Ok(commit)
+                    }
                 })
                 .await
         }
@@ -160,11 +180,15 @@ async fn delayed_interruption_preserves_the_successor(start_with_active_run: boo
         .expect("C3 actual attempt token");
     assert!(!actual_later_token.is_cancelled(), "C3 initially live");
     release_read.notify_one();
-    tokio::time::timeout(std::time::Duration::from_secs(5), interrupt)
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), interrupt)
         .await
         .expect("C4 interruption returned")
-        .expect("join interruption")
-        .expect("interruption succeeded");
+        .expect("join interruption");
+    if fail_read {
+        result.expect_err("R3/R4 propagate the original read failure");
+    } else {
+        result.expect("R1/R2 interruption succeeded");
+    }
     let cancelled_later = actual_later_token.is_cancelled();
     // Join the real Run on either implementation before checking the fault.
     provider_gate.notify_one();
@@ -178,9 +202,10 @@ async fn delayed_interruption_preserves_the_successor(start_with_active_run: boo
         "idle interruption cancelled the real successor admitted during its commit read"
     );
     if let Some(original) = selected_original_token {
-        assert!(
+        assert_eq!(
             original.is_cancelled(),
-            "the request still signals its selected original token"
+            !fail_read,
+            "R2 signals the selected original only after a successful read; R4 does not"
         );
     }
 }

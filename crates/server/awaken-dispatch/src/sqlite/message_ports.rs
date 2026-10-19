@@ -221,6 +221,55 @@ mod inbox_revision_tests {
         );
     }
 }
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::DispatchAttemptRecordReads for SqliteDispatchStore {
+    async fn attempt_admissions_after(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+        session_thread: &ThreadId,
+        member_threads: &[ThreadId],
+    ) -> Result<DispatchPage, DispatchError> {
+        crate::dispatch::validate_admission_scope(session_thread, member_threads)?;
+        let events = self
+            .read_stored_operations(
+                cursor,
+                limit,
+                None,
+                crate::dispatch::OperationReadPurpose::Admissions {
+                    session_thread,
+                    member_threads,
+                },
+            )
+            .await?;
+        Ok(crate::dispatch::diagnostic_page(cursor, events))
+    }
+
+    async fn attempt_closure_records_after(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+        run: Option<&RunId>,
+    ) -> Result<crate::AttemptClosurePage, DispatchError> {
+        let events = self
+            .read_stored_operations(
+                cursor,
+                limit,
+                run,
+                crate::dispatch::OperationReadPurpose::AttemptClosure,
+            )
+            .await?
+            .into_iter()
+            .filter_map(crate::dispatch::StoredDispatchEvent::attempt_closure)
+            .collect::<Vec<_>>();
+        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
+        Ok(crate::AttemptClosurePage {
+            events,
+            next_cursor,
+        })
+    }
+}
+
 #[async_trait]
 impl DispatchOperationalFeed for SqliteDispatchStore {
     async fn events_after(
@@ -236,15 +285,8 @@ impl DispatchOperationalFeed for SqliteDispatchStore {
                 run,
                 crate::dispatch::OperationReadPurpose::Diagnostics,
             )
-            .await?
-            .into_iter()
-            .filter_map(crate::dispatch::StoredDispatchEvent::diagnostic)
-            .collect::<Vec<_>>();
-        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
-        Ok(DispatchPage {
-            events,
-            next_cursor,
-        })
+            .await?;
+        Ok(crate::dispatch::diagnostic_page(cursor, events))
     }
 }
 
@@ -486,7 +528,7 @@ impl awaken_dispatch_contract::SessionContinuationOutbox for SqliteDispatchStore
     }
 }
 
-// Both purposes use the original operation rows, codec and global sequence.
+// Every view uses the original operation rows, codec and global sequence.
 // Raw batches are decoded before filtering; hidden prefixes cannot consume the
 // logical LIMIT or turn unknown/corrupt old rows into silently empty pages.
 async fn read_stored_operation_page(
@@ -494,7 +536,7 @@ async fn read_stored_operation_page(
     cursor: DispatchCursor,
     limit: usize,
     run: Option<&RunId>,
-    purpose: crate::dispatch::OperationReadPurpose,
+    purpose: crate::dispatch::OperationReadPurpose<'_>,
 ) -> Result<Vec<crate::dispatch::StoredDispatchEvent>, DispatchError> {
     let mut events = Vec::new();
     let mut scanned = cursor;
@@ -502,14 +544,42 @@ async fn read_stored_operation_page(
         let after = i64::try_from(scanned.0)
             .map_err(|_| DispatchError::Rejected("dispatch cursor exceeds storage range".into()))?;
         let remaining = i64::try_from(limit - events.len()).unwrap_or(i64::MAX);
-        let selection = if run.is_some() { "AND run_id = ?3" } else { "" };
+        let selection = match purpose {
+            crate::dispatch::OperationReadPurpose::Admissions { .. } => {
+                "AND COALESCE(json_extract(operation,'$.type'),'') NOT IN (SELECT value FROM json_each(?5)) \
+                 AND (COALESCE(json_extract(operation,'$.type'),'') <> 'attempt_admitted' \
+                   OR json_extract(operation,'$.attempt.session_thread_id') = ?3 \
+                   OR json_extract(operation,'$.attempt.thread_id') IN (SELECT value FROM json_each(?4)) \
+                   OR json_type(operation,'$.attempt.thread_id') IS NOT 'text' \
+                   OR json_extract(operation,'$.attempt.thread_id') NOT GLOB '*[!-~]*')"
+            }
+            _ if run.is_some() => "AND run_id = ?3",
+            _ => "",
+        };
         let sql = format!(
             "SELECT sequence, recorded_at_ms, run_id, operation FROM {NS}_dispatch_operation WHERE sequence > ?1 {selection} ORDER BY sequence LIMIT ?2"
         );
         let mut query = sqlx::query_as::<_, (i64, Option<i64>, String, String)>(&sql)
             .bind(after)
             .bind(remaining);
-        if let Some(run) = run {
+        if let crate::dispatch::OperationReadPurpose::Admissions {
+            session_thread,
+            member_threads,
+        } = purpose
+        {
+            query = query
+                .bind(&session_thread.0)
+                .bind(
+                    serde_json::to_string(
+                        &member_threads.iter().map(|id| &id.0).collect::<Vec<_>>(),
+                    )
+                    .map_err(DispatchError::unavailable)?,
+                )
+                .bind(
+                    serde_json::to_string(crate::dispatch::NON_ADMISSION_OPERATION_TAGS)
+                        .map_err(DispatchError::unavailable)?,
+                );
+        } else if let Some(run) = run {
             query = query.bind(&run.0);
         }
         let rows = query
@@ -541,7 +611,7 @@ impl SqliteDispatchStore {
         cursor: DispatchCursor,
         limit: usize,
         run: Option<&RunId>,
-        purpose: crate::dispatch::OperationReadPurpose,
+        purpose: crate::dispatch::OperationReadPurpose<'_>,
     ) -> Result<Vec<crate::dispatch::StoredDispatchEvent>, DispatchError> {
         if limit == 0 {
             return Ok(Vec::new());
