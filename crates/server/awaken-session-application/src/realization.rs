@@ -210,6 +210,7 @@ impl SessionApplication {
         // projecting only active A regresses that slot to A -> A and strands
         // cleanup. The terminal Host install stages A -> B without activating B.
         let projection = self
+            .queries
             .frozen_session_projection(owner_scope.to_string(), session, false)
             .await
             .map_err(unavailable)?;
@@ -261,6 +262,7 @@ impl SessionApplication {
         })?;
         let request_started = realization_runtime.observe_realization_request()?;
         let projection = self
+            .queries
             .frozen_session_projection(owner_scope.to_string(), session, true)
             .await?;
         awaken_session_realization_contract::SessionProjectionSynchronizer::synchronize_session_projection(
@@ -489,6 +491,7 @@ impl SessionApplication {
         let realization_runtime = self.runtime().realization();
 
         let projection = self
+            .queries
             .frozen_session_projection(owner_scope.to_string(), session, true)
             .await
             .map_err(|error| {
@@ -777,15 +780,11 @@ impl SessionApplication {
         // when an existing realization lease needs no Environment/Resource
         // Stage. Otherwise a durable System command accepted between Runs would
         // remain invisible on a warm local or remote Worker.
-        let materialize_request_context = true;
-        let projection = if activate_pending_resources {
-            self.frozen_session_projection(owner_scope, session, materialize_request_context)
-                .await
-        } else {
-            self.active_frozen_session_projection(owner_scope, session, materialize_request_context)
-                .await
-        }
-        .map_err(|error| unavailable(error.to_string()))?;
+        let projection = self
+            .queries
+            .frozen_runtime_projection(owner_scope, session, true, activate_pending_resources)
+            .await
+            .map_err(|error| unavailable(error.to_string()))?;
         Ok(SessionRealizationDirective {
             projection,
             authority:

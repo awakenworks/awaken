@@ -50,6 +50,8 @@ struct EventBatchRuntime {
     run_state_reads: AtomicUsize,
     latest_run: Mutex<Option<RunId>>,
     committed: Mutex<Vec<Message>>,
+    committed_read_trace: Mutex<Vec<String>>,
+    committed_read_error: Mutex<Option<RunError>>,
     recovery_projection_override: Mutex<Option<(Vec<u64>, u64)>>,
     trace: Mutex<Vec<String>>,
     outcomes: Mutex<BTreeMap<String, (String, String, u32)>>,
@@ -812,7 +814,14 @@ impl awaken_session_execution_contract::ThreadReadRuntime for EventBatchRuntime 
             .await
     }
 
-    async fn committed_messages(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
+    async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, RunError> {
+        self.committed_read_trace
+            .lock()
+            .unwrap()
+            .push(format!("committed:{thread}"));
+        if let Some(error) = self.committed_read_error.lock().unwrap().take() {
+            return Err(error);
+        }
         Ok(self.committed.lock().unwrap().clone())
     }
 
@@ -6302,3 +6311,5 @@ async fn cold_supervisor_continues_only_the_thread_owned_outcome_truth() {
 }
 
 mod resumed_dispatch;
+
+mod frozen_projection;

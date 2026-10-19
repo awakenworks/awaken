@@ -254,9 +254,8 @@ impl SessionApplicationBuilder {
         ));
         let queries = Arc::new(crate::SessionQueries::new(
             store.clone(),
-            self.runtime.projection_handle(),
-            self.runtime.capability.clone(),
-            self.profiles.clone(),
+            &self.runtime,
+            self.profiles,
         ));
         let inputs = Arc::new(crate::SessionInputs::new(
             store.clone(),
@@ -270,7 +269,6 @@ impl SessionApplicationBuilder {
             mcp_realizer: self.mcp,
             credentials,
             environments: self.environments,
-            config_source: self.profiles,
             model_publication_resolver: self.models,
             resource_registry,
             resource_purge_scheduler,

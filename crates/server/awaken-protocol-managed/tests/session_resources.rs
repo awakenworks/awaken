@@ -957,9 +957,8 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
         Some("gpt-5-upstream"),
         "R1"
     );
-    let equal_persisted = equal_state
-        .session_application()
-        .queries()
+    let equal_queries = equal_state.session_application().queries();
+    let equal_persisted = equal_queries
         .session(&SessionId::from(equal_created.id))
         .await
         .expect("R1 persisted Session");
@@ -972,8 +971,7 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
         equal_override.inference.is_default(),
         "R1 string resets controls"
     );
-    let equal_projection = equal_state
-        .session_application()
+    let equal_projection = equal_queries
         .frozen_session_projection("default".into(), &equal_persisted, true)
         .await
         .expect("R1 derived executable snapshot");
@@ -1044,9 +1042,8 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
         &[("default".into(), requested.into())],
         "R2 uses the trusted Workspace and exact official model id"
     );
-    let persisted = resolved_state
-        .session_application()
-        .queries()
+    let resolved_queries = resolved_state.session_application().queries();
+    let persisted = resolved_queries
         .session(&SessionId::from(created.id))
         .await
         .expect("R2 persisted Session");
@@ -1073,8 +1070,7 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
         },
         "R2"
     );
-    let projection = resolved_state
-        .session_application()
+    let projection = resolved_queries
         .frozen_session_projection("default".into(), &persisted, true)
         .await
         .expect("R2 derived executable snapshot");

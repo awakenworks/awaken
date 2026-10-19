@@ -167,6 +167,12 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
     // while the Session root is the sole Event/lifecycle authority; no follow-up
     // launch executor or compensating delete exists. Rules: D1 C1 -> E1;
     // D2 C1+C2 -> E2; D3 C1+C2+C3 -> E3.
+    // L1/L2b observation rule: after that real Session exists, the original
+    // narrow role returns the Runtime root subscription and rejects an
+    // unlinked child with its original typed error. Neither observation writes
+    // a root or changes the D2 publication-transport failure/replay causes.
+    // The existing streaming cases separately assert actual HTTP preview bytes;
+    // construction.rs owns the original neutral Runtime's None partition.
     let catalog = Arc::new(ExecutableAgentCatalog::new());
     let runtime_publications = Arc::new(TogglePublishedAgents {
         catalog: catalog.clone(),
@@ -229,6 +235,39 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
             } if created == &session_id
         ),
         "D1/E1: {first:?}"
+    );
+
+    let observed_session = awaken_session_types::SessionId::from(session_id.as_str());
+    let root_subscription =
+        awaken_session_application::SessionObservation::subscribe_session_thread_live(
+            managed.sessions.as_ref(),
+            &observed_session,
+            observed_session.as_str(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        root_subscription.is_some(),
+        "L1 real Runtime root subscription"
+    );
+    drop(root_subscription);
+    let unlinked = awaken_session_application::SessionObservation::subscribe_session_thread_live(
+        managed.sessions.as_ref(),
+        &observed_session,
+        "unlinked-observation-child",
+    )
+    .await;
+    let Err(error) = unlinked else {
+        panic!("L2b an unlinked child must retain the original Runtime refusal");
+    };
+    assert_eq!(
+        error.kind,
+        awaken_session_types::RunErrorKind::BadRequest,
+        "L2b"
+    );
+    assert_eq!(
+        error.message, "live observer target is not a coordinated Session Thread",
+        "L2b"
     );
 
     runtime_publications
@@ -601,3 +640,6 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
         "D5"
     );
 }
+
+#[path = "managed_deployment_e2e/admission.rs"]
+mod admission;
