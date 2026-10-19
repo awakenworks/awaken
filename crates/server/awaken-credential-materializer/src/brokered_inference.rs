@@ -1642,7 +1642,10 @@ mod tests {
 
     #[test]
     fn t4_broker_failures_keep_stable_runtime_categories() {
-        use awaken_runtime_contract::model_operation::{ModelExecutionEvidence, NoDispatchProof};
+        use awaken_runtime_contract::model_operation::{
+            ModelEffectScope, ModelExecutionEvidence, ModelOperationPhase, ModelReentry,
+            NoDispatchProof,
+        };
         use awaken_runtime_contract::resilience::{
             FailureClass, RetryPolicy, RetryStop, RetryVerdict,
         };
@@ -1651,6 +1654,8 @@ mod tests {
         // class; E3 the retry loop's verdict for the first failed attempt.
         // Regression row R6: an exhausted quota is a hard usage limit — not
         // retried in place — while a bare throttle (R7) still is.
+        // Reentry uses the production projection with Opaque scope: a broker
+        // refusal proves pre-dispatch, never a response-only adapter capability.
         let hour = std::time::Duration::from_secs(3_600);
         let reset = Some(std::time::Duration::from_secs(90));
         let not_retryable = RetryVerdict::Stop(RetryStop::NotRetryable);
@@ -1737,7 +1742,11 @@ mod tests {
             assert_eq!(error.class(), class, "{row} E2");
             let verdict = RetryPolicy::default().decide(
                 error.class(),
-                error.execution_evidence(),
+                ModelReentry::observed(
+                    ModelOperationPhase::Returned,
+                    ModelEffectScope::Opaque,
+                    error.execution_evidence(),
+                ),
                 0,
                 hour,
                 0,

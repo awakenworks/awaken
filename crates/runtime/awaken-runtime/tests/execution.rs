@@ -9,6 +9,8 @@
 mod cancelled_model_observation;
 #[path = "execution/checkpoint_observation.rs"]
 mod checkpoint_observation;
+#[path = "execution/response_reentry.rs"]
+mod response_reentry;
 #[path = "execution/tool_domain_preparation.rs"]
 mod tool_domain_preparation;
 
@@ -955,12 +957,20 @@ async fn unjournaled_runtime_masks_an_outer_model_identity() {
 }
 
 struct ReturnedUnknownModel {
+    scope: awaken_runtime_contract::model_operation::ModelEffectScope,
     calls: AtomicUsize,
     timeout: bool,
 }
 
 #[async_trait::async_trait]
 impl LlmExecutor for ReturnedUnknownModel {
+    fn effect_scope(
+        &self,
+        _request: &ChatRequest,
+    ) -> awaken_runtime_contract::model_operation::ModelEffectScope {
+        self.scope
+    }
+
     async fn infer_streaming(
         &self,
         request: ChatRequest,
@@ -995,6 +1005,7 @@ async fn returned_unknown_model_error_blocks_retry_failover_and_outer_tolerance(
     // remote quiescence. R2 existing checkpoint => retained, not consumed.
     for timeout in [false, true] {
         let model = Arc::new(ReturnedUnknownModel {
+            scope: Default::default(),
             calls: AtomicUsize::new(0),
             timeout,
         });

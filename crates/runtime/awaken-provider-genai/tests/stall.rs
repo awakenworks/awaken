@@ -11,7 +11,8 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::{AdapterKind, GenaiExecutor};
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, DeltaSink, LlmExecutor, StopReason};
 use awaken_runtime_contract::model_operation::{
-    ModelExecutionEvidence, ResponseEnvelope, TerminalReceipt,
+    ModelEffectScope, ModelExecutionEvidence, ModelOperationPhase, ModelReentry, ResponseEnvelope,
+    TerminalReceipt,
 };
 use awaken_runtime_contract::resolved::ModelBinding;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -22,11 +23,17 @@ use awaken_runtime_contract::resilience::{RetryPolicy, RetryStop, RetryVerdict};
 use budget::{budget, with_budget};
 
 /// The retry loop's final word on `error` as the failed first attempt of a
-/// default-budget request (jitter at its lower bound).
+/// default-budget request (jitter at its lower bound). Opaque is intentional:
+/// these generic adapter fixtures cannot borrow DeepSeek response-only scope;
+/// positive terminal/pre-dispatch evidence works and incomplete bodies stay blocked.
 fn verdict(error: &Error) -> RetryVerdict {
     RetryPolicy::default().decide(
         error.class(),
-        error.execution_evidence(),
+        ModelReentry::observed(
+            ModelOperationPhase::Returned,
+            ModelEffectScope::Opaque,
+            error.execution_evidence(),
+        ),
         0,
         ModelInferenceBudget::DEFAULT.total(),
         0,
@@ -126,7 +133,11 @@ async fn every_native_dialect_obeys_the_inherited_deadline_before_http_dispatch(
                 assert_eq!(
                     RetryPolicy::default().decide(
                         error.class(),
-                        error.execution_evidence(),
+                        ModelReentry::observed(
+                            ModelOperationPhase::Returned,
+                            ModelEffectScope::Opaque,
+                            error.execution_evidence()
+                        ),
                         0,
                         Duration::ZERO,
                         0

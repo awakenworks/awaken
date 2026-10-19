@@ -79,7 +79,16 @@ impl WireFailure<'static> {
         Self {
             status: error.status(),
             headers: None,
-            body: Cow::Owned(error.to_string()),
+            body: Cow::Owned(if diagnostic.kind == "response_body" {
+                // Preserve the already-derived closed diagnostic through the
+                // ordinary failure message, never raw source strings or URLs.
+                format!(
+                    "error decoding response body (io_kind={:?})",
+                    diagnostic.io_kind
+                )
+            } else {
+                error.to_string()
+            }),
             complete: false,
             unsent: error.is_connect(),
         }
@@ -521,9 +530,26 @@ mod tests {
         let diagnostic = TransportDiagnostic::of(&error);
         assert_eq!(diagnostic.kind, "response_body");
         assert!(diagnostic.source_depth > 0);
+        // R3 the response-body failure retains a safe concrete diagnostic in
+        // the existing error message, not just an ephemeral log. C4 nested I/O
+        // kind present/absent => preserve it when present, never guess it. URLs
+        // and response fragments are not diagnostics and must stay out.
+        let classified = classify_wire_failure(WireFailure::transport(&error));
         assert_eq!(
-            classify_wire_failure(WireFailure::transport(&error)).execution_evidence(),
+            classified.execution_evidence(),
             ModelExecutionEvidence::Unknown
+        );
+        let message = classified.to_string();
+        assert!(
+            message.contains("io_kind="),
+            "R3 response-body diagnostic must survive classification"
+        );
+        if let Some(kind) = diagnostic.io_kind {
+            assert!(message.contains(&format!("{kind:?}")));
+        }
+        assert!(
+            !message.contains(&address.to_string()),
+            "R3 endpoint is not public error content"
         );
     }
 

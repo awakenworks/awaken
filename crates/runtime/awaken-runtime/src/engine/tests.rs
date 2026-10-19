@@ -951,7 +951,16 @@ impl DeltaSink for RecordingSink {
 /// Ends the first remote attempt with a provider-confirmed terminal error after streaming a partial
 /// (text and/or one tool call whose raw argument text is `first_tool.2`), then
 /// succeeds on any retry — capturing every request it received.
+enum StreamInterruption {
+    TerminatedDeadline,
+    ReturnedEof {
+        scope: awaken_runtime_contract::model_operation::ModelEffectScope,
+        failures: usize,
+    },
+}
+
 struct FlakyStreamLlm {
+    interruption: StreamInterruption,
     requests: std::sync::Mutex<Vec<ChatRequest>>,
     first_partial: &'static str,
     first_tool: Option<(&'static str, &'static str, &'static str)>,
@@ -1025,6 +1034,16 @@ impl awaken_runtime_contract::AttemptOwnershipVerifier for SequencedOwnership {
 }
 #[async_trait]
 impl LlmExecutor for FlakyStreamLlm {
+    fn effect_scope(
+        &self,
+        _request: &ChatRequest,
+    ) -> awaken_runtime_contract::model_operation::ModelEffectScope {
+        match self.interruption {
+            StreamInterruption::TerminatedDeadline => Default::default(),
+            StreamInterruption::ReturnedEof { scope, .. } => scope,
+        }
+    }
+
     async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
         unreachable!("continuation path is streaming-only")
     }
@@ -1038,7 +1057,11 @@ impl LlmExecutor for FlakyStreamLlm {
             reqs.push(request);
             reqs.len() - 1
         };
-        if n == 0 {
+        let failures = match self.interruption {
+            StreamInterruption::TerminatedDeadline => 1,
+            StreamInterruption::ReturnedEof { failures, .. } => failures,
+        };
+        if n < failures {
             if !self.first_partial.is_empty() {
                 sink.on_text(self.first_partial).await;
             }
@@ -1046,12 +1069,18 @@ impl LlmExecutor for FlakyStreamLlm {
                 // Mid-stream, a provider hands a de-accumulated arg-fragment.
                 sink.on_tool_call_delta(call_id, tool_id, raw).await;
             }
-            return Err(
-                LlmError::Timeout("provider-confirmed terminal deadline".to_string())
-                    .with_execution_evidence(
-                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated(awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some("completed")).unwrap()),
-                ),
-            );
+            return Err(match self.interruption {
+                StreamInterruption::TerminatedDeadline =>
+                    LlmError::Timeout("provider-confirmed terminal deadline".to_string())
+                        .with_execution_evidence(
+                            awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated(
+                                awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some("completed")).unwrap()
+                            )
+                        ),
+                // Actual consumer return does not prove provider completion.
+                StreamInterruption::ReturnedEof { .. } =>
+                    LlmError::Provider("error decoding response body: unexpected EOF".into()),
+            });
         }
         sink.on_text(self.continuation).await;
         Ok(ChatResponse {
@@ -1593,6 +1622,7 @@ async fn provider_attempts_fail_closed_when_live_ownership_is_lost() {
     assert!(child_provider.requests.lock().unwrap().is_empty(), "O4/E2");
 
     let retrying_provider = Arc::new(FlakyStreamLlm {
+        interruption: StreamInterruption::TerminatedDeadline,
         requests: Default::default(),
         first_partial: "",
         first_tool: None,
@@ -1840,6 +1870,7 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
     // S1 partial text + confirmed remote termination + retry budget => continue.
     // Plain connection loss is Unknown and is covered by the negative case below.
     let flaky = Arc::new(FlakyStreamLlm {
+        interruption: StreamInterruption::TerminatedDeadline,
         requests: Default::default(),
         first_partial: "The ans",
         first_tool: None,
@@ -2114,6 +2145,7 @@ async fn completed_tool_calls_before_a_drop_are_executed_without_re_inferring() 
     // executable and salvage keeps the original call identity. Decision rule R2:
     // completed call+confirmed termination=>ToolUse response and provider count one.
     let flaky = Arc::new(FlakyStreamLlm {
+        interruption: StreamInterruption::TerminatedDeadline,
         requests: Default::default(),
         first_partial: "Let me search ",
         first_tool: Some(("c1", "search", r#"{"q":"rust"}"#)),
@@ -2159,6 +2191,7 @@ async fn completed_tool_calls_are_salvaged_even_when_the_retry_budget_is_spent()
     // Constraints/invariants: retry budget governs re-inference, not recovery of
     // an already complete call. Decision rule R2b: complete+drop+zero budget=>salvage.
     let flaky = Arc::new(FlakyStreamLlm {
+        interruption: StreamInterruption::TerminatedDeadline,
         requests: Default::default(),
         first_partial: "searching ",
         first_tool: Some(("c1", "search", r#"{"q":"rust"}"#)),
@@ -2199,6 +2232,7 @@ async fn an_in_flight_tool_call_is_dropped_and_the_text_continues() {
     // or replayed. Decision rule R3: partial tool+text=>two calls, stitched text,
     // zero committed ToolUse.
     let flaky = Arc::new(FlakyStreamLlm {
+        interruption: StreamInterruption::TerminatedDeadline,
         requests: Default::default(),
         first_partial: "Calling ",
         first_tool: Some(("c1", "search", r#"{"q":"ru"#)),
@@ -2282,6 +2316,7 @@ async fn the_interruption_boundary_flushes_a_checkpoint_then_clears_it_on_return
     // partial; an unvetoed, physically quiescent return then requests deletion
     // (the run concluded in-process, so nothing remains eligible to resume).
     let flaky = Arc::new(FlakyStreamLlm {
+        interruption: StreamInterruption::TerminatedDeadline,
         requests: Default::default(),
         first_partial: "half ",
         first_tool: None,
@@ -2843,3 +2878,5 @@ async fn sdk_supplied_activation_preserves_live_context_and_command_precedence()
         }
     }
 }
+
+mod response_reentry;
