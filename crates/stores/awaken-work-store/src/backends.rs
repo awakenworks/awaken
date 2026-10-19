@@ -1,3 +1,4 @@
+// @formal surface obligation=environment.registration_intent_is_atomic_recoverable_and_idempotent
 // @formal surface obligation=work.single_active_claim
 // @formal surface obligation=work.exact_boundary_reclaim
 // @formal surface obligation=work.lease_authority_snapshot_and_owner_mutations_are_atomic
@@ -7,10 +8,15 @@
 //!
 //! The Environment-owned Work role command
 //! implementations remain in the crate root. This module owns only connection
-//! lifecycle, schema admission, idempotent row creation, and owned-row reads for
-//! the two durable adapters.
+//! lifecycle, schema admission, idempotent row creation, owned-row reads and
+//! storage-atomic Environment registration watermarks for the two durable adapters.
 
 use super::*;
+use awaken_environment_contract::EnvironmentRevision;
+use awaken_executable_environment_contract::{
+    EnvironmentWorkRevisionError, EnvironmentWorkRevisionOperation as Operation,
+    EnvironmentWorkRevisionOutcome as Outcome, admit_environment_work_revision,
+};
 use awaken_time::WallClockExt;
 use sqlx::postgres::PgRow;
 use sqlx::sqlite::{Sqlite, SqliteConnection};
@@ -108,6 +114,9 @@ impl SqliteWorkQueue {
         created_at: String,
     ) -> Result<String, WorkQueueError> {
         let mut tx = immediate(conn).await?;
+        if data_type == "healthcheck" {
+            sqlite_require_healthcheck(&mut tx, environment_id).await?;
+        }
         if let Some(session_id) = session_id
             && let Some(existing) = sqlx::query_scalar::<_, String>(
                 "SELECT work_id FROM work_queue_item \
@@ -123,12 +132,7 @@ impl SqliteWorkQueue {
             tx.commit().await.map_err(storage)?;
             return Ok(existing);
         }
-        let next: i64 =
-            sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(storage)?;
-        let work_id = format!("work_{next:016}");
+        let (next, work_id) = identity::allocate_sqlite(&mut tx).await?;
         let data_id = session_id.unwrap_or(&work_id);
         sqlx::query(
             "INSERT INTO work_queue_item \
@@ -229,6 +233,9 @@ impl PostgresWorkQueue {
             .execute(&mut *tx)
             .await
             .map_err(storage)?;
+        if data_type == "healthcheck" {
+            postgres_require_healthcheck(&mut tx, env_id).await?;
+        }
         if let Some(session_id) = session_id
             && let Some(existing) = sqlx::query_scalar::<_, String>(
                 "SELECT work_id FROM work_queue_item \
@@ -244,12 +251,7 @@ impl PostgresWorkQueue {
             tx.commit().await.map_err(storage)?;
             return Ok(existing);
         }
-        let next: i64 =
-            sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(storage)?;
-        let work_id = format!("work_{next:016}");
+        let (next, work_id) = identity::allocate_postgres(&mut tx).await?;
         let data_id = session_id.unwrap_or(&work_id).to_string();
         sqlx::query(
             "INSERT INTO work_queue_item \
@@ -284,5 +286,290 @@ impl PostgresWorkQueue {
         .map_err(storage)?
         .map(|row| pg_row_to_item(&row))
         .transpose()
+    }
+}
+
+fn operation_name(operation: Operation) -> &'static str {
+    match operation {
+        Operation::Register { healthcheck: true } => "register_healthcheck",
+        Operation::Register { healthcheck: false } => "register_cloud",
+        Operation::Withdraw => "withdraw",
+    }
+}
+
+fn decode_watermark(
+    row: Option<(String, String)>,
+) -> Result<Option<(EnvironmentRevision, Operation)>, WorkQueueError> {
+    row.map(|(revision, operation)| {
+        let parsed = revision.parse::<u64>().map_err(storage)?;
+        if parsed == 0 || parsed.to_string() != revision {
+            return Err(storage("noncanonical Environment queue revision"));
+        }
+        let operation = match operation.as_str() {
+            "register_healthcheck" => Operation::Register { healthcheck: true },
+            "register_cloud" => Operation::Register { healthcheck: false },
+            "withdraw" => Operation::Withdraw,
+            _ => return Err(storage("unknown Environment queue revision operation")),
+        };
+        Ok((EnvironmentRevision(parsed), operation))
+    })
+    .transpose()
+}
+
+fn require_unversioned_healthcheck(
+    current: Option<(EnvironmentRevision, Operation)>,
+) -> Result<(), WorkQueueError> {
+    if current.is_some_and(|(_, operation)| {
+        !matches!(operation, Operation::Register { healthcheck: true })
+    }) {
+        Err(storage(
+            "unversioned healthcheck cannot bypass the Environment registration watermark",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+async fn sqlite_watermark(
+    connection: &mut sqlx::SqliteConnection,
+    env_id: &str,
+) -> Result<Option<(EnvironmentRevision, Operation)>, WorkQueueError> {
+    decode_watermark(sqlx::query_as::<_, (String, String)>("SELECT revision, operation FROM work_queue_environment_revision WHERE environment_id = ?1")
+        .bind(env_id).fetch_optional(connection).await.map_err(storage)?)
+}
+
+pub(super) async fn sqlite_require_healthcheck(
+    connection: &mut sqlx::SqliteConnection,
+    env_id: &str,
+) -> Result<(), WorkQueueError> {
+    require_unversioned_healthcheck(sqlite_watermark(connection, env_id).await?)
+}
+
+async fn sqlite_ensure_healthcheck(
+    connection: &mut sqlx::SqliteConnection,
+    env_id: &str,
+    created_at: String,
+) -> Result<String, WorkQueueError> {
+    if let Some(id) = sqlx::query_scalar::<_, String>("SELECT work_id FROM work_queue_item WHERE environment_id = ?1 AND data_type = 'healthcheck' ORDER BY seq ASC LIMIT 1")
+        .bind(env_id).fetch_optional(&mut *connection).await.map_err(storage)? { return Ok(id); }
+    let (next, id) = identity::allocate_sqlite(connection).await?;
+    sqlx::query("INSERT INTO work_queue_item (work_id,seq,environment_id,data_type,data_id,metadata_json,state,created_at) VALUES (?1,?2,?3,'healthcheck',?1,'{}','queued',?4)")
+        .bind(&id).bind(next).bind(env_id).bind(created_at).execute(&mut *connection).await.map_err(storage)?;
+    Ok(id)
+}
+
+async fn sqlite_remove_work(
+    connection: &mut sqlx::SqliteConnection,
+    env_id: &str,
+    healthchecks_only: bool,
+) -> Result<Vec<String>, WorkQueueError> {
+    let suffix = if healthchecks_only {
+        " AND data_type = 'healthcheck'"
+    } else {
+        ""
+    };
+    let ids = sqlx::query_scalar::<_, String>(&format!(
+        "SELECT work_id FROM work_queue_item WHERE environment_id = ?1{suffix}"
+    ))
+    .bind(env_id)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(storage)?;
+    sqlx::query(&format!(
+        "DELETE FROM work_queue_item WHERE environment_id = ?1{suffix}"
+    ))
+    .bind(env_id)
+    .execute(&mut *connection)
+    .await
+    .map_err(storage)?;
+    Ok(ids)
+}
+
+#[async_trait::async_trait]
+impl EnvironmentWorkLifecycle for SqliteWorkQueue {
+    async fn apply_environment_revision(
+        &self,
+        env_id: &str,
+        revision: EnvironmentRevision,
+        operation: Operation,
+    ) -> Result<Outcome, EnvironmentWorkRevisionError> {
+        let mut connection = self.connection().await?;
+        let mut tx = immediate(&mut connection).await?;
+        let current = sqlite_watermark(&mut tx, env_id).await?;
+        let outcome = admit_environment_work_revision(env_id, revision, operation, current)?;
+        if outcome != Outcome::Applied {
+            tx.commit().await.map_err(storage)?;
+            return Ok(outcome);
+        }
+        let removed = match operation {
+            Operation::Register { healthcheck: true } => {
+                sqlite_ensure_healthcheck(&mut tx, env_id, self.clock.observed_at()).await?;
+                Vec::new()
+            }
+            Operation::Register { healthcheck: false } => {
+                sqlite_remove_work(&mut tx, env_id, true).await?
+            }
+            Operation::Withdraw => sqlite_remove_work(&mut tx, env_id, true).await?,
+        };
+        // Canonical decimal text preserves the domain's entire u64 revision
+        // without an additional numeric dependency or signed-storage truncation.
+        sqlx::query("INSERT INTO work_queue_environment_revision (environment_id, revision, operation) VALUES (?1,?2,?3) ON CONFLICT (environment_id) DO UPDATE SET revision=excluded.revision,operation=excluded.operation")
+            .bind(env_id).bind(revision.0.to_string()).bind(operation_name(operation))
+            .execute(&mut *tx).await.map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
+        drop(connection);
+        if operation == Operation::Withdraw || !removed.is_empty() {
+            self.book.forget_env(env_id, &removed);
+        }
+        Ok(outcome)
+    }
+    async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
+        let mut connection = self.connection().await?;
+        Self::insert(
+            &mut connection,
+            env_id,
+            "healthcheck",
+            None,
+            self.clock.observed_at(),
+        )
+        .await
+    }
+    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
+        let mut connection = self.connection().await?;
+        let mut tx = immediate(&mut connection).await?;
+        sqlite_require_healthcheck(&mut tx, env_id).await?;
+        let id = sqlite_ensure_healthcheck(&mut tx, env_id, self.clock.observed_at()).await?;
+        tx.commit().await.map_err(storage)?;
+        Ok(id)
+    }
+    async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError> {
+        let mut connection = self.connection().await?;
+        let mut tx = immediate(&mut connection).await?;
+        let ids = sqlite_remove_work(&mut tx, env_id, false).await?;
+        tx.commit().await.map_err(storage)?;
+        self.book.forget_env(env_id, &ids);
+        Ok(())
+    }
+}
+
+async fn postgres_watermark(
+    connection: &mut sqlx::PgConnection,
+    env_id: &str,
+) -> Result<Option<(EnvironmentRevision, Operation)>, WorkQueueError> {
+    decode_watermark(sqlx::query_as::<_, (String, String)>("SELECT revision, operation FROM work_queue_environment_revision WHERE environment_id = $1")
+        .bind(env_id).fetch_optional(connection).await.map_err(storage)?)
+}
+
+pub(super) async fn postgres_require_healthcheck(
+    connection: &mut sqlx::PgConnection,
+    env_id: &str,
+) -> Result<(), WorkQueueError> {
+    require_unversioned_healthcheck(postgres_watermark(connection, env_id).await?)
+}
+
+async fn postgres_ensure_healthcheck(
+    connection: &mut sqlx::PgConnection,
+    env_id: &str,
+    created_at: String,
+) -> Result<String, WorkQueueError> {
+    if let Some(id) = sqlx::query_scalar::<_, String>("SELECT work_id FROM work_queue_item WHERE environment_id = $1 AND data_type = 'healthcheck' ORDER BY seq ASC LIMIT 1")
+        .bind(env_id).fetch_optional(&mut *connection).await.map_err(storage)? { return Ok(id); }
+    let (next, id) = identity::allocate_postgres(connection).await?;
+    sqlx::query("INSERT INTO work_queue_item (work_id,seq,environment_id,data_type,data_id,metadata_json,state,created_at) VALUES ($1,$2,$3,'healthcheck',$1,'{}','queued',$4)")
+        .bind(&id).bind(next).bind(env_id).bind(created_at).execute(&mut *connection).await.map_err(storage)?;
+    Ok(id)
+}
+
+async fn postgres_remove_work(
+    connection: &mut sqlx::PgConnection,
+    env_id: &str,
+    healthchecks_only: bool,
+) -> Result<Vec<String>, WorkQueueError> {
+    let suffix = if healthchecks_only {
+        " AND data_type = 'healthcheck'"
+    } else {
+        ""
+    };
+    let ids = sqlx::query_scalar::<_, String>(&format!(
+        "SELECT work_id FROM work_queue_item WHERE environment_id = $1{suffix}"
+    ))
+    .bind(env_id)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(storage)?;
+    sqlx::query(&format!(
+        "DELETE FROM work_queue_item WHERE environment_id = $1{suffix}"
+    ))
+    .bind(env_id)
+    .execute(&mut *connection)
+    .await
+    .map_err(storage)?;
+    Ok(ids)
+}
+
+#[async_trait::async_trait]
+impl EnvironmentWorkLifecycle for PostgresWorkQueue {
+    async fn apply_environment_revision(
+        &self,
+        env_id: &str,
+        revision: EnvironmentRevision,
+        operation: Operation,
+    ) -> Result<Outcome, EnvironmentWorkRevisionError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        let current = postgres_watermark(&mut tx, env_id).await?;
+        let outcome = admit_environment_work_revision(env_id, revision, operation, current)?;
+        if outcome != Outcome::Applied {
+            tx.commit().await.map_err(storage)?;
+            return Ok(outcome);
+        }
+        let removed = match operation {
+            Operation::Register { healthcheck: true } => {
+                postgres_ensure_healthcheck(&mut tx, env_id, self.clock.observed_at()).await?;
+                Vec::new()
+            }
+            Operation::Register { healthcheck: false } => {
+                postgres_remove_work(&mut tx, env_id, true).await?
+            }
+            Operation::Withdraw => postgres_remove_work(&mut tx, env_id, true).await?,
+        };
+        // Canonical decimal text preserves the domain's entire u64 revision
+        // without an additional numeric dependency or signed-storage truncation.
+        sqlx::query("INSERT INTO work_queue_environment_revision (environment_id, revision, operation) VALUES ($1,$2,$3) ON CONFLICT (environment_id) DO UPDATE SET revision=excluded.revision,operation=excluded.operation")
+            .bind(env_id).bind(revision.0.to_string()).bind(operation_name(operation))
+            .execute(&mut *tx).await.map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
+        if operation == Operation::Withdraw || !removed.is_empty() {
+            self.book.forget_env(env_id, &removed);
+        }
+        Ok(outcome)
+    }
+    async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
+        self.insert(env_id, "healthcheck", None).await
+    }
+    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        postgres_require_healthcheck(&mut tx, env_id).await?;
+        let id = postgres_ensure_healthcheck(&mut tx, env_id, self.clock.observed_at()).await?;
+        tx.commit().await.map_err(storage)?;
+        Ok(id)
+    }
+    async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        let ids = postgres_remove_work(&mut tx, env_id, false).await?;
+        tx.commit().await.map_err(storage)?;
+        self.book.forget_env(env_id, &ids);
+        Ok(())
     }
 }

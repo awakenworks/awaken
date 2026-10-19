@@ -27,6 +27,8 @@ use serde::de::DeserializeOwned;
 
 pub const EXECUTABLE_ENVIRONMENT_REGISTER_PATH: &str =
     "/internal/v1/executable-environments/register";
+pub const EXECUTABLE_ENVIRONMENT_RESTORE_HISTORY_PATH: &str =
+    "/internal/v1/executable-environments/restore-history";
 pub const EXECUTABLE_ENVIRONMENT_WITHDRAW_PATH: &str =
     "/internal/v1/executable-environments/withdraw";
 pub const EXECUTABLE_ENVIRONMENT_PUBLISH_PERMISSION: &str = "environment:publish";
@@ -60,6 +62,10 @@ pub fn executable_environment_registration_router_with_authenticator(
 ) -> Router {
     Router::new()
         .route(EXECUTABLE_ENVIRONMENT_REGISTER_PATH, post(register))
+        .route(
+            EXECUTABLE_ENVIRONMENT_RESTORE_HISTORY_PATH,
+            post(restore_history),
+        )
         .route(EXECUTABLE_ENVIRONMENT_WITHDRAW_PATH, post(withdraw))
         .with_state(RegistrationHttpState {
             registrar,
@@ -106,6 +112,35 @@ async fn register(
             Json(Some(Ok::<_, ExecutableEnvironmentRegistrationError>(
                 outcome,
             ))),
+        )
+            .into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn restore_history(
+    State(state): State<RegistrationHttpState>,
+    headers: HeaderMap,
+    Json(command): Json<ExecutableEnvironmentRegistration>,
+) -> impl IntoResponse {
+    if let Err(status) = authorize(
+        &headers,
+        state.authenticator.as_ref(),
+        ServiceAuthorizationRequirement::new(
+            COORDINATOR_SERVICE_AUDIENCE,
+            EXECUTABLE_ENVIRONMENT_PUBLISH_PERMISSION,
+        ),
+    ) {
+        return status.into_response();
+    }
+    match state
+        .registrar
+        .restore_historical_registration(command)
+        .await
+    {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(Some(Ok::<(), ExecutableEnvironmentRegistrationError>(()))),
         )
             .into_response(),
         Err(error) => error_response(error),
@@ -297,6 +332,14 @@ impl HttpExecutableEnvironmentRegistrar {
 
 #[async_trait::async_trait]
 impl ExecutableEnvironmentRegistrar for HttpExecutableEnvironmentRegistrar {
+    async fn restore_historical_registration(
+        &self,
+        registration: ExecutableEnvironmentRegistration,
+    ) -> Result<(), ExecutableEnvironmentRegistrationError> {
+        self.post(EXECUTABLE_ENVIRONMENT_RESTORE_HISTORY_PATH, &registration)
+            .await
+    }
+
     async fn register(
         &self,
         registration: ExecutableEnvironmentRegistration,
@@ -313,5 +356,98 @@ impl ExecutableEnvironmentRegistrar for HttpExecutableEnvironmentRegistrar {
     {
         self.post(EXECUTABLE_ENVIRONMENT_WITHDRAW_PATH, &withdrawal)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ExecutableEnvironmentCatalog, LocalExecutableEnvironmentRegistrar};
+    use awaken_environment_contract::{EnvItem, EnvironmentConfig, EnvironmentRevision};
+
+    #[tokio::test]
+    async fn private_history_route_retains_exact_facts_without_admission_and_rejects_wrong_credentials()
+     {
+        // T1 authenticated remote history uses the explicit history command,
+        // never ordinary register; T2 wrong bearer mutates no catalog fact;
+        // T3 normal remote register can later promote the exact retained fact.
+        let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let router = executable_environment_registration_router(
+            Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
+            "history-test-token",
+        )
+        .unwrap();
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await
+                .unwrap();
+        });
+        let client =
+            HttpExecutableEnvironmentRegistrar::new(&endpoint, "history-test-token").unwrap();
+        let exact = ExecutableEnvironmentRegistration::new(
+            EnvItem {
+                id: "http-history".into(),
+                revision: EnvironmentRevision(1),
+                name: "frozen".into(),
+                description: None,
+                metadata: Default::default(),
+                scope: None,
+                config: EnvironmentConfig::SelfHosted,
+                sandbox_policy: None,
+                created_at: None,
+                updated_at: None,
+                archived_at: None,
+            },
+            None,
+        );
+        client
+            .restore_historical_registration(exact.clone())
+            .await
+            .unwrap();
+        client
+            .restore_historical_registration(exact.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog.at_revision("http-history", EnvironmentRevision(1)),
+            Some(exact.clone()),
+            "T1"
+        );
+        assert!(catalog.current("http-history").is_none(), "T1");
+        let unauthorized =
+            HttpExecutableEnvironmentRegistrar::new(&endpoint, "wrong-token").unwrap();
+        let mut forged = exact.definition.clone();
+        forged.revision = EnvironmentRevision(2);
+        assert!(
+            unauthorized
+                .restore_historical_registration(ExecutableEnvironmentRegistration::new(
+                    forged, None
+                ))
+                .await
+                .is_err(),
+            "T2"
+        );
+        assert!(
+            catalog
+                .at_revision("http-history", EnvironmentRevision(2))
+                .is_none(),
+            "T2"
+        );
+        assert_eq!(
+            client.register(exact.clone()).await.unwrap(),
+            ExecutableEnvironmentRegistrationOutcome::RegisteredCurrent,
+            "T3"
+        );
+        assert_eq!(catalog.current("http-history"), Some(exact), "T3");
+        stop.send(()).unwrap();
+        server.await.unwrap();
     }
 }

@@ -13,6 +13,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_session_application_contract::StepOutcome;
 use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime, ToolPermissionDecision};
 use awaken_session_types::RunError;
+use awaken_time::WallClockExt as _;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -434,4 +435,240 @@ async fn environment_is_immutable_across_update() {
         .expect(StatusCode::OK);
     assert_eq!(got["environment_id"], environment_id);
     assert_eq!(got["title"], "renamed", "C2/E2");
+}
+
+#[tokio::test]
+async fn archived_environment_keeps_existing_session_bearer_http_scope() {
+    use awaken_session_application_contract::SessionWorkerAssignment as _;
+    use awaken_session_repository_contract::SessionRepositoryReads as _;
+    use base64::Engine as _;
+    let clock = awaken_time::system_clock();
+    let fixture = awaken_protocol_managed_testkit::environment_fixture(clock.clone());
+    let environment = fixture
+        .application
+        .create(awaken_environment_contract::CreateEnvironmentCommand {
+            command_id: "archive-existing-http".into(),
+            name: "archive-http".into(),
+            description: None,
+            metadata: Default::default(),
+            scope: None,
+            config: awaken_environment_contract::EnvironmentConfig::SelfHosted,
+            sandbox_policy: None,
+        })
+        .await
+        .unwrap();
+    // Retire the healthcheck through its actual owner before the Session poll.
+    let health = fixture
+        .execution
+        .work_consumer()
+        .claim(
+            &environment.id,
+            "health-owner",
+            "health-poller",
+            clock.now_ms(),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        fixture
+            .execution
+            .work_consumer()
+            .stop(&environment.id, &health.item.id, "health-owner")
+            .await
+            .unwrap()
+            .is_accepted()
+    );
+    let repository = support::session_repository("Archive Session root").await;
+    let state = Arc::new(
+        support::state(AcceptingFake)
+            .await
+            .with_session_repo(repository.clone())
+            .with_environments(fixture.execution.clone()),
+    );
+    let guard = awaken_protocol_managed::ManagedWorkSessionAccess::new(
+        fixture.execution.clone(),
+        state.clone(),
+    );
+    let routes = awaken_protocol_managed::router(state)
+        .merge(awaken_protocol_managed::environment_work_router(
+            fixture.execution.clone(),
+            clock,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            guard,
+            awaken_protocol_managed::work_session_guard,
+        ));
+    let app = support::edge_stamped(routes);
+    let session = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({"agent":"a", "environment_id":environment.id})),
+    )
+    .await
+    .expect(StatusCode::OK);
+    let sid = session["id"].as_str().unwrap();
+    let frozen_environment = repository
+        .get(&sid.into())
+        .await
+        .unwrap()
+        .frozen_baseline()
+        .expect("real Session creation must freeze its Environment")
+        .environment
+        .clone();
+    assert_eq!(frozen_environment.environment_id, environment.id);
+    fixture
+        .execution
+        .enqueue_session(&environment.id, &sid.into())
+        .await
+        .unwrap();
+    let request = Request::builder()
+        .uri(format!(
+            "/v1/environments/{}/work/poll?block_ms=",
+            environment.id
+        ))
+        .header("authorization", "Bearer environment-owner")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let claim: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        claim["data"]["id"], sid,
+        "poll must claim the actual durable Session"
+    );
+    let secret = claim["secret"]
+        .as_str()
+        .expect("Session poll must project the official secret envelope");
+    let envelope = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(secret)
+        .unwrap();
+    let envelope: Value = serde_json::from_slice(&envelope).unwrap();
+    let token = envelope["sessions_token"]
+        .as_str()
+        .expect("official envelope must contain the Session bearer");
+    let wid = claim["id"].as_str().unwrap();
+    async fn bearer_call(app: &Router, method: &str, path: &str, token: &str) -> StatusCode {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+    assert_eq!(
+        bearer_call(&app, "GET", &format!("/v1/sessions/{sid}"), token).await,
+        StatusCode::OK,
+        "pre-archive real Session bearer control"
+    );
+    // The real heartbeat extractor consumes query parameters, not a JSON body;
+    // ack has no body extractor. Exercise both legal requests before archive so
+    // only the post-archive Session GET can satisfy the intended assertion-red.
+    for operation in ["heartbeat", "ack"] {
+        assert_eq!(
+            bearer_call(
+                &app,
+                "POST",
+                &format!("/v1/environments/{}/work/{wid}/{operation}", environment.id),
+                token
+            )
+            .await,
+            StatusCode::OK,
+            "pre-archive existing Session lease {operation} control"
+        );
+    }
+    fixture.application.archive(&environment.id).await.unwrap();
+    assert_eq!(
+        bearer_call(&app, "GET", &format!("/v1/sessions/{sid}"), token).await,
+        StatusCode::OK,
+        "archive must retain the existing Session bearer"
+    );
+    // This is real Managed event admission into the same SQLite Session root.
+    // AcceptingFake deliberately has no durable Run reservation, so the receipt
+    // proves accepted work and an unchanged pin, not Run/provider completion.
+    let text = "continue the frozen Session after archive";
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/sessions/{sid}/events"))
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"events":[{
+                        "type":"user.message",
+                        "content":[{"type":"text", "text":text}]
+                    }]}))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let receipt: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(receipt["data"].as_array().unwrap().len(), 1);
+    assert_eq!(receipt["data"][0]["type"], "user.message");
+    assert_eq!(receipt["data"][0]["content"][0]["text"], text);
+    let persisted = repository.get(&sid.into()).await.unwrap();
+    assert_eq!(
+        persisted.frozen_baseline().unwrap().environment,
+        frozen_environment,
+        "accepted events must retain the whole original Environment pin"
+    );
+    assert!(
+        !persisted.event_batches.is_empty(),
+        "event acceptance must be retained by the actual Session root"
+    );
+    assert_eq!(
+        bearer_call(&app, "GET", "/v1/sessions/other-session", token).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        bearer_call(
+            &app,
+            "GET",
+            &format!("/v1/sessions/{sid}"),
+            &format!("{token}wrong")
+        )
+        .await,
+        StatusCode::UNAUTHORIZED
+    );
+    for operation in ["heartbeat", "ack", "stop"] {
+        assert_eq!(
+            bearer_call(
+                &app,
+                "POST",
+                &format!("/v1/environments/{}/work/{wid}/{operation}", environment.id),
+                token
+            )
+            .await,
+            StatusCode::OK,
+            "existing Session lease {operation}"
+        );
+    }
+    assert_eq!(
+        bearer_call(&app, "GET", &format!("/v1/sessions/{sid}"), token).await,
+        StatusCode::UNAUTHORIZED,
+        "stop still clears proof"
+    );
+    call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({"agent":"a", "environment_id":environment.id})),
+    )
+    .await
+    .expect(StatusCode::BAD_REQUEST);
 }

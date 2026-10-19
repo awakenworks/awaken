@@ -255,6 +255,20 @@ impl BuildAwareExecutableEnvironmentRegistrar {
 
 #[async_trait]
 impl ExecutableEnvironmentRegistrar for BuildAwareExecutableEnvironmentRegistrar {
+    async fn restore_historical_registration(
+        &self,
+        registration: ExecutableEnvironmentRegistration,
+    ) -> Result<(), ExecutableEnvironmentRegistrationError> {
+        self.registrar
+            .restore_historical_registration(registration.clone())
+            .await?;
+        // Exact replay always re-establishes this revision's build demand.
+        self.builds
+            .ensure_registration(&registration)
+            .await
+            .map_err(|error| ExecutableEnvironmentRegistrationError::Unavailable(error.to_string()))
+    }
+
     async fn register(
         &self,
         registration: ExecutableEnvironmentRegistration,
@@ -852,5 +866,234 @@ mod tests {
                 .is_some(),
             "X3 exact history retained"
         );
+    }
+
+    struct LatestBuildOutageStore {
+        inner: InMemoryEnvironmentImageBuildStore,
+        unavailable: AtomicBool,
+        ensures: Mutex<Vec<EnvironmentRevision>>,
+    }
+
+    #[async_trait]
+    impl EnvironmentImageBuildStore for LatestBuildOutageStore {
+        async fn ensure(
+            &self,
+            demand: EnvironmentImageBuildDemand,
+            now: u64,
+        ) -> Result<(), EnvironmentImageBuildError> {
+            self.ensures.lock().unwrap().push(demand.source_revision);
+            if demand.source_revision == EnvironmentRevision(2)
+                && self.unavailable.load(Ordering::SeqCst)
+            {
+                return Err(EnvironmentImageBuildError::Storage(
+                    "latest build demand remains unavailable".into(),
+                ));
+            }
+            self.inner.ensure(demand, now).await
+        }
+        async fn get(
+            &self,
+            key: &str,
+        ) -> Result<
+            Option<awaken_executable_environment_contract::EnvironmentImageBuildRecord>,
+            EnvironmentImageBuildError,
+        > {
+            self.inner.get(key).await
+        }
+        async fn claim_next(
+            &self,
+            owner: &str,
+            now: u64,
+            lease: u64,
+        ) -> Result<
+            Option<awaken_executable_environment_contract::EnvironmentImageBuildClaim>,
+            EnvironmentImageBuildError,
+        > {
+            self.inner.claim_next(owner, now, lease).await
+        }
+        async fn complete(
+            &self,
+            claim: &awaken_executable_environment_contract::EnvironmentImageBuildClaim,
+            image: &str,
+            now: u64,
+        ) -> Result<bool, EnvironmentImageBuildError> {
+            self.inner.complete(claim, image, now).await
+        }
+        async fn fail(
+            &self,
+            claim: &awaken_executable_environment_contract::EnvironmentImageBuildClaim,
+            message: &str,
+            now: u64,
+            retry: u64,
+        ) -> Result<bool, EnvironmentImageBuildError> {
+            self.inner.fail(claim, message, now, retry).await
+        }
+        async fn invalidate_ready(
+            &self,
+            key: &str,
+            now: u64,
+        ) -> Result<bool, EnvironmentImageBuildError> {
+            self.inner.invalidate_ready(key, now).await
+        }
+    }
+
+    #[tokio::test]
+    async fn latest_build_outage_does_not_starve_frozen_history_or_grant_older_queue_work() {
+        use awaken_environment_application::execution::CoordinatorEnvironmentRegistrar;
+        use awaken_environment_contract::{
+            EnvUpdate, EnvironmentDefinitionStore, EnvironmentRegistrationIntentFilter,
+            EnvironmentRegistrationOutbox,
+        };
+        use awaken_executable_environment_contract::WorkQueries;
+        // B1/B2 All/Pending: newest exact build demand repeatedly fails after
+        // catalog retention. Old frozen revision must still get catalog+build
+        // convergence every pass, never current and never a queue grant. B3 old
+        // Pending stays pending until latest converges. B4 duplicate historical
+        // restore must not skip ensure_registration; B5 normal retry promotes
+        // queue only after latest build ensure succeeds.
+        for recover_all in [false, true] {
+            let clock = awaken_time::system_clock();
+            let definitions = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(clock.clone()));
+            let authored = definitions
+                .create_once(CreateEnvironmentCommand {
+                    command_id: format!("build-history-{recover_all}"),
+                    name: "frozen".into(),
+                    description: None,
+                    metadata: Default::default(),
+                    scope: None,
+                    config: EnvironmentConfig::Cloud {
+                        networking: Default::default(),
+                        packages: EnvironmentPackages {
+                            npm: vec!["tsx@4.0.0".into()],
+                            ..Default::default()
+                        },
+                    },
+                    sandbox_policy: None,
+                })
+                .await
+                .unwrap()
+                .into_item();
+            definitions
+                .update(
+                    &authored.id,
+                    authored.revision,
+                    EnvUpdate {
+                        name: Some("latest".into()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            let store = Arc::new(LatestBuildOutageStore {
+                inner: InMemoryEnvironmentImageBuildStore::new(),
+                unavailable: AtomicBool::new(true),
+                ensures: Mutex::new(Vec::new()),
+            });
+            let builder = Arc::new(FakeBuilder {
+                builds: Mutex::new(0),
+                available: AtomicBool::new(true),
+                availability_checks: Mutex::new(Vec::new()),
+            });
+            let builds = Arc::new(
+                EnvironmentImageBuildCoordinator::new(
+                    store.clone(),
+                    builder,
+                    "registry/history:base",
+                    EnvironmentImageBuildPolicy::default(),
+                    clock.clone(),
+                )
+                .unwrap(),
+            );
+            let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+            let work = Arc::new(awaken_work_store::InMemoryWorkQueue::new(clock));
+            let application = awaken_environment_application::EnvironmentApplication::new(
+                definitions.clone(),
+                Arc::new(CoordinatorEnvironmentRegistrar::new(
+                    Arc::new(BuildAwareExecutableEnvironmentRegistrar::new(
+                        Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
+                        builds.clone(),
+                    )),
+                    work.clone(),
+                )),
+                None,
+            );
+            for _ in 0..2 {
+                let result = if recover_all {
+                    application.recover_registration_intents().await
+                } else {
+                    application.drain_registration_intents().await
+                };
+                assert!(result.is_err(), "B1/B2 latest outage persists");
+                let old = catalog
+                    .registration_at_revision(&authored.id, authored.revision)
+                    .await
+                    .unwrap()
+                    .expect("B1/B2 frozen catalog restored");
+                assert_eq!(
+                    catalog.current(&authored.id).unwrap().definition.revision,
+                    EnvironmentRevision(2),
+                    "B1/B2 old history never becomes current"
+                );
+                assert!(
+                    work.list(&authored.id).await.unwrap().is_empty(),
+                    "B1/B2 no queue effect before latest build convergence"
+                );
+                let demand = builds.demand(&old, None).await.unwrap().unwrap();
+                assert!(
+                    store.get(&demand.build_key).await.unwrap().is_some(),
+                    "B1/B2 frozen build demand restored"
+                );
+                assert_eq!(
+                    definitions
+                        .registration_intents(EnvironmentRegistrationIntentFilter::Pending)
+                        .await
+                        .unwrap()
+                        .len(),
+                    2,
+                    "B3 keep both retry obligations"
+                );
+            }
+            assert_eq!(
+                store
+                    .ensures
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|revision| **revision == EnvironmentRevision(1))
+                    .count(),
+                2,
+                "B4 duplicate history still ensures build"
+            );
+            assert!(builds.run_once("frozen-builder").await.unwrap());
+            let old = catalog
+                .registration_at_revision(&authored.id, authored.revision)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                builds.ready_image_now(&old, None).await.unwrap().is_some(),
+                "frozen image remains usable during latest outage"
+            );
+            store.unavailable.store(false, Ordering::SeqCst);
+            application.drain_registration_intents().await.unwrap();
+            assert!(
+                definitions
+                    .registration_intents(EnvironmentRegistrationIntentFilter::Pending)
+                    .await
+                    .unwrap()
+                    .is_empty(),
+                "B5"
+            );
+            assert!(
+                work.list(&authored.id).await.unwrap().is_empty(),
+                "Cloud never queues healthcheck"
+            );
+            assert_eq!(
+                catalog.current(&authored.id).unwrap().definition.revision,
+                EnvironmentRevision(2),
+                "B5"
+            );
+        }
     }
 }

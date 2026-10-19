@@ -30,11 +30,15 @@ thiserror.workspace = true
 async-trait.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
+awaken-reliability-testkit.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"] }
+tempfile = "3"
 awaken-executable-environment-catalog.workspace = true
 awaken-work-store = { workspace = true, features = ["test-support"] }
 awaken-time.workspace = true
 awaken-env-store = { workspace = true, features = ["test-support"] }
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "net"] }
 
 [lints]
 workspace = true

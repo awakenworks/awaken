@@ -17,6 +17,19 @@
 //! its single-active decision is atomic across processes. A Session claim mints
 //! one epoch-bound sessions token and stores only its digest on that same row;
 //! list/retrieve projections never expose it again.
+//!
+//! Work ids are opaque. Existing ids and live leases survive schema upgrades;
+//! newly allocated ids use a physical-store generation and a durable counter.
+//! Deleting Work rows never resets this authority. Missing/corrupt allocator
+//! state fails closed rather than deriving a new counter from surviving rows.
+//! The generation only seeds once; it does not change the Managed wire fields.
+//!
+//! Upgrade all queue writers before resuming delivery: older binaries do not
+//! participate in the allocator or Environment revision watermark. Schema
+//! upgrade compatibility does not qualify mixed-version writers. Catalog
+//! readers must also understand historical registration acknowledgements.
+//! Restoring an earlier whole-database backup requires fencing outstanding
+//! clients; rollback of the authority itself is outside this store's guarantees.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -52,6 +65,7 @@ const HAS_OWNER_CLAIMS: &str =
 mod lease_book;
 pub use lease_book::{LEASE_TTL_MS, LeaseBook, POLLER_WINDOW_MS};
 mod backends;
+mod identity;
 use backends::pg_row_to_item;
 mod mutation;
 use mutation::{
@@ -576,71 +590,6 @@ impl WorkMetadataPatch for SqliteWorkQueue {
         let item = Self::owned(&mut tx, env_id, wid).await?;
         tx.commit().await.map_err(storage)?;
         Ok(item)
-    }
-}
-
-#[async_trait]
-impl EnvironmentWorkLifecycle for SqliteWorkQueue {
-    async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
-        let created_at = self.clock.observed_at();
-        let mut conn = self.connection().await?;
-        Self::insert(&mut conn, env_id, "healthcheck", None, created_at).await
-    }
-
-    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
-        let created_at = self.clock.observed_at();
-        let mut conn = self.connection().await?;
-        let mut tx = backends::immediate(&mut conn).await?;
-        if let Some(id) = sqlx::query_scalar::<_, String>(
-            "SELECT work_id FROM work_queue_item WHERE environment_id = ?1 AND data_type = 'healthcheck' ORDER BY seq ASC LIMIT 1",
-        )
-        .bind(env_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
-        {
-            tx.commit().await.map_err(storage)?;
-            return Ok(id);
-        }
-        let next: i64 =
-            sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(storage)?;
-        let work_id = format!("work_{next:016}");
-        sqlx::query(
-            "INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state, created_at) VALUES (?1, ?2, ?3, 'healthcheck', ?1, '{}', 'queued', ?4)",
-        )
-        .bind(&work_id)
-        .bind(next)
-        .bind(env_id)
-        .bind(created_at)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
-        tx.commit().await.map_err(storage)?;
-        Ok(work_id)
-    }
-
-    async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError> {
-        let mut conn = self.connection().await?;
-        let mut tx = backends::immediate(&mut conn).await?;
-        let ids = sqlx::query_scalar::<_, String>(
-            "SELECT work_id FROM work_queue_item WHERE environment_id = ?1",
-        )
-        .bind(env_id)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(storage)?;
-        sqlx::query("DELETE FROM work_queue_item WHERE environment_id = ?1")
-            .bind(env_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
-        tx.commit().await.map_err(storage)?;
-        drop(conn);
-        self.book.forget_env(env_id, &ids);
-        Ok(())
     }
 }
 
@@ -1220,66 +1169,6 @@ impl WorkMetadataPatch for PostgresWorkQueue {
         .await
         .map_err(storage)?;
         self.fetch_owned(env_id, wid).await
-    }
-}
-
-#[async_trait]
-impl EnvironmentWorkLifecycle for PostgresWorkQueue {
-    async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
-        self.insert(env_id, "healthcheck", None).await
-    }
-
-    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
-        let mut tx = self.pool.begin().await.map_err(storage)?;
-        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
-        if let Some(id) = sqlx::query_scalar::<_, String>(
-            "SELECT work_id FROM work_queue_item WHERE environment_id = $1 AND data_type = 'healthcheck' ORDER BY seq ASC LIMIT 1",
-        )
-        .bind(env_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
-        {
-            tx.commit().await.map_err(storage)?;
-            return Ok(id);
-        }
-        let next: i64 =
-            sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(storage)?;
-        let work_id = format!("work_{next:016}");
-        sqlx::query("INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state, created_at) VALUES ($1, $2, $3, 'healthcheck', $1, '{}', 'queued', $4)")
-            .bind(&work_id).bind(next).bind(env_id).bind(self.clock.observed_at())
-            .execute(&mut *tx).await.map_err(storage)?;
-        tx.commit().await.map_err(storage)?;
-        Ok(work_id)
-    }
-
-    async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError> {
-        let mut tx = self.pool.begin().await.map_err(storage)?;
-        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
-        let ids = sqlx::query_scalar::<_, String>(
-            "SELECT work_id FROM work_queue_item WHERE environment_id = $1",
-        )
-        .bind(env_id)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(storage)?;
-        sqlx::query("DELETE FROM work_queue_item WHERE environment_id = $1")
-            .bind(env_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
-        tx.commit().await.map_err(storage)?;
-        self.book.forget_env(env_id, &ids);
-        Ok(())
     }
 }
 

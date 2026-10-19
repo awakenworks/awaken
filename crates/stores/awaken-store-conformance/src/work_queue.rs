@@ -12,11 +12,14 @@
 //! Session ownership fencing, and injected-clock observation are the port's
 //! observable contract, not one backend's behaviour.
 
+use awaken_environment_contract::EnvironmentRevision;
 use awaken_executable_environment_contract::{
-    EnvironmentWorkLifecycle, HeartbeatCondition, HeartbeatResult, LeaseHeartbeat,
-    SessionAccessAuthenticator, SessionWorkLeaseControl, SessionWorkStore, SessionWorkerLeaseStore,
-    WorkConsumer, WorkMetadataPatch, WorkMutationResult, WorkQueries, WorkState,
-    WorkerLeaseObservation,
+    EnvironmentWorkLifecycle, EnvironmentWorkRevisionError,
+    EnvironmentWorkRevisionOperation as RevisionOperation,
+    EnvironmentWorkRevisionOutcome as RevisionOutcome, HeartbeatCondition, HeartbeatResult,
+    LeaseHeartbeat, SessionAccessAuthenticator, SessionWorkLeaseControl, SessionWorkStore,
+    SessionWorkerLeaseStore, WorkConsumer, WorkMetadataPatch, WorkMutationResult, WorkQueries,
+    WorkState, WorkerLeaseObservation,
 };
 use awaken_lease_testkit::ManualClock;
 use awaken_session_types::SessionId;
@@ -868,6 +871,8 @@ pub async fn run_suite<Q: WorkBackend, F: std::future::Future<Output = Q>>(
     lease_ttl_ms: u64,
 ) {
     let fresh = || fresh_with(clock.clone());
+    environment_revision_replay_is_atomic(&fresh().await).await;
+    environment_revision_races_preserve_the_maximum(&fresh().await).await;
     single_active_cap(&fresh().await).await;
     reclaim_at_ttl(&fresh().await, lease_ttl_ms).await;
     requested_reclaim_uses_refresh_clock(&fresh().await).await;
@@ -1291,4 +1296,206 @@ impl<
         + EnvironmentWorkLifecycle,
 > WorkBackend for T
 {
+}
+
+/// Revision effect matrix, run unchanged against every backend. Live Session
+/// identity and bearer remain unchanged during Cloud revision or Archive.
+/// Withdraw removes only healthchecks; direct remove_env retains its purge contract.
+pub async fn environment_revision_replay_is_atomic<Q: WorkBackend>(q: &Q) {
+    use RevisionOperation::{Register, Withdraw};
+    use RevisionOutcome::{AlreadyApplied, Applied, Superseded};
+    let env = "revision-matrix";
+    let session = q
+        .enqueue_session(env, &SessionId::from("frozen-session"))
+        .await
+        .unwrap();
+    let digest = session_access_digest(701);
+    q.claim_with_session_access(env, "original-owner", "poller", 0, None, &digest)
+        .await
+        .unwrap()
+        .unwrap();
+    let proof = q
+        .authenticate_session_access(&digest, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        q.apply_environment_revision(env, EnvironmentRevision(3), Register { healthcheck: true })
+            .await
+            .unwrap(),
+        Applied
+    );
+    let before: Vec<_> = q
+        .list(env)
+        .await
+        .unwrap()
+        .iter()
+        .map(|item| format!("{item:?}"))
+        .collect();
+    for operation in [Register { healthcheck: false }, Withdraw] {
+        assert_eq!(
+            q.apply_environment_revision(env, EnvironmentRevision(2), operation)
+                .await
+                .unwrap(),
+            Superseded
+        );
+        assert!(matches!(
+            q.apply_environment_revision(env, EnvironmentRevision(3), operation).await,
+            Err(EnvironmentWorkRevisionError::Conflict { revision, current, proposed })
+                if revision == EnvironmentRevision(3) && current == (Register { healthcheck: true }) && proposed == operation
+        ));
+        assert_eq!(
+            q.list(env)
+                .await
+                .unwrap()
+                .iter()
+                .map(|item| format!("{item:?}"))
+                .collect::<Vec<_>>(),
+            before
+        );
+    }
+    assert_eq!(
+        q.apply_environment_revision(env, EnvironmentRevision(3), Register { healthcheck: true })
+            .await
+            .unwrap(),
+        AlreadyApplied
+    );
+    assert_eq!(
+        q.apply_environment_revision(env, EnvironmentRevision(4), Register { healthcheck: false })
+            .await
+            .unwrap(),
+        Applied
+    );
+    assert_eq!(
+        q.list(env)
+            .await
+            .unwrap()
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        [session.as_str()]
+    );
+    assert_eq!(
+        q.authenticate_session_access(&digest, 0).await.unwrap(),
+        Some(proof.clone())
+    );
+    assert!(
+        q.enqueue_healthcheck(env).await.is_err(),
+        "Cloud cannot be bypassed"
+    );
+    assert!(q.ensure_healthcheck(env).await.is_err());
+    assert_eq!(
+        q.apply_environment_revision(env, EnvironmentRevision(5), Withdraw)
+            .await
+            .unwrap(),
+        Applied
+    );
+    assert_eq!(
+        q.apply_environment_revision(env, EnvironmentRevision(5), Withdraw)
+            .await
+            .unwrap(),
+        AlreadyApplied
+    );
+    assert_eq!(
+        q.apply_environment_revision(env, EnvironmentRevision(4), Register { healthcheck: true })
+            .await
+            .unwrap(),
+        Superseded
+    );
+    let retained = q.list(env).await.unwrap();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].id, session);
+    assert_eq!(
+        q.authenticate_session_access(&digest, 0).await.unwrap(),
+        Some(proof)
+    );
+    assert!(q.enqueue_healthcheck(env).await.is_err());
+    assert!(q.ensure_healthcheck(env).await.is_err());
+    assert!(matches!(
+        q.apply_environment_revision(env, EnvironmentRevision(0), Withdraw)
+            .await,
+        Err(EnvironmentWorkRevisionError::Invalid(
+            awaken_executable_environment_contract::EnvironmentWorkRevisionInputError::ZeroRevision
+        ))
+    ));
+    assert!(matches!(
+        q.apply_environment_revision("", EnvironmentRevision(6), Withdraw)
+            .await,
+        Err(EnvironmentWorkRevisionError::Invalid(awaken_executable_environment_contract::EnvironmentWorkRevisionInputError::MissingEnvironmentId))
+    ));
+    // A real higher registration is admitted; stale Withdraw must never delete it.
+    assert_eq!(
+        q.apply_environment_revision(
+            env,
+            EnvironmentRevision(u64::MAX),
+            Register { healthcheck: true }
+        )
+        .await
+        .unwrap(),
+        Applied
+    );
+    assert_eq!(
+        q.apply_environment_revision(env, EnvironmentRevision(5), Withdraw)
+            .await
+            .unwrap(),
+        Superseded
+    );
+    assert_eq!(q.list(env).await.unwrap().len(), 2);
+}
+
+/// Opposing revisions, same-revision conflicting operations and a legacy
+/// healthcheck helper contend on the backend's real mutation boundary.
+pub async fn environment_revision_races_preserve_the_maximum<Q: WorkBackend>(q: &Q) {
+    use RevisionOperation::{Register, Withdraw};
+    use RevisionOutcome::{Applied, Superseded};
+    for round in 0..12 {
+        let env = format!("revision-race-{round}");
+        let (older, newest) = tokio::join!(
+            q.apply_environment_revision(
+                &env,
+                EnvironmentRevision(1),
+                Register { healthcheck: true }
+            ),
+            q.apply_environment_revision(&env, EnvironmentRevision(2), Withdraw),
+        );
+        assert!(matches!(older.unwrap(), Applied | Superseded));
+        assert_eq!(newest.unwrap(), Applied);
+        assert!(q.list(&env).await.unwrap().is_empty());
+        assert_eq!(
+            q.apply_environment_revision(
+                &env,
+                EnvironmentRevision(1),
+                Register { healthcheck: true }
+            )
+            .await
+            .unwrap(),
+            Superseded
+        );
+        let env = format!("revision-conflict-{round}");
+        let (left, right) = tokio::join!(
+            q.apply_environment_revision(
+                &env,
+                EnvironmentRevision(7),
+                Register { healthcheck: true }
+            ),
+            q.apply_environment_revision(
+                &env,
+                EnvironmentRevision(7),
+                Register { healthcheck: false }
+            ),
+        );
+        match (left, right) {
+            (Ok(Applied), Err(_)) => assert_eq!(q.list(&env).await.unwrap().len(), 1),
+            (Err(_), Ok(Applied)) => assert!(q.list(&env).await.unwrap().is_empty()),
+            other => panic!("same revision admitted incompatible operations: {other:?}"),
+        }
+        let (helper, withdrawn) = tokio::join!(
+            q.ensure_healthcheck(&env),
+            q.apply_environment_revision(&env, EnvironmentRevision(8), Withdraw),
+        );
+        let _ = helper; // May have linearized before withdrawal or been refused.
+        assert_eq!(withdrawn.unwrap(), Applied);
+        assert!(q.list(&env).await.unwrap().is_empty());
+        assert!(q.ensure_healthcheck(&env).await.is_err());
+    }
 }
