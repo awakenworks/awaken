@@ -70,6 +70,7 @@ async fn sqlite_independent_handles_allocate_concurrently_and_reopen_without_res
 }
 
 #[tokio::test]
+#[ignore = "requires PostgreSQL; run scripts/ci/pg_tests.sh --require-docker"]
 async fn postgres_independent_pools_allocate_concurrently_without_reset() {
     // A1 optional+absent reports a local skip; A2 required+absent or invalid
     // configuration fails; A3 live verifies independent clients, concurrent
@@ -204,6 +205,7 @@ async fn sqlite_allocator_work_and_watermark_roll_back_as_one_transaction() {
 }
 
 #[tokio::test]
+#[ignore = "requires PostgreSQL; run scripts/ci/pg_tests.sh --require-docker"]
 async fn postgres_allocator_work_and_watermark_roll_back_as_one_transaction() {
     // A1 optional+absent reports a local skip; A2 required+absent or invalid
     // configuration fails; A3 live injects each SQL failure and checks the
@@ -341,6 +343,7 @@ async fn sqlite_missing_malformed_and_exhausted_allocators_fail_closed() {
 }
 
 #[tokio::test]
+#[ignore = "requires PostgreSQL; run scripts/ci/pg_tests.sh --require-docker"]
 async fn postgres_missing_malformed_and_exhausted_allocators_fail_closed() {
     // A1 optional+absent reports a local skip; A2 required+absent or invalid
     // configuration fails; A3 live runs all three allocator faults without
