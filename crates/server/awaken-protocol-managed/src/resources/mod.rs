@@ -9,9 +9,6 @@
 
 use std::sync::Arc;
 
-use awaken_resource_contract::{
-    FileApplicationService, MemoryStoreApplicationService, ResourcePurgeScheduler, SkillStore,
-};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Json, Router};
@@ -55,28 +52,71 @@ pub(super) fn managed_resource_error(
         .into_response()
 }
 
+/// HTTP composition selected from one existing Resources application.
+///
+/// The catalog may use a different physical database from Memory content. This
+/// constructor preserves the application's existing selection rather than
+/// accepting unrelated application/content projections.
+///
+/// ```
+/// use std::sync::Arc;
+/// use awaken_protocol_managed::ResourcesRouterInput;
+/// use awaken_resource_application::ResourcesApplication;
+/// use awaken_resource_contract::RepositoryCredentialValidator;
+/// fn selected_input(
+///     resources: &ResourcesApplication,
+///     credentials: Arc<dyn RepositoryCredentialValidator>,
+/// ) -> ResourcesRouterInput {
+///     ResourcesRouterInput::new(resources, credentials)
+/// }
+/// ```
+///
+/// ```compile_fail,E0451
+/// use std::sync::Arc;
+/// use awaken_protocol_managed::ResourcesRouterInput;
+/// use awaken_resource_application::ResourcesApplication;
+/// use awaken_resource_contract::UnavailableRepositoryCredentialValidator;
+/// fn cannot_supply_components(resources: &ResourcesApplication) {
+///     let _ = ResourcesRouterInput {
+///         resources: resources.clone(),
+///         credentials: Arc::new(UnavailableRepositoryCredentialValidator),
+///     };
+/// }
+/// ```
 pub struct ResourcesRouterInput {
-    pub repositories: Arc<dyn awaken_resource_contract::RepositoryApplicationService>,
-    pub files: Arc<dyn FileApplicationService>,
-    pub memory: awaken_resource_contract::MemoryManagementContent,
-    pub memory_stores: Arc<dyn MemoryStoreApplicationService>,
-    pub skills: Option<Arc<dyn SkillStore>>,
-    pub purge: Arc<dyn ResourcePurgeScheduler>,
-    /// The Resources context's clock, the one its File application stamps with.
-    pub clock: Arc<dyn awaken_time::WallClock>,
+    resources: awaken_resource_application::ResourcesApplication,
+    credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
 }
 
-/// Mount all public resource families once. File, Memory, and Skill retain their
-/// independent aggregates and routes; this function only joins their HTTP routes.
+impl ResourcesRouterInput {
+    #[must_use]
+    pub fn new(
+        resources: &awaken_resource_application::ResourcesApplication,
+        credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
+    ) -> Self {
+        Self {
+            resources: resources.clone(),
+            credentials,
+        }
+    }
+}
+
+/// Mount the selected application once; route states retain only narrow ports.
+/// The private input is consumed here, never installed as a handler capability.
 pub fn resources_router(input: ResourcesRouterInput) -> Router {
-    files_router(input.files.clone(), input.clock.clone())
-        .merge(memory_stores_router(
-            input.memory,
-            input.memory_stores,
-            input.clock.clone(),
+    let resources = input.resources;
+    let authorities = resources.authorities();
+    let clock = authorities.clock();
+    files_router(resources.files(), clock.clone())
+        .merge(memory_stores_router(&resources))
+        .merge(repositories_router(
+            resources.repositories(input.credentials),
         ))
-        .merge(repositories_router(input.repositories))
-        .merge(skills_router(input.skills, input.purge, input.clock))
+        .merge(skills_router(
+            Some(authorities.skill_store()),
+            resources.purge_scheduler(),
+            clock,
+        ))
 }
 
 #[cfg(test)]
@@ -150,18 +190,10 @@ mod tests {
                 storage,
                 clock,
             ));
-        let authorities = application.authorities();
-        let router = resources_router(ResourcesRouterInput {
-            repositories: application.repositories(Arc::new(
-                awaken_resource_contract::UnavailableRepositoryCredentialValidator,
-            )),
-            files: application.files(),
-            memory: authorities.memory_management_content(),
-            memory_stores: application.memory_stores(),
-            skills: Some(authorities.skill_store()),
-            purge: application.purge_scheduler(),
-            clock: authorities.clock(),
-        });
+        let router = resources_router(ResourcesRouterInput::new(
+            &application,
+            Arc::new(awaken_resource_contract::UnavailableRepositoryCredentialValidator),
+        ));
         for (path, rule) in [
             ("/v1/files", "R1"),
             ("/v1/memory_stores", "R2"),

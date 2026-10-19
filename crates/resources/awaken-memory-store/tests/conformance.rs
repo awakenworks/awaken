@@ -27,6 +27,26 @@ mod shared;
 const PRECISE_NANOS: u128 = 1_700_000_000_123_456_789;
 
 #[cfg(feature = "test-support")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn volatile_snapshot_heads_follow_one_committed_cross_file_prefix() {
+    shared::snapshot_heads_follow_one_committed_cross_file_prefix(Arc::new(
+        VolatileMemoryRepository::new(awaken_time::system_clock()),
+    ))
+    .await;
+}
+
+#[cfg(all(feature = "sqlite", feature = "test-support"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sqlite_snapshot_heads_follow_one_committed_cross_file_prefix() {
+    shared::snapshot_heads_follow_one_committed_cross_file_prefix(Arc::new(
+        awaken_memory_store::SqliteMemoryRepository::open_in_memory(awaken_time::system_clock())
+            .await
+            .unwrap(),
+    ))
+    .await;
+}
+
+#[cfg(feature = "test-support")]
 #[tokio::test]
 async fn volatile_memory_timestamps_use_the_injected_clock() {
     // TV: the volatile backend has no SQL range restriction; every u128
@@ -234,6 +254,16 @@ async fn sqlite_concurrent_cas_has_exactly_one_winner() {
 /// may skip an unavailable default development database.
 #[cfg(feature = "postgres")]
 mod postgres {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn postgres_snapshot_heads_follow_one_committed_cross_file_prefix() {
+        let Some(pool) = schema_pool("memory_snapshot_prefix").await else {
+            return;
+        };
+        let backend = PostgresMemoryRepository::with_pool(pool, awaken_time::system_clock());
+        backend.ensure_schema().await.unwrap();
+        shared::snapshot_heads_follow_one_committed_cross_file_prefix(Arc::new(backend)).await;
+    }
+
     #[tokio::test]
     async fn postgres_memory_roles_share_the_same_atomic_memory() {
         let Some(pool) = schema_pool("memory_roles_atomic").await else {
@@ -247,11 +277,11 @@ mod postgres {
     use super::*;
     use awaken_memory_store::PostgresMemoryRepository;
     use sqlx::Executor;
-    use sqlx::postgres::{PgPool, PgPoolOptions};
+    use sqlx::postgres::{PgConnectOptions, PgPool};
 
     async fn schema_pool(schema: &'static str) -> Option<PgPool> {
         let url = awaken_reliability_testkit::postgres_fixture_url()?;
-        let admin = PgPoolOptions::new()
+        let admin = awaken_sql_storage::postgres_pool_options()
             .max_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(3))
             .connect(&url)
@@ -270,17 +300,16 @@ mod postgres {
             .await
             .expect("create schema");
         admin.close().await;
-        PgPoolOptions::new()
+        let options = url
+            .parse::<PgConnectOptions>()
+            .expect("parse the configured Memory PostgreSQL fixture")
+            .options([("search_path", schema.as_str())]);
+        // Keep production checkout verification on both fresh and reused
+        // connections. Startup options select our schema without replacing
+        // the shared after_connect or before_acquire hooks.
+        awaken_sql_storage::postgres_pool_options()
             .max_connections(4)
-            .after_connect(move |conn, _meta| {
-                let schema = schema.clone();
-                Box::pin(async move {
-                    conn.execute(format!("SET search_path = {schema}").as_str())
-                        .await?;
-                    Ok(())
-                })
-            })
-            .connect(&url)
+            .connect_with(options)
             .await
             .map(Some)
             .expect("connect to the newly created Postgres test schema")

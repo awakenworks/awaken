@@ -23,11 +23,7 @@ mod support;
 
 async fn router() -> Router {
     let resources = support::resources::ephemeral_resources().await;
-    memory_stores_router(
-        resources.authorities().memory_management_content(),
-        resources.memory_stores(),
-        awaken_time::system_clock(),
-    )
+    memory_stores_router(&resources)
 }
 
 #[tokio::test]
@@ -105,11 +101,7 @@ async fn retained_copy_candidates_use_store_visibility_and_explicit_content_view
     let resources = support::resources::ephemeral_resources().await;
     let preservation = resources.authorities().memory_copy_conflict_preservation();
     let content = resources.authorities().memory_management_content();
-    let router = memory_stores_router(
-        content.clone(),
-        resources.memory_stores(),
-        awaken_time::system_clock(),
-    );
+    let router = memory_stores_router(&resources);
     let store = create_store(&router, "conflicts").await;
     let base = MemoryCopyBase {
         id: "original".into(),
@@ -470,11 +462,7 @@ async fn unknown_store_is_fail_closed_on_every_verb() {
 #[tokio::test]
 async fn workspace_and_lifecycle_are_intrinsic_resource_guards() {
     let resources = support::resources::ephemeral_resources().await;
-    let router = memory_stores_router(
-        resources.authorities().memory_management_content(),
-        resources.memory_stores(),
-        awaken_time::system_clock(),
-    );
+    let router = memory_stores_router(&resources);
     let created = call_scoped(
         &router,
         "workspace-a",
@@ -1175,11 +1163,7 @@ async fn store_time_filters_match_wire_precision_before_pagination_and_lifecycle
                 .unwrap();
         }
     }
-    let router = memory_stores_router(
-        resources.authorities().memory_management_content(),
-        resources.memory_stores(),
-        awaken_time::system_clock(),
-    );
+    let router = memory_stores_router(&resources);
     for include_archived in [false, true] {
         for (millis, wire) in [
             (100, "1970-01-01T00:00:00.1Z"),
@@ -1238,11 +1222,72 @@ async fn store_time_filters_match_wire_precision_before_pagination_and_lifecycle
 // The winner is committed by a decorator inside `update_head_as`, so the store
 // produces a genuine stale-generation Conflict rather than a fabricated error.
 struct RaceLosingRepository {
+    backend: std::sync::Arc<awaken_memory_store::VolatileMemoryRepository>,
     inner: awaken_resource_contract::MemoryManagementContent,
     interposed: std::sync::atomic::AtomicBool,
     /// What the winning caller commits. `None` means it requested the same
     /// content as the loser, which is the already-current row.
     winner_content: Option<String>,
+}
+
+// Every required role belongs to one backend. Only the management Writer
+// interposes a genuine concurrent CAS winner; other roles forward unchanged.
+impl RaceLosingRepository {
+    fn new(
+        clock: std::sync::Arc<dyn awaken_time::WallClock>,
+        winner_content: Option<String>,
+    ) -> Self {
+        let backend =
+            std::sync::Arc::new(awaken_memory_store::VolatileMemoryRepository::new(clock));
+        Self {
+            inner: awaken_resource_contract::MemoryManagementContent::new(backend.clone()),
+            backend,
+            interposed: std::sync::atomic::AtomicBool::new(false),
+            winner_content,
+        }
+    }
+}
+
+macro_rules! forward_memory_role {
+    ($role:ident { $(fn $method:ident($($arg:ident: $ty:ty),*) -> $result:ty;)* }) => {
+        #[async_trait::async_trait]
+        impl awaken_resource_contract::$role for RaceLosingRepository {
+            $(async fn $method(&self, $($arg: $ty),*) -> $result {
+                awaken_resource_contract::$role::$method(self.backend.as_ref(), $($arg),*).await
+            })*
+        }
+    };
+}
+
+forward_memory_role!(MemoryQueries {
+    fn list(store: &str, prefix: &str) -> Result<Vec<awaken_resource_contract::MemoryEntry>, awaken_resource_contract::MemErr>;
+    fn get_by_path(store: &str, path: &str) -> Result<Option<awaken_resource_contract::Memory>, awaken_resource_contract::MemErr>;
+});
+forward_memory_role!(MemoryFilesystem {
+    fn list(store: &str, prefix: &str) -> Result<Vec<awaken_resource_contract::MemoryEntry>, awaken_resource_contract::MemErr>;
+    fn get_by_path(store: &str, path: &str) -> Result<Option<awaken_resource_contract::Memory>, awaken_resource_contract::MemErr>;
+    fn create_as(store: &str, path: &str, content: &str, actor: Option<&MemoryActor>) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>;
+    fn update_head_as(store: &str, base: &awaken_resource_contract::MemoryGeneration, content: &str, target_path: Option<&str>, actor: Option<&MemoryActor>) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>;
+    fn rename(store: &str, from: &str, to: &str) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>;
+    fn delete_by_path_as(store: &str, path: &str, actor: Option<&MemoryActor>) -> Result<(), awaken_resource_contract::MemErr>;
+});
+forward_memory_role!(MemoryCopyWriteback {
+    fn create_as(store: &str, path: &str, content: &str, actor: Option<&MemoryActor>) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>;
+    fn update_materialized(store: &str, path: &str, base: &awaken_resource_contract::MemoryGeneration, content: &str) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>;
+    fn delete_if_match_as(store: &str, path: &str, base: &awaken_resource_contract::MemoryGeneration, actor: Option<&MemoryActor>) -> Result<bool, awaken_resource_contract::MemErr>;
+});
+forward_memory_role!(MemoryCopyConflictPreservation {
+    fn preserve_copy_conflict(store: &str, candidate: &awaken_resource_contract::MemoryCopyConflict) -> Result<(), awaken_resource_contract::MemErr>;
+});
+forward_memory_role!(MemoryContentPurge {
+    fn purge_store(store: &str) -> Result<awaken_resource_contract::MemoryPurgeSummary, awaken_resource_contract::MemErr>;
+});
+
+// These HTTP CAS rows do not mount content. Invalidation coupling has its own
+// real-backend conformance assertions; no notification claim is made here.
+struct UnmountedMemoryInvalidator;
+impl awaken_resource_contract::MemoryInvalidator for UnmountedMemoryInvalidator {
+    fn publish(&self, _store: &str, _path: &str) {}
 }
 
 #[async_trait::async_trait]
@@ -1393,17 +1438,27 @@ async fn store_found_conflicts_answer_the_contract_only_when_already_at_the_requ
         ),
     ] {
         let resources = support::resources::ephemeral_resources().await;
-        let router = memory_stores_router(
-            awaken_resource_contract::MemoryManagementContent::new(std::sync::Arc::new(
-                RaceLosingRepository {
-                    inner: resources.authorities().memory_management_content(),
-                    interposed: std::sync::atomic::AtomicBool::new(false),
-                    winner_content: winner_content.map(str::to_string),
-                },
-            )),
-            resources.memory_stores(),
-            awaken_time::system_clock(),
+        let authorities = resources.authorities();
+        let resources = awaken_resource_application::ResourcesApplication::new(
+            awaken_resource_application::ResourceAuthorities::new(
+                authorities.resource_registry(),
+                authorities.file_store(),
+                authorities.file_catalog(),
+                std::sync::Arc::new(
+                    awaken_resource_application::memory::InvalidatingMemoryRepository::new(
+                        std::sync::Arc::new(RaceLosingRepository::new(
+                            authorities.clock(),
+                            winner_content.map(str::to_string),
+                        )),
+                        std::sync::Arc::new(UnmountedMemoryInvalidator),
+                    ),
+                ),
+                authorities.skill_store(),
+                authorities.reclamation(),
+                authorities.clock(),
+            ),
         );
+        let router = memory_stores_router(&resources);
         let store = create_store(&router, "race-host").await;
         let created = call(
             &router,

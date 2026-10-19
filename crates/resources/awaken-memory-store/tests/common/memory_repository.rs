@@ -1681,3 +1681,177 @@ where
             .is_empty()
     );
 }
+
+/// Check finite observed operation histories against complete committed heads.
+/// The writer's order is A1,B1,A2,B2,... . A snapshot must equal one whole
+/// prefix that fits its invocation/return interval, including identity, hash,
+/// content, version and metadata. Per-file list/get stitching can produce no
+/// such prefix. Channels arrange one partial state and a final state; every
+/// semantic assertion observes real committed heads/history, never a signal.
+/// This exercises observed interleavings, not an exhaustive concurrency proof.
+pub(crate) async fn snapshot_heads_follow_one_committed_cross_file_prefix<M>(fs: std::sync::Arc<M>)
+where
+    M: MemoryWriter + MemorySnapshotSource + MemoryVersionQueries + Send + Sync + 'static,
+{
+    use awaken_resource_contract::Memory;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    use tokio::sync::oneshot;
+    const STORE: &str = "snapshot-history";
+    const FOREIGN: &str = "snapshot-history-foreign";
+    const ROUNDS: usize = 8;
+    type Write = (u64, u64, Memory);
+    type Observation = (u64, u64, Vec<Memory>);
+    async fn observe<M: MemorySnapshotSource>(fs: &M, sequence: &AtomicU64) -> Observation {
+        let start = sequence.fetch_add(1, Ordering::SeqCst);
+        let heads = MemorySnapshotSource::snapshot_heads(fs, STORE)
+            .await
+            .unwrap();
+        let end = sequence.fetch_add(1, Ordering::SeqCst);
+        (start, end, heads)
+    }
+    let a = MemoryWriter::create(fs.as_ref(), STORE, "/a.md", "0")
+        .await
+        .unwrap();
+    let b = MemoryWriter::create(fs.as_ref(), STORE, "/b.md", "0")
+        .await
+        .unwrap();
+    MemoryWriter::create(fs.as_ref(), FOREIGN, "/foreign.md", "sentinel")
+        .await
+        .unwrap();
+    let foreign = MemorySnapshotSource::snapshot_heads(fs.as_ref(), FOREIGN)
+        .await
+        .unwrap();
+    let initial = vec![a.clone(), b.clone()];
+    assert_eq!(
+        MemorySnapshotSource::snapshot_heads(fs.as_ref(), STORE)
+            .await
+            .unwrap(),
+        initial
+    );
+    let sequence = Arc::new(AtomicU64::new(1));
+    let (first_committed, first_observed) = oneshot::channel();
+    let (continue_writer, continue_received) = oneshot::channel();
+    let (all_committed, all_observed) = oneshot::channel();
+    let writer_fs = fs.clone();
+    let writer_sequence = sequence.clone();
+    let writer = tokio::spawn(async move {
+        let (mut a, mut b) = (a, b);
+        let (mut first, mut proceed) = (Some(first_committed), Some(continue_received));
+        let mut writes: Vec<Write> = Vec::new();
+        for round in 1..=ROUNDS {
+            let start = writer_sequence.fetch_add(1, Ordering::SeqCst);
+            a = MemoryWriter::update(
+                writer_fs.as_ref(),
+                STORE,
+                &a.generation(),
+                &round.to_string(),
+            )
+            .await
+            .unwrap();
+            let end = writer_sequence.fetch_add(1, Ordering::SeqCst);
+            writes.push((start, end, a.clone()));
+            if round == 1 {
+                first
+                    .take()
+                    .unwrap()
+                    .send(())
+                    .expect("reader remains present");
+                proceed
+                    .take()
+                    .unwrap()
+                    .await
+                    .expect("first committed snapshot observed");
+            }
+            tokio::task::yield_now().await;
+            let start = writer_sequence.fetch_add(1, Ordering::SeqCst);
+            b = MemoryWriter::update(
+                writer_fs.as_ref(),
+                STORE,
+                &b.generation(),
+                &round.to_string(),
+            )
+            .await
+            .unwrap();
+            let end = writer_sequence.fetch_add(1, Ordering::SeqCst);
+            writes.push((start, end, b.clone()));
+            tokio::task::yield_now().await;
+        }
+        all_committed.send(()).expect("reader remains present");
+        writes
+    });
+    let reader_fs = fs.clone();
+    let reader = tokio::spawn(async move {
+        first_observed.await.expect("first A write committed");
+        let mut observations = vec![observe(reader_fs.as_ref(), &sequence).await];
+        continue_writer.send(()).expect("writer remains present");
+        for _ in 0..64 {
+            observations.push(observe(reader_fs.as_ref(), &sequence).await);
+            tokio::task::yield_now().await;
+        }
+        all_observed.await.expect("all writes committed");
+        observations.push(observe(reader_fs.as_ref(), &sequence).await);
+        observations
+    });
+    let writes = writer.await.unwrap();
+    let observations = reader.await.unwrap();
+    assert_eq!(writes.len(), ROUNDS * 2);
+    assert_eq!(observations.len(), 66);
+    for (index, (start, end, heads)) in observations.iter().enumerate() {
+        let lower = writes
+            .iter()
+            .filter(|(_, finished, _)| finished < start)
+            .count();
+        let upper = writes.iter().filter(|(began, _, _)| began < end).count();
+        if index == 0 {
+            assert_eq!((lower, upper), (1, 1));
+        }
+        if index == observations.len() - 1 {
+            assert_eq!((lower, upper), (writes.len(), writes.len()));
+        }
+        let mut model = initial.clone();
+        let mut matching_prefix = None;
+        for prefix in 0..=writes.len() {
+            if prefix > 0 {
+                let head = &writes[prefix - 1].2;
+                let slot = if head.path == "/a.md" {
+                    0
+                } else {
+                    assert_eq!(head.path, "/b.md");
+                    1
+                };
+                model[slot] = head.clone();
+            }
+            if (lower..=upper).contains(&prefix) && model == *heads {
+                matching_prefix = Some(prefix);
+                break;
+            }
+        }
+        assert!(
+            matching_prefix.is_some(),
+            "snapshot {index} has no committed prefix in {lower}..={upper}: {heads:?}"
+        );
+    }
+    assert_eq!(
+        MemoryVersionQueries::list_versions(fs.as_ref(), STORE)
+            .await
+            .unwrap()
+            .len(),
+        ROUNDS * 2 + 2
+    );
+    assert_eq!(
+        MemorySnapshotSource::snapshot_heads(fs.as_ref(), FOREIGN)
+            .await
+            .unwrap(),
+        foreign
+    );
+    assert_eq!(
+        MemoryVersionQueries::list_versions(fs.as_ref(), FOREIGN)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}

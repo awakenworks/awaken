@@ -39,7 +39,7 @@ awaken-sql-storage.workspace = true
 awaken-reliability-testkit.workspace = true
 proptest.workspace = true
 awaken-lease-testkit.workspace = true
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync"] }
 tempfile = "3"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"] }
 

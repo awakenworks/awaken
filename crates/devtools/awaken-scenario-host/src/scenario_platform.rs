@@ -594,18 +594,10 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FixedAge
 pub async fn build_unscoped_resource_router() -> Router {
     let platform = resource_host(Arc::new(EchoModel), "unscoped-resource").await;
     let (_host, resources) = platform.into_parts();
-    let authorities = resources.authorities();
-    awaken_protocol_managed::resources_router(awaken_protocol_managed::ResourcesRouterInput {
-        repositories: resources.repositories(Arc::new(
-            awaken_resource_contract::UnavailableRepositoryCredentialValidator,
-        )),
-        files: resources.files(),
-        memory: authorities.memory_management_content(),
-        memory_stores: resources.memory_stores(),
-        skills: Some(authorities.skill_store()),
-        purge: resources.purge_scheduler(),
-        clock: authorities.clock(),
-    })
+    awaken_protocol_managed::resources_router(awaken_protocol_managed::ResourcesRouterInput::new(
+        &resources,
+        Arc::new(awaken_resource_contract::UnavailableRepositoryCredentialValidator),
+    ))
 }
 
 #[cfg(test)]

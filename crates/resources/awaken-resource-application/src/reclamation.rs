@@ -71,6 +71,27 @@ impl ResourcePurgeGuard for ResourceLifecycleGuard {
     }
 }
 
+/// Physical effects selected by the existing Resources application.
+///
+/// The constructor is internal: callers obtain the existing instance from
+/// [`crate::ResourcesApplication::physical_cleanup`], instead of pairing another
+/// Memory backend with this application's lifecycle authority.
+///
+/// ```
+/// use std::sync::Arc;
+/// use awaken_resource_application::ResourcesApplication;
+/// use awaken_resource_contract::ResourcePhysicalReclaimer;
+/// fn selected_cleanup(a: &ResourcesApplication) -> Arc<dyn ResourcePhysicalReclaimer> {
+///     a.physical_cleanup()
+/// }
+/// ```
+///
+/// ```compile_fail,E0624
+/// use awaken_resource_application::{ResourcePhysicalCleanup, ResourcesApplication};
+/// fn cannot_construct_independent_cleanup(a: &ResourcesApplication) {
+///     let _ = ResourcePhysicalCleanup::new(&a.authorities());
+/// }
+/// ```
 pub struct ResourcePhysicalCleanup {
     files: Arc<dyn FileStore>,
     memories: Arc<dyn MemoryContentPurge>,
@@ -79,15 +100,11 @@ pub struct ResourcePhysicalCleanup {
 
 impl ResourcePhysicalCleanup {
     #[must_use]
-    pub fn new(
-        files: Arc<dyn FileStore>,
-        memories: Arc<dyn MemoryContentPurge>,
-        skills: Arc<dyn SkillStore>,
-    ) -> Self {
+    pub(crate) fn new(authorities: &crate::ResourceAuthorities) -> Self {
         Self {
-            files,
-            memories,
-            skills,
+            files: authorities.file_store(),
+            memories: authorities.memory_content_purge(),
+            skills: authorities.skill_store(),
         }
     }
 }
