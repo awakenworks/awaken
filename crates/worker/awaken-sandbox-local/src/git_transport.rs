@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 use command::validate_credentialed_git_transport;
-use command::{credentialed_git_run, credentialed_git_run_with_alternate, credentialed_git_stdout};
+use command::{
+    credentialed_git_clone, credentialed_git_run_with_alternate, credentialed_git_stdout,
+};
 pub(crate) use command::{git_bytes, git_stdout, run_git};
 
 use awaken_fs_durability::publish_directory_noreplace;
@@ -42,7 +44,8 @@ pub(crate) fn provision_repo_at(
     credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
     intent: pc::RepositoryRealizationIntent,
 ) -> Result<(), SandboxError> {
-    let dest = jailed_at(root, logical)?;
+    let dest = std::path::absolute(jailed_at(root, logical)?)
+        .map_err(|error| SandboxError::backend("provision_repo_at", error))?;
     let destination_state =
         repository_destination_state(&dest, url, initial_branch, initial_commit)?;
     match destination_state {
@@ -74,18 +77,16 @@ pub(crate) fn provision_repo_at(
         .map_err(|error| SandboxError::backend("provision_repo_at", error))?;
     let stage_guard = repository_stage(parent)?;
     let stage = stage_guard.path().to_path_buf();
-    let mut args = vec!["clone".to_string(), "--no-checkout".to_string()];
-    if let Some(branch) = initial_branch {
-        args.push("--branch".into());
-        args.push(branch.to_string());
-    }
-    args.push("--".into());
-    args.push(url.to_string());
-    args.push(stage.to_string_lossy().into_owned());
     let realization = (|| {
-        credentialed_git_run(url, &args, credential)?;
+        credentialed_git_clone(url, &stage_guard, initial_branch, credential)?;
         if let Some(commit) = initial_commit {
-            run_git(Some(&stage), &["checkout", "--detach", commit])?;
+            if let Some(branch) = initial_branch {
+                // Both frozen expectations must hold. Detaching here would
+                // contradict the branch checked before atomic publication.
+                run_git(Some(&stage), &["checkout", "-B", branch, commit])?;
+            } else {
+                run_git(Some(&stage), &["checkout", "--detach", commit])?;
+            }
         } else {
             // Populate the selected/default branch only after the credentialed
             // process has exited. Repository filters and checkout behavior never
@@ -1364,7 +1365,19 @@ mod tests {
             awaken_provisioning_contract::RepositoryHttpBasicCredential::gateway_capability(
                 capability.to_owned(),
             );
-        let root = IsolatedRoot::new(base.join("jail"));
+        #[cfg(windows)]
+        let jail = {
+            // Exercise authenticated success and failed-checkout cleanup through
+            // the private clone transfer, not only through a short fixture path.
+            let fixed = base.to_string_lossy().encode_utf16().count()
+                + 3
+                + "jail".len()
+                + "workspace".len();
+            base.join("x".repeat(210 - fixed)).join("jail")
+        };
+        #[cfg(not(windows))]
+        let jail = base.join("jail");
+        let root = IsolatedRoot::new(jail);
 
         provision_repo_at(
             &root,
