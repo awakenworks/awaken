@@ -29,6 +29,11 @@ output:
 
 glob_matcher: doublestar
 
+# Script jobs run independently of a guessed push-file list, including when an
+# older worktree just regenerated the shared Git hook. The custom hook below
+# owns qualification; its planners select the affected Rust/API work.
+source_dir: scripts/ci
+
 pre-commit:
   # Cargo, code generation and workspace formatting share the same resource
   # budget. Keep every check, but avoid concurrent compiler processes during
@@ -52,6 +57,12 @@ pre-commit:
       glob: "{lefthook.yml,scripts/ci/*.py,scripts/ci/check-rust.sh}"
       # <<< generated glob
       run: python3 scripts/ci/generate_hooks.py --check
+
+    hook-bootstrap:
+      # >>> generated glob from _lefthook_fitness.py INPUT_GLOBS — do not edit
+      glob: "{lefthook.yml,scripts/ci/_lefthook_fitness.py,scripts/ci/_native_shell.py,scripts/ci/pre-push/qualify.sh}"
+      # <<< generated glob
+      run: python3 scripts/ci/_lefthook_fitness.py --self-test && python3 scripts/ci/_lefthook_fitness.py --integration-test
 
     # An evidence link replaces its former standalone source classification.
     # Metadata/checker changes must pass the same strict validators as CI:
@@ -416,6 +427,12 @@ commit-msg:
       run: python3 scripts/ci/check_commit_message.py {1}
 
 pre-push:
+  scripts:
+    qualify.sh:
+      runner: bash
+      args: --qualify
+
+push-qualification:
   commands:
     # Keep push latency bounded. Full workspace tests, formal verification,
     # Postgres suites, and frontend tests/build remain explicit checks:
