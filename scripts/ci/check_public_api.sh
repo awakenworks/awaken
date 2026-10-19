@@ -98,6 +98,8 @@ if ! rustc +"$PUBLIC_API_NIGHTLY" --version >/dev/null 2>&1; then
     "rustup toolchain install $PUBLIC_API_NIGHTLY --profile minimal"
 fi
 
+awaken_configure_public_api_target "$PUBLIC_API_NIGHTLY"
+
 if [ "$bless" = 1 ]; then
   mkdir -p public-api
 fi

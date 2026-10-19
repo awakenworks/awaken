@@ -1631,20 +1631,12 @@ fn resource_management_router_from_application(
     Router,
     Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
 ) {
-    let authorities = resources.authorities();
     let stores = resources.memory_stores();
     (
-        resources_router(ResourcesRouterInput {
-            repositories: resources.repositories(Arc::new(
-                awaken_resource_contract::UnavailableRepositoryCredentialValidator,
-            )),
-            files: resources.files(),
-            memory: authorities.memory_management_content(),
-            memory_stores: stores.clone(),
-            skills: Some(authorities.skill_store()),
-            purge: resources.purge_scheduler(),
-            clock: authorities.clock(),
-        }),
+        resources_router(ResourcesRouterInput::new(
+            resources,
+            Arc::new(awaken_resource_contract::UnavailableRepositoryCredentialValidator),
+        )),
         stores,
     )
 }

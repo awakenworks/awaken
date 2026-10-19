@@ -33,12 +33,20 @@ impl PlatformMemoryHandle {
         source: &dyn awaken_resource_contract::MemorySnapshotSource,
         store_id: &str,
     ) -> Result<Vec<awaken_ext_memory::Entry>, String> {
-        let mut entries = Vec::new();
-        for memory in source
+        let mut memories = source
             .snapshot_heads(store_id)
             .await
-            .map_err(|error| error.to_string())?
-        {
+            .map_err(|error| error.to_string())?;
+        // Keep source precision: platform SystemTime can round distinct heads
+        // to the same instant, and its representable range is narrower.
+        memories.sort_by(|left, right| {
+            right
+                .updated_unix_nanos
+                .cmp(&left.updated_unix_nanos)
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        let mut entries = Vec::new();
+        for memory in memories {
             let Some(content) = memory.content.filter(|content| !content.trim().is_empty()) else {
                 continue;
             };
@@ -49,12 +57,6 @@ impl PlatformMemoryHandle {
                 modified: std::time::UNIX_EPOCH + std::time::Duration::from_nanos(nanos),
             });
         }
-        entries.sort_by(|left, right| {
-            right
-                .modified
-                .cmp(&left.modified)
-                .then_with(|| left.path.cmp(&right.path))
-        });
         Ok(entries)
     }
 

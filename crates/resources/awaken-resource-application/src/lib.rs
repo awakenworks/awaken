@@ -69,11 +69,7 @@ impl ResourcesApplication {
                 authorities.clock(),
             )),
             lifecycle_guard: Arc::new(ResourceLifecycleGuard::new(authorities.resource_registry())),
-            physical_cleanup: Arc::new(ResourcePhysicalCleanup::new(
-                authorities.file_store(),
-                authorities.memory_content_purge(),
-                authorities.skill_store(),
-            )),
+            physical_cleanup: Arc::new(ResourcePhysicalCleanup::new(&authorities)),
             purge,
             authorities,
         }

@@ -459,11 +459,23 @@ struct MemoryStoreApi {
 /// Mount the Memory API over the same Resource Registry used by Session
 /// resolution. Processes that manage Resources must use this variant so
 /// create/archive/delete and activation share one lifecycle truth.
+///
+/// Content and catalog from different applications cannot be supplied separately:
+/// ```compile_fail
+/// use awaken_protocol_managed::memory_stores_router;
+/// use awaken_resource_application::ResourcesApplication;
+/// fn cannot_mix(a: &ResourcesApplication, b: &ResourcesApplication) {
+///     let _ = memory_stores_router(b.authorities().memory_management_content(),
+///         a.memory_stores(), a.authorities().clock());
+/// }
+/// ```
 pub fn memory_stores_router(
-    content: awaken_resource_contract::MemoryManagementContent,
-    stores: Arc<dyn MemoryStoreApplicationService>,
-    clock: Arc<dyn awaken_time::WallClock>,
+    resources: &awaken_resource_application::ResourcesApplication,
 ) -> Router {
+    let authorities = resources.authorities();
+    let content = authorities.memory_management_content();
+    let stores = resources.memory_stores();
+    let clock = authorities.clock();
     let state = Arc::new(MemoryStoreApi {
         snapshots: content.snapshots(),
         writer: content.writer(),
