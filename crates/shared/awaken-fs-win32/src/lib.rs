@@ -1,7 +1,7 @@
-//! The narrow Win32 handle-inspection port for `awaken-sandbox-fs`.
+//! Native Win32 handle inspection for the shared filesystem component.
 //!
 //! Filesystem policy, traversal, locking, and lifecycle stay with the existing
-//! Sandbox filesystem crate. Only Win32 calls without a safe std or existing
+//! shared filesystem component. Only Win32 calls without a safe std or existing
 //! dependency surface live here.
 #![deny(unsafe_code)]
 

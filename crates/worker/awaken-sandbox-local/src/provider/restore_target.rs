@@ -46,7 +46,7 @@ fn sidecar(root: &Path, suffix: &str) -> Result<PathBuf, pc::SandboxError> {
 }
 
 fn read_binding(root: &Path) -> Result<Option<RestoreTargetBinding>, pc::SandboxError> {
-    match awaken_sandbox_fs::read_regular_file_nofollow(&sidecar(root, "target.json")?) {
+    match awaken_fs_durability::read_regular_file_nofollow(&sidecar(root, "target.json")?) {
         Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|error| {
             pc::SandboxError::invalid(format!("decode local restoration target evidence: {error}"))
         }),
@@ -61,7 +61,7 @@ fn read_binding(root: &Path) -> Result<Option<RestoreTargetBinding>, pc::Sandbox
 fn write_binding(
     root: &Path,
     evidence: &pc::SandboxRestorationEvidence,
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
 ) -> Result<(), pc::SandboxError> {
     let destination = sidecar(root, "target.json")?;
     let bytes = serde_json::to_vec(&RestoreTargetBinding {
@@ -82,14 +82,14 @@ fn write_binding(
 
 async fn lock_target(
     root: &Path,
-) -> Result<awaken_sandbox_fs::ExclusiveFileLock, pc::SandboxError> {
+) -> Result<awaken_fs_durability::ExclusiveFileLock, pc::SandboxError> {
     std::fs::create_dir_all(root.parent().ok_or_else(|| {
         pc::SandboxError::invalid("local restoration root has no provider parent")
     })?)
     .map_err(|error| pc::SandboxError::backend("lock_target", error))?;
     let path = sidecar(root, "lock")?;
     loop {
-        match awaken_sandbox_fs::try_lock_exclusive(&path) {
+        match awaken_fs_durability::try_lock_exclusive(&path) {
             Ok(lock) => return Ok(lock),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -107,14 +107,14 @@ async fn lock_target(
 pub(super) async fn lock_bound_target(
     root: &Path,
     expected: &pc::SandboxRestorationEvidence,
-) -> Result<awaken_sandbox_fs::ExclusiveFileLock, pc::SandboxError> {
+) -> Result<awaken_fs_durability::ExclusiveFileLock, pc::SandboxError> {
     let lock = lock_target(root).await?;
     verify_binding(root, expected)?;
     Ok(lock)
 }
 
 fn remove_target_binding(root: &Path) -> Result<(), pc::SandboxError> {
-    match awaken_sandbox_fs::remove_regular_file_nofollow(&sidecar(root, "target.json")?) {
+    match awaken_fs_durability::remove_regular_file_nofollow(&sidecar(root, "target.json")?) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(pc::SandboxError::backend("remove_target_binding", error)),
@@ -281,9 +281,9 @@ pub(super) async fn dispose_bound_target(
                 ));
             }
             Some(_) if physical_directory_exists(root)? => {
-                let identity = awaken_sandbox_fs::directory_identity_nofollow(root)
+                let identity = awaken_fs_durability::directory_identity_nofollow(root)
                     .map_err(|error| pc::SandboxError::backend("dispose_bound_target", error))?;
-                awaken_sandbox_fs::remove_directory_tree_exact(root, identity)
+                awaken_fs_durability::remove_directory_tree_exact(root, identity)
                     .map_err(|error| pc::SandboxError::backend("dispose_bound_target", error))?;
             }
             Some(_) | None => {}

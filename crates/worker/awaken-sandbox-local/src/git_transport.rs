@@ -21,8 +21,8 @@ use command::validate_credentialed_git_transport;
 use command::{credentialed_git_run, credentialed_git_run_with_alternate, credentialed_git_stdout};
 pub(crate) use command::{git_bytes, git_stdout, run_git};
 
+use awaken_fs_durability::publish_directory_noreplace;
 use awaken_provisioning_contract as pc;
-use awaken_sandbox_fs::publish_directory_noreplace;
 
 use crate::{IsolatedRoot, SandboxError, jailed_at};
 

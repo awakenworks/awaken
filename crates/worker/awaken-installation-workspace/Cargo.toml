@@ -18,7 +18,7 @@ authority = "installation-workspace"
 separation = "sole-in-layer"
 
 [dependencies]
-awaken-sandbox-fs.workspace = true
+awaken-fs-durability = { workspace = true, features = ["native-fs"] }
 
 [dev-dependencies]
 tempfile = "3"

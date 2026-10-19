@@ -14,7 +14,7 @@ use crate::IsolatedRoot;
 
 pub(crate) fn materialize_read_only_tree_at(
     root: &IsolatedRoot,
-    root_identity: awaken_sandbox_fs::DirectoryIdentity,
+    root_identity: awaken_fs_durability::DirectoryIdentity,
     subdir: &str,
     files: &[(String, Vec<u8>, bool)],
 ) -> Result<(), pc::SandboxError> {
@@ -35,7 +35,7 @@ pub(crate) fn materialize_read_only_tree_at(
             subdir.trim_matches('/'),
             relative.trim_start_matches('/')
         );
-        awaken_sandbox_fs::write_relative_file_atomic(
+        awaken_fs_durability::write_relative_file_atomic(
             root.root(),
             root_identity,
             std::path::Path::new(&logical),
@@ -60,7 +60,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = IsolatedRoot::new(temp.path().join("skill-tree"));
         std::fs::create_dir(root.root()).unwrap();
-        let identity = awaken_sandbox_fs::directory_identity_nofollow(root.root()).unwrap();
+        let identity = awaken_fs_durability::directory_identity_nofollow(root.root()).unwrap();
         let binary = vec![0, 159, 146, 150, 255];
         materialize_read_only_tree_at(
             &root,

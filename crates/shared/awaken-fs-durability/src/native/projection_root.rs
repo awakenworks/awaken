@@ -1,6 +1,8 @@
 //! Retained identity for a caller-owned quiescent projection. This is not a
 //! publication capability or a replacement for the exact-dirfd mutation APIs.
-use super::*;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use super::{DirectoryIdentity, directory_identity_nofollow, open_exact_root};
+use std::path::Path;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(super) fn reject_projection_link(metadata: &std::fs::Metadata) -> std::io::Result<()> {
@@ -91,6 +93,7 @@ impl ProjectionRoot {
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
+    use super::super::descriptor_identity;
     use super::*;
     use std::os::fd::AsFd as _;
 

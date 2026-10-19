@@ -53,7 +53,7 @@ awaken-local-process.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-sandbox-control.workspace = true
 awaken-sandbox-control-transport.workspace = true
-awaken-sandbox-fs.workspace = true
+awaken-fs-durability = { workspace = true, features = ["native-fs"] }
 tar = "0.4"
 tokio = { workspace = true, features = [
     "rt-multi-thread",

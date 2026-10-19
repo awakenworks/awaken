@@ -99,7 +99,7 @@ async fn run_native_probe_argv(argv: &[String], timeout: std::time::Duration) ->
     #[cfg(target_os = "linux")]
     {
         let roots = if argv.iter().any(|argument| argument == "--ro-bind-fd") {
-            let Ok(root) = awaken_sandbox_fs::ProjectionRoot::capture(std::path::Path::new(
+            let Ok(root) = awaken_fs_durability::ProjectionRoot::capture(std::path::Path::new(
                 PROBE_RUNTIME_ROOT,
             )) else {
                 return false;
@@ -602,7 +602,7 @@ impl NamespaceProvider {
                         pc::SandboxError::invalid("namespace mount escaped its exact sandbox root")
                     })?;
                     mutation_guard.with_mutation(|| {
-                        awaken_sandbox_fs::write_relative_file_atomic(
+                        awaken_fs_durability::write_relative_file_atomic(
                             root.root(),
                             root_identity,
                             relative,
@@ -623,7 +623,7 @@ impl NamespaceProvider {
                         pc::SandboxError::invalid("namespace mount escaped its exact sandbox root")
                     })?;
                     mutation_guard.with_mutation(|| {
-                        awaken_sandbox_fs::write_relative_file_atomic(
+                        awaken_fs_durability::write_relative_file_atomic(
                             root.root(),
                             root_identity,
                             relative,
@@ -765,7 +765,7 @@ impl NamespaceProvider {
             })?;
             let canonical_root = std::fs::canonicalize(&raw_root)
                 .map_err(|error| pc::SandboxError::backend("create_sandbox_inner", error))?;
-            if awaken_sandbox_fs::directory_identity_nofollow(&canonical_root)
+            if awaken_fs_durability::directory_identity_nofollow(&canonical_root)
                 .map_err(|error| pc::SandboxError::backend("create_sandbox_inner", error))?
                 != raw_identity
             {
@@ -870,11 +870,11 @@ impl NamespaceProvider {
             // `/var` is a symlink to `/private/var` on macOS. Seatbelt evaluates some
             // operations against the canonical vnode path, so build every rule/env/cwd
             // from one canonical root or write grants can miss their target.
-            let raw_identity = awaken_sandbox_fs::directory_identity_nofollow(&raw_root)
+            let raw_identity = awaken_fs_durability::directory_identity_nofollow(&raw_root)
                 .map_err(|error| pc::SandboxError::backend("create_sandbox_inner", error))?;
             let canonical_root = std::fs::canonicalize(&raw_root)
                 .map_err(|error| pc::SandboxError::backend("create_sandbox_inner", error))?;
-            if awaken_sandbox_fs::directory_identity_nofollow(&canonical_root)
+            if awaken_fs_durability::directory_identity_nofollow(&canonical_root)
                 .map_err(|error| pc::SandboxError::backend("create_sandbox_inner", error))?
                 != raw_identity
             {
@@ -893,7 +893,7 @@ impl NamespaceProvider {
                 .map(|mount| host_projection_path(&root, &host_workspace, &mount.mount_path))
                 .collect::<Result<Vec<_>, _>>()?;
             realization_guard.with_mutation(|| {
-                awaken_sandbox_fs::create_relative_directory_all(
+                awaken_fs_durability::create_relative_directory_all(
                     root.root(),
                     raw_identity,
                     std::path::Path::new(pc::WorkspaceLayout::ROOT.trim_start_matches('/')),
@@ -904,7 +904,7 @@ impl NamespaceProvider {
                 .resolve(&spec.outputs_path)
                 .map_err(pc::SandboxError::from)?;
             realization_guard.with_mutation(|| {
-                awaken_sandbox_fs::create_relative_directory_all(
+                awaken_fs_durability::create_relative_directory_all(
                     root.root(),
                     raw_identity,
                     std::path::Path::new(spec.outputs_path.trim_start_matches('/')),
@@ -1229,7 +1229,7 @@ impl NamespaceProvider {
             Some((evidence, _)) => crate::realization_marker::LiveRealization::Current(evidence),
             None => crate::realization_marker::LiveRealization::LegacyAdopted,
         };
-        let raw_identity = awaken_sandbox_fs::directory_identity_nofollow(&raw_root)
+        let raw_identity = awaken_fs_durability::directory_identity_nofollow(&raw_root)
             .map_err(|error| pc::SandboxError::backend("adopt_sandbox_inner", error))?;
         if realization
             .current()
@@ -1241,7 +1241,7 @@ impl NamespaceProvider {
         }
         let canonical_root = std::fs::canonicalize(&raw_root)
             .map_err(|error| pc::SandboxError::backend("adopt_sandbox_inner", error))?;
-        if awaken_sandbox_fs::directory_identity_nofollow(&canonical_root)
+        if awaken_fs_durability::directory_identity_nofollow(&canonical_root)
             .map_err(|error| pc::SandboxError::backend("adopt_sandbox_inner", error))?
             != raw_identity
         {
@@ -1403,13 +1403,13 @@ pub struct NamespaceSandbox {
 impl NamespaceSandbox {
     fn root_identity_for_access(
         &self,
-    ) -> Result<Option<awaken_sandbox_fs::DirectoryIdentity>, pc::SandboxError> {
+    ) -> Result<Option<awaken_fs_durability::DirectoryIdentity>, pc::SandboxError> {
         self.realization.root_identity_for_access(self.root.root())
     }
 
     fn require_root_identity(
         &self,
-    ) -> Result<awaken_sandbox_fs::DirectoryIdentity, pc::SandboxError> {
+    ) -> Result<awaken_fs_durability::DirectoryIdentity, pc::SandboxError> {
         self.realization.require_root_identity(self.root.root())
     }
 
@@ -1453,7 +1453,7 @@ impl NamespaceSandbox {
     /// Session workspace and every non-resource file.
     pub fn clear_resource_projection(&self) -> Result<(), pc::SandboxError> {
         let root_identity = self.require_root_identity()?;
-        awaken_sandbox_fs::remove_relative_entry_exact(
+        awaken_fs_durability::remove_relative_entry_exact(
             self.root.root(),
             root_identity,
             std::path::Path::new(
@@ -1522,7 +1522,7 @@ impl NamespaceSandbox {
     ) -> Result<(), pc::SandboxError> {
         let root_identity = self.require_root_identity()?;
         let sandbox_relative = pc::WorkspaceLayout::child(workspace_relative(logical));
-        awaken_sandbox_fs::write_relative_file_atomic(
+        awaken_fs_durability::write_relative_file_atomic(
             self.root.root(),
             root_identity,
             std::path::Path::new(sandbox_relative.trim_start_matches('/')),
@@ -1537,7 +1537,7 @@ impl NamespaceSandbox {
     pub fn remove_inline(&self, logical: &str) -> Result<(), pc::SandboxError> {
         let root_identity = self.require_root_identity()?;
         let sandbox_relative = pc::WorkspaceLayout::child(workspace_relative(logical));
-        awaken_sandbox_fs::remove_relative_entry_exact(
+        awaken_fs_durability::remove_relative_entry_exact(
             self.root.root(),
             root_identity,
             std::path::Path::new(sandbox_relative.trim_start_matches('/')),
@@ -1562,7 +1562,7 @@ impl NamespaceSandbox {
         let relative = path.strip_prefix(self.root.root()).map_err(|_| {
             pc::SandboxError::invalid("namespace mount path escaped its sandbox root")
         })?;
-        awaken_sandbox_fs::remove_relative_entry_exact(self.root.root(), root_identity, relative)
+        awaken_fs_durability::remove_relative_entry_exact(self.root.root(), root_identity, relative)
             .map_err(|error| pc::SandboxError::backend("remove_mount", error))
     }
 

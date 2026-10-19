@@ -1,7 +1,8 @@
 // @formal entrypoint sandbox_control.single_publication_is_stale_fenced_non_wrapping_and_close_absorbing
 //! Linux pathname socket addresses rooted in an opened directory.
-use super::*;
+use super::{directory_identity_nofollow, open_exact_root, validate_sibling_leaf};
 use std::os::fd::AsRawFd as _;
+use std::path::{Path, PathBuf};
 
 /// A short socket pathname that retains the exact parent directory descriptor.
 ///

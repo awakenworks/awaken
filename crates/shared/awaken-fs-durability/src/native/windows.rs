@@ -3,7 +3,7 @@
 // @formal reason: implement the existing Sandbox lock, no-follow, publication, read,
 // @formal reason: shred, and exact-delete contracts. Providers retain authorization;
 // @formal reason: executable tests cover effects but this is not a direct proof claim.
-//! Windows NTFS realization identity and the existing sidecar lock boundary.
+//! Windows NTFS physical identity and the existing sidecar lock boundary.
 //! Every directory component is opened relative to a retained handle without
 //! following reparse points. The 64-bit persisted inode format is qualified
 //! only on NTFS; ReFS and remote filesystems require a different identity
@@ -470,7 +470,7 @@ fn remove_regular_file_in(parent_path: &Path, parent: &File, name: &OsStr) -> io
     let file = open_regular_for_delete(parent, name)?;
     awaken_fs_win32::delete_open(&file)?;
     drop(file);
-    awaken_fs_durability::sync_directory(parent_path)
+    crate::sync_directory(parent_path)
 }
 
 pub(super) fn remove_sibling_regular_file_nofollow(
@@ -544,7 +544,7 @@ fn publish_file_in(
         }
         stage.sync_all()?;
         awaken_fs_win32::rename_open_noreplace(&stage, &parent_path.join(destination))?;
-        awaken_fs_durability::sync_directory(parent_path)
+        crate::sync_directory(parent_path)
     })();
     if result.is_err() {
         drop(stage);
@@ -580,7 +580,7 @@ where
         drop(source);
         awaken_fs_win32::rename_open_replace(&stage, &parent_path.join(destination))?;
         drop(stage);
-        awaken_fs_durability::sync_directory(parent_path)?;
+        crate::sync_directory(parent_path)?;
         if file_information(&open_regular(parent, destination)?)? != stage_identity {
             return Err(invalid("Windows replacement publication changed identity"));
         }
@@ -682,7 +682,7 @@ fn create_directory_in(
     if directory_identity_nofollow(&directory_path)? != created {
         return Err(invalid("created Windows directory changed identity"));
     }
-    awaken_fs_durability::sync_directory(parent_path)?;
+    crate::sync_directory(parent_path)?;
     Ok(created)
 }
 
@@ -727,7 +727,7 @@ fn publish_directory_in(
     if directory_identity_nofollow(&parent_path.join(destination_name))? != source_identity {
         return Err(invalid("published Windows directory changed identity"));
     }
-    awaken_fs_durability::sync_directory(parent_path)?;
+    crate::sync_directory(parent_path)?;
     Ok(())
 }
 
@@ -836,7 +836,7 @@ pub(super) fn clear_directory_contents_exact(
     if directory_identity_nofollow(path)? != expected {
         return Err(invalid("Windows directory changed identity during cleanup"));
     }
-    awaken_fs_durability::sync_directory(path)
+    crate::sync_directory(path)
 }
 
 fn remove_directory_tree_in(
@@ -852,7 +852,7 @@ fn remove_directory_tree_in(
     remove_directory_contents(&directory)?;
     awaken_fs_win32::delete_open(&directory)?;
     drop(directory);
-    awaken_fs_durability::sync_directory(parent_path)
+    crate::sync_directory(parent_path)
 }
 
 pub(super) fn remove_directory_tree_exact(
@@ -892,7 +892,7 @@ pub(super) fn clear_sibling_directory_contents_exact(
             "Windows sibling directory changed identity during cleanup",
         ));
     }
-    awaken_fs_durability::sync_directory(&lock.parent_path.join(name))?;
+    crate::sync_directory(&lock.parent_path.join(name))?;
     validate_parent_path(lock)
 }
 
@@ -1121,7 +1121,7 @@ pub(super) fn remove_relative_entry_exact(
     if directory_identity_nofollow(root)? != expected_root {
         return Err(invalid("Windows relative cleanup root changed identity"));
     }
-    awaken_fs_durability::sync_directory(&parent_path)
+    crate::sync_directory(&parent_path)
 }
 
 pub(super) fn validate_parent_path(lock: &ExclusiveFileLock) -> io::Result<()> {

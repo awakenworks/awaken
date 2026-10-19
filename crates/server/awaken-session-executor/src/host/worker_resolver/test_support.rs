@@ -425,9 +425,9 @@ pub(super) fn remove_local_environment_root(host: &crate::host::ExecutorComponen
         .expect("unavailable Local Environment fixture requires durable storage")
         .join("sandboxes")
         .join(thread);
-    let identity = awaken_sandbox_fs::directory_identity_nofollow(&root)
+    let identity = awaken_fs_durability::directory_identity_nofollow(&root)
         .expect("observe exact unavailable-Environment root identity");
-    awaken_sandbox_fs::remove_directory_tree_exact(&root, identity)
+    awaken_fs_durability::remove_directory_tree_exact(&root, identity)
         .expect("remove exact unavailable-Environment physical root");
 }
 

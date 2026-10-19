@@ -1,4 +1,4 @@
-use super::*;
+use std::path::Path;
 
 /// Physical scan budgets, not resource authorization or Repository quotas.
 #[derive(Clone, Copy)]
