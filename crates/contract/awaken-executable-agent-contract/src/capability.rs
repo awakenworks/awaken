@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Capability DTOs and pure composition callbacks describe installed support; they
+// @formal reason: neither grant authorization nor prove arbitrary plugin implementations pure.
 //! The runtime capability catalog the Host publishes to configuration.
 //!
 //! The Host projects each installed plugin's configuration schema and declared
@@ -29,7 +32,8 @@ pub struct PluginCapability {
     /// JSON Schema for this plugin's config section, derived from its config
     /// type (e.g. via `schemars`). Carried on the capability catalog so a config
     /// frontend can render and validate the section. Absent when the plugin has
-    /// no configuration. Advisory only — the authoritative check is a dry-run
+    /// no configuration. Advisory only — authoritative admission uses the
+    /// extension-owned decoder shared by its pure publication validator and
     /// `Plugin::resolve_configured`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_schema: Option<serde_json::Value>,
@@ -41,6 +45,31 @@ pub struct PluginCapability {
     /// predates the projection.
     #[serde(default)]
     pub bound: CapabilityBound,
+}
+
+/// Pure extension-owned configuration validation. It may decode and compile
+/// declarative values, but cannot perform Runtime or credential-material IO.
+pub type PluginConfigurationValidator = fn(Option<&serde_json::Value>) -> Result<(), String>;
+
+/// One composition declaration feeds discovery and publication admission.
+/// Only `capability` crosses the serializable API boundary; the function is
+/// process wiring, not another configuration store or executable snapshot.
+#[derive(Clone, Debug)]
+pub struct PluginConfigurationSource {
+    pub capability: PluginCapability,
+    /// None requires a Workspace-dependent publication resolver when the
+    /// capability declares a configuration section.
+    pub validate: Option<PluginConfigurationValidator>,
+}
+
+impl PluginConfigurationSource {
+    /// The discovery projection of the exact declarations installed at startup.
+    pub fn capabilities(sources: &[Self]) -> Vec<PluginCapability> {
+        sources
+            .iter()
+            .map(|source| source.capability.clone())
+            .collect()
+    }
 }
 
 pub trait RuntimeCapabilitySource {

@@ -392,7 +392,7 @@
       "reason": "W21 (plan 9.12): split by use case around one SessionMutations core; if it stays one aggregate after W21, record that review here"
     },
     "awaken-session-executor": {
-      "deps": 41,
+      "deps": 40,
       "lines": 24451,
       "reason": "runtime-host split (plan 10.4 slices R, E, H): lines hold host plus the realizer being extracted in place (+142 approved 2026-10-10 for the SessionRealizations view, leaves with the realization crate; +24 approved 2026-10-10 for k8s_unschedulable_wait_secs settings, leaves with the deployment configuration to the composition root; +127 2026-10-18 for typed poison refusals and their decision tables at every read role, plan v4 P6/P7); host_lines may only fall; target < 20000 lines, about 26-28 dependencies",
       "host_lines": 24451

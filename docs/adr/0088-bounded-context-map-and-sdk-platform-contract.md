@@ -554,3 +554,18 @@ versions, snapshots and wire/storage formats do not change in this cleanup.
 At the checked Cloud continuation source `f6719247` and old main worktree
 `b735ddb3`, none of these five symbols or an Ingress glob is used. This records
 source compatibility impact, not a pinned Cloud build or publication result.
+
+## Amendment 2026-10-19: platform plugin declaration leaves Execution
+
+The CLI and scenario host consume the single platform plugin declaration from
+`awaken-plugin-composition`, an `apps` process-bootstrap library. Discovery
+metadata and pure extension-owned configuration admission are composed together;
+ConfigService receives those declarations through the existing Config contract.
+Workspace-dependent publication resolution stays at its existing owner.
+
+SessionExecutor no longer produces the Config capability DTO or depends on
+`awaken-executable-agent-contract`. No Platform Execution crate now depends on
+Config, so the obsolete `execution -> config` context-pair allowance and the
+SessionExecutor upward-edge exception are removed. This narrows the dependency
+graph; it does not create an Execution-owned copy of the configuration catalog,
+change the published discovery wire shape or alter Runtime plugin activation.

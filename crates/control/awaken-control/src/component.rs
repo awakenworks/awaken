@@ -33,7 +33,7 @@ use awaken_data_subject_application::{
 };
 use awaken_environment_contract::EnvironmentAuthor;
 use awaken_executable_agent_contract::ExecutableAgentRegistrar;
-use awaken_executable_agent_contract::capability::PluginCapability;
+use awaken_executable_agent_contract::capability::PluginConfigurationSource;
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_protocol_managed::{ManagedAgentRepository, VaultState};
 use awaken_runtime_contract::resolved::ToolDescriptor;
@@ -111,8 +111,7 @@ pub struct ControlDependencies {
         Option<Arc<dyn awaken_session_configuration_contract::CredentialRefreshExchange>>,
     pub assistant_model_selection: Option<ModelSelection>,
     pub global_tools: Vec<ToolDescriptor>,
-    pub platform_plugins: Vec<PluginCapability>,
-    pub assistant_plugins: Vec<PluginCapability>,
+    pub platform_plugins: Vec<PluginConfigurationSource>,
     pub runtimes: Arc<dyn RuntimeCapabilitySource>,
     pub resource_inventory: Option<Arc<dyn ResourceInventory>>,
     pub environment_author: Arc<dyn EnvironmentAuthor>,
@@ -201,7 +200,6 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         assistant_model_selection,
         global_tools,
         platform_plugins,
-        assistant_plugins,
         runtimes,
         resource_inventory,
         environment_author,
@@ -263,6 +261,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         model_publication_resolver,
         executable_agent_registrar,
         tool_configuration_compiler.clone(),
+        platform_plugins.clone(),
     )
     .with_credential_reference_validator(credential_validator.clone())
     .with_resources(resource_store.clone());
@@ -299,7 +298,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         CatalogCapabilityReader::request_scoped(
             catalog.clone(),
             &global_tools,
-            &assistant_plugins,
+            &PluginConfigurationSource::capabilities(&platform_plugins),
             config_plane.clone(),
             resource_inventory,
         )
@@ -307,7 +306,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         CatalogCapabilityReader::new(
             catalog.clone(),
             &global_tools,
-            &assistant_plugins,
+            &PluginConfigurationSource::capabilities(&platform_plugins),
             config_plane.clone(),
             execution_workspace.clone(),
             resource_inventory,
@@ -390,7 +389,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         plane: config_plane.clone(),
         assistant_model_selection,
         global_tools,
-        plugins: platform_plugins,
+        plugins: PluginConfigurationSource::capabilities(&platform_plugins),
         runtimes,
         platform_workspace: execution_workspace,
         data_subject_application: data_subject_application.clone(),
