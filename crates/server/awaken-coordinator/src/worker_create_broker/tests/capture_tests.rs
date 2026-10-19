@@ -32,8 +32,7 @@ async fn current_private_wire_refuses_missing_or_wrong_version_before_provider_e
             )
             .unwrap();
             let router = Arc::new(K8sCreateBroker::new(
-                client,
-                ledger,
+                Arc::new(ledger),
                 "sandbox-ns",
                 "provider-a",
             ))
@@ -323,5 +322,361 @@ async fn original_readback_status_precedes_body_poll_without_changing_receipt() 
             in_flight,
             "R3 InFlight does not even issue a readback GET"
         );
+    }
+}
+
+#[tokio::test]
+async fn original_raw_request_build_refusal_precedes_the_one_service() {
+    // P1: invalid URI -> RequestBuild with service0 for both actual backend
+    // methods, unchanged physical ledger. Legal Broker POST paths are fixed
+    // collections, so this phase is tested at the real producer rather than
+    // weakening admission or adding a fake role to invent an unreachable RPC.
+    // P2: local admitted-name syntax permits an internal space; the original
+    // readback caller projects the same build phase to its original error.
+    let f = super::fixture::broker_fixture(|_| {}).await;
+    let calls = f.api_calls.load(Ordering::SeqCst);
+    let before = f.stored.lock().unwrap().clone();
+    assert_eq!(
+        f.ledger
+            .read_original("invalid uri\n", CreateReplyProfile::FreshCreate)
+            .await,
+        Err(RawCreateFailurePhase::RequestBuild)
+    );
+    assert_eq!(
+        f.ledger
+            .post_create(
+                "invalid uri\n",
+                b"{}".to_vec(),
+                CreateReplyProfile::FreshCreate
+            )
+            .await,
+        Err(RawCreateFailurePhase::RequestBuild)
+    );
+    let mut create = f.create.clone();
+    create.object["metadata"]["name"] = "bad name".into();
+    let validated = validate_create(&f.identity, "sandbox-ns", create).unwrap();
+    let error = f
+        .broker
+        .read_original_result(
+            &validated,
+            &TicketResult::Created {
+                uid: "original".into(),
+            },
+            "nonce",
+            CreateReplyProfile::FreshCreate,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.kind,
+        awaken_session_execution_contract::ApplicationErrorKind::Internal
+    );
+    assert_eq!(error.message, "original Create readback path invalid");
+    assert_eq!(f.api_calls.load(Ordering::SeqCst), calls);
+    assert_eq!(*f.stored.lock().unwrap(), before);
+}
+
+#[tokio::test]
+async fn raw_send_and_capture_failures_keep_original_caller_errors_and_receipts() {
+    // P3 table: operation GET(after Finished)/POST(after original admission)
+    // x actual service error/body>B/partial-data-then-body-error. Send and
+    // Capture retain their distinct
+    // original messages. GET cannot alter Finished; POST remains InFlight,
+    // retry cannot issue a second raw POST. These are real Client/Body faults
+    // on the original fixture, not a role fake or a second error classifier.
+    for (readback, failure) in [
+        (false, "send"),
+        (false, "limit"),
+        (false, "body"),
+        (true, "send"),
+        (true, "limit"),
+        (true, "body"),
+    ] {
+        let capture = failure != "send";
+        let polls = Arc::new(AtomicUsize::new(0));
+        let f = super::fixture::broker_fixture(|_| {}).await;
+        f.release.notify_one();
+        if readback {
+            f.broker
+                .create(
+                    f.directory.clone(),
+                    f.clock.clone(),
+                    f.identity.clone(),
+                    f.create.clone(),
+                )
+                .await
+                .unwrap();
+        }
+        let before = f.stored.lock().unwrap().clone();
+        if capture {
+            let response = super::fixture::ReadbackResponse {
+                status: if readback { 200 } else { 403 },
+                body: if failure == "limit" {
+                    vec![b'x'; CreateReplyProfile::FreshCreate.body_limit().unwrap() + 1]
+                } else {
+                    b"partial original bytes".to_vec()
+                },
+                polls: polls.clone(),
+            };
+            if failure == "body" {
+                *f.capture_error.lock().unwrap() =
+                    Some(if readback { Method::GET } else { Method::POST });
+            }
+            if readback {
+                *f.readback_response.lock().unwrap() = Some(response);
+            } else {
+                *f.post_response.lock().unwrap() = Some(response);
+            }
+        } else {
+            *f.fail_send.lock().unwrap() = Some(if readback { Method::GET } else { Method::POST });
+        }
+        let result = f
+            .broker
+            .create(
+                f.directory.clone(),
+                f.clock.clone(),
+                f.identity.clone(),
+                f.create.clone(),
+            )
+            .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("P3 fault was accepted"),
+        };
+        assert_eq!(
+            error.kind,
+            awaken_session_execution_contract::ApplicationErrorKind::Unavailable
+        );
+        assert_eq!(
+            error.message,
+            match (readback, capture) {
+                (true, false) => "original Create API readback unavailable",
+                (true, true) => "original Create API readback incomplete or outside capture policy",
+                (false, false) => "Worker Create API outcome is unknown",
+                (false, true) =>
+                    "Worker Create API response is incomplete or outside capture policy",
+            }
+        );
+        if failure == "body" {
+            assert_eq!(
+                polls.load(Ordering::SeqCst),
+                1,
+                "P3 partial data before original body failure"
+            );
+        }
+        if readback {
+            assert_eq!(
+                *f.stored.lock().unwrap(),
+                before,
+                "P3 Finished receipt unchanged"
+            );
+        } else {
+            let state = super::fixture::ledger_state(&f.stored);
+            assert!(
+                state["tickets"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .all(|ticket| ticket["status"] == "in_flight")
+            );
+            assert!(
+                f.broker
+                    .create(
+                        f.directory.clone(),
+                        f.clock.clone(),
+                        f.identity.clone(),
+                        f.create.clone()
+                    )
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            f.pod_posts.load(Ordering::SeqCst),
+            1,
+            "P3 no additional POST"
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_post_status_captures_whole_bytes_before_definitive_result_selection() {
+    // P4 table: definitive400/401/403/409/422 vs nondefinitive202/500,
+    // complete ready body -> every status polls the same original body fully.
+    // Only the original TicketResult owner admits the five refusal codes;
+    // other statuses remain InFlight, no second POST. P3's403 oversized body
+    // separately proves a refusal status cannot bypass capture or finish early.
+    // Fresh201/UID and raw/outward/result overflow remain in the original cases.
+    for status in [400, 401, 403, 409, 422, 202, 500] {
+        let f = super::fixture::broker_fixture(|_| {}).await;
+        let object =
+            json!({"kind":"Status","code":status,"message":"complete original failure".repeat(64)});
+        let polls = Arc::new(AtomicUsize::new(0));
+        *f.post_response.lock().unwrap() = Some(super::fixture::ReadbackResponse {
+            status,
+            body: serde_json::to_vec(&object).unwrap(),
+            polls: polls.clone(),
+        });
+        f.release.notify_one();
+        let result = f
+            .broker
+            .create(
+                f.directory.clone(),
+                f.clock.clone(),
+                f.identity.clone(),
+                f.create.clone(),
+            )
+            .await;
+        let definitive = matches!(status, 400 | 401 | 403 | 409 | 422);
+        let state = super::fixture::ledger_state(&f.stored);
+        if definitive {
+            let reply = result.unwrap();
+            let decoded: K8sCreateResponse = serde_json::from_slice(&reply.body).unwrap();
+            assert_eq!(decoded.status, status);
+            assert_eq!(decoded.object, object);
+            let request = validate_create(&f.identity, "sandbox-ns", f.create.clone())
+                .unwrap()
+                .ticket;
+            let retained = awaken_sandbox_kubernetes::WorkerCreateLedgerState::decode(
+                f.stored.lock().unwrap().as_ref().unwrap()["data"]["ledger"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                retained.ticket(&request).unwrap().status,
+                awaken_container_contract::TicketStatus::Finished(TicketResult::RejectedNoEffect {
+                    code: status
+                })
+            );
+        } else {
+            assert!(result.is_err());
+            assert!(
+                state["tickets"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .all(|ticket| ticket["status"] == "in_flight")
+            );
+            assert!(
+                f.broker
+                    .create(
+                        f.directory.clone(),
+                        f.clock.clone(),
+                        f.identity.clone(),
+                        f.create.clone()
+                    )
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            polls.load(Ordering::SeqCst),
+            1,
+            "P4 whole ready frame for {status}"
+        );
+        assert_eq!(
+            f.pod_posts.load(Ordering::SeqCst),
+            1,
+            "P4 single POST for {status}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn registry_changes_across_original_io_keep_both_authority_rechecks() {
+    // P5 table: close the real Registry while original admission PUT response
+    // is pending -> detached executor rechecks before POST, fully encodes403,
+    // then finishes refusal. P6 close while original Finished GET response is
+    // pending -> decode original bytes but refuse after await; no new POST or
+    // finish CAS. Uses the original tower Body and MemoryWorkerDirectory; no
+    // alternate Registry/role implementation, wall-clock sleep or API authority.
+    for readback in [false, true] {
+        let f = super::fixture::broker_fixture(|_| {}).await;
+        if readback {
+            f.release.notify_one();
+            f.broker
+                .create(
+                    f.directory.clone(),
+                    f.clock.clone(),
+                    f.identity.clone(),
+                    f.create.clone(),
+                )
+                .await
+                .unwrap();
+        }
+        let before = f.stored.lock().unwrap().clone();
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let path = if readback {
+            "/api/v1/namespaces/sandbox-ns/pods/sandbox-pod".to_owned()
+        } else {
+            format!(
+                "/api/v1/namespaces/control-ns/configmaps/{}",
+                before.as_ref().unwrap()["metadata"]["name"]
+                    .as_str()
+                    .unwrap()
+            )
+        };
+        *f.response_pause.lock().unwrap() = Some(super::fixture::ResponsePause {
+            method: if readback { Method::GET } else { Method::PUT },
+            path,
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let (broker, directory, clock, identity, create) = (
+            f.broker.clone(),
+            f.directory.clone(),
+            f.clock.clone(),
+            f.identity.clone(),
+            f.create.clone(),
+        );
+        let task =
+            tokio::spawn(async move { broker.create(directory, clock, identity, create).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        f.directory.deregister(&f.identity).await.unwrap();
+        release.notify_one();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        if readback {
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("P6 authority change accepted"),
+            };
+            assert_eq!(
+                error.message,
+                "original Create Worker authority changed during readback"
+            );
+            assert_eq!(*f.stored.lock().unwrap(), before, "P6 no finish CAS");
+            assert_eq!(f.pod_posts.load(Ordering::SeqCst), 1, "P6 no new POST");
+        } else {
+            let reply = result.unwrap();
+            let decoded: K8sCreateResponse = serde_json::from_slice(&reply.body).unwrap();
+            assert_eq!(decoded.status, 403, "P5 original complete refusal");
+            let request = validate_create(&f.identity, "sandbox-ns", f.create.clone())
+                .unwrap()
+                .ticket;
+            let retained = awaken_sandbox_kubernetes::WorkerCreateLedgerState::decode(
+                f.stored.lock().unwrap().as_ref().unwrap()["data"]["ledger"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                retained.ticket(&request).unwrap().status,
+                awaken_container_contract::TicketStatus::Finished(TicketResult::RejectedNoEffect {
+                    code: 403
+                })
+            );
+            assert_eq!(
+                f.pod_posts.load(Ordering::SeqCst),
+                0,
+                "P5 no POST after authority closes"
+            );
+        }
     }
 }

@@ -32,9 +32,6 @@ awaken-worker-transport-security.workspace = true
 # The broker wire is a pure container contract; ledger/Pod mechanics stay
 # in the existing Kubernetes adapter.
 awaken-container-contract = { workspace = true, optional = true }
-# The Kubernetes Create broker speaks the engine's ledger and Pod process wire.
-awaken-sandbox-kubernetes = { workspace = true, optional = true }
-kube = { workspace = true, features = ["client", "rustls-tls", "http-proxy"], optional = true }
 awaken-executable-agent-contract.workspace = true
 awaken-service-auth-contract.workspace = true
 awaken-deployment-contract.workspace = true
@@ -160,12 +157,15 @@ test-support = [
 # wake selector. This is the *wake* channel only and is independent of the crate's
 # non-optional `async-nats` used for the ADR-0045 hand relay — do not conflate them.
 nats = ["awaken-dispatch/nats"]
-# The same Coordinator Create broker, until its concrete ledger/API dependency
-# is inverted through the existing contract boundary. Pod coordinates use the
-# default security codec; physical authentication remains selected by the CLI.
-container-k8s = ["dep:awaken-container-contract", "dep:awaken-sandbox-kubernetes", "dep:kube"]
+# The same Coordinator Create broker uses the canonical effects role. Pod
+# coordinates use the default security codec; the concrete client/ledger and
+# physical authentication remain selected together by the CLI.
+container-k8s = ["dep:awaken-container-contract"]
 
 [dev-dependencies]
+# The Broker regressions retain the original real Kube client/ledger fixture.
+awaken-sandbox-kubernetes.workspace = true
+kube = { workspace = true, features = ["client", "rustls-tls", "http-proxy"] }
 # The relay fixture uses the real root invalidation bus.
 awaken-sandbox-memoryd.workspace = true
 # The erasure regression retains the real portable ACP filesystem store.

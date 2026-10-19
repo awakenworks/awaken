@@ -1,7 +1,7 @@
 // @formal entrypoint sandbox.k8s_process_observation_requires_complete_exit
 //! Trusted Kubernetes facts lowered into existing Coordinator ports.
 
-use awaken_container_contract::K8sLedgerBinding;
+use awaken_container_contract::{K8sCreateBrokerEffects, K8sLedgerBinding};
 use awaken_session_execution_contract::ApplicationError;
 use std::sync::Arc;
 
@@ -42,15 +42,16 @@ pub(super) fn assemble(
     )?;
     let observer =
         PodProcessObserver::new(client.clone(), namespace).map_err(|error| error.to_string())?;
-    let create_ledger = K8sWorkerCreateLedger::new(
-        client.clone(),
-        create_control_namespace,
-        namespace,
-        provider_id,
-    )
-    .map_err(|error| error.to_string())?;
+    let create_ledger = Arc::new(
+        K8sWorkerCreateLedger::new(
+            client.clone(),
+            create_control_namespace,
+            namespace,
+            provider_id,
+        )
+        .map_err(|error| error.to_string())?,
+    );
     let create_broker = Arc::new(K8sCreateBroker::new(
-        client.clone(),
         create_ledger.clone(),
         namespace,
         provider_id,
@@ -80,7 +81,7 @@ pub(super) fn assemble(
 
 struct KubernetesWorkerBindings {
     observer: PodProcessObserver,
-    create_ledger: K8sWorkerCreateLedger,
+    create_ledger: Arc<K8sWorkerCreateLedger>,
     namespace: String,
     provider_id: String,
 }
@@ -279,7 +280,7 @@ impl WorkerRelayTargetObserver for KubernetesWorkerBindings {
 
 struct KubernetesWorkerStops {
     stopper: PodProcessStopper,
-    create_ledger: K8sWorkerCreateLedger,
+    create_ledger: Arc<K8sWorkerCreateLedger>,
     namespace: String,
     provider_id: String,
 }
@@ -315,7 +316,14 @@ impl KubernetesWorkerStops {
         let Some(anchor) = original else {
             return Ok(());
         };
-        seal_worker_requests(&self.create_ledger, anchor, pod, worker, &self.provider_id).await?;
+        seal_worker_requests(
+            self.create_ledger.as_ref(),
+            anchor,
+            pod,
+            worker,
+            &self.provider_id,
+        )
+        .await?;
         Ok(())
     }
 }

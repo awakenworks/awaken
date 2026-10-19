@@ -11,8 +11,9 @@
 
 use awaken_container_contract::{
     CreateReplyProfile, CreateTicketRequest, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL,
-    K8S_CREATE_WIRE_VERSION, K8sLedgerBinding, ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION,
-    RequestJoin, TicketAdmission, TicketResult, original_request_metadata_matches,
+    K8S_CREATE_WIRE_VERSION, K8sCreateBrokerEffects, K8sLedgerBinding, ORIGINAL_GUARD_FINALIZER,
+    REQUEST_DIGEST_ANNOTATION, RawCreateFailurePhase, RequestJoin, TicketAdmission, TicketResult,
+    original_request_metadata_matches,
 };
 use awaken_container_contract::{K8sCreateRequest, K8sCreateResponse};
 use awaken_session_execution_contract::ApplicationError;
@@ -26,7 +27,6 @@ use awaken_dispatch::{
     RegisteredWorker, WorkerCreateLedger, WorkerDirectory, WorkerIdentity, WorkerState,
 };
 
-use awaken_sandbox_kubernetes::{K8sWorkerCreateLedger, collect_create_body};
 use awaken_time::{WallClock, WallClockExt};
 use awaken_worker_transport_security::kubernetes::KubernetesPodIdentity;
 use awaken_worker_transport_security::{
@@ -34,12 +34,9 @@ use awaken_worker_transport_security::{
     verify_current_worker_identity, verify_registered_worker_identity,
 };
 use axum::extract::{Extension, State};
-use axum::http::{Method, Request, StatusCode, header};
 use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::post;
 use axum::{Json, Router};
-use kube::Client;
-use kube::client::Body;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -52,8 +49,7 @@ const REALIZATION_DIGEST: &str = "awaken.dev/realization-digest";
 
 #[derive(Clone)]
 pub struct K8sCreateBroker {
-    api_client: Client,
-    ledger: K8sWorkerCreateLedger,
+    ledger: Arc<dyn K8sCreateBrokerEffects>,
     sandbox_namespace: String,
     provider_id: String,
 }
@@ -307,7 +303,7 @@ fn stamp_admitted_create(
 }
 
 fn binding<'a>(
-    ledger: &K8sWorkerCreateLedger,
+    ledger: &dyn K8sCreateBrokerEffects,
     anchor: &'a WorkerCreateLedger,
     pod: &'a KubernetesPodIdentity,
     provider_id: &str,
@@ -333,7 +329,7 @@ fn binding<'a>(
 /// One original-anchor seal/join used by terminal recovery and both Worker
 /// evidence-release purposes. Complete admission fencing is not disposal.
 pub async fn seal_worker_requests<'a>(
-    ledger: &K8sWorkerCreateLedger,
+    ledger: &dyn K8sCreateBrokerEffects,
     anchor: &'a WorkerCreateLedger,
     pod: &'a KubernetesPodIdentity,
     worker: &WorkerIdentity,
@@ -381,13 +377,11 @@ async fn verify_request(
 
 impl K8sCreateBroker {
     pub fn new(
-        api_client: Client,
-        ledger: K8sWorkerCreateLedger,
+        ledger: Arc<dyn K8sCreateBrokerEffects>,
         sandbox_namespace: &str,
         provider_id: &str,
     ) -> Self {
         Self {
-            api_client,
             ledger,
             sandbox_namespace: sandbox_namespace.into(),
             provider_id: provider_id.into(),
@@ -518,7 +512,7 @@ impl K8sCreateBroker {
         let anchor = record.create_ledger.ok_or_else(|| {
             ApplicationError::unavailable("Worker Create has no frozen physical ledger")
         })?;
-        let ledger_binding = binding(&self.ledger, &anchor, &pod, &self.provider_id)?;
+        let ledger_binding = binding(self.ledger.as_ref(), &anchor, &pod, &self.provider_id)?;
         let validated = validate_create(&identity, &self.sandbox_namespace, create)?;
         let (admission, profile) = self
             .ledger
@@ -622,25 +616,24 @@ impl K8sCreateBroker {
         nonce: &str,
         profile: CreateReplyProfile,
     ) -> Result<Value, ApplicationError> {
-        let request = Request::builder()
-            .method(Method::GET)
-            .uri(format!("{}/{}", validated.path, validated.ticket.name))
-            .body(Body::empty())
-            .map_err(|_| ApplicationError::internal("original Create readback path invalid"))?;
-        let response = self.api_client.send(request).await.map_err(|_| {
-            ApplicationError::unavailable("original Create API readback unavailable")
-        })?;
-        if response.status() != StatusCode::OK {
-            return Err(ApplicationError::unavailable(
-                "original Create object is no longer observable",
-            ));
-        }
-        let bytes = collect_create_body(response.into_body(), profile)
+        let path = format!("{}/{}", validated.path, validated.ticket.name);
+        let bytes = self
+            .ledger
+            .read_original(&path, profile)
             .await
-            .map_err(|_| {
-                ApplicationError::unavailable(
+            .map_err(|phase| match phase {
+                RawCreateFailurePhase::RequestBuild => {
+                    ApplicationError::internal("original Create readback path invalid")
+                }
+                RawCreateFailurePhase::Send => {
+                    ApplicationError::unavailable("original Create API readback unavailable")
+                }
+                RawCreateFailurePhase::Capture => ApplicationError::unavailable(
                     "original Create API readback incomplete or outside capture policy",
-                )
+                ),
+            })?
+            .ok_or_else(|| {
+                ApplicationError::unavailable("original Create object is no longer observable")
             })?;
         let object: Value = serde_json::from_slice(&bytes).map_err(|_| {
             ApplicationError::unavailable("original Create API readback undecodable")
@@ -694,8 +687,14 @@ impl K8sCreateBroker {
         let Some(anchor) = record.create_ledger else {
             return Ok(RequestJoin::Unknown);
         };
-        let (exact, _) =
-            seal_worker_requests(&self.ledger, &anchor, &pod, &identity, &self.provider_id).await?;
+        let (exact, _) = seal_worker_requests(
+            self.ledger.as_ref(),
+            &anchor,
+            &pod,
+            &identity,
+            &self.provider_id,
+        )
+        .await?;
         let group = group_for(&identity);
         self.ledger
             .reserve_terminal_claim_pod_and_join(exact, &group, scope, expected_pod_name)
@@ -723,7 +722,7 @@ impl K8sCreateBroker {
             let reply = BrokerCreateReply::new(status_response(403, "Forbidden"), profile)?;
             self.ledger
                 .finish_request(
-                    binding(&self.ledger, &anchor, &pod, &self.provider_id)?,
+                    binding(self.ledger.as_ref(), &anchor, &pod, &self.provider_id)?,
                     &create.ticket,
                     &result,
                 )
@@ -736,7 +735,7 @@ impl K8sCreateBroker {
         let admitted = self
             .ledger
             .ticket_for(
-                binding(&self.ledger, &anchor, &pod, &self.provider_id)?,
+                binding(self.ledger.as_ref(), &anchor, &pod, &self.provider_id)?,
                 &create.ticket,
             )
             .await
@@ -748,23 +747,20 @@ impl K8sCreateBroker {
             &admitted.isolation_id,
             &create.ticket.digest,
         )?;
-        let request = Request::builder()
-            .method(Method::POST)
-            .uri(create.path.as_str())
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body))
-            .map_err(|_| ApplicationError::internal("Worker Create path could not be encoded"))?;
-        let response =
-            self.api_client.send(request).await.map_err(|_| {
-                ApplicationError::unavailable("Worker Create API outcome is unknown")
-            })?;
-        let status = response.status().as_u16();
-        let bytes = collect_create_body(response.into_body(), profile)
+        let (status, bytes) = self
+            .ledger
+            .post_create(&create.path, body, profile)
             .await
-            .map_err(|_| {
-                ApplicationError::unavailable(
+            .map_err(|phase| match phase {
+                RawCreateFailurePhase::RequestBuild => {
+                    ApplicationError::internal("Worker Create path could not be encoded")
+                }
+                RawCreateFailurePhase::Send => {
+                    ApplicationError::unavailable("Worker Create API outcome is unknown")
+                }
+                RawCreateFailurePhase::Capture => ApplicationError::unavailable(
                     "Worker Create API response is incomplete or outside capture policy",
-                )
+                ),
             })?;
         let object: Value = serde_json::from_slice(&bytes).map_err(|_| {
             ApplicationError::unavailable("Worker Create API response is undecodable")
@@ -810,7 +806,7 @@ impl K8sCreateBroker {
         let reply = BrokerCreateReply::new(K8sCreateResponse { status, object }, profile)?;
         self.ledger
             .finish_request(
-                binding(&self.ledger, &anchor, &pod, &self.provider_id)?,
+                binding(self.ledger.as_ref(), &anchor, &pod, &self.provider_id)?,
                 &create.ticket,
                 &result,
             )
