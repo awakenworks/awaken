@@ -579,3 +579,26 @@ faults, and Skill staging retains its owner code. Converting these values to
 an Internal message would create a second classification path. Caller-level
 tests exercise the actual installation boundary before correlated inputs are
 published; no new failure class or retry policy is introduced.
+
+
+## Implementation note 2026-10-20: one Session role forwarding boundary
+
+`DeploymentSessionEnvironment` and `SessionObservation` remain the existing
+caller-shaped Session capabilities. Their implementations consume the same
+constructor-selected Environment/profile and Runtime coordination ports directly.
+The matching inherent `SessionApplication::deployment_environment`,
+`deployment_unavailable_delegate` and `subscribe_session_thread_live` entries are
+removed. They carried no additional admission, persistence or translation law.
+Managed's Deployment launcher uses the narrow role it already holds; the three
+private `ManagedState` deployment forwarding methods are removed. It receives no
+broader Runtime reservation/activation capability or underlying catalog handle.
+
+Deployment first-refusal order and Session replay, exact Thread membership and
+committed/live stream ownership remain unchanged. The existing application
+constructors, Store/Clock, query/mutation/lifecycle services and effect owners are
+not replaced by a new service, factory, subscriber registry or compatibility path.
+These are Platform Rust entrypoints, outside the SDK22 version/snapshot promise.
+The bounded two-Cloud-tree source search found no named callers; Flow's known
+subscription adapter uses the unchanged Runtime contract, not these App entries.
+Other concrete App callers must select the existing narrow role when upgrading
+that pin. This source search is not unknown-downstream compile qualification.

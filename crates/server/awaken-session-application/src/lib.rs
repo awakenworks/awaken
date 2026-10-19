@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use awaken_agent_contract::McpTarget;
+#[cfg(test)]
 use awaken_environment_contract::EnvItem;
+#[cfg(test)]
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
 use awaken_session_configuration_contract::{
     is_native_session_runtime, validate_sandbox_provisioning_runtime,

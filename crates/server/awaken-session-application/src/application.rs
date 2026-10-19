@@ -153,6 +153,67 @@ impl SessionPersistence {
 /// }
 /// ```
 ///
+/// W8-W10 source-capability table: each removed inherent forwarding entry is
+/// independently absent; its original narrow role still accepts the same
+/// arguments and result type. Runtime lookup/error/scope behavior belongs to
+/// the D/L native cases, not these compile-only examples. No complete Runtime
+/// write role or new Environment/profile source is exposed to the protocol.
+///
+/// W8a: the old inherent Environment lookup is absent without importing a role.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionApplication;
+/// let _ = SessionApplication::deployment_environment;
+/// ```
+///
+/// W8b: the existing narrow Deployment role preserves the typed lookup result.
+///
+/// ```
+/// use awaken_session_application::DeploymentSessionEnvironment;
+/// async fn lookup(role: &dyn DeploymentSessionEnvironment)
+///     -> Result<Option<awaken_environment_contract::EnvItem>, awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError>
+/// {
+///     role.deployment_environment("environment").await
+/// }
+/// ```
+///
+/// W9a: delegate availability has no second inherent entry.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionApplication;
+/// let _ = SessionApplication::deployment_unavailable_delegate;
+/// ```
+///
+/// W9b: the same Deployment role keeps its original optional delegate answer.
+///
+/// ```
+/// use awaken_session_application::DeploymentSessionEnvironment;
+/// fn delegate(role: &dyn DeploymentSessionEnvironment) -> Option<String> {
+///     role.deployment_unavailable_delegate("workspace", "agent")
+/// }
+/// ```
+///
+/// W10a: live observation has no second inherent entry.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionApplication;
+/// let _ = SessionApplication::subscribe_session_thread_live;
+/// ```
+///
+/// W10b: the existing read-only role keeps its selected Runtime subscription.
+///
+/// ```
+/// use awaken_session_application::{SessionApplication, SessionObservation};
+/// use awaken_session_runtime_contract::SessionThreadLiveSubscription;
+/// use awaken_session_types::{RunError, SessionId};
+/// fn selected(application: &SessionApplication) -> &dyn SessionObservation { application }
+/// async fn live(role: &dyn SessionObservation, session: &SessionId)
+///     -> Result<Option<Box<dyn SessionThreadLiveSubscription>>, RunError>
+/// {
+///     role.subscribe_session_thread_live(session, session.as_str()).await
+/// }
+/// ```
+///
 /// Construction capability table: a selected Store/Clock enters the existing
 /// persistence value before construction; a live application has no Store
 /// replacement operation. These examples prove source capability only; the
@@ -566,26 +627,6 @@ impl SessionApplication {
         &self,
     ) -> &Arc<crate::realization::LocalRealizationLocks> {
         &self.local_realization_locks
-    }
-
-    /// Read the current executable Environment projection for Deployment admission.
-    pub async fn deployment_environment(
-        &self,
-        environment_id: &str,
-    ) -> Result<Option<EnvItem>, ExecutableEnvironmentRegistrationError> {
-        self.environments.projection.get(environment_id).await
-    }
-
-    /// The unavailable delegate that blocks one Deployment launch, if any.
-    #[must_use]
-    pub fn deployment_unavailable_delegate(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-    ) -> Option<String> {
-        self.config_source
-            .as_ref()
-            .and_then(|source| source.unavailable_delegate_in(workspace_id, agent_id))
     }
 
     /// Resolve and validate the exact Environment snapshot frozen into a new Session.

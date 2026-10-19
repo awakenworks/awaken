@@ -778,24 +778,6 @@ impl SessionApplication {
             .await
     }
 
-    /// Open the Runtime's existing Thread-scoped live observer. The application
-    /// adds no buffer or subscription registry; it only preserves the
-    /// server/runtime boundary for protocol adapters.
-    pub async fn subscribe_session_thread_live(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<
-        Option<Box<dyn awaken_session_runtime_contract::SessionThreadLiveSubscription>>,
-        RunError,
-    > {
-        let coordination_runtime = self.runtime().coordination();
-
-        coordination_runtime
-            .subscribe_session_thread_live(session_id, thread_id)
-            .await
-    }
-
     /// Read the Runtime's one consistent recovery prefix for a logical child
     /// through the parent Session partition. This is a direct query wrapper;
     /// the application owns no snapshot cache or reconstructed projection.

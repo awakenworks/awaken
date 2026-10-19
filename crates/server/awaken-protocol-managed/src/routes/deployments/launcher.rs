@@ -84,9 +84,9 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
                 Ok(_) => {}
             }
         }
+        let deployments = self.state.roles.deployments.as_ref();
         if request.environment_id != awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID {
-            match self
-                .state
+            match deployments
                 .deployment_environment(&request.environment_id)
                 .await
             {
@@ -109,17 +109,13 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
                 }
             }
         }
-        if self
-            .state
-            .deployment_agent_unavailable(&request.workspace_id, &request.agent.id)
-        {
+        if deployments.deployment_agent_unavailable(&request.workspace_id, &request.agent.id) {
             return failed(RunError::AgentArchivedError {
                 message: format!("agent `{}` is archived", request.agent.id),
             });
         }
-        if let Some(delegate) = self
-            .state
-            .deployment_unavailable_delegate(&request.workspace_id, &request.agent.id)
+        if let Some(delegate) =
+            deployments.deployment_unavailable_delegate(&request.workspace_id, &request.agent.id)
         {
             return failed(RunError::AgentArchivedError {
                 message: format!("subagent `{delegate}` is archived"),
