@@ -4948,22 +4948,23 @@ async fn exact_activity_receipt_precedes_fresh_budget_policy() {
         .delivery()
         .expect("P1 delivery")
         .session_activity_epoch;
-    app.reconcile_managed_budget_usage(
-        &SessionId::from("receipt-before-policy"),
-        awaken_session_budget_contract::SessionUsage {
-            input_tokens: 10_000,
-            by_model: BTreeMap::from([(
-                "model".into(),
-                awaken_session_budget_contract::SessionModelUsage {
-                    input_tokens: 10_000,
-                    ..Default::default()
-                },
-            )]),
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("P2 budget settlement");
+    app.lifecycle()
+        .reconcile_managed_budget_usage(
+            &SessionId::from("receipt-before-policy"),
+            awaken_session_budget_contract::SessionUsage {
+                input_tokens: 10_000,
+                by_model: BTreeMap::from([(
+                    "model".into(),
+                    awaken_session_budget_contract::SessionModelUsage {
+                        input_tokens: 10_000,
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("P2 budget settlement");
     let before = repository
         .get(&SessionId::from("receipt-before-policy"))
         .await

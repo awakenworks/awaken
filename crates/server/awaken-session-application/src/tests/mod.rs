@@ -4915,6 +4915,7 @@ fn repository_publication_intent(
 /// | L4 | different | replacement | true | false | E4 epoch advances immediately |
 /// | L5 | any | any | true | true | invalid, no mutation |
 mod authority;
+mod budget_settlement;
 mod construction;
 mod continuation;
 mod creation;

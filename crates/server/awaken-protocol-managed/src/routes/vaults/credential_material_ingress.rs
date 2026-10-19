@@ -16,13 +16,12 @@
 //! `VaultApplication`.
 
 use awaken_credential_contract::{
-    CredentialDescriptor, CredentialMaterialDescriptor, CredentialTargetContract,
+    CredentialDescriptor, CredentialMaterialDescriptor, CredentialTargetContract, MaterialEntry,
     OPAQUE_SECRET_MATERIAL_TYPE,
 };
 use awaken_session_application::{
-    CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialIngressReceipt,
-    CredentialMaterialInput, CredentialMaterialRetirementCommand,
-    CredentialMaterialRotationCommand, CredentialPlaintext, SessionParticipantProvenance,
+    CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialInput,
+    CredentialMaterialRetirementCommand, CredentialMaterialRotationCommand, CredentialPlaintext,
 };
 
 use super::VaultState;
@@ -32,7 +31,7 @@ impl CredentialMaterialIngress for VaultState {
     async fn enter_material(
         &self,
         command: CredentialMaterialIngressCommand,
-    ) -> Result<CredentialMaterialIngressReceipt, String> {
+    ) -> Result<MaterialEntry, String> {
         let CredentialMaterialIngressCommand {
             source_id,
             workspace_id,
@@ -46,18 +45,9 @@ impl CredentialMaterialIngress for VaultState {
             material_descriptor,
             [CredentialTargetContract::new(target, usage)],
         );
-        let entry = self
-            .application
+        self.application
             .enter_material(source_id, &workspace_id, descriptor, material)
-            .await?;
-        Ok(CredentialMaterialIngressReceipt {
-            credential: entry.credential,
-            provenance: if entry.created {
-                SessionParticipantProvenance::Applied
-            } else {
-                SessionParticipantProvenance::Replayed
-            },
-        })
+            .await
     }
 
     async fn rotate_material(
@@ -264,7 +254,11 @@ mod tests {
             "V5/E5"
         );
 
-        vault
+        // Material-entry causes/effects: M1 absent exact source => the original
+        // WAL publishes one source and returns created=true; M2 an exact retry
+        // => the same credential with created=false, no source or material change.
+        // This is the original insertion winner, not Session/Registry provenance.
+        let entered = vault
             .enter_material(enter(
                 source_id.clone(),
                 "workspace-a",
@@ -274,6 +268,7 @@ mod tests {
             ))
             .await
             .expect("V1/E1");
+        assert!(entered.created, "M1 current command owns the new material");
         let source = repository.get(&source_id).await.expect("V1 source");
         assert!(source.provider_id.is_none(), "V1/E1 one provider authority");
         let descriptor = source.descriptor.as_ref().expect("V1 descriptor");
@@ -289,6 +284,27 @@ mod tests {
         );
 
         let before = secrets.inventory().await.expect("V2 inventory");
+        let replayed = vault
+            .enter_material(enter(
+                source_id.clone(),
+                "workspace-a",
+                exact_target.clone(),
+                "github",
+                "token-1",
+            ))
+            .await
+            .expect("M2 exact replay");
+        assert!(
+            !replayed.created,
+            "M2 earlier durable truth owns the material"
+        );
+        assert_eq!(replayed.credential, entered.credential, "M2 exact identity");
+        assert_eq!(
+            repository.get(&source_id).await.unwrap(),
+            source,
+            "M2 source"
+        );
+        assert_eq!(secrets.inventory().await.unwrap(), before, "M2 material");
         assert!(
             vault
                 .enter_material(enter(

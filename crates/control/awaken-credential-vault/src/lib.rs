@@ -38,8 +38,8 @@ pub use credential_access::{
 #[cfg(feature = "oauth-command")]
 pub use oauth::{CommandTokenSource, TokenSource};
 pub use vault_application::{
-    ApplicationMcpBearerEntry, ApplicationMcpBearerReceipt, MaterialEntry, McpCredentialTarget,
-    VaultApplication, VaultCommandError, VaultCredentialChange, VaultCredentialDraft, VaultObject,
+    ApplicationMcpBearerEntry, ApplicationMcpBearerReceipt, McpCredentialTarget, VaultApplication,
+    VaultCommandError, VaultCredentialChange, VaultCredentialDraft, VaultObject,
     apply_metadata_patch, identity_digest, mcp_bearer_descriptor,
 };
 

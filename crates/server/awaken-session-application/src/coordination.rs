@@ -135,7 +135,8 @@ impl SessionApplication {
         let usage = self
             .session_usage_for_model_request(session.session_id.as_str(), &source_thread_id.0)
             .await?;
-        self.reconcile_managed_budget_usage(&session.session_id, usage)
+        self.lifecycle
+            .reconcile_managed_budget_usage(&session.session_id, usage)
             .await
             .map(|outcome| outcome.session)
             .map_err(|error| {
@@ -656,7 +657,8 @@ impl SessionAgentCoordination for SessionApplication {
         let usage = self
             .session_usage_for_model_request(session_id.as_str(), &thread_id.0)
             .await?;
-        self.reconcile_managed_budget_usage(session_id, usage)
+        self.lifecycle
+            .reconcile_managed_budget_usage(session_id, usage)
             .await
             .map(|outcome| outcome.session.budget.can_admit_model_request())
             .map_err(|error| {

@@ -31,6 +31,13 @@ pub use awaken_agent_contract::credential::{
     TokenEndpointAuth, TrustDomainRef, is_core_delivery_consumer,
 };
 
+/// The receipt of one consumer-neutral credential material entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterialEntry {
+    pub credential: CredentialRef,
+    pub created: bool,
+}
+
 mod attempt;
 pub use attempt::{
     AttemptCredentialBinding, AttemptCredentialBindingError, AttemptCredentialDelivery,

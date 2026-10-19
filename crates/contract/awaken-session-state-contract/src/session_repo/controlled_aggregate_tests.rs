@@ -1712,6 +1712,7 @@ fn mcp_runtime_progress_and_retry_do_not_require_an_authoring_fact() {
 
 #[test]
 fn budget_reconciliation_rejects_rewinds_and_missing_prices_atomically() {
+    // B5: a rewind or absent exact price leaves both original root cursors and budget unchanged.
     use awaken_session_budget_contract::{ManagedBudgetUsageCursor, ManagedModelUsageCursor};
     let mut dto = root(SessionExecutionState::Idle, 4).into_snapshot();
     dto.budget = SessionBudgetState::active(10, budget_snapshot());

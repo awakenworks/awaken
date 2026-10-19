@@ -51,10 +51,9 @@ pub use composition::{
     WorkDispatchFailure, WorkDispatchReconciliation, runtime_placement_for_topology,
 };
 pub use session_services::{
-    CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialIngressReceipt,
-    CredentialMaterialInput, CredentialMaterialRetirementCommand,
-    CredentialMaterialRotationCommand, CredentialPlaintext, SessionCredentialAccessRequest,
-    SessionCredentialSource, SessionParticipantProvenance,
+    CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialInput,
+    CredentialMaterialRetirementCommand, CredentialMaterialRotationCommand, CredentialPlaintext,
+    SessionCredentialAccessRequest, SessionCredentialSource, SessionParticipantProvenance,
 };
 
 mod worker_lease;

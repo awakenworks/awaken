@@ -21,7 +21,7 @@ use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::{
     CredentialAccess, CredentialDescriptor, CredentialMaterialDelivery,
     CredentialMaterialDescriptor, CredentialPurpose, CredentialRef, CredentialRefreshAccess,
-    CredentialSourceId, CredentialTarget, CredentialTargetContract, CredentialUsage,
+    CredentialSourceId, CredentialTarget, CredentialTargetContract, CredentialUsage, MaterialEntry,
     OPAQUE_SECRET_MATERIAL_TYPE, TokenEndpointAuth,
 };
 use awaken_time::WallClock;
@@ -122,13 +122,6 @@ pub struct VaultCredentialChange {
     pub after: ManagedVaultCredential,
     pub material: CredentialMaterialPatch,
     pub advance_source_without_material: bool,
-}
-
-/// The receipt of one consumer-neutral credential material entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MaterialEntry {
-    pub credential: CredentialRef,
-    pub created: bool,
 }
 
 pub struct VaultApplication {

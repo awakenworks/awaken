@@ -1,15 +1,15 @@
 //! Original registration/retirement fault fixture; no production state lives here.
 use super::resource_registry::FaultInjectingResourceRegistry;
 use crate::{
-    CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialIngressReceipt,
+    CredentialMaterialIngress, CredentialMaterialIngressCommand,
     CredentialMaterialRetirementCommand, CredentialMaterialRotationCommand,
-    SessionParticipantProvenance,
 };
+use awaken_credential_contract::MaterialEntry;
 use std::collections::BTreeSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Fault-only ingress port. Its set exists only to project Applied/Replayed and
+/// Fault-only ingress port. Its set exists only to project created/replayed and
 /// retirement observations for the cause/effect rules; production Vault state
 /// and replay remain owned by the composed credential implementation.
 #[derive(Default)]
@@ -47,28 +47,23 @@ impl CredentialMaterialIngress for FaultInjectingCredentialMaterialIngress {
     async fn enter_material(
         &self,
         command: CredentialMaterialIngressCommand,
-    ) -> Result<CredentialMaterialIngressReceipt, String> {
+    ) -> Result<MaterialEntry, String> {
         let source_id = command.source_id;
         self.calls.fetch_add(1, Ordering::SeqCst);
         if FaultInjectingResourceRegistry::consume_failure(&self.failures) {
             Err("injected credential ingress failure".into())
         } else {
-            let provenance = if self
+            let created = self
                 .entered_sources
                 .lock()
                 .unwrap()
-                .insert(source_id.0.clone())
-            {
-                SessionParticipantProvenance::Applied
-            } else {
-                SessionParticipantProvenance::Replayed
-            };
-            Ok(CredentialMaterialIngressReceipt {
+                .insert(source_id.0.clone());
+            Ok(MaterialEntry {
                 credential: awaken_credential_contract::CredentialRef {
                     id: source_id.0,
                     revision: 1,
                 },
-                provenance,
+                created,
             })
         }
     }
