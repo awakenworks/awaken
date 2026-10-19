@@ -79,6 +79,10 @@ pub(super) async fn control_component_for_process(
             "the catalog's Anthropic offering cannot be pinned for the reserved Assistant: {error}"
         )
     });
+    let platform_plugins =
+        awaken_plugin_composition::platform_plugin_configurations_with_web_search(
+            web_search_providers,
+        );
     awaken_control::build_control_component(awaken_control::ControlDependencies {
         tool_configuration_compiler: std::sync::Arc::new(
             awaken_ext_builtin_tools::WebToolConfigurationCompiler,
@@ -131,12 +135,7 @@ pub(super) async fn control_component_for_process(
         ))),
         assistant_model_selection,
         global_tools: awaken_session_executor::authorable_tools(),
-        platform_plugins: awaken_session_executor::platform_plugin_capabilities_with_web_search(
-            web_search_providers,
-        ),
-        assistant_plugins: awaken_session_executor::platform_plugin_capabilities_with_web_search(
-            web_search_providers,
-        ),
+        platform_plugins,
         runtimes,
         resource_inventory,
         environment_author,

@@ -57,6 +57,8 @@ pub struct ConfigService {
     pub(crate) model_publication_resolver: Arc<dyn ModelPublicationResolver>,
     pub(crate) credential_reference_validator: Option<Arc<dyn CredentialReferenceValidator>>,
     pub(crate) plugin_publication_resolvers: Vec<Arc<dyn PluginPublicationResolver>>,
+    pub(crate) plugin_configurations:
+        Vec<awaken_executable_agent_contract::capability::PluginConfigurationSource>,
 }
 
 #[cfg(test)]

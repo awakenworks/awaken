@@ -11,20 +11,15 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::{Message, Role};
-use awaken_executable_agent_contract::capability::PluginCapability;
-use awaken_ext_builtin_tools::{
-    AGENT_RUN, Toolset, WebFetchPlugin, WebSearchPlugin, WebSearchProviderRegistry, all_hand_tools,
-    builtin_tools,
-};
+use awaken_ext_builtin_tools::{AGENT_RUN, Toolset, all_hand_tools, builtin_tools};
 use awaken_ext_permission::{
     PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
     ToolPermissionBehavior,
 };
-use awaken_ext_state_machine::{STATE_MACHINE_PLUGIN_ID, StateMachinePlugin};
+use awaken_ext_state_machine::StateMachinePlugin;
 use awaken_runtime::{PermissionGate, Runtime};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::permission::{ToolGateHook, ToolPermissionPolicy};
-use awaken_runtime_contract::plugin::Plugin;
 use awaken_runtime_contract::resolved::{
     ContextPolicy, InvalidModelBinding, ModelBinding, ToolDescriptor,
 };
@@ -536,63 +531,6 @@ pub(crate) fn server_config(
     Ok(snapshot)
 }
 
-/// The plugins this server configures, advertised with their config schema so a
-/// config frontend can discover and author each section. One place declares a
-/// plugin's id and its schema, so registration and discovery cannot drift.
-pub fn platform_plugin_capabilities() -> Vec<PluginCapability> {
-    platform_plugin_capabilities_with_web_search(&WebSearchProviderRegistry::builtins())
-}
-
-/// Capability projection for an externally extended WebSearch registry. The
-/// same descriptors used for dispatch derive this schema, so an embedding
-/// startup can advertise custom providers without modifying core enums.
-pub fn platform_plugin_capabilities_with_web_search(
-    providers: &WebSearchProviderRegistry,
-) -> Vec<PluginCapability> {
-    let web_search = WebSearchPlugin::new(providers.clone(), None);
-    let manifest = web_search.manifest();
-    let web_fetch = WebFetchPlugin::new(providers.clone(), None);
-    let fetch_manifest = web_fetch.manifest();
-    vec![
-        PluginCapability {
-            id: awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID.to_string(),
-            schema_keys: vec![awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID.to_string()],
-            config_schema: Some(awaken_ext_background_task::config_schema()),
-            bound: awaken_ext_background_task::background_task_manifest().bound,
-        },
-        PluginCapability {
-            id: STATE_MACHINE_PLUGIN_ID.to_string(),
-            schema_keys: vec![STATE_MACHINE_PLUGIN_ID.to_string()],
-            config_schema: Some(awaken_ext_state_machine::config_schema()),
-            bound: Default::default(),
-        },
-        PluginCapability {
-            id: awaken_ext_memory::MEMORY_PLUGIN_ID.to_string(),
-            schema_keys: vec![awaken_ext_memory::MEMORY_PLUGIN_ID.to_string()],
-            config_schema: Some(awaken_ext_memory::memory_config_schema()),
-            bound: Default::default(),
-        },
-        PluginCapability {
-            id: awaken_ext_compact::COMPACT_PLUGIN_ID.to_string(),
-            schema_keys: vec![awaken_ext_compact::COMPACT_PLUGIN_ID.to_string()],
-            config_schema: Some(awaken_ext_compact::compact_config_schema()),
-            bound: Default::default(),
-        },
-        PluginCapability {
-            id: manifest.id,
-            schema_keys: manifest.config_sections,
-            config_schema: Some(providers.config_schema()),
-            bound: manifest.bound,
-        },
-        PluginCapability {
-            id: fetch_manifest.id,
-            schema_keys: fetch_manifest.config_sections,
-            config_schema: Some(providers.fetch_config_schema()),
-            bound: fetch_manifest.bound,
-        },
-    ]
-}
-
 /// The server's base authorization gate (the declarative permission policy). A
 /// process-startup helper so a caller can wrap it (e.g. to observe file paths for
 /// conditional skills) and re-inject it.
@@ -734,6 +672,7 @@ pub(crate) fn build_runtime_with_authorization<S: RuntimeToolSource + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_ext_state_machine::STATE_MACHINE_PLUGIN_ID;
     use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
     use awaken_runtime_contract::resolved::ResolvedSpec;
 
@@ -800,80 +739,6 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(!static_ids.iter().any(|id| id == "web_fetch"), "R1/E2");
         assert!(!static_ids.iter().any(|id| id == "web_search"), "R1/E2");
-    }
-
-    #[test]
-    fn platform_capabilities_expose_the_schema() {
-        // Capability cause/effect table. C1 the authoritative registry contains
-        // direct and server-routed providers; C2 every provider id is unique;
-        // C3 a direct provider requires credentials. E1 the projected schema
-        // contains every direct provider and no duplicate branch; E2 the free
-        // default remains selectable; E3 paid authoring exposes only the Vault
-        // source pin and hides provider wire mechanics. The provider crate owns
-        // the server-route list,
-        // so this adapter test deliberately derives expectations from the same
-        // registry instead of copying its current branch count.
-        //
-        // | Rule | registry | credential | Effect |
-        // | C1 | builtins | none | E1 + E2 |
-        // | C1 + C2 + C3 | builtins | required | E1 + E3 |
-        let providers = WebSearchProviderRegistry::builtins();
-        let caps = platform_plugin_capabilities_with_web_search(&providers);
-        assert!(
-            caps.iter()
-                .any(|c| c.id == STATE_MACHINE_PLUGIN_ID && c.config_schema.is_some())
-        );
-        let web = caps
-            .iter()
-            .find(|capability| capability.id == awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID)
-            .expect("WebSearch capability");
-        assert_eq!(
-            web.bound.tools,
-            awaken_runtime_contract::plugin::IdBound::Exact(vec![
-                awaken_ext_builtin_tools::WEB_SEARCH_TOOL_ID.into()
-            ])
-        );
-        let branches = web.config_schema.as_ref().unwrap()["oneOf"]
-            .as_array()
-            .unwrap();
-        let branch_ids = branches
-            .iter()
-            .map(|branch| {
-                branch["properties"]["provider_id"]["const"]
-                    .as_str()
-                    .expect("provider branch id")
-            })
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(branch_ids.len(), branches.len(), "C2/E1 unique branches");
-        for descriptor in providers.descriptors() {
-            assert!(branch_ids.contains(descriptor.id.as_str()), "C1/E1");
-        }
-        assert!(branch_ids.contains("duckduckgo"), "C1/E2 free default");
-        let fetch = caps
-            .iter()
-            .find(|capability| capability.id == awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID)
-            .expect("WebFetch capability");
-        assert_eq!(
-            fetch.bound.tools,
-            awaken_runtime_contract::plugin::IdBound::Exact(vec![
-                awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID.into()
-            ])
-        );
-        let brave = branches
-            .iter()
-            .find(|branch| branch["properties"]["provider_id"]["const"] == "brave")
-            .expect("Brave provider branch");
-        let credential = &brave["properties"]["credential"];
-        assert_eq!(
-            credential["required"],
-            serde_json::json!(["id", "revision"]),
-            "C3/E3 authoring exposes only an exact Vault selection"
-        );
-        assert!(
-            credential.get("x-awaken-credential-application").is_none()
-                && !credential.to_string().contains("X-Subscription-Token"),
-            "C3/E3 provider injection mechanics never enter the model-facing schema"
-        );
     }
 
     #[test]

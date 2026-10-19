@@ -1442,6 +1442,7 @@ pub async fn build_config_router() -> Router {
             executable_agent_catalog.clone(),
         )),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        awaken_plugin_composition::platform_plugin_configurations(),
     ));
     let plane = awaken_config_service::ConfigPlane::new(service.clone(), store, tools);
     // The management tool executables, backed by real ports (D3/D4): the capability
@@ -1450,7 +1451,7 @@ pub async fn build_config_router() -> Router {
     let reader = Arc::new(awaken_control::CatalogCapabilityReader::new(
         catalog_repo.clone(),
         &global,
-        &awaken_session_executor::platform_plugin_capabilities(),
+        &awaken_plugin_composition::platform_plugin_capabilities(),
         // The config plane, to list existing agent ids in the tenant scope.
         plane.clone(),
         platform_workspace.clone(),

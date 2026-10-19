@@ -42,7 +42,7 @@ pub struct MemoryConfig {
     pub recall_enabled: bool,
     /// Enable terminal extraction when the bound store is writable.
     pub extraction_enabled: bool,
-    #[serde(flatten)]
+    #[serde(flatten, deserialize_with = "deserialize_recall_bounds")]
     pub recall: RecallBounds,
     /// Ordinary published Agent used for extraction. The stable built-in id is
     /// used when omitted; publishing that id through the normal Agent API
@@ -57,6 +57,34 @@ pub struct MemoryConfig {
     pub selector_agent_id: Option<String>,
     /// Optional per-main-Agent system instruction override for the selector.
     pub selector_instructions: Option<String>,
+}
+
+// The outer derive consumes Memory's named fields first. This existing flattened
+// facet receives only remaining keys, so checking the one RecallBounds wire
+// shape closes the entire section without duplicating MemoryConfig in a shadow
+// struct or combining serde's unsupported flatten/deny_unknown_fields options.
+fn deserialize_recall_bounds<'de, D>(deserializer: D) -> Result<RecallBounds, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    let remaining = BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    let fields = serde_json::to_value(RecallBounds::default()).map_err(serde::de::Error::custom)?;
+    if let Some(key) = remaining
+        .keys()
+        .find(|key| fields.get(key.as_str()).is_none())
+    {
+        return Err(serde::de::Error::custom(format!(
+            "unknown Memory configuration field `{key}`"
+        )));
+    }
+    let bounds: RecallBounds =
+        serde_json::from_value(serde_json::Value::Object(remaining.into_iter().collect()))
+            .map_err(serde::de::Error::custom)?;
+    if bounds.max_entries < crate::recall::MIN_RECALL_ENTRIES {
+        return Err(serde::de::Error::custom("memory.max_entries must be >= 1"));
+    }
+    Ok(bounds)
 }
 
 impl Default for MemoryConfig {
@@ -326,7 +354,7 @@ pub fn config_schema() -> serde_json::Value {
                 "description": "Cap the whole recall block to this many characters."
             },
             "max_entries": {
-                "type": "integer", "minimum": 1,
+                "type": "integer", "minimum": crate::recall::MIN_RECALL_ENTRIES,
                 "description": "Inject at most this many memories."
             },
             "select_over": {
@@ -366,6 +394,79 @@ pub fn config_schema() -> serde_json::Value {
 #[cfg(test)]
 mod config_tests {
     use super::*;
+
+    #[test]
+    fn schema_fields_and_flattened_decoder_share_one_closed_wire_shape() {
+        // DT-MEMORY-CONFIG R1 every named/flattened typed field -> advertised;
+        // R2 default, partial, explicit bounds, nulls and verbatim prompt text
+        // -> same direct serde / owner decoder value. No shadow field list or
+        // alternative default/configuration type is maintained by this test.
+        let defaults = serde_json::to_value(MemoryConfig::default()).unwrap();
+        let schema = config_schema();
+        let advertised = schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<std::collections::BTreeSet<_>>();
+        let typed = defaults
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(advertised, typed);
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(
+            serde_json::to_value(MemoryConfig::from_value(None).unwrap()).unwrap(),
+            defaults
+        );
+        for authored in [
+            serde_json::json!({}),
+            defaults,
+            serde_json::json!({
+                "binding_id":"notes", "recall_enabled":false, "extraction_enabled":true,
+                "per_entry_chars":0, "total_chars":0, "max_entries":1, "select_over":0,
+                "agent_id":null, "instructions":"  保留原文\n  ",
+                "extraction_prompt":"", "selector_agent_id":"reviewer",
+                "selector_instructions":null
+            }),
+        ] {
+            let direct: MemoryConfig = serde_json::from_value(authored.clone()).unwrap();
+            let decoded = MemoryConfig::from_value(Some(&authored)).unwrap();
+            assert_eq!(
+                serde_json::to_value(direct).unwrap(),
+                serde_json::to_value(decoded).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn closed_memory_section_rejects_unknown_fields_and_schema_invalid_bounds() {
+        // DT-MEMORY-CONFIG R3 typo in either named or flattened facet, unknown
+        // key or a forbidden field shape -> both entrypoints refuse; R4 the
+        // Schema's min_entries boundary 0 -> refuse, 1 -> accept. Explicit
+        // false/zero for other admitted fields remains covered by R2 above.
+        for authored in [
+            serde_json::json!({"extraction_promt":"lost intent"}),
+            serde_json::json!({"max_memories":3}),
+            serde_json::json!({"instructions":"keep", "future_field":true}),
+            serde_json::json!({"max_entries":0}),
+            serde_json::json!({"max_entries":1.5}),
+            serde_json::json!({"recall_enabled":"false"}),
+            serde_json::json!({"instructions":{}}),
+            serde_json::json!([]),
+            serde_json::Value::Null,
+        ] {
+            assert!(
+                serde_json::from_value::<MemoryConfig>(authored.clone()).is_err(),
+                "{authored}"
+            );
+            assert!(
+                MemoryConfig::from_value(Some(&authored)).is_err(),
+                "{authored}"
+            );
+        }
+        assert!(MemoryConfig::from_value(Some(&serde_json::json!({"max_entries":1}))).is_ok());
+    }
 
     #[test]
     fn memory_config_round_trips_per_agent_prompts_and_bounds() {

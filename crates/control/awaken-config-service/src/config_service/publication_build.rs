@@ -55,6 +55,7 @@ pub(super) async fn prepare_publication(
     )
     .await?;
     resolve_plugin_configuration(
+        &service.plugin_configurations,
         &service.plugin_publication_resolvers,
         workspace,
         &mut resolved.config,

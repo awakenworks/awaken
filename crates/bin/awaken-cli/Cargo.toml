@@ -32,6 +32,7 @@ path = "src/bin/awaken-coordinator.rs"
 # and thin Control/Coordinator executables. Every target calls the same role
 # service lifecycle; the authority-free Worker remains its own package and binary.
 [dependencies]
+awaken-plugin-composition.workspace = true
 awaken-acp-contract = { workspace = true }
 # Deployment policy fields and the broker wire consume their canonical contract.
 awaken-container-contract.workspace = true

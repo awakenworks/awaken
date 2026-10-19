@@ -1,6 +1,86 @@
 // @formal evidence config.inference_access_resolved_once_at_publication
 // @formal evidence config_activation.stale_publication_never_installs
 #[tokio::test]
+async fn plugin_configuration_admission_is_shared_by_validate_preview_and_publish() {
+    // DT-CONFIG-LIFECYCLE L1 an editable but semantically invalid section may
+    // remain in the lossless Draft; L2 the exact same owning pure validator
+    // refuses validate, preview and publication. Every refusal leaves the
+    // original Draft intact, zero durable publications and zero registrations.
+    // L3 inactive malformed residue is retained and does not enter this gate.
+    use awaken_executable_agent_contract::capability::{
+        PluginCapability, PluginConfigurationSource,
+    };
+    let catalog = Arc::new(ExecutableAgentCatalog::new());
+    let service = Arc::new(ConfigService::new(
+        Arc::new(FakeResolver),
+        Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
+        Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        vec![PluginConfigurationSource {
+            capability: PluginCapability {
+                id: "owned".into(),
+                schema_keys: vec!["owned".into()],
+                config_schema: Some(serde_json::json!({"type":"object"})),
+                bound: Default::default(),
+            },
+            validate: Some(|value| {
+                if value.is_some_and(|value| value["valid"] == true) {
+                    Ok(())
+                } else {
+                    Err("owner refused the test configuration".into())
+                }
+            }),
+        }],
+    ));
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
+    let plane = ConfigPlane::new(
+        service,
+        store,
+        Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+    );
+    let workspace = scope("workspace-plugin-config");
+    let mut config = agent_config("plugin-config");
+    config.plugin_ids = vec!["owned".into()];
+    config
+        .plugin_config
+        .insert("owned".into(), serde_json::json!({"valid":false}));
+    plane.put(&workspace, &config).await.unwrap();
+    let stored = plane.get(&workspace, &config.id).await.unwrap();
+    let issue = plane.validate(&workspace, &config).await.unwrap_err();
+    assert_eq!(issue.path, "plugin_config.owned");
+    assert_eq!(issue.code.as_deref(), Some("plugin_configuration_invalid"));
+    let mut preview = config.clone();
+    preview.id = "preview-plugin-config".into();
+    assert!(
+        plane
+            .preview_for_execution_workspace(
+                &workspace,
+                workspace.as_str(),
+                &preview.id,
+                &preview,
+                AgentInputConfig {
+                    agent_id: preview.id.clone(),
+                    environment: None,
+                    inputs: vec![],
+                    revision: 0
+                }
+            )
+            .await
+            .is_err()
+    );
+    assert!(plane.publish(&workspace, &config.id).await.is_err());
+    assert_eq!(plane.get(&workspace, &config.id).await.unwrap(), stored);
+    assert!(plane.publications(&workspace).await.unwrap().is_empty());
+    assert!(catalog.current(workspace.as_str(), &config.id).is_none());
+    assert!(catalog.current(workspace.as_str(), &preview.id).is_none());
+    config.plugin_ids.clear();
+    plane.validate(&workspace, &config).await.unwrap();
+    assert_eq!(
+        config.plugin_config["owned"],
+        serde_json::json!({"valid":false})
+    );
+}
+
+#[tokio::test]
 async fn publish_resolves_scope_access_once_into_the_persisted_snapshot() {
     // Cause/effect decision table: R1 one ordinary model pool, no advisor, and
     // successful resolution -> the injected resolver is invoked exactly once
@@ -34,6 +114,7 @@ async fn publish_resolves_scope_access_once_into_the_persisted_snapshot() {
         resolver.clone(),
         Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        Vec::new(),
     ));
     let plane = ConfigPlane::new(
         service,
@@ -238,6 +319,7 @@ async fn publish_never_installs_an_artifact_from_a_stale_source_revision() {
             Arc::new(FakeResolver),
             registrar.clone(),
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            Vec::new(),
         );
         let registry = StalePublishRegistry { write };
         let err = service
@@ -369,6 +451,7 @@ async fn config_plane_preserves_publish_intent_during_source_race() {
             }),
             Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            Vec::new(),
         );
         let plane = ConfigPlane::new(
             Arc::new(service),
@@ -455,6 +538,7 @@ async fn resolve_agent_config_derives_the_effective_compaction_window_for_both_r
         Arc::new(WindowResolver),
         test_registrar(),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        Vec::new(),
     );
     let pin = || ModelSelection::Pinned(ModelBinding::new("p", "m-x", "b"));
     // Usable budget = context_window − max_output_tokens = 200k − 40k = 160k;
@@ -540,6 +624,7 @@ async fn resolve_agent_config_leaves_a_non_object_compact_untouched() {
         Arc::new(WindowResolver),
         test_registrar(),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        Vec::new(),
     );
     let mut cfg = agent_config("a4");
     cfg.model_binding = ModelSelection::Pinned(ModelBinding::new("p", "m-x", "b"));
@@ -624,6 +709,7 @@ async fn publish_pins_agent_model_catalog_and_session_defaults_revision() {
         Arc::new(FakeResolver),
         Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        Vec::new(),
     )
     .with_resources(resources.clone());
     let plane = ConfigPlane::new(
@@ -776,6 +862,7 @@ async fn managed_projection_preserves_the_published_authoring_model_id() {
             Arc::new(FakeResolver),
             Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            Vec::new(),
         )),
         store,
         Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
@@ -930,6 +1017,7 @@ async fn reconcile_advances_source_revision_before_changed_policy_fingerprint() 
             Arc::new(FakeResolver),
             registrar.clone(),
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            Vec::new(),
         )),
         store.clone(),
         tools.clone(),
@@ -952,6 +1040,7 @@ async fn reconcile_advances_source_revision_before_changed_policy_fingerprint() 
             Arc::new(ChangedPolicyResolver),
             registrar,
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            Vec::new(),
         )),
         store.clone(),
         tools,
@@ -1227,6 +1316,7 @@ async fn web_compilation_rejects_every_config_entry_before_publication_effects()
         effects.clone(),
         test_registrar(),
         Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        Vec::new(),
     );
     service.credential_reference_validator = Some(effects.clone());
     let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());

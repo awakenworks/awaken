@@ -94,6 +94,7 @@ pub(super) fn test_service_and_catalog() -> (ConfigService, Arc<ExecutableAgentC
             Arc::new(FakeResolver),
             registrar,
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            Vec::new(),
         ),
         catalog,
     )
@@ -104,6 +105,7 @@ pub(crate) fn test_service() -> ConfigService {
         Arc::new(FakeResolver),
         test_registrar(),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        Vec::new(),
     )
 }
 
@@ -117,6 +119,7 @@ pub(super) async fn plane_with(
         resolver.unwrap_or_else(|| Arc::new(FakeResolver)),
         test_registrar(),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        Vec::new(),
     );
     if let Some(resources) = resources {
         service = service.with_resources(resources);

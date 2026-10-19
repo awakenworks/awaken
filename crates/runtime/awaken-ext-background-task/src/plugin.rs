@@ -31,6 +31,20 @@ pub struct BackgroundTaskConfig {
     pub notifications: crate::TaskNotifications,
 }
 
+impl BackgroundTaskConfig {
+    /// The one semantic admission used by publication and Runtime resolution.
+    pub fn validate(&self) -> Result<(), String> {
+        if self
+            .tools
+            .iter()
+            .any(|tool| tool.trim().is_empty() || crate::tools::is_management_tool(tool))
+        {
+            return Err("background tools must be non-empty ordinary tool ids".into());
+        }
+        self.notifications.validate()
+    }
+}
+
 /// Authoring schema derived from the one typed configuration shape.
 #[must_use]
 pub fn config_schema() -> serde_json::Value {
@@ -117,18 +131,7 @@ impl Plugin for BackgroundTaskPlugin {
             .transpose()
             .map_err(|error| PluginConfigError::new(BACKGROUND_TASK_PLUGIN_ID, error.to_string()))?
             .unwrap_or_else(|| self.defaults.clone());
-        if config
-            .tools
-            .iter()
-            .any(|tool| tool.trim().is_empty() || crate::tools::is_management_tool(tool))
-        {
-            return Err(PluginConfigError::new(
-                BACKGROUND_TASK_PLUGIN_ID,
-                "background tools must be non-empty ordinary tool ids",
-            ));
-        }
         config
-            .notifications
             .validate()
             .map_err(|error| PluginConfigError::new(BACKGROUND_TASK_PLUGIN_ID, error))?;
         Ok(self.contributions(config))

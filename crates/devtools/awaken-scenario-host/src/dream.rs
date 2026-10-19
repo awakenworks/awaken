@@ -163,7 +163,7 @@ pub async fn build_dream_router_and_host() -> (Router, Arc<ExecutorComponents>) 
 fn dream_auxiliary_routes() -> Router {
     let capabilities = awaken_control::capabilities_router(
         awaken_session_executor::authorable_tools(),
-        awaken_session_executor::platform_plugin_capabilities(),
+        awaken_plugin_composition::platform_plugin_capabilities(),
         vec![awaken_control::RuntimeCapability::native()],
     );
     let console_context = Router::new()

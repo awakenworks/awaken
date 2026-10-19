@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::localfs::MemoryDir;
 
+pub(crate) const MIN_RECALL_ENTRIES: usize = 1;
+
 /// How large a recalled memory block may get. Configured (e.g. from a plugin
 /// config section) rather than hard-coded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,7 +66,10 @@ pub fn render(entries: &[crate::localfs::Entry], bounds: &RecallBounds) -> Optio
     let header =
         "Memories from earlier conversations (use them if relevant to the user's request):";
     let mut shown = 0usize;
-    for entry in entries.iter().take(bounds.max_entries.max(1)) {
+    for entry in entries
+        .iter()
+        .take(bounds.max_entries.max(MIN_RECALL_ENTRIES))
+    {
         let piece = truncate(&entry.content, bounds.per_entry_chars);
         // Measure the block budget in CHARS, matching `truncate`'s per-entry cap and
         // the `total_chars` name/docs — not UTF-8 bytes, which over-count multibyte
