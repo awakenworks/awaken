@@ -25,7 +25,7 @@ use crate::FuseError;
 
 // One physical projection profile for ingress, recovery and harvest. Logical
 // Repository paths/quotas remain owned by resource-contract.
-const COPY_LIMITS: awaken_sandbox_fs::TreeReadLimits = awaken_sandbox_fs::TreeReadLimits {
+const COPY_LIMITS: awaken_fs_durability::TreeReadLimits = awaken_fs_durability::TreeReadLimits {
     file_bytes: awaken_resource_contract::MAX_MEMORY_BYTES as u64,
     total_bytes: (awaken_resource_contract::MAX_MEMORY_BYTES
         * awaken_resource_contract::MAX_MEMORIES_PER_STORE) as u64,
@@ -220,8 +220,8 @@ pub async fn materialize(
     // Admission requires an exact round trip, including filesystem Unicode
     // normalization. Never publish a mount whose first no-edit harvest would
     // rename a logical head. Reuse the canonical bounded nofollow reader.
-    let projected =
-        awaken_sandbox_fs::read_tree_nofollow_with_limits(root, COPY_LIMITS).map_err(scan_error)?;
+    let projected = awaken_fs_durability::read_tree_nofollow_with_limits(root, COPY_LIMITS)
+        .map_err(scan_error)?;
     if projected.files.len() != snapshot.heads.len() {
         return Err(scan_error("Memory projection changed the path set"));
     }
@@ -275,8 +275,8 @@ pub(crate) async fn harvest_with_roles(
     // A missing/unreadable tree is not an empty tree and cannot authorize delete.
     // The caller must quiesce writers; this is not an atomic filesystem snapshot
     // or a sandbox against an actively hostile TrustedHost process.
-    let tree =
-        awaken_sandbox_fs::read_tree_nofollow_with_limits(root, COPY_LIMITS).map_err(scan_error)?;
+    let tree = awaken_fs_durability::read_tree_nofollow_with_limits(root, COPY_LIMITS)
+        .map_err(scan_error)?;
     for directory in &tree.directories {
         memory_path(&directory.relative_path)?;
     }
@@ -471,7 +471,7 @@ pub(crate) fn relative_memory_path(logical: &str) -> Result<PathBuf, FuseError> 
     awaken_resource_contract::validate_path_len(logical).map_err(scan_error)?;
     if relative
         .split('/')
-        .any(|name| !awaken_sandbox_fs::is_portable_component(name))
+        .any(|name| !awaken_fs_durability::is_portable_component(name))
     {
         return Err(scan_error("Memory path cannot be projected portably"));
     }
@@ -489,7 +489,7 @@ fn memory_path(relative: &Path) -> Result<String, FuseError> {
         let name = name
             .to_str()
             .ok_or_else(|| scan_error("non-UTF-8 filename"))?;
-        if !awaken_sandbox_fs::is_portable_component(name) {
+        if !awaken_fs_durability::is_portable_component(name) {
             return Err(scan_error("filename is not a portable component"));
         }
         logical.push('/');

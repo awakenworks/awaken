@@ -63,7 +63,7 @@ impl CheckpointParticipantGuard for CurrentCheckpointParticipant<'_> {
 
 fn append_snapshot<W: Write>(
     archive: &mut tar::Builder<W>,
-    snapshot: &awaken_sandbox_fs::TreeSnapshot,
+    snapshot: &awaken_fs_durability::TreeSnapshot,
 ) -> Result<(), pc::SandboxError> {
     for directory in &snapshot.directories {
         let mut header = tar::Header::new_gnu();
@@ -184,7 +184,7 @@ impl LocalProvider {
 
         let _target_lock =
             super::restore_target::lock_bound_target(sandbox.root.root(), &evidence).await?;
-        let root_identity = awaken_sandbox_fs::directory_identity_nofollow(sandbox.root.root())
+        let root_identity = awaken_fs_durability::directory_identity_nofollow(sandbox.root.root())
             .map_err(|error| pc::SandboxError::backend("restore_exact_sandbox", error))?;
         extract_checkpoint(&sandbox, root_identity, &bytes, || {
             super::restore_target::verify_binding(sandbox.root.root(), &evidence)
@@ -196,7 +196,7 @@ impl LocalProvider {
 
 pub(super) fn extract_checkpoint(
     sandbox: &LocalSandbox,
-    root_identity: awaken_sandbox_fs::DirectoryIdentity,
+    root_identity: awaken_fs_durability::DirectoryIdentity,
     bytes: &[u8],
     mut validate_before_mutation: impl FnMut() -> Result<(), pc::SandboxError>,
 ) -> Result<(), pc::SandboxError> {
@@ -249,7 +249,7 @@ pub(super) fn extract_checkpoint(
                 .map_err(|error| pc::SandboxError::backend("extract_checkpoint", error))?
                 & 0o777;
             validate_before_mutation()?;
-            awaken_sandbox_fs::create_relative_directory_all(root, root_identity, &path)
+            awaken_fs_durability::create_relative_directory_all(root, root_identity, &path)
                 .map_err(|error| pc::SandboxError::backend("extract_checkpoint", error))?;
             directory_modes.push((path, mode));
         } else if entry_type.is_file() {
@@ -263,7 +263,7 @@ pub(super) fn extract_checkpoint(
                 .map_err(|error| pc::SandboxError::backend("extract_checkpoint", error))?
                 & 0o777;
             validate_before_mutation()?;
-            awaken_sandbox_fs::write_relative_file_atomic(
+            awaken_fs_durability::write_relative_file_atomic(
                 root,
                 root_identity,
                 &path,
@@ -284,7 +284,7 @@ pub(super) fn extract_checkpoint(
     directory_modes.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
     for (path, mode) in directory_modes {
         validate_before_mutation()?;
-        awaken_sandbox_fs::set_relative_directory_mode(root, root_identity, &path, mode)
+        awaken_fs_durability::set_relative_directory_mode(root, root_identity, &path, mode)
             .map_err(|error| pc::SandboxError::backend("extract_checkpoint", error))?;
     }
     Ok(())
@@ -312,7 +312,7 @@ impl LocalSandbox {
                 Ok(relative.to_owned())
             })
             .collect::<Result<Vec<_>, pc::SandboxError>>()?;
-        let snapshot = awaken_sandbox_fs::read_tree_nofollow_excluding(
+        let snapshot = awaken_fs_durability::read_tree_nofollow_excluding(
             self.root.root(),
             root_identity,
             Path::new(""),
@@ -1046,12 +1046,12 @@ mod tests {
         // not the Session lifecycle request or a grant. R2/R3 keep its exact
         // effect admission separate from current execution authority, whose
         // loss/replay combinations are covered by the upload tests above.
-        let snapshot = awaken_sandbox_fs::TreeSnapshot {
-            directories: vec![awaken_sandbox_fs::TreeDirectory {
+        let snapshot = awaken_fs_durability::TreeSnapshot {
+            directories: vec![awaken_fs_durability::TreeDirectory {
                 relative_path: "empty".into(),
                 mode: 0o700,
             }],
-            files: vec![awaken_sandbox_fs::TreeFile {
+            files: vec![awaken_fs_durability::TreeFile {
                 relative_path: "nested/file".into(),
                 bytes: b"checkpoint".to_vec(),
                 mode: 0o600,

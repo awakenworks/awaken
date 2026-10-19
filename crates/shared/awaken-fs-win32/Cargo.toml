@@ -1,15 +1,15 @@
 [package]
-name = "awaken-sandbox-win32"
+name = "awaken-fs-win32"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
-context = "worker"
+context = "shared"
 product = "platform"
-bounded_context = "sandbox"
+bounded_context = "storage"
 layer = "infrastructure"
-authority = "sandbox-filesystem-win32"
+authority = "native-filesystem-win32"
 separation = "isolation"
 isolates = ["windows-sys"]
 

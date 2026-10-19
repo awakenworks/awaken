@@ -54,7 +54,7 @@ use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
 use awaken_fs_durability::sync_directory;
-use awaken_sandbox_fs::{ExclusiveFileLock, PathEntry, try_lock_exclusive};
+use awaken_fs_durability::{ExclusiveFileLock, PathEntry, try_lock_exclusive};
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryCommitReplay};
 
 const LOG_FILE: &str = "commits.ndjson";

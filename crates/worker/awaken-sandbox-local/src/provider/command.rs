@@ -64,7 +64,7 @@ impl LocalSandbox {
             .root
             .resolve(cwd_logical)
             .map_err(pc::SandboxError::from)?;
-        awaken_sandbox_fs::create_relative_directory_all(
+        awaken_fs_durability::create_relative_directory_all(
             self.root.root(),
             root_identity,
             host_cwd.strip_prefix(self.root.root()).map_err(|_| {
@@ -73,7 +73,7 @@ impl LocalSandbox {
         )
         .map_err(|error| pc::SandboxError::backend("build_command", error))?;
         let host_outputs = self.host_outputs()?;
-        awaken_sandbox_fs::create_relative_directory_all(
+        awaken_fs_durability::create_relative_directory_all(
             self.root.root(),
             root_identity,
             host_outputs.strip_prefix(self.root.root()).map_err(|_| {

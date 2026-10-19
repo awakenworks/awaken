@@ -80,13 +80,13 @@ pub(super) fn lock_path(root: &Path) -> Result<PathBuf, pc::SandboxError> {
 
 pub(super) fn acquire(
     root: &Path,
-) -> Result<awaken_sandbox_fs::ExclusiveFileLock, pc::SandboxError> {
+) -> Result<awaken_fs_durability::ExclusiveFileLock, pc::SandboxError> {
     let lock = lock_path(root)?;
     let parent = lock
         .parent()
         .ok_or_else(|| pc::SandboxError::invalid("sandbox realization lock has no parent"))?;
     std::fs::create_dir_all(parent).map_err(|error| pc::SandboxError::backend("acquire", error))?;
-    awaken_sandbox_fs::try_lock_exclusive(&lock).map_err(|error| {
+    awaken_fs_durability::try_lock_exclusive(&lock).map_err(|error| {
         if error.kind() == std::io::ErrorKind::WouldBlock {
             pc::SandboxError::not_ready(format!(
                 "sandbox realization `{}` is already being mutated",

@@ -55,7 +55,7 @@ async fn compensation_preserves_phase_and_all_failure_evidence() {
                 let foreign = base.path().join("foreign");
                 std::fs::write(&secret, b"synthetic credential").unwrap();
                 std::fs::write(&foreign, b"foreign bytes").unwrap();
-                let identity = awaken_sandbox_fs::directory_identity_nofollow(&root).unwrap();
+                let identity = awaken_fs_durability::directory_identity_nofollow(&root).unwrap();
                 let marker = read_marker(&root).unwrap();
                 let teardowns = Arc::new(AtomicUsize::new(0));
                 let drops = Arc::new(AtomicUsize::new(0));
@@ -108,7 +108,7 @@ async fn compensation_preserves_phase_and_all_failure_evidence() {
                 );
                 if retained {
                     assert_eq!(
-                        awaken_sandbox_fs::directory_identity_nofollow(&root).unwrap(),
+                        awaken_fs_durability::directory_identity_nofollow(&root).unwrap(),
                         identity
                     );
                     assert_eq!(

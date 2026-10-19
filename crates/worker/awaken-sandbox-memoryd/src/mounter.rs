@@ -306,7 +306,7 @@ impl MemoryMounter for MemoryStoreMounter {
 
             // No FUSE (macOS / CI / unprivileged container): copy the store out now and
             // harvest a writable mount back on teardown.
-            let root = awaken_sandbox_fs::ProjectionRoot::capture(host_path)
+            let root = awaken_fs_durability::ProjectionRoot::capture(host_path)
                 .map_err(|error| SandboxError::backend("mount", error))?;
             let snapshot = copy::materialize(self.copy.snapshots.as_ref(), store_id, host_path)
                 .await
@@ -414,7 +414,7 @@ impl MemoryMount for FuseMount {
 
 /// A materialized copy; teardown harvests a writable copy back to the store.
 struct CopyMount {
-    root: awaken_sandbox_fs::ProjectionRoot,
+    root: awaken_fs_durability::ProjectionRoot,
     copy: CopyMountContent,
     store_id: String,
     host_path: PathBuf,
@@ -512,7 +512,7 @@ mod tests {
         std::fs::write(dir.join("note.md"), "v2").unwrap();
         let materialization_heads = snapshot.materialization_heads();
         let guard: Box<dyn MemoryMount> = Box::new(CopyMount {
-            root: awaken_sandbox_fs::ProjectionRoot::capture(&dir).unwrap(),
+            root: awaken_fs_durability::ProjectionRoot::capture(&dir).unwrap(),
             copy: mounter.copy.clone(),
             store_id: "s".into(),
             host_path: dir.clone(),
@@ -649,7 +649,7 @@ mod tests {
         std::fs::write(dir.join("note.md"), "tampered").unwrap();
         let materialization_heads = snapshot.materialization_heads();
         let guard: Box<dyn MemoryMount> = Box::new(CopyMount {
-            root: awaken_sandbox_fs::ProjectionRoot::capture(&dir).unwrap(),
+            root: awaken_fs_durability::ProjectionRoot::capture(&dir).unwrap(),
             copy: mounter.copy.clone(),
             store_id: "s".into(),
             host_path: dir.clone(),

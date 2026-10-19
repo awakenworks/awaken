@@ -109,7 +109,7 @@ fn only_this_authoritys_own_unsettled_creation_may_reclaim_its_root() {
 fn a_creation_record_round_trips_and_rejects_a_foreign_schema() {
     let base = tempfile::tempdir().unwrap();
     let root = base.path().join("scope");
-    let lock = awaken_sandbox_fs::try_lock_exclusive(&base.path().join(".scope.lock")).unwrap();
+    let lock = awaken_fs_durability::try_lock_exclusive(&base.path().join(".scope.lock")).unwrap();
 
     assert_eq!(read_creation_record(&lock, &root).unwrap(), None);
     let record = LegacyCreationRecord::in_flight(Some(identity(4)));

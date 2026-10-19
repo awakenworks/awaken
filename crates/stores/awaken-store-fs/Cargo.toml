@@ -13,8 +13,7 @@ authority = "store-fs"
 
 [dependencies]
 awaken-agent-contract.workspace = true
-awaken-fs-durability.workspace = true
-awaken-sandbox-fs.workspace = true
+awaken-fs-durability = { workspace = true, features = ["native-fs"] }
 awaken-store-inmem.workspace = true
 async-trait.workspace = true
 awaken-time.workspace = true

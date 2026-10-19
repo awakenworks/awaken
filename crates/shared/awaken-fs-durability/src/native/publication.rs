@@ -1,10 +1,20 @@
 // @formal surface requirement=resource.files.resource_lifecycle
-// @formal reason: The existing policy-free Sandbox filesystem owner allocates private stages,
+// @formal reason: The shared policy-free filesystem owner allocates private stages,
 // @formal reason: publishes absent names, and replaces one validated regular file; providers
 // @formal reason: retain authorization and lifecycle authority. This is not a direct proof claim.
 //! Shared file and directory publication entrypoints.
 
-use super::*;
+#[cfg(not(windows))]
+use super::directory_identity_nofollow;
+#[cfg(windows)]
+use super::windows;
+use super::{DirectoryIdentity, PRIVATE_STAGE_SEQUENCE};
+#[cfg(not(windows))]
+use std::fs::File;
+#[cfg(not(windows))]
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 
 /// Allocate one private empty directory beside `destination` and return its
 /// nofollow inode identity. The caller owns the returned stage and decides when
@@ -218,7 +228,7 @@ pub fn publish_file_noreplace(destination: &Path, contents: &[u8]) -> std::io::R
                 ));
             }
 
-            awaken_fs_durability::sync_directory(parent)
+            crate::sync_directory(parent)
         })();
         if result.is_err() {
             let _ = std::fs::remove_file(&stage_path);
@@ -267,8 +277,8 @@ pub fn replace_regular_file_atomic(destination: &Path, contents: &[u8]) -> std::
             )
         })?;
         let stage = write_private_file_stage(destination, contents)?;
-        let result = std::fs::rename(&stage, destination)
-            .and_then(|()| awaken_fs_durability::sync_directory(parent));
+        let result =
+            std::fs::rename(&stage, destination).and_then(|()| crate::sync_directory(parent));
         if result.is_err() {
             let _ = std::fs::remove_file(stage);
         }

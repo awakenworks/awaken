@@ -1,4 +1,13 @@
-use super::*;
+use super::DirectoryIdentity;
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+use super::{
+    ReadBudget, TreeDirectory, TreeFile, TreeReadLimits, TreeSnapshot, read_tree_file_bounded,
+};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use super::{descriptor_identity, io_error, open_exact_root, open_relative_parent};
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+use std::fs::File;
+use std::path::Path;
 
 /// Platform adapter for callers that own a quiescent plain projection, not an
 /// exact inode identity. The exact-dirfd APIs stay unsupported on these targets;

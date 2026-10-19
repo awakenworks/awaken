@@ -146,7 +146,7 @@ pub(super) fn projected_runtime_roots_for_command(
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn prepare_runtime_root(
     destination: &str,
-) -> Result<Option<(PathBuf, awaken_sandbox_fs::ProjectionRoot)>, pc::SandboxError> {
+) -> Result<Option<(PathBuf, awaken_fs_durability::ProjectionRoot)>, pc::SandboxError> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let physical_home = home
         .as_ref()
@@ -169,7 +169,7 @@ pub(super) fn prepare_runtime_root(
             "runtime projection resolves to protected host state",
         ));
     }
-    let root = awaken_sandbox_fs::ProjectionRoot::capture(&physical)
+    let root = awaken_fs_durability::ProjectionRoot::capture(&physical)
         .map_err(|_| pc::SandboxError::invalid("runtime projection cannot be retained safely"))?;
     #[cfg(target_os = "linux")]
     {

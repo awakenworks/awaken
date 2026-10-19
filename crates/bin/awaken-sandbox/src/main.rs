@@ -31,11 +31,11 @@ mod socket_stdio;
 
 use std::process::ExitCode;
 
-use awaken_sandbox::bridge::{AcpBridge, parse_acp_args};
-use awaken_sandbox_fs::{
+use awaken_fs_durability::{
     PathEntry, classify_nofollow, directory_identity_nofollow, publish_directory_noreplace,
     read_regular_tree_nofollow,
 };
+use awaken_sandbox::bridge::{AcpBridge, parse_acp_args};
 
 struct OwnedCheckDirectory(std::path::PathBuf);
 

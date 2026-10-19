@@ -145,9 +145,10 @@ async fn creation_and_adoption_recheck_authority_and_retain_pending_memory() {
                         assert_pending(pending.as_mut()).await;
                         assert_eq!(mounter.mount_calls.load(Ordering::SeqCst), baseline + 1);
                         std::fs::write(&proof, b"unchanged Agent bytes").unwrap();
-                        let root_identity =
-                            awaken_sandbox_fs::directory_identity_nofollow(proof.parent().unwrap())
-                                .unwrap();
+                        let root_identity = awaken_fs_durability::directory_identity_nofollow(
+                            proof.parent().unwrap(),
+                        )
+                        .unwrap();
                         {
                             let mut current = authority.current.lock().unwrap();
                             match change {
@@ -202,8 +203,10 @@ async fn creation_and_adoption_recheck_authority_and_retain_pending_memory() {
                             assert_eq!(replay.handle(), handle);
                         }
                         assert_eq!(
-                            awaken_sandbox_fs::directory_identity_nofollow(proof.parent().unwrap())
-                                .unwrap(),
+                            awaken_fs_durability::directory_identity_nofollow(
+                                proof.parent().unwrap()
+                            )
+                            .unwrap(),
                             root_identity
                         );
                         if operation != "create" || change == "renew" {

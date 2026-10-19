@@ -6,7 +6,7 @@
 //! no-replace: concurrent first startups converge on one winner, an exact
 //! replay succeeds, and a different or malformed marker fails closed without
 //! being replaced. The policy-free no-replace syscall stays owned by
-//! `awaken-sandbox-fs`; minting a fresh coordinate stays with the Runtime Host
+//! `awaken-fs-durability`; minting a fresh coordinate stays with the Runtime Host
 //! (`ExecutorComponents::mint_local_workspace`), which owns its format.
 //!
 //! Consumers: the CLI's process stores and installation binding, the Worker's
@@ -71,7 +71,7 @@ fn publish_marker(path: &Path, workspace_id: &str) -> io::Result<String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    match awaken_sandbox_fs::publish_file_noreplace(path, workspace_id.as_bytes()) {
+    match awaken_fs_durability::publish_file_noreplace(path, workspace_id.as_bytes()) {
         Ok(()) => Ok(workspace_id.to_owned()),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             let existing = read_marker(path)?.ok_or_else(|| {
@@ -137,7 +137,7 @@ mod tests {
         // complete durable identity; R2 absent+two returns the same winning
         // identity to both and never truncates it; R3 valid replays byte-for-byte;
         // R4 empty or non-regular fails closed without replacement. The
-        // policy-free no-replace syscall remains owned by awaken-sandbox-fs.
+        // policy-free no-replace syscall remains owned by awaken-fs-durability.
         // The read-only owner projects the same table: absent=>None, valid=>the
         // exact coordinate, malformed/non-regular=>error without publication. R5 an
         // exact first publish/replay returns that coordinate, while a conflicting

@@ -369,7 +369,7 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   portable across FUSE-capable and FUSE-less hosts.
 - **Complete-scan prerequisite for copy write-back.** The one `copy::harvest`
   first enumerates and reads the whole quiescent projection through
-  `awaken-sandbox-fs::read_tree_nofollow_with_limits`, reusing its descriptor walker
+  `awaken-fs-durability::read_tree_nofollow_with_limits`, reusing its descriptor walker
   on Linux/macOS and its explicitly quiescent-path adapter on Windows. Memory
   owns logical-path validation and Repository mutations, not a second walker.
   Missing roots, directory/read failures, links or Windows reparse points, special files,
@@ -403,7 +403,7 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   before materialization and recovery: backslashes, drive/ADS syntax, device
   names, trailing dots/spaces, control bytes and other nonportable components
   reject on every OS. Device-name rules reuse the sandbox directory-name owner
-  in `awaken-sandbox-fs`; no second Memory path authority is introduced. Files
+  in `awaken-fs-durability`; no second Memory path authority is introduced. Files
   and distinct logical parents use exclusive creation, so aliases such as
   `A/x.md` and `a/y.md` cannot silently merge directories. Admission reads the
   completed projection through the canonical bounded reader and requires exact

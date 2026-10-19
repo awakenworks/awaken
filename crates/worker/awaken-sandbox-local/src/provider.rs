@@ -490,7 +490,7 @@ impl LocalProvider {
                 .resolve(&spec.outputs_path)
                 .map_err(pc::SandboxError::from)?;
             realization_guard.with_mutation(|| {
-                awaken_sandbox_fs::create_relative_directory_all(
+                awaken_fs_durability::create_relative_directory_all(
                     sandbox.root.root(),
                     root_identity,
                     std::path::Path::new(spec.outputs_path.trim_start_matches('/')),
@@ -886,7 +886,7 @@ impl LocalProvider {
     async fn realize_mount(
         &self,
         root: &IsolatedRoot,
-        root_identity: awaken_sandbox_fs::DirectoryIdentity,
+        root_identity: awaken_fs_durability::DirectoryIdentity,
         req: &pc::MountRequirement,
         retained_mounts: &tokio::sync::Mutex<crate::MemoryMountState>,
         mutation_guard: &crate::realization_marker::ProviderCreationGuard<'_>,
@@ -941,7 +941,7 @@ impl LocalProvider {
                     pc::SandboxError::invalid("mount path escaped its exact sandbox root")
                 })?;
                 mutation_guard.with_mutation(|| {
-                    awaken_sandbox_fs::write_relative_file_atomic(
+                    awaken_fs_durability::write_relative_file_atomic(
                         root.root(),
                         root_identity,
                         relative,
@@ -970,7 +970,7 @@ impl LocalProvider {
                     pc::SandboxError::invalid("mount path escaped its exact sandbox root")
                 })?;
                 mutation_guard.with_mutation(|| {
-                    awaken_sandbox_fs::write_relative_file_atomic(
+                    awaken_fs_durability::write_relative_file_atomic(
                         root.root(),
                         root_identity,
                         relative,
@@ -1051,7 +1051,7 @@ impl pc::SandboxReadiness for LocalProvider {
             // advertising Workdir availability.
             let mut candidate = self.base.as_path();
             loop {
-                match awaken_sandbox_fs::directory_identity_nofollow(candidate) {
+                match awaken_fs_durability::directory_identity_nofollow(candidate) {
                     Ok(_) => break,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                         candidate = candidate.parent().ok_or_else(|| {
@@ -1306,13 +1306,13 @@ impl LocalSandbox {
 
     fn root_identity_for_access(
         &self,
-    ) -> Result<Option<awaken_sandbox_fs::DirectoryIdentity>, pc::SandboxError> {
+    ) -> Result<Option<awaken_fs_durability::DirectoryIdentity>, pc::SandboxError> {
         self.realization.root_identity_for_access(self.root.root())
     }
 
     fn require_root_identity(
         &self,
-    ) -> Result<awaken_sandbox_fs::DirectoryIdentity, pc::SandboxError> {
+    ) -> Result<awaken_fs_durability::DirectoryIdentity, pc::SandboxError> {
         self.realization.require_root_identity(self.root.root())
     }
 
@@ -1361,7 +1361,7 @@ impl LocalSandbox {
     /// detached resource must not remain reachable as stale bytes under `.mnt`.
     pub fn clear_resource_projection(&self) -> Result<(), pc::SandboxError> {
         let root_identity = self.require_root_identity()?;
-        awaken_sandbox_fs::remove_relative_entry_exact(
+        awaken_fs_durability::remove_relative_entry_exact(
             self.root.root(),
             root_identity,
             std::path::Path::new(pc::WorkspaceLayout::RESOURCE_PROJECTION_SUBDIR),
@@ -1511,7 +1511,7 @@ impl LocalSandbox {
         contents: &[u8],
     ) -> Result<(), pc::SandboxError> {
         let root_identity = self.require_root_identity()?;
-        awaken_sandbox_fs::write_relative_file_atomic(
+        awaken_fs_durability::write_relative_file_atomic(
             self.root.root(),
             root_identity,
             std::path::Path::new(logical.trim_start_matches('/')),
@@ -1526,7 +1526,7 @@ impl LocalSandbox {
     /// escape attempts; missing paths are an idempotent success.
     pub fn remove_inline(&self, logical: &str) -> Result<(), pc::SandboxError> {
         let root_identity = self.require_root_identity()?;
-        awaken_sandbox_fs::remove_relative_entry_exact(
+        awaken_fs_durability::remove_relative_entry_exact(
             self.root.root(),
             root_identity,
             std::path::Path::new(logical.trim_start_matches('/')),
@@ -1701,21 +1701,21 @@ impl pc::Sandbox for LocalSandbox {
     }
 
     async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
-        let entry = awaken_sandbox_fs::classify_nofollow(self.root.root())
+        let entry = awaken_fs_durability::classify_nofollow(self.root.root())
             .map_err(|error| pc::SandboxError::backend("status", error))?;
         match (&self.realization, entry) {
-            (_, awaken_sandbox_fs::PathEntry::Absent) => Ok(pc::SandboxStatus::Terminated),
+            (_, awaken_fs_durability::PathEntry::Absent) => Ok(pc::SandboxStatus::Terminated),
             (
                 crate::realization_marker::LiveRealization::Current(evidence),
-                awaken_sandbox_fs::PathEntry::Directory(observed),
+                awaken_fs_durability::PathEntry::Directory(observed),
             ) if observed == evidence.root_identity() => Ok(pc::SandboxStatus::Ready),
             (
                 crate::realization_marker::LiveRealization::LegacyCreated(evidence),
-                awaken_sandbox_fs::PathEntry::Directory(observed),
+                awaken_fs_durability::PathEntry::Directory(observed),
             ) if observed == evidence.root_identity() => Ok(pc::SandboxStatus::Ready),
             (
                 crate::realization_marker::LiveRealization::LegacyAdopted,
-                awaken_sandbox_fs::PathEntry::Directory(_),
+                awaken_fs_durability::PathEntry::Directory(_),
             ) => Ok(pc::SandboxStatus::Ready),
             _ => Err(pc::SandboxError::conflict(
                 "sandbox root has a foreign file type or physical identity",

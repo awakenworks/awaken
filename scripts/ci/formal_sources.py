@@ -320,6 +320,26 @@ def _git_grep(root: Path, environment: dict[str, str], arguments: list[str]) -> 
     return result.stdout
 
 
+def _grep_records(output: bytes) -> Iterable[tuple[str, int, str]]:
+    """Read path-NUL-number-NUL-text-LF without splitting a legal LF path."""
+    position = 0
+    while position < len(output):
+        path_end = output.find(b"\0", position)
+        number_end = output.find(b"\0", path_end + 1) if path_end >= 0 else -1
+        text_end = output.find(b"\n", number_end + 1) if number_end >= 0 else -1
+        if path_end == position or min(path_end, number_end, text_end) < 0:
+            raise SourceError("Malformed Git grep record")
+        encoded_number = output[path_end + 1:number_end]
+        if not encoded_number.isdigit() or int(encoded_number) < 1:
+            raise SourceError("Malformed Git grep line number")
+        yield (
+            os.fsdecode(output[position:path_end]),
+            int(encoded_number),
+            output[number_end + 1:text_end].decode("utf-8"),
+        )
+        position = text_end + 1
+
+
 def _staged_text(
     root: Path, pattern: str, containing: tuple[str, ...], environment: dict[str, str]
 ) -> dict[str, str]:
@@ -327,15 +347,13 @@ def _staged_text(
     if containing:
         needles = [argument for needle in containing for argument in ("-e", needle)]
         listed = _git_grep(root, environment, ["-l", "-z", "--fixed-strings", *needles, "--", *pathspecs])
-        pathspecs = [f":(literal){path}" for path in listed.decode("utf-8").split("\0") if path]
+        pathspecs = [f":(literal){path}" for path in _path_names(listed)]
         if not pathspecs:
             return {}
     # Every line of every selected staged blob, as `path NUL line NUL text`.
     output = _git_grep(root, environment, ["-z", "-n", "--basic-regexp", "-e", "^", "--", *pathspecs])
     lines: dict[str, list[str]] = {}
-    for record in output.decode("utf-8").split("\n")[:-1]:
-        path, _, rest = record.partition("\0")
-        _, _, text = rest.partition("\0")
+    for path, _, text in _grep_records(output):
         lines.setdefault(path, []).append(text + "\n")
     return {path: "".join(body) for path, body in sorted(lines.items())}
 
@@ -398,11 +416,9 @@ def matching_lines(root: Path, needle: str, accept: Callable[[str], object]) -> 
                 ]
         return sorted(found)
     output = _git_grep(root, environment, ["-z", "-n", "--fixed-strings", "-e", needle])
-    for record in output.decode("utf-8").split("\n")[:-1]:
-        path, _, rest = record.partition("\0")
-        number, _, text = rest.partition("\0")
+    for path, number, text in _grep_records(output):
         if accept(path):
-            found.append((path, int(number), text))
+            found.append((path, number, text))
     return sorted(found)
 
 
@@ -522,6 +538,50 @@ def _selftest_guard_inputs() -> None:
                 assert error.returncode == 128, "SIO3 missing selected index blob is an error"
             else:
                 raise AssertionError("SIO3 index blob failure became None")
+
+        # SIO5 grep-record causes: the existing portable/raw/LF path set;
+        # UTF-8 body, blank line and line number. Both public readers must
+        # preserve the same exact staged path/content, never split a path at LF.
+        # | Rule | path/record | Reader | Effect |
+        # | G1 | real Git names + UTF-8/blank lines | source_text +/- containing | exact text |
+        # | G2 | same real Git names | matching_lines | exact path, line, body |
+        # | G3 | truncated/invalid protocol fields | both | SourceError |
+        # | G4 | invalid UTF-8 text | both | original UnicodeDecodeError |
+        grep_line = "# grep framing 名"
+        grep_text = grep_line + "\n\nprint('line-3')\n"
+        for name in names:
+            (root / name).write_bytes(grep_text.encode("utf-8"))
+        git(root, "add", "--", *names)
+        with patch.dict(os.environ, environment, clear=True):
+            for containing in ((), (grep_line,)):
+                selected = source_text(root, "*.py", containing)
+                assert {name: selected[name] for name in names} == {
+                    name: grep_text for name in names
+                }, "SIO5 G1 both source_text modes retain exact raw/LF path and UTF-8 body"
+                if containing:
+                    assert set(selected) == set(names), "SIO5 G1 containing keeps the exact selection"
+            assert matching_lines(root, grep_line, lambda relative: relative in names) == sorted(
+                (name, 1, grep_line) for name in names
+            ), "SIO5 G2 exact matching_lines path/number/UTF-8 body"
+            for wire, failure in [
+                (b"unterminated path", SourceError),
+                (b"source.py\0x\0line\n", SourceError),
+                (b"source.py\0" b"0\0line\n", SourceError),
+                (b"\0" b"1\0line\n", SourceError),
+                (b"source.py\0" b"1\0unterminated", SourceError),
+                (b"source.py\0" b"1\0\xff\n", UnicodeDecodeError),
+            ]:
+                with patch.dict(globals(), _git_grep=lambda *_, data=wire: data):
+                    for reader, arguments in [
+                        (source_text, (root, "*.py")),
+                        (matching_lines, (root, grep_line, lambda _: True)),
+                    ]:
+                        try:
+                            reader(*arguments)
+                        except failure:
+                            pass
+                        else:
+                            raise AssertionError("SIO3 G3/G4 malformed grep record became source")
 
         reads = []
         original = file_bytes

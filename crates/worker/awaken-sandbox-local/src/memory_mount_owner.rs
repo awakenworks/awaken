@@ -11,8 +11,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
+use awaken_fs_durability::DirectoryIdentity;
 use awaken_provisioning_contract as pc;
-use awaken_sandbox_fs::DirectoryIdentity;
 
 #[derive(PartialEq)]
 struct MountKey {
@@ -183,7 +183,7 @@ impl MemoryMountState {
         identity: Option<DirectoryIdentity>,
     ) -> Result<(), pc::SandboxError> {
         if let Some(expected) = identity {
-            let observed = awaken_sandbox_fs::directory_identity_nofollow(root)
+            let observed = awaken_fs_durability::directory_identity_nofollow(root)
                 .map_err(|error| pc::SandboxError::backend("validate_root", error))?;
             if observed != expected {
                 return Err(pc::SandboxError::conflict(
@@ -271,7 +271,7 @@ impl MemoryMountState {
         }
         if self.mounts.is_empty() {
             self.identity = Some(
-                awaken_sandbox_fs::directory_identity_nofollow(&self.root)
+                awaken_fs_durability::directory_identity_nofollow(&self.root)
                     .map_err(|error| pc::SandboxError::backend("acquire", error))?,
             );
         }

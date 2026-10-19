@@ -999,14 +999,14 @@ pub(crate) use provider::terminal_disposal::{
 /// absent; it never authorizes deriving an identity from an occupied pathname.
 pub(crate) fn shred_secret_paths_at(
     root: &IsolatedRoot,
-    root_identity: Option<awaken_sandbox_fs::DirectoryIdentity>,
+    root_identity: Option<awaken_fs_durability::DirectoryIdentity>,
     paths: &[PathBuf],
 ) -> Result<(), awaken_provisioning_contract::SandboxError> {
     let Some(root_identity) = root_identity else {
-        return match awaken_sandbox_fs::classify_nofollow(root.root()).map_err(|error| {
+        return match awaken_fs_durability::classify_nofollow(root.root()).map_err(|error| {
             awaken_provisioning_contract::SandboxError::backend("shred_secret_paths_at", error)
         })? {
-            awaken_sandbox_fs::PathEntry::Absent => Ok(()),
+            awaken_fs_durability::PathEntry::Absent => Ok(()),
             _ => Err(awaken_provisioning_contract::SandboxError::conflict(
                 "marker-free secret shredding found an occupied sandbox root",
             )),
@@ -1020,7 +1020,7 @@ pub(crate) fn shred_secret_paths_at(
                 root.root().display()
             ))
         })?;
-        awaken_sandbox_fs::zero_relative_regular_file_nofollow(
+        awaken_fs_durability::zero_relative_regular_file_nofollow(
             root.root(),
             root_identity,
             relative,
@@ -1081,7 +1081,7 @@ pub(crate) fn sandbox_dir(base: &Path, id: &str) -> PathBuf {
         || id.chars().any(|character| {
             !character.is_ascii_alphanumeric() && !matches!(character, '.' | '-' | '_')
         });
-    let reserved = awaken_sandbox_fs::is_reserved_component(id);
+    let reserved = awaken_fs_durability::is_reserved_component(id);
     if !invalid && !reserved {
         return base.join(id);
     }
@@ -1316,10 +1316,10 @@ pub(crate) fn jailed_at(root: &IsolatedRoot, logical: &str) -> Result<PathBuf, S
 /// (never a host path, G3). Shared with the Workdir tier.
 pub(crate) fn list_files_at(
     root: &IsolatedRoot,
-    root_identity: awaken_sandbox_fs::DirectoryIdentity,
+    root_identity: awaken_fs_durability::DirectoryIdentity,
     subdir: &str,
 ) -> Result<Vec<(String, Vec<u8>)>, SandboxError> {
-    awaken_sandbox_fs::read_regular_tree_nofollow(
+    awaken_fs_durability::read_regular_tree_nofollow(
         root.root(),
         root_identity,
         std::path::Path::new(subdir),
@@ -1342,12 +1342,12 @@ pub(crate) fn list_files_at(
 /// root, while `logical_subdir` owns the caller-visible `"<subdir>/<id>"` path.
 pub(crate) fn scan_skill_dir_at(
     root: &IsolatedRoot,
-    root_identity: awaken_sandbox_fs::DirectoryIdentity,
+    root_identity: awaken_fs_durability::DirectoryIdentity,
     tree_subdir: &str,
     logical_subdir: &str,
 ) -> Result<Vec<DiscoveredSkillFile>, SandboxError> {
     let mut out = Vec::new();
-    for file in awaken_sandbox_fs::read_regular_tree_nofollow(
+    for file in awaken_fs_durability::read_regular_tree_nofollow(
         root.root(),
         root_identity,
         std::path::Path::new(tree_subdir),

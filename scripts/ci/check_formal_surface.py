@@ -431,7 +431,7 @@ def check_staged(paths: list[str]) -> None:
             raise formal_sources.SourceError("The repository index cannot be selected")
         indexed = set(formal_sources.tracked_files(ROOT)) if staged else set()
         deleted = set(formal_sources.git_paths(
-            ROOT, "diff", "--cached", "--name-only", "--diff-filter=D", "-z", "--",
+            ROOT, "diff", "--cached", "--no-renames", "--name-only", "--diff-filter=D", "-z", "--",
         )) if staged else set()
         registered = (
             set(ledger_sources())

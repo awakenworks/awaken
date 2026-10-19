@@ -602,6 +602,54 @@ class FormalSurfaceStagedSubjectTests(unittest.TestCase):
             self.assertIn("unclassified safety surfaces", error)
             self.assertIn("authorization", error)
 
+    def test_explicit_rename_paths_preserve_deletion_and_current_source_checks(self) -> None:
+        # Causes: C1 exact staged R100 rename (private diff.renames=true);
+        # C2 target classified/unclassified; C3 an additional unknown explicit
+        # path. The deleted old name must never hide or substitute the target.
+        # | Rule | target | explicit paths | Effect |
+        # | R18 | classified | old + new | skip old, inspect new once, accept |
+        # | R19 | unclassified | old + new | reject new safety source |
+        # | R20 | classified | old + new + unknown | reject absent unknown |
+        # Reuse R11's NTFS-safe separator and canonical NUL framing; all rows
+        # use real private Git state, not a mocked deletion/rename classifier.
+        for rule, classified, unknown in [
+            ("R18", True, False), ("R19", False, False), ("R20", True, True),
+        ]:
+            with self.subTest(rule=rule), self.fixture() as root:
+                self.git(root, "config", "diff.renames", "true")
+                (root / self.POLICY).write_text(
+                    self.CLASSIFIED if classified else "fn authorize_request() {}\n"
+                )
+                self.git(root, "add", self.POLICY)
+                self.git(root, "commit", "--quiet", "-m", "fixture baseline")
+                separator = "\u2028" if os.name == "nt" else "\n"
+                renamed = f"crates/runtime/example/src/renamed{separator}source with space.rs"
+                self.git(root, "mv", self.POLICY, renamed)
+                self.assertEqual(
+                    self.git(root, "diff", "--cached", "--name-status", "-z"),
+                    f"R100\0{self.POLICY}\0{renamed}\0", rule,
+                )
+                paths = [self.POLICY, renamed]
+                missing = "crates/runtime/example/src/not-staged.rs"
+                if unknown:
+                    (root / missing).write_text("fn authorize_unknown() {}\n")
+                    paths.append(missing)
+                status, output, error = self.invoke(paths)
+                if rule == "R18":
+                    self.assertEqual((status, error), (0, ""), rule)
+                    self.assertIn("1 production Rust candidate(s)", output, rule)
+                    self.assertIn("2 selected path(s), source=index", output, rule)
+                elif rule == "R19":
+                    self.assertEqual(status, 1, rule)
+                    self.assertIn(renamed, error, rule)
+                    self.assertIn("unclassified safety surfaces", error, rule)
+                    self.assertIn("authorization", error, rule)
+                    self.assertNotIn("absent from the index", error, rule)
+                else:
+                    self.assertEqual(status, 1, rule)
+                    self.assertIn(missing, error, rule)
+                    self.assertIn("absent from the index", error, rule)
+
     def test_failed_index_selection_or_blob_io_never_becomes_empty_success(self) -> None:
         # R12 failed selection and R13 failed selected-blob IO both refuse;
         # neither may fall back to a benign disk file or a zero-source result.

@@ -55,7 +55,7 @@ fn completed_checkpoint(
 
 fn begin_checkpoint_upload(
     root: &Path,
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
     marker: &mut RealizationMarker,
     pending: pc::SandboxCheckpointUpload,
 ) -> Result<Option<pc::SandboxCheckpointRef>, pc::SandboxError> {
@@ -76,7 +76,7 @@ fn begin_checkpoint_upload(
 
 fn complete_checkpoint_upload(
     root: &Path,
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
     marker: &mut RealizationMarker,
     operation_id: &str,
     request_fingerprint: &str,

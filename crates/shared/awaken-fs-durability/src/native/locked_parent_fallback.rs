@@ -1,4 +1,6 @@
-use super::*;
+use super::{DirectoryIdentity, ExclusiveFileLock, PathEntry};
+use std::fs::File;
+use std::path::Path;
 
 impl ExclusiveFileLock {
     #[cfg(not(windows))]

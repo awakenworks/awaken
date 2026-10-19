@@ -1553,7 +1553,19 @@ dependencies = [
 name = "awaken-fs-durability"
 version = "1.0.0"
 dependencies = [
+ "awaken-fs-win32",
+ "cap-primitives",
+ "cap-std",
+ "rustix 1.1.4",
+ "same-file",
  "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "awaken-fs-win32"
+version = "1.0.0"
+dependencies = [
  "windows-sys 0.61.2",
 ]
 
@@ -1664,7 +1676,7 @@ dependencies = [
 name = "awaken-installation-workspace"
 version = "1.0.0"
 dependencies = [
- "awaken-sandbox-fs",
+ "awaken-fs-durability",
  "tempfile",
 ]
 
@@ -2566,6 +2578,7 @@ dependencies = [
  "awaken-agent-channel",
  "awaken-connection-plan",
  "awaken-ext-builtin-tools",
+ "awaken-fs-durability",
  "awaken-lease-testkit",
  "awaken-local-process",
  "awaken-memory-store",
@@ -2575,7 +2588,6 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-sandbox-control",
  "awaken-sandbox-control-transport",
- "awaken-sandbox-fs",
  "awaken-sandbox-local",
  "awaken-sandbox-memoryd",
  "awaken-time",
@@ -2656,20 +2668,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "awaken-sandbox-fs"
-version = "1.0.0"
-dependencies = [
- "awaken-fs-durability",
- "awaken-sandbox-win32",
- "cap-primitives",
- "cap-std",
- "rustix 1.1.4",
- "same-file",
- "tempfile",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "awaken-sandbox-kubernetes"
 version = "1.0.0"
 dependencies = [
@@ -2715,6 +2713,7 @@ dependencies = [
  "awaken-agent-channel",
  "awaken-ext-builtin-tools",
  "awaken-file-store",
+ "awaken-fs-durability",
  "awaken-local-process",
  "awaken-memory-store",
  "awaken-provisioning-contract",
@@ -2723,7 +2722,6 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-sandbox-control",
  "awaken-sandbox-control-transport",
- "awaken-sandbox-fs",
  "awaken-sandbox-memoryd",
  "awaken-session-environment-contract",
  "awaken-session-state-contract",
@@ -2750,6 +2748,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-file-store",
+ "awaken-fs-durability",
  "awaken-lease-testkit",
  "awaken-memory-store",
  "awaken-protocol-managed",
@@ -2757,7 +2756,6 @@ dependencies = [
  "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-store",
- "awaken-sandbox-fs",
  "awaken-skill-store",
  "awaken-sqlite-pool",
  "awaken-tenancy",
@@ -2789,13 +2787,6 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
-]
-
-[[package]]
-name = "awaken-sandbox-win32"
-version = "1.0.0"
-dependencies = [
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3095,6 +3086,7 @@ dependencies = [
  "awaken-ext-skills",
  "awaken-ext-state-machine",
  "awaken-file-store",
+ "awaken-fs-durability",
  "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-memory-store",
@@ -3112,7 +3104,6 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-sandbox-container",
  "awaken-sandbox-control",
- "awaken-sandbox-fs",
  "awaken-sandbox-local",
  "awaken-service-lifecycle",
  "awaken-session-application",
@@ -3469,7 +3460,6 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-fs-durability",
  "awaken-reliability-testkit",
- "awaken-sandbox-fs",
  "awaken-store-conformance",
  "awaken-store-inmem",
  "awaken-time",

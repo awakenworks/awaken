@@ -39,8 +39,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use awaken_fs_durability::{DirectoryIdentity, PathEntry};
 use awaken_provisioning_contract as pc;
-use awaken_sandbox_fs::{DirectoryIdentity, PathEntry};
 use serde::{Deserialize, Serialize};
 
 /// Roots whose realization was claimed and then dropped before it settled.
@@ -250,7 +250,7 @@ fn creation_record_leaf(root: &Path) -> Result<PathBuf, pc::SandboxError> {
 }
 
 pub(crate) fn read_creation_record(
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
     root: &Path,
 ) -> Result<Option<LegacyCreationRecord>, pc::SandboxError> {
     let leaf = creation_record_leaf(root)?;
@@ -286,7 +286,7 @@ pub(crate) fn read_creation_record(
 }
 
 pub(crate) fn write_creation_record(
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
     root: &Path,
     record: &LegacyCreationRecord,
 ) -> Result<(), pc::SandboxError> {
@@ -317,7 +317,7 @@ pub(crate) fn write_creation_record(
 /// refused just as hard, and leaving a reclaimable one behind is the only
 /// outcome that would be unsafe.
 pub(crate) fn retain_creation_record(
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
     root: &Path,
 ) -> Result<(), pc::SandboxError> {
     let Some(record) = read_creation_record(lock, root)? else {
@@ -337,7 +337,7 @@ pub(crate) fn retain_creation_record(
 }
 
 pub(crate) fn clear_creation_record(
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
     root: &Path,
 ) -> Result<(), pc::SandboxError> {
     let leaf = creation_record_leaf(root)?;

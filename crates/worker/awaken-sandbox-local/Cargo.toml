@@ -29,7 +29,7 @@ awaken-session-state-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-resource-contract.workspace = true
 awaken-local-process.workspace = true
-awaken-sandbox-fs.workspace = true
+awaken-fs-durability = { workspace = true, features = ["native-fs"] }
 awaken-agent-channel.workspace = true
 awaken-sandbox-control.workspace = true
 awaken-sandbox-control-transport.workspace = true

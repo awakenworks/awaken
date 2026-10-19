@@ -9,15 +9,39 @@ context = "shared"
 product = "platform"
 bounded_context = "storage"
 layer = "infrastructure"
-authority = "filesystem-directory-durability"
+authority = "native-filesystem-durability"
 separation = "isolation"
-isolates = ["windows-sys"]
+isolates = ["cap-std", "rustix", "windows-sys"]
+
+[dependencies]
+cap-std = { version = "4", optional = true }
+rustix = { version = "1", features = ["fs"], optional = true }
+
+[target.'cfg(not(any(target_os = "linux", target_os = "macos")))'.dependencies]
+same-file = { version = "1.0.6", optional = true }
 
 [target.'cfg(windows)'.dependencies]
+awaken-fs-win32 = { path = "../awaken-fs-win32", version = "1.0.0", optional = true }
+cap-primitives = { version = "4", optional = true }
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+default = []
+native-fs = [
+    "dep:cap-std",
+    "dep:rustix",
+    "dep:same-file",
+    "dep:awaken-fs-win32",
+    "dep:cap-primitives",
+    "windows-sys/Win32_Foundation",
+]
+
+[[test]]
+name = "windows_long_paths"
+required-features = ["native-fs"]
 
 [lints]
 workspace = true

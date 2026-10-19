@@ -281,7 +281,7 @@ impl PublishedSandboxControlService for NamespaceControlPublication {
 async fn bind_namespace_control_listener(
     socket: &std::path::Path,
 ) -> Result<(tokio::net::UnixListener, SocketIdentity), SandboxControlPublishError> {
-    let address = awaken_sandbox_fs::PinnedUnixSocketPath::capture(socket)
+    let address = awaken_fs_durability::PinnedUnixSocketPath::capture(socket)
         .map_err(|_| SandboxControlPublishError)?;
     let physical_socket = address.path();
     match std::fs::symlink_metadata(physical_socket) {
@@ -321,7 +321,7 @@ async fn bind_namespace_control_listener(
 #[cfg(target_os = "linux")]
 fn bind_new_namespace_control_listener(
     socket: &std::path::Path,
-    address: &awaken_sandbox_fs::PinnedUnixSocketPath,
+    address: &awaken_fs_durability::PinnedUnixSocketPath,
 ) -> Result<(tokio::net::UnixListener, SocketIdentity), SandboxControlPublishError> {
     let physical_socket = address.path();
     let listener =
@@ -566,7 +566,7 @@ mod tests {
         // proves its last listener closed before the parent tests stale recovery.
         let socket =
             std::path::PathBuf::from(std::env::var_os("AWAKEN_STALE_SOCKET_FIXTURE").unwrap());
-        let address = awaken_sandbox_fs::PinnedUnixSocketPath::capture(&socket).unwrap();
+        let address = awaken_fs_durability::PinnedUnixSocketPath::capture(&socket).unwrap();
         let listener = std::os::unix::net::UnixListener::bind(address.path()).unwrap();
         drop(listener);
     }
@@ -586,7 +586,7 @@ mod tests {
                 let parent = base.path().join("p".repeat(length));
                 std::fs::create_dir(&parent).unwrap();
                 let socket = parent.join("control.sock");
-                let address = awaken_sandbox_fs::PinnedUnixSocketPath::capture(&socket).unwrap();
+                let address = awaken_fs_durability::PinnedUnixSocketPath::capture(&socket).unwrap();
                 let foreign = match state {
                     "stale" => {
                         let mut child =
@@ -676,11 +676,11 @@ mod tests {
             let moved = base.path().join("moved");
             std::fs::create_dir(&parent).unwrap();
             let socket = parent.join("control.sock");
-            let address = awaken_sandbox_fs::PinnedUnixSocketPath::capture(&socket).unwrap();
+            let address = awaken_fs_durability::PinnedUnixSocketPath::capture(&socket).unwrap();
             std::fs::rename(&parent, &moved).unwrap();
             std::fs::create_dir(&parent).unwrap();
             let replacement_address =
-                awaken_sandbox_fs::PinnedUnixSocketPath::capture(&socket).unwrap();
+                awaken_fs_durability::PinnedUnixSocketPath::capture(&socket).unwrap();
             let foreign = match replacement {
                 "file" => {
                     std::fs::write(&socket, b"preserved").unwrap();
@@ -1005,7 +1005,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .join("repository-git-credential.sock");
-            let address = awaken_sandbox_fs::PinnedUnixSocketPath::capture(&socket).unwrap();
+            let address = awaken_fs_durability::PinnedUnixSocketPath::capture(&socket).unwrap();
             let mut channel = tokio::net::UnixStream::connect(address.path())
                 .await
                 .unwrap();
@@ -1085,7 +1085,7 @@ mod tests {
             )
             .await
             .unwrap_or_else(|_| panic!("N10 publication failed for prefix length {prefix_length}"));
-            let address = awaken_sandbox_fs::PinnedUnixSocketPath::capture(&socket).unwrap();
+            let address = awaken_fs_durability::PinnedUnixSocketPath::capture(&socket).unwrap();
             let mut channel = tokio::net::UnixStream::connect(address.path())
                 .await
                 .unwrap();

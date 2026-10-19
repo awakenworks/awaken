@@ -2,7 +2,7 @@
 // @formal reason: Test-only Windows publication, replacement and original NTFS identity observations.
 // @formal reason: These executable regressions classify effects, not a formal-proof claim.
 #![cfg(windows)]
-use awaken_sandbox_fs::*;
+use awaken_fs_durability::*;
 use std::path::{Path, PathBuf};
 
 #[test]

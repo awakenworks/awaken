@@ -18,8 +18,8 @@
 use std::path::{Component, Path, PathBuf};
 
 use crate::FilesystemHandleCodec as _;
+use awaken_fs_durability::{DirectoryIdentity, PathEntry};
 use awaken_provisioning_contract as pc;
-use awaken_sandbox_fs::{DirectoryIdentity, PathEntry};
 use serde::{Deserialize, Serialize};
 
 const MARKER_SCHEMA: u8 = 2;
@@ -292,7 +292,7 @@ pub(crate) struct CreationGuard {
     root: PathBuf,
     marker: RealizationMarker,
     admission: Admission,
-    lock: Option<awaken_sandbox_fs::ExclusiveFileLock>,
+    lock: Option<awaken_fs_durability::ExclusiveFileLock>,
 }
 
 impl CreationGuard {
@@ -321,7 +321,7 @@ impl CreationGuard {
         )
     }
 
-    fn lock(&self) -> Result<&awaken_sandbox_fs::ExclusiveFileLock, pc::SandboxError> {
+    fn lock(&self) -> Result<&awaken_fs_durability::ExclusiveFileLock, pc::SandboxError> {
         self.lock.as_ref().ok_or_else(|| {
             pc::SandboxError::conflict("filesystem creation lifecycle lock was released")
         })
@@ -471,11 +471,11 @@ impl CreationGuard {
 pub(crate) struct LegacyCreationGuard {
     root: PathBuf,
     identity: Option<DirectoryIdentity>,
-    lock: Option<awaken_sandbox_fs::ExclusiveFileLock>,
+    lock: Option<awaken_fs_durability::ExclusiveFileLock>,
 }
 
 impl LegacyCreationGuard {
-    fn lock(&self) -> Result<&awaken_sandbox_fs::ExclusiveFileLock, pc::SandboxError> {
+    fn lock(&self) -> Result<&awaken_fs_durability::ExclusiveFileLock, pc::SandboxError> {
         self.lock.as_ref().ok_or_else(|| {
             pc::SandboxError::conflict("legacy filesystem creation lock was released")
         })
@@ -586,7 +586,7 @@ pub(crate) struct RemovalGuard {
     root: PathBuf,
     marker: RealizationMarker,
     checkpoint_expected_effect_fence: Option<pc::SandboxEffectFence>,
-    lock: awaken_sandbox_fs::ExclusiveFileLock,
+    lock: awaken_fs_durability::ExclusiveFileLock,
 }
 
 /// Stable admission for one non-lifecycle effect against an exact Ready
@@ -598,7 +598,7 @@ pub(crate) struct ReadyOperationGuard {
     operation_effect_fence: pc::SandboxEffectFence,
     authorization_effect_fence: pc::SandboxEffectFence,
     marker: RealizationMarker,
-    lock: awaken_sandbox_fs::ExclusiveFileLock,
+    lock: awaken_fs_durability::ExclusiveFileLock,
 }
 
 mod checkpoint_participant;
@@ -620,7 +620,7 @@ use physical_identity::{new_physical_incarnation, validate_removed_restore_sourc
 mod marker_paths;
 use marker_paths::*;
 fn classify(path: &Path) -> Result<PathEntry, pc::SandboxError> {
-    awaken_sandbox_fs::classify_nofollow(path).map_err(|error| {
+    awaken_fs_durability::classify_nofollow(path).map_err(|error| {
         pc::SandboxError::backend(
             "classify",
             format!(
@@ -632,7 +632,7 @@ fn classify(path: &Path) -> Result<PathEntry, pc::SandboxError> {
 }
 
 fn classify_locked(
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
     leaf: &Path,
 ) -> Result<PathEntry, pc::SandboxError> {
     lock.classify_sibling_nofollow(leaf).map_err(|error| {
@@ -648,7 +648,7 @@ fn classify_locked(
 
 fn require_absent_locked(
     root: &Path,
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
     leaf: &Path,
     description: &str,
 ) -> Result<(), pc::SandboxError> {
@@ -666,7 +666,7 @@ fn require_absent_locked(
 
 fn require_no_untracked_stage_locked(
     root: &Path,
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
 ) -> Result<(), pc::SandboxError> {
     let name = root
         .file_name()
@@ -689,7 +689,7 @@ fn require_no_untracked_stage_locked(
 
 fn require_exact_root_locked(
     root: &Path,
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
     expected: DirectoryIdentity,
 ) -> Result<(), pc::SandboxError> {
     match classify_locked(lock, root_leaf(root)?)? {
@@ -786,7 +786,7 @@ fn validate_marker_disposal_authorization(
 }
 
 fn read_marker_path(path: &Path) -> Result<RealizationMarker, pc::SandboxError> {
-    let bytes = awaken_sandbox_fs::read_regular_file_nofollow(path).map_err(|error| {
+    let bytes = awaken_fs_durability::read_regular_file_nofollow(path).map_err(|error| {
         pc::SandboxError::backend(
             "read_marker_path",
             format!(
@@ -812,7 +812,7 @@ fn read_marker(root: &Path) -> Result<Option<RealizationMarker>, pc::SandboxErro
 
 fn read_marker_locked(
     root: &Path,
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
 ) -> Result<Option<RealizationMarker>, pc::SandboxError> {
     let leaf = marker_leaf(root)?;
     match classify_locked(lock, &leaf)? {
@@ -847,7 +847,7 @@ fn encode_marker(marker: &RealizationMarker) -> Result<Vec<u8>, pc::SandboxError
 
 fn publish_marker_locked(
     root: &Path,
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
     marker: &RealizationMarker,
 ) -> Result<(), pc::SandboxError> {
     lock.publish_sibling_file_noreplace(&marker_leaf(root)?, &encode_marker(marker)?)
@@ -856,7 +856,7 @@ fn publish_marker_locked(
 
 fn replace_marker_locked(
     root: &Path,
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
     expected: &RealizationMarker,
     next: &RealizationMarker,
 ) -> Result<(), pc::SandboxError> {
@@ -872,7 +872,7 @@ fn replace_marker_locked(
 
 fn remove_marker_exact_locked(
     root: &Path,
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
     expected: &RealizationMarker,
 ) -> Result<(), pc::SandboxError> {
     let leaf = marker_leaf(root)?;
@@ -887,7 +887,7 @@ fn remove_marker_exact_locked(
 
 fn require_marker_absence_locked(
     root: &Path,
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
 ) -> Result<(), pc::SandboxError> {
     match read_marker_locked(root, lock)? {
         None => Ok(()),
@@ -929,7 +929,7 @@ fn root_record(root: &Path, incarnation: &str) -> Result<RootRecord, pc::Sandbox
 /// marker publication and the no-replace rename.
 fn ensure_root_published(
     root: &Path,
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
     marker: &mut RealizationMarker,
 ) -> Result<(), pc::SandboxError> {
     let stage = stage_path(root, &marker.root)?;
@@ -1006,7 +1006,7 @@ fn owned_realization_path(
 
 fn owned_realization_path_locked(
     root: &Path,
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
     marker: &RealizationMarker,
 ) -> Result<OwnedRealizationPath, pc::SandboxError> {
     let stage = stage_path(root, &marker.root)?;
@@ -1055,7 +1055,7 @@ fn owned_realization_path_from_entries(
 
 fn require_realization_absent(
     root: &Path,
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
     marker: &RealizationMarker,
 ) -> Result<(), pc::SandboxError> {
     execution_participant::require_quiescent(marker)?;
@@ -1070,7 +1070,7 @@ fn require_realization_absent(
 
 fn remove_owned_root_or_stage_locked(
     root: &Path,
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
     marker: &RealizationMarker,
 ) -> Result<(), pc::SandboxError> {
     execution_participant::require_quiescent(marker)?;
@@ -1423,7 +1423,7 @@ fn validate_ready_operation_marker(
     operation_effect_fence: &pc::SandboxEffectFence,
     authorization_effect_fence: &pc::SandboxEffectFence,
     marker_effect_fence: &pc::SandboxEffectFence,
-    lock: &awaken_sandbox_fs::ExclusiveFileLock,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
 ) -> Result<(), pc::SandboxError> {
     if marker.phase != RealizationPhase::Ready
         || marker.fingerprint != evidence.fingerprint

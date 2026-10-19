@@ -24,7 +24,7 @@ isolates = ["fuser", "libc"]
 awaken-time.workspace = true
 awaken-resource-contract = { workspace = true }
 awaken-provisioning-contract = { workspace = true }
-awaken-sandbox-fs.workspace = true
+awaken-fs-durability = { workspace = true, features = ["native-fs"] }
 async-trait.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync"] }

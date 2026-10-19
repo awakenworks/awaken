@@ -163,7 +163,7 @@ impl pc::Sandbox for NamespaceSandbox {
         let relative = host.strip_prefix(self.root.root()).map_err(|_| {
             pc::SandboxError::invalid("namespace attachment path escaped its sandbox root")
         })?;
-        awaken_sandbox_fs::write_relative_file_atomic(
+        awaken_fs_durability::write_relative_file_atomic(
             self.root.root(),
             root_identity,
             relative,

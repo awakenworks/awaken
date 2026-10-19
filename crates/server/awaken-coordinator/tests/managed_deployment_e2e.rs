@@ -332,6 +332,9 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
     // the R1 Session. This covers the response-loss retry before an HTTP adapter exists.
     // Constraints/invariants: DeploymentRun identity and launch fingerprint are
     // the sole replay fence; the receipt-aware observer never drives execution.
+    // M1/M2: fresh and exact-replayed Session projections retain the launcher's
+    // Deployment id and the Run id owned by the single create seam. The original
+    // request, before business metadata is added, still owns the fingerprint.
     let catalog = Arc::new(ExecutableAgentCatalog::new());
     let (host, resources) = build_unmounted_platform_with_agent_publications(
         Arc::new(EchoModel),
@@ -386,6 +389,23 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
         outcomes => panic!("R1/R2 unexpected outcomes: {outcomes:?}"),
     };
     assert_eq!(first_id, second_id, "R1/R2");
+    let replayed = managed.managed.get_session(&first_id).unwrap();
+    assert_eq!(
+        replayed
+            .metadata
+            .get("awaken.deployment_id")
+            .map(String::as_str),
+        Some("depl_retry"),
+        "M1/M2 launcher Deployment metadata survives exact replay"
+    );
+    assert_eq!(
+        replayed
+            .metadata
+            .get("awaken.deployment_run_id")
+            .map(String::as_str),
+        Some("drun_retry"),
+        "M1/M2 the create seam retains canonical Run metadata"
+    );
     let events = wait_for_session_events(
         &app,
         &first_id,
