@@ -174,11 +174,30 @@ pub(super) fn selected_work_bundle(
 pub(super) fn converged_work_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         CONVERGED_BUNDLE_ID,
-        vec![Migration::new(
-            1,
-            "seal the converged Work queue migration history",
-            "SELECT 1",
-        )?],
+        vec![
+            Migration::new(
+                1,
+                "seal the converged Work queue migration history",
+                "SELECT 1",
+            )?,
+            Migration::new(
+                2,
+                "retain exact Environment registration revision and queue operation",
+                "CREATE TABLE {prefix}_environment_revision (\
+                 environment_id TEXT PRIMARY KEY CHECK (length(environment_id) > 0), \
+                 revision TEXT NOT NULL CHECK (length(revision) > 0), \
+                 operation TEXT NOT NULL CHECK (operation IN ('register_healthcheck','register_cloud','withdraw')))",
+            )?,
+            // This stream creates only its own authority. A fresh generation
+            // fences legacy numeric ids, including already-deleted history.
+            // FIFO admission relative to old rows belongs to the queue transaction.
+            Migration::per_dialect(
+                3,
+                "persist Work identity generation and allocation high-water mark",
+                "CREATE TABLE {prefix}_identity_allocator (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), generation_id TEXT NOT NULL CHECK (length(generation_id) = 32), next_sequence BIGINT NOT NULL CHECK (next_sequence >= 0)); INSERT INTO {prefix}_identity_allocator (singleton, generation_id, next_sequence) VALUES (1, replace(gen_random_uuid()::text, '-', ''), 0)",
+                "CREATE TABLE {prefix}_identity_allocator (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), generation_id TEXT NOT NULL CHECK (length(generation_id) = 32), next_sequence BIGINT NOT NULL CHECK (next_sequence >= 0)); INSERT INTO {prefix}_identity_allocator (singleton, generation_id, next_sequence) VALUES (1, lower(hex(randomblob(16))), 0)",
+            )?,
+        ],
     )
 }
 
@@ -211,8 +230,8 @@ pub(super) async fn apply_sqlite_migrations(pool: &EmbeddedPool) -> Result<(), S
         .map_err(|error| error.to_string())?;
     awaken_sqlite_pool::held(runner.run_bundle(&converged))
         .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    crate::identity::verify_sqlite(pool).await
 }
 
 async fn selected_postgres_bundles(
@@ -254,8 +273,8 @@ pub(super) async fn apply_postgres_migrations(pool: &PgPool) -> Result<(), Strin
     runner
         .run_bundle(&converged)
         .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    crate::identity::verify_postgres(pool).await
 }
 
 pub(super) async fn verify_postgres_migrations(pool: &PgPool) -> Result<(), String> {
@@ -270,7 +289,8 @@ pub(super) async fn verify_postgres_migrations(pool: &PgPool) -> Result<(), Stri
     runner
         .verify_bundle(&converged)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    crate::identity::verify_postgres(pool).await
 }
 
 fn state_from_wire(state: &str) -> Result<WorkState, String> {
@@ -596,7 +616,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap(),
-            2,
+            4,
             "E2"
         );
         assert!(
@@ -732,4 +752,96 @@ mod tests {
         );
         pool.close().await;
     }
+    #[tokio::test]
+    async fn sqlite_both_published_histories_append_empty_registration_watermarks() {
+        for legacy in [false, true] {
+            let pool = EmbeddedSqlite::memory().open().await.unwrap();
+            let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS).unwrap();
+            let published = if legacy {
+                legacy_work_bundle().unwrap()
+            } else {
+                work_bundle().unwrap()
+            };
+            runner.run_bundle(&published).await.unwrap();
+            let old_converged = MigrationBundle::new(
+                CONVERGED_BUNDLE_ID,
+                converged_work_bundle().unwrap().migrations()[..1].to_vec(),
+            )
+            .unwrap();
+            runner.run_bundle(&old_converged).await.unwrap();
+            sqlx::query("INSERT INTO work_queue_item(work_id,seq,environment_id,data_type,data_id,metadata_json,state,created_at) VALUES('legacy-health',0,'existing','healthcheck','legacy-health','{}','queued','2026-01-01T00:00:00Z')").execute(&pool).await.unwrap();
+            apply_sqlite_migrations(&pool).await.unwrap();
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM work_queue_environment_revision"
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+                0,
+                "migration never invents an Environment revision"
+            );
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM work_queue_item")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+                1,
+                "historical work remains intact until real All recovery"
+            );
+        }
+    }
+
+    #[cfg(not(feature = "loom"))]
+    #[tokio::test]
+    async fn postgres_both_published_histories_append_empty_registration_watermarks() {
+        let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+            return;
+        };
+        for legacy in [false, true] {
+            let fixture = crate::work_postgres_fixture::WorkPostgresFixture::new(&url, 4).await;
+            let pool = &fixture.pool;
+            let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+                pool.clone(),
+                NS,
+            )
+            .unwrap();
+            let published = if legacy {
+                legacy_work_bundle().unwrap()
+            } else {
+                work_bundle().unwrap()
+            };
+            runner.run_bundle(&published).await.unwrap();
+            let old_converged = MigrationBundle::new(
+                CONVERGED_BUNDLE_ID,
+                converged_work_bundle().unwrap().migrations()[..1].to_vec(),
+            )
+            .unwrap();
+            runner.run_bundle(&old_converged).await.unwrap();
+            sqlx::query("INSERT INTO work_queue_item(work_id,seq,environment_id,data_type,data_id,metadata_json,state,created_at) VALUES('legacy-health',0,'existing','healthcheck','legacy-health','{}','queued','2026-01-01T00:00:00Z')").execute(pool).await.unwrap();
+            apply_postgres_migrations(pool).await.unwrap();
+            verify_postgres_migrations(pool).await.unwrap();
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM work_queue_environment_revision"
+                )
+                .fetch_one(pool)
+                .await
+                .unwrap(),
+                0
+            );
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM work_queue_item")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap(),
+                1
+            );
+            fixture.cleanup().await;
+        }
+    }
 }
+
+#[cfg(all(test, not(feature = "loom")))]
+#[path = "schema/identity_upgrade_tests.rs"]
+mod identity_upgrade_tests;

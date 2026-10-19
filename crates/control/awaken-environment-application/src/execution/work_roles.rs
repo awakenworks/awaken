@@ -1,32 +1,33 @@
 // @formal surface obligation=work.lease_authority_snapshot_and_owner_mutations_are_atomic
 // @formal surface obligation=work.terminal_lease_clear
-// @formal reason: Narrow application roles preserve registration checks and delegate atomic storage operations.
+// @formal reason: Narrow application roles preserve current lifecycle checks and delegate atomic storage operations.
 //! Work use cases handed to adapters by their calling role.
 use super::{EnvironmentExecutionApplication, EnvironmentExecutionError, session_access};
 use awaken_executable_environment_contract::{
-    self as storage, ClaimedWork, ExecutableEnvironmentRegistrationSource, HeartbeatResult,
-    LeaseHeartbeat, QueueStats, WorkItem, WorkQueueError, WorkSessionAccess,
+    self as storage, ClaimedWork, ExecutableEnvironmentLifecycle,
+    ExecutableEnvironmentLifecycleSource, HeartbeatResult, LeaseHeartbeat, QueueStats, WorkItem,
+    WorkQueueError, WorkSessionAccess,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone)]
 struct WorkContext {
-    execution_source: Arc<dyn ExecutableEnvironmentRegistrationSource>,
+    execution_source: Arc<dyn ExecutableEnvironmentLifecycleSource>,
 }
 impl WorkContext {
     async fn require_environment(
         &self,
         environment_id: &str,
     ) -> Result<(), EnvironmentExecutionError> {
-        if self
+        match self
             .execution_source
-            .current_registration(environment_id)
+            .current_lifecycle(environment_id)
             .await?
-            .is_some()
         {
-            Ok(())
-        } else {
-            Err(EnvironmentExecutionError::EnvironmentNotFound)
+            Some(
+                ExecutableEnvironmentLifecycle::Active | ExecutableEnvironmentLifecycle::Archived,
+            ) => Ok(()),
+            None => Err(EnvironmentExecutionError::EnvironmentNotFound),
         }
     }
 }
@@ -37,8 +38,8 @@ impl WorkContext {
 /// ```
 /// use std::sync::Arc;
 /// use awaken_environment_application::execution::WorkQueries;
-/// use awaken_executable_environment_contract::{WorkQueries as QueryStorage, ExecutableEnvironmentRegistrationSource};
-/// fn read_only(storage: Arc<dyn QueryStorage>, environments: Arc<dyn ExecutableEnvironmentRegistrationSource>) -> WorkQueries {
+/// use awaken_executable_environment_contract::{WorkQueries as QueryStorage, ExecutableEnvironmentLifecycleSource};
+/// fn read_only(storage: Arc<dyn QueryStorage>, environments: Arc<dyn ExecutableEnvironmentLifecycleSource>) -> WorkQueries {
 ///     WorkQueries::new(storage, environments)
 /// }
 /// ```
@@ -59,7 +60,7 @@ impl WorkQueries {
     #[must_use]
     pub fn new(
         port: Arc<dyn storage::WorkQueries>,
-        execution_source: Arc<dyn ExecutableEnvironmentRegistrationSource>,
+        execution_source: Arc<dyn ExecutableEnvironmentLifecycleSource>,
     ) -> Self {
         Self {
             port,
@@ -102,7 +103,7 @@ impl WorkConsumer {
     #[must_use]
     pub fn new(
         port: Arc<dyn storage::WorkConsumer>,
-        execution_source: Arc<dyn ExecutableEnvironmentRegistrationSource>,
+        execution_source: Arc<dyn ExecutableEnvironmentLifecycleSource>,
     ) -> Self {
         Self {
             port,
@@ -227,7 +228,7 @@ impl SessionWorkLeaseControl {
     #[must_use]
     pub fn new(
         port: Arc<dyn storage::SessionWorkLeaseControl>,
-        execution_source: Arc<dyn ExecutableEnvironmentRegistrationSource>,
+        execution_source: Arc<dyn ExecutableEnvironmentLifecycleSource>,
     ) -> Self {
         Self {
             port,
@@ -281,7 +282,7 @@ impl WorkMetadataPatch {
     #[must_use]
     pub fn new(
         port: Arc<dyn storage::WorkMetadataPatch>,
-        execution_source: Arc<dyn ExecutableEnvironmentRegistrationSource>,
+        execution_source: Arc<dyn ExecutableEnvironmentLifecycleSource>,
     ) -> Self {
         Self {
             port,

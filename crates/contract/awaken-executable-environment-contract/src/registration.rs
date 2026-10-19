@@ -95,8 +95,13 @@ impl ExecutableEnvironmentWithdrawal {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutableEnvironmentRegistrationOutcome {
+    /// This exact revision became the current active registration.
     RegisteredCurrent,
+    /// Immutable history was retained; it grants no current queue admission.
+    /// Replaying an older or archived revision has this same outcome.
     RegisteredHistorical,
+    /// This exact registration is still current and active. Downstream queue
+    /// convergence may be retried after an interrupted previous delivery.
     AlreadyRegistered,
 }
 
@@ -104,7 +109,9 @@ pub enum ExecutableEnvironmentRegistrationOutcome {
 #[serde(rename_all = "snake_case")]
 pub enum ExecutableEnvironmentWithdrawalOutcome {
     WithdrawnCurrent,
+    /// This exact withdrawal is current; interrupted queue convergence may retry.
     AlreadyWithdrawn,
+    /// A newer lifecycle fact already exists; no queue mutation is authorized.
     HistoricalNoop,
 }
 
@@ -123,6 +130,15 @@ pub enum ExecutableEnvironmentRegistrationError {
 
 #[async_trait]
 pub trait ExecutableEnvironmentRegistrar: Send + Sync {
+    /// Restore exact immutable history and its build convergence only.
+    /// Never advance current admission, enqueue Work, or infer a newer revision.
+    /// Every adapter must implement this capability explicitly; no fallback to
+    /// ordinary registration is safe when the latest revision is unavailable.
+    async fn restore_historical_registration(
+        &self,
+        registration: ExecutableEnvironmentRegistration,
+    ) -> Result<(), ExecutableEnvironmentRegistrationError>;
+
     async fn register(
         &self,
         registration: ExecutableEnvironmentRegistration,
@@ -134,8 +150,29 @@ pub trait ExecutableEnvironmentRegistrar: Send + Sync {
     ) -> Result<ExecutableEnvironmentWithdrawalOutcome, ExecutableEnvironmentRegistrationError>;
 }
 
+/// Current executable lifecycle committed by Control's registration boundary.
+/// Historical registration facts alone never grant Work access.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutableEnvironmentLifecycle {
+    /// New Session bindings and existing Session Work may be admitted.
+    Active,
+    /// New bindings are withdrawn; existing Session Work retains its authority.
+    Archived,
+}
+
+/// Read only the current lifecycle from the same canonical catalog allocation.
+/// A committed withdrawal establishes Archived even before its history arrives;
+/// None means no current lifecycle fact, not merely an absent active definition.
 #[async_trait]
-pub trait ExecutableEnvironmentRegistrationSource: Send + Sync {
+pub trait ExecutableEnvironmentLifecycleSource: Send + Sync {
+    async fn current_lifecycle(
+        &self,
+        environment_id: &str,
+    ) -> Result<Option<ExecutableEnvironmentLifecycle>, ExecutableEnvironmentRegistrationError>;
+}
+
+#[async_trait]
+pub trait ExecutableEnvironmentRegistrationSource: ExecutableEnvironmentLifecycleSource {
     /// Current executable registrations. This is a rebuildable projection of
     /// the existing catalog, not a second desired-state queue. The default keeps
     /// remote/legacy readers source-compatible while advertising no warm demand.

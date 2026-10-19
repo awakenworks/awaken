@@ -15,12 +15,15 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use awaken_environment_contract::EnvironmentRevision;
 use awaken_executable_environment_contract::{
-    EnvironmentWorkLifecycle, HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats,
-    SessionAccessAuthenticator, SessionAccessDigest, SessionWorkLeaseControl,
-    SessionWorkReleaseAdmission, SessionWorkStore, SessionWorkerLeaseStore, WorkClaim,
-    WorkConsumer, WorkItem, WorkLeaseMutationAdmission, WorkMetadataPatch, WorkMutationResult,
-    WorkPayload, WorkQueries, WorkQueueError, WorkSessionAccess, WorkState, WorkerLeaseObservation,
+    EnvironmentWorkLifecycle, EnvironmentWorkRevisionOperation as Operation,
+    EnvironmentWorkRevisionOutcome as RevisionOutcome, HeartbeatResult, LeaseHeartbeat,
+    LeaseReceipt, QueueStats, SessionAccessAuthenticator, SessionAccessDigest,
+    SessionWorkLeaseControl, SessionWorkReleaseAdmission, SessionWorkStore,
+    SessionWorkerLeaseStore, WorkClaim, WorkConsumer, WorkItem, WorkLeaseMutationAdmission,
+    WorkMetadataPatch, WorkMutationResult, WorkPayload, WorkQueries, WorkQueueError,
+    WorkSessionAccess, WorkState, WorkerLeaseObservation, admit_environment_work_revision,
     session_work_release_admission, work_lease_mutation_admission,
 };
 use awaken_session_types::SessionWorkLease;
@@ -47,6 +50,7 @@ pub struct InMemoryWorkQueue {
 /// The existing LeaseBook remains the sole lease arithmetic implementation.
 #[derive(Default)]
 struct InMemoryQueueAuthority {
+    environment_revisions: BTreeMap<String, (EnvironmentRevision, Operation)>,
     works: BTreeMap<String, WorkItem>,
     session_token_sha256: HashMap<String, SessionAccessDigest>,
     book: LeaseBook,
@@ -137,13 +141,14 @@ impl InMemoryWorkQueue {
         format!("work_{:016}", self.seq.fetch_add(1, Ordering::SeqCst))
     }
 
-    fn store(&self, id: String, environment_id: &str, data: WorkPayload) {
-        self.authority.lock().unwrap().works.insert(
+    fn insert_healthcheck(&self, authority: &mut InMemoryQueueAuthority, env_id: &str) -> String {
+        let id = self.next_id();
+        authority.works.insert(
             id.clone(),
             WorkItem {
-                id,
-                environment_id: environment_id.to_string(),
-                data,
+                id: id.clone(),
+                environment_id: env_id.into(),
+                data: WorkPayload::HealthCheck { id: id.clone() },
                 metadata: BTreeMap::new(),
                 state: WorkState::Queued,
                 created_at: self.clock.observed_at(),
@@ -154,6 +159,63 @@ impl InMemoryWorkQueue {
                 stopped_at: None,
             },
         );
+        id
+    }
+
+    fn ensure_healthcheck_locked(
+        &self,
+        authority: &mut InMemoryQueueAuthority,
+        env_id: &str,
+    ) -> String {
+        authority
+            .works
+            .values()
+            .find(|item| {
+                item.environment_id == env_id
+                    && matches!(item.data, WorkPayload::HealthCheck { .. })
+            })
+            .map(|item| item.id.clone())
+            .unwrap_or_else(|| self.insert_healthcheck(authority, env_id))
+    }
+
+    fn remove_work_locked(
+        authority: &mut InMemoryQueueAuthority,
+        env_id: &str,
+        healthchecks_only: bool,
+    ) {
+        let ids: Vec<_> = authority
+            .works
+            .values()
+            .filter(|item| {
+                item.environment_id == env_id
+                    && (!healthchecks_only || matches!(item.data, WorkPayload::HealthCheck { .. }))
+            })
+            .map(|item| item.id.clone())
+            .collect();
+        authority.works.retain(|id, _| !ids.contains(id));
+        authority.book.forget_env(env_id, &ids);
+        authority
+            .session_token_sha256
+            .retain(|id, _| !ids.contains(id));
+    }
+
+    fn require_healthcheck_locked(
+        authority: &InMemoryQueueAuthority,
+        env_id: &str,
+    ) -> Result<(), WorkQueueError> {
+        if authority
+            .environment_revisions
+            .get(env_id)
+            .is_some_and(|(_, operation)| {
+                !matches!(operation, Operation::Register { healthcheck: true })
+            })
+        {
+            Err(super::storage(
+                "unversioned healthcheck cannot bypass the Environment registration watermark",
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     /// Run `f` on the item under `wid` only when it belongs to `env_id`.
@@ -185,6 +247,7 @@ impl InMemoryWorkQueue {
             works,
             book,
             session_token_sha256,
+            ..
         } = &mut *authority;
         book.record_poll(env_id, poller_id, now_ms);
         for (wid, work) in works.iter_mut() {
@@ -435,6 +498,7 @@ impl WorkConsumer for InMemoryWorkQueue {
             works,
             book,
             session_token_sha256,
+            ..
         } = &mut *authority;
         let Some(work) = works
             .get_mut(wid)
@@ -573,6 +637,7 @@ impl SessionWorkLeaseControl for InMemoryWorkQueue {
             works,
             book,
             session_token_sha256,
+            ..
         } = &mut *authority;
         let Some(work) = works
             .get_mut(&access.work_id)
@@ -619,6 +684,7 @@ impl SessionWorkStore for InMemoryWorkQueue {
             works,
             book,
             session_token_sha256,
+            ..
         } = &mut *authority;
         if let Some(existing) = works.values_mut().find(|work| {
             work.environment_id == env_id
@@ -668,6 +734,7 @@ impl SessionWorkStore for InMemoryWorkQueue {
             works,
             book,
             session_token_sha256,
+            ..
         } = &mut *authority;
         let Some((wid, work)) = works.iter_mut().find(|(_, work)| {
             work.environment_id == env_id
@@ -694,6 +761,7 @@ impl SessionWorkerLeaseStore for InMemoryWorkQueue {
             works,
             book,
             session_token_sha256,
+            ..
         } = &mut *authority;
         let mut released = 0;
         for (id, work) in works.iter_mut() {
@@ -719,6 +787,7 @@ impl SessionWorkerLeaseStore for InMemoryWorkQueue {
             works,
             book,
             session_token_sha256,
+            ..
         } = &mut *authority;
         let Some(work) = works.get_mut(lease.work_id()) else {
             return Ok(false);
@@ -769,6 +838,7 @@ impl SessionWorkerLeaseStore for InMemoryWorkQueue {
                 works,
                 book,
                 session_token_sha256,
+                ..
             } = &mut *authority;
             for (id, work) in works.iter_mut() {
                 if work.environment_id == env_id
@@ -840,65 +910,50 @@ impl WorkMetadataPatch for InMemoryWorkQueue {
 
 #[async_trait]
 impl EnvironmentWorkLifecycle for InMemoryWorkQueue {
-    async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
-        // A healthcheck's inner id is the work id itself (self-reference).
-        let id = self.next_id();
-        self.store(
-            id.clone(),
+    async fn apply_environment_revision(
+        &self,
+        env_id: &str,
+        revision: EnvironmentRevision,
+        operation: Operation,
+    ) -> Result<RevisionOutcome, awaken_executable_environment_contract::EnvironmentWorkRevisionError>
+    {
+        let mut authority = self.authority.lock().unwrap();
+        let outcome = admit_environment_work_revision(
             env_id,
-            WorkPayload::HealthCheck { id: id.clone() },
-        );
-        Ok(id)
+            revision,
+            operation,
+            authority.environment_revisions.get(env_id).copied(),
+        )?;
+        if outcome != RevisionOutcome::Applied {
+            return Ok(outcome);
+        }
+        match operation {
+            Operation::Register { healthcheck: true } => {
+                self.ensure_healthcheck_locked(&mut authority, env_id);
+            }
+            Operation::Register { healthcheck: false } => {
+                Self::remove_work_locked(&mut authority, env_id, true)
+            }
+            Operation::Withdraw => Self::remove_work_locked(&mut authority, env_id, true),
+        }
+        authority
+            .environment_revisions
+            .insert(env_id.into(), (revision, operation));
+        Ok(outcome)
     }
-
+    async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
+        let mut authority = self.authority.lock().unwrap();
+        Self::require_healthcheck_locked(&authority, env_id)?;
+        Ok(self.insert_healthcheck(&mut authority, env_id))
+    }
     async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
         let mut authority = self.authority.lock().unwrap();
-        let InMemoryQueueAuthority { works, .. } = &mut *authority;
-        if let Some(existing) = works
-            .values()
-            .find(|work| {
-                work.environment_id == env_id
-                    && matches!(work.data, WorkPayload::HealthCheck { .. })
-            })
-            .map(|work| work.id.clone())
-        {
-            return Ok(existing);
-        }
-        let id = self.next_id();
-        works.insert(
-            id.clone(),
-            WorkItem {
-                id: id.clone(),
-                environment_id: env_id.to_string(),
-                data: WorkPayload::HealthCheck { id: id.clone() },
-                metadata: BTreeMap::new(),
-                state: WorkState::Queued,
-                created_at: self.clock.observed_at(),
-                acknowledged_at: None,
-                latest_heartbeat_at: None,
-                started_at: None,
-                stop_requested_at: None,
-                stopped_at: None,
-            },
-        );
-        Ok(id)
+        Self::require_healthcheck_locked(&authority, env_id)?;
+        Ok(self.ensure_healthcheck_locked(&mut authority, env_id))
     }
-
     async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError> {
         let mut authority = self.authority.lock().unwrap();
-        let InMemoryQueueAuthority {
-            works,
-            book,
-            session_token_sha256,
-        } = &mut *authority;
-        let ids: Vec<String> = works
-            .values()
-            .filter(|w| w.environment_id == env_id)
-            .map(|w| w.id.clone())
-            .collect();
-        works.retain(|_, w| w.environment_id != env_id);
-        book.forget_env(env_id, &ids);
-        session_token_sha256.retain(|work_id, _| !ids.contains(work_id));
+        Self::remove_work_locked(&mut authority, env_id, false);
         Ok(())
     }
 }
@@ -1469,3 +1524,50 @@ mod tests {
 
 #[cfg(all(test, feature = "loom"))]
 mod loom_tests;
+
+#[cfg(all(test, not(feature = "loom")))]
+mod registration_thread_races {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+    #[test]
+    fn independent_threads_cannot_publish_an_older_registration_after_withdrawal() {
+        for _ in 0..24 {
+            let q = Arc::new(InMemoryWorkQueue::new(awaken_time::system_clock()));
+            let start = Arc::new(Barrier::new(2));
+            let tasks: Vec<_> = [false, true]
+                .into_iter()
+                .map(|newest| {
+                    let q = q.clone();
+                    let start = start.clone();
+                    std::thread::spawn(move || {
+                        let runtime = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .unwrap();
+                        start.wait();
+                        runtime
+                            .block_on(q.apply_environment_revision(
+                                "thread-race",
+                                EnvironmentRevision(if newest { 2 } else { 1 }),
+                                if newest {
+                                    Operation::Withdraw
+                                } else {
+                                    Operation::Register { healthcheck: true }
+                                },
+                            ))
+                            .unwrap()
+                    })
+                })
+                .collect();
+            for task in tasks {
+                task.join().unwrap();
+            }
+            let authority = q.authority.lock().unwrap();
+            assert!(authority.works.is_empty());
+            assert_eq!(
+                authority.environment_revisions.get("thread-race"),
+                Some(&(EnvironmentRevision(2), Operation::Withdraw))
+            );
+        }
+    }
+}

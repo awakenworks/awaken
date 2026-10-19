@@ -249,6 +249,16 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ExecutableEnvironmentRegistrar for EnvironmentRegistrar {
+        async fn restore_historical_registration(
+            &self,
+            registration: awaken_executable_environment_contract::ExecutableEnvironmentRegistration,
+        ) -> Result<
+            (),
+            awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError,
+        > {
+            registration.validate()
+        }
+
         async fn register(
             &self,
             registration: ExecutableEnvironmentRegistration,

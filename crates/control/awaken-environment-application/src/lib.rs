@@ -403,6 +403,7 @@ mod tests {
         fail_withdrawal: AtomicBool,
         failed_environment: Mutex<Option<String>>,
         registrations: Mutex<Vec<ExecutableEnvironmentRegistration>>,
+        histories: Mutex<Vec<ExecutableEnvironmentRegistration>>,
         withdrawals: Mutex<Vec<ExecutableEnvironmentWithdrawal>>,
     }
 
@@ -443,6 +444,15 @@ mod tests {
 
     #[async_trait]
     impl ExecutableEnvironmentRegistrar for RecordingRegistrar {
+        async fn restore_historical_registration(
+            &self,
+            registration: ExecutableEnvironmentRegistration,
+        ) -> Result<(), ExecutableEnvironmentRegistrationError> {
+            registration.validate()?;
+            self.histories.lock().unwrap().push(registration);
+            Ok(())
+        }
+
         async fn register(
             &self,
             registration: ExecutableEnvironmentRegistration,
@@ -486,17 +496,14 @@ mod tests {
     #[tokio::test]
     async fn authoring_delivery_and_execution_share_committed_revisions_without_sharing_authority()
     {
-        use crate::execution::{
-            CoordinatorEnvironmentRegistrar, EnvironmentExecutionApplication,
-            EnvironmentExecutionError,
-        };
+        use crate::execution::{CoordinatorEnvironmentRegistrar, EnvironmentExecutionApplication};
         use awaken_executable_environment_catalog::{
             ExecutableEnvironmentCatalog, LocalExecutableEnvironmentRegistrar,
         };
 
         // Decision table: R1 authored create -> exact execution projection and
         // one healthcheck; R2 update -> execution v2 with immutable authored v1;
-        // R3 archive -> history retained, execution unavailable, queued work removed;
+        // R3 archive -> history retained, new admission withdrawn, healthcheck removed;
         // R4 outbox recovery -> same terminal outcome, no new authored revision.
         let clock = awaken_time::system_clock();
         let definitions = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(clock.clone()));
@@ -555,7 +562,7 @@ mod tests {
         assert!(
             matches!(
                 execution.work_queries().list(&created.id).await,
-                Err(EnvironmentExecutionError::EnvironmentNotFound)
+                Ok(items) if items.is_empty()
             ),
             "R3"
         );
@@ -885,6 +892,13 @@ mod tests {
 
     #[async_trait]
     impl ExecutableEnvironmentRegistrar for BarrierRegistrar {
+        async fn restore_historical_registration(
+            &self,
+            registration: ExecutableEnvironmentRegistration,
+        ) -> Result<(), ExecutableEnvironmentRegistrationError> {
+            registration.validate()
+        }
+
         async fn register(
             &self,
             registration: ExecutableEnvironmentRegistration,
@@ -1216,5 +1230,281 @@ mod tests {
         assert!(terminal.sandbox_policy.is_none(), "T4");
         assert_eq!(registrar.registrations.lock().unwrap().len(), 1, "T3/T4");
         assert_eq!(registrar.withdrawals.lock().unwrap().len(), 1, "T3/T4");
+    }
+    #[tokio::test]
+    async fn lost_registration_ack_then_archived_ack_cannot_replay_old_pending_work() {
+        use crate::execution::CoordinatorEnvironmentRegistrar;
+        use awaken_executable_environment_catalog::{
+            ExecutableEnvironmentCatalog, LocalExecutableEnvironmentRegistrar,
+        };
+        use awaken_executable_environment_contract::WorkQueries;
+        for withdrawal_ack_lost in [false, true] {
+            let clock = awaken_time::system_clock();
+            let definitions = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(clock.clone()));
+            let work = Arc::new(awaken_work_store::InMemoryWorkQueue::new(clock.clone()));
+            let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+            let application = EnvironmentApplication::new(
+                definitions.clone(),
+                Arc::new(CoordinatorEnvironmentRegistrar::new(
+                    Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
+                    work.clone(),
+                )),
+                None,
+            );
+            definitions.fail_next_acknowledgements(1);
+            assert!(
+                application
+                    .create(create_command("lost-registration-ack", "archived"))
+                    .await
+                    .is_err()
+            );
+            let created = definitions.list_active().await.unwrap().pop().unwrap();
+            assert_eq!(work.list(&created.id).await.unwrap().len(), 1);
+            if withdrawal_ack_lost {
+                definitions.fail_next_acknowledgements(1);
+                assert!(application.archive(&created.id).await.is_err());
+            }
+            let archived = application.archive(&created.id).await.unwrap();
+            assert_eq!(archived.revision, EnvironmentRevision(2));
+            assert!(work.list(&created.id).await.unwrap().is_empty());
+            let pending = definitions
+                .registration_intents(EnvironmentRegistrationIntentFilter::Pending)
+                .await
+                .unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].revision, EnvironmentRevision(1));
+            assert_eq!(application.drain_registration_intents().await.unwrap(), 1);
+            assert!(
+                work.list(&created.id).await.unwrap().is_empty(),
+                "stale Pending cannot resurrect healthcheck"
+            );
+            assert!(catalog.current(&created.id).is_none());
+            assert!(
+                catalog
+                    .at_revision(&created.id, EnvironmentRevision(1))
+                    .is_some(),
+                "frozen history survives"
+            );
+            // A fresh empty catalog AND empty watermark simulates first upgrade
+            // or volatile AllInOne restart. Highest-first All must install the
+            // true withdrawal first while still restoring every historical row.
+            let recovered_catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+            let recovered_work = Arc::new(awaken_work_store::InMemoryWorkQueue::new(clock));
+            let recovered = EnvironmentApplication::new(
+                definitions.clone(),
+                Arc::new(CoordinatorEnvironmentRegistrar::new(
+                    Arc::new(LocalExecutableEnvironmentRegistrar::new(
+                        recovered_catalog.clone(),
+                    )),
+                    recovered_work.clone(),
+                )),
+                None,
+            );
+            recovered.recover_registration_intents().await.unwrap();
+            assert!(recovered_work.list(&created.id).await.unwrap().is_empty());
+            assert!(recovered_catalog.current(&created.id).is_none());
+            assert!(
+                recovered_catalog
+                    .at_revision(&created.id, EnvironmentRevision(1))
+                    .is_some()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_latest_all_revision_restores_old_history_without_old_admission() {
+        use crate::execution::CoordinatorEnvironmentRegistrar;
+        use awaken_executable_environment_contract::WorkQueries;
+        let clock = awaken_time::system_clock();
+        let definitions = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(clock.clone()));
+        let bootstrap = Arc::new(RecordingRegistrar::default());
+        let authoring = EnvironmentApplication::new(definitions.clone(), bootstrap.clone(), None);
+        let archived = authoring
+            .create(create_command("highest-fails", "archive-target"))
+            .await
+            .unwrap();
+        let healthy = authoring
+            .create(create_command("other-healthy", "healthy"))
+            .await
+            .unwrap();
+        authoring.archive(&archived.id).await.unwrap();
+        let delegate = Arc::new(RecordingRegistrar::default());
+        delegate.fail_withdrawal.store(true, Ordering::SeqCst);
+        let work = Arc::new(awaken_work_store::InMemoryWorkQueue::new(clock));
+        let recovering = EnvironmentApplication::new(
+            definitions,
+            Arc::new(CoordinatorEnvironmentRegistrar::new(
+                delegate.clone(),
+                work.clone(),
+            )),
+            None,
+        );
+        assert!(recovering.recover_registration_intents().await.is_err());
+        assert!(
+            work.list(&archived.id).await.unwrap().is_empty(),
+            "failed highest revision cannot fall through to old Register"
+        );
+        assert!(
+            delegate
+                .registrations
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|r| r.definition.id != archived.id)
+        );
+        assert_eq!(
+            work.list(&healthy.id).await.unwrap().len(),
+            1,
+            "another Environment still recovers"
+        );
+        assert!(
+            delegate
+                .histories
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.definition.id == archived.id),
+            "latest outage must not starve frozen history"
+        );
+        delegate.fail_withdrawal.store(false, Ordering::SeqCst);
+        recovering.recover_registration_intents().await.unwrap();
+        assert!(
+            delegate
+                .histories
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.definition.id == archived.id),
+            "retry restores historical catalog facts through history-only role"
+        );
+        assert!(work.list(&archived.id).await.unwrap().is_empty());
+    }
+
+    struct WithdrawalOutageRegistrar {
+        inner: awaken_executable_environment_catalog::LocalExecutableEnvironmentRegistrar,
+        unavailable: AtomicBool,
+    }
+
+    #[async_trait]
+    impl ExecutableEnvironmentRegistrar for WithdrawalOutageRegistrar {
+        async fn restore_historical_registration(
+            &self,
+            registration: ExecutableEnvironmentRegistration,
+        ) -> Result<(), ExecutableEnvironmentRegistrationError> {
+            self.inner
+                .restore_historical_registration(registration)
+                .await
+        }
+        async fn register(
+            &self,
+            registration: ExecutableEnvironmentRegistration,
+        ) -> Result<ExecutableEnvironmentRegistrationOutcome, ExecutableEnvironmentRegistrationError>
+        {
+            self.inner.register(registration).await
+        }
+        async fn withdraw(
+            &self,
+            withdrawal: ExecutableEnvironmentWithdrawal,
+        ) -> Result<ExecutableEnvironmentWithdrawalOutcome, ExecutableEnvironmentRegistrationError>
+        {
+            if self.unavailable.load(Ordering::SeqCst) {
+                return Err(ExecutableEnvironmentRegistrationError::Unavailable(
+                    "latest withdrawal unavailable".into(),
+                ));
+            }
+            self.inner.withdraw(withdrawal).await
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_before_all_uses_acknowledged_latest_intent_and_keeps_failed_latest_retryable()
+    {
+        use crate::execution::CoordinatorEnvironmentRegistrar;
+        use awaken_executable_environment_catalog::{
+            ExecutableEnvironmentCatalog, LocalExecutableEnvironmentRegistrar,
+        };
+        use awaken_executable_environment_contract::WorkQueries;
+        // C1 old Register ack lost; C2 newer Withdraw already acknowledged;
+        // C3 projection/watermark empty after upgrade; C4 Pending runs before All;
+        // C5 latest delivery persistently fails. P1 C1-C4 -> replay true latest,
+        // restore old history only, no healthcheck. P2 +C5 -> history still exists,
+        // no current/queue, old Pending retained for the next latest retry.
+        for fail_latest in [false, true] {
+            let clock = awaken_time::system_clock();
+            let definitions = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(clock.clone()));
+            let authoring = EnvironmentApplication::new(
+                definitions.clone(),
+                Arc::new(RecordingRegistrar::default()),
+                None,
+            );
+            definitions.fail_next_acknowledgements(1);
+            assert!(
+                authoring
+                    .create(create_command("cold-pending", "frozen"))
+                    .await
+                    .is_err()
+            );
+            let item = definitions.list_active().await.unwrap().pop().unwrap();
+            authoring.archive(&item.id).await.unwrap();
+            assert!(
+                definitions
+                    .registration_intent(&item.id, EnvironmentRevision(2))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .delivered
+            );
+            let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+            let work = Arc::new(awaken_work_store::InMemoryWorkQueue::new(clock));
+            let delegate = Arc::new(WithdrawalOutageRegistrar {
+                inner: LocalExecutableEnvironmentRegistrar::new(catalog.clone()),
+                unavailable: AtomicBool::new(fail_latest),
+            });
+            let recovering = EnvironmentApplication::new(
+                definitions.clone(),
+                Arc::new(CoordinatorEnvironmentRegistrar::new(
+                    delegate.clone(),
+                    work.clone(),
+                )),
+                None,
+            );
+            for _ in 0..2 {
+                let result = recovering.drain_registration_intents().await;
+                assert_eq!(result.is_err(), fail_latest, "P1/P2 exact latest outcome");
+                assert!(
+                    catalog.current(&item.id).is_none(),
+                    "P1/P2 history never becomes current"
+                );
+                assert!(
+                    work.list(&item.id).await.unwrap().is_empty(),
+                    "P1/P2 cold watermark cannot permit old work"
+                );
+                assert!(
+                    catalog
+                        .at_revision(&item.id, EnvironmentRevision(1))
+                        .is_some(),
+                    "P1/P2 frozen history always recovers"
+                );
+                assert_eq!(
+                    definitions
+                        .registration_intents(EnvironmentRegistrationIntentFilter::Pending)
+                        .await
+                        .unwrap()
+                        .len(),
+                    usize::from(fail_latest),
+                    "P2 retain retry obligation"
+                );
+            }
+            delegate.unavailable.store(false, Ordering::SeqCst);
+            recovering.drain_registration_intents().await.unwrap();
+            assert!(
+                definitions
+                    .registration_intents(EnvironmentRegistrationIntentFilter::Pending)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(work.list(&item.id).await.unwrap().is_empty());
+        }
     }
 }

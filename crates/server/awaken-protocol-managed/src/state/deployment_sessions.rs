@@ -79,6 +79,21 @@ mod tests {
     struct UnavailableEnvironmentSource;
 
     #[async_trait]
+    impl awaken_executable_environment_contract::ExecutableEnvironmentLifecycleSource
+        for UnavailableEnvironmentSource
+    {
+        async fn current_lifecycle(
+            &self,
+            _environment_id: &str,
+        ) -> Result<
+            Option<awaken_executable_environment_contract::ExecutableEnvironmentLifecycle>,
+            awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError,
+        > {
+            Err(awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError::Unavailable("catalog offline".into()))
+        }
+    }
+
+    #[async_trait]
     impl awaken_executable_environment_contract::ExecutableEnvironmentRegistrationSource
         for UnavailableEnvironmentSource
     {
