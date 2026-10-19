@@ -207,6 +207,7 @@ async fn sqlite_archive_keeps_existing_session_authority_after_reopen() {
 }
 
 #[tokio::test]
+#[ignore = "requires PostgreSQL; run scripts/ci/pg_tests.sh --require-docker"]
 async fn postgres_archive_keeps_existing_session_authority_after_reconnect() {
     // A1 optional+absent is an explicit local skip; A2 required+absent or
     // invalid configuration fails; A3 live must preserve the exact lease and

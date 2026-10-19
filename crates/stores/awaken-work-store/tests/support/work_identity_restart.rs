@@ -120,6 +120,7 @@ fn sqlite_identity_high_watermark_survives_a_native_process_restart() {
 }
 
 #[tokio::test]
+#[ignore = "requires PostgreSQL; run scripts/ci/pg_tests.sh --require-docker"]
 async fn postgres_identity_high_watermark_survives_a_native_process_restart() {
     // A1 optional+absent reports a local skip; A2 required+absent or invalid
     // configuration fails; A3 live runs the exact original seed/assert child
