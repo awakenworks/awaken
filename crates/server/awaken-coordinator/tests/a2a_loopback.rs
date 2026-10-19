@@ -313,13 +313,16 @@ async fn published_delegating_host(
         Arc::new(publications),
     )
     .await
-    .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(materializer))))
+    .with_remote_attempt_executor(awaken_cli::a2a_attempt_executor(Some(materializer))))
     .build()
     .expect("validated Host dependencies")
 }
 
 #[tokio::test]
 async fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
+    // Composition rule A5: relocating production installation must preserve this
+    // neutral attempt/commit path. This fixed transport proves causal routing;
+    // production Agent Card/credential checks are not claimed by this fixture.
     // Causes:
     // C1 parent publication permits researcher and freezes AgentDelegation; C2
     // researcher publication pins a2a:*; C3 one remote attempt executor is
@@ -358,6 +361,10 @@ async fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
 
 #[tokio::test]
 async fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
+    // Composition rules A1/A4/A5: the CLI root installs the same pinned
+    // materializer/capability pair and original resolver, so the exact claim and
+    // header still precede the remote attempt. This success case does not qualify
+    // every rejection partition of that unchanged resolver.
     // Causes:
     // C1 the published remote child pins a card fingerprint, verified origin
     // target, and one exact origin-tagged credential revision; C2 the card requires Bearer auth; C3

@@ -62,9 +62,6 @@ awaken-session-store = { workspace = true }
 # Volatile Environment execution for test/scenario startup only.
 awaken-work-store = { workspace = true, optional = true }
 awaken-executable-environment-catalog = { workspace = true, optional = true }
-# A2A attempt adapter is selected here, at the data-plane process boundary,
-# and injected into the neutral runtime host through `RunAttemptExecutor`.
-awaken-run-executor-a2a = { workspace = true }
 # Volatile scenario wiring is available only through `test-support`; production
 # Coordinator receives exact credential contracts and never opens Vault.
 awaken-credential-vault = { workspace = true, features = ["oauth-command"], optional = true }
@@ -165,6 +162,8 @@ nats = ["awaken-dispatch/nats"]
 container-k8s = ["dep:awaken-container-contract"]
 
 [dev-dependencies]
+# Integration fixtures drive the actual outbound A2A attempt through its neutral port.
+awaken-run-executor-a2a.workspace = true
 # The Broker regressions retain the original real Kube client/ledger fixture.
 awaken-sandbox-kubernetes.workspace = true
 kube = { workspace = true, features = ["client", "rustls-tls", "http-proxy"] }

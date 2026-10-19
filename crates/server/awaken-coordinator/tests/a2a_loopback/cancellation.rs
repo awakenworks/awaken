@@ -73,7 +73,7 @@ fn worker(
     commit: Arc<MemoryCommitCoordinator>,
     owner: &str,
 ) -> DispatchWorker<MemoryDispatchStore> {
-    let installation = awaken_coordinator::a2a_attempt_executor(Some(peer.materializer()));
+    let installation = awaken_cli::a2a_attempt_executor(Some(peer.materializer()));
     let worker = DispatchWorker::new(Arc::new(Runtime::new()), store, commit, owner)
         .with_local_credential_capabilities(installation.credential_realization);
     worker.install_attempt_executor(installation.executor);
@@ -182,6 +182,9 @@ async fn cancellation_case(case: Case) {
 
 #[test]
 fn authenticated_cancellation_recovery_obeys_claim_and_terminal_evidence() {
+    // Composition rule A6: root relocation keeps the original materializer,
+    // adapter and durable recovery owners. Every row below retains its exact
+    // authenticated request order, claim fence, terminal evidence and ACK result.
     // Causes: C1 exact origin credential remains valid/revoked after Awaiting;
     // C2 independent GET observes terminal/still-waiting after accepted cancel;
     // C3 current claim remains live/expires during first GET; C4 Worker is rebuilt.

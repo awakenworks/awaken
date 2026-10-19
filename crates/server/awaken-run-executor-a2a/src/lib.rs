@@ -63,7 +63,9 @@ mod task_driver;
 mod task_projection;
 mod task_state;
 
-pub use awaken_protocol_a2a::{HttpTransport, Transport};
+#[cfg(test)]
+use awaken_protocol_a2a::HttpTransport;
+use awaken_protocol_a2a::Transport;
 use message_identity::*;
 use run_commit::*;
 use task_projection::*;
