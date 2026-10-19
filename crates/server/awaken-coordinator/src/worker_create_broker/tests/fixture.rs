@@ -66,8 +66,7 @@ pub(super) fn no_api_route_fixture() -> NoApiRouteFixture {
     let directory = Arc::new(MemoryWorkerDirectory::new());
     let clock = Arc::new(ManualClock::new(100));
     let router = Arc::new(K8sCreateBroker::new(
-        client,
-        ledger,
+        Arc::new(ledger),
         "sandbox-ns",
         "provider-a",
     ))
@@ -185,8 +184,51 @@ pub(super) struct ReadbackResponse {
     pub(super) polls: Arc<AtomicUsize>,
 }
 
+// The existing response/body adapter has one implementation for GET and POST
+// fault rows. This is test input, not a second effects/ledger authority.
+impl ReadbackResponse {
+    fn into_http(self, capture_error: bool) -> Response<AxumBody> {
+        let Self {
+            status,
+            body,
+            polls,
+        } = self;
+        // A ready data frame counts every first data poll, never a Pending shortcut.
+        let body = Body::from(body).map_frame(move |frame| {
+            polls.fetch_add(1, Ordering::SeqCst);
+            frame
+        });
+        let body = if capture_error {
+            // Real partial data followed by an HTTP-body error, using the
+            // existing library combinator rather than another body/stream impl.
+            AxumBody::new(
+                body.with_trailers(std::future::ready(Some(Err(kube::Error::Service(
+                    Box::new(std::io::Error::other("original body interrupted")),
+                ))))),
+            )
+        } else {
+            AxumBody::new(body)
+        };
+        Response::builder().status(status).body(body).unwrap()
+    }
+}
+
+pub(super) struct ResponsePause {
+    pub(super) method: Method,
+    pub(super) path: String,
+    pub(super) entered: Arc<Notify>,
+    pub(super) release: Arc<Notify>,
+}
+
 pub(super) struct BrokerFixture {
     pub(super) broker: K8sCreateBroker,
+    pub(super) api_client: Client,
+    pub(super) ledger: Arc<K8sWorkerCreateLedger>,
+    pub(super) api_calls: Arc<AtomicUsize>,
+    pub(super) fail_send: Arc<Mutex<Option<Method>>>,
+    pub(super) capture_error: Arc<Mutex<Option<Method>>>,
+    pub(super) post_response: Arc<Mutex<Option<ReadbackResponse>>>,
+    pub(super) response_pause: Arc<Mutex<Option<ResponsePause>>>,
     pub(super) directory: Arc<MemoryWorkerDirectory>,
     pub(super) clock: Arc<ManualClock>,
     pub(super) identity: WorkerIdentity,
@@ -203,6 +245,11 @@ pub(super) struct BrokerFixture {
 // One authoritative existing fake API for the broker's fault/replay tests.
 // Every original request/UID/CAS/projection assertion remains in this helper.
 pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFixture {
+    let api_calls = Arc::new(AtomicUsize::new(0));
+    let fail_send = Arc::new(Mutex::new(None::<Method>));
+    let capture_error = Arc::new(Mutex::new(None::<Method>));
+    let post_response = Arc::new(Mutex::new(None::<ReadbackResponse>));
+    let response_pause = Arc::new(Mutex::new(None::<ResponsePause>));
     let stored = Arc::new(Mutex::new(None::<Value>));
     let pod_posts = Arc::new(AtomicUsize::new(0));
     let created_pod = Arc::new(Mutex::new(None::<Value>));
@@ -211,6 +258,13 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
     let release = Arc::new(Notify::new());
     let completed = Arc::new(Notify::new());
     let service = tower::service_fn({
+        let (api_calls, fail_send, capture_error, post_response, response_pause) = (
+            api_calls.clone(),
+            fail_send.clone(),
+            capture_error.clone(),
+            post_response.clone(),
+            response_pause.clone(),
+        );
         let (stored, created_pod, pod_posts, started, release, completed, readback_response) = (
             stored.clone(),
             created_pod.clone(),
@@ -221,6 +275,13 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
             readback_response.clone(),
         );
         move |request: Request<Body>| {
+            let (api_calls, fail_send, capture_error, post_response, response_pause) = (
+                api_calls.clone(),
+                fail_send.clone(),
+                capture_error.clone(),
+                post_response.clone(),
+                response_pause.clone(),
+            );
             let (stored, created_pod, pod_posts, started, release, completed, readback_response) = (
                 stored.clone(),
                 created_pod.clone(),
@@ -231,8 +292,34 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
                 readback_response.clone(),
             );
             async move {
+                api_calls.fetch_add(1, Ordering::SeqCst);
                 let method = request.method().clone();
                 let path = request.uri().path().to_owned();
+                let raw = (method == Method::POST && path == "/api/v1/namespaces/sandbox-ns/pods")
+                    || (method == Method::GET
+                        && path == "/api/v1/namespaces/sandbox-ns/pods/sandbox-pod");
+                let fail = {
+                    let mut selected = fail_send.lock().unwrap();
+                    if raw && selected.as_ref() == Some(&method) {
+                        selected.take().is_some()
+                    } else {
+                        false
+                    }
+                };
+                if fail {
+                    if method == Method::POST {
+                        pod_posts.fetch_add(1, Ordering::SeqCst);
+                    }
+                    return Err(std::io::Error::other("original API service unavailable"));
+                }
+                let fail_capture = {
+                    let mut selected = capture_error.lock().unwrap();
+                    if raw && selected.as_ref() == Some(&method) {
+                        selected.take().is_some()
+                    } else {
+                        false
+                    }
+                };
                 let bytes = request.into_body().collect_bytes().await.unwrap();
                 let body: Value = if bytes.is_empty() {
                     Value::Null
@@ -318,6 +405,9 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
                         pod_posts.fetch_add(1, Ordering::SeqCst);
                         started.notify_one();
                         release.notified().await;
+                        if let Some(response) = post_response.lock().unwrap().take() {
+                            return Ok(response.into_http(fail_capture));
+                        }
                         let mut object = body;
                         object["apiVersion"] = "v1".into();
                         object["kind"] = "Pod".into();
@@ -327,23 +417,8 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
                         (201, object)
                     }
                     ("GET", "/api/v1/namespaces/sandbox-ns/pods/sandbox-pod") => {
-                        if let Some(ReadbackResponse {
-                            status,
-                            body,
-                            polls,
-                        }) = readback_response.lock().unwrap().take()
-                        {
-                            // This body is immediately ready with one data
-                            // frame: any first poll invokes this exact counter.
-                            // The Kube client wraps the real HTTP body as usual.
-                            let body = Body::from(body).map_frame(move |frame| {
-                                polls.fetch_add(1, Ordering::SeqCst);
-                                frame
-                            });
-                            return Ok(Response::builder()
-                                .status(status)
-                                .body(AxumBody::new(body))
-                                .unwrap());
+                        if let Some(response) = readback_response.lock().unwrap().take() {
+                            return Ok(response.into_http(fail_capture));
                         }
                         (200, created_pod.lock().unwrap().clone().unwrap())
                     }
@@ -360,6 +435,23 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
                     }
                     _ => panic!("unexpected test Kubernetes request {method} {path}"),
                 };
+                // Pause only the explicitly selected original response. All ConfigMap
+                // guards above have dropped before awaiting real Registry mutations.
+                let pause = {
+                    let mut selected = response_pause.lock().unwrap();
+                    if selected
+                        .as_ref()
+                        .is_some_and(|pause| pause.method == method && pause.path == path)
+                    {
+                        selected.take()
+                    } else {
+                        None
+                    }
+                };
+                if let Some(pause) = pause {
+                    pause.entered.notify_one();
+                    pause.release.notified().await;
+                }
                 Ok::<_, std::io::Error>(
                     Response::builder()
                         .status(code)
@@ -405,7 +497,8 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
         .heartbeat(&identity, empty_heartbeat(1, true), 100, 60_000)
         .await
         .unwrap();
-    let broker = K8sCreateBroker::new(client, ledger, "sandbox-ns", "provider-a");
+    let ledger = Arc::new(ledger);
+    let broker = K8sCreateBroker::new(ledger.clone(), "sandbox-ns", "provider-a");
     let create = K8sCreateRequest {
         path: "/api/v1/namespaces/sandbox-ns/pods".into(),
         object: json!({"metadata":{
@@ -414,6 +507,13 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
         }}),
     };
     BrokerFixture {
+        api_calls,
+        fail_send,
+        capture_error,
+        post_response,
+        response_pause,
+        api_client: client,
+        ledger,
         broker,
         directory,
         clock,

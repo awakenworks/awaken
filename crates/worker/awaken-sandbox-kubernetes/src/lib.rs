@@ -150,7 +150,7 @@ pub use sandbox_control::{
     pod_for_plan_with_control_forwarder,
 };
 
-pub use create_ledger::{K8sWorkerCreateLedger, WorkerCreateLedgerState, collect_create_body};
+pub use create_ledger::{K8sWorkerCreateLedger, WorkerCreateLedgerState};
 pub use create_transport::K8sCreateTransport;
 pub(crate) use create_transport::brokered_client;
 pub use package_image::K8sPackageImageProvisioner;

@@ -682,6 +682,7 @@ dependencies = [
 name = "awaken-container-contract"
 version = "1.0.0"
 dependencies = [
+ "async-trait",
  "awaken-agent-contract",
  "awaken-provisioning-contract",
  "blake3",

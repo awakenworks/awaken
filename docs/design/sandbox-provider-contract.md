@@ -119,3 +119,40 @@ After all Coordinator ticket imports move to the contract, its unused direct
 sandbox-container dependency is removed. The original concrete Kubernetes
 ledger/client still retains the indirect container implementation path; this
 single edge removal is not whole Coordinator implementation independence.
+
+
+## Privileged Create Broker effects boundary (2026-10-19)
+
+`awaken-container-contract::K8sCreateBrokerEffects` is the Coordinator Create
+broker's caller role. The original `K8sWorkerCreateLedger` implements its eight
+ledger observations/operations and two raw API effects directly. Their former
+inherent bodies are moved, not kept as forwarding compatibility methods. The
+CLI constructs one ledger Arc for Broker and its original binding/stop adapters;
+Broker receives only that same role Arc, not a separately selectable client.
+
+The original raw Client/Body/collector stays private to Kubernetes. GET non200
+returns unobservable without polling the body; exact200 and every POST capture
+the complete body under the original explicit profile. RawCreateFailurePhase
+names only RequestBuild, Send or Capture, not no-effect/retry/cleanup authority.
+It is not serialized. Coordinator keeps all path/JSON/current Registry/nonce/
+UID/digest/definitive-result/Seal decisions and their exact outward errors. The
+original detached lifetime, ConfigMap UID/resourceVersion CAS, nonce-once,
+capacity, isolation/finalizer and finish-after-complete-encoding laws stay put.
+Only the existing collector remains, with its dead public export removed.
+
+Platform callers of the moved methods import K8sCreateBrokerEffects directly
+from its contract; K8sCreateBroker::new takes one effects Arc plus the original
+namespace/provider inputs. Registration/process retention and provider-private
+isolation methods remain inherent. Worker K8sCreateTransport is the opposite
+signed remote direction and gains no privileged role or RBAC permission. The
+current inspected Cloud Rust roots have no direct Broker/ledger/collector calls;
+that bounded source observation does not qualify unknown external consumers.
+
+Coordinator removes the two concrete normal dependencies but keeps them as
+explicit dev dependencies for its original real client/ledger regressions. The
+shared CLI still assembles Kubernetes and Worker, and other Coordinator paths
+still reach executor-side implementations. This change does not claim zero
+component-total/binary closure, physical cleanup or a Session cleanup receipt.
+SDK release types, source and snapshots are outside this migration. Final
+qualification and the normal Cargo-generated lock must bind the actual received
+source rather than these prepared source changes.

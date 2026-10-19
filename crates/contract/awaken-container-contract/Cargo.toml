@@ -10,11 +10,12 @@ product = "platform"
 bounded_context = "environment"
 layer = "contract"
 # ADR-0081 §1 interface kinds this crate may hold (types | spi | api | remote | ext).
-kinds = ["types"]
+kinds = ["types", "spi"]
 authority = "container-environment"
 separation = "contract"
 
 [dependencies]
+async-trait.workspace = true
 blake3 = "1"
 # Pure container wire and capacity values share provisioning vocabulary.
 awaken-provisioning-contract.workspace = true
