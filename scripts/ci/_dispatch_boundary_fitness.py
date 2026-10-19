@@ -60,7 +60,6 @@ COORDINATOR_WORKER_SIDE_ENTRIES: frozenset[str] = frozenset(
     {
         "awaken-credential-materializer",
         "awaken-session-executor",
-        "awaken-store-fs",
     }
 )
 

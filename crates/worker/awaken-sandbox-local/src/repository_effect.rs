@@ -152,7 +152,7 @@ pub(crate) fn temporary_root(root: &Path) -> PathBuf {
 impl Request {
     pub(crate) fn new(
         root: &Path,
-        identity: awaken_sandbox_fs::DirectoryIdentity,
+        identity: awaken_fs_durability::DirectoryIdentity,
         plan: &pc::RepositoryRealizationPlan,
         publication: Option<&pc::RepositoryPublicationExpectation>,
         credential: Option<&pc::RepositoryHttpBasicCredential>,
@@ -192,7 +192,7 @@ impl Request {
                 "repository root must be absolute",
             ));
         }
-        let identity = awaken_sandbox_fs::directory_identity_nofollow(&self.root)
+        let identity = awaken_fs_durability::directory_identity_nofollow(&self.root)
             .map_err(|_| pc::SandboxError::not_found("repository root is unavailable"))?;
         if (identity.device, identity.inode) != self.root_identity {
             return Err(pc::SandboxError::conflict(
@@ -206,7 +206,7 @@ impl Request {
                 "repository temporary directory is not sandbox-owned",
             ));
         }
-        awaken_sandbox_fs::create_relative_directory_all(
+        awaken_fs_durability::create_relative_directory_all(
             &self.root,
             identity,
             temporary
@@ -338,7 +338,7 @@ mod tests {
     fn request(root: &Path, credential: Option<&pc::RepositoryHttpBasicCredential>) -> Request {
         Request::new(
             root,
-            awaken_sandbox_fs::directory_identity_nofollow(root).unwrap(),
+            awaken_fs_durability::directory_identity_nofollow(root).unwrap(),
             &pc::RepositoryRealizationPlan {
                 repository_id: "repo".into(),
                 mount_path: "/workspace/repo".into(),

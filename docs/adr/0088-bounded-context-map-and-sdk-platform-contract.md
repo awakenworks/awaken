@@ -650,3 +650,50 @@ searches found no calls to these three App entries or the Query constructor.
 That evidence does not qualify an unknown downstream or an old pinned build.
 The scoped read keeps its current-root ownership gate; historical prefix reads
 keep their already-frozen reference and never require a live source projection.
+
+
+## Amendment — 2026-10-20: one shared native filesystem owner
+
+The policy-free native filesystem component previously named
+`awaken-sandbox-fs` belongs to the existing storage boundary identified above.
+Its code is received by `awaken-fs-durability`; the old safe crate and its public
+namespace are removed, and every actual caller uses the same new owner. The
+component owns physical inode/handle identity, no-follow file/directory effects,
+atomic publication and bounded scans. Session leases, realization marker CAS,
+Workspace identity, Repository mutations and provider retry decisions stay in
+their existing callers. Paths, serialized identities, error projections and
+native effect ordering do not change.
+
+Directory flush remains the existing default API. One additive, default-off
+`native-fs` compile capability selects the original native component; the five
+normal FS consumers and the Executor fixture explicitly request it through
+their dependency declarations. Missing selection is a compile error, never a
+runtime fallback. Flush-only consumers do not request the capability, so this
+edge retains its original default dependency contribution. Cargo can unify
+features when another consumer in the same build requests native support; this
+is not a promise that the complete CLI/workspace graph stays flush-only.
+
+The original small Win32 unsafe isolation component moves as
+`awaken-fs-win32`, in shared storage. Its checked safe interface and private
+unsafe implementation remain separate from the safe owner: the safe crate
+keeps the workspace unsafe prohibition. Local fixed NTFS, 64-bit physical
+identity, ancestor pinning, reparse/link refusals, unsupported targets and
+platform-specific contracts retain their existing meaning. This changes real
+implementation ownership and callers, not the D3 recognizer or an exemption.
+The old package is removed; no compatibility wrapper or alternate syscall
+implementation is introduced.
+
+Tests and their original decision tables move with the physical owner. The
+existing portability executor explicitly requests native support and still
+requires its original Windows long-path case. Default/native compile boundaries
+and actual target-native execution remain distinct evidence. Source movement
+or Linux tests do not revise historical Windows/macOS execution observations.
+The Coordinator keeps its durable FS adapter, single-flight commit authority
+and distinct Thread/Worker checkpoint layouts. The Store-FS D3 entry shrinks
+only because that adapter no longer brings a Worker filesystem implementation.
+
+These are Platform implementation paths, outside the SDK22 public surface.
+The bounded Cloud/Flow source review found no import of the removed native
+filesystem namespaces; no downstream compatibility alias is retained. Actual
+Git-pin, archive and downstream consumption remain separate qualification, and
+SDK versions, deep paths and release-cohort decisions do not change here.

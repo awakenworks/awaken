@@ -187,7 +187,7 @@ def scan(root: Path) -> Scan:
 # The sources that state their own role: every Rust source under crates/ and
 # every Web source under web/src/. One rule serves both sides -- the scan reads
 # anchors only here, and an obligation file may not name such a source.
-SOURCE_ANCHORED = re.compile(r"(?:crates/.+\.rs|web/src/.+)")
+SOURCE_ANCHORED = re.compile(r"(?:crates/.+\.rs|web/src/.+)", re.DOTALL)
 HEADER_PREFIX = "// @formal "
 HEADER = re.compile(r"^// @formal (?P<role>[a-z][a-z-]*):?(?: (?P<value>\S(?:.*\S)?))?$")
 HEADER_ROLES = ("entrypoint", "evidence", "surface", "reason", "owner")

@@ -454,7 +454,7 @@ fn fenced_marker_phase_root_fence_and_incarnation_table_is_total() {
         .recorded_admission(|held, admitted| held.prepare_root(admitted))
         .unwrap();
     assert_eq!(
-        awaken_sandbox_fs::directory_identity_nofollow(&root).unwrap(),
+        awaken_fs_durability::directory_identity_nofollow(&root).unwrap(),
         identity
     );
     let first_evidence = first
@@ -469,7 +469,7 @@ fn fenced_marker_phase_root_fence_and_incarnation_table_is_total() {
     );
     assert_eq!(std::fs::read(root.join("preserved")).unwrap(), b"ready");
 
-    awaken_sandbox_fs::remove_directory_tree_exact(&root, identity).unwrap();
+    awaken_fs_durability::remove_directory_tree_exact(&root, identity).unwrap();
     let rebuild = fence("rebuild", 2);
     let mut recreating = begin(
         &root,
@@ -506,7 +506,7 @@ fn fenced_marker_phase_root_fence_and_incarnation_table_is_total() {
     let replacement = base.path().join("foreign");
     std::fs::create_dir(&replacement).unwrap();
     let rebuilt_identity = rebuilt.root_identity();
-    awaken_sandbox_fs::remove_directory_tree_exact(&root, rebuilt_identity).unwrap();
+    awaken_fs_durability::remove_directory_tree_exact(&root, rebuilt_identity).unwrap();
     std::fs::rename(&replacement, &root).unwrap();
     assert!(
         begin(&root, &fingerprint, &rebuild, None, None).is_err(),

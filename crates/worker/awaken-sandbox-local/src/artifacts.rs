@@ -13,10 +13,10 @@ use awaken_resource_contract::content_id;
 /// fault is surfaced rather than being misreported as an empty output set.
 pub(crate) fn scan_outputs(
     root: &IsolatedRoot,
-    root_identity: awaken_sandbox_fs::DirectoryIdentity,
+    root_identity: awaken_fs_durability::DirectoryIdentity,
     outputs_path: &str,
 ) -> Result<Vec<(pc::Artifact, Vec<u8>)>, pc::SandboxError> {
-    awaken_sandbox_fs::read_regular_tree_nofollow(
+    awaken_fs_durability::read_regular_tree_nofollow(
         root.root(),
         root_identity,
         std::path::Path::new(outputs_path.trim_start_matches('/')),
@@ -60,7 +60,7 @@ mod tests {
         assert!(
             scan_outputs(
                 &IsolatedRoot::new(&missing),
-                awaken_sandbox_fs::DirectoryIdentity {
+                awaken_fs_durability::DirectoryIdentity {
                     device: 0,
                     inode: 0
                 },
@@ -79,7 +79,7 @@ mod tests {
         std::fs::write(outputs.join("b.txt"), b"bbb").unwrap();
         std::fs::write(outputs.join("sub/a.txt"), b"aa").unwrap();
 
-        let identity = awaken_sandbox_fs::directory_identity_nofollow(root.path()).unwrap();
+        let identity = awaken_fs_durability::directory_identity_nofollow(root.path()).unwrap();
         let arts = scan_outputs(
             &IsolatedRoot::new(root.path()),
             identity,
@@ -107,7 +107,7 @@ mod tests {
         let outputs = root.path().join("mnt/session/outputs");
         std::fs::create_dir_all(&outputs).unwrap();
         std::os::unix::fs::symlink("/no/such/target", outputs.join("dangling")).unwrap();
-        let identity = awaken_sandbox_fs::directory_identity_nofollow(root.path()).unwrap();
+        let identity = awaken_fs_durability::directory_identity_nofollow(root.path()).unwrap();
         assert!(
             scan_outputs(
                 &IsolatedRoot::new(root.path()),

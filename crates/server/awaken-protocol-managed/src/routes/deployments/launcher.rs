@@ -170,10 +170,6 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
             "awaken.deployment_id".to_string(),
             request.deployment_id.clone(),
         );
-        metadata.insert(
-            "awaken.deployment_run_id".to_string(),
-            request.deployment_run_id.clone(),
-        );
         let create = crate::types::SessionCreateParams {
             agent: crate::types::AgentRef::Object(Box::new(crate::types::AgentRefObject::Agent {
                 id: request.agent.id,

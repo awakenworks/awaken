@@ -167,7 +167,6 @@ awaken-container-contract = { path = "crates/contract/awaken-container-contract"
 awaken-session-environment-contract = { path = "crates/contract/awaken-session-environment-contract" }
 awaken-session-environment = { path = "crates/worker/awaken-session-environment" }
 awaken-local-process = { path = "crates/worker/awaken-local-process" }
-awaken-sandbox-fs = { path = "crates/worker/awaken-sandbox-fs", version = "1.0.0" }
 awaken-fs-durability = { path = "crates/shared/awaken-fs-durability", version = "1.0.0" }
 awaken-installation-workspace = { path = "crates/worker/awaken-installation-workspace" }
 awaken-sandbox-policy-store = { path = "crates/server/awaken-sandbox-policy-store" }

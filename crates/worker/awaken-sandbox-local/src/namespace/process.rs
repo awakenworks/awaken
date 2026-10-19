@@ -13,7 +13,7 @@ impl LaunchInfo {
     /// earlier child-side `dup2`.
     pub(super) fn attach(
         command: &mut TokioCommand,
-        runtime_roots: Vec<awaken_sandbox_fs::ProjectionRoot>,
+        runtime_roots: Vec<awaken_fs_durability::ProjectionRoot>,
     ) -> Result<Self, pc::SandboxError> {
         #[cfg(target_os = "linux")]
         {
@@ -94,7 +94,7 @@ impl LaunchInfo {
 pub(crate) fn attach_syscall_profile(
     command: &mut TokioCommand,
     profile: awaken_local_process::seccomp::SyscallProfile,
-    runtime_roots: Vec<awaken_sandbox_fs::ProjectionRoot>,
+    runtime_roots: Vec<awaken_fs_durability::ProjectionRoot>,
 ) -> Result<(), pc::SandboxError> {
     map_launch_fds(command, None, profile, runtime_roots)
 }
@@ -106,7 +106,7 @@ fn map_launch_fds(
     command: &mut TokioCommand,
     report: Option<std::os::fd::OwnedFd>,
     profile: awaken_local_process::seccomp::SyscallProfile,
-    runtime_roots: Vec<awaken_sandbox_fs::ProjectionRoot>,
+    runtime_roots: Vec<awaken_fs_durability::ProjectionRoot>,
 ) -> Result<(), pc::SandboxError> {
     use awaken_local_process::seccomp::BUBBLEWRAP_FILTER_FDS;
     use command_fds::{CommandFdExt, FdMapping};
@@ -174,7 +174,7 @@ pub(super) fn runtime_root_fd(index: usize) -> Result<i32, pc::SandboxError> {
 pub(super) fn pin_runtime_roots(
     argv: &mut Vec<String>,
     roots: &[String],
-) -> Result<Vec<awaken_sandbox_fs::ProjectionRoot>, pc::SandboxError> {
+) -> Result<Vec<awaken_fs_durability::ProjectionRoot>, pc::SandboxError> {
     let mut pinned = Vec::new();
     for destination in roots {
         let position = argv

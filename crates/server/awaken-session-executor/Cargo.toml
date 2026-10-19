@@ -150,7 +150,7 @@ awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"
 awaken-dispatch-testkit = { workspace = true }
 # The durable session-store round-trip test opens a real sessions.db under a temp dir.
 # Test fixtures cut an exact physical Environment root by inode.
-awaken-sandbox-fs = { workspace = true }
+awaken-fs-durability = { workspace = true, features = ["native-fs"] }
 tempfile = "3"
 # The sandboxed-channel-source integration test observes what the bwrap-confined
 # agent said through the in-memory commit boundary.

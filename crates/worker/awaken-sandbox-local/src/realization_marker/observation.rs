@@ -66,7 +66,7 @@ fn observe_adoption_inner(
     handle_fence: Option<&pc::SandboxEffectFence>,
     physical_incarnation: Option<&str>,
     current_fence: Option<&pc::SandboxEffectFence>,
-    lock: Option<&awaken_sandbox_fs::ExclusiveFileLock>,
+    lock: Option<&awaken_fs_durability::ExclusiveFileLock>,
 ) -> Result<pc::SandboxObservation, pc::SandboxError> {
     let current = match (fingerprint, handle_fence, physical_incarnation) {
         (None, None, None) => None,
