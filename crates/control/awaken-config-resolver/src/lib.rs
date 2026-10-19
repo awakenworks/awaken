@@ -683,7 +683,7 @@ pub fn cooldown_deadline(
                 .unwrap_or(DEFAULT_COOLDOWN_MS);
             Some(now_ms.saturating_add(window))
         }
-        Disposition::Transient | Disposition::Permanent => None,
+        Disposition::Transient | Disposition::Permanent | Disposition::StopRouting => None,
     }
 }
 
@@ -1190,6 +1190,7 @@ mod tests {
         // Transient / permanent failures never cool the identity.
         assert_eq!(cooldown_deadline(Disposition::Transient, 1_000), None);
         assert_eq!(cooldown_deadline(Disposition::Permanent, 1_000), None);
+        assert_eq!(cooldown_deadline(Disposition::StopRouting, 1_000), None);
     }
 
     // ---- CEG 02: resolve_credential unit cases (R1–R10) ----

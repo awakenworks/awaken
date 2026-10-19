@@ -359,3 +359,70 @@ async fn explicit_claim_controls_continue_after_original_slots_drop() {
         ]
     );
 }
+
+#[tokio::test]
+async fn model_gate_preserves_local_and_remote_control_failure_grades() {
+    // Causes: C1 embedded/remote authority, C2 unavailable/not-ready/rejected
+    // disposition. Cross C1 x C2: preserve transient/overloaded/permanent grade
+    // and original diagnostic, without relabeling every error Unauthorized.
+    // Each remote row makes exactly one claim-fenced call. This adapter cannot
+    // mint inference completion evidence; the Runtime owns pre-Provider proof.
+    use awaken_runtime_contract::resilience::FailureClass;
+    use awaken_session_realization_contract::{
+        ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, SessionRealizationControlFailure as F,
+    };
+    let rows = [
+        (
+            awaken_session_types::RunError::unavailable("causal dependency"),
+            F::Unavailable("causal dependency".into()),
+            FailureClass::Transient,
+        ),
+        (
+            awaken_session_types::RunError::unavailable_classified(
+                ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
+                "causal capacity",
+            ),
+            F::NotReady,
+            FailureClass::Overloaded { retry_after: None },
+        ),
+        (
+            awaken_session_types::RunError::bad_request("causal rejection"),
+            F::Invalid("causal rejection".into()),
+            FailureClass::Permanent,
+        ),
+    ];
+    for (local_error, remote_error, expected) in rows {
+        let local: Arc<dyn SessionAgentCoordination> =
+            Arc::new(RecordingSessionAgentCoordination {
+                model_error: std::sync::Mutex::new(Some(local_error)),
+                ..Default::default()
+            });
+        let control = Arc::new(RemoteControl {
+            model_error: Some(remote_error.into()),
+            ..Default::default()
+        });
+        for endpoint in [
+            CoordinationEndpoint::Local(Arc::downgrade(&local)),
+            CoordinationEndpoint::Remote {
+                control: control.clone(),
+                slots: Weak::new(),
+            },
+        ] {
+            let exact = claim();
+            let error = HostModelRequestGate::claimed(endpoint, "session".into(), exact.clone())
+                .admit_model_request(ModelRequestAdmissionRequest {
+                    run_id: exact.run_id,
+                    thread_id: ThreadId("thread".into()),
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(error.class(), expected);
+            assert_ne!(error.code(), "unauthorized");
+            assert_eq!(
+                error.execution_evidence(),
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::Unknown
+            );
+        }
+        assert_eq!(control.calls.lock().unwrap().len(), 1);
+    }
+}

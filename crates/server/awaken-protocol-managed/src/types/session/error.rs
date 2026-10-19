@@ -159,16 +159,26 @@ impl SessionError {
                     .map_or("unknown_error", |_| "mcp_authentication_failed_error"),
                 RetryStatus::Terminal,
             ),
-            "rate_limited" => ("model_rate_limited_error", RetryStatus::Exhausted),
+            "rate_limited" | "model_admission_rate_limited" => {
+                ("model_rate_limited_error", RetryStatus::Exhausted)
+            }
             "overloaded" => ("model_overloaded_error", RetryStatus::Exhausted),
             // These are model-owned, non-retryable failures. In particular,
             // billing exhaustion must not lose its model origin or look like
             // ordinary retry exhaustion at the Managed boundary.
-            "binding_rejected" | "context_overflow" | "invalid_request" | "unauthorized"
-            | "usage_limit" | "login_required" | "model_not_found" | "content_filtered" => {
-                ("model_request_failed_error", RetryStatus::Terminal)
+            "binding_rejected"
+            | "context_overflow"
+            | "invalid_request"
+            | "unauthorized"
+            | "usage_limit"
+            | "login_required"
+            | "model_not_found"
+            | "content_filtered"
+            | "model_admission_usage_limit"
+            | "model_admission_rejected" => ("model_request_failed_error", RetryStatus::Terminal),
+            "provider_error" | "timeout" | "model_admission_unavailable" => {
+                ("model_request_failed_error", RetryStatus::Exhausted)
             }
-            "provider_error" | "timeout" => ("model_request_failed_error", RetryStatus::Exhausted),
             "activation_failed" => ("unknown_error", RetryStatus::Terminal),
             _ => ("unknown_error", RetryStatus::Exhausted),
         };
@@ -194,6 +204,43 @@ fn code_message_server_name(code: &str, message: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admission_faults_keep_known_model_variants_without_inventing_execution_unknown() {
+        // R1 hard quota/rejection -> terminal known model refusal; R2 temporary
+        // admission dependency failure -> exhausted known model refusal;
+        // R3 admission throttling -> exhausted rate-limit variant. Every row
+        // preserves the original message and needs no MCP server field. The
+        // separate ExecutionUnknown projector retains its terminal semantics.
+        for (code, kind, status) in [
+            (
+                "model_admission_usage_limit",
+                "model_request_failed_error",
+                RetryStatus::Terminal,
+            ),
+            (
+                "model_admission_rejected",
+                "model_request_failed_error",
+                RetryStatus::Terminal,
+            ),
+            (
+                "model_admission_unavailable",
+                "model_request_failed_error",
+                RetryStatus::Exhausted,
+            ),
+            (
+                "model_admission_rate_limited",
+                "model_rate_limited_error",
+                RetryStatus::Exhausted,
+            ),
+        ] {
+            let projected = SessionError::classify(code, "exact admission cause");
+            assert_eq!(projected.kind, kind, "{code}");
+            assert_eq!(projected.retry_status, status, "{code}");
+            assert_eq!(projected.message, "exact admission cause");
+            assert!(projected.mcp_server_name.is_none());
+        }
+    }
 
     /// Causes: the committed neutral code and, for MCP faults, presence of the
     /// server marker in the message. Effects: the SDK kind, required server

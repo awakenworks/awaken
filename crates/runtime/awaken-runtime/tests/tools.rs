@@ -1485,7 +1485,8 @@ async fn returned_tool_cannot_hide_an_inline_participants_quiescence_veto() {
         async fn admit_model_request(
             &self,
             _: awaken_runtime_contract::llm::ModelRequestAdmissionRequest,
-        ) -> Result<awaken_runtime_contract::llm::ModelRequestAdmission, String> {
+        ) -> awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ModelRequestAdmission>
+        {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(awaken_runtime_contract::llm::ModelRequestAdmission::Admit)
         }

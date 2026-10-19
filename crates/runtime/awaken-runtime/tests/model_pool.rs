@@ -210,6 +210,74 @@ fn no_retries() -> RetryPolicy {
     }
 }
 
+type ErrorClassifier = fn(LlmError) -> LlmError;
+
+struct ClassifiedLlm {
+    route: RouteLlm,
+    classify: ErrorClassifier,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for ClassifiedLlm {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        self.route.infer(request).await.map_err(self.classify)
+    }
+}
+
+#[tokio::test]
+async fn admission_failure_cannot_be_hidden_by_a_successful_fallback_model() {
+    // Decision rows: the primary reports either admission overload or caller
+    // cancellation, with an independently safe physical return. A published
+    // fallback could succeed and per-request retries are disabled. Both rows
+    // must stop routing: one primary call, one failed audit observation and
+    // the original terminal code. Neither can manufacture natural success;
+    // ordinary Provider failover is covered next.
+    let rows: [(&str, ErrorClassifier); 2] = [
+        ("model_admission_unavailable", |source| {
+            LlmError::Admission {
+                source: Box::new(source),
+            }
+        }),
+        ("cancelled", |source| {
+            LlmError::Cancelled("caller cancelled".into())
+                .with_execution_evidence(source.execution_evidence())
+        }),
+    ];
+    for (code, classify) in rows {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let runtime = Runtime::new()
+            .with_llm(Arc::new(ClassifiedLlm {
+                route: RouteLlm {
+                    failing: vec!["primary"],
+                    seen: seen.clone(),
+                },
+                classify,
+            }))
+            .with_retry_policy(no_retries());
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+        let outcome = runtime
+            .execute(
+                activation("primary", &["fallback"]),
+                RuntimeRunContext::new().with_commit(commit.clone()),
+            )
+            .await
+            .expect("Run terminates");
+        assert!(
+            matches!(&outcome, RunState::Ended(EndCause::Error(
+            awaken_agent_contract::agent::run::Failure::Inference { code: actual, .. }
+        )) if actual == code),
+            "{outcome:?}"
+        );
+        assert_eq!(&*seen.lock().unwrap(), &["primary"]);
+        let observed = committed_model_requests(&commit);
+        assert_eq!(observed.len(), 1);
+        assert!(observed[0].is_error);
+    }
+}
+
 #[tokio::test]
 async fn primary_failure_fails_over_to_the_next_candidate() {
     // Causes: C1 the primary logical request fails; C2 the ordered fallback

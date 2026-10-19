@@ -118,7 +118,7 @@ async fn native_returned_error_retains_slot_while_detached_provider_is_still_run
 async fn assert_native_uncertainty_retains_physical_slot(return_unknown_error: bool) {
     // Q1 Native model entered; Q2 remote execution outlives the local 30ms watchdog (20ms response
     // window + 10ms allowance); Q2b adapter's own deadline returns Err normally while remote work
-    // lives. Q3 inner retry and outer tolerance enabled; Q4 new owner reclaims lease. E1 exactly one
+    // lives. Q3 request retries enabled and further steps available; Q4 new owner reclaims lease. E1 exactly one
     // physical provider invocation; E2 durable slot retained; E3 replacement cannot begin, even
     // after logical Indeterminate commits. Rules: Q1+(Q2|Q2b)+Q3=>E1/E2; Q4+E2=>E3. Unlike a
     // blocking custom Attempt, this crosses the actual Native inference/timeout/journal/Worker seam.
@@ -131,16 +131,13 @@ async fn assert_native_uncertainty_retains_physical_slot(return_unknown_error: b
         calls: std::sync::atomic::AtomicUsize::new(0),
         live: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     });
-    let runtime = Arc::new(
-        Runtime::new()
-            .with_llm(model.clone())
-            .with_max_consecutive_inference_failures(3)
-            .with_retry_policy(awaken_runtime::RetryPolicy {
-                budget: ModelInferenceBudget::new(ms(90), ms(20), ms(20), ms(10)).unwrap(),
-                max_retries: 3,
-                ..Default::default()
-            }),
-    );
+    let runtime = Arc::new(Runtime::new().with_llm(model.clone()).with_retry_policy(
+        awaken_runtime::RetryPolicy {
+            budget: ModelInferenceBudget::new(ms(90), ms(20), ms(20), ms(10)).unwrap(),
+            max_retries: 3,
+            ..Default::default()
+        },
+    ));
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));

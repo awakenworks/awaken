@@ -5,10 +5,11 @@
 //! onto the retry domain. Everything that asks "may this be retried, and
 //! when?" reads that projection:
 //!
-//! - [`Error::is_retryable`] (the circuit breaker's counted set and the
-//!   checkpoint/salvage gate) is [`FailureClass::is_retryable`];
-//! - the routing [`Disposition`] (failover / credential cooldown) is
-//!   [`FailureClass::disposition`];
+//! - [`Error::is_retryable`] (the checkpoint/salvage gate) is
+//!   [`FailureClass::is_retryable`]; Provider health additionally requires a
+//!   Provider-owned error, as projected by the circuit-breaker permit;
+//! - the routing [`Disposition`] (failover / credential cooldown) uses
+//!   [`FailureClass::disposition`] unless admission ownership stops routing;
 //! - the same-call retry loop asks [`RetryPolicy::decide`] once per failed
 //!   attempt and obeys its [`RetryVerdict`].
 //!
@@ -56,8 +57,8 @@ pub enum FailureClass {
 }
 
 impl FailureClass {
-    /// Whether retrying the identical call can succeed at all. The circuit
-    /// breaker counts exactly this set as provider-health failures.
+    /// Whether retrying the identical call can succeed at all. Provider health
+    /// additionally requires a Provider-owned failure, not an admission refusal.
     #[must_use]
     pub const fn is_retryable(self) -> bool {
         matches!(
@@ -98,9 +99,9 @@ impl FailureClass {
                 retry_after: reset_after,
             },
             Self::Permanent => Disposition::Permanent,
-            // A cancellation is no evidence against this binding: neither
-            // failover nor cooldown, which is exactly the Transient routing.
-            Self::Cancelled => Disposition::Transient,
+            // A cancellation is no evidence against this binding and must not
+            // become success on a later candidate.
+            Self::Cancelled => Disposition::StopRouting,
         }
     }
 }
@@ -131,14 +132,18 @@ impl Error {
             | Error::ContentFiltered(_) => FailureClass::Permanent,
             Error::Cancelled(_) => FailureClass::Cancelled,
             // `classification()` never returns the evidence wrapper.
-            Error::Observed { source, .. } => source.class(),
+            Error::Observed { source, .. } | Error::Admission { source } => source.class(),
         }
     }
 }
 
 impl Classify for Error {
     fn disposition(&self) -> Disposition {
-        self.class().disposition()
+        match self {
+            Error::Observed { source, .. } => source.disposition(),
+            Error::Admission { .. } => Disposition::StopRouting,
+            _ => self.class().disposition(),
+        }
     }
 }
 
@@ -528,7 +533,7 @@ mod tests {
                 || Error::Cancelled("run cancelled".into()),
                 FailureClass::Cancelled,
                 false,
-                Disposition::Transient,
+                Disposition::StopRouting,
             ),
         ];
         for (error, class, retryable, disposition) in rows {

@@ -1,5 +1,5 @@
 // @formal surface requirement=platform.resilience.failure_safety
-// @formal reason: Neutral failure-disposition vocabulary only: the Transient/Quota/Permanent projection
+// @formal reason: Neutral failure-disposition vocabulary only: Transient/Quota/Permanent/StopRouting
 // @formal reason: and the Classify port that inference and sandbox failures implement. It holds no retry
 // @formal reason: state and performs no effect; the bounded retry kernel and its Kani proofs stay with
 // @formal reason: their owner in awaken-runtime-contract. This is a product-requirement classification,
@@ -15,13 +15,15 @@ use std::time::Duration;
 
 /// The failover disposition of an inference failure.
 ///
-/// Three states, collapsing a finer failure taxonomy onto the only distinction
+/// Four states, projecting a finer failure taxonomy onto the distinction
 /// a router acts on:
 /// - [`Transient`](Self::Transient): retrying the *same* binding may succeed.
 /// - [`Quota`](Self::Quota): a rate/quota signal *against this credential-identity*
 ///   — prefer another candidate and cool this one until `retry_after`.
 /// - [`Permanent`](Self::Permanent): retrying the identical request cannot succeed;
 ///   only a different binding or an authored change can.
+/// - [`StopRouting`](Self::StopRouting): the application prerequisite or caller
+///   owns the failure; preserve the selected binding and its health state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Disposition {
     /// A transport blip, timeout, or provider overload — the same call may work
@@ -34,6 +36,9 @@ pub enum Disposition {
     /// A permanent rejection of this request shape (bad binding, context overflow,
     /// auth failure, missing model, content filter).
     Permanent,
+    /// Stop candidate/credential routing. The failing source still owns its
+    /// same-call retry policy; this does not grant physical re-entry.
+    StopRouting,
 }
 
 /// A disposition answers the routing question only. Whether the *same* call

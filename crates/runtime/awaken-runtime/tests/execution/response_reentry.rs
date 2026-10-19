@@ -211,7 +211,6 @@ async fn response_only_eof_exhaustion_keeps_a_specific_inference_failure_and_ori
             backoff_base_ms: 0,
             ..Default::default()
         })
-        .with_max_consecutive_inference_failures(1)
         .execute(
             activation("catalog-a"),
             RuntimeRunContext::new()

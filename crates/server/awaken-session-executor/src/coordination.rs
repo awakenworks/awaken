@@ -16,7 +16,7 @@ use awaken_dispatch_contract::{
     DispatchSettlementError, DispatchSettlementObserver, RunClaim, RunDispatch,
 };
 use awaken_runtime_contract::llm::{
-    ModelRequestAdmission, ModelRequestAdmissionRequest, ModelRequestGate,
+    Error as LlmError, ModelRequestAdmission, ModelRequestAdmissionRequest, ModelRequestGate,
 };
 use awaken_session_execution_contract::{
     ClaimedSessionCoordinationControl, SessionAgentBoundaryCommand, SessionAgentCoordination,
@@ -26,6 +26,21 @@ use awaken_session_execution_contract::{
 use awaken_tool_contract::tool::ToolError;
 
 pub(crate) type ClaimedCoordination = dyn ClaimedSessionCoordinationControl<RunClaim>;
+
+fn model_admission_error(
+    disposition: awaken_session_realization_contract::SessionRealizationControlDisposition,
+    message: String,
+) -> LlmError {
+    use awaken_session_realization_contract::SessionRealizationControlDisposition as D;
+    match disposition {
+        D::Terminal => LlmError::Binding(message),
+        D::Retryable => LlmError::Provider(message),
+        D::NotReady => LlmError::Overloaded {
+            message,
+            retry_after: None,
+        },
+    }
+}
 
 #[derive(Clone)]
 pub(crate) enum CoordinationEndpoint {
@@ -127,20 +142,31 @@ impl CoordinationEndpoint {
         session_id: &awaken_session_types::SessionId,
         request: &ModelRequestAdmissionRequest,
         claimed: Option<&RunClaim>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, LlmError> {
         if claimed.is_some_and(|claim| claim.run_id.0 != request.run_id.0) {
-            return Err("Session model request Run differs from its dispatch claim".into());
+            return Err(LlmError::Binding(
+                "Session model request Run differs from its dispatch claim".into(),
+            ));
         }
         match self {
             Self::Local(application) => application
                 .upgrade()
-                .ok_or_else(|| "Session coordination application is unavailable".to_string())?
+                .ok_or_else(|| {
+                    LlmError::Provider("Session coordination application is unavailable".into())
+                })?
                 .admit_session_model_request(session_id, &request.thread_id, &request.run_id)
                 .await
-                .map_err(|error| error.to_string()),
+                .map_err(|error| {
+                    model_admission_error(
+                        awaken_session_realization_contract::effect_failure_disposition(&error),
+                        error.to_string(),
+                    )
+                }),
             Self::Remote { control, .. } => {
                 let claim = claimed.ok_or_else(|| {
-                    "Remote Session model request requires its exact dispatch claim".to_string()
+                    LlmError::Binding(
+                        "Remote Session model request requires its exact dispatch claim".into(),
+                    )
                 })?;
                 control
                     .admit_session_model_request(
@@ -150,7 +176,7 @@ impl CoordinationEndpoint {
                         &request.run_id,
                     )
                     .await
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| model_admission_error(error.disposition(), error.to_string()))
             }
         }
     }
@@ -316,7 +342,7 @@ impl ModelRequestGate for HostModelRequestGate {
     async fn admit_model_request(
         &self,
         request: ModelRequestAdmissionRequest,
-    ) -> Result<ModelRequestAdmission, String> {
+    ) -> Result<ModelRequestAdmission, LlmError> {
         self.endpoint
             .admit_model_request(
                 &awaken_session_types::SessionId::from(&self.session_id),
@@ -551,6 +577,7 @@ impl DispatchSettlementObserver for HostDispatchSettlementObserver {
 pub(crate) struct RecordingSessionAgentCoordination {
     boundaries: std::sync::Mutex<Vec<SessionAgentBoundaryCommand>>,
     message_gate: Option<Arc<AdmissionGate>>,
+    model_error: std::sync::Mutex<Option<awaken_session_types::RunError>>,
 }
 
 #[cfg(test)]
@@ -595,9 +622,11 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
         _thread_id: &awaken_agent_contract::agent::thread::Id,
         _run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<bool, awaken_session_types::RunError> {
-        Err(awaken_session_types::RunError::bad_request(
-            "recording coordination fixture does not admit model requests",
-        ))
+        Err(self.model_error.lock().unwrap().take().unwrap_or_else(|| {
+            awaken_session_types::RunError::bad_request(
+                "recording coordination fixture does not admit model requests",
+            )
+        }))
     }
 
     async fn list_session_agents(

@@ -620,6 +620,7 @@ Cancellation and stop behavior are runtime commands with typed terminal reasons.
 | Tool timeout | Convert to typed tool/backend failure or `Indeterminate` |
 | Stop policy hit | Stop at a safe step boundary and commit the reason |
 | Max attempts / no progress | Record typed diagnosis and expose read-only projection |
+| Inference refusal / retry exhaustion | Commit the original classified failure; the existing `RetryPolicy` is the sole request-attempt owner ([ADR-0005](../adr/0005-run-terminal-state-single-authority.md#amendment-2026-10-20-one-inference-retry-budget)) |
 | User or operator pause | Commit `RunDisposition::Awaiting(ResumeTicket)`, then resume through ingress |
 
 Stop policies are configuration and runtime logic. Public error strings, HTTP

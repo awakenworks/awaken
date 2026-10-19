@@ -80,9 +80,8 @@ impl LlmExecutor for FailingLlm {
     }
 }
 
-/// Fails permanently `fail_times`, then succeeds with text — exercises the
-/// consecutive-failure tolerance, which absorbs post-retry failures at step
-/// granularity.
+/// Offers a later success so a permanent refusal cannot be hidden by another
+/// inference step.
 struct PermanentThenOkLlm {
     fail_times: usize,
     calls: Arc<AtomicUsize>,
@@ -662,45 +661,56 @@ async fn failed_run_emits_run_failed_on_the_live_stream_before_run_finished() {
 }
 
 #[tokio::test]
-async fn consecutive_failure_tolerance_absorbs_a_failed_step_until_success() {
+async fn inference_retry_owner_stops_permanent_refusal_before_another_step() {
+    // Cause/effect table R1: a permanent first refusal + a possible later
+    // success -> exactly one call and the original terminal error. The legacy
+    // failed-step tolerance of three must not turn that refusal into success.
     let calls = Arc::new(AtomicUsize::new(0));
-    let runtime = Runtime::new()
-        .with_llm(Arc::new(PermanentThenOkLlm {
-            fail_times: 2,
-            calls: calls.clone(),
-        }))
-        .with_max_consecutive_inference_failures(3);
+    let runtime = Runtime::new().with_llm(Arc::new(PermanentThenOkLlm {
+        fail_times: 2,
+        calls: calls.clone(),
+    }));
 
     let context = RuntimeRunContext::new();
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
-    // Two failed steps are absorbed (below the threshold of 3); the third
-    // step succeeds and the run ends naturally.
-    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
-    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    assert!(matches!(outcome,
+        RunState::Ended(EndCause::Error(Failure::Inference { ref code, .. }))
+            if code == "unauthorized"
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
-async fn consecutive_failure_tolerance_exhausted_ends_with_the_last_error() {
+async fn inference_retry_owner_does_not_restart_the_request_budget() {
+    // Cause/effect graph: retryable positively returned refusal + request
+    // budget=2 retries -> three calls then original overload error. Legacy
+    // failed-step tolerance=3 caused nine calls by restarting that budget.
+    // Circuit threshold=100 excludes breaker admission as a confounder; there
+    // is no new model response, continuation, tool or user input between calls.
     let calls = Arc::new(AtomicUsize::new(0));
     let runtime = Runtime::new()
         .with_llm(Arc::new(FailingLlm {
-            retryable: false,
+            retryable: true,
             calls: calls.clone(),
         }))
-        .with_max_consecutive_inference_failures(2);
+        .with_retry_policy(fast_retries(2))
+        .with_circuit_breaker(CircuitBreakerConfig {
+            failure_threshold: 100,
+            cooldown: std::time::Duration::from_secs(600),
+            half_open_max_probes: 1,
+        });
 
     let context = RuntimeRunContext::new();
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
-    // The second consecutive failure is terminal, classified by its code.
     match &outcome {
         RunState::Ended(EndCause::Error(Failure::Inference { code, .. })) => {
-            assert_eq!(code, "unauthorized");
+            assert_eq!(code, "overloaded");
         }
         other => panic!("expected a classified inference failure, got {other:?}"),
     }
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
 
 #[tokio::test]
