@@ -12,6 +12,10 @@
 //! `use super::*` (same-crate privates included).
 
 use super::*;
+use awaken_runtime_contract::llm::{
+    Error as LlmError, ModelRequestAdmission, ModelRequestAdmissionRequest,
+};
+use awaken_runtime_contract::model_operation::{ModelExecutionEvidence, NoDispatchProof};
 use awaken_runtime_contract::resilience::RetryVerdict;
 
 /// Prepare the model-owned input through the existing materializer/read seam.
@@ -37,6 +41,40 @@ pub(super) async fn materialize_model_input(
         .physical_quiescence
         .permits_execution()
         .then_some(request))
+}
+
+/// Ask the existing live gate before Provider entry. A shared physical veto
+/// dominates either reply; an ordinary refusal keeps its typed admission grade.
+pub(super) async fn admit_model_request(
+    context: &RuntimeRunContext,
+    run_id: &RunId,
+    thread_id: &ThreadId,
+) -> awaken_runtime_contract::llm::Result<Option<ModelRequestAdmission>> {
+    let Some(gate) = &context.model_request_gate else {
+        return Ok(Some(ModelRequestAdmission::Admit));
+    };
+    let admission = model_read(
+        context.cancellation.as_ref(),
+        context
+            .physical_quiescence
+            .observe_return(gate.admit_model_request(ModelRequestAdmissionRequest {
+                run_id: run_id.clone(),
+                thread_id: thread_id.clone(),
+            })),
+    )
+    .await
+    .ok_or_else(|| LlmError::Cancelled("model admission cancelled".into()))?;
+    if !context.physical_quiescence.permits_execution() {
+        return Ok(None);
+    }
+    admission.map(Some).map_err(|source| {
+        LlmError::Admission {
+            source: Box::new(source),
+        }
+        .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
+            NoDispatchProof::runtime_admission(),
+        ))
+    })
 }
 
 /// Sole admission gate for retiring a spent interrupted-stream checkpoint.
@@ -562,7 +600,7 @@ async fn infer_with_retry_inner(
             // The watchdog abandoned an in-flight executor. Neither a retry,
             // continuation, nor synthesized tool call may cross this boundary.
             if let Err(error) = &attempt_result {
-                permit.failure(error.is_retryable());
+                permit.failure(error);
             }
             return attempt_result;
         }
@@ -572,12 +610,12 @@ async fn infer_with_retry_inner(
                 return Ok(stitch_prefix(response, &prefix));
             }
             Err(err) => {
-                // One classification, one decision. Only retryable classes
-                // speak to provider health, or permanent faults (bad key,
-                // overlong prompt) would trip the breaker.
+                // Retry policy consumes the grade; the typed permit owns
+                // Provider-health attribution, including admission refusal.
+                // Physical re-entry remains a separate proof and budget gate.
                 let class = err.class();
                 let retryable = class.is_retryable();
-                permit.failure(retryable);
+                permit.failure(&err);
                 let verdict = policy.decide(
                     class,
                     reentry,

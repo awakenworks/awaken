@@ -9,6 +9,8 @@
 mod cancelled_model_observation;
 #[path = "execution/checkpoint_observation.rs"]
 mod checkpoint_observation;
+#[path = "execution/model_admission.rs"]
+mod model_admission;
 #[path = "execution/response_reentry.rs"]
 mod response_reentry;
 #[path = "execution/tool_domain_preparation.rs"]
@@ -221,7 +223,7 @@ impl awaken_runtime_contract::CommitCoordinator for ModelEvidenceFault {
 async fn model_evidence_write_faults_never_retry_or_fail_over_execution() {
     use awaken_runtime_contract::model_operation::ModelOperationPhase::{Entered, Returned};
     // Cause/effect graph: C1 failure at Entered/Returned; C2 before commit/
-    // lost ACK; C3 retry, model-pool failover and outer failure tolerance enabled.
+    // lost ACK; C3 retry and model-pool failover enabled; no new input is admitted.
     // E1 fail at the commit boundary, not a provider failure; E2 no additional
     // model calls; E3 exact durable prefix; E4 no invented final Run/usage fact.
     // Decision table:
@@ -255,7 +257,6 @@ async fn model_evidence_write_faults_never_retry_or_fail_over_execution() {
             )));
         let result = Runtime::new()
             .with_llm(model.clone())
-            .with_max_consecutive_inference_failures(3)
             .execute(
                 request,
                 RuntimeRunContext::new()
@@ -728,7 +729,7 @@ async fn dropped_and_timed_out_model_futures_preserve_distinct_durable_evidence(
     // records TimedOut, never Returned or provider quiescence. Rules:
     // R5=C1=>E1+E2; R6=C2=>E1+E3. The existing Dispatch SIGKILL test owns
     // physical exclusion; this test owns the new model evidence boundary.
-    // R7: retry + failover + outer tolerance enabled must still admit only one
+    // R7: retry + failover enabled must still admit only one
     // invocation after an abandoned Future; its existing quiescence latch vetoes
     // the Worker ACK. Timeout ends Indeterminate, not a known provider failure.
     // R8 scoped response-only + either abandonment cause => Unknown remains,
@@ -751,31 +752,31 @@ async fn dropped_and_timed_out_model_futures_preserve_distinct_durable_evidence(
             entered: entered.clone(),
             scope,
         });
-        let runtime = Runtime::new()
-            .with_llm(model)
-            .with_retry_policy(awaken_runtime::RetryPolicy {
-                max_retries: 3,
-                // Watchdog = response window + return allowance: 30ms or 5s.
-                budget: if timeout {
-                    awaken_runtime_contract::llm::ModelInferenceBudget::new(
-                        std::time::Duration::from_millis(90),
-                        std::time::Duration::from_millis(20),
-                        std::time::Duration::from_millis(20),
-                        std::time::Duration::from_millis(10),
-                    )
-                    .unwrap()
-                } else {
-                    awaken_runtime_contract::llm::ModelInferenceBudget::new(
-                        std::time::Duration::from_millis(15000),
-                        std::time::Duration::from_millis(4990),
-                        std::time::Duration::from_millis(4990),
-                        std::time::Duration::from_millis(10),
-                    )
-                    .unwrap()
-                },
-                ..Default::default()
-            })
-            .with_max_consecutive_inference_failures(3);
+        let runtime =
+            Runtime::new()
+                .with_llm(model)
+                .with_retry_policy(awaken_runtime::RetryPolicy {
+                    max_retries: 3,
+                    // Watchdog = response window + return allowance: 30ms or 5s.
+                    budget: if timeout {
+                        awaken_runtime_contract::llm::ModelInferenceBudget::new(
+                            std::time::Duration::from_millis(90),
+                            std::time::Duration::from_millis(20),
+                            std::time::Duration::from_millis(20),
+                            std::time::Duration::from_millis(10),
+                        )
+                        .unwrap()
+                    } else {
+                        awaken_runtime_contract::llm::ModelInferenceBudget::new(
+                            std::time::Duration::from_millis(15000),
+                            std::time::Duration::from_millis(4990),
+                            std::time::Duration::from_millis(4990),
+                            std::time::Duration::from_millis(10),
+                        )
+                        .unwrap()
+                    },
+                    ..Default::default()
+                });
         let context = RuntimeRunContext::new().with_commit(durable.clone());
         let quiescence = context.physical_quiescence.clone();
         let mut request = activation("catalog-a");
@@ -997,10 +998,10 @@ impl LlmExecutor for ReturnedUnknownModel {
 }
 
 #[tokio::test]
-async fn returned_unknown_model_error_blocks_retry_failover_and_outer_tolerance() {
+async fn returned_unknown_model_error_blocks_retry_failover_and_another_step() {
     // Cause/effect: C1 adapter returns timeout or transport error normally;
-    // C2 no provider termination proof; C3 retries, failover and outer failure
-    // tolerance all enabled. R1=C1+C2+C3 => one invocation, Indeterminate,
+    // C2 no provider termination proof; C3 retries and failover enabled,
+    // with further inference steps available. R1=C1+C2+C3 => one invocation, Indeterminate,
     // retained physical veto. The healthy-return observer alone cannot prove
     // remote quiescence. R2 existing checkpoint => retained, not consumed.
     for timeout in [false, true] {
@@ -1012,15 +1013,15 @@ async fn returned_unknown_model_error_blocks_retry_failover_and_outer_tolerance(
         let durable = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         let (checkpoints, checkpoint) = interrupted_model_checkpoint().await;
         commit_terminated_model(&durable).await;
-        let runtime = Runtime::new()
-            .with_llm(model.clone())
-            .with_retry_policy(awaken_runtime::RetryPolicy {
-                max_retries: 2,
-                backoff_base_ms: 0,
-                overloaded_backoff_base_ms: 0,
-                ..Default::default()
-            })
-            .with_max_consecutive_inference_failures(3);
+        let runtime =
+            Runtime::new()
+                .with_llm(model.clone())
+                .with_retry_policy(awaken_runtime::RetryPolicy {
+                    max_retries: 2,
+                    backoff_base_ms: 0,
+                    overloaded_backoff_base_ms: 0,
+                    ..Default::default()
+                });
         let mut request = activation("catalog-a");
         request
             .snapshot
@@ -1222,13 +1223,13 @@ impl ModelRequestGate for SequencedModelRequestGate {
     async fn admit_model_request(
         &self,
         request: ModelRequestAdmissionRequest,
-    ) -> Result<ModelRequestAdmission, String> {
+    ) -> Result<ModelRequestAdmission, awaken_runtime_contract::llm::Error> {
         self.requests.lock().unwrap().push(request);
-        self.decisions
-            .lock()
-            .unwrap()
-            .pop_front()
-            .ok_or_else(|| "test gate received an unexpected logical model request".into())
+        self.decisions.lock().unwrap().pop_front().ok_or_else(|| {
+            awaken_runtime_contract::llm::Error::Binding(
+                "test gate received an unexpected logical model request".into(),
+            )
+        })
     }
 }
 
@@ -2033,7 +2034,7 @@ async fn model_preparation_and_quota_pause_cannot_mask_a_participant_veto() {
         async fn admit_model_request(
             &self,
             _: ModelRequestAdmissionRequest,
-        ) -> Result<ModelRequestAdmission, String> {
+        ) -> Result<ModelRequestAdmission, awaken_runtime_contract::llm::Error> {
             self.admissions.fetch_add(1, Ordering::SeqCst);
             if self.at == 2 {
                 tokio::task::yield_now().await;

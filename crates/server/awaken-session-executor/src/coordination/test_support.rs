@@ -12,6 +12,7 @@ pub(super) struct RemoteControl {
     pub(super) calls: Mutex<Vec<(&'static str, RunClaim)>>,
     pub(super) gate: Option<Arc<AdmissionGate>>,
     pub(super) fail: bool,
+    pub(super) model_error: Option<ClaimedSessionControlError>,
 }
 
 impl RemoteControl {
@@ -66,7 +67,10 @@ impl ClaimedSessionCoordinationControl<RunClaim> for RemoteControl {
         _run: &RunId,
     ) -> Result<bool, ClaimedSessionControlError> {
         self.calls.lock().unwrap().push(("model", claim.clone()));
-        Ok(true)
+        match &self.model_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(true),
+        }
     }
 
     async fn admit_session_run_activity(

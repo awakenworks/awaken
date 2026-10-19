@@ -131,3 +131,42 @@ closed sets in code are now (`crates/contract/awaken-agent-contract/src/agent/ru
   determined; never projected as success) is used by [ADR-0015](0015-crash-retry-budget-and-dead-letter.md),
   [ADR-0024](0024-daemon-lease-renewal.md) and [ADR-0044](0044-remote-hand-tool-executor-over-a-channel.md); no ADR introduced it on its own.
 - `Failure = Inference { code, message } | CapabilityBound | StateConflict`.
+
+## Amendment 2026-10-20: one inference retry budget
+
+The existing `RetryPolicy` owns attempts and backoff for one logical inference
+request. A permanent refusal or exhausted request ends the Run through the
+same terminal commit. A second failed-step tolerance cannot restart that
+budget or absorb a permanent refusal into a later natural success. Its Runtime
+builder setting is removed rather than retained as an inert compatibility
+path. Successful `MaxTokens` continuation retains its separate protocol budget;
+unproven physical execution retains its independent recovery veto.
+
+## Amendment 2026-10-20: admission origin is distinct from Provider health
+
+The existing model error carries an explicit `Admission` source wrapper when
+its owning application rejects the request before Provider inference. Its
+underlying failure grade and original physical evidence remain independent.
+It uses the same bounded request retry policy, but cannot affect Provider
+health or cause Provider failover/cooldown. The existing circuit-breaker permit
+accepts the typed error and owns that health projection instead of accepting
+an adapter-selected retryable boolean.
+
+The existing committed inference code retains this source through the closed
+`model_admission_*` namespace. Managed protocol projection recognizes those
+codes without changing its standard error envelope; Flow projects the owning
+admission prerequisite separately from Provider credentials and Provider quota.
+No execution outcome, recovery permission, journal or scheduler is introduced.
+
+Environment failures retain the existing realization-contract projection as
+their classification authority. The realization boundary derives its local
+disposition from that projection rather than independently matching Provider
+routing variants; adding a model routing decision cannot create a second
+Environment failure table.
+
+`ModelRequestGate` returns the existing typed model error instead of a string.
+The Session adapter derives its grade from the existing local or authenticated
+Control failure disposition. Runtime adds admission origin before Provider
+entry, while an independent physical-quiescence veto still wins over either
+admission success or refusal. Gate failure terminates the current attempt;
+it does not introduce another request retry budget or a fake model audit event.

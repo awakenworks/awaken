@@ -258,11 +258,13 @@ mod resolve_seam_tests {
         async fn admit_model_request(
             &self,
             request: ModelRequestAdmissionRequest,
-        ) -> Result<ModelRequestAdmission, String> {
+        ) -> Result<ModelRequestAdmission, awaken_runtime_contract::llm::Error> {
             if request.run_id.0 == self.0 {
                 Ok(ModelRequestAdmission::Admit)
             } else {
-                Err("wrong Run claim".into())
+                Err(awaken_runtime_contract::llm::Error::Binding(
+                    "wrong Run claim".into(),
+                ))
             }
         }
     }

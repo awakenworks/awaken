@@ -10,6 +10,7 @@
 //! The Agent step loop and its per-step orchestration.
 
 use super::*;
+use awaken_runtime_contract::resilience::{Classify, Disposition};
 
 /// Fresh and activated resumes select the same publication-bounded model
 /// without rewriting the immutable snapshot or its catalog identity.
@@ -389,36 +390,12 @@ async fn infer_step(
         let Some(request) = inference::materialize_model_input(context, request).await? else {
             break Ok(InferStepOutcome::Indeterminate);
         };
-        if let Some(gate) = &context.model_request_gate {
-            let admission = inference::model_read(
-                context.cancellation.as_ref(),
-                context
-                    .physical_quiescence
-                    .observe_return(gate.admit_model_request(ModelRequestAdmissionRequest {
-                        run_id: run_id.clone(),
-                        thread_id: thread_id.clone(),
-                    })),
-            )
-            .await
-            .ok_or_else(|| {
-                awaken_runtime_contract::llm::Error::Cancelled("model admission cancelled".into())
-            })?
-            .map_err(|error| {
-                awaken_runtime_contract::llm::Error::Unauthorized(format!(
-                    "model request admission unavailable: {error}"
-                ))
-            })?;
-            // Admission can pause, but cannot upgrade another participant's
-            // unknown stop into an ordinary resumable budget boundary.
-            if !context.physical_quiescence.permits_execution() {
-                break Ok(InferStepOutcome::Indeterminate);
+        match inference::admit_model_request(context, run_id, thread_id).await? {
+            None => break Ok(InferStepOutcome::Indeterminate),
+            Some(ModelRequestAdmission::Pause(reason)) => {
+                break Ok(InferStepOutcome::Await(reason));
             }
-            match admission {
-                ModelRequestAdmission::Admit => {}
-                ModelRequestAdmission::Pause(reason) => {
-                    break Ok(InferStepOutcome::Await(reason));
-                }
-            }
+            Some(ModelRequestAdmission::Admit) => {}
         }
         // One stable response coordinate per model response. A MaxTokens
         // continuation constructs a fresh sink on the next loop iteration, so
@@ -498,18 +475,15 @@ async fn infer_step(
                     Some(&observed_input),
                 )
                 .await;
-                let has_tool_calls = !response.output.tool_calls().is_empty();
-                let has_text = !response.output.text_content().is_empty();
-                let has_continuable_output = has_text || response.output.has_reasoning();
-                let may_continue = response.stop_reason.is_some_and(|reason| {
+                if response.stop_reason.is_some_and(|reason| {
                     reason.admits_continuation(
-                        has_tool_calls,
-                        has_continuable_output,
+                        !response.output.tool_calls().is_empty(),
+                        !response.output.text_content().is_empty()
+                            || response.output.has_reasoning(),
                         truncation_retries,
                         runtime.max_continuation_retries(),
                     )
-                });
-                if may_continue {
+                }) {
                     if let Some(step_usage) = response.usage {
                         fold_thread_usage(
                             store,
@@ -547,7 +521,10 @@ async fn infer_step(
                 });
             }
             Err(err) => {
-                if truncation_retries == 0 && cand_idx + 1 < candidates.len() {
+                if !matches!(err.disposition(), Disposition::StopRouting)
+                    && truncation_retries == 0
+                    && cand_idx + 1 < candidates.len()
+                {
                     cand_idx += 1;
                     // A resume checkpoint belongs to the prior model's stream;
                     // a fresh candidate starts clean.
@@ -666,9 +643,6 @@ pub(super) async fn drive(
     let mut live_env = LiveEnv::new(
         runtime.active_live_version_with(&resolved.spec.plugin_ids, &context.session_plugins),
     );
-    // Failed inference steps in a row (post-retry). The runtime's tolerance
-    // decides when the streak is terminal; a success resets it.
-    let mut consecutive_inference_failures = 0usize;
     // Deferred tools (ADR-0053) the model has discovered via `tool_search` this run, by
     // canonical id: once revealed, a tool's full schema is sent on subsequent steps.
     let mut discovery =
@@ -813,10 +787,7 @@ pub(super) async fn drive(
             Ok(InferStepOutcome::Response {
                 response,
                 model_ref,
-            }) => {
-                consecutive_inference_failures = 0;
-                (response, model_ref)
-            }
+            }) => (response, model_ref),
             Ok(InferStepOutcome::Await(reason)) => {
                 disposition = Some(RunDisposition::awaiting(pause_ticket(
                     context,
@@ -836,14 +807,6 @@ pub(super) async fn drive(
                 break;
             }
             Err(err) => {
-                // Below the tolerance the failed step is absorbed and the next
-                // step re-infers; each absorbed failure still consumes a step,
-                // so `max_steps` stays the runaway backstop. At the tolerance
-                // the streak ends the run with the last error's classification.
-                consecutive_inference_failures += 1;
-                if consecutive_inference_failures < runtime.max_consecutive_inference_failures() {
-                    continue;
-                }
                 disposition = Some(RunDisposition::ended(
                     run_id.clone(),
                     EndCause::Error(Failure::Inference {
