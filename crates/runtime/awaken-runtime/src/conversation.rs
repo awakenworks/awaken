@@ -16,6 +16,40 @@ use std::future::Future;
 ///
 /// Runs share the supplied Thread and store. This binding uses the Runtime's
 /// existing execution and recovery paths; it does not create a managed Session.
+///
+/// C1: a caller binds the canonical type and method with its own Snapshot and
+/// context; type checking requires no execution, additional store or model.
+///
+/// ```
+/// use awaken_runtime::{Conversation, ExecutableAgentSnapshot, Runtime, RuntimeRunContext};
+/// fn bind<'a>(
+///     runtime: &'a Runtime,
+///     snapshot: &'a ExecutableAgentSnapshot,
+///     context: RuntimeRunContext,
+/// ) -> Result<Conversation<'a>, awaken_runtime::Error> {
+///     runtime.conversation(snapshot, "conversation", context)
+/// }
+/// ```
+///
+/// C2: the redundant type name is absent independently of method selection.
+///
+/// ```compile_fail,E0412
+/// let _: Option<awaken_runtime::EmbeddedSession<'_>> = None;
+/// ```
+///
+/// C3: the redundant method is absent with valid canonical argument types;
+/// this check does not reference the removed type or execute a Run.
+///
+/// ```compile_fail,E0599
+/// use awaken_runtime::{ExecutableAgentSnapshot, Runtime, RuntimeRunContext};
+/// fn old_binding(
+///     runtime: &Runtime,
+///     snapshot: &ExecutableAgentSnapshot,
+///     context: RuntimeRunContext,
+/// ) {
+///     let _ = runtime.session(snapshot, "conversation", context);
+/// }
+/// ```
 pub struct Conversation<'a> {
     runtime: &'a Runtime,
     snapshot: &'a ExecutableAgentSnapshot,

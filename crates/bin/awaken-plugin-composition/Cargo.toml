@@ -16,6 +16,7 @@ separation = "process"
 awaken-executable-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-ext-background-task.workspace = true
+awaken-ext-mcp.workspace = true
 awaken-ext-state-machine = { workspace = true, features = ["schema"] }
 awaken-ext-memory.workspace = true
 awaken-ext-compact.workspace = true

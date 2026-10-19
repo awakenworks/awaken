@@ -2,7 +2,17 @@
 //! Child lifecycle, disposition, delegation, and aggregate terminal projection.
 
 use super::*;
-use awaken_managed_session_events::{CoordinatedThread, ThreadStatus};
+use awaken_managed_session_events::{CoordinatedThread, OrderIndex, ThreadStatus};
+
+// Coordination opening/message facts precede transcript qualification; every
+// other child lifecycle fact follows it. Both filters borrow this one rule.
+fn precedes_child_transcript(fact: &awaken_managed_session_events::DerivedSessionEvent) -> bool {
+    matches!(
+        fact.key.role,
+        awaken_managed_session_events::ManagedEventType::CoordinationStatusRunning
+            | awaken_managed_session_events::ManagedEventType::CoordinationMessageSent
+    )
+}
 
 impl ManagedState {
     /// Select child Running, cross-post, and lifecycle facts in one committed
@@ -17,6 +27,7 @@ impl ManagedState {
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
         >,
         plan: &awaken_managed_session_events::CoordinationEvents,
+        index: &OrderIndex<'_>,
     ) -> Result<
         (
             awaken_managed_session_events::ChildLifecycle,
@@ -32,6 +43,7 @@ impl ManagedState {
             events,
             historical_pending,
             snapshots,
+            index,
         )
         .map_err(projection_error)?;
         Ok((projection, threads))
@@ -150,17 +162,16 @@ impl ManagedState {
             historical_pending,
             snapshots,
             plan,
+            order_index,
         )?;
         // Child transcript projection resolves answerable tool ids before
         // lifecycle Idle/usage consumes them. Keep that existing dependency
         // while the sole activity plan has already selected every Running key.
-        for fact in activity.facts.iter().filter(|fact| {
-            matches!(
-                fact.key.role,
-                awaken_managed_session_events::ManagedEventType::CoordinationStatusRunning
-                    | awaken_managed_session_events::ManagedEventType::CoordinationMessageSent
-            )
-        }) {
+        for fact in activity
+            .facts
+            .iter()
+            .filter(|fact| precedes_child_transcript(fact))
+        {
             record.publish_fact(fact, None)?;
         }
         for link in links {
@@ -210,13 +221,11 @@ impl ManagedState {
                 order_index,
             )?;
         }
-        for fact in activity.facts.iter().filter(|fact| {
-            !matches!(
-                fact.key.role,
-                awaken_managed_session_events::ManagedEventType::CoordinationStatusRunning
-                    | awaken_managed_session_events::ManagedEventType::CoordinationMessageSent
-            )
-        }) {
+        for fact in activity
+            .facts
+            .iter()
+            .filter(|fact| !precedes_child_transcript(fact))
+        {
             record.publish_fact(fact, None)?;
         }
         record

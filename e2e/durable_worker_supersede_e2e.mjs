@@ -48,13 +48,14 @@ async function main() {
   fs.rmSync(STORE, { recursive: true, force: true });
   fs.mkdirSync(STORE, { recursive: true });
   const upstream = await startUpstream('probe');
+  const capture = { buf: '' };
   let srv = null;
   try {
     srv = spawnServer('real', PORT, {
       SESSION_DEPLOYMENT_INGRESS: 'durable',
       SESSION_DEPLOYMENT_STORAGE_DIR: STORE,
       ...realServerEnv('probe', upstream),
-    });
+    }, process.env, capture);
     await waitForPort(PORT);
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
     // A first turn awaits on a tool confirmation — its dispatch sits `Awaiting` on
@@ -139,9 +140,14 @@ async function main() {
     console.error('E2E FAIL:', err);
     process.exitCode = 1;
   } finally {
-    if (srv) await stopServer(srv.server);
+    if (srv) await stopServer(srv.server, { requireCleanExit: true });
     upstream.close();
     fs.rmSync(STORE, { recursive: true, force: true });
+    // W3: C3 may reuse the first Run's model-local tool id. E2: the retained
+    // Awaiting payload must still name its first exact occurrence. The DROP
+    // assertions can pass while Managed rejects a conflicting refresh, so
+    // require its original captured log to stay conflict-free through shutdown.
+    assert.doesNotMatch(capture.buf, /Managed committed event history conflict|session_event_history_conflict/);
   }
 }
 

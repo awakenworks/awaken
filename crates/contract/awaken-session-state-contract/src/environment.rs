@@ -665,16 +665,7 @@ impl SessionEnvironmentReceipt {
             self.source_binding.clone(),
             self.environment_fingerprint.clone(),
         );
-        self.effect_id = intent.effect_id().to_string();
-        self.receipt_fingerprint = crate::stable_fingerprint(&(
-            &self.session_id,
-            &self.effect_id,
-            &self.kind,
-            self.source_binding.as_deref(),
-            self.environment_fingerprint.as_deref(),
-            &self.binding,
-            &self.realization,
-        ));
+        *self = Self::from_verified_intent(&intent, self.binding.clone());
     }
 
     fn from_verified_intent(intent: &SessionEnvironmentEffectIntent, binding: String) -> Self {
@@ -2143,6 +2134,217 @@ mod tests {
             );
             prop_assert_eq!(state, before);
         }
+    }
+
+    #[test]
+    fn environment_receipt_entrypoints_preserve_exact_coordinate_bytes() {
+        // H1-H7 cause/effect table: C1 kind covers all variants and optional
+        // generation/transition strings; C2 text is empty/plain/Unicode+NUL,
+        // with None distinct from Some(""); C3 realization is absent, renewed,
+        // empty, or maximal; C4 configuration/source builders run in either
+        // order and repeat; C5 a public receipt's lease changes before an
+        // explicit builder refresh. H1 new/from_intent => exact same bytes;
+        // H2 C4 => same bytes independent of order and repetition; H3 C5 =>
+        // retain the exact new lease, without adding validation/canonicalizing
+        // raw coordinates. H4 None/empty/Unicode and zero epochs remain data,
+        // not provider authorization. H5-H6 bad wire/intent rejection is owned
+        // by the next case. The oracle is the existing verified-intent entry,
+        // never another copy of the seven-axis fingerprint tuple.
+        let kinds = [
+            SessionEnvironmentEffectKind::Create,
+            SessionEnvironmentEffectKind::Adopt,
+            SessionEnvironmentEffectKind::Rebuild {
+                source_generation_id: None,
+            },
+            SessionEnvironmentEffectKind::Rebuild {
+                source_generation_id: Some(String::new()),
+            },
+            SessionEnvironmentEffectKind::Rebuild {
+                source_generation_id: Some("代次/😀\0".into()),
+            },
+            SessionEnvironmentEffectKind::ResourceProjectionReservation {
+                transition_fingerprint: String::new(),
+            },
+            SessionEnvironmentEffectKind::ResourceProjectionReservation {
+                transition_fingerprint: "变更/😀\0".into(),
+            },
+        ];
+        let coordinates = [
+            ("", "", None, None),
+            ("session", "binding", Some(""), None),
+            ("session", "binding", None, Some("")),
+            ("session", "binding", Some("source"), Some("environment")),
+            (
+                "会话/😀\0",
+                "绑定/😀\0",
+                Some("来源/😀\0"),
+                Some("配置/😀\0"),
+            ),
+        ];
+        let leases = [
+            None,
+            Some(realization(100)),
+            Some(realization(200)),
+            Some(crate::SessionRealizationLease {
+                owner: String::new(),
+                runtime_incarnation: String::new(),
+                epoch: 0,
+                expires_at_unix_ms: 0,
+            }),
+            Some(crate::SessionRealizationLease {
+                owner: "所有者/😀\0".into(),
+                runtime_incarnation: "启动/😀\0".into(),
+                epoch: u64::MAX,
+                expires_at_unix_ms: u64::MAX,
+            }),
+        ];
+        for kind in kinds {
+            for (session, binding, source, environment) in coordinates {
+                for lease in &leases {
+                    let intent =
+                        SessionEnvironmentEffectIntent::new(session, kind.clone(), lease.clone())
+                            .for_frozen_coordinates(
+                                source.map(str::to_owned),
+                                environment.map(str::to_owned),
+                            );
+                    let expected =
+                        SessionEnvironmentReceipt::from_intent(&intent, binding).unwrap();
+                    let bytes = serde_json::to_vec(&expected).unwrap();
+                    assert_eq!(expected.session_id.as_str(), session, "H1 raw SessionId");
+                    assert_eq!(expected.realization, *lease, "H1 exact lease");
+                    expected.verify().unwrap();
+                    let rebound =
+                        SessionEnvironmentReceipt::from_intent(&intent, format!("{binding}-next"))
+                            .unwrap();
+                    assert_eq!(
+                        rebound.effect_id, expected.effect_id,
+                        "H1 binding-independent intent"
+                    );
+                    assert_ne!(
+                        rebound.receipt_fingerprint, expected.receipt_fingerprint,
+                        "H1 exact binding witness"
+                    );
+                    for source_first in [false, true] {
+                        let mut actual = SessionEnvironmentReceipt::new(
+                            session,
+                            kind.clone(),
+                            binding,
+                            lease.clone(),
+                        );
+                        for step in if source_first { [1, 0] } else { [0, 1] } {
+                            actual = match (step, source, environment) {
+                                (0, _, Some(value)) => actual.for_environment(value),
+                                (1, Some(value), _) => actual.from_binding(value),
+                                _ => actual,
+                            };
+                        }
+                        assert_eq!(serde_json::to_vec(&actual).unwrap(), bytes, "H1/H2");
+                        if let Some(value) = source {
+                            actual = actual.from_binding(value);
+                        }
+                        if let Some(value) = environment {
+                            actual = actual.for_environment(value);
+                        }
+                        assert_eq!(serde_json::to_vec(&actual).unwrap(), bytes, "H2 repeat");
+                    }
+                    let mut changed = expected;
+                    changed.realization = Some(realization(301));
+                    let refreshed = changed.for_environment(environment.unwrap_or(""));
+                    let changed_intent = SessionEnvironmentEffectIntent::new(
+                        session,
+                        kind.clone(),
+                        Some(realization(301)),
+                    )
+                    .for_frozen_coordinates(
+                        source.map(str::to_owned),
+                        Some(environment.unwrap_or("").to_owned()),
+                    );
+                    let changed_expected =
+                        SessionEnvironmentReceipt::from_intent(&changed_intent, binding).unwrap();
+                    assert_eq!(
+                        serde_json::to_vec(&refreshed).unwrap(),
+                        serde_json::to_vec(&changed_expected).unwrap(),
+                        "H3 exact public-field change only on explicit refresh"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn environment_receipt_bad_wire_stays_rejected_without_implicit_refresh() {
+        // H5: each of the eight stored fields changes without its witnesses;
+        // verify must return the original exact Mismatch and leave bytes alone.
+        // Lease-expiry drift preserves the intent id but invalidates the full
+        // receipt witness. H6: from_intent rejects a malformed intent rather
+        // than repairing it. H7: explicit builders retain their OLD refresh
+        // behavior for changed effect/hash witnesses; no read/verify/from_intent
+        // gains implicit repair. These input DTOs grant no root/provider right.
+        let original = SessionEnvironmentReceipt::new(
+            "s1",
+            SessionEnvironmentEffectKind::Rebuild {
+                source_generation_id: Some("generation".into()),
+            },
+            "binding",
+            Some(realization(100)),
+        )
+        .for_environment("environment")
+        .from_binding("source");
+        let original_bytes = serde_json::to_vec(&original).unwrap();
+        let changes = [
+            ("session_id", serde_json::json!("other")),
+            ("effect_id", serde_json::json!("other")),
+            ("kind", serde_json::json!("adopt")),
+            ("source_binding", serde_json::json!("other")),
+            ("environment_fingerprint", serde_json::json!("other")),
+            ("binding", serde_json::json!("other")),
+            (
+                "realization",
+                serde_json::to_value(realization(200)).unwrap(),
+            ),
+            ("receipt_fingerprint", serde_json::json!("other")),
+        ];
+        for (field, value) in changes {
+            let mut wire = serde_json::to_value(&original).unwrap();
+            wire[field] = value;
+            let corrupt: SessionEnvironmentReceipt = serde_json::from_value(wire).unwrap();
+            let before = serde_json::to_vec(&corrupt).unwrap();
+            assert_eq!(
+                corrupt.verify(),
+                Err(SessionEnvironmentReceiptError::Mismatch),
+                "H5 {field}"
+            );
+            assert_eq!(
+                serde_json::to_vec(&corrupt).unwrap(),
+                before,
+                "H5 no repair"
+            );
+            if field == "realization" {
+                assert_eq!(corrupt.effect_id, original.effect_id, "H5 same intent id");
+                corrupt.effect_intent().unwrap();
+            }
+            if matches!(field, "effect_id" | "receipt_fingerprint") {
+                assert_eq!(
+                    serde_json::to_vec(&corrupt.for_environment("environment")).unwrap(),
+                    original_bytes,
+                    "H7 original explicit refresh only"
+                );
+            }
+        }
+        let mut wire = serde_json::to_value(original.effect_intent().unwrap()).unwrap();
+        wire["effect_id"] = serde_json::json!("other");
+        let corrupt: SessionEnvironmentEffectIntent = serde_json::from_value(wire).unwrap();
+        let before = serde_json::to_vec(&corrupt).unwrap();
+        assert_eq!(
+            SessionEnvironmentReceipt::from_intent(&corrupt, "binding"),
+            Err(SessionEnvironmentReceiptError::Mismatch),
+            "H6"
+        );
+        assert_eq!(
+            serde_json::to_vec(&corrupt).unwrap(),
+            before,
+            "H6 no repair"
+        );
     }
 }
 

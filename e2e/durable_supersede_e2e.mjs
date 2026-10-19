@@ -40,10 +40,11 @@ const get = async (path) => (await fetch(`${BASE}${path}`)).json();
 async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
+  const capture = { buf: '' };
   const srv = spawnServer('custom', PORT, {
     SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR,
     SESSION_DEPLOYMENT_INGRESS: 'durable',
-  });
+  }, process.env, capture);
   await waitForPort(PORT);
   try {
     // Cause/effect graph: C1 an ordinary durable Thread submits a Run; C2 its
@@ -89,8 +90,13 @@ async function main() {
 
     console.log('E2E PASS: epoch supersession (ADR-0022) via the durable operations surface.');
   } finally {
-    await stopServer(srv.server);
+    await stopServer(srv.server, { requireCleanExit: true });
     fs.rmSync(STORE_DIR, { recursive: true, force: true });
+    // S3: C2+C3 can reuse a model-local tool id in the replacement Run.
+    // E4: replaying the old Awaiting boundary must keep its exact ToolUse
+    // source. Queue assertions alone cannot detect a rejected history refresh;
+    // inspect the original harness capture through shutdown as well.
+    assert.doesNotMatch(capture.buf, /Managed committed event history conflict|session_event_history_conflict/);
   }
 }
 

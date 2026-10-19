@@ -6,6 +6,9 @@
 //! Atomic Managed inbound-event validation, lowering, retention, and receipt projection.
 
 use super::*;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
+use awaken_managed_session_events::{OrderEvidence, OrderIndex};
+use awaken_session_execution_contract::ProjectionThreadSnapshots;
 
 impl ManagedState {
     #[cfg(test)]
@@ -132,68 +135,44 @@ impl ManagedState {
         }
         let lifecycle_events =
             Self::committed_lifecycle_prefix(root_snapshot.iter().chain(child_snapshots.values()))?;
-        let mut candidates = Vec::new();
-        if let Some(snapshot) = root_snapshot.as_ref()
-            && let Some((run_id, correlation_id, pending)) =
-                Self::pending_ticket_from_recovery_snapshot(snapshot)?
-        {
-            let answered_pending_commit_cursor = Self::answered_pending_commit_cursor(
-                &snapshot.thread_id,
-                &run_id,
-                snapshot.store_cursor,
+        let candidates = collect_pending_reply_candidates(
+            root_snapshot.as_ref(),
+            &child_snapshots,
+            &lifecycle_events,
+        )?;
+        let candidates = {
+            let historical = awaken_managed_session_events::historical_pending_by_lifecycle(
                 &lifecycle_events,
-            )?;
-            candidates.push(PendingToolReplyCandidate::from_pending(
-                SessionThreadTarget::Primary,
-                snapshot.thread_version,
-                answered_pending_commit_cursor,
-                run_id,
-                correlation_id,
-                pending,
-            ));
-        }
-        for (thread_id, snapshot) in &child_snapshots {
-            let disposition =
-                awaken_agent_contract::thread_disposition_from_committed_state(&snapshot.state)
-                    .map_err(|error| {
-                        StateError::Run(RunError::internal(format!(
-                            "recover coordinated Thread disposition: {error}"
-                        )))
-                    })?;
-            if disposition == awaken_agent_contract::ThreadDisposition::Archived {
-                continue;
-            }
-            if let Some((run_id, correlation_id, pending)) =
-                Self::pending_ticket_from_recovery_snapshot(snapshot)?
-            {
-                let answered_pending_commit_cursor = Self::answered_pending_commit_cursor(
-                    &snapshot.thread_id,
-                    &run_id,
-                    snapshot.store_cursor,
-                    &lifecycle_events,
-                )?;
-                candidates.push(PendingToolReplyCandidate::from_pending(
-                    SessionThreadTarget::Child(awaken_agent_contract::agent::thread::Id(
-                        thread_id.clone(),
-                    )),
-                    snapshot.thread_version,
-                    answered_pending_commit_cursor,
-                    run_id,
-                    correlation_id,
-                    pending,
-                ));
-            }
-        }
-        {
+                |thread| {
+                    if thread == session_id {
+                        root_snapshot.as_ref()
+                    } else {
+                        child_snapshots.get(thread)
+                    }
+                },
+            )
+            .map_err(projection_error)?;
+            // Tool-source evidence is built before taking the cache lock. This
+            // synchronous scope drops the index, history and guard before any
+            // later await, keeping only the original owned candidate vector.
+            let index = OrderIndex::new(OrderEvidence {
+                updates: None,
+                session_id,
+                batches: &[],
+                closed_intervals: &[],
+                budget_reach: &[],
+                parent_terminal: Default::default(),
+                lifecycle: &lifecycle_events,
+                root: root_snapshot.as_ref(),
+                children: &child_snapshots,
+                links: &links,
+                outcomes: &[],
+                historical_pending: &historical,
+            });
             let sessions = self.sessions.lock().unwrap();
             let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
-            for candidate in &mut candidates {
-                let index =
-                    record.projected_tool_index_for(public_child_thread_id(&candidate.key.target));
-                candidate.projected_family = index.latest_family(&candidate.key.runtime_call_id);
-                candidate.projected_event_id = index.latest_id(&candidate.key.runtime_call_id);
-            }
-        }
+            qualify_pending_reply_candidates(record, candidates, &index)
+        };
         let tool_reply_phases = Self::tool_reply_projection_phases(&persisted_session, &candidates);
         // Cause/effect table over the one shared phase authority:
         // PendingClient/PendingBuiltin/Unclassified => reject follow-up;
@@ -677,4 +656,130 @@ impl ManagedState {
         }
         Ok(SendEventsResponse { data: receipts })
     }
+}
+
+/// The existing current-ticket law and exact answered commit, shared by
+/// root and child collection. The Pending is held only until source proof.
+fn pending_reply_candidate(
+    target: SessionThreadTarget,
+    snapshot: &RunRecoverySnapshot,
+    lifecycle: &[RunLifecycleEvent],
+) -> Result<Option<(PendingToolReplyCandidate, Pending)>, StateError> {
+    let Some((run_id, correlation_id, pending)) =
+        ManagedState::pending_ticket_from_recovery_snapshot(snapshot)?
+    else {
+        return Ok(None);
+    };
+    let answered = ManagedState::answered_pending_commit_cursor(
+        &snapshot.thread_id,
+        &run_id,
+        snapshot.store_cursor,
+        lifecycle,
+    )?;
+    Ok(Some((
+        PendingToolReplyCandidate::from_pending(
+            target,
+            snapshot.thread_version,
+            answered,
+            run_id,
+            correlation_id,
+            pending.clone(),
+        ),
+        pending,
+    )))
+}
+
+fn collect_pending_reply_candidates(
+    root: Option<&RunRecoverySnapshot>,
+    children: &ProjectionThreadSnapshots,
+    lifecycle: &[RunLifecycleEvent],
+) -> Result<Vec<(PendingToolReplyCandidate, Pending)>, StateError> {
+    let mut candidates = Vec::new();
+    let root_prefix = root
+        .into_iter()
+        .map(|snapshot| (SessionThreadTarget::Primary, snapshot));
+    let child_prefixes = children.iter().map(|(thread, snapshot)| {
+        (
+            SessionThreadTarget::Child(awaken_agent_contract::agent::thread::Id(thread.clone())),
+            snapshot,
+        )
+    });
+    for (target, snapshot) in root_prefix.chain(child_prefixes) {
+        if let SessionThreadTarget::Child(_) = &target {
+            let disposition =
+                awaken_agent_contract::thread_disposition_from_committed_state(&snapshot.state)
+                    .map_err(|error| {
+                        StateError::Run(RunError::internal(format!(
+                            "recover coordinated Thread disposition: {error}"
+                        )))
+                    })?;
+            if disposition == awaken_agent_contract::ThreadDisposition::Archived {
+                continue;
+            }
+        }
+        if let Some(candidate) = pending_reply_candidate(target, snapshot, lifecycle)? {
+            candidates.push(candidate);
+        }
+    }
+    Ok(candidates)
+}
+
+/// One request-local projection proof over the already-read snapshots.
+/// No ticket can supply an audit row that its own Awaiting did not retain.
+fn qualify_pending_reply_candidates(
+    record: &SessionRecord,
+    candidates: Vec<(PendingToolReplyCandidate, Pending)>,
+    index: &OrderIndex<'_>,
+) -> Vec<PendingToolReplyCandidate> {
+    candidates
+        .into_iter()
+        .map(|(candidate, pending)| {
+            bind_pending_reply_projection(record, candidate, &pending, index)
+        })
+        .collect()
+}
+
+fn bind_pending_reply_projection(
+    record: &SessionRecord,
+    mut candidate: PendingToolReplyCandidate,
+    pending: &Pending,
+    index: &OrderIndex<'_>,
+) -> PendingToolReplyCandidate {
+    let session_id = record.session.id.as_str();
+    let owner = public_child_thread_id(&candidate.key.target);
+    let thread = owner.unwrap_or(session_id);
+    let projected = record.projected_tool_index_for(owner);
+    let mut pauses = index.lifecycle().iter().filter(|event| {
+        event.thread_id.0 == thread
+            && event.run_id == candidate.key.expected_run_id
+            && event.kind == RunLifecycleEventKind::Awaiting
+            && event.source_commit_cursor == candidate.answered_pending_commit_cursor
+    });
+    // Missing, ambiguous or not-yet-published source stays None; the old
+    // Unclassified/follow-up refusal and invalid-reply literal still own it.
+    let source = pauses
+        .next()
+        .filter(|_| pauses.next().is_none())
+        .and_then(|pause| index.pending_tool_source(pause, pending).ok());
+    candidate.projected_event_id = source.as_ref().and_then(|source| {
+        projected
+            .event_id_for_source(
+                &ManagedState::public_tool_thread_id(session_id, owner),
+                &candidate.key.runtime_call_id,
+                Some((source.source_id.as_str(), source.call_id.as_str())),
+            )
+            .ok()
+    });
+    // Qualified identity owns its family. The existing raw legacy wire
+    // path may use only an actually published raw Event's exact family,
+    // after the same audit/source proof; resolve_tool_reply still demands
+    // one unique pending owner before accepting that older public id.
+    candidate.projected_family = source.as_ref().and_then(|_| {
+        candidate
+            .projected_event_id
+            .as_deref()
+            .and_then(|id| projected.family_for_event(id))
+            .or_else(|| projected.family_for_event(&candidate.key.runtime_call_id))
+    });
+    candidate
 }

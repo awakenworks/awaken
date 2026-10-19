@@ -13,12 +13,13 @@ impl ManagedState {
     pub(super) fn close_aggregate(
         &self,
         record: &mut SessionRecord,
-        session_id: &str,
         persisted: &awaken_session_state_contract::PersistedSession,
         evidence: &CandidateEvidence,
         root: &RootProjection,
         plan: &awaken_managed_session_events::AggregatePlan,
+        index: &OrderIndex<'_>,
     ) -> Result<(), StateError> {
+        let session_id = record.session.id.clone();
         let RootProjection {
             projected_budget_reach,
         } = root;
@@ -26,7 +27,7 @@ impl ManagedState {
         // Every root Run boundary publishes its Thread idle (and fault) once,
         // from its own committed lifecycle and audit.
         for terminal in awaken_managed_session_events::root_run_boundaries(
-            session_id,
+            &session_id,
             &evidence.acceptance.accepted,
         ) {
             let idle_key =
@@ -44,6 +45,7 @@ impl ManagedState {
                     .any(|projection| projection.owns_failure_run(&terminal.run_id)),
                 evidence.root.as_ref(),
                 historical_pending,
+                index,
             )
             .map_err(projection_error)?;
             if let Some(error) = &facts.error {
@@ -64,7 +66,7 @@ impl ManagedState {
         // answerable-wait history. A later Running Session, pending call or
         // child Archive cannot erase a previously issued budget pair.
         for reach in projected_budget_reach {
-            for fact in reach.facts(session_id) {
+            for fact in reach.facts(&session_id) {
                 record.publish_fact(&fact, None)?;
             }
             record.checkpoint.source.budget_reach_generation = reach.generation;
@@ -93,16 +95,13 @@ impl ManagedState {
                 awaken_managed_session_events::AggregateStop::Calls { thread_calls } => {
                     let mut event_ids = thread_calls
                         .iter()
-                        .map(|(thread, call)| {
+                        .map(|(thread, source)| {
                             let owner = (thread != &session_id).then_some(thread.as_str());
-                            record
-                                .projected_tool_index_for(owner)
-                                .latest_id(call)
-                                .ok_or_else(|| {
-                                    StateError::Run(RunError::internal(
-                                        "an answerable pause has no public Managed tool event",
-                                    ))
-                                })
+                            record.projected_tool_index_for(owner).event_id_for_source(
+                                &ManagedState::public_tool_thread_id(&session_id, owner),
+                                &source.call_id,
+                                Some((source.source_id.as_str(), source.call_id.as_str())),
+                            )
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     event_ids.sort();

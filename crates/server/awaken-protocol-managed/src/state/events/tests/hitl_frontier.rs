@@ -1,12 +1,73 @@
 //! The root lifecycle owns primary Thread Running across Session intervals.
 
 use super::*;
-use awaken_managed_session_events::{
-    AggregateStop, FactProvenance, ManagedEventType, plan_aggregate,
-};
+use awaken_managed_session_events::{AggregateStop, FactProvenance, ManagedEventType};
 
-#[test]
-fn aggregate_fallback_and_interval_close_require_one_prefix_plan() {
+// These original pure-plan rows have no ToolUse Messages. Lend the existing
+// Runtime fixture's actual aligned snapshots and fixed audited targets, so the
+// same as-of-Awaiting synthetic law proves their Run-qualified source. No
+// placeholder source, new snapshot constructor or second occurrence fold.
+async fn plan_aggregate_from_fixture(
+    persisted: &awaken_session_state_contract::PersistedSession,
+    lifecycle: &[RunLifecycleEvent],
+    pending: &std::collections::HashMap<RunLifecycleCursor, Pending>,
+    links: &[CoordinatedThreadLink],
+) -> Result<
+    awaken_managed_session_events::AggregatePlan,
+    awaken_managed_session_events::ProjectionError,
+> {
+    let runtime = LifecycleRuntime::default();
+    *runtime.lifecycle.lock().unwrap() = lifecycle.to_vec();
+    for (cursor, target) in pending {
+        runtime.await_targets.lock().unwrap().insert(
+            *cursor,
+            awaken_protocol_managed_testkit::tool_call_target(
+                target.clone(),
+                awaken_agent_contract::agent::awaiting::ToolAwaitReason::Permission,
+            ),
+        );
+    }
+    let session = persisted.session_id.clone();
+    let mut root = None;
+    let mut children = std::collections::HashMap::new();
+    for thread in lifecycle
+        .iter()
+        .map(|event| event.thread_id.0.as_str())
+        .collect::<std::collections::HashSet<_>>()
+    {
+        let snapshot =
+            awaken_session_execution_contract::ThreadReadRuntime::session_thread_recovery_snapshot(
+                &runtime, &session, thread,
+            )
+            .await
+            .expect("the original Runtime fixture supplies this committed prefix");
+        if thread == persisted.session_id.as_str() {
+            root = snapshot;
+        } else if let Some(snapshot) = snapshot {
+            children.insert(thread.to_string(), snapshot);
+        }
+    }
+    let index = awaken_managed_session_events::OrderIndex::new(
+        awaken_managed_session_events::OrderEvidence {
+            updates: None,
+            session_id: persisted.session_id.as_str(),
+            batches: &persisted.event_batches,
+            closed_intervals: &persisted.closed_runtime_intervals,
+            budget_reach: &[],
+            parent_terminal: Default::default(),
+            lifecycle,
+            root: root.as_ref(),
+            children: &children,
+            links,
+            outcomes: &[],
+            historical_pending: pending,
+        },
+    );
+    awaken_managed_session_events::plan_aggregate(persisted, lifecycle, pending, links, &index)
+}
+
+#[tokio::test]
+async fn aggregate_fallback_and_interval_close_require_one_prefix_plan() {
     // Causes: A1 root Running3 then audited Awaiting7 in a legacy Session
     // with no interval; A2 an alternative committed history has an interval
     // admitted before 7 and closed by that boundary. Effects: E1 A1 owns one
@@ -46,7 +107,9 @@ fn aggregate_fallback_and_interval_close_require_one_prefix_plan() {
         },
     )]);
     let persisted = crate::state::tests::sample_persisted(session_id);
-    let plan = plan_aggregate(&persisted, &accepted, &pending, &[]).unwrap();
+    let plan = plan_aggregate_from_fixture(&persisted, &accepted, &pending, &[])
+        .await
+        .unwrap();
     assert_eq!(plan.fallback_openings.len(), 1, "R1/E1 one opening");
     assert_eq!(
         plan.fallback_openings[0].role,
@@ -73,7 +136,14 @@ fn aggregate_fallback_and_interval_close_require_one_prefix_plan() {
     assert_eq!(
         fallback.stop,
         AggregateStop::Calls {
-            thread_calls: vec![(session_id.into(), "call-7".into())]
+            thread_calls: vec![(
+                session_id.into(),
+                awaken_managed_session_events::ToolResultSource {
+                    source_id: run.0.clone(),
+                    call_id: "call-7".into(),
+                    name: "write".into(),
+                }
+            )]
         },
         "R1/E1 answerable stop stays neutral until Managed rendering"
     );
@@ -102,7 +172,9 @@ fn aggregate_fallback_and_interval_close_require_one_prefix_plan() {
             max_list_cost_minor: None,
         },
     );
-    let interval_plan = plan_aggregate(&with_interval, &accepted, &pending, &[]).unwrap();
+    let interval_plan = plan_aggregate_from_fixture(&with_interval, &accepted, &pending, &[])
+        .await
+        .unwrap();
     assert_eq!(
         interval_plan.fallback_openings, plan.fallback_openings,
         "R2/E2"
@@ -118,8 +190,8 @@ fn aggregate_fallback_and_interval_close_require_one_prefix_plan() {
     assert_eq!(close.idle.key.provenance, close.usage.key.provenance);
 }
 
-#[test]
-fn aggregate_fallback_holds_root_and_child_answerable_calls_neutrally() {
+#[tokio::test]
+async fn aggregate_fallback_holds_root_and_child_answerable_calls_neutrally() {
     // Causes: M1 root Running1 then child Running2; M2 root Awaiting3 while
     // child still runs; M3 child Awaiting4, both with committed call targets.
     // Effects: E1 one opening at 1 and no close at 3; E2 one close at 4 with
@@ -191,24 +263,41 @@ fn aggregate_fallback_holds_root_and_child_answerable_calls_neutrally() {
         latest_run_id: Some(child_run),
     };
     let persisted = crate::state::tests::sample_persisted(session_id);
-    let prefix = plan_aggregate(
+    let prefix = plan_aggregate_from_fixture(
         &persisted,
         &events[..3],
         &pending,
         std::slice::from_ref(&link),
     )
+    .await
     .unwrap();
     assert_eq!(prefix.fallback_openings.len(), 1, "R1/E1");
     assert!(prefix.fallback_closes.is_empty(), "R1/E1 child still runs");
-    let full = plan_aggregate(&persisted, &events, &pending, &[link]).unwrap();
+    let full = plan_aggregate_from_fixture(&persisted, &events, &pending, &[link])
+        .await
+        .unwrap();
     assert_eq!(full.fallback_openings, prefix.fallback_openings, "R2/E3");
     assert_eq!(full.fallback_closes.len(), 1, "R2/E2 one close");
     assert_eq!(
         full.fallback_closes[0].stop,
         AggregateStop::Calls {
             thread_calls: vec![
-                (session_id.into(), "root-call".into()),
-                ("child".into(), "child-call".into()),
+                (
+                    session_id.into(),
+                    awaken_managed_session_events::ToolResultSource {
+                        source_id: events[2].run_id.0.clone(),
+                        call_id: "root-call".into(),
+                        name: "write".into(),
+                    }
+                ),
+                (
+                    "child".into(),
+                    awaken_managed_session_events::ToolResultSource {
+                        source_id: events[3].run_id.0.clone(),
+                        call_id: "child-call".into(),
+                        name: "read".into(),
+                    }
+                ),
             ],
         },
         "R2/E2 canonical Thread-key order before public ID sort"
@@ -222,8 +311,8 @@ fn aggregate_fallback_holds_root_and_child_answerable_calls_neutrally() {
     );
 }
 
-#[test]
-fn hitl_interval_close_cannot_insert_running_before_an_issued_tool_use() {
+#[tokio::test]
+async fn hitl_interval_close_cannot_insert_running_before_an_issued_tool_use() {
     // Causes: H1 the root Run opened at commit 3; H2 another child closes a
     // Session interval at 4 without closing that root Run; H3 the root ToolUse
     // and answerable Awaiting commit at 7, and its interval closes later;
@@ -306,7 +395,9 @@ fn hitl_interval_close_cannot_insert_running_before_an_issued_tool_use() {
         [ManagedEventType::RootLifecycleStatusRunning],
         "R1/E1 real Running3 owns the Thread"
     );
-    let plan = plan_aggregate(&persisted, &accepted, &pending, &[]).unwrap();
+    let plan = plan_aggregate_from_fixture(&persisted, &accepted, &pending, &[])
+        .await
+        .unwrap();
     assert!(
         !plan.interval_closes.is_empty(),
         "R1/E2 Session interval still closes with its Usage/Idle pair"

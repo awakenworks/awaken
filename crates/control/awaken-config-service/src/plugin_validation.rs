@@ -30,6 +30,31 @@ pub(crate) async fn resolve_plugin_configuration(
     workspace: &awaken_tenancy::ScopeId,
     config: &mut AgentConfig,
 ) -> Result<(), crate::publication::ValidationIssue> {
+    use awaken_executable_agent_contract::capability::PluginConfigurationSource;
+    // Expand only the Agent's declared servers through the same source directory.
+    // These disposable exact rows are a projection, never a second catalog.
+    let mut exact = Vec::new();
+    for source in configurations {
+        match source {
+            PluginConfigurationSource::Exact { .. } => exact.push(source.clone()),
+            PluginConfigurationSource::McpServers {
+                capability_for,
+                validate,
+            } => {
+                for server in &config.mcp_servers {
+                    // A failed pure metadata projection cannot advertise an
+                    // exact instance. It does not validate the complete binding:
+                    // the original Agent compiler still owns that error/class.
+                    if let Ok(capability) = capability_for(&server.name) {
+                        exact.push(PluginConfigurationSource::Exact {
+                            capability: Box::new(capability),
+                            validate: Some(*validate),
+                        });
+                    }
+                }
+            }
+        }
+    }
     // Reject missing/ambiguous owners before any Workspace resolver is entered.
     // Inactive authoring sections remain untouched and do not acquire authority.
     let mut selected = std::collections::BTreeSet::new();
@@ -45,11 +70,17 @@ pub(crate) async fn resolve_plugin_configuration(
                 format!("plugin `{id}` is selected more than once"),
             ));
         }
-        let sources = configurations
+        let sources = exact
             .iter()
-            .filter(|source| source.capability.id == *id)
+            .filter_map(|source| match source {
+                PluginConfigurationSource::Exact {
+                    capability,
+                    validate,
+                } if capability.id == *id => Some((capability, *validate)),
+                _ => None,
+            })
             .collect::<Vec<_>>();
-        let [source] = sources.as_slice() else {
+        let [(capability, validate)] = sources.as_slice() else {
             return Err(issue(
                 if sources.is_empty() {
                     "plugin_configuration_unavailable"
@@ -69,16 +100,16 @@ pub(crate) async fn resolve_plugin_configuration(
                 format!("plugin `{id}` has more than one publication resolver"),
             ));
         }
-        if source.capability.schema_keys.is_empty() && config.plugin_config.contains_key(id) {
+        if capability.schema_keys.is_empty() && config.plugin_config.contains_key(id) {
             return Err(issue(
                 "plugin_configuration_unsupported",
                 format!("plugin `{id}` declares no authored configuration section"),
             ));
         }
-        if let Some(validate) = source.validate {
+        if let Some(validate) = validate {
             validate(config.plugin_config.get(id))
                 .map_err(|message| issue("plugin_configuration_invalid", message))?;
-        } else if owners == 0 && !source.capability.schema_keys.is_empty() {
+        } else if owners == 0 && !capability.schema_keys.is_empty() {
             return Err(issue(
                 "plugin_configuration_unavailable",
                 format!("plugin `{id}` has no configuration validator or publication resolver"),
@@ -120,8 +151,8 @@ mod tests {
         validate: Option<PluginConfigurationValidator>,
         configured: bool,
     ) -> PluginConfigurationSource {
-        PluginConfigurationSource {
-            capability: PluginCapability {
+        PluginConfigurationSource::Exact {
+            capability: Box::new(PluginCapability {
                 id: id.into(),
                 schema_keys: if configured {
                     vec![id.into()]
@@ -130,7 +161,7 @@ mod tests {
                 },
                 config_schema: configured.then(|| serde_json::json!({"type":"object"})),
                 bound: Default::default(),
-            },
+            }),
             validate,
         }
     }
@@ -402,5 +433,291 @@ mod tests {
             .is_err()
         );
         assert!(seen.lock().unwrap().is_empty());
+    }
+    fn mcp_source_case() -> AgentConfig {
+        use crate::config_service::mcp_server_binding;
+        let policy = serde_json::json!({"notifications":{
+            "notifications/phone/input":{"event_id":"/id","delivery":{"kind":"message","text":"/text"}},
+            "notifications/phone/interrupt":{"event_id":"/id","delivery":{"kind":"cancel_response","input_method":"notifications/phone/input","input_event_id":"/target"}}
+        }});
+        AgentConfig {
+            plugin_ids: vec!["mcp:phone".into()],
+            mcp_servers: vec![mcp_server_binding("phone")],
+            plugin_config: [("mcp:phone".into(), policy.clone())].into_iter().collect(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn declared_mcp_instances_keep_exact_ownership_and_one_runtime_parser() {
+        // S1 declared ASCII/Unicode + exact selected id + real valid/default
+        // parser -> accepted unchanged; S2 undeclared/unknown -> unavailable;
+        // S3 duplicate selected/source/name -> ambiguous; S4 empty -> no
+        // advertisable instance, never a new structural validation result.
+        use crate::config_service::{mcp_configuration_source, mcp_server_binding};
+        let workspace = awaken_tenancy::ScopeId::from("workspace");
+        let base = mcp_source_case();
+        let policy = base.plugin_config["mcp:phone"].clone();
+        for (declared, selected, source_count, repeat, expected) in [
+            ("phone", "mcp:phone", 1, false, None),
+            ("智客/phone", "mcp:智客/phone", 1, false, None),
+            (
+                "phone",
+                "mcp:other",
+                1,
+                false,
+                Some("plugin_configuration_unavailable"),
+            ),
+            (
+                "phone",
+                "unknown",
+                1,
+                false,
+                Some("plugin_configuration_unavailable"),
+            ),
+            (
+                "phone",
+                "mcp:phone",
+                1,
+                true,
+                Some("plugin_configuration_ambiguous"),
+            ),
+            (
+                "phone",
+                "mcp:phone",
+                2,
+                false,
+                Some("plugin_configuration_ambiguous"),
+            ),
+            (
+                "",
+                "mcp:",
+                1,
+                false,
+                Some("plugin_configuration_unavailable"),
+            ),
+        ] {
+            let mut config = base.clone();
+            config.mcp_servers = vec![mcp_server_binding(declared)];
+            config.plugin_ids = vec![selected.into(); if repeat { 2 } else { 1 }];
+            config.plugin_config = [(selected.into(), policy.clone())].into_iter().collect();
+            let before = config.clone();
+            let sources = vec![mcp_configuration_source(); source_count];
+            let result = resolve_plugin_configuration(&sources, &[], &workspace, &mut config).await;
+            assert_eq!(
+                result
+                    .as_ref()
+                    .err()
+                    .and_then(|issue| issue.code.as_deref()),
+                expected
+            );
+            assert_eq!(config, before, "S1-S4 never rewrite source/config/defaults");
+        }
+        let mut duplicate = base.clone();
+        duplicate.mcp_servers.push(mcp_server_binding("phone"));
+        assert_eq!(
+            resolve_plugin_configuration(
+                &[mcp_configuration_source()],
+                &[],
+                &workspace,
+                &mut duplicate
+            )
+            .await
+            .unwrap_err()
+            .code
+            .as_deref(),
+            Some("plugin_configuration_ambiguous")
+        );
+        let mut no_declaration = base.clone();
+        no_declaration.mcp_servers.clear();
+        assert_eq!(
+            resolve_plugin_configuration(
+                &[mcp_configuration_source()],
+                &[],
+                &workspace,
+                &mut no_declaration
+            )
+            .await
+            .unwrap_err()
+            .code
+            .as_deref(),
+            Some("plugin_configuration_unavailable")
+        );
+        let mut missing = base.clone();
+        missing.plugin_config.clear();
+        let before = missing.clone();
+        resolve_plugin_configuration(&[mcp_configuration_source()], &[], &workspace, &mut missing)
+            .await
+            .unwrap();
+        assert_eq!(missing, before, "S1 absent config stays absent");
+    }
+
+    #[tokio::test]
+    async fn mcp_parser_refusals_and_inactive_sections_keep_their_original_owner() {
+        // S5 bad pointer/unknown/cancel target absent -> real parser refusal;
+        // S6 inactive malformed residue stays; S7 other validators still run.
+        // These are the original S5-S7 inputs/assertions, without a copied DSL.
+        use crate::config_service::mcp_configuration_source;
+        let workspace = awaken_tenancy::ScopeId::from("workspace");
+        let base = mcp_source_case();
+        let policy = base.plugin_config["mcp:phone"].clone();
+        let mut bad_pointer = policy.clone();
+        bad_pointer["notifications"]["notifications/phone/input"]["event_id"] = "id".into();
+        let mut missing_target = policy.clone();
+        missing_target["notifications"]
+            .as_object_mut()
+            .unwrap()
+            .remove("notifications/phone/input");
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!({"unknown":true}),
+            bad_pointer,
+            missing_target,
+        ] {
+            let mut config = base.clone();
+            config.plugin_config.insert("mcp:phone".into(), value);
+            let before = config.clone();
+            let issue = resolve_plugin_configuration(
+                &[mcp_configuration_source()],
+                &[],
+                &workspace,
+                &mut config,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(issue.code.as_deref(), Some("plugin_configuration_invalid"));
+            assert_eq!(issue.path, "plugin_config.mcp:phone");
+            assert_eq!(config, before, "S5 real parser refusal leaves input intact");
+        }
+        let sources = [
+            mcp_configuration_source(),
+            configuration("owned", Some(pure_configuration), true),
+        ];
+        let mut config = base;
+        config.plugin_ids = vec!["owned".into()];
+        config
+            .plugin_config
+            .insert("mcp:phone".into(), serde_json::json!({"unknown":true}));
+        config
+            .plugin_config
+            .insert("owned".into(), serde_json::json!({"valid":true}));
+        let before = config.clone();
+        resolve_plugin_configuration(&sources, &[], &workspace, &mut config)
+            .await
+            .unwrap();
+        assert_eq!(config, before, "S6 inactive malformed section is retained");
+        config
+            .plugin_config
+            .insert("owned".into(), serde_json::json!({"valid":false}));
+        assert_eq!(
+            resolve_plugin_configuration(&sources, &[], &workspace, &mut config)
+                .await
+                .unwrap_err()
+                .path,
+            "plugin_config.owned",
+            "S7 unrelated validators are not bypassed"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_metadata_failures_preserve_exact_overlap_and_first_refusal_order() {
+        // S3 Exact/family overlap remains ambiguous, failed projection cannot
+        // hide a successful Exact. S8 unrelated invalid binding metadata cannot
+        // preempt active missing/duplicate/validator errors. Full binding
+        // legality remains at the existing complete Agent compiler (S9).
+        use crate::config_service::{mcp_configuration_source, mcp_server_binding};
+        let workspace = awaken_tenancy::ScopeId::from("workspace");
+        let base = mcp_source_case();
+        let PluginConfigurationSource::McpServers {
+            capability_for,
+            validate,
+        } = mcp_configuration_source()
+        else {
+            unreachable!("fixture is dynamic")
+        };
+        let exact_phone = PluginConfigurationSource::Exact {
+            capability: Box::new(capability_for("phone").unwrap()),
+            validate: Some(validate),
+        };
+        let mut overlap = base.clone();
+        assert_eq!(
+            resolve_plugin_configuration(
+                &[mcp_configuration_source(), exact_phone.clone()],
+                &[],
+                &workspace,
+                &mut overlap
+            )
+            .await
+            .unwrap_err()
+            .code
+            .as_deref(),
+            Some("plugin_configuration_ambiguous"),
+            "S3 Exact/family overlap stays ambiguous"
+        );
+        let mut projected = base.clone();
+        resolve_plugin_configuration(
+            &[
+                PluginConfigurationSource::McpServers {
+                    capability_for: |_| Err("not advertisable".into()),
+                    validate,
+                },
+                exact_phone,
+            ],
+            &[],
+            &workspace,
+            &mut projected,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            projected, base,
+            "a failed metadata projection cannot hide a successful Exact"
+        );
+        // S8 metadata from an unrelated invalid binding cannot preempt the
+        // selected Exact's original missing/duplicate/validator decisions, nor
+        // invent a new structural error before credentials/resolvers/compiler.
+        for (ids, valid, code) in [
+            (
+                vec!["missing"],
+                true,
+                Some("plugin_configuration_unavailable"),
+            ),
+            (
+                vec!["owned", "owned"],
+                true,
+                Some("plugin_configuration_ambiguous"),
+            ),
+            (vec!["owned"], false, Some("plugin_configuration_invalid")),
+            (vec!["owned"], true, None),
+        ] {
+            let mut config = base.clone();
+            config.plugin_ids = ids.into_iter().map(str::to_owned).collect();
+            config.mcp_servers = vec![mcp_server_binding("")];
+            config
+                .plugin_config
+                .insert("owned".into(), serde_json::json!({"valid":valid}));
+            let before = config.clone();
+            let result = resolve_plugin_configuration(
+                &[
+                    mcp_configuration_source(),
+                    configuration("owned", Some(pure_configuration), true),
+                ],
+                &[],
+                &workspace,
+                &mut config,
+            )
+            .await;
+            assert_eq!(
+                result
+                    .as_ref()
+                    .err()
+                    .and_then(|issue| issue.code.as_deref()),
+                code
+            );
+            assert_eq!(
+                config, before,
+                "S8 original Exact first-refusal is unchanged"
+            );
+        }
     }
 }

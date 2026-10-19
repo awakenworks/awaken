@@ -106,9 +106,11 @@ Use `error.kind()`, `error.code()` and `std::error::Error::source` for diagnosti
 Classification is not permission to retry an effect; retain existing idempotency,
 execution-evidence and commit rules.
 
-`EmbeddedSession` and `Runtime::session` remain as deprecated compatibility
-entries for `Conversation` and `Runtime::conversation`. Existing contract import
-paths and legacy string error variants remain. The development API adds
+Use `Conversation` and `Runtime::conversation` for the SDK binding. The former
+`EmbeddedSession` and `Runtime::session` source entries have been removed;
+existing callers must migrate to the canonical names. This is a source-breaking
+API change and requires explicit release qualification. Other existing contract
+import paths and legacy string error variants remain. The development API adds
 `execution::Error::Diagnostic`; downstream exhaustive matches must handle it.
 New diagnostic/options/outcome types have
 private fields or non-exhaustive enums. Before publishing a stable release,

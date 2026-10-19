@@ -11,11 +11,6 @@ mod event_page_index;
 use super::events::ProjectedToolUseFamily;
 use event_page_index::EventPageIndex;
 
-struct ProjectedToolUse {
-    id: String,
-    family: ProjectedToolUseFamily,
-}
-
 #[derive(Default)]
 pub(super) struct ProjectedToolIndex {
     pub(super) all: HashSet<String>,
@@ -24,11 +19,9 @@ pub(super) struct ProjectedToolIndex {
     /// continuation, while Managed publishes the corresponding `user.*` event
     /// as their one wire representation.
     pub(super) client_settled_occurrences: HashSet<String>,
-    /// Authored custom-tool family of each exact public occurrence.
-    pub(super) custom: HashSet<String>,
-    /// The latest public occurrence and its family are one projection. An
-    /// earlier MCP use cannot classify a later builtin use of the same raw id.
-    latest: HashMap<String, ProjectedToolUse>,
+    /// One exact public occurrence owns its family. Current reply admission
+    /// and result projection borrow the same map; raw call ids can repeat.
+    families: HashMap<String, ProjectedToolUseFamily>,
     /// Exact committed source occurrence of every qualified tool-use Event.
     /// Rebuilt from the append-only Event log; never persisted as another
     /// projection cursor or tool authority.
@@ -44,33 +37,25 @@ impl ProjectedToolIndex {
         family: ProjectedToolUseFamily,
     ) {
         self.all.insert(call_id.to_string());
-        if family == ProjectedToolUseFamily::Custom {
-            self.custom.insert(id.clone());
-        }
         if let Some(identity) = crate::project::decode_managed_tool_event_id(&id) {
             self.sources
                 .insert((identity.source_id.to_string(), identity.call_id.to_string()));
         }
-        self.latest
-            .insert(call_id.to_string(), ProjectedToolUse { id, family });
+        self.families.insert(id, family);
     }
 
-    pub(super) fn latest_id(&self, call_id: &str) -> Option<String> {
-        self.latest.get(call_id).map(|tool| tool.id.clone())
+    pub(super) fn family_for_event(&self, event_id: &str) -> Option<ProjectedToolUseFamily> {
+        self.families.get(event_id).copied()
     }
 
-    pub(super) fn latest_family(&self, call_id: &str) -> Option<ProjectedToolUseFamily> {
-        self.latest.get(call_id).map(|tool| tool.family)
-    }
-
-    pub(super) fn result_id(
+    pub(super) fn event_id_for_source(
         &self,
         thread_id: &str,
         call_id: &str,
-        source: Option<&awaken_managed_session_events::ToolResultSource>,
+        source: Option<(&str, &str)>,
     ) -> Result<String, StateError> {
-        let source = source
-            .filter(|source| source.call_id == call_id)
+        let (source, _) = source
+            .filter(|(_, source_call)| *source_call == call_id)
             .ok_or_else(|| {
                 StateError::Run(RunError::internal(
                     "tool result has no exact committed source",
@@ -78,16 +63,14 @@ impl ProjectedToolIndex {
             })?;
         if !self
             .sources
-            .contains(&(source.source_id.clone(), source.call_id.clone()))
+            .contains(&(source.to_string(), call_id.to_string()))
         {
             return Err(StateError::Run(RunError::internal(
                 "tool result source has no published ToolUse",
             )));
         }
         Ok(crate::project::managed_tool_event_id(
-            thread_id,
-            &source.source_id,
-            call_id,
+            thread_id, source, call_id,
         ))
     }
 }
