@@ -617,7 +617,7 @@ async fn assemble_execution_host(
         .with_skill_catalog_application(resources.resource_application.skill_catalog_application())
         .with_web_search_provider_registry(cloud.web_search_providers.clone())
         .with_acp_tool_exporter(Arc::new(awaken_protocol_mcp::SessionToolExporter))
-        .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(
+        .with_remote_attempt_executor(crate::a2a_attempt_executor(
             cloud.credential_materializer.clone(),
         ))
         .with_agent_publications(base.agents.catalog.clone())

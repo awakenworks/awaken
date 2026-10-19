@@ -10,6 +10,7 @@
 //! its independent authority-free bootstrap.
 //!
 //! Every binary target is a thin shell over this library.
+mod a2a_attempt;
 mod acp_local_credentials;
 mod assistant_selection;
 mod brokered_catalog;
@@ -44,6 +45,7 @@ mod worker_observation_wiring;
 mod worker_transport;
 mod worker_transport_security;
 
+pub use a2a_attempt::a2a_attempt_executor;
 pub use memory::with_platform_memory_data_plane;
 pub use worker_transport::WorkerTransport;
 

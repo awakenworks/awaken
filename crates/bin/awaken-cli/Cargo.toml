@@ -40,6 +40,9 @@ awaken-tool-contract.workspace = true
 awaken-data-governance-contract.workspace = true
 # Assembles the container-tier Session environment the deployment names.
 awaken-execution-composition.workspace = true
+# This product root selects the original publication-pinned outbound A2A adapter.
+awaken-run-executor-a2a.workspace = true
+awaken-protocol-a2a.workspace = true
 # Deployment-file PVC policy is owned by the existing container substrate.
 # The Kubernetes engine: the control client that authenticates Pod Workers.
 awaken-sandbox-kubernetes = { workspace = true, optional = true }
