@@ -627,3 +627,26 @@ replacement operation. Flow's older pinned constructor still calls that entry,
 so source inspection alone does not qualify a future downstream pin upgrade.
 No public Session business entry, protocol wire, durable transaction or SDK
 release surface changes in this bounded dependency-ownership cut.
+
+## Implementation note 2026-10-20: Session Query read ownership
+
+The existing `SessionQueries` component owns the frozen execution-input projection
+and scoped transcript read cases. Its only constructor takes the repository,
+a construction-only borrow of the already-selected `SessionExecutor`, and the
+selected Agent profile handle. It stores only the original read roles, so an
+independently supplied projected source cannot disagree with its raw reader.
+The canonical committed-prefix adapter and all Thread/Run validation remain
+unchanged; the raw role serves only exact committed-message reads here.
+
+`SessionApplication::frozen_session_projection`, `session_transcript` and the
+redundant `committed_messages` forwarding entry are removed. Callers use the
+Queries business methods or the existing Runtime raw read role, without aliases.
+No new query context, raw mirror, factory, cache or persistence authority exists.
+Session commands retain their original lease, CAS, Clock and physical effects.
+
+These are Platform source-path and constructor-signature changes, outside SDK22.
+Known Awaken callers migrate together; bounded current Flow/two-Cloud source
+searches found no calls to these three App entries or the Query constructor.
+That evidence does not qualify an unknown downstream or an old pinned build.
+The scoped read keeps its current-root ownership gate; historical prefix reads
+keep their already-frozen reference and never require a live source projection.

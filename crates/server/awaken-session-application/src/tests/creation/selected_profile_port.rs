@@ -266,6 +266,7 @@ async fn selected_profile_port_reads_the_live_handle_and_custom_delegate_without
         &ProfiledAgent { unavailable: false }, "workspace", "profiled", 7,
     ).unwrap();
     let first = app
+        .queries()
         .frozen_session_projection("workspace".into(), &session, false)
         .await
         .unwrap();
@@ -294,6 +295,7 @@ async fn selected_profile_port_reads_the_live_handle_and_custom_delegate_without
     );
     *source.inner.lock().unwrap() = Arc::new(SubstitutingProfileSource);
     let next = app
+        .queries()
         .frozen_session_projection("workspace".into(), &session, false)
         .await
         .unwrap();

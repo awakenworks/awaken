@@ -136,6 +136,7 @@ impl BuiltInDreamAgent {
         for session_id in &request.session_ids {
             let messages = self
                 .sessions
+                .queries()
                 .session_transcript(&request.workspace_id, session_id.as_str())
                 .await
                 .map_err(|error| {
@@ -330,6 +331,7 @@ impl DreamExecutor for BuiltInDreamAgent {
             })?;
         for session_id in &request.session_ids {
             self.sessions
+                .queries()
                 .session_transcript(&request.workspace_id, session_id.as_str())
                 .await
                 .map_err(|error| {
@@ -358,12 +360,14 @@ impl DreamExecutor for BuiltInDreamAgent {
             && (matches!(request.output_behavior, DreamOutputBehavior::CreateNew)
                 || self
                     .sessions
+                    .queries()
                     .session_transcript(&request.workspace_id, &expected_session_id)
                     .await
                     .is_ok())
         {
             let session_exists = self
                 .sessions
+                .queries()
                 .session_transcript(&request.workspace_id, &expected_session_id)
                 .await
                 .is_ok();
