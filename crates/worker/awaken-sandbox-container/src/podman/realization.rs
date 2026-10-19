@@ -1,6 +1,7 @@
 //! Podman physical-container naming, launch labels, and restore identity inspection.
 
 use super::*;
+use awaken_container_contract::RuntimeError;
 
 impl PodmanRuntime {
     /// `podman container exists` reserves exit 1 for an absent target and 125

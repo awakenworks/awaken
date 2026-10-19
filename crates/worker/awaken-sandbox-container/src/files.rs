@@ -160,7 +160,7 @@ mod tests {
 
     #[async_trait]
     impl ContainerRuntime for ScanRuntime {
-        async fn probe_ready(&self) -> Result<(), crate::RuntimeError> {
+        async fn probe_ready(&self) -> Result<(), awaken_container_contract::RuntimeError> {
             Ok(())
         }
 
@@ -168,15 +168,20 @@ mod tests {
             &self,
             _id: &str,
             _plan: &crate::ContainerPlan,
-        ) -> Result<String, crate::RuntimeError> {
-            Err(crate::RuntimeError::Backend("not used".into()))
+        ) -> Result<String, awaken_container_contract::RuntimeError> {
+            Err(awaken_container_contract::RuntimeError::Backend(
+                "not used".into(),
+            ))
         }
 
         async fn spawn_agent(
             &self,
             _admitted: crate::AdmittedExec,
             command: pc::MaterializedCommand,
-        ) -> Result<awaken_provisioning_contract::AgentProcess, crate::RuntimeError> {
+        ) -> Result<
+            awaken_provisioning_contract::AgentProcess,
+            awaken_container_contract::RuntimeError,
+        > {
             self.commands.lock().unwrap().push(command.argv);
             let (channel, mut writer) = tokio::io::duplex(self.archive.len().max(1));
             let archive = self.archive.clone();
@@ -197,25 +202,35 @@ mod tests {
         async fn open_channel(
             &self,
             _container_id: &str,
-        ) -> Result<Box<dyn awaken_agent_channel::AgentChannel>, crate::RuntimeError> {
-            Err(crate::RuntimeError::Backend("not used".into()))
+        ) -> Result<
+            Box<dyn awaken_agent_channel::AgentChannel>,
+            awaken_container_contract::RuntimeError,
+        > {
+            Err(awaken_container_contract::RuntimeError::Backend(
+                "not used".into(),
+            ))
         }
 
         async fn inspect(
             &self,
             _container_id: &str,
-        ) -> Result<crate::ContainerState, crate::RuntimeError> {
+        ) -> Result<crate::ContainerState, awaken_container_contract::RuntimeError> {
             Ok(crate::ContainerState::Running)
         }
 
-        async fn wait(&self, _container_id: &str) -> Result<pc::ExitStatus, crate::RuntimeError> {
-            Err(crate::RuntimeError::Backend("not used".into()))
+        async fn wait(
+            &self,
+            _container_id: &str,
+        ) -> Result<pc::ExitStatus, awaken_container_contract::RuntimeError> {
+            Err(awaken_container_contract::RuntimeError::Backend(
+                "not used".into(),
+            ))
         }
 
         async fn poll(
             &self,
             _container_id: &str,
-        ) -> Result<Option<pc::ExitStatus>, crate::RuntimeError> {
+        ) -> Result<Option<pc::ExitStatus>, awaken_container_contract::RuntimeError> {
             Ok(None)
         }
 
@@ -223,14 +238,14 @@ mod tests {
             &self,
             _container_id: &str,
             _signal: pc::Signal,
-        ) -> Result<(), crate::RuntimeError> {
+        ) -> Result<(), awaken_container_contract::RuntimeError> {
             Ok(())
         }
 
         async fn artifacts(
             &self,
             _container_id: &str,
-        ) -> Result<Vec<pc::Artifact>, crate::RuntimeError> {
+        ) -> Result<Vec<pc::Artifact>, awaken_container_contract::RuntimeError> {
             Ok(Vec::new())
         }
 
@@ -238,15 +253,23 @@ mod tests {
             &self,
             _container_id: &str,
             _artifact_id: &str,
-        ) -> Result<Vec<u8>, crate::RuntimeError> {
-            Err(crate::RuntimeError::Backend("not used".into()))
+        ) -> Result<Vec<u8>, awaken_container_contract::RuntimeError> {
+            Err(awaken_container_contract::RuntimeError::Backend(
+                "not used".into(),
+            ))
         }
 
-        async fn touch_lease(&self, _container_id: &str) -> Result<(), crate::RuntimeError> {
+        async fn touch_lease(
+            &self,
+            _container_id: &str,
+        ) -> Result<(), awaken_container_contract::RuntimeError> {
             Ok(())
         }
 
-        async fn remove(&self, _container_id: &str) -> Result<(), crate::RuntimeError> {
+        async fn remove(
+            &self,
+            _container_id: &str,
+        ) -> Result<(), awaken_container_contract::RuntimeError> {
             Ok(())
         }
     }

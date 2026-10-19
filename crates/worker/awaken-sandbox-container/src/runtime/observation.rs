@@ -8,9 +8,8 @@
 //! regression tables remain in the parent runtime test module beside the
 //! shared realization fixtures; no test or verification path is duplicated.
 
-use super::{
-    ExistingRealization, ExistingRealizationPhase, ExistingRealizationRecovery, RuntimeError,
-};
+use super::{ExistingRealization, ExistingRealizationPhase, ExistingRealizationRecovery};
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract as pc;
 
 /// Project one adapter observation into the provider-neutral adoption result.

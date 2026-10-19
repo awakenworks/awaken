@@ -6,7 +6,7 @@
 // @formal entrypoint session_resources.repository_rotation_requires_original_live_generation
 // @formal entrypoint session_resources.restart_retries_same_pending_revision
 // @formal entrypoint session_resources.terminal_session_never_reactivates
-// awaken-allow(file-limit-ceiling): 1628
+// awaken-allow(file-limit-ceiling): 1588
 //! Durable Session Resource recovery and terminal reclamation.
 
 use crate::mutation::ROOT_CAS_ATTEMPTS;
@@ -28,6 +28,7 @@ use super::{
     CredentialMaterialRotationCommand, SessionApplication, SessionMutationError,
     SessionParticipantProvenance, SessionPreparationError, SessionReconciliation,
     SessionReconciliationFailure, SessionRecoveryCandidates, SessionRepositoryOwner,
+    credentials::{mutation_failure, repository_preparation},
     mutation::repository_failure,
     realization::{mutation_control, repository_control},
 };
@@ -215,23 +216,6 @@ impl SessionResourceManifestError {
             SessionMutationError::Unavailable(message) => Self::Unavailable(message),
         }
     }
-}
-
-pub(crate) fn mutation_failure(error: SessionMutationError) -> SessionPreparationError {
-    match error {
-        SessionMutationError::NotFound => SessionPreparationError::NotFound,
-        SessionMutationError::Conflict => SessionPreparationError::Conflict,
-        SessionMutationError::IdempotencyMismatch => SessionPreparationError::Unavailable(
-            "Session idempotency key was reused with another payload".into(),
-        ),
-        SessionMutationError::Unavailable(message) => SessionPreparationError::Unavailable(message),
-    }
-}
-
-fn repository_preparation(
-    error: awaken_session_state_contract::SessionRepositoryError,
-) -> SessionPreparationError {
-    mutation_failure(repository_failure(error))
 }
 
 pub(crate) fn internal(error: impl std::fmt::Display) -> SessionPreparationError {
@@ -598,7 +582,7 @@ impl SessionApplication {
                     }
                 }
             }
-            self.wake_lifecycle_supervisor();
+            self.lifecycle.request_reconciliation();
             return Ok(());
         }
         Err(SessionRealizationControlFailure::Conflict)
@@ -680,7 +664,7 @@ impl SessionApplication {
                 )
                 .map_err(terminal_cleanup_authorization_failure)?;
             if !changed {
-                self.wake_lifecycle_supervisor();
+                self.lifecycle.request_reconciliation();
                 return Ok(());
             }
             match self
@@ -693,7 +677,7 @@ impl SessionApplication {
                 .await
             {
                 Ok(_) => {
-                    self.wake_lifecycle_supervisor();
+                    self.lifecycle.request_reconciliation();
                     return Ok(());
                 }
                 Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
@@ -735,7 +719,7 @@ impl SessionApplication {
                 )
                 .map_err(terminal_cleanup_authorization_failure)?;
             if !changed {
-                self.wake_lifecycle_supervisor();
+                self.lifecycle.request_reconciliation();
                 return Ok(());
             }
             match self
@@ -748,7 +732,7 @@ impl SessionApplication {
                 .await
             {
                 Ok(_) => {
-                    self.wake_lifecycle_supervisor();
+                    self.lifecycle.request_reconciliation();
                     return Ok(());
                 }
                 Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
@@ -887,163 +871,6 @@ impl SessionApplication {
                 "Session Resource reference repair remains pending"
             );
         }
-    }
-
-    /// Rotate and repin one Session-scoped Repository credential through the
-    /// durable root CAS. A conflict reloads and recompiles the exact pin.
-    pub async fn rotate_repository_credential(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        owner_scope: &str,
-        binding_id: &awaken_resource_contract::BindingId,
-        material: CredentialMaterialInput,
-    ) -> Result<PersistedSession, SessionPreparationError> {
-        let mutations = &self.mutations;
-        let mut persisted = mutations
-            .session_aggregate(session_id)
-            .await
-            .map_err(repository_preparation)?;
-        if persisted.is_terminal() {
-            return Err(SessionPreparationError::Conflict);
-        }
-        if let Some(baseline) = persisted.frozen_baseline()
-            && !baseline
-                .mutation_policy
-                .admits_repository_credential_mutation()
-        {
-            return Err(SessionPreparationError::Rejected(RunError::bad_request(
-                "profiled Session Repository credentials are immutable",
-            )));
-        }
-        let ingress = self.credential_material_ingress().ok_or_else(|| {
-            SessionPreparationError::Rejected(RunError::bad_request(
-                "repository authorization requires a configured credential Vault",
-            ))
-        })?;
-        let resource_generation = persisted.resources.desired_generation().0;
-        let original_input = persisted
-            .resources
-            .desired()
-            .inputs()
-            .iter()
-            .find(|input| input.binding_id == *binding_id)
-            .cloned()
-            .ok_or(SessionPreparationError::NotFound)?;
-        let (credential_source, credential_revision, remote_url) = match &original_input.source {
-            ResolvedInputSource::Repository {
-                config, credential, ..
-            } => config
-                .credential_binding
-                .clone()
-                .zip(credential.as_ref())
-                .map(|(binding, credential)| {
-                    (
-                        binding,
-                        credential.access.credential.revision,
-                        config.remote_url.clone(),
-                    )
-                }),
-            _ => None,
-        }
-        .ok_or_else(|| {
-            SessionPreparationError::Rejected(RunError::bad_request(
-                "repository credential update requires an authenticated Repository resource",
-            ))
-        })?;
-        // Run the existing exact pending gate BEFORE the Vault effect. The
-        // clone is a preflight only; the durable root remains the sole owner.
-        preflight_repository_credential_rotation(&persisted, original_input.clone())?;
-        self.resource_plaintext_holder(&persisted)?;
-        let credential_target =
-            crate::session_resource::repository_transport_credential_target(&remote_url).map_err(
-                |error| SessionPreparationError::Rejected(RunError::bad_request(error.to_string())),
-            )?;
-        let completed_credential_revision = ingress
-            .rotate_material(CredentialMaterialRotationCommand {
-                source_id: awaken_credential_contract::CredentialSourceId(credential_source),
-                expected_revision: credential_revision,
-                workspace_id: owner_scope.to_owned(),
-                target: credential_target,
-                usage: crate::session_resource::repository_transport_credential_usage(),
-                material,
-            })
-            .await
-            .map_err(|error| {
-                SessionPreparationError::Rejected(RunError::bad_request(format!(
-                    "repository authorization could not be rotated: {error}"
-                )))
-            })?;
-
-        for attempt in 0..ROOT_CAS_ATTEMPTS {
-            if !repository_rotation_generation_is_current(
-                resource_generation,
-                persisted.resources.desired_generation().0,
-                persisted.execution,
-                &persisted.disposition,
-            ) {
-                return Err(SessionPreparationError::Conflict);
-            }
-            let holder = self.resource_plaintext_holder(&persisted)?;
-            let mut input = persisted
-                .resources
-                .desired()
-                .inputs()
-                .iter()
-                .find(|input| input.binding_id == *binding_id)
-                .cloned()
-                .ok_or(SessionPreparationError::Conflict)?;
-            if !repository_rotation_target_matches(&original_input, &input) {
-                return Err(SessionPreparationError::Conflict);
-            }
-            let ResolvedInputSource::Repository { credential, .. } = &mut input.source else {
-                return Err(SessionPreparationError::NotFound);
-            };
-            *credential = None;
-            self.pin_repository_credential(owner_scope, &holder, &mut input)
-                .await?;
-            let ResolvedInputSource::Repository {
-                credential: Some(credential),
-                ..
-            } = &input.source
-            else {
-                return Err(SessionPreparationError::Rejected(RunError::bad_request(
-                    "repository credential rotation did not produce an exact execution pin",
-                )));
-            };
-            if credential.access.credential.revision != completed_credential_revision {
-                return Err(SessionPreparationError::Rejected(RunError::bad_request(
-                    "repository credential revision changed before Session repin",
-                )));
-            }
-            input.updated_at_unix_ms = Some(
-                self.clock
-                    .now_ms()
-                    .max(input.updated_at_unix_ms.unwrap_or(0)),
-            );
-            persisted
-                .resources()
-                .replace_desired_repository_credential(input)
-                .map_err(|_| SessionPreparationError::Conflict)?;
-            match mutations
-                .commit_session_snapshot_with_outcome(
-                    owner_scope,
-                    persisted,
-                    "repository-credential-update",
-                    Vec::new(),
-                )
-                .await
-            {
-                Ok(commit) => return Ok(commit.into_session()),
-                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
-                    persisted = mutations
-                        .session_aggregate(session_id)
-                        .await
-                        .map_err(repository_preparation)?;
-                }
-                Err(error) => return Err(mutation_failure(error)),
-            }
-        }
-        Err(SessionPreparationError::Conflict)
     }
 
     /// Settle the one canonical reconciliation attempt against its exact
@@ -1302,6 +1129,7 @@ impl SessionApplication {
         session: PersistedSession,
     ) -> Result<PersistedSession, SessionPreparationError> {
         let session = self
+            .credentials
             .ensure_repository_credentials_pinned(owner_scope, session)
             .await?;
         if !session.is_terminal() && !session.requires_external_environment_owner() {
@@ -1697,6 +1525,7 @@ impl SessionApplication {
                 && credential.provenance == SessionParticipantProvenance::Applied
             {
                 retired &= self
+                    .credentials
                     .retire_owned_repository_credential(
                         &configured.workspace_id,
                         &credential.credential,
@@ -1782,6 +1611,7 @@ impl SessionApplication {
         }
         if let Some(credential) = credential
             && !self
+                .credentials
                 .retire_owned_repository_credential(owner_scope, credential)
                 .await
         {
@@ -1819,8 +1649,167 @@ impl SessionApplication {
             OwnedRepositoryRetirement::Pending
         }
     }
+}
 
-    async fn retire_owned_repository_credential(
+impl crate::SessionCredentials {
+    /// Rotate and repin one Session-scoped Repository credential through the
+    /// durable root CAS. A conflict reloads and recompiles the exact pin.
+    pub async fn rotate_repository_credential(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        owner_scope: &str,
+        binding_id: &awaken_resource_contract::BindingId,
+        material: CredentialMaterialInput,
+    ) -> Result<PersistedSession, SessionPreparationError> {
+        let mutations = self.mutations();
+        let mut persisted = mutations
+            .session_aggregate(session_id)
+            .await
+            .map_err(repository_preparation)?;
+        if persisted.is_terminal() {
+            return Err(SessionPreparationError::Conflict);
+        }
+        if let Some(baseline) = persisted.frozen_baseline()
+            && !baseline
+                .mutation_policy
+                .admits_repository_credential_mutation()
+        {
+            return Err(SessionPreparationError::Rejected(RunError::bad_request(
+                "profiled Session Repository credentials are immutable",
+            )));
+        }
+        let ingress = self.credential_material_ingress().ok_or_else(|| {
+            SessionPreparationError::Rejected(RunError::bad_request(
+                "repository authorization requires a configured credential Vault",
+            ))
+        })?;
+        let resource_generation = persisted.resources.desired_generation().0;
+        let original_input = persisted
+            .resources
+            .desired()
+            .inputs()
+            .iter()
+            .find(|input| input.binding_id == *binding_id)
+            .cloned()
+            .ok_or(SessionPreparationError::NotFound)?;
+        let (credential_source, credential_revision, remote_url) = match &original_input.source {
+            ResolvedInputSource::Repository {
+                config, credential, ..
+            } => config
+                .credential_binding
+                .clone()
+                .zip(credential.as_ref())
+                .map(|(binding, credential)| {
+                    (
+                        binding,
+                        credential.access.credential.revision,
+                        config.remote_url.clone(),
+                    )
+                }),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            SessionPreparationError::Rejected(RunError::bad_request(
+                "repository credential update requires an authenticated Repository resource",
+            ))
+        })?;
+        // Run the existing exact pending gate BEFORE the Vault effect. The
+        // clone is a preflight only; the durable root remains the sole owner.
+        preflight_repository_credential_rotation(&persisted, original_input.clone())?;
+        self.resource_plaintext_holder(&persisted)?;
+        let credential_target =
+            crate::session_resource::repository_transport_credential_target(&remote_url).map_err(
+                |error| SessionPreparationError::Rejected(RunError::bad_request(error.to_string())),
+            )?;
+        let completed_credential_revision = ingress
+            .rotate_material(CredentialMaterialRotationCommand {
+                source_id: awaken_credential_contract::CredentialSourceId(credential_source),
+                expected_revision: credential_revision,
+                workspace_id: owner_scope.to_owned(),
+                target: credential_target,
+                usage: crate::session_resource::repository_transport_credential_usage(),
+                material,
+            })
+            .await
+            .map_err(|error| {
+                SessionPreparationError::Rejected(RunError::bad_request(format!(
+                    "repository authorization could not be rotated: {error}"
+                )))
+            })?;
+
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
+            if !repository_rotation_generation_is_current(
+                resource_generation,
+                persisted.resources.desired_generation().0,
+                persisted.execution,
+                &persisted.disposition,
+            ) {
+                return Err(SessionPreparationError::Conflict);
+            }
+            let holder = self.resource_plaintext_holder(&persisted)?;
+            let mut input = persisted
+                .resources
+                .desired()
+                .inputs()
+                .iter()
+                .find(|input| input.binding_id == *binding_id)
+                .cloned()
+                .ok_or(SessionPreparationError::Conflict)?;
+            if !repository_rotation_target_matches(&original_input, &input) {
+                return Err(SessionPreparationError::Conflict);
+            }
+            let ResolvedInputSource::Repository { credential, .. } = &mut input.source else {
+                return Err(SessionPreparationError::NotFound);
+            };
+            *credential = None;
+            self.pin_repository_credential(owner_scope, &holder, &mut input)
+                .await?;
+            let ResolvedInputSource::Repository {
+                credential: Some(credential),
+                ..
+            } = &input.source
+            else {
+                return Err(SessionPreparationError::Rejected(RunError::bad_request(
+                    "repository credential rotation did not produce an exact execution pin",
+                )));
+            };
+            if credential.access.credential.revision != completed_credential_revision {
+                return Err(SessionPreparationError::Rejected(RunError::bad_request(
+                    "repository credential revision changed before Session repin",
+                )));
+            }
+            input.updated_at_unix_ms = Some(
+                self.clock()
+                    .now_ms()
+                    .max(input.updated_at_unix_ms.unwrap_or(0)),
+            );
+            persisted
+                .resources()
+                .replace_desired_repository_credential(input)
+                .map_err(|_| SessionPreparationError::Conflict)?;
+            match mutations
+                .commit_session_snapshot_with_outcome(
+                    owner_scope,
+                    persisted,
+                    "repository-credential-update",
+                    Vec::new(),
+                )
+                .await
+            {
+                Ok(commit) => return Ok(commit.into_session()),
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
+                    persisted = mutations
+                        .session_aggregate(session_id)
+                        .await
+                        .map_err(repository_preparation)?;
+                }
+                Err(error) => return Err(mutation_failure(error)),
+            }
+        }
+        Err(SessionPreparationError::Conflict)
+    }
+
+    pub(crate) async fn retire_owned_repository_credential(
         &self,
         owner_scope: &str,
         credential: &awaken_credential_contract::CredentialRef,

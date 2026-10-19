@@ -1179,3 +1179,21 @@ The existing gate owner releases the selected guard; it must not duplicate the
 independent original-guard release. Ordinary live-Pod cleanup keeps its current
 continuation-finalizer path. This change alone does not qualify Actor retirement
 or the original automatic-development mission.
+
+
+## 2026-10-18 shared Create-value ownership amendment
+
+The Create ticket/request/result/status/origin, admission/join observations,
+physical ledger-binding view, reply capture profile/version/header and shared
+isolation metadata vocabulary belong to `awaken-container-contract`. Former
+Container and Kubernetes implementation exports are removed and callers read
+the same contract definition. Their Serde/default/hash and wire/capture laws
+remain unchanged; the Platform Rust import path changes without an alias and
+the SDK surface does not change.
+
+This relocation does not move or replace the provider ledger state machine,
+original Client/Body operations, resourceVersion/UID CAS, physical name
+isolation, direct-mode activity guards or Registry anchor. Forward/Complete
+values grant no independent permission, cleanup receipt or lease-derived join.
+The original detached request lifetime, GET non-200 no-poll boundary and
+complete outward encoding before finish CAS remain the same causal boundary.

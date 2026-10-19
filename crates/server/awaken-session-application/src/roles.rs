@@ -56,8 +56,7 @@ use crate::{
 ///
 /// The original complete Session root is the sole successful result.
 ///
-/// Consumer: a protocol's Session create command, its create-retry replay and
-/// its bind-time Vault check.
+/// Consumer: a protocol's Session create command and its create-retry replay.
 #[async_trait]
 pub trait SessionCreation: Send + Sync {
     /// Advance executable facts before entering a lifecycle command. This is
@@ -87,13 +86,6 @@ pub trait SessionCreation: Send + Sync {
         session_id: &SessionId,
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionCreationError>;
-
-    /// The first referenced Vault that does not exist, if any.
-    async fn missing_vault(
-        &self,
-        workspace_id: &str,
-        vault_ids: &[String],
-    ) -> Result<Option<String>, RunError>;
 
     /// The process-unique Runtime incarnation a protocol folds into its fresh
     /// Session id candidates.
@@ -392,21 +384,32 @@ pub trait SessionResourceCommands: Send + Sync {
         session_inputs: &[crate::session_resource::SessionInputAttachment],
     ) -> Result<crate::session_resource::ResolvedSessionResources, RunError>;
 
-    /// See [`SessionApplication::rotate_repository_credential`].
-    async fn rotate_repository_credential(
-        &self,
-        session_id: &SessionId,
-        owner_scope: &str,
-        binding_id: &awaken_resource_contract::BindingId,
-        material: CredentialMaterialInput,
-    ) -> Result<PersistedSession, SessionPreparationError>;
-
-    /// The definition of one Memory store a Session may mount.
-    async fn session_memory_store(
+    /// Normalize derived MemoryStore mounts through the selected Inventory.
+    /// This does not assign input identities, validate the complete layout, or
+    /// configure Repository/Vault participants.
+    ///
+    /// The existing role accepts normalized requests, without exposing an
+    /// Inventory lookup primitive that lets another caller rebuild the loop.
+    ///
+    /// ```
+    /// use awaken_session_application::{SessionInputRequest, SessionResourceCommands};
+    /// async fn normalize(role: &dyn SessionResourceCommands, inputs: &[SessionInputRequest]) {
+    ///     let _ = role.normalize_session_input_mounts("workspace", inputs, &[]).await;
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0599
+    /// use awaken_session_application::SessionResourceCommands;
+    /// async fn old_leaf(role: &dyn SessionResourceCommands) {
+    ///     role.session_memory_store("workspace", "memory").await;
+    /// }
+    /// ```
+    async fn normalize_session_input_mounts(
         &self,
         workspace_id: &str,
-        memory_store_id: &str,
-    ) -> Result<awaken_resource_contract::MemoryStoreDefinition, RunError>;
+        requests: &[crate::SessionInputRequest],
+        agent_defaults: &[awaken_resource_contract::InputBinding],
+    ) -> Result<Vec<crate::SessionInputRequest>, RunError>;
 
     /// See [`SessionApplication::validate_persisted_session_resource_layout`].
     fn validate_persisted_session_resource_layout(
@@ -500,14 +503,6 @@ impl SessionCreation for SessionApplication {
         self.mutations
             .replay_accepted_session_create(owner_scope, session_id, idempotency)
             .await
-    }
-
-    async fn missing_vault(
-        &self,
-        workspace_id: &str,
-        vault_ids: &[String],
-    ) -> Result<Option<String>, RunError> {
-        SessionApplication::missing_vault(self, workspace_id, vault_ids).await
     }
 
     fn runtime_incarnation(&self) -> &str {
@@ -794,29 +789,21 @@ impl SessionResourceCommands for SessionApplication {
         .await
     }
 
-    async fn rotate_repository_credential(
-        &self,
-        session_id: &SessionId,
-        owner_scope: &str,
-        binding_id: &awaken_resource_contract::BindingId,
-        material: CredentialMaterialInput,
-    ) -> Result<PersistedSession, SessionPreparationError> {
-        Box::pin(SessionApplication::rotate_repository_credential(
-            self,
-            session_id,
-            owner_scope,
-            binding_id,
-            material,
-        ))
-        .await
-    }
-
-    async fn session_memory_store(
+    async fn normalize_session_input_mounts(
         &self,
         workspace_id: &str,
-        memory_store_id: &str,
-    ) -> Result<awaken_resource_contract::MemoryStoreDefinition, RunError> {
-        SessionApplication::session_memory_store(self, workspace_id, memory_store_id).await
+        requests: &[crate::SessionInputRequest],
+        agent_defaults: &[awaken_resource_contract::InputBinding],
+    ) -> Result<Vec<crate::SessionInputRequest>, RunError> {
+        crate::session_input::normalize_session_input_mounts(
+            self.resource_registry
+                .as_deref()
+                .map(|registry| registry as &dyn awaken_resource_contract::ResourceInventory),
+            workspace_id,
+            requests,
+            agent_defaults,
+        )
+        .await
     }
 
     fn validate_persisted_session_resource_layout(
@@ -880,5 +867,107 @@ impl DeploymentSessionEnvironment for SessionApplication {
         agent_id: &str,
     ) -> Option<String> {
         SessionApplication::deployment_unavailable_delegate(self, workspace_id, agent_id)
+    }
+}
+
+/// Session credential-binding commands consumed by Managed bind and Resource update.
+///
+/// O11 capability table: the one Managed credential-binding role exposes both
+/// original commands. Creation and Resource roles no longer grant them, and
+/// holding the application does not restore the removed business entrypoints.
+/// These compile checks prove the source boundary; the existing real bind and
+/// rotation cases exercise the same commands through the directly held service.
+///
+/// ```
+/// use awaken_session_application::{CredentialMaterialInput, SessionCredentialCommands};
+/// use awaken_session_types::SessionId;
+/// use awaken_resource_contract::BindingId;
+/// async fn binding_commands(role: &dyn SessionCredentialCommands, material: CredentialMaterialInput) {
+///     let _ = role.missing_vault("workspace", &[]).await;
+///     let _ = role.rotate_repository_credential(
+///         &SessionId::from("session"), "workspace", &BindingId::from("binding"), material,
+///     ).await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionCreation;
+/// async fn old_create_role(role: &dyn SessionCreation) {
+///     let _ = role.missing_vault("workspace", &[]).await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::{CredentialMaterialInput, SessionResourceCommands};
+/// use awaken_session_types::SessionId;
+/// use awaken_resource_contract::BindingId;
+/// async fn old_resource_role(role: &dyn SessionResourceCommands, material: CredentialMaterialInput) {
+///     let _ = role.rotate_repository_credential(
+///         &SessionId::from("session"), "workspace", &BindingId::from("binding"), material,
+///     ).await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::SessionApplication;
+/// async fn old_application(application: &SessionApplication) {
+///     let _ = application.missing_vault("workspace", &[]).await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use awaken_session_application::{CredentialMaterialInput, SessionApplication};
+/// use awaken_session_types::SessionId;
+/// use awaken_resource_contract::BindingId;
+/// async fn old_application(application: &SessionApplication, material: CredentialMaterialInput) {
+///     let _ = application.rotate_repository_credential(
+///         &SessionId::from("session"), "workspace", &BindingId::from("binding"), material,
+///     ).await;
+/// }
+/// ```
+#[async_trait]
+pub trait SessionCredentialCommands: Send + Sync {
+    /// The first referenced Vault that does not exist, if any.
+    async fn missing_vault(
+        &self,
+        workspace_id: &str,
+        vault_ids: &[String],
+    ) -> Result<Option<String>, RunError>;
+
+    /// See [`crate::SessionCredentials::rotate_repository_credential`].
+    async fn rotate_repository_credential(
+        &self,
+        session_id: &SessionId,
+        owner_scope: &str,
+        binding_id: &awaken_resource_contract::BindingId,
+        material: CredentialMaterialInput,
+    ) -> Result<PersistedSession, SessionPreparationError>;
+}
+
+#[async_trait]
+impl SessionCredentialCommands for crate::SessionCredentials {
+    async fn missing_vault(
+        &self,
+        workspace_id: &str,
+        vault_ids: &[String],
+    ) -> Result<Option<String>, RunError> {
+        crate::SessionCredentials::missing_vault(self, workspace_id, vault_ids).await
+    }
+
+    async fn rotate_repository_credential(
+        &self,
+        session_id: &SessionId,
+        owner_scope: &str,
+        binding_id: &awaken_resource_contract::BindingId,
+        material: CredentialMaterialInput,
+    ) -> Result<PersistedSession, SessionPreparationError> {
+        Box::pin(crate::SessionCredentials::rotate_repository_credential(
+            self,
+            session_id,
+            owner_scope,
+            binding_id,
+            material,
+        ))
+        .await
     }
 }

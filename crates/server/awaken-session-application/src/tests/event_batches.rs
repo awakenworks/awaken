@@ -1137,7 +1137,7 @@ async fn preferred_user_drive_accelerates_only_the_canonical_fifo_head() {
         assert!(drive_error.is_none(), "F1-F2 request-local drive");
         tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            app.lifecycle_wakeup.notified(),
+            app.lifecycle.notified(),
         )
         .await
         .expect("F1-F2 full recovery remains notified after the local attempt");
@@ -1213,7 +1213,7 @@ async fn preferred_user_drive_failure_retains_receipt_and_recovery_wake() {
     );
     tokio::time::timeout(
         std::time::Duration::from_millis(100),
-        app.lifecycle_wakeup.notified(),
+        app.lifecycle.notified(),
     )
     .await
     .expect("E3");
@@ -1400,7 +1400,7 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
         assert!(
             tokio::time::timeout(
                 std::time::Duration::from_millis(10),
-                app.lifecycle_wakeup.notified(),
+                app.lifecycle.notified(),
             )
             .await
             .is_err(),
@@ -1416,7 +1416,7 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
         .unwrap();
         tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            app.lifecycle_wakeup.notified(),
+            app.lifecycle.notified(),
         )
         .await
         .expect("model admission must wake the existing supervisor before completion");
@@ -1452,7 +1452,7 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
             assert!(
                 tokio::time::timeout(
                     std::time::Duration::from_millis(10),
-                    app.lifecycle_wakeup.notified(),
+                    app.lifecycle.notified(),
                 )
                 .await
                 .is_err(),

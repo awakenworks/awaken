@@ -1,12 +1,20 @@
 use super::*;
+#[cfg(feature = "kubernetes")]
+use crate::*;
+#[cfg(feature = "kubernetes")]
 use axum::http::{Request, StatusCode};
+#[cfg(feature = "kubernetes")]
 use serde_json::{Value, json};
+#[cfg(feature = "kubernetes")]
 use std::sync::atomic::AtomicUsize;
+#[cfg(feature = "kubernetes")]
+use std::time::Duration;
 
 fn pod() -> KubernetesPodIdentity {
     KubernetesPodIdentity::new("workers", "worker-1", "uid-a").unwrap()
 }
 
+#[cfg(feature = "kubernetes")]
 fn accepted() -> Value {
     json!({"apiVersion":"authentication.k8s.io/v1", "kind":"TokenReview", "metadata":{}, "spec":{}, "status":{
         "authenticated":true, "audiences":["awaken-worker"],
@@ -18,6 +26,7 @@ fn accepted() -> Value {
     }})
 }
 
+#[cfg(feature = "kubernetes")]
 struct ApiState {
     reply: Mutex<(StatusCode, Value)>,
     calls: AtomicUsize,
@@ -25,18 +34,21 @@ struct ApiState {
     delay: Duration,
 }
 
+#[cfg(feature = "kubernetes")]
 struct MockApi {
     state: Arc<ApiState>,
     auth: KubernetesWorkerAuthenticator,
     server: tokio::task::JoinHandle<()>,
 }
 
+#[cfg(feature = "kubernetes")]
 impl Drop for MockApi {
     fn drop(&mut self) {
         self.server.abort();
     }
 }
 
+#[cfg(feature = "kubernetes")]
 impl MockApi {
     async fn new(timeout: Duration, delay: Duration) -> Self {
         let state = Arc::new(ApiState {
@@ -93,6 +105,7 @@ impl MockApi {
     }
 }
 
+#[cfg(feature = "kubernetes")]
 fn parts(identity: Option<&WorkerIdentity>) -> Parts {
     let path = if identity.is_some() {
         "/v1/worker/dispatch/attempt/begin"
@@ -110,6 +123,7 @@ fn parts(identity: Option<&WorkerIdentity>) -> Parts {
     request.body(()).unwrap().into_parts().0
 }
 
+#[cfg(feature = "kubernetes")]
 #[tokio::test]
 async fn one_pod_uid_cannot_authenticate_another_process_incarnation() {
     // I1 exact Pod UID + canonical incarnation + positive Registry generation =>
@@ -143,6 +157,11 @@ async fn one_pod_uid_cannot_authenticate_another_process_incarnation() {
 
 #[test]
 fn pod_coordinate_codec_is_exact_and_cannot_alias_a_replacement_or_path() {
+    // Feature partition table: F0 default and F1 physical Kubernetes both
+    // execute this same original codec/path. F0 compiles no TokenReview owner;
+    // F1 additionally runs all original physical authentication/rotation cases
+    // below. A parsed coordinate never supplies authenticated/Registry/stop
+    // authority; constructor and transport tests retain those independent laws.
     // P1 valid names/UID => bijective Worker-id coordinate. P2 changing any
     // coordinate changes identity. P3 empty, path/query injection, malformed
     // labels, extra separators and overlong input => reject before API lookup.
@@ -187,6 +206,7 @@ fn pod_coordinate_codec_is_exact_and_cannot_alias_a_replacement_or_path() {
     assert!(KubernetesPodIdentity::from_worker_id(&":".repeat(513)).is_err());
 }
 
+#[cfg(feature = "kubernetes")]
 #[test]
 fn projected_identity_and_remote_constructor_fail_closed() {
     // P4 all three bounded metadata files + token + HTTPS => exact Pod Worker.
@@ -263,6 +283,7 @@ fn projected_identity_and_remote_constructor_fail_closed() {
     }
 }
 
+#[cfg(feature = "kubernetes")]
 #[tokio::test]
 async fn reviewed_pod_requires_all_identity_audience_and_service_account_conjuncts() {
     // Cause/effect graph: API authenticated AND no error AND explicit expected
@@ -342,6 +363,7 @@ async fn reviewed_pod_requires_all_identity_audience_and_service_account_conjunc
     }
 }
 
+#[cfg(feature = "kubernetes")]
 #[tokio::test]
 async fn malformed_or_unbound_requests_never_spend_a_token_review() {
     // R3 malformed/duplicate headers, mismatched incarnation, missing binding
@@ -411,6 +433,7 @@ async fn malformed_or_unbound_requests_never_spend_a_token_review() {
     assert_eq!(api.state.calls.load(Ordering::SeqCst), 0, "R3 no review");
 }
 
+#[cfg(feature = "kubernetes")]
 #[tokio::test]
 async fn provider_failure_timeout_and_revocation_never_reuse_prior_authority() {
     // R4 successful review then deletion/revocation => subsequent request fails
@@ -445,6 +468,7 @@ async fn provider_failure_timeout_and_revocation_never_reuse_prior_authority() {
     assert!(error.to_string().contains("timed out"), "R6");
 }
 
+#[cfg(feature = "kubernetes")]
 #[tokio::test]
 async fn projected_token_rotation_and_registration_use_the_existing_authorizer_port() {
     // R7 projected file rotates => next request uses new token, same Pod and

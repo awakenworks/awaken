@@ -219,9 +219,19 @@ mod tests {
             .get(&awaken_session_types::SessionId::from(id))
             .await
             .unwrap();
-        let restarted = ManagedState::new(RehydrateFake::default())
-            .await
-            .with_session_repo(repo.clone());
+        let restarted = {
+            let session_fixture_runtime = RehydrateFake::default();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repo.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        };
 
         assert!(
             restarted
@@ -527,9 +537,19 @@ mod tests {
             .await
             .expect("persist durable root");
         }
-        let state = ManagedState::new(RehydrateFake::default())
-            .await
-            .with_session_repo(repo);
+        let state = {
+            let session_fixture_runtime = RehydrateFake::default();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repo,
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        };
         for (rule, id, purpose) in [
             (
                 "H1",

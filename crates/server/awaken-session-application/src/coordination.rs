@@ -651,7 +651,7 @@ impl SessionAgentCoordination for SessionApplication {
                 })
             })
         {
-            self.wake_lifecycle_supervisor();
+            self.lifecycle.request_reconciliation();
         }
         let usage = self
             .session_usage_for_model_request(session_id.as_str(), &thread_id.0)
@@ -890,7 +890,7 @@ impl SessionAgentCoordination for SessionApplication {
                 // The committed Run is authoritative but its lifecycle projection
                 // is not visible yet. Wake the sole supervisor and return before
                 // any root mutation; Pool relinquishes this exact claim for retry.
-                self.wake_lifecycle_supervisor();
+                self.lifecycle.request_reconciliation();
                 return Err(RunError::unavailable(
                     "committed Agent boundary is not yet visible in the lifecycle feed",
                 ));
@@ -925,7 +925,7 @@ impl SessionAgentCoordination for SessionApplication {
                 .await
                 .map_err(crate::SessionActivityError::run_error)?;
             }
-            self.wake_lifecycle_supervisor();
+            self.lifecycle.request_reconciliation();
             return Ok(());
         }
 
@@ -1000,7 +1000,7 @@ impl SessionAgentCoordination for SessionApplication {
         }
         let (_, state, observation) = self.committed_agent_boundary(&command).await?;
         let observation = observation.ok_or_else(|| {
-            self.wake_lifecycle_supervisor();
+            self.lifecycle.request_reconciliation();
             RunError::unavailable(
                 "committed Agent boundary is not yet visible in the lifecycle feed",
             )
@@ -1015,7 +1015,7 @@ impl SessionAgentCoordination for SessionApplication {
         )
         .await
         .map_err(crate::SessionActivityError::run_error)?;
-        self.wake_lifecycle_supervisor();
+        self.lifecycle.request_reconciliation();
         Ok(())
     }
 

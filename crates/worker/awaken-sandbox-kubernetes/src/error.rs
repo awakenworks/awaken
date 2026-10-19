@@ -2,7 +2,7 @@
 
 use awaken_provisioning_contract as pc;
 
-use awaken_sandbox_container::RuntimeError;
+use awaken_container_contract::RuntimeError;
 
 /// A failure the Kubernetes adapter turns into [`RuntimeError`].
 ///

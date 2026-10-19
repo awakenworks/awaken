@@ -1,8 +1,9 @@
 //! Kubernetes projection of authority-resolved Memory snapshots.
 
 use super::{K8sRuntime, backend};
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract::SandboxEffectFence;
-use awaken_sandbox_container::{ContainerPlan, RuntimeError};
+use awaken_sandbox_container::ContainerPlan;
 use kube::api::AttachParams;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

@@ -16,6 +16,21 @@
 //!   orphaned sandbox is reaped by the platform, not a bespoke reaper;
 //! - **out-of-band artifacts**: outputs live on a volume ([`ContainerPlan::outputs_volume`]),
 //!   retrieved without streaming through the control plane.
+//!
+//! The container failure value has one contract owner:
+//! ```
+//! let _: awaken_container_contract::RuntimeError =
+//!     awaken_container_contract::RuntimeError::EffectFenceExpired;
+//! ```
+//! The former implementation-owned Platform path is removed:
+//! ```compile_fail
+//! let _: awaken_sandbox_container::RuntimeError;
+//! ```
+
+//! The ticket value also has no implementation-owned compatibility export:
+//! ```compile_fail
+//! let _: awaken_sandbox_container::CreateTicket;
+//! ```
 
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
@@ -42,9 +57,8 @@ mod handle;
 mod host_evidence;
 mod kubernetes_handle;
 pub use kubernetes_handle::{
-    CreateTicket, CreateTicketRequest, KubernetesGuardedClaimHandle, KubernetesProjectedKind,
-    KubernetesProjectedObject, KubernetesProjectedOrigin, KubernetesProjectedParticipants,
-    TicketOrigin, TicketResult, TicketStatus,
+    KubernetesGuardedClaimHandle, KubernetesProjectedKind, KubernetesProjectedObject,
+    KubernetesProjectedOrigin, KubernetesProjectedParticipants,
 };
 mod live_inputs;
 mod packages;
@@ -58,6 +72,7 @@ mod recovery;
 mod resident_hand;
 mod restore_target;
 mod runtime;
+#[cfg(feature = "docker")]
 mod runtime_error;
 mod sandbox_exec;
 mod secret;
@@ -115,7 +130,7 @@ pub(crate) use runtime::{
 };
 pub use runtime::{
     ContainerRuntime, ContainerState, MemoryMount, MissingHandleTerminalEvidence,
-    PackageImageProvisioner, RuntimeError, RuntimeRestoreTarget, SandboxControlBindingRequest,
+    PackageImageProvisioner, RuntimeRestoreTarget, SandboxControlBindingRequest,
 };
 #[cfg(any(feature = "docker", feature = "podman"))]
 pub(crate) use runtime::{

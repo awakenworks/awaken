@@ -10,10 +10,20 @@ async fn profiled_release_closes_only_a_never_attempted_work_unit_preparation() 
     // is requested. Application tests own every unsafe constituent and CAS race.
     let sessions = support::session_repository("unattempted profiled release").await;
     let state = Arc::new(
-        support::state(AcceptingFake::default())
-            .await
-            .with_session_repo(sessions.clone())
-            .with_resource_registry(resource_registry().await),
+        {
+            let session_fixture_runtime = AcceptingFake::default();
+            let session_fixture_clock = awaken_time::system_clock();
+            awaken_protocol_managed_testkit::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                sessions.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        }
+        .with_resource_registry(resource_registry().await),
     );
     let app = profiled_router(state.clone(), "default");
     for (id, mode, succeeds) in [

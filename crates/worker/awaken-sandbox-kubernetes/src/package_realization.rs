@@ -20,7 +20,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference}
 use serde::{Deserialize, Serialize};
 
 use crate::api_defaults::normalize_pod_spec;
-use awaken_sandbox_container::RuntimeError;
+use awaken_container_contract::RuntimeError;
 
 pub const K8S_PACKAGE_REALIZATION_CONTRACT_VERSION: &str = "v1";
 pub const PACKAGE_REALIZATION_CONTRACT_ANNOTATION: &str = "awaken.dev/package-realization-contract";

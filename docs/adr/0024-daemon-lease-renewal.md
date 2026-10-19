@@ -1050,3 +1050,30 @@ the final status write are shared inside that same state machine. No second
 completion path or persistence mechanism is introduced. Its decision-table
 tests include rejected-to-isolated observations, pending reservation replay,
 terminal-guard restrictions and unchanged state on refusal.
+
+## 2026-10-19 implementation: coordinate codec and physical authentication features
+
+The existing `awaken-worker-transport-security::kubernetes` owner keeps one
+`KubernetesPodIdentity` definition, exact Worker-id codec and shared DNS-name
+validator. This pure lookup coordinate is available without enabling physical
+Kubernetes authentication. Its private fields, validation, borrowed getters,
+public path and identity/incarnation matching are unchanged; parsing a
+coordinate grants neither authenticated context nor Registry/stop authority.
+
+The original TokenReview authenticator implementation is a private child of
+that same owner under the existing `kubernetes` feature. The existing rotating
+projected-token authorizer and both public adapter paths keep that feature.
+Coordinator no longer enables it merely to read the lookup value; trusted CLI
+and Worker composition continue selecting it for physical authentication. The
+same TokenReview/ServiceAccount/audience/Pod checks, current Registry checks,
+registration generation, failures and lack of authentication fallback remain
+unchanged. There is no new identity carrier, parser, client, state or port.
+
+Default and physical feature builds exercise the same original coordinate
+regression at the same test path; all original TokenReview/rotation cases and
+assertions remain under the physical feature. The known Cloud hosted worker
+still calls the unchanged projected-authorizer path and obtains that feature
+through its Worker composition. Source compatibility does not replace Root's
+pinned Cloud build. Cargo feature unification and the CLI's shared executable
+package can still compile Kube; this source partition is not zero binary
+implementation closure or a physical deployment proof.

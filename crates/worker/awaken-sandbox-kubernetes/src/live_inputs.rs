@@ -2,8 +2,9 @@
 
 use super::projection::PROJECTOR;
 use super::{EXEC_SEQUENCE, K8sRuntime, backend, content_binds, hardened_security_context};
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract::SandboxEffectFence;
-use awaken_sandbox_container::{BindPlan, ContainerPlan, RuntimeError};
+use awaken_sandbox_container::{BindPlan, ContainerPlan};
 use k8s_openapi::api::core::v1::{Container, EmptyDirVolumeSource, EnvVar, Volume, VolumeMount};
 use kube::api::AttachParams;
 use std::sync::atomic::Ordering;

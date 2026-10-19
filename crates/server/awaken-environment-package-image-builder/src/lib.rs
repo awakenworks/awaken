@@ -127,14 +127,14 @@ mod tests {
 
     #[async_trait]
     impl awaken_sandbox_container::PackageImageProvisioner for RecordingProvisioner {
-        async fn probe_builder(&self) -> Result<(), awaken_sandbox_container::RuntimeError> {
+        async fn probe_builder(&self) -> Result<(), awaken_container_contract::RuntimeError> {
             Ok(())
         }
 
         async fn package_base_image_identity(
             &self,
             reference: &str,
-        ) -> Result<String, awaken_sandbox_container::RuntimeError> {
+        ) -> Result<String, awaken_container_contract::RuntimeError> {
             Ok(format!("{reference}@sha256:resolved"))
         }
 
@@ -143,7 +143,7 @@ mod tests {
             base_image: &str,
             packages: &awaken_environment_contract::PackageRequirements,
             network: &awaken_provisioning_contract::NetworkPolicy,
-        ) -> Result<String, awaken_sandbox_container::RuntimeError> {
+        ) -> Result<String, awaken_container_contract::RuntimeError> {
             self.calls.lock().unwrap().push((
                 base_image.to_owned(),
                 packages.clone(),
@@ -158,7 +158,7 @@ mod tests {
             packages: &awaken_environment_contract::PackageRequirements,
             network: &awaken_provisioning_contract::NetworkPolicy,
             image: &str,
-        ) -> Result<bool, awaken_sandbox_container::RuntimeError> {
+        ) -> Result<bool, awaken_container_contract::RuntimeError> {
             self.availability_calls.lock().unwrap().push((
                 base_image.to_owned(),
                 packages.clone(),

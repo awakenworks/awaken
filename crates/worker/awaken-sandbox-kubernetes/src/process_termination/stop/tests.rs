@@ -724,7 +724,7 @@ async fn sandbox_stop_preserves_create_and_continuation_retention_ownership() {
     // The existing resource lifecycle remains the sole guard/PVC harvest owner.
     for guard in [
         super::super::super::continuation::CONTINUATION_CLEANUP_FINALIZER,
-        super::super::super::create_ledger::ORIGINAL_GUARD_FINALIZER,
+        awaken_container_contract::ORIGINAL_GUARD_FINALIZER,
     ] {
         let fixture = Fixture::new(Fault::None);
         fixture

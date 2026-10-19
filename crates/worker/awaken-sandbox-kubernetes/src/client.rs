@@ -2,7 +2,7 @@
 
 use kube::Client;
 
-use awaken_sandbox_container::RuntimeError;
+use awaken_container_contract::RuntimeError;
 
 use super::backend;
 

@@ -153,13 +153,11 @@ impl crate::SessionRuns {
     /// Under the shared queue a session's own worker must not claim (it would grab
     /// foreign threads' runs), so the foreground durable path enqueues, nudges the
     /// pool, and waits for the pool to signal completion — **by event**, not by
-    /// polling committed truth, so it pays no poll-interval latency. `supersede`
-    /// marks the thread's prior pending work superseded first (ADR-0022).
+    /// polling committed truth, so it pays no poll-interval latency.
     pub(crate) async fn submit_durable_foreground(
         &self,
         ctx: &Arc<SessionCtx>,
         activation: RunActivation,
-        supersede: bool,
         stream_sink: Option<Arc<dyn StreamSink>>,
         associate_prepared_session: bool,
     ) -> Result<awaken_agent_contract::agent::run::RunState, SessionExecutionError> {
@@ -188,23 +186,11 @@ impl crate::SessionRuns {
             ));
         }
         let store = self.coordinator_dispatch()?;
-        if supersede {
-            store
-                .enqueue_with(
-                    request,
-                    SubmitOptions {
-                        supersede: true,
-                        ..Default::default()
-                    },
-                )
-                .await
-                .map_err(|e| SessionExecutionError::internal(e.to_string()))?;
-        } else {
-            store
-                .enqueue(request)
-                .await
-                .map_err(|e| SessionExecutionError::internal(e.to_string()))?;
-        }
+        store
+            .enqueue(request)
+            .await
+            .map_err(|e| SessionExecutionError::internal(e.to_string()))?;
+
         self.dispatch.hint_local_pool().await;
         self.await_settled_event(ctx, &run_id, None, settled).await
     }

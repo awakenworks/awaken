@@ -112,7 +112,9 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
         pod.metadata.uid = Some("pod-uid".into());
         pod.metadata.resource_version = Some("1".into());
         pod.metadata.namespace = Some(runtime.namespace.clone());
-        pod.metadata.finalizers = Some(vec![create_ledger::ORIGINAL_GUARD_FINALIZER.into()]);
+        pod.metadata.finalizers = Some(vec![
+            awaken_container_contract::ORIGINAL_GUARD_FINALIZER.into(),
+        ]);
         pod.status = Some(serde_json::from_value(json!({"phase":"Failed"})).unwrap());
         let original = awaken_sandbox_container::ContainerSandboxHandleV1 {
             container_id: pod.metadata.name.clone().unwrap(),

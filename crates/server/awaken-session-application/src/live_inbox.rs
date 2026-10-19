@@ -54,11 +54,6 @@ impl SessionInputs {
         Self { repository, inbox }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn replace_repository(&mut self, repository: Arc<dyn SessionRepositoryReads>) {
-        self.repository = repository;
-    }
-
     async fn require_live_inbox_owner(
         &self,
         workspace_id: &str,

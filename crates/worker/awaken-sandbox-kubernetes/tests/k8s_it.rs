@@ -5,6 +5,9 @@
 //! Run with: `cargo test -p awaken-sandbox-kubernetes --test k8s_it`
 
 // The container provider owns the exact restore fixture every engine uses.
+use awaken_container_contract::{
+    CreateTicket, CreateTicketRequest, RequestJoin, TicketResult, TicketStatus,
+};
 use awaken_container_contract::{K8sCreateRequest, K8sCreateResponse};
 #[path = "../../awaken-sandbox-container/tests/common/restore.rs"]
 mod common;
@@ -1319,10 +1322,8 @@ async fn missing_handle_reconstructs_a_live_original_pod_and_claim_for_terminal_
      * incomplete/foreign decision row; the independent ledger live test owns
      * durable CAS. This row qualifies real API defaulting and cleanup but its
      * in-memory join is not a product Worker-exit receipt. */
-    use awaken_sandbox_container::{
-        CreateTicket, CreateTicketRequest, RuntimeError, TicketResult, TicketStatus,
-    };
-    use awaken_sandbox_kubernetes::{K8sCreateTransport, RequestJoin};
+    use awaken_container_contract::RuntimeError;
+    use awaken_sandbox_kubernetes::K8sCreateTransport;
 
     struct JoinedPair {
         client: kube::Client,

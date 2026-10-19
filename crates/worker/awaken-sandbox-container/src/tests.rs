@@ -7,7 +7,7 @@
 use super::*;
 use crate::test_support::{disposal_authorization, spec};
 use awaken_agent_channel::AgentChannel;
-use awaken_container_contract::LIVE_INPUTS_ROOT;
+use awaken_container_contract::{LIVE_INPUTS_ROOT, RuntimeError};
 use awaken_provisioning_contract::test_support::FenceTamper as _;
 use awaken_provisioning_contract::{
     SandboxAdoption, SandboxCheckpointAccess, SandboxCheckpointMutation, SandboxEffectFence,

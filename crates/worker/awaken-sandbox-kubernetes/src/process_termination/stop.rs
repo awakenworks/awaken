@@ -8,7 +8,7 @@ use super::{
     coordinate, matching_statuses, observe, retention_finalizer,
 };
 use crate::finalizer::{ExactFinalizerAdmission, update_exact_pod_finalizer};
-use awaken_sandbox_container::RuntimeError;
+use awaken_container_contract::RuntimeError;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{DeleteParams, Preconditions};
 

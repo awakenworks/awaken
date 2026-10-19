@@ -250,3 +250,27 @@ and `scripts/ci/formal_realization_capacity_mutations.py`.
 - ADR-0065's capacity paragraph and ADR-0073's 2026-08-10 amendment carry pointers to
   this record.
 - Implementation and tests are work item W31.
+
+
+## 2026-10-18 implementation ownership amendment
+
+The existing container failure enum, including `CapacityUnavailable`, now
+belongs to `awaken-container-contract::RuntimeError`; the former Platform
+`awaken_sandbox_container::RuntimeError` path is removed without an alias.
+The seven variants, display strings, post-mutation exceptions and the unique
+conversion to provisioning `SandboxError` keep their existing behavior. The
+shared Container API status projection accepts only an extracted `u16` status
+and detail, with no typed transport dependency. Docker and Kubernetes retain
+their original local source classifiers; Kubernetes still tests the original
+403 quota predicate before the generic status projection. Worker outer broker
+HTTP uncertainty, Provider retention/fence refresh, dispatch retry and exact
+physical disposal remain under their existing owners. This is a value-owner
+migration, not proof that Coordinator's implementation closure is removed.
+
+The contract's existing provisioning edge already reaches `thiserror`; adding
+its direct declaration adds no dependency-closure node. Relocating the
+unchanged `Backend(String)` variant increases the measured contract catch-all
+count by one and requires an explicit canonical ratchet reason. Neither the
+SDK surface nor a serialized failure format changes. The two inspected Cloud
+source trees have no references to the removed error path; deployment and
+uninspected external Platform consumers require their own qualification.

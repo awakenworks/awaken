@@ -693,8 +693,10 @@ fn assemble_session_plane(
     // The canonical Coordinator component owns Runtime background drain.
     // This process does not register a second drain for the same Host.
     let credentials = match control.vault_state.as_ref() {
-        Some(vault) => awaken_session_application::SessionCredentials::read_write(vault.clone()),
-        None => awaken_session_application::SessionCredentials::read_only(
+        Some(vault) => {
+            awaken_session_application::SessionCredentialAuthorities::read_write(vault.clone())
+        }
+        None => awaken_session_application::SessionCredentialAuthorities::read_only(
             control.credential_source.clone(),
         ),
     };
@@ -828,13 +830,13 @@ fn bind_session_lifecycle_hooks(
         let application = session_application.clone();
         builds
             .install_transition_hint(Arc::new(move || {
-                application.request_lifecycle_reconciliation();
+                application.lifecycle().request_reconciliation();
             }))
             .map_err(|error| error.to_string())?;
         // Cover a fast build transition that completed between starting the
         // image worker and installing this process-local hint. Notify retains
         // one permit until the lifecycle supervisor begins waiting.
-        session_application.request_lifecycle_reconciliation();
+        session_application.lifecycle().request_reconciliation();
     }
     if let Some(publisher) = host.artifact_fence.as_ref() {
         publisher

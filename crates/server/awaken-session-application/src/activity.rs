@@ -998,7 +998,7 @@ impl SessionApplication {
             {
                 Ok(commit) => {
                     if emitted_runtime_interval {
-                        self.notify_lifecycle_fact();
+                        self.lifecycle.notify_fact();
                     }
                     return Ok(commit.into_session());
                 }

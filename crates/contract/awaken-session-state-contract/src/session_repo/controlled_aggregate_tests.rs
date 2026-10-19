@@ -1803,7 +1803,7 @@ fn budget_limit_matrix_preserves_price_usage_and_removal_provenance() {
     aggregate.budget().update_limit(None).unwrap();
     assert_eq!(aggregate, before);
 }
-
+// O5: active/pending migration cannot change topology or discard a retained generation; no-op stutters.
 #[test]
 fn credential_migration_cannot_replace_topology_or_drop_a_retained_slot() {
     let mut aggregate = root(SessionExecutionState::Idle, 4);

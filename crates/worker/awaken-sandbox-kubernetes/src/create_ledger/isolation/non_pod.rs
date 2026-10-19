@@ -3,11 +3,13 @@
 //! separate ticket, cleanup authority, or terminal receipt.
 
 use super::{
-    CreateTicket, FINALIZER, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, REQUEST_DIGEST_ANNOTATION,
-    TicketResult, api_conflict, backend, delete_probe_params, deletion_denial,
+    FINALIZER, api_conflict, backend, delete_probe_params, deletion_denial,
     exact_original_metadata, exact_reservation_metadata, policy_ready, valid_isolation_id,
 };
-use awaken_sandbox_container::RuntimeError;
+use awaken_container_contract::RuntimeError;
+use awaken_container_contract::{
+    CreateTicket, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, REQUEST_DIGEST_ANNOTATION, TicketResult,
+};
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{ListParams, PostParams};
 use kube::core::{ApiResource, DynamicObject, GroupVersionKind};
@@ -461,7 +463,8 @@ pub(super) async fn isolate_other(
 mod tests {
     use super::super::PVC_PROTECTION_FINALIZER;
     use super::*;
-    use awaken_sandbox_container::{CreateTicketRequest, TicketStatus};
+    use awaken_container_contract::{CreateTicketRequest, TicketStatus};
+
     use http::{Method, Request, Response};
     use kube::client::Body;
 

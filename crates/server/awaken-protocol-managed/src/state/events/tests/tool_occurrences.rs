@@ -369,9 +369,19 @@ async fn overlapping_reused_calls_keep_exact_result_sources_and_families_after_r
     for names in [["read", "mcp__srv__echo"], ["mcp__srv__echo", "read"]] {
         let runtime = LifecycleRuntime::default();
         let repository = Arc::new(ephemeral_session_repo().await);
-        let warm = ManagedState::new(runtime.clone())
-            .await
-            .with_session_repo(repository.clone());
+        let warm = {
+            let session_fixture_runtime = runtime.clone();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repository.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        };
         let session = warm
             .create_session(
                 serde_json::from_value(serde_json::json!({
@@ -468,9 +478,21 @@ async fn overlapping_reused_calls_keep_exact_result_sources_and_families_after_r
                     "R1 exact source"
                 );
             }
-            let cold = ManagedState::new(runtime.clone())
-                .await
-                .with_session_repo(repository.clone());
+            let cold = {
+                let session_fixture_runtime = runtime.clone();
+                let session_fixture_clock = awaken_time::system_clock();
+                crate::state::test_support::managed_state_from_parts(
+                    std::sync::Arc::new(session_fixture_runtime),
+                    None,
+                    repository.clone(),
+                    awaken_protocol_managed_testkit::environment_fixture(
+                        session_fixture_clock.clone(),
+                    )
+                    .execution,
+                    session_fixture_clock,
+                    std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+                )
+            };
             cold.refresh_committed_events(&session.id).await.unwrap();
             assert_eq!(
                 serde_json::to_value(

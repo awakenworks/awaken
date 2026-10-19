@@ -7,7 +7,7 @@
 #[cfg(any(feature = "docker", feature = "podman"))]
 use awaken_provisioning_contract as pc;
 
-use crate::RuntimeError;
+use awaken_container_contract::RuntimeError;
 
 const PACKAGE_RECIPE_VERSION: &str = "4";
 

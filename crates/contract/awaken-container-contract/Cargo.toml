@@ -15,10 +15,15 @@ authority = "container-environment"
 separation = "contract"
 
 [dependencies]
+blake3 = "1"
 # Pure container wire and capacity values share provisioning vocabulary.
 awaken-provisioning-contract.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+awaken-agent-contract.workspace = true
 
 [lints]
 workspace = true

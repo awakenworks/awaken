@@ -771,6 +771,7 @@ impl SessionApplication {
                 .mcp_holder
                 .clone();
             let drafts = self
+                .credentials
                 .normalize_mcp_drafts(
                     &owner_scope,
                     mcp_update.candidates(),

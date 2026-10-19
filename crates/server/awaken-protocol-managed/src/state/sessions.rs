@@ -217,7 +217,7 @@ impl ManagedState {
     ) -> Result<(), StateError> {
         if let Some(vault_id) = self
             .roles
-            .creation
+            .credentials
             .missing_vault(workspace_id, &req.vault_ids)
             .await
             .map_err(StateError::Run)?

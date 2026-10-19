@@ -1,6 +1,9 @@
-use super::super::RequestJoin;
 use super::*;
-use crate::create_ledger::capture::{CreateReplyProfile, validate_fresh_result};
+use crate::create_ledger::capture::validate_fresh_result;
+use awaken_container_contract::RequestJoin;
+use awaken_container_contract::{
+    CreateReplyProfile, CreateTicketRequest, TicketResult, TicketStatus,
+};
 
 const NONCE: &str = "0123456789abcdef0123456789abcdef";
 fn request(resource: &str, name: &str) -> CreateTicketRequest {

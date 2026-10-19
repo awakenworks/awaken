@@ -9,7 +9,8 @@ use super::names::continuation_claim_name;
 use super::{
     K8sRuntime, backend, continuation, k8s_runtime_id, participants, pod_name, realization,
 };
-use awaken_sandbox_container::{ContainerPlan, ContainerRuntime as _, RuntimeError};
+use awaken_container_contract::RuntimeError;
+use awaken_sandbox_container::{ContainerPlan, ContainerRuntime as _};
 use k8s_openapi::api::core::v1::Pod;
 use kube::ResourceExt as _;
 

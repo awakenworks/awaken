@@ -145,11 +145,19 @@ mod tests {
         // | D4 | present | different | exact | E3 |
         let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
             Arc::new(ephemeral_session_repo().await);
-        let state = Arc::new(
-            ManagedState::new(RehydrateFake::default())
-                .await
-                .with_session_repo(repo.clone()),
-        );
+        let state = Arc::new({
+            let session_fixture_runtime = RehydrateFake::default();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repo.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        });
         let request = |title: &str| {
             let mut request = SessionCreateParams::new(
                 "deployment-agent",
@@ -190,11 +198,19 @@ mod tests {
         assert_eq!(created.metadata.len(), 1, "D1/E4");
 
         drop(state);
-        let state = Arc::new(
-            ManagedState::new(RehydrateFake::default())
-                .await
-                .with_session_repo(repo.clone()),
-        );
+        let state = Arc::new({
+            let session_fixture_runtime = RehydrateFake::default();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repo.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        });
         assert!(state.list_sessions().is_empty(), "D2 cold cache");
         let replayed = state
             .create_deployment_session_with_initial_events(

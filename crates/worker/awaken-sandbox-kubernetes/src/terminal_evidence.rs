@@ -5,7 +5,6 @@
 //! a Worker created or joined, or proof that nothing was ever materialized.
 
 use super::K8sRuntime;
-use super::RequestJoin;
 use super::backend;
 use super::continuation;
 use super::continuation_claim_for_pod;
@@ -15,15 +14,16 @@ use super::guarded_claim::verify_joined_original_claim;
 use super::participants;
 use super::pod_name;
 use super::sandbox_control;
+use awaken_container_contract::CreateTicket;
+use awaken_container_contract::RequestJoin;
+use awaken_container_contract::RuntimeError;
+use awaken_container_contract::TicketResult;
+use awaken_container_contract::TicketStatus;
 use awaken_provisioning_contract::SandboxEffectFence;
 use awaken_sandbox_container::ContainerPlan;
 use awaken_sandbox_container::ContainerRealizationContext;
 use awaken_sandbox_container::ContainerRealizationIntent;
-use awaken_sandbox_container::CreateTicket;
 use awaken_sandbox_container::MissingHandleTerminalEvidence;
-use awaken_sandbox_container::RuntimeError;
-use awaken_sandbox_container::TicketResult;
-use awaken_sandbox_container::TicketStatus;
 use k8s_openapi::api::core::v1::Pod;
 
 pub(super) fn unmaterialized_absence_shape_is_closed(

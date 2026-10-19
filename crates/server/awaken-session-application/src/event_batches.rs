@@ -440,7 +440,7 @@ impl SessionApplication {
         // The full sweep remains the one retry owner. Waking after the local
         // attempt preserves queued predecessors and retryable failures without
         // racing this request's append/admission/activation root mutations.
-        self.wake_lifecycle_supervisor();
+        self.lifecycle.request_reconciliation();
         Ok((batch, drive_error))
     }
 
@@ -648,7 +648,7 @@ impl SessionApplication {
             {
                 Ok(_) => {
                     if !batch.admission_closed && wake_after_accept {
-                        self.wake_lifecycle_supervisor();
+                        self.lifecycle.request_reconciliation();
                     }
                     return Ok(batch);
                 }
@@ -1175,7 +1175,7 @@ impl SessionApplication {
                 // event (for example an in-process grader), so nudge the
                 // sole reconciler now; Notify retains the permit until the
                 // currently blocked drive yields.
-                self.wake_lifecycle_supervisor();
+                self.lifecycle.request_reconciliation();
                 let mut source_commit_cursor = EventHistory::from(session).projection_cursor();
                 for target in &targets {
                     let thread_id = target.thread_id(&session.session_id);

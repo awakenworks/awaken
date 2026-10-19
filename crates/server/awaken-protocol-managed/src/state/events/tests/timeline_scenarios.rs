@@ -543,9 +543,19 @@ impl Timeline for RootTimeline {
             .unwrap_or_default();
         let runtime = LifecycleRuntime::default();
         let repository = Arc::new(ephemeral_session_repo().await);
-        let warm = ManagedState::new(runtime.clone())
-            .await
-            .with_session_repo(repository.clone());
+        let warm = {
+            let session_fixture_runtime = runtime.clone();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repository.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        };
         // These properties compare every refreshed point with a fresh cold
         // replica themselves, and a scenario still on a known-divergence list
         // is asserted to diverge; the per-publication oracle would stop it
@@ -580,9 +590,19 @@ impl Timeline for RootTimeline {
     }
 
     async fn cold(&self) -> ManagedState {
-        let cold = ManagedState::new(self.runtime.clone())
-            .await
-            .with_session_repo(self.repository.clone());
+        let cold = {
+            let session_fixture_runtime = self.runtime.clone();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                self.repository.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        };
         cold.disable_warm_cold_oracle();
         cold
     }
@@ -877,15 +897,25 @@ impl ChildTimeline {
         runtime: &RehydrateFake,
         repository: &Arc<awaken_session_store::SqliteManagedSessionRepository>,
     ) -> ManagedState {
-        let state = ManagedState::new(runtime.clone())
-            .await
-            .with_session_repo(repository.clone())
-            .with_config_source(Arc::new(FrozenToolFamilyProfiles::uniform(
-                "coder",
-                &["researcher"],
-                FrozenTestToolFamily::AgentAlwaysAsk,
-                "bash",
-            )));
+        let state = {
+            let session_fixture_runtime = runtime.clone();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repository.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        }
+        .with_config_source(Arc::new(FrozenToolFamilyProfiles::uniform(
+            "coder",
+            &["researcher"],
+            FrozenTestToolFamily::AgentAlwaysAsk,
+            "bash",
+        )));
         state.disable_warm_cold_oracle();
         state
     }

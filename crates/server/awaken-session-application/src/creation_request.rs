@@ -211,13 +211,8 @@ fn compile_creation_tools<P: SessionCreateProtocol + ?Sized>(
     protocol: &P,
     tools_override: Option<SessionToolsOverride>,
 ) -> Result<(SessionToolConfiguration, bool), RunError> {
-    let mut inherited_tools = protocol.capability_tools(capabilities)?;
-    if let Some(profile) = profile {
-        if !profile.toolsets.is_empty() {
-            inherited_tools.toolsets = profile.toolsets.clone();
-        }
-        inherited_tools.client_tools = profile.client_tools.clone();
-    }
+    let capability_tools = protocol.capability_tools(capabilities)?;
+    let inherited_tools = crate::tool_compilation::inherit_profile_tools(capability_tools, profile);
     let (tools, clears_all_tools) = tools_override.map_or((inherited_tools, false), |tools| {
         (tools.configuration, tools.clears_all)
     });
@@ -226,6 +221,38 @@ fn compile_creation_tools<P: SessionCreateProtocol + ?Sized>(
 }
 
 impl SessionApplication {
+    /// Finish the same resolved Resource generation for both creation entries.
+    /// Error presentation stays with the caller: only pinning has a distinct
+    /// preparation error. The suffix is the original compensation diagnostic,
+    /// never a domain classification or a new cleanup authority.
+    pub(super) async fn finalize_creation_inputs<E: From<RunError>>(
+        &self,
+        owner_scope: &str,
+        agent_defaults: &[awaken_resource_contract::InputBinding],
+        attachments: &[crate::session_resource::SessionInputAttachment],
+        resolved_skills: Option<Vec<crate::session_resource::ResolvedSkillBinding>>,
+        selected_holder: &awaken_credential_contract::PlaintextHolder,
+        map_pin_error: impl FnOnce(SessionPreparationError) -> E,
+    ) -> Result<crate::session_resource::ResolvedSessionResources, (E, &'static str)> {
+        let mut resources = self
+            .resolve_session_inputs(owner_scope, agent_defaults, attachments)
+            .await
+            .map_err(|error| (E::from(error), "input resolution"))?;
+        if let Some(skills) = resolved_skills {
+            resources = resources.with_skills(skills).map_err(|error| {
+                (
+                    E::from(RunError::bad_request(error.to_string())),
+                    "Skill binding",
+                )
+            })?;
+        }
+        self.credentials
+            .pin_repository_credentials(owner_scope, selected_holder, &mut resources)
+            .await
+            .map_err(|error| (map_pin_error(error), "credential pinning"))?;
+        Ok(resources)
+    }
+
     /// Retire the Repository participants a failed request configured; a
     /// compensation that cannot finish is left to terminal reconciliation.
     pub(super) async fn compensate_request_repositories(
@@ -475,9 +502,11 @@ impl SessionApplication {
                 )
             })
             .transpose()?;
-        let (mcp_candidates, mcp_targets) = Self::normalize_mcp_candidate_targets(
-            initial_mcp_candidates(profile.as_ref(), mcp_override),
-        )?;
+        let (mcp_candidates, mcp_targets) =
+            crate::SessionCredentials::normalize_mcp_candidate_targets(initial_mcp_candidates(
+                profile.as_ref(),
+                mcp_override,
+            ))?;
         // Resolve the Environment and networking policy once, for both the
         // creation intent and the protocol's echo. No local-environment
         // fallback is invoked on behalf of an explicit selection.
@@ -520,10 +549,15 @@ impl SessionApplication {
                 resources: prepared_inputs.effective_bindings().to_vec(),
             },
         )?;
-        if let Some(vault_id) = self.missing_vault(&owner_scope, &vault_ids).await? {
+        if let Some(vault_id) = self
+            .credentials
+            .missing_vault(&owner_scope, &vault_ids)
+            .await?
+        {
             return Err(SessionCreateRequestError::VaultNotFound(vault_id));
         }
         let mcp_drafts = self
+            .credentials
             .normalize_mcp_drafts(
                 &owner_scope,
                 mcp_candidates,
@@ -627,52 +661,30 @@ impl SessionApplication {
         // Sole Session input resolution point. Environment selection has
         // already produced one exact snapshot above; the creation intent is the
         // only value that combines and freezes both families.
-        let mut resolved_inputs = match self
-            .resolve_session_inputs(&owner_scope, agent_defaults, &attachments)
+        let resolved_inputs = match self
+            .finalize_creation_inputs(
+                &owner_scope,
+                agent_defaults,
+                &attachments,
+                resolved_skills,
+                &environment.credential_realization.resource_holder,
+                SessionCreateRequestError::from,
+            )
             .await
         {
             Ok(inputs) => inputs,
-            Err(first) => {
+            Err((first, stage)) => {
                 self.compensate_request_repositories(
                     &session_id,
                     &repository_configurations,
-                    "Managed Session Repository compensation remains pending after input resolution",
+                    &format!(
+                        "Managed Session Repository compensation remains pending after {stage}"
+                    ),
                 )
                 .await;
-                return Err(first.into());
+                return Err(first);
             }
         };
-        if let Some(resolved_skills) = resolved_skills {
-            resolved_inputs = match resolved_inputs.with_skills(resolved_skills) {
-                Ok(inputs) => inputs,
-                Err(error) => {
-                    let first = RunError::bad_request(error.to_string());
-                    self.compensate_request_repositories(
-                        &session_id,
-                        &repository_configurations,
-                        "Managed Session Repository compensation remains pending after Skill binding",
-                    )
-                    .await;
-                    return Err(first.into());
-                }
-            };
-        }
-        if let Err(error) = self
-            .pin_repository_credentials(
-                &owner_scope,
-                &environment.credential_realization.resource_holder,
-                &mut resolved_inputs,
-            )
-            .await
-        {
-            self.compensate_request_repositories(
-                &session_id,
-                &repository_configurations,
-                "Managed Session Repository compensation remains pending after credential pinning",
-            )
-            .await;
-            return Err(error.into());
-        }
         let agent_revision = profile
             .as_ref()
             .and_then(|profile| (profile.source_revision > 0).then_some(profile.source_revision));

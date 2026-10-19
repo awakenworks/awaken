@@ -10,6 +10,7 @@
 //! The adapter honors [`crate::RootfsPlan`] and uses [`crate::net`] for published
 //! agent ports, sharing the Docker/K8s connection boundary.
 
+use awaken_container_contract::RuntimeError;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -36,13 +37,13 @@ use crate::runtime::{
 use crate::{
     ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
     ContainerRealizationNamespace, ContainerRuntime, ContainerState, MANAGED_SANDBOX_LABEL,
-    PackageImageProvisioner, PreparedContainer, RUNTIME_OWNER_LABEL, RuntimeError,
-    RuntimeRestoreTarget, SANDBOX_ADOPTION_LABEL, SANDBOX_ATTEMPT_LABEL,
-    SANDBOX_EFFECT_EPOCH_LABEL, SANDBOX_EFFECT_EXPIRY_LABEL, SANDBOX_EFFECT_LABEL,
-    SANDBOX_EFFECT_OWNER_LABEL, SANDBOX_EFFECT_RUNTIME_LABEL, SANDBOX_REALIZATION_LABEL,
-    SANDBOX_SCOPE_LABEL, container_effect_fence_from_values, container_effect_label_values,
-    podman_create_argv, podman_run_argv, restoration_metadata, restoration_plan_fingerprint,
-    restore_container_name, runtime_container_name, sandbox_scope_identity,
+    PackageImageProvisioner, PreparedContainer, RUNTIME_OWNER_LABEL, RuntimeRestoreTarget,
+    SANDBOX_ADOPTION_LABEL, SANDBOX_ATTEMPT_LABEL, SANDBOX_EFFECT_EPOCH_LABEL,
+    SANDBOX_EFFECT_EXPIRY_LABEL, SANDBOX_EFFECT_LABEL, SANDBOX_EFFECT_OWNER_LABEL,
+    SANDBOX_EFFECT_RUNTIME_LABEL, SANDBOX_REALIZATION_LABEL, SANDBOX_SCOPE_LABEL,
+    container_effect_fence_from_values, container_effect_label_values, podman_create_argv,
+    podman_run_argv, restoration_metadata, restoration_plan_fingerprint, restore_container_name,
+    runtime_container_name, sandbox_scope_identity,
 };
 use awaken_provisioning_contract::AgentProcess;
 #[cfg(test)]

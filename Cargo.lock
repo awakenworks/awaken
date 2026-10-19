@@ -681,9 +681,12 @@ dependencies = [
 name = "awaken-container-contract"
 version = "1.0.0"
 dependencies = [
+ "awaken-agent-contract",
  "awaken-provisioning-contract",
+ "blake3",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -828,7 +831,6 @@ dependencies = [
  "awaken-run-ingress-testkit",
  "awaken-runtime",
  "awaken-runtime-contract",
- "awaken-sandbox-container",
  "awaken-sandbox-kubernetes",
  "awaken-sandbox-memoryd",
  "awaken-scenario-host",
@@ -1222,6 +1224,7 @@ name = "awaken-environment-package-image-builder"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-container-contract",
  "awaken-environment-contract",
  "awaken-executable-environment-contract",
  "awaken-provisioning-contract",
@@ -2404,11 +2407,13 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-environment-contract",
  "awaken-executable-environment-contract",
+ "awaken-ext-builtin-tools",
  "awaken-file-store",
  "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-memory-store",
  "awaken-observability",
+ "awaken-protocol-managed-testkit",
  "awaken-provisioning-contract",
  "awaken-resource-application",
  "awaken-resource-store",
@@ -2417,6 +2422,7 @@ dependencies = [
  "awaken-run-ingress-testkit",
  "awaken-runtime",
  "awaken-runtime-contract",
+ "awaken-session-application",
  "awaken-session-application-contract",
  "awaken-session-configuration-contract",
  "awaken-session-executor",
@@ -2835,7 +2841,6 @@ dependencies = [
  "awaken-resource-store",
  "awaken-run-executor-acp",
  "awaken-run-ingress",
- "awaken-run-ingress-http",
  "awaken-runtime-contract",
  "awaken-sandbox-memoryd",
  "awaken-service-lifecycle",

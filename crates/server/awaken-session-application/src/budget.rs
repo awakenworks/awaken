@@ -105,7 +105,7 @@ impl SessionApplication {
             {
                 Ok(commit) => {
                     if reached_now {
-                        self.notify_lifecycle_fact();
+                        self.lifecycle.notify_fact();
                     }
                     return Ok(BudgetSettlementOutcome {
                         session: commit.into_session(),

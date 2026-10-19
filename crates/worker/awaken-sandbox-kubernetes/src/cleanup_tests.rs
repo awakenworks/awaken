@@ -2,9 +2,13 @@
 //! Real kube HTTP boundaries, with one deterministic API response-loss scheduler
 //! shared by cleanup and checkpoint participant tests.
 use super::*;
+use awaken_container_contract::CreateTicketRequest;
+use awaken_container_contract::RuntimeError;
+use awaken_container_contract::{
+    CreateTicket, ISOLATION_ID_ANNOTATION, REQUEST_DIGEST_ANNOTATION, TicketResult, TicketStatus,
+};
 use awaken_provisioning_contract::SandboxEffect;
 use awaken_provisioning_contract::test_support::FenceTamper as _;
-use awaken_sandbox_container::CreateTicketRequest;
 use pc::test_support::EffectAuthority;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -1178,9 +1182,9 @@ impl ApiState {
                     && !continuation::pod_cleanup_gate_held(&replacement);
                 let guarded = |pod: &Pod| {
                     pod.metadata.finalizers.as_ref().is_some_and(|values| {
-                        values
-                            .iter()
-                            .any(|value| value == create_ledger::ORIGINAL_GUARD_FINALIZER)
+                        values.iter().any(|value| {
+                            value == awaken_container_contract::ORIGINAL_GUARD_FINALIZER
+                        })
                     })
                 };
                 let releasing_original = guarded(old) && !guarded(&replacement);
@@ -1470,7 +1474,9 @@ fn fixture_original_participants<'a>(
 fn retain_terminal_original(state: &Mutex<ApiState>, deleting: bool) {
     let mut state = state.lock().unwrap();
     let pod = state.pod.as_mut().unwrap();
-    pod.metadata.finalizers = Some(vec![create_ledger::ORIGINAL_GUARD_FINALIZER.into()]);
+    pod.metadata.finalizers = Some(vec![
+        awaken_container_contract::ORIGINAL_GUARD_FINALIZER.into(),
+    ]);
     pod.status = Some(serde_json::from_value(json!({"phase":"Failed"})).unwrap());
     pod.metadata.deletion_timestamp =
         deleting.then(|| serde_json::from_value(json!("2026-10-14T06:37:35Z")).unwrap());

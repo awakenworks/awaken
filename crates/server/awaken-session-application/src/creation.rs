@@ -695,7 +695,7 @@ impl SessionApplication {
                 // and idempotency receipt. Waking the sole recovery driver is
                 // only an optimization: startup scanning recovers the same
                 // root after process loss without a Job row or second lifecycle.
-                self.wake_lifecycle_supervisor();
+                self.lifecycle.request_reconciliation();
                 return Ok(persisted);
             }
             SessionCreateEffectPlan::ContinueAppliedRealization => {}
@@ -736,14 +736,14 @@ impl SessionApplication {
                             .await;
                     }
                     Ok(Some(session)) if recoverable_control => {
-                        self.wake_lifecycle_supervisor();
+                        self.lifecycle.request_reconciliation();
                         return Ok(session);
                     }
                     Ok(Some(_)) => {
                         // The root still owns unfinished physical responsibility.
                         // Keep it intact and wake the sole lifecycle driver, but
                         // retain the original fail-closed effect/control result.
-                        self.wake_lifecycle_supervisor();
+                        self.lifecycle.request_reconciliation();
                     }
                     Ok(None) => {}
                     Err(replay_error) => return Err(replay_error),
@@ -785,7 +785,7 @@ impl SessionApplication {
             );
         }
         if persisted.needs_event_reconciliation() {
-            self.wake_lifecycle_supervisor();
+            self.lifecycle.request_reconciliation();
         }
         Ok(persisted)
     }

@@ -3,6 +3,7 @@
 //! unreceipted-scope cleanup. Callers retain their existing authority guards.
 
 use super::*;
+use awaken_container_contract::RuntimeError;
 use std::time::Duration;
 
 const REMOVAL_TIMEOUT: Duration = Duration::from_secs(30);

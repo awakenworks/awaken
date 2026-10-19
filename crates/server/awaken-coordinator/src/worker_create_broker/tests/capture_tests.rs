@@ -1,5 +1,5 @@
 use super::*;
-use awaken_sandbox_kubernetes::{CreateReplyProfile, K8S_CREATE_CAPTURE_HEADER};
+use awaken_container_contract::{CreateReplyProfile, K8S_CREATE_CAPTURE_HEADER};
 
 #[tokio::test]
 async fn current_private_wire_refuses_missing_or_wrong_version_before_provider_effects() {
@@ -153,7 +153,7 @@ async fn fresh_api_or_complete_reply_or_result_overflow_never_finishes_or_repost
             .ticket;
         assert_eq!(
             state.ticket(&ticket).unwrap().status,
-            awaken_sandbox_container::TicketStatus::InFlight
+            awaken_container_contract::TicketStatus::InFlight
         );
         assert!(
             fixture
@@ -230,4 +230,98 @@ async fn finished_readback_overflow_preserves_receipt_and_legacy_read_scope() {
         CreateReplyProfile::LegacyRetainedCreate.header_value()
     );
     assert_eq!(fixture.pod_posts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn original_readback_status_precedes_body_poll_without_changing_receipt() {
+    // Cause/effect table at the original HTTP producer and real Kube Body.
+    // C1 ticket Finished/InFlight; C2 GET status 200/404/409/503; C3 a ready
+    // single-frame body carries the entire original object / invalid JSON.
+    // R1 Finished+non200+invalid body => original refusal BEFORE any body
+    // poll; original UID/Finished receipt stays unchanged; no POST/finish CAS.
+    // R2 Finished+200+complete original object => poll the complete frame,
+    // return every object byte/field and original UID; same no-mutation law.
+    // R3 InFlight+any prepared response => no GET, no poll or second POST;
+    // the original unknown outcome stays InFlight and is never finished.
+    // Constraint: the body's first poll is immediately ready, so the frame
+    // callback counts every possible first data poll, not a Pending shortcut.
+    // This extends the sole existing API/client/ledger fixture, not a fake
+    // classifier, status-only transport or new request/cleanup authority.
+    for status in [200, 404, 409, 503, 0] {
+        let in_flight = status == 0;
+        let fixture = super::fixture::broker_fixture(if in_flight {
+            |object: &mut Value| {
+                object["payload"] = "x"
+                    .repeat(CreateReplyProfile::FreshCreate.body_limit().unwrap())
+                    .into();
+            }
+        } else {
+            |_| {}
+        })
+        .await;
+        fixture.release.notify_one();
+        let first = fixture
+            .broker
+            .create(
+                fixture.directory.clone(),
+                fixture.clock.clone(),
+                fixture.identity.clone(),
+                fixture.create.clone(),
+            )
+            .await;
+        assert_eq!(first.is_err(), in_flight, "initial original result");
+        let before = fixture.stored.lock().unwrap().clone();
+        let original = fixture.created_pod.lock().unwrap().clone().unwrap();
+        let mut complete = original.clone();
+        complete["readback_payload"] = "complete original response".repeat(64).into();
+        let polls = Arc::new(AtomicUsize::new(0));
+        *fixture.readback_response.lock().unwrap() = Some(super::fixture::ReadbackResponse {
+            status: if in_flight { 503 } else { status },
+            body: if status == 200 {
+                serde_json::to_vec(&complete).unwrap()
+            } else {
+                b"an invalid body must never be polled".to_vec()
+            },
+            polls: polls.clone(),
+        });
+        let result = fixture
+            .broker
+            .create(
+                fixture.directory.clone(),
+                fixture.clock.clone(),
+                fixture.identity.clone(),
+                fixture.create.clone(),
+            )
+            .await;
+        if status == 200 {
+            let reply = result.unwrap();
+            let decoded: K8sCreateResponse = serde_json::from_slice(&reply.body).unwrap();
+            assert_eq!(decoded.status, 200, "R2 original readback");
+            assert_eq!(decoded.object, complete, "R2 complete original object");
+            assert_eq!(polls.load(Ordering::SeqCst), 1, "R2 complete ready frame");
+        } else {
+            assert!(result.is_err(), "R1/R3 status {status}");
+            assert_eq!(polls.load(Ordering::SeqCst), 0, "R1/R3 status {status}");
+        }
+        assert_eq!(
+            fixture.stored.lock().unwrap().clone(),
+            before,
+            "R1-R3 no finish CAS"
+        );
+        assert_eq!(
+            fixture.pod_posts.load(Ordering::SeqCst),
+            1,
+            "R1-R3 no new POST"
+        );
+        assert_eq!(
+            fixture.created_pod.lock().unwrap().as_ref().unwrap()["metadata"]["uid"],
+            "pod-uid",
+            "R1-R3 original physical UID"
+        );
+        assert_eq!(
+            fixture.readback_response.lock().unwrap().is_some(),
+            in_flight,
+            "R3 InFlight does not even issue a readback GET"
+        );
+    }
 }

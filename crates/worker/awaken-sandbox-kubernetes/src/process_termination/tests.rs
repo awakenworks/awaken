@@ -43,7 +43,7 @@ fn original_create_guard_retains_only_the_exact_pre_entry_sandbox_process() {
     // R3 missing/substituted guard -> no retained evidence. R4 changed UID,
     // node or runtime incarnation -> Unknown. No row installs a new guard or
     // upgrades an old unretained binding; terminal status cannot mint admission.
-    let guard = super::super::create_ledger::ORIGINAL_GUARD_FINALIZER;
+    let guard = awaken_container_contract::ORIGINAL_GUARD_FINALIZER;
     let mut live = running();
     live["metadata"]["finalizers"] = json!([guard]);
     let binding = bind("ns", "worker", "uid-a", &decode(live)).unwrap();

@@ -10,9 +10,9 @@ use super::{
     backend, continuation, continuation_claim_for_pod, create_ledger, lifecycle,
     observed_pod_incarnation, participants,
 };
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxObservationPurpose;
-use awaken_sandbox_container::RuntimeError;
 use awaken_sandbox_container::engine::ExistingRealization;
 
 pub(super) async fn replace_exact_realization(
@@ -27,7 +27,7 @@ pub(super) async fn replace_exact_realization(
     if pod.metadata.finalizers.as_ref().is_some_and(|values| {
         values
             .iter()
-            .any(|value| value == create_ledger::ORIGINAL_GUARD_FINALIZER)
+            .any(|value| value == awaken_container_contract::ORIGINAL_GUARD_FINALIZER)
     }) {
         return Err(backend(
             "brokered Pod replacement requires the original terminal cleanup owner",

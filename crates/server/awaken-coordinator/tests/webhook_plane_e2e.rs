@@ -5,7 +5,6 @@
 //! mock transport: the dispatcher uses `ReqwestSender`, the receiver is an axum
 //! server on an ephemeral port.
 
-use awaken_protocol_managed_testkit::ManagedStateFixture as _;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -16,7 +15,6 @@ use awaken_deployment_application::{
     AgentSelector, CreateDeploymentCommand, DeploymentApplication, DeploymentLaunch,
     DeploymentLaunchOutcome, DeploymentSchedule, DeploymentSeedEvent, DeploymentSessionLauncher,
 };
-use awaken_protocol_managed::ManagedState;
 use awaken_protocol_managed_testkit::CoordinatedRuntimeFake;
 use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_tenancy::WorkspaceScope;
@@ -139,11 +137,19 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
     // The same repository read back as the lifecycle-outbox authority: its
     // pending rows are the durable fact each delivery assertion settles on.
     let facts: Arc<dyn awaken_session_repository_contract::LifecycleOutbox> = sessions.clone();
-    let state = Arc::new(
-        ManagedState::new(CoordinatedRuntimeFake::default())
-            .await
-            .with_session_repo(sessions.clone()),
-    );
+    let state = Arc::new({
+        let session_fixture_runtime = CoordinatedRuntimeFake::default();
+        let session_fixture_clock = awaken_time::system_clock();
+        awaken_protocol_managed_testkit::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            sessions.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    });
     let deployments = Arc::new(
         DeploymentApplication::from_repository(sessions, awaken_time::system_clock())
             .await

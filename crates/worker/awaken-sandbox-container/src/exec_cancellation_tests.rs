@@ -7,13 +7,14 @@
 //! file the wrapper writes and the shell that lists it — is exercised against a
 //! real daemon only by the feature-gated backend suites.
 
+use awaken_container_contract::RuntimeError;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 
-use crate::{ContainerSandbox, ContainerState, RuntimeError};
+use crate::{ContainerSandbox, ContainerState};
 use awaken_provisioning_contract::AgentProcess;
 
 /// How the fake resolves a spawn that the test lets run to completion.

@@ -5,8 +5,8 @@
 //! The provider evidence a Sandbox Pod and its projected objects carry:
 //! effect-fence, attempt and realization annotations and the exact Pod owner.
 
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract::SandboxEffectFence;
-use awaken_sandbox_container::RuntimeError;
 use awaken_sandbox_container::engine::{
     ExistingRealization, ExistingRealizationPhase, ExistingRealizationRecovery,
     PhysicalIncarnation, container_effect_fence_from_values,

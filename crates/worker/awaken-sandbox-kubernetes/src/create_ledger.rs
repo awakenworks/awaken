@@ -9,21 +9,21 @@
 //! namespace. The Registry freezes the returned UID before Worker Ready; a
 //! replacement process must never initialize a missing ledger to claim proof.
 
+use awaken_container_contract::RuntimeError;
+use awaken_container_contract::{
+    CreateReplyProfile, CreateTicket, CreateTicketRequest, K8sLedgerBinding, RequestJoin,
+    TicketAdmission, TicketResult, TicketStatus,
+};
 mod capacity;
 mod capture;
 mod isolation;
 mod state;
-pub use capture::{
-    CreateReplyProfile, K8S_CREATE_CAPTURE_HEADER, K8S_CREATE_WIRE_VERSION, collect_create_body,
-};
+pub use capture::collect_create_body;
 pub(crate) use isolation::original_guard_release_required;
 pub(crate) use isolation::release_original_guard;
 pub(crate) use isolation::verify_reservation as verify_pod_isolation;
-pub use isolation::{
-    ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION,
-    original_request_metadata_matches,
-};
-pub use state::{RequestJoin, TicketAdmission, WorkerCreateLedgerState};
+
+pub use state::WorkerCreateLedgerState;
 
 use std::collections::BTreeMap;
 
@@ -34,9 +34,6 @@ use kube::{Api, Client, ResourceExt};
 
 use super::PodProcessBinding;
 use super::error::{api_conflict, backend};
-use awaken_sandbox_container::{
-    CreateTicket, CreateTicketRequest, RuntimeError, TicketResult, TicketStatus,
-};
 
 const CONTRACT: &str = "awaken.dev/create-ledger-contract";
 const PROVIDER: &str = "awaken.dev/create-ledger-provider";
@@ -47,19 +44,6 @@ const WORKER_UID: &str = "awaken.dev/create-ledger-worker-uid";
 const CONFIGURATION: &str = "awaken.dev/create-ledger-configuration";
 const VERSION: &str = "v1";
 const CAS_ATTEMPTS: usize = 8;
-
-/// Registry-frozen witness plus the exact retained Worker Pod identity. The
-/// provider verifies both before every ticket CAS; a stable ConfigMap name is
-/// never accepted in place of the original UID.
-#[derive(Clone, Copy)]
-pub struct K8sLedgerBinding<'a> {
-    pub worker_namespace: &'a str,
-    pub worker_name: &'a str,
-    pub worker_uid: &'a str,
-    pub ledger_name: &'a str,
-    pub ledger_uid: &'a str,
-    pub configuration_fingerprint: &'a str,
-}
 
 /// One Kubernetes physical effect store, scoped by a retained Worker Pod UID.
 #[derive(Clone)]

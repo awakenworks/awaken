@@ -1,4 +1,9 @@
 use super::*;
+use awaken_container_contract::{
+    CreateReplyProfile, ISOLATION_ID_ANNOTATION, K8S_CREATE_CAPTURE_HEADER,
+    K8S_CREATE_WIRE_VERSION, ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION, RequestJoin,
+};
+use http_body_util::BodyExt as _;
 
 pub(super) fn empty_heartbeat(sequence: u64, ready: bool) -> WorkerHeartbeat {
     WorkerHeartbeat {
@@ -172,6 +177,14 @@ pub(super) async fn assert_unknown_seal(response: AxumResponse, rule: &str) {
     );
 }
 
+// Optional response fault on this same original fake API; it creates no
+// second client, ledger, request lifetime or classification path.
+pub(super) struct ReadbackResponse {
+    pub(super) status: u16,
+    pub(super) body: Vec<u8>,
+    pub(super) polls: Arc<AtomicUsize>,
+}
+
 pub(super) struct BrokerFixture {
     pub(super) broker: K8sCreateBroker,
     pub(super) directory: Arc<MemoryWorkerDirectory>,
@@ -181,6 +194,7 @@ pub(super) struct BrokerFixture {
     pub(super) stored: Arc<Mutex<Option<Value>>>,
     pub(super) pod_posts: Arc<AtomicUsize>,
     pub(super) created_pod: Arc<Mutex<Option<Value>>>,
+    pub(super) readback_response: Arc<Mutex<Option<ReadbackResponse>>>,
     pub(super) started: Arc<Notify>,
     pub(super) release: Arc<Notify>,
     pub(super) completed: Arc<Notify>,
@@ -192,26 +206,29 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
     let stored = Arc::new(Mutex::new(None::<Value>));
     let pod_posts = Arc::new(AtomicUsize::new(0));
     let created_pod = Arc::new(Mutex::new(None::<Value>));
+    let readback_response = Arc::new(Mutex::new(None::<ReadbackResponse>));
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let completed = Arc::new(Notify::new());
     let service = tower::service_fn({
-        let (stored, created_pod, pod_posts, started, release, completed) = (
+        let (stored, created_pod, pod_posts, started, release, completed, readback_response) = (
             stored.clone(),
             created_pod.clone(),
             pod_posts.clone(),
             started.clone(),
             release.clone(),
             completed.clone(),
+            readback_response.clone(),
         );
         move |request: Request<Body>| {
-            let (stored, created_pod, pod_posts, started, release, completed) = (
+            let (stored, created_pod, pod_posts, started, release, completed, readback_response) = (
                 stored.clone(),
                 created_pod.clone(),
                 pod_posts.clone(),
                 started.clone(),
                 release.clone(),
                 completed.clone(),
+                readback_response.clone(),
             );
             async move {
                 let method = request.method().clone();
@@ -310,6 +327,24 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
                         (201, object)
                     }
                     ("GET", "/api/v1/namespaces/sandbox-ns/pods/sandbox-pod") => {
+                        if let Some(ReadbackResponse {
+                            status,
+                            body,
+                            polls,
+                        }) = readback_response.lock().unwrap().take()
+                        {
+                            // This body is immediately ready with one data
+                            // frame: any first poll invokes this exact counter.
+                            // The Kube client wraps the real HTTP body as usual.
+                            let body = Body::from(body).map_frame(move |frame| {
+                                polls.fetch_add(1, Ordering::SeqCst);
+                                frame
+                            });
+                            return Ok(Response::builder()
+                                .status(status)
+                                .body(AxumBody::new(body))
+                                .unwrap());
+                        }
                         (200, created_pod.lock().unwrap().clone().unwrap())
                     }
                     ("GET", "/api/v1/namespaces/sandbox-ns/pods/worker") => {
@@ -328,7 +363,7 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
                 Ok::<_, std::io::Error>(
                     Response::builder()
                         .status(code)
-                        .body(Body::from(serde_json::to_vec(&value).unwrap()))
+                        .body(AxumBody::from(serde_json::to_vec(&value).unwrap()))
                         .unwrap(),
                 )
             }
@@ -387,6 +422,7 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
         stored,
         pod_posts,
         created_pod,
+        readback_response,
         started,
         release,
         completed,

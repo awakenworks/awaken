@@ -1,10 +1,11 @@
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract::FilesystemContinuity;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{DeleteParams, Preconditions};
 use kube::{Api, Resource};
 
 use super::error::api_not_found;
-use super::{K8sRuntime, RuntimeError, backend};
+use super::{K8sRuntime, backend};
 
 /// Observe disappearance of one previously authorized incarnation. A DELETE
 /// response only establishes intent; a valid replacement UID or 404 ends this

@@ -5,10 +5,9 @@
 //! The Kubernetes Create-ledger ticket: one admitted Create request and its
 //! definitive result.
 //!
-//! The Container codec owns these values because a terminal-only
-//! [`super::KubernetesGuardedClaimHandle`] persists one ticket, and a persisted
-//! handle must decode whichever container engines a build links. The
-//! Kubernetes backend's Create ledger owns every transition between them.
+//! The Container handle codec, Kubernetes ledger and independent Broker consume
+//! these same contract values. Backend transitions and physical authority remain
+//! in the existing Kubernetes adapter. A ticket is not a cleanup receipt.
 use serde::{Deserialize, Serialize};
 
 use crate::RuntimeError;
@@ -151,4 +150,34 @@ fn supported_resource(value: &str) -> bool {
         value,
         "pods" | "persistentvolumeclaims" | "configmaps" | "secrets" | "jobs" | "daemonsets"
     )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TicketAdmission {
+    Forward,
+    InFlight,
+    Finished(TicketResult),
+    Sealed,
+}
+
+/// Complete means only that no earlier admitted Create request can still
+/// materialize. Participant absence/disposal remains a separate provider fact.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub enum RequestJoin {
+    Unknown,
+    Complete(Vec<CreateTicket>),
+}
+
+/// Registry-frozen witness plus the exact retained Worker Pod identity. The
+/// provider verifies both before every ticket CAS; a stable ConfigMap name is
+/// never accepted in place of the original UID.
+#[derive(Clone, Copy)]
+pub struct K8sLedgerBinding<'a> {
+    pub worker_namespace: &'a str,
+    pub worker_name: &'a str,
+    pub worker_uid: &'a str,
+    pub ledger_name: &'a str,
+    pub ledger_uid: &'a str,
+    pub configuration_fingerprint: &'a str,
 }

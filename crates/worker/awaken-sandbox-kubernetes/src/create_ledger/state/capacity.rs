@@ -3,12 +3,12 @@
 // @formal reason: the cause-effect tests cover byte and replay scope, not universal physical closure.
 //! Derive future obligations from the original state; never persist a balance.
 use super::super::capture::RESULT_BYTES;
-use super::{
-    CreateTicket, CreateTicketRequest, GroupAdmission, MAX_TICKETS, TicketOrigin, TicketResult,
-    TicketStatus, WorkerCreateLedgerState,
-};
+use super::{GroupAdmission, MAX_TICKETS, WorkerCreateLedgerState};
 use crate::{error::backend, names};
-use awaken_sandbox_container::RuntimeError;
+use awaken_container_contract::RuntimeError;
+use awaken_container_contract::{
+    CreateTicket, CreateTicketRequest, TicketOrigin, TicketResult, TicketStatus,
+};
 use serde::Serialize;
 
 pub(in crate::create_ledger) struct FutureCapacity {

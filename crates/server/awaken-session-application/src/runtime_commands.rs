@@ -468,28 +468,6 @@ impl SessionApplication {
         )
     }
 
-    pub async fn missing_vault(
-        &self,
-        workspace_id: &str,
-        vault_ids: &[String],
-    ) -> Result<Option<String>, RunError> {
-        let Some(source) = &self.credential_source else {
-            return Ok(None);
-        };
-        for vault_id in vault_ids {
-            let exists = source
-                .has_vault(workspace_id, vault_id)
-                .await
-                .map_err(|error| {
-                    RunError::unavailable(format!("credential authority unavailable: {error}"))
-                })?;
-            if !exists {
-                return Ok(Some(vault_id.clone()));
-            }
-        }
-        Ok(None)
-    }
-
     pub async fn resolve_session_inputs(
         &self,
         workspace_id: &str,
@@ -506,26 +484,6 @@ impl SessionApplication {
         )
         .await
         .map_err(session_input_error)
-    }
-
-    pub async fn session_memory_store(
-        &self,
-        workspace_id: &str,
-        memory_store_id: &str,
-    ) -> Result<awaken_resource_contract::MemoryStoreDefinition, RunError> {
-        self.resource_registry
-            .as_ref()
-            .ok_or_else(|| {
-                RunError::bad_request("memory resources require a configured Resource Registry")
-            })?
-            .find_memory_store(workspace_id, memory_store_id)
-            .await
-            .map_err(|error| RunError::bad_request(error.to_string()))?
-            .ok_or_else(|| {
-                RunError::bad_request(format!(
-                    "MemoryStore `{memory_store_id}` not found in this workspace"
-                ))
-            })
     }
 
     pub async fn configure_session_repository(
@@ -564,11 +522,14 @@ impl SessionApplication {
             let credential_target =
                 crate::session_resource::repository_transport_credential_target(&remote_url)
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
-            let ingress = self.credential_material_ingress.as_deref().ok_or_else(|| {
-                RunError::bad_request(
-                    "repository authorization requires a configured credential Vault",
-                )
-            })?;
+            let ingress = self
+                .credentials
+                .credential_material_ingress()
+                .ok_or_else(|| {
+                    RunError::bad_request(
+                        "repository authorization requires a configured credential Vault",
+                    )
+                })?;
             let source_id = awaken_credential_contract::CredentialSourceId(format!(
                 "{}:credential",
                 repository_id.as_str()
@@ -794,12 +755,6 @@ impl SessionApplication {
             registry_provenance,
             credential: Some(credential_entry),
         })
-    }
-
-    pub fn notify_lifecycle_fact(&self) {
-        if let Some(notifier) = self.lifecycle_notifier.get() {
-            notifier.notify();
-        }
     }
 
     pub async fn runtime_owns_thread(&self, thread: &str) -> Result<bool, RunError> {
@@ -1159,6 +1114,30 @@ impl SessionApplication {
         let execution = self.runtime().core();
 
         execution.model()
+    }
+}
+
+impl crate::SessionCredentials {
+    pub async fn missing_vault(
+        &self,
+        workspace_id: &str,
+        vault_ids: &[String],
+    ) -> Result<Option<String>, RunError> {
+        let Some(source) = self.credential_source() else {
+            return Ok(None);
+        };
+        for vault_id in vault_ids {
+            let exists = source
+                .has_vault(workspace_id, vault_id)
+                .await
+                .map_err(|error| {
+                    RunError::unavailable(format!("credential authority unavailable: {error}"))
+                })?;
+            if !exists {
+                return Ok(Some(vault_id.clone()));
+            }
+        }
+        Ok(None)
     }
 }
 

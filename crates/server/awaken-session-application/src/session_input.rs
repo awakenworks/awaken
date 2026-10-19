@@ -349,6 +349,68 @@ impl PreparedSessionInputs {
     }
 }
 
+async fn memory_store_definition(
+    inventory: Option<&dyn awaken_resource_contract::ResourceInventory>,
+    workspace_id: &str,
+    memory_store_id: &str,
+) -> Result<awaken_resource_contract::MemoryStoreDefinition, RunError> {
+    inventory
+        .ok_or_else(|| {
+            RunError::bad_request("memory resources require a configured Resource Registry")
+        })?
+        .find_memory_store(workspace_id, memory_store_id)
+        .await
+        .map_err(|error| RunError::bad_request(error.to_string()))?
+        .ok_or_else(|| {
+            RunError::bad_request(format!(
+                "MemoryStore `{memory_store_id}` not found in this workspace"
+            ))
+        })
+}
+
+/// Normalize definition-owned mounts before either caller configures a participant.
+/// Explicit paths and Agent defaults reserve slots; no derived request means
+/// no Inventory capability or read is required. Identity/layout planning stays
+/// with the caller and retains its original order after this one normalization.
+pub(super) async fn normalize_session_input_mounts(
+    inventory: Option<&dyn awaken_resource_contract::ResourceInventory>,
+    owner_scope: &str,
+    requests: &[SessionInputRequest],
+    agent_defaults: &[awaken_resource_contract::InputBinding],
+) -> Result<Vec<SessionInputRequest>, RunError> {
+    let mut used_mounts = agent_defaults
+        .iter()
+        .map(|binding| binding.mount_path.trim_start_matches('/').to_string())
+        .chain(
+            requests
+                .iter()
+                .filter(|request| !request.derived_memory_mount)
+                .map(|request| request.mount_path.trim_start_matches('/').to_string()),
+        )
+        .collect::<std::collections::BTreeSet<_>>();
+    // Resolve every definition-owned mount before entering either durable
+    // Repository participant. A later malformed Memory/File input cannot
+    // strand an earlier Registry/Vault participant.
+    let mut normalized = Vec::with_capacity(requests.len());
+    for request in requests {
+        let mut request = request.clone();
+        if request.derived_memory_mount {
+            let SessionInputTarget::MemoryStore(memory_store_id) = &request.target else {
+                unreachable!("only MemoryStore inputs derive a mount path")
+            };
+            let definition =
+                memory_store_definition(inventory, owner_scope, memory_store_id.as_str()).await?;
+            request.mount_path =
+                unique_memory_mount_path(&definition.name, memory_store_id.as_str(), &used_mounts);
+            // All explicit paths were seeded before the loop, including later
+            // requests. Only newly derived paths need to extend that same set.
+            used_mounts.insert(request.mount_path.trim_start_matches('/').to_string());
+        }
+        normalized.push(request);
+    }
+    Ok(normalized)
+}
+
 impl SessionApplication {
     /// Derive every definition-owned mount path and compile the one effective
     /// typed binding plan before entering Skill/File/Vault/Repository effects.
@@ -362,38 +424,15 @@ impl SessionApplication {
         requests: &[SessionInputRequest],
         agent_defaults: &[awaken_resource_contract::InputBinding],
     ) -> Result<PreparedSessionInputs, RunError> {
-        let mut used_mounts = agent_defaults
-            .iter()
-            .map(|binding| binding.mount_path.trim_start_matches('/').to_string())
-            .chain(
-                requests
-                    .iter()
-                    .filter(|request| !request.derived_memory_mount)
-                    .map(|request| request.mount_path.trim_start_matches('/').to_string()),
-            )
-            .collect::<std::collections::BTreeSet<_>>();
-        // Resolve every definition-owned mount before entering either durable
-        // Repository participant. A later malformed Memory/File input cannot
-        // strand an earlier Registry/Vault participant.
-        let mut normalized = Vec::with_capacity(requests.len());
-        for request in requests {
-            let mut request = request.clone();
-            if request.derived_memory_mount {
-                let SessionInputTarget::MemoryStore(memory_store_id) = &request.target else {
-                    unreachable!("only MemoryStore inputs derive a mount path")
-                };
-                let definition = self
-                    .session_memory_store(owner_scope, memory_store_id.as_str())
-                    .await?;
-                request.mount_path = unique_memory_mount_path(
-                    &definition.name,
-                    memory_store_id.as_str(),
-                    &used_mounts,
-                );
-            }
-            used_mounts.insert(request.mount_path.trim_start_matches('/').to_string());
-            normalized.push(request);
-        }
+        let normalized = normalize_session_input_mounts(
+            self.resource_registry
+                .as_deref()
+                .map(|registry| registry as &dyn awaken_resource_contract::ResourceInventory),
+            owner_scope,
+            requests,
+            agent_defaults,
+        )
+        .await?;
         // Build the complete logical binding set with a non-durable placeholder
         // Repository id. The shared resolver owns replacement/collision/tree
         // semantics, and this call remains pure; only after it succeeds may the

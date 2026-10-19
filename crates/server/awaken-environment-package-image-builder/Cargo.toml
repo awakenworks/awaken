@@ -19,6 +19,7 @@ awaken-provisioning-contract.workspace = true
 awaken-sandbox-container.workspace = true
 
 [dev-dependencies]
+awaken-container-contract.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]

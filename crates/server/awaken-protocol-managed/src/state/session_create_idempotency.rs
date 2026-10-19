@@ -169,11 +169,19 @@ mod tests {
         // project that truth but cannot create or replace another aggregate.
         let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
             Arc::new(ephemeral_session_repo().await);
-        let original = Arc::new(
-            ManagedState::new(RehydrateFake::default())
-                .await
-                .with_session_repo(repo.clone()),
-        );
+        let original = Arc::new({
+            let session_fixture_runtime = RehydrateFake::default();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repo.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        });
         let created = original
             .create_session_idempotent(request("Project A"), "workspace-a", "issue-a")
             .await
@@ -184,11 +192,19 @@ mod tests {
         );
         drop(original);
 
-        let restarted = Arc::new(
-            ManagedState::new(RehydrateFake::default())
-                .await
-                .with_session_repo(repo.clone()),
-        );
+        let restarted = Arc::new({
+            let session_fixture_runtime = RehydrateFake::default();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repo.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        });
         assert!(restarted.list_sessions().is_empty(), "R2 starts cold");
         let replayed = restarted
             .create_session_idempotent(request("Project A"), "workspace-a", "issue-a")

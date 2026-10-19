@@ -34,7 +34,7 @@ use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_resource_contract::{FileCatalog, FileStore};
 #[cfg(test)]
 use awaken_run_ingress_contract::RunDispatch;
-use awaken_run_ingress_contract::{Inbox, PendingInput, SubmitOptions};
+use awaken_run_ingress_contract::{Inbox, PendingInput};
 use awaken_runtime::{DirectAttemptDriver, Runtime};
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::activation::RunActivation;

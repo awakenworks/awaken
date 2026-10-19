@@ -19,7 +19,7 @@ pub(crate) fn control_image() -> String {
 pub(crate) async fn connect_with_clock(
     namespace: &str,
     address: std::net::SocketAddr,
-) -> Result<awaken_sandbox_kubernetes::K8sRuntime, awaken_sandbox_container::RuntimeError> {
+) -> Result<awaken_sandbox_kubernetes::K8sRuntime, awaken_container_contract::RuntimeError> {
     awaken_sandbox_kubernetes::K8sRuntime::connect(namespace, address)
         .await
         .map(|runtime| runtime.with_clock(awaken_time::system_clock()))

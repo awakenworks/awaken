@@ -6,7 +6,7 @@ use k8s_openapi::api::core::v1::ConfigMap;
 
 use super::state::{WorkerCreateLedgerState, future_capacity};
 use crate::error::backend;
-use awaken_sandbox_container::RuntimeError;
+use awaken_container_contract::RuntimeError;
 
 pub(super) const CONFIGMAP_DATA_BYTES: usize = 1024 * 1024;
 const ANNOTATION_BYTES: usize = 256 * 1024;

@@ -67,7 +67,6 @@ impl credential::CredentialRealizationRecorder for LocalAttemptAuthority {
 }
 
 struct ActivationOptions {
-    supersede: bool,
     associate_prepared_session: bool,
     sink: Option<Arc<dyn StreamSink>>,
     lends_cancellation_to: Option<Arc<crate::host::ForegroundRunRecord>>,
@@ -278,7 +277,6 @@ impl RunAttemptExecutor for CaptureContextAttemptExecutor {
 pub(crate) struct BoundRunExecutor<'a> {
     host: &'a crate::SessionRuns,
     ctx: Arc<SessionCtx>,
-    supersede: bool,
     sink: Option<Arc<dyn StreamSink>>,
     lends_cancellation_to: Option<Arc<crate::host::ForegroundRunRecord>>,
     release_active_on_return: bool,
@@ -290,7 +288,6 @@ impl<'a> BoundRunExecutor<'a> {
         Self {
             host,
             ctx,
-            supersede: false,
             sink: None,
             lends_cancellation_to: None,
             release_active_on_return: true,
@@ -303,11 +300,6 @@ impl<'a> BoundRunExecutor<'a> {
     /// still flow through the one dispatch decorator.
     pub(crate) fn for_thread_extension(mut self) -> Self {
         self.associate_prepared_session = false;
-        self
-    }
-
-    pub(crate) fn with_supersede(mut self, supersede: bool) -> Self {
-        self.supersede = supersede;
         self
     }
 
@@ -363,7 +355,6 @@ impl RunExecutor for BoundRunExecutor<'_> {
                 &self.ctx,
                 activation,
                 ActivationOptions {
-                    supersede: self.supersede,
                     associate_prepared_session: self.associate_prepared_session,
                     sink: self.sink.clone(),
                     lends_cancellation_to: self.lends_cancellation_to.clone(),
@@ -512,7 +503,7 @@ impl crate::SessionRuns {
     }
 
     /// Execute `activation`: the ACP executor when the session chose
-    /// an ACP runtime, else the native ingress (direct / durable / superseding).
+    /// an ACP runtime, else the native direct or durable delivery.
     ///
     /// `sink`, when set, receives the engine's best-effort live progress. Direct
     /// execution wires it into the attempt context; durable foreground execution
@@ -534,25 +525,13 @@ impl crate::SessionRuns {
         // so the runtime only ever receives an executor, never a model identity to
         // look up — the provider owns how the model is reached (local credentials or a
         // gateway offering).
-        if options.supersede {
-            // Durable + superseding: enqueue (marking prior pending superseded) and
-            // let the process pool drive it on this session's worker (O2).
-            self.submit_durable_foreground(
-                ctx,
-                activation,
-                true,
-                options.sink,
-                options.associate_prepared_session,
-            )
-            .await
-        } else if ctx.delivery.is_durable() {
+        if ctx.delivery.is_durable() {
             // Durable: enqueue and await the pool driving it to a settled state. The
             // session's own worker must not claim (it would grab foreign threads'
             // runs on the shared queue); the pool is the sole claimer.
             self.submit_durable_foreground(
                 ctx,
                 activation,
-                false,
                 options.sink,
                 options.associate_prepared_session,
             )

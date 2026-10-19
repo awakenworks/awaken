@@ -37,9 +37,21 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
         {
             let runtime = LifecycleRuntime::default();
             let repository = Arc::new(ephemeral_session_repo().await);
-            let warm = ManagedState::new(runtime.clone())
-                .await
-                .with_session_repo(repository.clone());
+            let warm = {
+                let session_fixture_runtime = runtime.clone();
+                let session_fixture_clock = awaken_time::system_clock();
+                crate::state::test_support::managed_state_from_parts(
+                    std::sync::Arc::new(session_fixture_runtime),
+                    None,
+                    repository.clone(),
+                    awaken_protocol_managed_testkit::environment_fixture(
+                        session_fixture_clock.clone(),
+                    )
+                    .execution,
+                    session_fixture_clock,
+                    std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+                )
+            };
             let session = warm
                 .create_session(
                     serde_json::from_value(serde_json::json!({
@@ -124,9 +136,21 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
                 )
                 .await
                 .unwrap();
-            let cold = ManagedState::new(runtime.clone())
-                .await
-                .with_session_repo(repository);
+            let cold = {
+                let session_fixture_runtime = runtime.clone();
+                let session_fixture_clock = awaken_time::system_clock();
+                crate::state::test_support::managed_state_from_parts(
+                    std::sync::Arc::new(session_fixture_runtime),
+                    None,
+                    repository,
+                    awaken_protocol_managed_testkit::environment_fixture(
+                        session_fixture_clock.clone(),
+                    )
+                    .execution,
+                    session_fixture_clock,
+                    std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+                )
+            };
             let mut previous = None;
             for state in [&warm, &warm, &cold] {
                 state.refresh_committed_events(&session.id).await.unwrap();
@@ -197,9 +221,19 @@ async fn cancelled_child_uses_the_same_committed_execution_classifier() {
             .unwrap()
             .push("researcher".into());
         let repository = Arc::new(ephemeral_session_repo().await);
-        let warm = ManagedState::new(runtime.clone())
-            .await
-            .with_session_repo(repository.clone());
+        let warm = {
+            let session_fixture_runtime = runtime.clone();
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repository.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        };
         let session = warm
             .create_session(
                 serde_json::from_value(serde_json::json!({
@@ -274,9 +308,19 @@ async fn cancelled_child_uses_the_same_committed_execution_classifier() {
             .lock()
             .unwrap()
             .insert(child_id.into(), cursors);
-        let cold = ManagedState::new(runtime)
-            .await
-            .with_session_repo(repository);
+        let cold = {
+            let session_fixture_runtime = runtime;
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                std::sync::Arc::new(session_fixture_runtime),
+                None,
+                repository,
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        };
         let mut previous = None;
         for state in [&warm, &warm, &cold] {
             state.refresh_committed_events(&session.id).await.unwrap();

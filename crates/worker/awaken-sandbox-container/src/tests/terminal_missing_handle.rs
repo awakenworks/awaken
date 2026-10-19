@@ -1,6 +1,9 @@
 //! One provider-owned classification for a missing durable container handle.
 
 use super::*;
+use awaken_container_contract::{
+    CreateTicket, CreateTicketRequest, TicketOrigin, TicketResult, TicketStatus,
+};
 use awaken_provisioning_contract::SandboxObservationPurpose;
 use awaken_provisioning_contract::SandboxProvider;
 
@@ -254,7 +257,7 @@ async fn guarded_claim_uses_the_existing_two_phase_terminal_owner() {
     // authorized disposal re-observes and removes exactly once. Rules G1 all
     // causes=>E1+E2+E4, G2 !C2=>Unknown, G3 !C3=>E3. The real K8s test owns
     // guard policy/UID and PVC API effects; this case owns provider ordering.
-    use crate::{CreateTicket, CreateTicketRequest, TicketOrigin, TicketResult, TicketStatus};
+
     let scope = "guarded-claim-terminal";
     let create = pc::SandboxEffectFence::new(
         "create-guarded-claim",

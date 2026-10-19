@@ -12,8 +12,8 @@ use tokio::io::AsyncReadExt;
 use super::{EXEC_SEQUENCE, K8sRuntime, backend, channel};
 use awaken_agent_channel::{AgentChannel, SplitChannel};
 use awaken_connection_plan::{ChannelFactory as _, ConnectionPlan, TokioChannelFactory};
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract::AgentProcess;
-use awaken_sandbox_container::RuntimeError;
 use std::sync::atomic::Ordering;
 use tokio::io::AsyncWriteExt as _;
 

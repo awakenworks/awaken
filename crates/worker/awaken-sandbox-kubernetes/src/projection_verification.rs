@@ -11,8 +11,8 @@ use super::{
     api_defaults, backend, hardened_security_context, has_forbidden_sandbox_namespace_shape,
     pod_projection, realization,
 };
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract as pc;
-use awaken_sandbox_container::RuntimeError;
 
 /// Decode only the historical directory initializer into the expected immutable
 /// projection. New creation never emits it. Full spec and original digest still

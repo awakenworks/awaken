@@ -112,11 +112,21 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
         calls: std::sync::atomic::AtomicUsize::new(0),
         fail: std::sync::atomic::AtomicBool::new(false),
     });
-    let state = ManagedState::new_with_mcp(RehydrateFake::default())
-        .await
-        .with_config_source(profiles.clone())
-        .with_session_repo(repo)
-        .with_executable_projection_refresh(paired_projection_refresh(refresh.clone()));
+    let state = {
+        let session_fixture_runtime = std::sync::Arc::new(RehydrateFake::default());
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    }
+    .with_config_source(profiles.clone())
+    .with_executable_projection_refresh(paired_projection_refresh(refresh.clone()));
     let request = serde_json::from_value(serde_json::json!({
         "agent":"coordinator", "environment_id":"env_local"
     }))
@@ -410,9 +420,19 @@ async fn application_root_cas_decision_table() {
         let repo = Arc::new(ephemeral_session_repo().await);
         create_session_fixture(repo.as_ref(), "workspace-a", sample_persisted(&id)).await;
         let stale = repo.get(&SessionId::from(&id)).await.unwrap();
-        let state = ManagedState::new_with_mcp(RehydrateFake::default())
-            .await
-            .with_session_repo(repo.clone());
+        let state = {
+            let session_fixture_runtime = std::sync::Arc::new(RehydrateFake::default());
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                session_fixture_runtime.clone(),
+                Some(session_fixture_runtime),
+                repo.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        };
         let applied = state
             .commit_session_snapshot(
                 "workspace-a",
@@ -703,9 +723,19 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
     let restored_environments = runtime.restored_environments.clone();
     let restored_runtimes = runtime.restored_runtimes.clone();
     let order = runtime.order.clone();
-    let restarted = ManagedState::new_with_mcp(runtime)
-        .await
-        .with_session_repo(repo.clone());
+    let restarted = {
+        let session_fixture_runtime = std::sync::Arc::new(runtime);
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     restarted.ensure_session("sesn_1").await.expect("rehydrate");
     let session = restarted
         .get_session("sesn_1")
@@ -828,9 +858,19 @@ async fn cold_workspace_list_projects_durable_sessions_without_runtime_effects()
     let runtime = RehydrateFake::default();
     let restored = runtime.restored.clone();
     let restored_environments = runtime.restored_environments.clone();
-    let restarted = ManagedState::new_with_mcp(runtime)
-        .await
-        .with_session_repo(repo);
+    let restarted = {
+        let session_fixture_runtime = std::sync::Arc::new(runtime);
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     assert!(restarted.list_sessions().is_empty(), "C1 cold cache");
 
     let listed = restarted
@@ -892,9 +932,19 @@ async fn cold_workspace_list_isolates_a_missing_preview_publication() {
 
     let runtime = RehydrateFake::default();
     let restored = runtime.restored.clone();
-    let restarted = ManagedState::new_with_mcp(runtime)
-        .await
-        .with_session_repo(repo);
+    let restarted = {
+        let session_fixture_runtime = std::sync::Arc::new(runtime);
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let listed = restarted
         .list_sessions_scoped_durable("workspace-a")
         .await
@@ -948,9 +998,19 @@ async fn committed_event_refresh_merges_peer_messages_exactly_once() {
         "first",
     );
     *runtime.committed.lock().unwrap() = Some(vec![first.clone()]);
-    let state = ManagedState::new_with_mcp(runtime.clone())
-        .await
-        .with_session_repo(repo);
+    let state = {
+        let session_fixture_runtime = std::sync::Arc::new(runtime.clone());
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     state.ensure_session("sesn_peer").await.expect("warm cache");
 
     let second = Message::text(
@@ -992,9 +1052,19 @@ async fn protocol_defaults_preparer_rehydrates_the_exact_durable_baseline() {
     let runtime = RehydrateFake::default();
     let restored = runtime.restored.clone();
     let restored_environments = runtime.restored_environments.clone();
-    let restarted = ManagedState::new_with_mcp(runtime)
-        .await
-        .with_session_repo(repo);
+    let restarted = {
+        let session_fixture_runtime = std::sync::Arc::new(runtime);
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
 
     restarted
         .session_application()
@@ -1020,9 +1090,19 @@ async fn session_id_mint_namespaces_restart_away_from_repository_truth() {
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
         Arc::new(ephemeral_session_repo().await);
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, sample_persisted("sesn_0")).await;
-    let restarted = ManagedState::new(EndSessionRecorder::default())
-        .await
-        .with_session_repo(repo);
+    let restarted = {
+        let session_fixture_runtime = EndSessionRecorder::default();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let created = restarted
         .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
@@ -1043,12 +1123,32 @@ async fn active_active_session_id_mint_is_collision_free() {
     // | S2 | same process object | increasing | yes | distinct Sessions |
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
         Arc::new(ephemeral_session_repo().await);
-    let left = ManagedState::new(EndSessionRecorder::default())
-        .await
-        .with_session_repo(repo.clone());
-    let right = ManagedState::new(EndSessionRecorder::default())
-        .await
-        .with_session_repo(repo.clone());
+    let left = {
+        let session_fixture_runtime = EndSessionRecorder::default();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
+    let right = {
+        let session_fixture_runtime = EndSessionRecorder::default();
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            std::sync::Arc::new(session_fixture_runtime),
+            None,
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let (left_result, right_result) = tokio::join!(
         left.create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID),
         right.create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID),
@@ -1092,9 +1192,19 @@ async fn resource_reconciler_retries_and_commits_a_crash_interrupted_activation(
 
     let runtime = RehydrateFake::default();
     let restored = runtime.restored.clone();
-    let restarted = ManagedState::new_with_mcp(runtime)
-        .await
-        .with_session_repo(repo.clone());
+    let restarted = {
+        let session_fixture_runtime = std::sync::Arc::new(runtime);
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     assert_eq!(restarted.reconcile_resource_activations().await, 1);
     restarted.ensure_session("sesn_pending").await.unwrap();
 
@@ -1132,9 +1242,19 @@ async fn resource_reclaimer_finishes_terminal_release_after_restart_case() {
     deleted.resources.begin_release().unwrap();
     create_session_fixture(repo.as_ref(), "workspace-a", deleted).await;
 
-    let restarted = ManagedState::new_with_mcp(RehydrateFake::default())
-        .await
-        .with_session_repo(repo.clone());
+    let restarted = {
+        let session_fixture_runtime = std::sync::Arc::new(RehydrateFake::default());
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     let report = restarted.application.reconcile_resource_activations().await;
     assert!(report.failures.is_empty(), "{:?}", report.failures);
     assert_eq!(report.settled.len(), 1);
@@ -1198,9 +1318,19 @@ async fn resource_reclaimer_never_tears_down_a_live_session_environment_case() {
     let runtime = RehydrateFake::default();
     let applied = runtime.restored.clone();
     let ended = runtime.ended.clone();
-    let restarted = ManagedState::new_with_mcp(runtime)
-        .await
-        .with_session_repo(repo.clone());
+    let restarted = {
+        let session_fixture_runtime = std::sync::Arc::new(runtime);
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
 
     let report = restarted.application.reconcile_resource_activations().await;
     assert!(report.failures.is_empty(), "{:?}", report.failures);
@@ -1264,9 +1394,19 @@ async fn cold_rehydrate_preserves_a_running_sessions_resource_generation() {
     let applied = runtime.restored.clone();
     let ended = runtime.ended.clone();
     let restored_environment = runtime.restored_environments.clone();
-    let restarted = ManagedState::new_with_mcp(runtime)
-        .await
-        .with_session_repo(repo.clone());
+    let restarted = {
+        let session_fixture_runtime = std::sync::Arc::new(runtime);
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
 
     restarted
         .ensure_session("sesn_running_rehydrate")
@@ -1404,9 +1544,19 @@ async fn terminal_root_fences_mcp_recovery_before_runtime_effects() {
 
     let runtime = RehydrateFake::default();
     let runtime_effects = runtime.restored_runtimes.clone();
-    let restarted = ManagedState::new_with_mcp(runtime)
-        .await
-        .with_session_repo(repo);
+    let restarted = {
+        let session_fixture_runtime = std::sync::Arc::new(runtime);
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo,
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
     assert_eq!(
         restarted.reconcile_session_realizations().await,
         0,
@@ -1440,9 +1590,19 @@ async fn startup_mcp_recovery_adopts_the_durable_environment_before_staging() {
 
     let runtime = RehydrateFake::default();
     let order = runtime.order.clone();
-    let restarted = ManagedState::new_with_mcp(runtime)
-        .await
-        .with_session_repo(repo.clone());
+    let restarted = {
+        let session_fixture_runtime = std::sync::Arc::new(runtime);
+        let session_fixture_clock = awaken_time::system_clock();
+        crate::state::test_support::managed_state_from_parts(
+            session_fixture_runtime.clone(),
+            Some(session_fixture_runtime),
+            repo.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                .execution,
+            session_fixture_clock,
+            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+    };
 
     assert_eq!(restarted.reconcile_session_realizations().await, 1, "C1-C3");
     assert_eq!(
@@ -1476,10 +1636,20 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
         let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
             Arc::new(ephemeral_session_repo().await);
         let catalog = Arc::new(ephemeral_resource_registry().await);
-        let state = ManagedState::new_with_mcp(RehydrateFake::default())
-            .await
-            .with_session_repo(repo.clone())
-            .with_resource_registry(catalog.clone());
+        let state = {
+            let session_fixture_runtime = std::sync::Arc::new(RehydrateFake::default());
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                session_fixture_runtime.clone(),
+                Some(session_fixture_runtime),
+                repo.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        }
+        .with_resource_registry(catalog.clone());
         let id = state
             .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
             .await
@@ -1525,10 +1695,20 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
             .await
             .expect("expire the crashed Runtime owner");
 
-        let restarted = ManagedState::new_with_mcp(RehydrateFake::default())
-            .await
-            .with_session_repo(repo.clone())
-            .with_resource_registry(catalog.clone());
+        let restarted = {
+            let session_fixture_runtime = std::sync::Arc::new(RehydrateFake::default());
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                session_fixture_runtime.clone(),
+                Some(session_fixture_runtime),
+                repo.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        }
+        .with_resource_registry(catalog.clone());
         restarted.ensure_session(&id).await.expect("rehydrate");
         let (_, restored) = restarted.list_resources(&id).await.expect("list restored");
         assert_eq!(restored.len(), 1);
@@ -1565,10 +1745,20 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
             )
             .await
             .expect("expire the second crashed Runtime owner");
-        let second_restart = ManagedState::new_with_mcp(RehydrateFake::default())
-            .await
-            .with_session_repo(repo)
-            .with_resource_registry(catalog);
+        let second_restart = {
+            let session_fixture_runtime = std::sync::Arc::new(RehydrateFake::default());
+            let session_fixture_clock = awaken_time::system_clock();
+            crate::state::test_support::managed_state_from_parts(
+                session_fixture_runtime.clone(),
+                Some(session_fixture_runtime),
+                repo,
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+        }
+        .with_resource_registry(catalog);
         second_restart
             .ensure_session(&id)
             .await

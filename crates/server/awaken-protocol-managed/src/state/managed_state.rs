@@ -12,8 +12,8 @@ use tokio::sync::broadcast;
 
 use awaken_session_application::{
     DeploymentSessionEnvironment, ProfiledSessionCommands, SessionApplication, SessionCreation,
-    SessionEventBatches, SessionObservation, SessionProjectionReads, SessionResourceCommands,
-    SessionRootReads, SessionTermination, SessionUpdates,
+    SessionCredentialCommands, SessionEventBatches, SessionObservation, SessionProjectionReads,
+    SessionResourceCommands, SessionRootReads, SessionTermination, SessionUpdates,
 };
 use awaken_time::WallClock;
 
@@ -26,6 +26,7 @@ use super::SessionRecord;
 /// adapter keeps only these narrowed views of it.
 pub(crate) struct SessionApplicationRoles {
     pub(crate) creation: Arc<dyn SessionCreation>,
+    pub(crate) credentials: Arc<dyn SessionCredentialCommands>,
     pub(crate) roots: Arc<dyn SessionRootReads>,
     pub(crate) projection: Arc<dyn SessionProjectionReads>,
     pub(crate) events: Arc<dyn SessionEventBatches>,
@@ -43,6 +44,7 @@ impl SessionApplicationRoles {
     pub(super) fn of(application: &Arc<SessionApplication>) -> Self {
         Self {
             creation: application.clone(),
+            credentials: application.credentials(),
             roots: application.queries(),
             projection: application.queries(),
             events: application.clone(),

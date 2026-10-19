@@ -1,5 +1,5 @@
-use super::super::{CreateTicketRequest, TicketAdmission, TicketResult};
 use super::*;
+use awaken_container_contract::{CreateTicketRequest, TicketAdmission, TicketResult};
 use k8s_openapi::{ByteString, apimachinery::pkg::apis::meta::v1::ObjectMeta};
 use std::collections::BTreeMap;
 
