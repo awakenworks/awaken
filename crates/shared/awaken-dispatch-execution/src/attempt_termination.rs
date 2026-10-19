@@ -94,6 +94,7 @@ pub struct NativeAttemptFootprint {
     profile: NativeAttemptCoverage,
     all_models_stopped: bool,
     all_model_effects_closed: bool,
+    models_response_only: bool,
     response_only: bool,
     domains: Vec<awaken_runtime_contract::tool_batch::ToolExecutionDomain>,
 }
@@ -112,6 +113,28 @@ impl NativeAttemptFootprint {
 
     pub(crate) fn response_only(&self) -> bool {
         self.response_only
+    }
+
+    /// Read model effects without treating a logical ToolBatch clear as either
+    /// physical closure or the removal of earlier business operations.
+    pub(crate) fn model_effect_scope_for_run(
+        snapshot: &RunRecoverySnapshot,
+        run: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<
+        Option<awaken_runtime_contract::model_operation::ModelEffectScope>,
+        NativeAttemptTerminationError,
+    > {
+        use awaken_runtime_contract::model_operation::ModelEffectScope;
+        let footprint = Self::decode_model_footprint_for_run(snapshot, run)?;
+        Ok(
+            (footprint.profile != NativeAttemptCoverage::Unspecified).then_some(
+                if footprint.models_response_only {
+                    ModelEffectScope::ResponseOnly
+                } else {
+                    ModelEffectScope::Opaque
+                },
+            ),
+        )
     }
 
     pub fn classify(
@@ -153,10 +176,25 @@ impl NativeAttemptFootprint {
         snapshot: &RunRecoverySnapshot,
         run: &awaken_agent_contract::agent::run::Id,
     ) -> Result<Self, NativeAttemptTerminationError> {
+        let mut footprint = Self::decode_model_footprint_for_run(snapshot, run)?;
+        if footprint.profile != NativeAttemptCoverage::Unspecified {
+            footprint.domains = ActiveToolBatch::recorded_execution_domains(&snapshot.state, run)
+                .map_err(|error| {
+                NativeAttemptTerminationError::InvalidToolHistory(error.to_string())
+            })?;
+        }
+        Ok(footprint)
+    }
+
+    fn decode_model_footprint_for_run(
+        snapshot: &RunRecoverySnapshot,
+        run: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<Self, NativeAttemptTerminationError> {
         let unsupported = || Self {
             profile: NativeAttemptCoverage::Unspecified,
             all_models_stopped: false,
             all_model_effects_closed: false,
+            models_response_only: false,
             response_only: false,
             domains: Vec::new(),
         };
@@ -229,10 +267,10 @@ impl NativeAttemptFootprint {
         let models = ActiveModelOperation::recorded(&snapshot.state, run).map_err(|error| {
             NativeAttemptTerminationError::InvalidModelHistory(error.to_string())
         })?;
-        let domains =
-            ActiveToolBatch::recorded_execution_domains(&snapshot.state, run).map_err(|error| {
-                NativeAttemptTerminationError::InvalidToolHistory(error.to_string())
-            })?;
+        let models_response_only = models.iter().all(|model| {
+            model.effect_scope
+                == awaken_runtime_contract::model_operation::ModelEffectScope::ResponseOnly
+        });
         Ok(Self {
             profile,
             all_models_stopped: models.iter().all(|model| model.execution.permits_reentry()),
@@ -241,12 +279,9 @@ impl NativeAttemptFootprint {
                     || model.effect_scope
                         == awaken_runtime_contract::model_operation::ModelEffectScope::ResponseOnly
             }),
-            response_only: !has_tool_history
-                && models.iter().all(|model| {
-                    model.effect_scope
-                        == awaken_runtime_contract::model_operation::ModelEffectScope::ResponseOnly
-                }),
-            domains,
+            models_response_only,
+            response_only: !has_tool_history && models_response_only,
+            domains: Vec::new(),
         })
     }
 }

@@ -5,31 +5,28 @@
 //! Awaken-only read projection for exact Session execution evidence.
 
 use crate::common::scope::RequiredWorkspaceScope;
+use awaken_session_execution_contract::SessionExecutionEvidenceSelection;
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 
 use super::{WireErr, session_projection_error};
 use crate::state::ManagedState;
 
 fn project_execution_evidence(
     observation: awaken_session_application::SessionExecutionObservation,
+    selection: SessionExecutionEvidenceSelection,
 ) -> crate::awaken_extensions::SessionExecutionEvidence {
     let public_thread_id =
         crate::state::public_thread_id(&observation.session_id, &observation.session_id);
     let mut recovery = observation.recovery;
-    let (operation_footprint, preparation) = match &mut recovery {
-        awaken_session_execution_contract::SessionExecutionRecoveryObservation::EffectsClosed {
-            operation_footprint,
-            preparation,
-            ..
-        } => (operation_footprint.take(), preparation.take()),
-        _ => (None, None),
-    };
+    let (operation_footprint, preparation, operation_inventory) =
+        recovery.take_projection_details(selection);
     crate::awaken_extensions::SessionExecutionEvidence {
         artifact_capture: observation.artifact_capture,
         operation_footprint,
+        operation_inventory,
         preparation,
         recovery: Some(recovery),
         session_id: observation.session_id,
@@ -73,6 +70,7 @@ fn project_execution_evidence(
 pub async fn get_session_execution_evidence(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
+    Query(query): Query<SessionExecutionEvidenceSelection>,
     RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
 ) -> Result<Json<crate::awaken_extensions::SessionExecutionEvidence>, WireErr> {
     let observation = state
@@ -81,7 +79,7 @@ pub async fn get_session_execution_evidence(
         .session_execution_observation(&owner_scope, &awaken_session_types::SessionId::from(id))
         .await
         .map_err(session_projection_error)?;
-    Ok(Json(project_execution_evidence(observation)))
+    Ok(Json(project_execution_evidence(observation, query)))
 }
 
 #[cfg(test)]
@@ -96,8 +94,7 @@ mod tests {
         // model request. Effects: E1 every coordinate is preserved; E2 the
         // empty Run stays empty rather than being reported as executed. Rules:
         // R1=P1=>E1 and R2=P2=>E2.
-        let projected =
-            project_execution_evidence(awaken_session_application::SessionExecutionObservation {
+        let mut observation = awaken_session_application::SessionExecutionObservation {
                 artifact_capture: Some(serde_json::from_value(serde_json::json!({
                     "workspace_id":"workspace","session_id":"session-1","revision":2,
                     "file_ids":["file-original"],"origin":{"run_id":"original-run","owner":"worker","epoch":7}
@@ -146,7 +143,11 @@ mod tests {
                         model_requests: Vec::new(),
                     },
                 ],
-            });
+            };
+        let projected = project_execution_evidence(
+            observation.clone(),
+            SessionExecutionEvidenceSelection::default(),
+        );
         assert_eq!(projected.backend_ref.as_deref(), Some("native"), "R1/E1");
         // P3 immutable source carrier is projected exactly; it is non-bearer
         // provenance and adds neither an execution claim nor a permission.
@@ -185,5 +186,127 @@ mod tests {
         );
         assert_eq!(projected.runs[0].model_requests[0].sequence, 11, "R1/E1");
         assert!(projected.runs[1].model_requests.is_empty(), "R2/E2");
+
+        // P4/P5: a caller selects an expanded projection, not permission.
+        // Off -> no new field even when the owning observation has inventory;
+        // On -> exact original ids, with no tool-settlement or retry claim.
+        // P7 both selections preserve existing preparation/footprint fields and
+        // closure coordinates while the Session language extracts the details.
+        use awaken_session_execution_contract::{
+            SessionExecutionOperationInventory as Inventory,
+            SessionExecutionRecoveryObservation as Recovery, SessionExecutionToolOperation,
+        };
+        observation.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
+        let inventory = Inventory::Recorded {
+            tools: vec![SessionExecutionToolOperation {
+                thread_id: "session-1".into(),
+                run_id: "run-observed".into(),
+                operation_id: "original-operation".into(),
+                tool_id: "original-tool".into(),
+            }],
+        };
+        observation.recovery = Recovery::EffectsClosed {
+            preparation: Some(
+                awaken_session_execution_contract::SessionRecoveryPreparationReference {
+                    session_id: "session-1".into(),
+                    effect_id: "original-preparation".into(),
+                    preparation_fingerprint: "original-fingerprint".into(),
+                },
+            ),
+            operation_footprint: Some(
+                awaken_session_execution_contract::SessionExecutionOperationFootprint::ResponseOnly,
+            ),
+            operation_inventory: Some(inventory.clone()),
+            session_revision: 5,
+            runtime_commit_cursor: 19,
+            thread_ids: vec!["session-1".into()],
+            closure_records: Vec::new(),
+        };
+        let standard = serde_json::to_value(project_execution_evidence(
+            observation.clone(),
+            SessionExecutionEvidenceSelection::default(),
+        ))
+        .unwrap();
+        assert!(
+            standard.get("operation_inventory").is_none(),
+            "P4 legacy view unchanged"
+        );
+        assert!(
+            standard["recovery"].get("operation_inventory").is_none(),
+            "P4 no nested bypass"
+        );
+        assert_eq!(
+            standard["preparation"]["effect_id"], "original-preparation",
+            "P7"
+        );
+        assert_eq!(standard["operation_footprint"], "response_only", "P7");
+        assert_eq!(standard["recovery"]["session_revision"], 5, "P7");
+        assert_eq!(standard["recovery"]["runtime_commit_cursor"], 19, "P7");
+        let expanded = project_execution_evidence(
+            observation.clone(),
+            SessionExecutionEvidenceSelection {
+                include_operation_inventory: true,
+            },
+        );
+        assert_eq!(expanded.operation_inventory, Some(inventory), "P5");
+        assert_eq!(
+            expanded.execution, observation.execution,
+            "P5 read cannot change execution"
+        );
+        // P6 missing provenance stays a typed negative observation; neither
+        // the selector nor physical closure upgrades business effects.
+        if let Recovery::EffectsClosed {
+            operation_inventory,
+            ..
+        } = &mut observation.recovery
+        {
+            *operation_inventory = Some(Inventory::NotProven {
+                reason:
+                    awaken_session_execution_contract::SessionExecutionRecoveryGap::HistoryMissing,
+            });
+        }
+        assert!(
+            matches!(
+                project_execution_evidence(
+                    observation,
+                    SessionExecutionEvidenceSelection {
+                        include_operation_inventory: true
+                    }
+                )
+                .operation_inventory,
+                Some(Inventory::NotProven {
+                    reason:
+                        awaken_session_execution_contract::SessionExecutionRecoveryGap::HistoryMissing
+                })
+            ),
+            "P6"
+        );
+    }
+
+    #[test]
+    fn operation_inventory_query_is_explicit_and_closed() {
+        // Q1 absent/false -> original projection; Q2 true -> expanded read;
+        // Q3 malformed Boolean or unknown selector -> rejection. Parsing
+        // dispatches no operation and grants no recovery permission.
+        for (query, expected) in [
+            ("", Some(false)),
+            ("?include_operation_inventory=false", Some(false)),
+            ("?include_operation_inventory=true", Some(true)),
+            ("?include_operation_inventory=allow", None),
+            ("?safe_to_retry=true", None),
+        ] {
+            let uri = format!("/v1/awaken/sessions/s/execution-evidence{query}")
+                .parse()
+                .unwrap();
+            let observed = Query::<SessionExecutionEvidenceSelection>::try_from_uri(&uri);
+            match expected {
+                Some(value) => assert_eq!(
+                    observed.unwrap().include_operation_inventory,
+                    value,
+                    "Q1/Q2 {query}"
+                ),
+                None => assert!(observed.is_err(), "Q3 {query}"),
+            }
+        }
     }
 }

@@ -7,8 +7,9 @@ use awaken_dispatch_contract::{
     AttemptClosureRecord, AttemptPhysicalFact, DispatchCursor, DispatchOperation,
 };
 use awaken_session_execution_contract::{
-    SessionExecutionClosureReference, SessionExecutionRecoveryGap as Gap,
-    SessionExecutionRecoveryObservation as Observation,
+    SessionExecutionClosureReference, SessionExecutionOperationInventory,
+    SessionExecutionRecoveryGap as Gap, SessionExecutionRecoveryObservation as Observation,
+    SessionExecutionToolOperation,
 };
 use awaken_session_state_contract::PersistedSession;
 use std::collections::{BTreeMap, BTreeSet};
@@ -159,6 +160,78 @@ fn response_only_run(
         })
 }
 
+fn run_operation_inventory(
+    snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+    run: &awaken_agent_contract::agent::run::Id,
+) -> Result<SessionExecutionOperationInventory, Gap> {
+    use awaken_agent_contract::agent::content::ContentBlock;
+    use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolCallPhase};
+    let scope = crate::NativeAttemptFootprint::model_effect_scope_for_run(snapshot, run)
+        .map_err(|_| Gap::IdentityMismatch)?
+        .ok_or(Gap::InventoryIncomplete)?;
+    if scope.is_opaque() {
+        return Err(Gap::InventoryIncomplete);
+    }
+    let mut operations = BTreeMap::new();
+    for recorded in ActiveToolBatch::recorded_batches(&snapshot.state, run) {
+        let (_, batch) = recorded.map_err(|_| Gap::IdentityMismatch)?;
+        let Some(batch) = batch else {
+            // A clear changes the active cell, never the original operation
+            // history. Without a retained prefix it cannot certify inventory.
+            if operations.is_empty() {
+                return Err(Gap::HistoryMissing);
+            }
+            continue;
+        };
+        for call in batch.calls() {
+            let operation = batch.operation_id(&call.call.call_id);
+            if let Some(original) = operations.get(&operation) {
+                if original != &call.call {
+                    return Err(Gap::IdentityMismatch);
+                }
+            } else {
+                if !matches!(call.phase, ToolCallPhase::Requested) {
+                    return Err(Gap::HistoryMissing);
+                }
+                operations.insert(operation, call.call.clone());
+            }
+        }
+    }
+    // Messages corroborate the journal, but cannot fill a missing ToolBatch.
+    // A Requested call with no committed assistant message must remain present.
+    for message in snapshot
+        .messages
+        .iter()
+        .filter(|message| message.id.assistant_step_of(run).is_some())
+    {
+        for block in &message.content {
+            if let ContentBlock::ToolUse { id, name, input } = block {
+                let operation = ActiveToolBatch::operation_for_message(snapshot, message, id)
+                    .map_err(|_| Gap::IdentityMismatch)?
+                    .ok_or(Gap::InventoryIncomplete)?;
+                let original = operations.get(&operation).ok_or(Gap::InventoryIncomplete)?;
+                if original.call_id != *id
+                    || original.tool_id != *name
+                    || original.arguments != *input
+                {
+                    return Err(Gap::IdentityMismatch);
+                }
+            }
+        }
+    }
+    Ok(SessionExecutionOperationInventory::Recorded {
+        tools: operations
+            .into_iter()
+            .map(|(operation_id, call)| SessionExecutionToolOperation {
+                thread_id: snapshot.thread_id.0.clone(),
+                run_id: run.0.clone(),
+                operation_id,
+                tool_id: call.tool_id,
+            })
+            .collect(),
+    })
+}
+
 fn unknown(reason: Gap) -> Observation {
     Observation::NotProven { reason }
 }
@@ -274,37 +347,6 @@ where
     if entries.is_empty() {
         return unknown(Gap::InventoryIncomplete);
     }
-    let mut response_only = true;
-    for thread in &threads {
-        let snapshot = match reads
-            .session_thread_recovery_snapshot(&session.session_id, thread)
-            .await
-        {
-            Ok(Some(snapshot)) => snapshot,
-            Ok(None) => return unknown(Gap::HistoryMissing),
-            Err(_) => return unknown(Gap::HistoryUnavailable),
-        };
-        if snapshot.thread_id.0 != *thread
-            || snapshot.runs.iter().any(|run| run.thread_id.0 != *thread)
-        {
-            return unknown(Gap::IdentityMismatch);
-        }
-        if snapshot.runs.iter().any(|run| {
-            !entries.iter().any(|entry| {
-                entry.claim.run_id == run.id
-                    && entry
-                        .thread_id
-                        .as_ref()
-                        .is_some_and(|entry_thread| entry_thread.0 == *thread)
-            })
-        }) {
-            return unknown(Gap::InventoryIncomplete);
-        }
-        response_only &= snapshot
-            .runs
-            .iter()
-            .all(|run| response_only_run(&snapshot, &run.id));
-    }
     let mut identities = BTreeSet::new();
     let mut closure_records = Vec::new();
     let mut records_by_run = BTreeMap::new();
@@ -334,7 +376,103 @@ where
             Err(gap) => return unknown(gap),
         }
     }
+    // Closure is read first: a tool committed while closure was being observed
+    // must be included in the subsequent original-history read.
+    let mut snapshots = BTreeMap::new();
+    for thread in &threads {
+        let snapshot = match reads
+            .session_thread_recovery_snapshot(&session.session_id, thread)
+            .await
+        {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => return unknown(Gap::HistoryMissing),
+            Err(_) => return unknown(Gap::HistoryUnavailable),
+        };
+        snapshots.insert(thread.clone(), snapshot);
+    }
+    project_closed_scope_observation(
+        session,
+        threads,
+        runtime_commit_cursor,
+        &entries,
+        closure_records,
+        snapshots,
+    )
+}
+
+/// Project only the original histories read after all independent closure facts.
+/// This helper owns no I/O and cannot replace the preceding closure read.
+fn project_closed_scope_observation(
+    session: &PersistedSession,
+    threads: BTreeSet<String>,
+    runtime_commit_cursor: u64,
+    entries: &[PhysicalAttempt],
+    closure_records: Vec<SessionExecutionClosureReference>,
+    snapshots: BTreeMap<String, awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+) -> Observation {
+    let mut response_only = true;
+    let mut inventory = SessionExecutionOperationInventory::Recorded { tools: Vec::new() };
+    for (thread, snapshot) in &snapshots {
+        if snapshot.thread_id.0 != *thread
+            || snapshot.runs.iter().any(|run| run.thread_id.0 != *thread)
+        {
+            return unknown(Gap::IdentityMismatch);
+        }
+        if snapshot.runs.iter().any(|run| {
+            !entries.iter().any(|entry| {
+                entry.claim.run_id == run.id
+                    && entry
+                        .thread_id
+                        .as_ref()
+                        .is_some_and(|entry_thread| entry_thread.0 == *thread)
+            })
+        }) {
+            return unknown(Gap::InventoryIncomplete);
+        }
+        if entries.iter().any(|entry| {
+            entry
+                .thread_id
+                .as_ref()
+                .is_some_and(|entry_thread| entry_thread.0 == *thread)
+                && !snapshot.runs.iter().any(|run| run.id == entry.claim.run_id)
+        }) {
+            return unknown(Gap::InventoryIncomplete);
+        }
+        if snapshot.messages.iter().any(|message| {
+            message.content.iter().any(|block| {
+                matches!(
+                    block,
+                    awaken_agent_contract::agent::content::ContentBlock::ToolUse { .. }
+                )
+            }) && !snapshot
+                .runs
+                .iter()
+                .any(|run| message.id.assistant_step_of(&run.id).is_some())
+        }) {
+            return unknown(Gap::InventoryIncomplete);
+        }
+        response_only &= snapshot
+            .runs
+            .iter()
+            .all(|run| response_only_run(snapshot, &run.id));
+        for run in &snapshot.runs {
+            match run_operation_inventory(snapshot, &run.id) {
+                Ok(SessionExecutionOperationInventory::Recorded { mut tools }) => {
+                    if let SessionExecutionOperationInventory::Recorded { tools: all_tools } =
+                        &mut inventory
+                    {
+                        all_tools.append(&mut tools);
+                    }
+                }
+                Err(reason) => inventory = SessionExecutionOperationInventory::NotProven { reason },
+                Ok(SessionExecutionOperationInventory::NotProven { reason }) => {
+                    inventory = SessionExecutionOperationInventory::NotProven { reason };
+                }
+            }
+        }
+    }
     Observation::EffectsClosed {
+        operation_inventory: Some(inventory),
         preparation: original_preparation(session),
         operation_footprint: response_only.then_some(
             awaken_session_execution_contract::SessionExecutionOperationFootprint::ResponseOnly,
@@ -368,6 +506,7 @@ mod tests {
         closures: Option<Vec<AttemptClosureEvent>>,
         calls: AtomicUsize,
         unavailable: AtomicBool,
+        on_closure_read: Option<Arc<dyn Fn() + Send + Sync>>,
     }
     #[async_trait::async_trait]
     impl awaken_dispatch_contract::DispatchOperationalFeed for RecoverySource {
@@ -412,6 +551,9 @@ mod tests {
             awaken_dispatch_contract::AttemptClosurePage,
             awaken_dispatch_contract::DispatchError,
         > {
+            if let Some(hook) = &self.on_closure_read {
+                hook();
+            }
             let records = self.closures.as_ref().ok_or_else(|| {
                 awaken_dispatch_contract::DispatchError::Unavailable("fixture outage".into())
             })?;
@@ -817,6 +959,159 @@ mod tests {
         }
     }
 
+    #[test]
+    fn operation_inventory_retains_original_calls_without_asserting_effects_or_stop() {
+        use awaken_agent_contract::agent::state::{Action, Command, StateKey};
+        use awaken_agent_contract::agent::{
+            content::ContentBlock,
+            message::{Id, Message, Role},
+        };
+        use awaken_runtime_contract::attempt_termination::{
+            ActiveNativeAttemptCoverage, NativeAttemptCoverage,
+        };
+        use awaken_runtime_contract::model_operation::{
+            ActiveModelOperation, ModelEffectScope, ModelOperation,
+        };
+        use awaken_runtime_contract::resolved::ModelBinding;
+        use awaken_runtime_contract::tool::{ToolCall, ToolRecoveryPolicy};
+        use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatch};
+        // Cause/effect table: I0 Requested before message -> retain original id;
+        // I1 Executing then logical clear -> same inventory, never stop evidence;
+        // I2 missing Requested prefix, I4 malformed history, I5 clear-only ->
+        // unproven. I3 changed command -> identity failure. I6 missing native
+        // coverage -> incomplete. I7 opaque model -> incomplete: provider-hosted
+        // effects cannot be inventoried through the native ToolBatch journal.
+        // I8 transcript without batch -> incomplete; I9 exact transcript joins;
+        // I10 changed transcript -> mismatch. Arguments never cross this view.
+        for rule in 0..=10 {
+            let run = RunId("run".into());
+            let bind = |mut command: Command| {
+                command.run_id = Some(run.clone());
+                command
+            };
+            let marker = bind(ActiveNativeAttemptCoverage::write(
+                &NativeAttemptCoverage::JournalledV1,
+            ));
+            let call = ToolCall {
+                call_id: "call".into(),
+                tool_id: "original-tool".into(),
+                arguments: serde_json::json!({"body":"never-project-this-body"}),
+            };
+            let mut batch = ToolBatch::for_step(
+                run.clone(),
+                1,
+                [(call.clone(), ToolRecoveryPolicy::default())],
+            )
+            .unwrap();
+            let expected = batch.operation_id("call");
+            let mut snapshot = recovery_snapshot(
+                "thread",
+                vec![RunRecord {
+                    id: run.clone(),
+                    thread_id: ThreadId("thread".into()),
+                    state: RunState::Ended(EndCause::Indeterminate),
+                }],
+                vec![],
+                vec![],
+            );
+            snapshot.state = vec![marker, bind(ActiveToolBatch::write(&Some(batch.clone())))];
+            snapshot.state_commit_cursors = vec![1, 2];
+            match rule {
+                1 => {
+                    batch.mark_executing("call").unwrap();
+                    snapshot
+                        .state
+                        .push(bind(ActiveToolBatch::write(&Some(batch.clone()))));
+                    snapshot.state.push(bind(ActiveToolBatch::write(&None)));
+                    snapshot.state_commit_cursors.extend([3, 4]);
+                    assert!(
+                        crate::NativeAttemptFootprint::decode_for_run(&snapshot, &run).is_err(),
+                        "I1 clear still cannot prove physical closure"
+                    );
+                }
+                2 => {
+                    batch.mark_executing("call").unwrap();
+                    snapshot.state[1] = bind(ActiveToolBatch::write(&Some(batch.clone())));
+                }
+                3 => {
+                    let mut changed = call.clone();
+                    changed.arguments = serde_json::json!({"changed":true});
+                    let changed = ToolBatch::for_step(
+                        run.clone(),
+                        1,
+                        [(changed, ToolRecoveryPolicy::default())],
+                    )
+                    .unwrap();
+                    snapshot
+                        .state
+                        .push(bind(ActiveToolBatch::write(&Some(changed))));
+                    snapshot.state_commit_cursors.push(3);
+                }
+                4 => snapshot.state[1].action = Action::Set(serde_json::json!({"malformed":true})),
+                5 => snapshot.state[1] = bind(ActiveToolBatch::write(&None)),
+                6 => {
+                    snapshot.state.remove(0);
+                    snapshot.state_commit_cursors.remove(0);
+                }
+                7 => {
+                    let mut model = ModelOperation::next(
+                        None,
+                        ModelBinding::parse("provider", "model", "genai").unwrap(),
+                    )
+                    .unwrap();
+                    model.effect_scope = ModelEffectScope::Opaque;
+                    snapshot
+                        .state
+                        .insert(1, bind(ActiveModelOperation::write(&Some(model))));
+                    snapshot.state_commit_cursors = vec![1, 2, 3];
+                }
+                8..=10 => {
+                    if rule == 8 {
+                        snapshot.state.pop();
+                        snapshot.state_commit_cursors.pop();
+                    }
+                    snapshot.messages.push(Message::new(
+                        Id::assistant(&run, 1),
+                        Role::Assistant,
+                        vec![ContentBlock::ToolUse {
+                            id: call.call_id.clone(),
+                            name: call.tool_id.clone(),
+                            input: if rule == 10 {
+                                serde_json::json!({"changed":true})
+                            } else {
+                                call.arguments.clone()
+                            },
+                        }],
+                    ));
+                    snapshot.message_commit_cursors.push(2);
+                }
+                _ => {}
+            }
+            let observed = run_operation_inventory(&snapshot, &run);
+            if matches!(rule, 0 | 1 | 9) {
+                let inventory = observed.unwrap();
+                let encoded = serde_json::to_string(&inventory).unwrap();
+                assert!(
+                    !encoded.contains("never-project-this-body"),
+                    "I0/I1/I9 no argument projection"
+                );
+                let SessionExecutionOperationInventory::Recorded { tools } = inventory else {
+                    panic!("I{rule} expected recorded inventory")
+                };
+                assert_eq!(tools.len(), 1);
+                assert_eq!(tools[0].operation_id, expected);
+                assert_eq!(tools[0].tool_id, call.tool_id);
+            } else {
+                let reason = match rule {
+                    2 | 5 => Gap::HistoryMissing,
+                    6 | 7 | 8 => Gap::InventoryIncomplete,
+                    _ => Gap::IdentityMismatch,
+                };
+                assert_eq!(observed, Err(reason), "I{rule}");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn terminal_recovery_requires_every_frozen_thread_and_original_attempt() {
         use awaken_dispatch_contract::dispatch::PhysicalAttempt;
@@ -837,7 +1132,11 @@ mod tests {
         // R10 every member has original response-only/no-tool coverage ->
         // optional footprint. R11 one opaque child -> closure still truthful,
         // but no scope-wide no-effects footprint may borrow the root's proof.
-        for rule in 1..=11 {
+        // R12 an admitted Run missing from an otherwise present snapshot is
+        // incomplete, never vacuously response-only. R13 a tool committed just
+        // before the closure read returns must be included in inventory and
+        // prevent a borrowed response-only footprint. Cleanup remains Requested.
+        for rule in 1..=13 {
             let id = SessionId::from(format!("recovery-scope-{rule}"));
             let child = ThreadId(format!("{}-child", id.as_str()));
             let root_run = RunId(format!("{}-root-run", id.as_str()));
@@ -904,6 +1203,9 @@ mod tests {
                     snapshot.state = vec![marker, entry];
                     snapshot.state_commit_cursors = vec![1, 2];
                 }
+                if rule == 12 && thread.0 == id.as_str() {
+                    snapshot.runs.clear();
+                }
                 runtime.set_recovery_snapshot(id.as_str(), &thread, snapshot);
             }
             let mut events = Vec::new();
@@ -958,11 +1260,43 @@ mod tests {
                 closures: Some(closures),
                 calls: 0.into(),
                 unavailable: (rule == 7).into(),
+                on_closure_read: (rule == 13).then(|| {
+                    let runtime = runtime.clone();
+                    let root = id.as_str().to_owned();
+                    Arc::new(move || {
+                        use awaken_agent_contract::agent::state::StateKey;
+                        use awaken_runtime_contract::tool::{ToolCall, ToolRecoveryPolicy};
+                        use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatch};
+                        let mut snapshots = runtime.0.lock().unwrap();
+                        let snapshot = snapshots.get_mut(&root).unwrap();
+                        if snapshot.state.len() == 2 {
+                            let run = snapshot.runs[0].id.clone();
+                            let batch = ToolBatch::for_step(
+                                run.clone(),
+                                1,
+                                [(
+                                    ToolCall {
+                                        call_id: "late".into(),
+                                        tool_id: "original-tool".into(),
+                                        arguments: serde_json::json!({}),
+                                    },
+                                    ToolRecoveryPolicy::default(),
+                                )],
+                            )
+                            .unwrap();
+                            let mut command = ActiveToolBatch::write(&Some(batch));
+                            command.run_id = Some(run);
+                            snapshot.state.push(command);
+                            snapshot.state_commit_cursors.push(3);
+                        }
+                    }) as Arc<dyn Fn() + Send + Sync>
+                }),
             });
             let observed = read_execution_recovery(feed.as_ref(), runtime.as_ref(), &session).await;
-            if matches!(rule, 1 | 10 | 11) {
+            if matches!(rule, 1 | 10 | 11 | 13) {
                 let Observation::EffectsClosed {
                     operation_footprint,
+                    operation_inventory,
                     runtime_commit_cursor,
                     thread_ids,
                     closure_records,
@@ -972,6 +1306,19 @@ mod tests {
                     panic!("R1 complete scope is closed");
                 };
                 assert_eq!(runtime_commit_cursor, 41, "R1 original scope fence");
+                if rule == 13 {
+                    let Some(SessionExecutionOperationInventory::Recorded { tools, .. }) =
+                        operation_inventory
+                    else {
+                        panic!("R13 late operation inventory must remain available");
+                    };
+                    assert_eq!(
+                        tools.len(),
+                        1,
+                        "R13 no lost operation at the closure boundary"
+                    );
+                    assert_eq!(tools[0].tool_id, "original-tool");
+                }
                 assert_eq!(operation_footprint, (rule == 10).then_some(awaken_session_execution_contract::SessionExecutionOperationFootprint::ResponseOnly), "R10/R11 complete original scope only");
                 assert_eq!(thread_ids.len(), 2, "R1 includes child");
                 assert_eq!(
@@ -988,7 +1335,7 @@ mod tests {
                     2 => Gap::NotTerminal,
                     3 => Gap::ScopeNotFrozen,
                     4 => Gap::HistoryMissing,
-                    5 => Gap::InventoryIncomplete,
+                    5 | 12 => Gap::InventoryIncomplete,
                     6 => Gap::AttemptStillOpen,
                     7 => Gap::HistoryUnavailable,
                     _ => Gap::IdentityMismatch,
