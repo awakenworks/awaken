@@ -874,9 +874,7 @@ impl DeploymentSessionEnvironment for SessionApplication {
         workspace_id: &str,
         agent_id: &str,
     ) -> Option<String> {
-        self.config_source
-            .as_ref()
-            .and_then(|source| source.unavailable_delegate_in(workspace_id, agent_id))
+        self.queries.unavailable_delegate(workspace_id, agent_id)
     }
 }
 

@@ -379,7 +379,6 @@ pub struct SessionApplication {
     mcp_realizer: Arc<dyn McpAttachmentRealizer>,
     credentials: Arc<crate::SessionCredentials>,
     environments: SessionEnvironments,
-    config_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
     model_publication_resolver:
         Option<Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>>,
     resource_registry: Option<Arc<dyn awaken_resource_contract::ResourceRegistry>>,
@@ -790,8 +789,7 @@ impl SessionApplication {
         &mut self,
         source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     ) {
-        self.fixture_queries().set_profiles(source.clone());
-        self.config_source = Some(source);
+        self.fixture_queries().set_profiles(source);
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -886,18 +884,15 @@ impl SessionApplication {
         }
 
         let mut models = std::collections::BTreeSet::new();
-        let source = self.config_source.as_ref();
         let root_snapshot = root_profile
             .filter(|profile| profile.source_revision > 0)
             .map(|profile| {
-                source
-                    .and_then(|source| {
-                        source.executable_snapshot_at_revision_in(
-                            workspace_id,
-                            root_agent_id,
-                            profile.source_revision,
-                        )
-                    })
+                self.queries
+                    .executable_snapshot_at_revision(
+                        workspace_id,
+                        root_agent_id,
+                        profile.source_revision,
+                    )
                     .ok_or_else(|| {
                         RunError::bad_request(format!(
                             "budget_price_roster_unavailable: Agent `{root_agent_id}` revision {} has no executable publication",
@@ -956,11 +951,11 @@ impl SessionApplication {
         if root_profile.delegates.is_empty() {
             return Ok(models.into_iter().collect());
         }
-        let source = source.ok_or_else(|| {
-            RunError::bad_request(
+        if !self.queries.has_agent_profile_source() {
+            return Err(RunError::bad_request(
                 "budget_price_roster_unavailable: Agent publication source is unavailable",
-            )
-        })?;
+            ));
+        }
         for delegate in &root_profile.delegates {
             let agent_id = &delegate.agent_id;
             let revision = delegate.source_revision.ok_or_else(|| {
@@ -968,8 +963,9 @@ impl SessionApplication {
                     "budget_price_roster_unavailable: Agent `{agent_id}` has no exact publication revision"
                 ))
             })?;
-            let snapshot = source
-                .executable_snapshot_at_revision_in(workspace_id, agent_id, revision)
+            let snapshot = self
+                .queries
+                .executable_snapshot_at_revision(workspace_id, agent_id, revision)
                 .ok_or_else(|| {
                     RunError::bad_request(format!(
                         "budget_price_roster_unavailable: Agent `{agent_id}` revision {revision} has no executable publication"

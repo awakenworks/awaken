@@ -77,13 +77,11 @@ impl SessionApplication {
         );
         let agent_publication = match baseline.agent_revision {
             Some(source_revision) => {
-                let snapshot = self.config_source.as_ref().and_then(|source| {
-                    source.executable_snapshot_at_revision_in(
-                        &owner_scope,
-                        &baseline.agent_id,
-                        source_revision,
-                    )
-                });
+                let snapshot = self.queries.executable_snapshot_at_revision(
+                    &owner_scope,
+                    &baseline.agent_id,
+                    source_revision,
+                );
                 match awaken_session_realization_contract::frozen_agent_publication_decision(
                     &baseline,
                     snapshot.as_ref(),

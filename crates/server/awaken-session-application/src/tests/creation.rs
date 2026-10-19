@@ -2926,3 +2926,5 @@ impl awaken_resource_contract::MemoryInvalidator for RecordingMemoryInvalidator 
             .push((store.into(), path.into()));
     }
 }
+
+mod selected_profile_port;

@@ -50,6 +50,31 @@ impl SessionQueries {
             })
     }
 
+    /// Read the complete exact publication through the selected profile source.
+    /// A profile cannot stand in for this snapshot, and an absent exact value
+    /// never falls through to the mutable current publication.
+    pub(crate) fn executable_snapshot_at_revision(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<awaken_runtime_contract::ExecutableAgentSnapshot> {
+        self.profiles.as_ref().and_then(|source| {
+            source.executable_snapshot_at_revision_in(workspace_id, agent_id, source_revision)
+        })
+    }
+
+    /// Preserve the selected source's own delegate-availability implementation.
+    pub(crate) fn unavailable_delegate(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<String> {
+        self.profiles
+            .as_ref()
+            .and_then(|source| source.unavailable_delegate_in(workspace_id, agent_id))
+    }
+
     pub(crate) fn capabilities_for(&self, thread: &str) -> Result<AgentCapabilities, RunError> {
         self.capabilities.as_ref().capabilities_for(thread)
     }

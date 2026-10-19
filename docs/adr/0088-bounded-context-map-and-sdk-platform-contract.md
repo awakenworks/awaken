@@ -602,3 +602,28 @@ The bounded two-Cloud-tree source search found no named callers; Flow's known
 subscription adapter uses the unchanged Runtime contract, not these App entries.
 Other concrete App callers must select the existing narrow role when upgrading
 that pin. This source search is not unknown-downstream compile qualification.
+
+
+## Implementation note 2026-10-20: one selected Session profile port
+
+`SessionQueries` is the single holder of the constructor-selected
+`ExecutableAgentProfileSource`. `SessionApplication` no longer retains a second
+copy or synchronizes two selections. The existing Builder transfers the same
+handle once; its repository, Runtime projection/capability roles and Clock
+selection are unchanged. Profile, complete executable snapshot and custom
+delegate-availability operations remain distinct calls to that source.
+
+The application keeps its original budget-roster, frozen projection,
+coordination and admission algorithms. Their source-presence refusals and exact
+revision/error/effect ordering remain in place. Queries returns values, never
+a source capability getter; it creates no publication or cache. The selected
+handle may resolve its underlying control source on each call, as the existing
+Flow handle does, so construction never captures its current catalog or value.
+
+The existing `set_config_source` signature remains under its original
+`cfg(any(test, feature = "test-support"))` boundary and exclusive-Queries check.
+It selects that one component only; this does not introduce a production late
+replacement operation. Flow's older pinned constructor still calls that entry,
+so source inspection alone does not qualify a future downstream pin upgrade.
+No public Session business entry, protocol wire, durable transaction or SDK
+release surface changes in this bounded dependency-ownership cut.
