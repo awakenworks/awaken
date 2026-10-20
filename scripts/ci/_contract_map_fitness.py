@@ -855,7 +855,7 @@ def _selftest_baseline_snapshot() -> None:
             assert len(acquired) == len(measured), "T7 contexts and counts share one corpus acquisition"
             return status, before, after, reads, measured, errors.getvalue()
 
-    modes = ([], ["--check"], ["--tighten"], ["--write-baseline"], ["--write-baseline", "--reason", "reviewed"])
+    modes = ([], ["--check"], ["--tighten"], ["--write-baseline"], ["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")])
     # Prepare a normalized, hard-valid record through the existing writer.
     # Partial fixture records otherwise legitimately gain its empty rule slots
     # and owning comment; that is not a change to the equal-count policy.
@@ -879,7 +879,7 @@ def _selftest_baseline_snapshot() -> None:
             assert status == 1 and before == after, "D10d original shared fall requires recording"
         else:
             assert status == 0 and json.loads(after)["fat-trait"] == {"Wide": 13}, "D10d original fall records"
-    for argv in (["--write-baseline"], ["--write-baseline", "--reason", "first record"]):
+    for argv in (["--write-baseline"], ["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("first record")]):
         for count, expected in ((0, 0), (13, 1)):
             status, before, after, reads, measured, _ = invoke(argv, None, held, count)
             assert status == expected and before is None and not reads and measured, "D10e absent record hard authority"
@@ -895,7 +895,7 @@ def _selftest_baseline_snapshot() -> None:
         status, before, after, reads, measured, errors = invoke(argv, target_map=ambiguous)
         assert status == 1 and before == after and len(reads) == len(measured) == 1 \
             and "one final owner" in errors, "T5 CLI writers cannot admit duplicate merge ownership"
-    for argv in (["--write-baseline"], ["--write-baseline", "--reason", "first record"]):
+    for argv in (["--write-baseline"], ["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("first record")]):
         status, before, after, _reads, _measured, errors = invoke(argv, None, count=0, target_map=ambiguous)
         assert status == 1 and before is None and after is None and "one final owner" in errors, \
             "T5 CLI first record cannot admit duplicate merge ownership"

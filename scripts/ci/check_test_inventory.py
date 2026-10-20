@@ -307,7 +307,7 @@ def _selftest_cli_snapshot() -> None:
                 assert calls == (["recorded"] if held is not None else []) + ["current", "ledger"], "I1 shared IO precedes measurement"
             return status, before, after, output.getvalue(), calls, errors.getvalue()
 
-    writes = (["--write-baseline"], ["--write-baseline", "--reason", "reviewed"])
+    writes = (["--write-baseline"], ["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")])
     modes = ([], ["--check"], ["--tighten"], *writes)
     for argv in modes:
         status, before, after, output, _, _ = invoke(argv)

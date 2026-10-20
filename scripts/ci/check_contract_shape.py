@@ -813,9 +813,9 @@ def _selftest_cli() -> None:
     assert status == 1 and before == after and not stage_calls, "SCLI2 growth never stages"
     status, before, after, _, _ = invoke(["--write-baseline"], 3)
     assert status == 1 and before == after, "SCLI3 growth needs reason"
-    status, _, after, _, _ = invoke(["--write-baseline", "--reason", "reviewed"], 3)
+    status, _, after, _, _ = invoke(["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")], 3)
     document = json.loads(after)
-    assert status == 0 and document["crates"]["c"]["growth_reasons"]["catch_all_errors"] == "first; then: reviewed", \
+    assert status == 0 and document["crates"]["c"]["growth_reasons"]["catch_all_errors"] == "first; then: " + _architecture_ratchet._test_growth_reason("reviewed"), \
         "SCLI3 review history"
     assert document["crates"]["c"]["future-counter"] == 8 and document["crates"]["c"]["growth_reasons"]["future-counter"] == foreign, \
         "SCLI3 explicit write preserves foreign metadata/reasons"
@@ -832,7 +832,7 @@ def _selftest_cli() -> None:
         assert status == 1 and before == after, "SCLI5 initialization is not check/tighten authorization"
     status, before, after, _, _ = invoke(["--write-baseline"], 3, empty, errors=("cycle / wrong kind",))
     assert status == 1 and before == after, "SCLI5 initial recording cannot waive hard rules"
-    for argv in (["--check"], ["--tighten", "--stage"], ["--write-baseline", "--reason", "reviewed"]):
+    for argv in (["--check"], ["--tighten", "--stage"], ["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")]):
         stage_calls.clear()
         status, before, after, _, _ = invoke(argv, 1, errors=("cycle / wrong kind",))
         assert status == 1 and before == after and not stage_calls, "SCLI3 hard rules cannot be waived"
@@ -840,7 +840,7 @@ def _selftest_cli() -> None:
         status, before, after, observed, _ = invoke(argv, baseline=None)
         assert status == 1 and before is None and after is None and not observed, "SCLI4 missing baseline"
     for argv in (["--check", "--tighten"], ["--self-test", "--write-baseline"], ["--stage"],
-                 ["--write-baseline", "--stage", "--reason", "reviewed"], ["--tighten", "--reason", "x"],
+                 ["--write-baseline", "--stage", "--reason", _architecture_ratchet._test_growth_reason("reviewed")], ["--tighten", "--reason", "x"],
                  ["--write-baseline", "--reason", "   "], ["--self-test", "--report"]):
         status, before, after, observed, _ = invoke(argv)
         assert status == 2 and before == after and not observed, f"SCLI4 {argv}"
