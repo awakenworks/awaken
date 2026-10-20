@@ -197,6 +197,8 @@ echo "Rust stage evidence: $rust_step_evidence"
 
 step "dependency-sources" "use an allowlisted HTTPS Git repository and pin a full 40-character rev" \
   python3 scripts/ci/check_dependency_sources.py
+step "trust-roots" "keep the immutable compatibility shim connected to patched certificate data" \
+  python3 scripts/ci/check_trust_roots.py
 step "authority-arithmetic" "replace lossy or saturating authority arithmetic with checked conversions" \
   python3 scripts/ci/check_authority_arithmetic.py
 step "feature-matrix" "add the crate to [workspace.members] or register the feature's substitute verifier" \

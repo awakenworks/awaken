@@ -60,7 +60,7 @@ pre-commit:
 
     hook-bootstrap:
       # >>> generated glob from _lefthook_fitness.py INPUT_GLOBS — do not edit
-      glob: "{lefthook.yml,scripts/ci/_lefthook_fitness.py,scripts/ci/_native_shell.py,scripts/ci/pre-push/qualify.sh}"
+      glob: "{lefthook.yml,scripts/ci/_lefthook_fitness.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py,scripts/ci/pre-push/qualify.sh}"
       # <<< generated glob
       run: python3 scripts/ci/_lefthook_fitness.py --self-test && python3 scripts/ci/_lefthook_fitness.py --integration-test
 
@@ -264,10 +264,10 @@ pre-commit:
     # One Rust gate owns source and boundary checks. Trigger it for checker
     # edits too; separate hook invocations would execute the same scan twice.
     rust-quick:
-      # >>> generated glob from check_sdk_consumer.py, rust_test_plan.py INPUT_GLOBS — do not edit
-      glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,apps/**,crates/**,examples/sdk-consumer/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/ci/*.py,scripts/ci/check-rust.sh,tests/**,xtask/**}"
+      # >>> generated glob from _native_shell.py, check_sdk_consumer.py, check_trust_roots.py, rust_test_plan.py INPUT_GLOBS — do not edit
+      glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,apps/**,crates/**,deny.toml,examples/sdk-consumer/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/ci/*.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py,scripts/ci/check-rust.sh,scripts/ci/check_trust_roots.py,tests/**,xtask/**}"
       # <<< generated glob
-      run: scripts/ci/check-rust.sh --quick
+      run: python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --quick
 
     # An observation time is a fact its owner observed, not a value the code
     # chose. No date literal may reach a `*_at`-shaped field outside tests, and
@@ -450,7 +450,7 @@ push-qualification:
     # coverage ledger check: the two ways main has gone red after a green
     # pre-commit, refused here before the push instead of at the full gate.
     rust-quick:
-      run: scripts/ci/check-rust.sh --push
+      run: python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --push
 
     # Public snapshots are the review authority for contract/facade changes.
     # Run the existing fail-closed gate; do not duplicate its crate inventory,

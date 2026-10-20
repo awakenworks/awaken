@@ -271,8 +271,16 @@ AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-kubernetes \
 # CapacityUnavailable, leave no Pod behind, and succeed once there is room.
 AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-kubernetes \
   --test k8s_capacity_e2e -- --nocapture --test-threads=1
-AWAKEN_K8S_E2E=1 cargo test -p awaken-session-executor --features k8s-tests --lib \
-  k8s_live_pvc_initialization_is_readable_and_reused -- --nocapture
+# The PVC initializer now belongs to Session realization. A stale package or
+# filter can report success with zero tests, so verify the exact current target
+# before asking the existing disposable cluster to run it.
+PVC_TEST=cache_volume::tests::k8s_live_pvc_initialization_is_readable_and_reused
+PVC_TESTS=$(cargo test --locked -p awaken-session-realization --features k8s-tests --lib \
+  "$PVC_TEST" -- --list --exact)
+grep -Fqx "$PVC_TEST: test" <<<"$PVC_TESTS" \
+  || { echo "exact live PVC qualification test was not selected" >&2; exit 1; }
+AWAKEN_K8S_E2E=1 cargo test --locked -p awaken-session-realization --features k8s-tests --lib \
+  "$PVC_TEST" -- --exact --nocapture
 # Pod-bound Worker identity and independent stop are qualified by the existing
 # distributed-control k3d gate, which first verifies exact test selection.
 

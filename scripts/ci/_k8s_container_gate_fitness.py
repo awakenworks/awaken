@@ -27,6 +27,15 @@ def k8s_container_gate_errors(gate: str) -> list[str]:
         errors.append(
             "Kubernetes container gate duplicates the distributed-control Worker stop test"
         )
+    pvc_command = r'cargo test --locked -p awaken-session-realization --features k8s-tests --lib\s*\\?\s*\n\s*"\$PVC_TEST" -- '
+    if (
+        'PVC_TEST=cache_volume::tests::k8s_live_pvc_initialization_is_readable_and_reused' not in gate
+        or not re.search(r'PVC_TESTS=\$\(' + pvc_command + r'--list --exact\)', gate)
+        or 'grep -Fqx "$PVC_TEST: test" <<<"$PVC_TESTS"' not in gate
+        or '|| { echo "exact live PVC qualification test was not selected" >&2; exit 1; }' not in gate
+        or not re.search(r'^AWAKEN_K8S_E2E=1 ' + pvc_command + r'--exact --nocapture$', gate, re.MULTILINE)
+    ):
+        errors.append("Kubernetes gate must select and execute the exact live PVC test in its current owner")
     return errors
 
 
@@ -56,3 +65,16 @@ def self_test(gate: str) -> None:
         + "\ncargo test -p awaken-cli --features container-k8s --lib "
         "real_pod_identity_survives_reopen_and_independent_stop_without_false_retirement\n"
     ), "K3 stale CLI Worker-stop filter must not qualify the container gate"
+
+    # K4: a moved owner, stale filter, omitted feature, disabled substrate or
+    # absent list assertion must reject zero-selected/soft-skipped evidence.
+    for mutation in (
+        gate.replace('-p awaken-session-realization', '-p awaken-session-executor'),
+        gate.replace('PVC_TEST=cache_volume::tests::', 'PVC_TEST=old::tests::', 1),
+        gate.replace('--features k8s-tests --lib', '--lib'),
+        gate.replace('--list --exact)', '--list)'),
+        gate.replace('grep -Fqx "$PVC_TEST: test"', 'true # omitted selection'),
+        gate.replace('AWAKEN_K8S_E2E=1 cargo test --locked -p awaken-session-realization',
+                     'AWAKEN_K8S_E2E=0 cargo test --locked -p awaken-session-realization'),
+    ):
+        assert k8s_container_gate_errors(mutation), "K4 live PVC proof cannot silently disappear"
