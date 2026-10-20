@@ -77,7 +77,7 @@ mod tests {
             if let Ok(fence) = fence {
                 assert_eq!(
                     fence,
-                    lease.sandbox_effect_fence(&operation.effect_id).unwrap(),
+                    lease.sandbox_effect_fence(operation.effect_id()).unwrap(),
                     "{rule}/no rewritten expiry or identity"
                 );
             }
@@ -159,7 +159,7 @@ mod tests {
             host.realization_executor
                 .continuation_effect_fence(thread, &operation)
                 .unwrap(),
-            renewed.sandbox_effect_fence(&operation.effect_id).unwrap(),
+            renewed.sandbox_effect_fence(operation.effect_id()).unwrap(),
             "P2 ordinary operation observes same-generation renewal"
         );
         assert_eq!(

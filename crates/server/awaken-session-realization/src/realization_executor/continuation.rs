@@ -61,7 +61,7 @@ impl RealizationExecutor {
         thread: &str,
         operation: &awaken_session_state_contract::SessionEnvironmentOperation,
     ) -> Result<awaken_provisioning_contract::SandboxEffectFence, RunError> {
-        let asserted = operation.realization.as_ref().ok_or_else(|| {
+        let asserted = operation.realization().ok_or_else(|| {
             RunError::unavailable_classified(
                 "session_environment_continuation_unfenced",
                 "Session Environment continuation has no realization fence",
@@ -73,7 +73,7 @@ impl RealizationExecutor {
             "session_environment_continuation_generation_stale",
         )?;
         current
-            .sandbox_effect_fence(&operation.effect_id)
+            .sandbox_effect_fence(operation.effect_id())
             .map_err(|error| {
                 RunError::from(crate::realization_error::RealizationError::from(error))
             })
@@ -367,7 +367,7 @@ impl RealizationExecutor {
             .map_err(awaken_session_types::RunError::from)?;
         self.continuation_source_disposal_authorization(thread, disposal)?;
         Ok(awaken_session_state_contract::SourceDisposedReceipt {
-            effect_id: operation.effect_id.clone(),
+            effect_id: operation.effect_id().to_owned(),
             generation_id: generation.id().to_owned(),
             source_binding: source_binding.to_string(),
             terminated: true,

@@ -18,6 +18,30 @@ use super::{
 use crate::SessionId;
 
 impl SessionEnvironmentOperation {
+    /// The exact immutable effect identity selected by the original constructor.
+    #[must_use]
+    pub fn effect_id(&self) -> &str {
+        &self.effect_id
+    }
+
+    /// The frozen driving activity coordinate of this operation.
+    #[must_use]
+    pub const fn activity_epoch(&self) -> u64 {
+        self.activity_epoch
+    }
+
+    /// The first operation time; zero retains the original legacy meaning.
+    #[must_use]
+    pub const fn started_at_unix_ms(&self) -> u64 {
+        self.started_at_unix_ms
+    }
+
+    /// The original exact lease, including its stored expiry; no mutable view.
+    #[must_use]
+    pub const fn realization(&self) -> Option<&crate::SessionRealizationLease> {
+        self.realization.as_ref()
+    }
+
     /// Construct the complete workspace-bound operation identity. The writer
     /// binds every immutable generation, realization, and optional checkpoint
     /// axis; already-durable legacy ids continue to replay opaquely.

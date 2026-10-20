@@ -85,7 +85,6 @@
     "SessionCleanupDisposalCommand": 5,
     "SessionCleanupDisposalReceipt": 6,
     "SessionCleanupPreparation": 3,
-    "SessionEnvironmentOperation": 4,
     "SessionEnvironmentReceipt": 8,
     "SessionExecutionTransitionError": 2,
     "SessionIdempotencyReceipt": 2,

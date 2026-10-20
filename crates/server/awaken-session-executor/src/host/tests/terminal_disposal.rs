@@ -549,7 +549,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             environment_fingerprint: generation.environment_fingerprint().to_owned(),
             base_image_fingerprint: generation.base_image_fingerprint().to_owned(),
             excluded_mounts: Vec::new(),
-            suspend_effect_id: suspend.effect_id,
+            suspend_effect_id: suspend.effect_id().to_owned(),
         };
         let restore = awaken_session_state_contract::SessionEnvironmentOperation::new(
             "terminal-workspace",
@@ -1618,7 +1618,14 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
                         else {
                             unreachable!("fixture is checkpoint source retirement");
                         };
-                        operation.effect_id.push_str("-other");
+                        // Original replaced-source row: change only the stored
+                        // operation id, keeping the old exact owner assertions.
+                        let mut wire =
+                            serde_json::to_value(&*operation).expect("source operation fixture");
+                        wire["effect_id"] =
+                            serde_json::json!(format!("{}-other", operation.effect_id()));
+                        *operation = serde_json::from_value(wire)
+                            .expect("replaced source operation fixture");
                     }
                     "source-generation-replaced" => {
                         let RetiringEnvironmentOwner::Bound(owned) = &mut retained.owned else {
@@ -1716,7 +1723,7 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
             "{rule}"
         );
         if let Ok(receipt) = result {
-            assert_eq!(receipt.effect_id, disposal.operation().effect_id);
+            assert_eq!(receipt.effect_id, disposal.operation().effect_id());
             assert_eq!(receipt.source_binding, disposal.source_binding());
             assert!(receipt.terminated);
             assert!(

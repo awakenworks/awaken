@@ -633,14 +633,14 @@ impl crate::environment_holding::EnvironmentHolding {
         // than deriving a competing effect identity.
         let authorized = self
             .sessions
-            .read_realization(thread, |r| match operation.realization.as_ref() {
+            .read_realization(thread, |r| match operation.realization() {
                 Some(asserted) => r.execution().authority.remaining_for(asserted).is_some(),
                 None => matches!(
                     r.execution().authority,
                     crate::realization_state::SessionRealizationAuthority::Uninstalled
                 ),
             })?
-            .unwrap_or(operation.realization.is_none());
+            .unwrap_or(operation.realization().is_none());
         if !authorized {
             return Err(RealizationError::invariant(
                 "checkpoint continuation operation lost its exact realization lease",

@@ -210,11 +210,12 @@ impl ClaimFencedArtifactPublisher {
                         .into(),
             });
         }
-        let lease = operation.realization.as_ref().ok_or_else(|| {
-            ArtifactPublicationError::InvalidRequest {
-                detail: "checkpoint source-release Artifact has no realization lease".into(),
-            }
-        })?;
+        let lease =
+            operation
+                .realization()
+                .ok_or_else(|| ArtifactPublicationError::InvalidRequest {
+                    detail: "checkpoint source-release Artifact has no realization lease".into(),
+                })?;
         let control = self.checkpoint_control_for_live_lease(lease, "checkpoint source-release")?;
         let authorized_workspace = control
             .authorize_checkpoint_release_artifact_effect(session_id, operation)
@@ -916,7 +917,11 @@ mod tests {
                 .unwrap();
             }
             if cause == "changed" {
-                operation.effect_id.push_str("-changed");
+                // Existing changed-authority row: keep the same corrupted wire,
+                // without recomputing the operation identity through `new`.
+                let mut wire = serde_json::to_value(&operation).expect("operation fixture");
+                wire["effect_id"] = serde_json::json!(format!("{}-changed", operation.effect_id()));
+                operation = serde_json::from_value(wire).expect("changed operation fixture");
             }
             let fence = ResourceOperationFence::CheckpointRelease(operation);
             let workspace = if cause == "workspace" {

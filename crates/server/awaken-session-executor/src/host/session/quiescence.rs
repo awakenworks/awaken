@@ -112,9 +112,9 @@ impl crate::RunAssembly {
             .modify_run(thread, |run| run.context = None)
             .map_err(crate::installed_session::registry_run_error)?;
         Ok(awaken_session_state_contract::QuiescenceReceipt {
-            effect_id: operation.effect_id.clone(),
+            effect_id: operation.effect_id().to_owned(),
             generation_id: generation.id().to_owned(),
-            activity_epoch: operation.activity_epoch,
+            activity_epoch: operation.activity_epoch(),
             live_environment_effects: 0,
             mcp_generations: mcp.generations,
         })
