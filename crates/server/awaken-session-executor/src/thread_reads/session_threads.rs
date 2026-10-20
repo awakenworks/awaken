@@ -548,7 +548,7 @@ mod tests {
             }
             if child {
                 assert!(
-                    !crate::RuntimeAuthority::durable_thread_exists(
+                    !awaken_dispatch_erasure::RuntimeAuthority::durable_thread_exists(
                         authority.as_ref(),
                         &thread_id.0
                     )

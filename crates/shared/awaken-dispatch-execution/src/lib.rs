@@ -61,7 +61,7 @@ pub use reconciliation::TerminalReconciliationScan;
 pub use recovery_projection::{RecoveryProjection, RecoveryProjectionError};
 pub use service::{DispatchService, DispatchServiceConfig};
 pub use session_admission::SessionRunAdmissionObserver;
-pub use wake::{DispatchHint, LocalWakeSignal, WakeSignal, publish_dispatch_hint};
+pub use wake::{DispatchHint, LocalWakeSignal, publish_dispatch_hint};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker, claim_bound_ownership_verifier};
 pub use worker_context::{ClaimedModelRequestGateFactory, InferenceMaterializerFn};
 pub use worker_evidence::{

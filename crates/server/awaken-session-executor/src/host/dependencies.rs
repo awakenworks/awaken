@@ -206,7 +206,7 @@ impl SessionExecutorBuilder {
         content: capability::WorkerContentAdapters,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
         process: SessionExecutionProcess,
-        runtime_authority: Arc<dyn crate::RuntimeAuthority>,
+        runtime_authority: Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>,
     ) -> Self {
         select(
             llm,
@@ -234,7 +234,7 @@ impl SessionExecutorBuilder {
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
         local_workspace: impl Into<String>,
         deployment: crate::DeploymentConfig,
-        runtime_authority: Arc<dyn crate::RuntimeAuthority>,
+        runtime_authority: Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>,
     ) -> Self {
         let clock = resources.clock.clone();
         select(
@@ -327,7 +327,7 @@ impl SessionExecutorBuilder {
     /// Worker is constructed with its upstream authority instead.
     pub fn with_runtime_authority(
         mut self,
-        authority: Arc<dyn crate::RuntimeAuthority>,
+        authority: Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>,
     ) -> Result<Self, SessionExecutionError> {
         if !self.authority.hosts_session_application() {
             return Err(SessionExecutionError::bad_request(

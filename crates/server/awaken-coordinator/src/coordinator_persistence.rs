@@ -15,7 +15,7 @@ use awaken_session_executor::{DeploymentConfig, DispatchBackend, StoreKind};
 #[derive(Clone)]
 pub struct CoordinatorPersistence {
     pub worker_directory: WorkerDirectoryHandle,
-    pub runtime_authority: std::sync::Arc<dyn awaken_session_executor::RuntimeAuthority>,
+    pub runtime_authority: std::sync::Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>,
     /// Process-owned PostgreSQL pool shared by every hosted adapter that reads
     /// the Coordinator database. `None` is the explicit non-PostgreSQL case.
     pub postgres_pool: Option<sqlx::PgPool>,
@@ -107,7 +107,7 @@ pub async fn migrate_postgres_schema_with_pool(
 pub async fn init_scenario_runtime(
     deployment: &DeploymentConfig,
     clock: std::sync::Arc<dyn awaken_time::WallClock>,
-) -> Result<std::sync::Arc<dyn awaken_session_executor::RuntimeAuthority>, String> {
+) -> Result<std::sync::Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>, String> {
     if deployment.storage_dir.is_none()
         && deployment.database_url.is_none()
         && deployment.store == awaken_session_executor::StoreKind::Sqlite
@@ -130,7 +130,7 @@ pub async fn init_scenario_runtime(
         clock,
     )
     .await
-    .map(|authority| authority as std::sync::Arc<dyn awaken_session_executor::RuntimeAuthority>)
+    .map(|authority| authority as std::sync::Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>)
 }
 
 /// Open every Coordinator-owned runtime authority, applying schemas first.

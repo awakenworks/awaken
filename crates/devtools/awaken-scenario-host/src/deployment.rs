@@ -142,13 +142,13 @@ impl ScenarioPlatform {
 }
 
 static SCENARIO_RUNTIME_AUTHORITY: std::sync::OnceLock<
-    Arc<dyn awaken_session_executor::RuntimeAuthority>,
+    Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>,
 > = std::sync::OnceLock::new();
 
 /// Install the one Coordinator-owned authority selected by the scenario entry
 /// point before any router is assembled.
 pub fn install_scenario_runtime_authority(
-    authority: Arc<dyn awaken_session_executor::RuntimeAuthority>,
+    authority: Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>,
 ) -> Result<(), std::io::Error> {
     SCENARIO_RUNTIME_AUTHORITY
         .set(authority)
@@ -267,7 +267,7 @@ async fn resource_host_with_selected_runtime(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     deployment: awaken_session_executor::DeploymentConfig,
-    selected: Option<&Arc<dyn awaken_session_executor::RuntimeAuthority>>,
+    selected: Option<&Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>>,
 ) -> ScenarioPlatform {
     // The Scenario process's Resources clock.
     let clock = awaken_time::system_clock();
@@ -336,8 +336,8 @@ async fn resource_host_with_selected_runtime(
 fn select_scenario_runtime_authority(
     deployment: &awaken_session_executor::DeploymentConfig,
     clock: Arc<dyn awaken_time::WallClock>,
-    selected: Option<&Arc<dyn awaken_session_executor::RuntimeAuthority>>,
-) -> Arc<dyn awaken_session_executor::RuntimeAuthority> {
+    selected: Option<&Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>>,
+) -> Arc<dyn awaken_dispatch_erasure::RuntimeAuthority> {
     match selected {
         Some(authority) => authority.clone(),
         None => {

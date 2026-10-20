@@ -445,7 +445,7 @@ mod durable_cancellation_tests {
     struct CountingWake(AtomicUsize);
 
     #[async_trait::async_trait]
-    impl awaken_dispatch_execution::WakeSignal for CountingWake {
+    impl awaken_run_ingress_contract::WakeSignal for CountingWake {
         async fn publish(&self) -> Result<(), awaken_run_ingress_contract::DispatchError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(())

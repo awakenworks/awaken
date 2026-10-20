@@ -7,7 +7,7 @@ use std::sync::Arc;
 /// the CLI once. `private_router` is never merged into `public_router`.
 #[derive(Clone)]
 pub struct CoordinatorAuthorityHandles {
-    pub runtime_authority: Arc<dyn awaken_session_executor::RuntimeAuthority>,
+    pub runtime_authority: Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>,
     pub worker_directory: Arc<dyn awaken_worker_contract::WorkerDirectory>,
     pub sessions: Arc<dyn awaken_session_repository_contract::SessionRepository>,
     /// The one process-owned Coordinator pool. Hosted adapters and the

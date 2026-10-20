@@ -7,7 +7,8 @@
 
 use std::time::Duration;
 
-use awaken_run_ingress::{NatsWakeSignal, WakeSignal};
+use awaken_run_ingress::NatsWakeSignal;
+use awaken_run_ingress_contract::WakeSignal;
 
 fn nats_url() -> String {
     std::env::var("AWAKEN_TEST_NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string())

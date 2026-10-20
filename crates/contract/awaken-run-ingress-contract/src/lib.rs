@@ -18,7 +18,9 @@ mod dispatch_transition;
 pub mod operational;
 pub mod run_dispatch;
 mod session_run_events;
+mod wake;
 mod worker_transport;
+pub use wake::WakeSignal;
 
 pub use session_run_events::SessionRunEventPage;
 

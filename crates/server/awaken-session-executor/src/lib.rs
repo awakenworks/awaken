@@ -14,10 +14,21 @@
 //! or selects a SQL/filesystem authority Store, never owns a public protocol or
 //! domain aggregate, and never decides the deployment topology. Session resource
 //! effects are supplied by `awaken-session-realization`. Coordinator
-//! injects the sole durable [`RuntimeAuthority`]; a database-less Worker is
+//! injects the sole durable [`awaken_dispatch_erasure::RuntimeAuthority`]; a database-less Worker is
 //! constructed with an [`UpstreamAuthority`] carrying its claim-fenced
 //! transports. Product composition mounts the corresponding routers around
 //! these protocol-neutral behaviors.
+//!
+//! Declaration-owner source rules: A1/A2 the former public durable authority
+//! names are absent here; the existing contract lives in dispatch-erasure.
+//! These only test import capability, not Worker/store authorization. Original
+//! startup, HostCommit and topology tables retain the runtime decisions.
+//! ```compile_fail,E0432
+//! use awaken_session_executor::RuntimeAuthority;
+//! ```
+//! ```compile_fail,E0432
+//! use awaken_session_executor::RuntimeAuthorityError;
+//! ```
 
 mod acp_backend;
 mod acp_capability_probe;
@@ -102,8 +113,8 @@ pub(crate) use awaken_session_realization_contract::ResourceOperationFence;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::authority::EphemeralRuntimeAuthority;
+pub use crate::authority::UpstreamAuthority;
 pub(crate) use crate::authority::{LocalAuthority, SessionAuthority};
-pub use crate::authority::{RuntimeAuthority, RuntimeAuthorityError, UpstreamAuthority};
 // Internal use of the canonical adapter owner; these are not public compatibility exports.
 pub(crate) use crate::host::HostOutcomeIteration;
 pub use crate::host::{CommittedStepReceipt, HostOutcomeDrive, HostOutcomeReport};

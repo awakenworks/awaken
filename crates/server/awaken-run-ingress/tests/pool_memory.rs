@@ -39,8 +39,9 @@ use awaken_run_ingress::{
     CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchPool, DispatchReconciler,
     DispatchServiceConfig, DispatchSettlementError, DispatchSettlementObserver, DispatchWorker,
     Error, LocalWakeSignal, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch,
-    SessionChildAdmission, WakeSignal, WorkerResolver,
+    SessionChildAdmission, WorkerResolver,
 };
+use awaken_run_ingress_contract::WakeSignal;
 use awaken_run_ingress_testkit::ConformanceClock as _;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::{llm::ModelInferenceBudget, resume::ResumeResult};
