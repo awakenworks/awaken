@@ -1176,7 +1176,11 @@ async fn checkpoint_release_is_unscoped_idempotent_and_terminal_rebindable() {
     scoped_checkpoint.idempotency_scope = Some("must-not-reserve-terminal".into());
     assert!(publisher.publish(scoped_checkpoint).await.is_err(), "C4");
     let mut stale_operation = operation;
-    stale_operation.effect_id.push_str("-stale");
+    // C5 keeps the same stale wire and zero-capture-I/O rejection. Do not
+    // compile another valid operation id from the original coordinates.
+    let mut wire = serde_json::to_value(&stale_operation).expect("operation fixture");
+    wire["effect_id"] = serde_json::json!(format!("{}-stale", stale_operation.effect_id()));
+    stale_operation = serde_json::from_value(wire).expect("stale operation fixture");
     assert!(
         matches!(
             publisher

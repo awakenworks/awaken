@@ -347,7 +347,7 @@ mod tests {
             environment_fingerprint: generation.environment_fingerprint().to_owned(),
             base_image_fingerprint: generation.base_image_fingerprint().to_owned(),
             excluded_mounts: Vec::new(),
-            suspend_effect_id: suspend.effect_id,
+            suspend_effect_id: suspend.effect_id().to_owned(),
         }
     }
 

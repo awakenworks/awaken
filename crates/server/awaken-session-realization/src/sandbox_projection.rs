@@ -118,7 +118,7 @@ pub fn provisioning_checkpoint_request(
         generation_id: request.generation.id().to_owned(),
         environment_fingerprint: request.generation.environment_fingerprint().to_owned(),
         base_image_fingerprint: request.generation.base_image_fingerprint().to_owned(),
-        effect_id: request.operation.effect_id.clone(),
+        effect_id: request.operation.effect_id().to_owned(),
         format: request.format.clone(),
         created_at_unix_ms: request.created_at_unix_ms,
         expires_at_unix_ms: request.expires_at_unix_ms,

@@ -211,7 +211,7 @@ fn restore_request(thread: &str) -> awaken_session_state_contract::SandboxRestor
         environment_fingerprint: generation.environment_fingerprint().to_owned(),
         base_image_fingerprint: generation.base_image_fingerprint().to_owned(),
         excluded_mounts: Vec::new(),
-        suspend_effect_id: suspend.effect_id,
+        suspend_effect_id: suspend.effect_id().to_owned(),
     };
     let restore = awaken_session_state_contract::SessionEnvironmentOperation::new(
         "workspace",
@@ -225,7 +225,7 @@ fn restore_request(thread: &str) -> awaken_session_state_contract::SandboxRestor
     awaken_session_state_contract::SandboxRestoreRequest {
         workspace_id: "workspace".into(),
         session_id: thread.into(),
-        effect_id: restore.effect_id,
+        effect_id: restore.effect_id().to_owned(),
         generation_id: generation.id().to_owned(),
         checkpoint,
     }
