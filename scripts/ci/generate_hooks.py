@@ -150,10 +150,29 @@ def gate_mode_source(gate: str, mode: str) -> str:
     return "".join(selected)
 
 
-def invoked_scripts(block: str) -> set[str]:
+def invoked_scripts(block: str, *, expand_rust_gate: bool = True) -> set[str]:
     """Direct Python calls plus the Rust gate's actual literal hook mode."""
-    scripts = set(INVOCATION.findall(block))
-    if "scripts/ci/check-rust.sh" in block:
+    lines = block.splitlines()
+    commands = []
+    for index, line in enumerate(lines):
+        run = re.match(r"^(\s*)run:\s*(.*)$", line)
+        if not run:
+            continue
+        commands.append(run.group(2))
+        if run.group(2) in ("|", "|-", ">", ">-"):
+            for following in lines[index + 1:]:
+                if following.strip() and len(following) - len(following.lstrip()) <= len(run.group(1)):
+                    break
+                commands.append(following)
+    block = "\n".join(commands)
+    # The native shell launcher transports a shell command; its own unit-test
+    # inputs cannot replace that command's existing frontend/contract inputs.
+    # Only the literal shell-transport form is excluded. Direct --self-test
+    # calls still declare the launcher's actual Python test inputs.
+    calls = re.sub(r"python3\s+scripts/ci/_native_shell\.py(?=\s+scripts/[A-Za-z0-9_./-]+\.sh(?:\s|$))",
+                   "python3", block)
+    scripts = set(INVOCATION.findall(calls))
+    if expand_rust_gate and "scripts/ci/check-rust.sh" in block:
         modes = re.findall(r"scripts/ci/check-rust\.sh (--[a-z-]+)(?:\s|$)", block)
         if len(modes) != 1:
             raise SystemExit("generate_hooks: Rust hook needs one literal mode")
@@ -364,7 +383,7 @@ def undeclared_invocations(hooks: str, declarations: dict[str, tuple[str, ...]])
     for _, header, end in spans:
         body_end = _body_end(lines, header + 1, end)
         block = _without_generated(lines[header + 1:body_end])
-        for name in INVOCATION.findall("".join(block)):
+        for name in invoked_scripts("".join(block), expand_rust_gate=False):
             if name not in declarations:
                 undeclared.add(name)
     return sorted(undeclared)
@@ -481,6 +500,21 @@ def selftest() -> None:
     # U2 the fixture's own commands are all declared (its shell command runs no
     # Python checker), so the mandatory-declaration rule reports nothing.
     assert undeclared_invocations(generated, declarations) == [], "U2"
+    transported = hand_written.replace("run: tools/opaque.sh",
+        "run: python3 scripts/ci/_native_shell.py scripts/contract/generate-contracts.sh --check")
+    assert render(transported, {**declarations, "_native_shell.py": ("scripts/ci/_native_shell.py",)}) == \
+        generated.replace("run: tools/opaque.sh",
+            "run: python3 scripts/ci/_native_shell.py scripts/contract/generate-contracts.sh --check"), \
+        "U3 shell transport must preserve the existing command trigger"
+    assert invoked_scripts("run: python3 scripts/ci/_native_shell.py --self-test") == {"_native_shell.py"}, \
+        "U4 native launcher tests still own their declared inputs"
+    assert invoked_scripts("run: python3 scripts/ci/_native_shell.py scripts/ci/opaque.sh && "
+                           "python3 scripts/ci/check_alpha.py") == {"check_alpha.py"}, \
+        "U5 a shell transport cannot hide another Python checker"
+    assert invoked_scripts('      glob: "scripts/ci/_native_shell.py"\n'
+                           '      # python3 scripts/ci/check_beta.py\n'
+                           '      run: python3 scripts/ci/check_alpha.py\n') == {"check_alpha.py"}, \
+        "U6 globs and comments cannot pretend a checker executes"
     # U1 one added command runs a checker that declared nothing.
     # Inserted inside the pre-commit commands block: a command appended past the
     # end of that section is not a pre-commit trigger and must not be scanned.

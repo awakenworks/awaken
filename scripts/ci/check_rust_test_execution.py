@@ -23,7 +23,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 # The self-test copies the actual transitive CI script closure, including its
 # source/deadline owners and production entrypoints, rather than a fixed list.
-INPUT_GLOBS = ("scripts/ci/**",)
+INPUT_GLOBS = ("scripts/ci/**", "scripts/e2e/sandbox_capability_suite.sh")
 
 LISTED = re.compile(r"^(\S+): test$", re.MULTILINE)
 EXECUTED = re.compile(r"^test (\S+)(?: - should panic)? \.\.\. (ok|FAILED|ignored)(?:,.*)?$", re.MULTILINE)
@@ -735,6 +735,84 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
                 elif case != "empty":
                     expected.append("test --locked -p critical --lib critical -- --exact --show-output")
                 self.assertEqual((fixture / "target/calls").read_text().splitlines(), expected)
+
+
+    @unittest.skipIf(os.name == "nt", "systemd substrate qualification belongs to Linux")
+    def test_sandbox_entrypoint_requires_the_current_systemd_case(self) -> None:
+        # S1 exact CLI case executes => this substrate passes. S2 empty/renamed
+        # selection, S3 the former Coordinator owner, S4 ignored/skipped/failed
+        # execution, S5 missing live-fixture opt-in => this substrate fails.
+        # Run the actual entrypoint and source/list/run/deadline owners. Other
+        # substrate adapters are deliberately absent, so the complete suite
+        # must remain non-green in every orchestration-only fixture below.
+        selected = "worker_transport::systemd::tests::live_systemd_unit_stop_survives_adapter_reopen"
+        for case in ("passing", "empty", "former-owner", "renamed", "ignored",
+                     "fixture-skip", "failed", "missing-env"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                fixture = Path(temporary)
+                self.runner_fixture(fixture, "scripts/e2e/sandbox_capability_suite.sh")
+                entrypoint = fixture / "scripts/e2e/sandbox_capability_suite.sh"
+                if case in ("former-owner", "missing-env"):
+                    text = entrypoint.read_text(encoding="utf-8")
+                    old, new = (("-p awaken-cli", "-p awaken-coordinator") if case == "former-owner"
+                                else ("AWAKEN_SYSTEMD_WORKER_E2E=1 run", "run"))
+                    self.assertIn(old, text)
+                    entrypoint.write_text(text.replace(old, new, 1), encoding="utf-8")
+                environment = self.cargo_fixture(fixture, r'''
+printf '%s\n' "$*" >> "$CARGO_TARGET_DIR/calls"
+[[ "$*" == *live_systemd_unit_stop_survives_adapter_reopen* ]] || exit 0
+selection="$SELECTED"
+[[ " $* " == *" -p awaken-cli "* && "$CASE" != empty ]] || selection=''
+[[ "$CASE" != renamed ]] || selection=renamed_systemd_case
+case "$*" in
+  *--list*)
+    [ -z "$selection" ] || echo "$selection: test"
+    exit 0 ;;
+esac
+if [ -z "$selection" ]; then
+  echo 'test result: ok. 0 passed; 0 failed; 0 ignored;'
+elif [ "$CASE" = ignored ]; then
+  echo "test $selection ... ignored"
+  echo 'test result: ok. 0 passed; 0 failed; 1 ignored;'
+elif [ "$CASE" = failed ]; then
+  echo "test $selection ... FAILED"
+  echo 'test result: FAILED. 0 passed; 1 failed; 0 ignored;'
+  exit 17
+else
+  echo "test $selection ... ok"
+  echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
+  if [ "${AWAKEN_SYSTEMD_WORKER_E2E:-}" != 1 ] || [ "$CASE" = fixture-skip ]; then
+    echo 'skipping live systemd Worker: AWAKEN_SYSTEMD_WORKER_E2E=1 is required' >&2
+  fi
+fi
+''')
+                binary = fixture / "bin"
+                for name, body in {"node": "exit 1", "docker": "exit 1", "podman": "exit 1",
+                                   "systemctl": "exit 0", "systemd-run": "exit 0"}.items():
+                    command = binary / name
+                    command.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
+                    command.chmod(0o755)
+                environment.pop("AWAKEN_SYSTEMD_WORKER_E2E", None)
+                environment.update(CASE=case, SELECTED=selected, AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="10")
+                result = subprocess.run(["bash", str(entrypoint), "--require-substrates"],
+                                        cwd=fixture, env=environment, capture_output=True, text=True, timeout=30)
+                output = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 1, output)  # other substrates are absent
+                label = "systemd:exact-worker-exit-after-reopen"
+                self.assertEqual(f"PASS: {label}" in output, case == "passing", output)
+                self.assertEqual(f"FAIL: {label}" in output, case != "passing", output)
+                calls = (fixture / "target/calls").read_text().splitlines()
+                if case == "passing":
+                    self.assertIn(f"test --locked -p awaken-cli --lib {selected} -- --exact --list", calls)
+                    self.assertIn(f"test --locked -p awaken-cli --lib {selected} -- --exact --show-output", calls)
+                elif case in ("empty", "former-owner"):
+                    self.assertIn("required selection is empty", output)
+                elif case == "renamed":
+                    self.assertIn("required selection omits cases: " + selected, output)
+                elif case in ("fixture-skip", "missing-env"):
+                    self.assertIn("a selected test skipped its fixture or behavior", output)
+                elif case == "failed":
+                    self.assertIn("test command failed with status 17", output)
 
     def test_selection_and_execution_decision_table(self) -> None:
         # R1 selected identities + actual successes => pass. R2 zero/renamed/

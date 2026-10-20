@@ -60,7 +60,7 @@ pre-commit:
 
     hook-bootstrap:
       # >>> generated glob from _lefthook_fitness.py INPUT_GLOBS — do not edit
-      glob: "{lefthook.yml,scripts/ci/_lefthook_fitness.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py,scripts/ci/pre-push/qualify.sh}"
+      glob: "{lefthook.yml,scripts/ci/_lefthook_fitness.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py,scripts/ci/deadline.py,scripts/ci/pre-push/qualify.sh}"
       # <<< generated glob
       run: python3 scripts/ci/_lefthook_fitness.py --self-test && python3 scripts/ci/_lefthook_fitness.py --integration-test
 
@@ -159,7 +159,7 @@ pre-commit:
 
     affected-rust-plan:
       # >>> generated glob from benchmark_rust_build.py, check_rust_test_execution.py, rust_test_plan.py INPUT_GLOBS — do not edit
-      glob: "{.cargo/**,.config/**,.config/rust-tests.toml,Cargo.lock,Cargo.toml,apps/**,crates/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/ci/benchmark_rust_build.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_sources.py,scripts/ci/nextest_execution.py,scripts/ci/test.sh,tests/**,xtask/**}"
+      glob: "{.cargo/**,.config/**,.config/rust-tests.toml,Cargo.lock,Cargo.toml,apps/**,crates/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/ci/benchmark_rust_build.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_sources.py,scripts/ci/nextest_execution.py,scripts/ci/test.sh,scripts/e2e/sandbox_capability_suite.sh,tests/**,xtask/**}"
       # <<< generated glob
       run: python3 scripts/ci/rust_test_plan.py --self-test && python3 scripts/ci/benchmark_rust_build.py --self-test && python3 scripts/ci/check_rust_test_execution.py --self-test
 
@@ -264,8 +264,8 @@ pre-commit:
     # One Rust gate owns source and boundary checks. Trigger it for checker
     # edits too; separate hook invocations would execute the same scan twice.
     rust-quick:
-      # >>> generated glob from _native_shell.py, check_sdk_consumer.py, check_trust_roots.py, rust_test_plan.py INPUT_GLOBS — do not edit
-      glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,apps/**,crates/**,deny.toml,examples/sdk-consumer/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/ci/*.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py,scripts/ci/check-rust.sh,scripts/ci/check_trust_roots.py,tests/**,xtask/**}"
+      # >>> generated glob from check_sdk_consumer.py, check_trust_roots.py, rust_test_plan.py INPUT_GLOBS — do not edit
+      glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,apps/**,crates/**,deny.toml,examples/sdk-consumer/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/ci/*.py,scripts/ci/check-rust.sh,scripts/ci/check_trust_roots.py,tests/**,xtask/**}"
       # <<< generated glob
       run: python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --quick
 
@@ -302,8 +302,8 @@ pre-commit:
     # 5. Frontend checks are active as soon as package.json exists. The frontend
     #    project must expose lint/typecheck/build scripts.
     frontend-quick:
-      glob: "{package.json,pnpm-lock.yaml,package-lock.json,yarn.lock,bun.lockb,apps/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},packages/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},web/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml}}"
-      run: scripts/ci/check-frontend.sh --quick
+      glob: "{package.json,pnpm-lock.yaml,package-lock.json,yarn.lock,bun.lockb,apps/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},packages/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},web/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py}"
+      run: python3 scripts/ci/_native_shell.py scripts/ci/check-frontend.sh --quick
 
     # The oracle's check reads the E2E manifest and the workspace lockfile as
     # well as its own package: the trigger names every input so a version bump
@@ -337,11 +337,17 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/test_deadline.py
 
+    full-gate-admission:
+      # >>> generated glob from test_full_gate_admission.py INPUT_GLOBS — do not edit
+      glob: "{scripts/ci/_deadline.sh,scripts/ci/check-all.sh,scripts/ci/deadline.py,scripts/ci/test_full_gate_admission.py}"
+      # <<< generated glob
+      run: python3 scripts/ci/test_full_gate_admission.py
+
     # Generated wire artifacts are derived from the admin-config and Managed
     # DTOs; a DTO edit without regeneration is refused here, not at release.
     generated-contracts:
-      glob: "{.gitattributes,contracts/**/*,scripts/contract/**/*,crates/control/awaken-admin-config-api/**/*.rs,crates/server/awaken-protocol-managed/src/**/*.rs}"
-      run: scripts/contract/generate-contracts.sh --check
+      glob: "{.gitattributes,contracts/**/*,scripts/contract/**/*,crates/control/awaken-admin-config-api/**/*.rs,crates/server/awaken-protocol-managed/src/**/*.rs,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py}"
+      run: python3 scripts/ci/_native_shell.py scripts/contract/generate-contracts.sh --check
 
     # 6. Every relative Markdown link resolves to a real file and anchor.
     check-doc-links:
@@ -429,7 +435,7 @@ commit-msg:
 pre-push:
   scripts:
     qualify.sh:
-      runner: bash
+      runner: python3 scripts/ci/_native_shell.py
       args: --qualify
 
 push-qualification:
@@ -444,7 +450,7 @@ push-qualification:
     # sequential, like pre-commit: two concurrent workspace builds exhaust a
     # low-memory Windows host before either reports a useful diagnosis.
     documentation:
-      run: scripts/ci/check-docs.sh
+      run: python3 scripts/ci/_native_shell.py scripts/ci/check-docs.sh
 
     # --push is --quick plus workspace clippy (-D warnings) and the formal
     # coverage ledger check: the two ways main has gone red after a green
@@ -456,10 +462,10 @@ push-qualification:
     # Run the existing fail-closed gate; do not duplicate its crate inventory,
     # tool pinning, or comparison policy in the hook.
     public-api:
-      run: scripts/ci/check_public_api.sh --require-tools --affected-upstream
+      run: python3 scripts/ci/_native_shell.py scripts/ci/check_public_api.sh --require-tools --affected-upstream
 
     frontend-quick:
-      run: scripts/ci/check-frontend.sh --quick
+      run: python3 scripts/ci/_native_shell.py scripts/ci/check-frontend.sh --quick
 
 # main stays linear: every update is a fast-forward of single-parent commits
 # (plan v4 D10). Checked before any ref moves, whatever command moves it.

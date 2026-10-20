@@ -732,7 +732,7 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
         errors.append("Rust pre-push must delegate to the canonical gate's --push mode once")
     if "check-rust.sh --quick" in pre_push:
         errors.append("Rust pre-push still runs --quick, which skips clippy and the formal ledger")
-    public_api_command = "run: scripts/ci/check_public_api.sh --require-tools"
+    public_api_command = "run: python3 scripts/ci/_native_shell.py scripts/ci/check_public_api.sh --require-tools"
     if pre_push.count(public_api_command) != 1:
         errors.append(
             "pre-push must invoke the canonical fail-closed public API gate exactly once"
@@ -1131,7 +1131,7 @@ def self_test() -> None:
     allowing = gate[:push_start] + push_body.replace("-D warnings", "-W warnings") + gate[push_end:]
     assert rust_hook_errors(hooks, allowing), "H11 --push clippy must deny warnings"
     assert rust_hook_errors(
-        hooks.replace("run: scripts/ci/check_public_api.sh --require-tools", "run: true"),
+        hooks.replace("run: python3 scripts/ci/_native_shell.py scripts/ci/check_public_api.sh --require-tools", "run: true"),
         gate,
     ), "H14 pre-push must run the canonical public API gate"
     assert rust_hook_errors(hooks, gate.replace("  --quick|--push)", "  --quick)")), "H8 gate without a --push branch"

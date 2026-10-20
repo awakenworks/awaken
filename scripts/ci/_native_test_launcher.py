@@ -5,8 +5,14 @@ import atexit
 from functools import cache
 from pathlib import Path
 import os
+import shlex
 import subprocess
 import tempfile
+
+
+def python_script_header(interpreter: str | Path) -> str:
+    """Keep spaces and quotes in the real interpreter path across shebang parsing."""
+    return f"#!/usr/bin/env -S {shlex.quote(Path(interpreter).as_posix())}\n"
 
 
 def compiler_command(environment: dict[str, str]) -> list[str]:

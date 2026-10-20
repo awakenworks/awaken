@@ -722,7 +722,16 @@ def _selftest_acquisition() -> None:
         assert invoke(empty)[-1] is SyntaxError, "M28 original syntax failure"
         primary.unlink()
         primary.mkdir()
-        assert invoke(empty)[-1] is IsADirectoryError, "M28 no new is_file corpus filter"
+        # Preserve the native reader's exact failure: Windows reports a
+        # directory read as PermissionError; POSIX reports IsADirectoryError.
+        # A new is_file filter would suppress either failure and still fail M28.
+        try:
+            primary.read_text(encoding="utf-8")
+        except OSError as directory_failure:
+            directory_error = type(directory_failure)
+        else:
+            raise AssertionError("M28 directory read must fail")
+        assert invoke(empty)[-1] is directory_error, "M28 no new is_file corpus filter"
         primary.rmdir()
         for newline in ("\r\n", "\r"):
             primary.write_bytes((list_source + delegated).replace("\n", newline).encode())
