@@ -14,7 +14,7 @@ use awaken_session_state_contract::{
     SessionEnvironmentEffectAuthorization, SessionEnvironmentEffectIntent,
     SessionEnvironmentReceipt, SessionEnvironmentReceiptError,
     SessionEnvironmentReceiptRecoveryAction, SessionEnvironmentState, SessionMutationResult,
-    SessionRepositoryError,
+    SessionRepositoryError, SessionTerminalCleanupAction,
 };
 use awaken_time::WallClockExt;
 use awaken_tool_contract::ToolConfigurationCompiler;
@@ -521,50 +521,108 @@ impl SessionApplication {
         self.mutations.repository().as_ref()
     }
 
-    /// Read the Session aggregate's one durable realization-owner authority.
-    /// Lease expiry does not release an incumbent Worker: only verified terminal
-    /// cleanup can make its retained physical source safe for replacement.
-    /// The repository query is complete and fail-closed across Workspaces.
-    pub async fn has_unfinished_worker_realizations(
+    /// One complete Worker-owned Session read. Normal occupancy never depends
+    /// on provider availability. Explicit retirement preserves occupancy and
+    /// additionally qualifies every retained terminal source without effects,
+    /// lease changes, installed projections or cleanup receipts.
+    pub async fn observe_worker_realizations(
         &self,
-        worker_id: &str,
-    ) -> Result<bool, RunError> {
+        read: crate::WorkerRealizationRead<'_>,
+    ) -> Result<crate::WorkerRealizationObservation, RunError> {
+        let (worker_id, identity) = match read {
+            crate::WorkerRealizationRead::Occupancy(worker_id) => (worker_id, None),
+            crate::WorkerRealizationRead::Retirement(identity) => {
+                (identity.worker_id.as_str(), Some(identity))
+            }
+        };
         if worker_id.trim().is_empty() {
             return Err(RunError::bad_request("Worker realization owner is empty"));
         }
-        let scan = self
-            .session_repository()
-            .scan(
-                awaken_session_state_contract::SessionScanQuery::WorkerRealizationOwner {
-                    worker_id,
-                },
-            )
-            .await
-            .map_err(session_repository_error)?;
-        if scan.next_cursor.is_some() || !scan.quarantined.is_empty() {
-            return Err(RunError::unavailable(
-                "Worker realization-owner read is incomplete",
+        if identity.is_some_and(|identity| {
+            identity.incarnation_id.trim().is_empty() || identity.generation == 0
+        }) {
+            return Err(RunError::bad_request(
+                "exact Worker realization identity is required",
             ));
         }
-        for scoped in scan.sessions {
+        let sessions =
+            crate::recovery_scan::worker_realizations(self.session_repository(), worker_id)
+                .await
+                .map_err(session_repository_error)?;
+        let mut occupied = false;
+        let blocked = crate::WorkerRealizationObservation {
+            occupied: true,
+            sources_retained: false,
+        };
+        for scoped in sessions {
             let session = scoped.session;
-            if session
-                .realization
-                .as_ref()
-                .is_none_or(|lease| lease.owner != worker_id)
-            {
-                return Err(RunError::unavailable(
-                    "Worker realization-owner read disagrees with Session root",
-                ));
-            }
-            if session
+            if !session
                 .has_unfinished_worker_realization()
                 .map_err(|error| RunError::unavailable(error.to_string()))?
             {
-                return Ok(true);
+                continue;
+            }
+            occupied = true;
+            let Some(identity) = identity else {
+                return Ok(blocked);
+            };
+            let lease = session
+                .realization
+                .as_ref()
+                .ok_or_else(|| RunError::unavailable("Worker realization owner missing"))?;
+            if lease.runtime_incarnation != identity.lease_owner()
+                || !session.is_terminal()
+                || session.has_incomplete_event_batches()
+            {
+                return Ok(blocked);
+            }
+            let Some(action) = session
+                .terminal_cleanup_work_action()
+                .map_err(|error| RunError::unavailable(error.to_string()))?
+            else {
+                return Ok(blocked);
+            };
+            if matches!(action, SessionTerminalCleanupAction::Waiting) {
+                return Ok(blocked);
+            }
+            if awaken_session_state_contract::session_has_terminal_no_create_evidence(&session)
+                || crate::archive_intent::unattempted_profiled_archive_witness(
+                    self.session_repository(),
+                    &scoped.workspace_id,
+                    &session,
+                )
+                .await
+                .map_err(session_repository_error)?
+            {
+                continue;
+            }
+            if !matches!(
+                self.runtime()
+                    .coordination_reads()
+                    .source_dispatch_observation(&session)
+                    .await,
+                awaken_session_execution_contract::SessionSourceDispatchObservation::Settled
+            ) {
+                return Ok(blocked);
+            }
+            let projection = self
+                .queries
+                .frozen_session_projection(scoped.workspace_id, &session, false)
+                .await?;
+            let prepared = matches!(action, SessionTerminalCleanupAction::Dispose { .. });
+            if !self
+                .runtime()
+                .terminal_cleanup()
+                .observe_terminal_cleanup_retention(&session.session_id, &projection, prepared)
+                .await?
+            {
+                return Ok(blocked);
             }
         }
-        Ok(false)
+        Ok(crate::WorkerRealizationObservation {
+            occupied,
+            sources_retained: identity.is_some(),
+        })
     }
 
     pub async fn resolve_managed_list_price_snapshot(

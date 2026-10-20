@@ -22,7 +22,7 @@
     },
     "awaken-session-application::SessionApplication": {
       "files": 22,
-      "methods": 229,
+      "methods": 228,
       "reason": "W21: one application service per use case, composed by a facade"
     },
     "awaken-session-executor::ExecutorComponents": {

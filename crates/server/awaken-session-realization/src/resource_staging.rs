@@ -8,12 +8,12 @@
 use crate::memory_binding::MemoryBinding;
 use crate::realization_error::RealizationError;
 use crate::sandbox_projection::{
-    ProjectedSandboxLayout, project_session_mounts, resource_mount_is_create_time,
+    ProjectedSandboxLayout, create_time_resource_mounts, project_sandbox_spec,
+    resource_mount_is_create_time,
 };
 use crate::staged_resources::StagedResources;
 use awaken_provisioning_contract as pc;
 use awaken_session_configuration_contract::SkillBundleSource;
-use awaken_session_configuration_contract::environment_projection;
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
 use std::sync::Arc;
@@ -297,23 +297,8 @@ impl ResourceStaging {
         provider: &crate::session_environment::SessionEnvironmentProvider,
     ) -> Result<pc::SandboxSpec, RealizationError> {
         let environment = self.sessions.frozen(thread)?.environment_projection.clone();
-        let mounts = resources
-            .inputs()
-            .iter()
-            .filter_map(|input| {
-                crate::managed_input_layout::resolved_input_validation_mount(
-                    input,
-                    environment.as_ref(),
-                )
-            })
-            .filter(resource_mount_is_create_time)
-            .collect();
-        let has_repositories = resources.inputs().iter().any(|input| {
-            matches!(
-                input.source,
-                session_resource::ResolvedInputSource::Repository { .. }
-            )
-        });
+        let mounts = create_time_resource_mounts(resources, environment.as_ref());
+        let has_repositories = resources.compatibility_facts().has_repository();
         self.sandbox_spec_for_mount_layout_with_network(
             thread,
             mounts,
@@ -358,38 +343,11 @@ impl ResourceStaging {
         thread: &str,
         projection: ProjectedSandboxLayout<'_>,
     ) -> Result<pc::SandboxSpec, RealizationError> {
-        let mounts = project_session_mounts(
-            projection.resource_mounts,
-            projection.baseline_mounts,
-            projection.content_delivery,
-        );
         let env = projection
             .baseline_env
             .map(<[pc::EnvVar]>::to_vec)
             .map_or_else(|| self.thread_session_env(thread), Ok)?;
-        let spec = environment_projection::sandbox_spec_from_projection(
-            thread,
-            mounts,
-            env,
-            projection.environment,
-            projection.network_isolation,
-        );
-        Ok(
-            if projection.environment.is_some_and(|environment| {
-                environment
-                    .sandbox
-                    .as_ref()
-                    .is_some_and(|sandbox| sandbox.host_access == pc::HostAccessPolicy::TrustedHost)
-            }) {
-                // Preserve the frozen exact trust decision, just as placement does.
-                // TrustedHost clients consume AgentFilesystemView, not an asserted
-                // sandbox-absolute process namespace. Provider admission still checks
-                // every requested capability against the exact Workdir provider.
-                spec
-            } else {
-                pc::session_sandbox_projection(&spec, projection.has_repositories, false).0
-            },
-        )
+        Ok(project_sandbox_spec(thread, projection, env))
     }
 
     /// Stage a thread's resources (mounts + prompt fragments); consumed by

@@ -207,6 +207,23 @@ pub struct SessionRealizationTarget {
 }
 
 impl SessionRealizationTarget {
+    /// Drain may continue an already-owned terminal root, including its
+    /// expired generation retry. It may not acquire another root's obligation.
+    /// The caller supplies the original predecessor at uncertain-CAS readback.
+    pub fn admits_terminal_cleanup_generation(
+        &self,
+        worker: &awaken_worker_contract::WorkerSnapshot,
+        prior: Option<&SessionRealizationLease>,
+    ) -> bool {
+        match worker.state {
+            awaken_worker_contract::WorkerState::Ready => true,
+            awaken_worker_contract::WorkerState::Draining => prior.is_some_and(|lease| {
+                lease.owner == self.owner && lease.runtime_incarnation == self.runtime_incarnation
+            }),
+            _ => false,
+        }
+    }
+
     /// Match this claimed target against one observed Registry roster, retaining
     /// exact incarnation, current time, protocol and immutable manifest checks.
     /// This pure projection performs no query and grants no Root lease.

@@ -47,6 +47,7 @@ pub use construction::{SessionApplicationBuilder, SessionCredentialAuthorities, 
 
 mod recovery_scan;
 use recovery_scan::scan_recovery_candidates;
+pub use recovery_scan::{WorkerRealizationObservation, WorkerRealizationRead};
 
 /// Single Session-application projection from repository policy into the Run
 /// error vocabulary. Repository callers reuse the contract-owned recovery

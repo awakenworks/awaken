@@ -1082,6 +1082,15 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         effect_fence: Option<&pc::SandboxEffectFence>,
         purpose: SandboxObservationPurpose,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        let normalized = if matches!(purpose, SandboxObservationPurpose::WorkerRetirement { .. }) {
+            self.normalized_terminal_handle(adoption.spec, Some(adoption.handle))?
+        } else {
+            None
+        };
+        let adoption = SandboxAdoption {
+            handle: normalized.as_ref().unwrap_or(adoption.handle),
+            ..adoption
+        };
         if let Some(stored) = adoption.handle.container_adoption_fingerprint()? {
             let (plan, expected) = self.adoption_plan(adoption.spec)?;
             let historical_match = if stored != expected

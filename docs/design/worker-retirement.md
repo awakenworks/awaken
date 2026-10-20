@@ -1,0 +1,148 @@
+# Worker Retirement With Retained Session Sources
+
+This bounded qualification expands [ADR-0078](../adr/0078-terminal-recovery-retains-the-existing-session-authority.md).
+It delegates the existing role catalog to the
+[remote Worker component catalog](remote-worker-protocol.md#10-remote-worker-component-catalog);
+it adds no service, queue, durable cleanup state or permission authority.
+
+## Amendment 2026-10-16: separate source preparation, physical cleanup and Actor retirement
+
+**Implementation status: Actor retirement remains a target.** Source partitions
+are qualified separately in ADR-0078; generation-admission qualification below
+does not prove retirement, deployment or original-mission completion.
+
+The original local CRM and autonomous-development roots exposed the next two
+provider partitions after logical scope freeze and exact predecessor-exit
+reassignment succeeded. A retained V2 Pod/PVC handle can lack a projected-object
+handoff. A failed original Pod can already have a deletion timestamp while its
+exact continuation PVC remains live. Both stopped before source preparation
+in the original failure. The replacement barrier retains the current Worker when
+its Session realization domain is still occupied. Repeated expiry or a sampled
+404 must not convert any of these facts into cleanup completion.
+
+The objective remains one original Session root and one cleanup driver. Source
+readiness, physical cleanup and the lifetime of its process-local Actor are
+separate questions with separate evidence; none substitutes for the others.
+
+| Scope | Authoritative existing owner and reuse | Required change |
+| --- | --- | --- |
+| Logical creation and execution | Runtime committed heads, sealed creation scope and `SessionSourceDispatchObservation`; retain their current meaning | Reuse unchanged; a settled source read is not a physical disposal receipt |
+| Source and physical participant identity | Sandbox provider, frozen specification, retained handle, original Create ledger and K8s UID checks | Distinguish terminal source preparation from destructive cleanup; normalize a retained legacy handle only from sufficient provider-owned evidence |
+| Actor authority and retained source obligation | Session root realization lease, terminal cleanup operation and Worker Registry incarnation | Fence new Actor grants on drain and distinguish an inactive Actor from a source obligation which remains retained |
+| Replacement and publication | Existing Native Worker-domain observation and Cloud release/restore barrier | Consume an explicit Native retirement decision, observe real process exit, then permit exact successor admission; preserve the current source objects and root |
+
+New code is limited to transient role-specific evidence where the existing
+observation types cannot express the distinction, plus their regression/model
+cases. It introduces no additional persisted cleanup flag, queue, scheduler,
+provider journal, receipt issuer or replacement controller. Existing provider
+builders, participant verifiers, lease succession, UID deletion and root CAS
+remain authoritative.
+
+A terminal source-preparation observation may admit an exact failed/deleting Pod
+and its still-live exact PVC for bounded source access. It does not report that
+the Pod is absent, release a claim, or certify participant disposal. Ordinary
+execution and checkpoint admission retain their own rules. Destructive cleanup
+still requires original participant identities, complete preparations and the
+existing current-authority/finalizer/UID protocol.
+
+A retained V2 handle supplies original Pod/PVC identity but does not itself
+supply an original projected-object result set. A known-empty API projection
+must be established from the exact retained handle and verified frozen provider
+plan, not from missing RESULTS or an empty current LIST. A nonempty, partial,
+foreign or otherwise unproved membership keeps its existing Unknown result.
+Retained control/Memory/Secret evidence must be preserved rather than replaced
+by the handle-free narrow joined-empty witness.
+
+Ordinary drain must still let an already-owned cleanup reach its durable
+boundary. A Pool-wide switch which stops all cold recovery is not an Actor
+retirement protocol: Control must distinguish fresh takeover from continuation
+of the original Actor. A retiring Actor cannot acquire another terminal root;
+its exact already-owned root may continue across lease expiry.
+
+Run grace and Session cleanup lifetime are distinct. Do not truncate every
+cleanup renewal to a run-drain timer: a long preparation may still need its
+original Actor. Continuing an already-owned root, including an expired exact-
+Actor generation retry, retains the normal Registry-bounded lease protocol.
+Safe forced stop is established by source durability, not by waiting for that
+Actor to stop renewing. The actual process exit and original Create closure
+fence its remaining authority before a successor acquires the same root.
+
+The Native Worker-domain read may qualify a draining Actor separately
+from its still-retained cleanup obligations. Reuse the existing complete Session
+owner scan, frozen projection builder, source-dispatch observation, terminal
+runtime role and selected Environment provider. The Session owner lowers its
+canonical action to the existing prepared-source observation fact; the Runtime
+role does not re-export or reinterpret that aggregate action. `Prepare` still requires positive
+provider evidence that the original data survives this process's stop; `Dispose`
+uses the already-durable preparations and the same original participant replay.
+`Waiting`, incomplete scans, unsealed sources and unsupported
+providers remain unqualified. The read installs no Runtime projection and issues
+no cleanup or process-exit receipt. The existing release owner consumes this
+Native decision, then scales the exact held Worker down; the existing independent
+exit/Create closure and same-root CAS still precede replacement cleanup.
+
+New code is limited to this read qualification, its typed observation purpose
+and the optional positive Native domain projection. Reuse and factor the current
+provider selection and Sandbox spec projection rather than construct a second
+layout or run a second cleanup driver. Kubernetes source retention requires its
+original guard and exact Pod/PVC identities outside Worker-owned garbage
+collection; unavailable bytes or identities are not repaired by this read.
+
+The existing Worker-domain transport module exports its query, response and
+route path for consuming composition tests. A consumer must serialize these
+exact pinned types into its existing release predicate; an invented fixture
+field cannot establish producer support. Ordinary reads still omit the optional
+qualification. These read-only types create no retirement or cleanup authority.
+
+Actor retirement must not reuse `cleanup_completed` as its permission bit.
+Retirement with retained sources requires exact draining Registry identity,
+closed new business-work admission, no physical Run or Work claim, and a
+positive provider observation that the
+original source survives this Actor's stop. An unavailable retention observation
+or a nonterminal/unsealed Session blocks that path. The real exit and original
+Create closure are still required before another Actor acquires the root;
+retirement never acknowledges the old Source, Runtime slot, Session cleanup or
+Flow inbox.
+
+The dynamic order is: close admission -> fence new Actor grants -> establish
+source retention -> stop the old Actor through its existing bounded shutdown -> independently
+observe its exact process exit and close original Create issuance -> claim the
+same Session through its existing CAS -> prepare the original source -> perform
+only authorized UID-fenced disposal -> commit the original cleanup receipt ->
+let Flow close its exact retained link and make its Work-owned recovery decision.
+
+A forward code correction while a source is retained must use the existing
+release owner and command-start Pod/template identities. It may not replace the
+held Worker through compensation, reset rollback evidence, publish a different
+business identity, or bypass an Unknown observation. Tests must cover the source
+and Actor partitions together with the current physical, WorkQueue and Session
+domain checks before this target can be called implemented.
+
+## Source migration 2026-10-20: retain current component ownership
+
+Sandbox observation purpose stays in `awaken-provisioning-contract`; the retired
+Session and Container spellings are not restored. `RunAssembly` supplies the
+required terminal read through its existing realization executor. Environment
+holding owns provider/publication selection and the original physical read;
+the existing pure Sandbox projection supplies the same complete frozen layout
+used by installed adoption. Root CAS, Registry, preparation, UID disposal and
+cleanup receipts retain their existing owners. No Host facade, duplicate
+provider port, compatibility alias or additional cleanup driver is introduced.
+
+## Amendment 2026-10-17: preserve owned cleanup across drain
+
+The realization contract `SessionRealizationTarget` distinguishes continuation
+of an already-owned terminal root from acquisition of a new obligation. Ready
+may acquire; Draining continues only its exact owner/incarnation, including an
+expired-generation retry. Full Run capacity and run-grace expiry do not revoke
+that cleanup responsibility. At uncertain CAS readback, the existing conflict
+record's predecessor establishes original ownership; the just-written claim
+cannot manufacture affinity. Only an unowned/new-root claim is compensated
+when drain wins that race, preserving concurrent successors.
+
+This corrects the earlier over-restrictive live-generation-only proposal and
+withdraws the unshipped universal drain-deadline cutoff. One canonical Registry
+read, root CAS and compensation path remain. Retirement is independently
+qualified from retained/prepared source data, then actual exit/Create closure
+and existing root lease succession permit recovery. It never acknowledges the
+old Session cleanup or Flow inbox.

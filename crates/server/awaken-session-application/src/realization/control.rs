@@ -973,24 +973,6 @@ impl SessionApplication {
         target.worker_from_registry_observation(workers, self.clock.now_ms())
     }
 
-    /// Recompute the complete claim gate from one current Registry read and
-    /// one current Session root. The outer scan may use an earlier observation
-    /// only as a coarse wake-up hint; this is the sole eligibility decision at
-    /// the root-CAS/assignment boundary.
-    async fn terminal_cleanup_worker_admits_root(
-        &self,
-        target: &awaken_session_realization_contract::SessionRealizationTarget,
-        owner_scope: &str,
-        session: &PersistedSession,
-        action: &awaken_session_state_contract::SessionTerminalCleanupAction,
-    ) -> Result<bool, SessionRealizationControlFailure> {
-        let Some(worker) = self.terminal_cleanup_worker_for_target(target).await? else {
-            return Ok(false);
-        };
-        let requirements = terminal_cleanup_worker_requirements(owner_scope, session, action)?;
-        Ok(awaken_worker_contract::can_claim(&worker.manifest, &requirements).is_ok())
-    }
-
     /// Undo only this invocation's exact uncertain claim after Registry
     /// authority disappears. Each retry reloads the aggregate and preserves
     /// every concurrent field; a different realization proves that another
@@ -1067,32 +1049,36 @@ impl SessionApplication {
         action: &awaken_session_state_contract::SessionTerminalCleanupAction,
         conflict: Option<&TerminalCleanupClaimConflict>,
     ) -> TerminalCleanupWorkerRevalidation {
-        let admission = self
-            .terminal_cleanup_worker_admits_root(target, owner_scope, session, action)
-            .await;
-        match admission {
-            Ok(true) => TerminalCleanupWorkerRevalidation::Admitted,
-            Ok(false) => {
-                if let Some(conflict) = conflict
-                    && let Err(error) = self
-                        .compensate_terminal_cleanup_claim(conflict, Some(session.clone()))
-                        .await
-                {
-                    return TerminalCleanupWorkerRevalidation::Abort(error);
-                }
-                TerminalCleanupWorkerRevalidation::Ineligible
+        // A just-written claim is not prior ownership at readback. Reuse the
+        // conflict record for both this decision and exact compensation below.
+        let prior = match conflict {
+            Some(conflict) => conflict.previous_realization.as_ref(),
+            None => session.realization.as_ref(),
+        };
+        let admission = match self.terminal_cleanup_worker_for_target(target).await {
+            Ok(Some(worker)) if !target.admits_terminal_cleanup_generation(&worker, prior) => {
+                Ok(false)
             }
-            Err(error) => {
-                if let Some(conflict) = conflict
-                    && let Err(compensation_error) = self
-                        .compensate_terminal_cleanup_claim(conflict, Some(session.clone()))
-                        .await
-                {
-                    return TerminalCleanupWorkerRevalidation::Abort(compensation_error);
-                }
-                TerminalCleanupWorkerRevalidation::Failed(error)
-            }
+            Ok(Some(worker)) => terminal_cleanup_worker_requirements(owner_scope, session, action)
+                .map(|requirements| {
+                    awaken_worker_contract::can_claim(&worker.manifest, &requirements).is_ok()
+                }),
+            Ok(None) => Ok(false),
+            Err(error) => Err(error),
+        };
+        let rejected = match admission {
+            Ok(true) => return TerminalCleanupWorkerRevalidation::Admitted,
+            Ok(false) => TerminalCleanupWorkerRevalidation::Ineligible,
+            Err(error) => TerminalCleanupWorkerRevalidation::Failed(error),
+        };
+        if let Some(conflict) = conflict
+            && let Err(error) = self
+                .compensate_terminal_cleanup_claim(conflict, Some(session.clone()))
+                .await
+        {
+            return TerminalCleanupWorkerRevalidation::Abort(error);
         }
+        rejected
     }
 
     async fn claim_terminal_cleanup_root(

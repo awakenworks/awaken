@@ -8,8 +8,12 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/WorkerReplacement.tla",
+  "formal/tla/RetainedWorkerRetirement.tla",
 ]
 production_entrypoints = []
 
 [[bounds]]
 text = '''Production exact-incarnation expiry, replacement and heartbeat admission across all Worker states and u64 deadlines; Kani proves the scalar admission kernel, Loom explores the three-command mutation-lock schedules, and shared Memory/SQLite/PostgreSQL tests exercise adapter serialization. This does not prove physical stop, external termination or Dispatch retirement.'''
+
+[[bounds]]
+text = '''RetainedWorkerRetirement additionally checks a two-source, two-Actor handoff after drain, live original cleanup leases, post-exit lease succession, and independent retained/already-prepared/unknown source partitions. Seven exact semantic counterexamples guard its safety and reachability claims. Provider retention, original UID observations, source-scope closure, process exit and Create closure remain explicit premises verified by their separate owners; the model proves neither those infrastructure facts nor the deployed Rust refinement.'''
