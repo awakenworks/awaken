@@ -224,9 +224,9 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ContinuationRunti
             .take()
             .unwrap_or_else(|| expected_mcp_generations.to_vec());
         Ok(awaken_session_state_contract::QuiescenceReceipt {
-            effect_id: operation.effect_id.clone(),
+            effect_id: operation.effect_id().to_owned(),
             generation_id: generation.id().to_owned(),
-            activity_epoch: operation.activity_epoch,
+            activity_epoch: operation.activity_epoch(),
             live_environment_effects: 0,
             mcp_generations,
         })
@@ -287,7 +287,7 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
             return Err(RunError::unavailable("injected upload crash"));
         }
         Ok(awaken_session_state_contract::CheckpointReceipt {
-            effect_id: request.operation.effect_id.clone(),
+            effect_id: request.operation.effect_id().to_owned(),
             generation_id: request.generation.id().to_owned(),
             checkpoint: awaken_session_state_contract::SandboxCheckpointRef {
                 id: "object".into(),
@@ -299,7 +299,7 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
                 environment_fingerprint: request.generation.environment_fingerprint().to_owned(),
                 base_image_fingerprint: request.generation.base_image_fingerprint().to_owned(),
                 excluded_mounts: Vec::new(),
-                suspend_effect_id: request.operation.effect_id,
+                suspend_effect_id: request.operation.effect_id().to_owned(),
             },
         })
     }
@@ -346,7 +346,7 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
             return Err(RunError::unavailable("injected disposal crash"));
         }
         Ok(awaken_session_state_contract::SourceDisposedReceipt {
-            effect_id: disposal.operation().effect_id.clone(),
+            effect_id: disposal.operation().effect_id().to_owned(),
             generation_id: disposal.generation().id().to_owned(),
             source_binding: disposal.source_binding().into(),
             terminated: true,
@@ -845,7 +845,7 @@ pub(super) fn hibernated_session(id: &str, expires_at_unix_ms: u64) -> Persisted
             environment_fingerprint: generation.environment_fingerprint().to_owned(),
             base_image_fingerprint: generation.base_image_fingerprint().to_owned(),
             excluded_mounts: Vec::new(),
-            suspend_effect_id: operation.effect_id,
+            suspend_effect_id: operation.effect_id().to_owned(),
         },
         generation,
     };
@@ -1421,7 +1421,11 @@ async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
         "C1"
     );
     let mut stale = operation.clone();
-    stale.effect_id.push_str("-stale");
+    // C2 keeps the same stale imported operation and exact StaleOwnership
+    // rejection; recomputing a valid identity would erase this counterexample.
+    let mut wire = serde_json::to_value(&stale).expect("operation fixture");
+    wire["effect_id"] = serde_json::json!(format!("{}-stale", stale.effect_id()));
+    stale = serde_json::from_value(wire).expect("stale operation fixture");
     assert_eq!(
         awaken_session_realization_contract::SessionCheckpointArtifactControl::authorize_checkpoint_release_artifact_effect(
             &app,
@@ -1703,7 +1707,7 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
         panic!("P1 durable preparation survives response loss")
     };
     assert_eq!(
-        operation.realization.as_ref().unwrap().expires_at_unix_ms,
+        operation.realization().unwrap().expires_at_unix_ms,
         100_000,
         "P1 immutable suspend A0",
     );
@@ -2146,7 +2150,7 @@ async fn driving_ingress_during_upload_completes_suspend_then_restores() {
         .environment
         .record_quiescence(
             &awaken_session_state_contract::QuiescenceReceipt {
-                effect_id: operation.effect_id,
+                effect_id: operation.effect_id().to_owned(),
                 generation_id: generation.id().to_owned(),
                 activity_epoch: 0,
                 live_environment_effects: 0,
@@ -2335,7 +2339,7 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
             .environment
             .record_quiescence(
                 &awaken_session_state_contract::QuiescenceReceipt {
-                    effect_id: operation.effect_id,
+                    effect_id: operation.effect_id().to_owned(),
                     generation_id,
                     activity_epoch: 0,
                     live_environment_effects: 0,
@@ -2357,7 +2361,11 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
     } = &mut inconsistent.environment
     {
         *suspend_phase = awaken_session_state_contract::SuspendPhase::ReadyToDispose;
-        operation.realization = realization;
+        // O1 retains its original inconsistent persisted evidence. Importing
+        // this wire grants no transition or current provider authority.
+        let mut wire = serde_json::to_value(&*operation).unwrap();
+        wire["realization"] = serde_json::to_value(realization).unwrap();
+        *operation = serde_json::from_value(wire).unwrap();
     }
     // O2
     let stale_upload = uploading("stale-upload", Some(superseded.clone()));

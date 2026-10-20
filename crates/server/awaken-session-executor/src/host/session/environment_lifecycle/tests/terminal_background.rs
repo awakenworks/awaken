@@ -995,7 +995,7 @@ async fn cold_checkpoint_disposal_cannot_seed_an_owner_without_preparation() {
         None,
         None,
     );
-    let authorization = source_disposal_authorization(&operation.effect_id);
+    let authorization = source_disposal_authorization(operation.effect_id());
     let error = host
         .realization_executor
         .environments()

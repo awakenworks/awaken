@@ -582,7 +582,7 @@ async fn authorize_checkpoint_release_artifact(
     workspace_id: &str,
     session_id: &awaken_session_types::SessionId,
 ) -> Result<(), StatusCode> {
-    let Some(lease) = operation.realization.as_ref() else {
+    let Some(lease) = operation.realization() else {
         return Err(StatusCode::FORBIDDEN);
     };
     authorize_session_worker_lease(

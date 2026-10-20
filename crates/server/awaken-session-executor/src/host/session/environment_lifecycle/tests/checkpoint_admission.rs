@@ -88,7 +88,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                     Some(lease.clone()),
                     None,
                 );
-                let fence = lease.sandbox_effect_fence(&operation.effect_id).unwrap();
+                let fence = lease.sandbox_effect_fence(operation.effect_id()).unwrap();
                 let worker = Arc::new(pc::test_support::EffectAuthority::new(&fence));
                 let store = Arc::new(PendingUploadStore {
                     puts: AtomicUsize::new(0),

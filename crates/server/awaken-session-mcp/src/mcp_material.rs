@@ -210,8 +210,8 @@ impl McpQuiescenceAdmissionFence {
         generation: &awaken_session_state_contract::SandboxGeneration,
     ) -> Self {
         Self {
-            operation_effect_id: operation.effect_id.clone(),
-            activity_epoch: operation.activity_epoch,
+            operation_effect_id: operation.effect_id().to_owned(),
+            activity_epoch: operation.activity_epoch(),
             source_effect_id: source_effect_id.to_owned(),
             source_binding: source_binding.to_owned(),
             generation: generation.clone(),

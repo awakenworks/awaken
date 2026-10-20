@@ -2370,7 +2370,7 @@ pub(super) fn disposing_terminal_environment(
             environment_fingerprint: "environment-disposing".into(),
             base_image_fingerprint: "image-disposing".into(),
             excluded_mounts: Vec::new(),
-            suspend_effect_id: operation.effect_id,
+            suspend_effect_id: operation.effect_id().to_owned(),
         }),
         source_release_preparation: Some(Box::new(receipt.clone())),
     };

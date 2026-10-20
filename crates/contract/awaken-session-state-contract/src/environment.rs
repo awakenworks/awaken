@@ -48,18 +48,86 @@ pub use transition::{
 
 /// Stable effect identity. Recovery always reuses this value rather than
 /// creating another checkpoint or restore authority.
+///
+/// Operation capability table: the existing constructors select one identity;
+/// O1/O2 shared getters preserve its exact coordinates without a mutable view.
+/// The four independent O3 field-write examples close separate source paths;
+/// serialization remains the explicit legacy/untrusted import boundary, not an
+/// execution grant. Original R1-R5 start/replay tests own runtime compatibility.
+///
+/// ```
+/// use awaken_session_state_contract::{SandboxGeneration, SessionEnvironmentOperation};
+/// use awaken_session_types::SessionId;
+/// fn build(session: &SessionId, generation: &SandboxGeneration) -> SessionEnvironmentOperation {
+///     SessionEnvironmentOperation::new("workspace", session, "suspend", generation, 7, None, None)
+/// }
+/// ```
+///
+/// ```
+/// use awaken_session_state_contract::SessionEnvironmentOperation;
+/// use awaken_session_configuration_contract::resource::SessionRealizationLease;
+/// fn read(operation: &SessionEnvironmentOperation) {
+///     let _: &str = operation.effect_id();
+///     let _: u64 = operation.activity_epoch();
+///     let _: u64 = operation.started_at_unix_ms();
+///     let _: Option<&SessionRealizationLease> = operation.realization();
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// use awaken_session_state_contract::SessionEnvironmentOperation;
+/// fn overwrite(operation: &mut SessionEnvironmentOperation) {
+///     operation.effect_id = String::new();
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// use awaken_session_state_contract::SessionEnvironmentOperation;
+/// fn overwrite(operation: &mut SessionEnvironmentOperation) {
+///     operation.activity_epoch = 0;
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// use awaken_session_state_contract::SessionEnvironmentOperation;
+/// fn overwrite(operation: &mut SessionEnvironmentOperation) {
+///     operation.started_at_unix_ms = 0;
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// use awaken_session_state_contract::SessionEnvironmentOperation;
+/// fn overwrite(operation: &mut SessionEnvironmentOperation) {
+///     operation.realization = None;
+/// }
+/// ```
+///
+/// ```compile_fail,E0308
+/// use awaken_session_state_contract::SessionEnvironmentOperation;
+/// fn mutable(operation: &mut SessionEnvironmentOperation) {
+///     let _: &mut str = operation.effect_id();
+/// }
+/// ```
+///
+/// ```compile_fail,E0308
+/// use awaken_session_state_contract::SessionEnvironmentOperation;
+/// use awaken_session_configuration_contract::resource::SessionRealizationLease;
+/// fn mutable(operation: &mut SessionEnvironmentOperation) {
+///     let _: Option<&mut SessionRealizationLease> = operation.realization();
+/// }
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionEnvironmentOperation {
-    pub effect_id: String,
-    pub activity_epoch: u64,
+    pub(crate) effect_id: String,
+    pub(crate) activity_epoch: u64,
     /// Wall-clock edge captured when the aggregate first commits this
     /// operation. Every retry reuses it as checkpoint metadata; reading a new
     /// clock value after response loss would turn one effect into two distinct
     /// object writes. Legacy rows decode to zero and retain their already-stored
     /// effect identity.
     #[serde(default)]
-    pub started_at_unix_ms: u64,
-    pub realization: Option<crate::SessionRealizationLease>,
+    pub(crate) started_at_unix_ms: u64,
+    pub(crate) realization: Option<crate::SessionRealizationLease>,
 }
 
 pub use awaken_provisioning_contract::{SandboxCheckpointRef, SandboxRestoreRequest};
@@ -1151,12 +1219,13 @@ mod tests {
         // and different T=>different id; R4 C4=>decode zero without rewriting
         // the persisted legacy identity; R5 C5=>project the one provider fence
         // or explicit None without reconstructing lease fields in an adapter.
+        // O1/O4 read the original stored values through the same public immutable API.
         let mut first = resident();
         let operation = first
             .begin_suspend_at("workspace", &crate::SessionId::from("s1"), 7, None, 100)
             .unwrap()
             .clone();
-        assert_eq!(operation.started_at_unix_ms, 100, "R1");
+        assert_eq!(operation.started_at_unix_ms(), 100, "R1");
         let current_wire = serde_json::to_value(&operation).unwrap();
         assert_eq!(current_wire["started_at_unix_ms"], 100, "R1 wire");
         assert_eq!(
@@ -1181,11 +1250,13 @@ mod tests {
             .begin_suspend_at("workspace", &crate::SessionId::from("s1"), 7, None, 101)
             .unwrap();
         assert_eq!(
-            equal_operation.effect_id, operation.effect_id,
+            equal_operation.effect_id(),
+            operation.effect_id(),
             "R3 equal facts"
         );
         assert_ne!(
-            later_operation.effect_id, operation.effect_id,
+            later_operation.effect_id(),
+            operation.effect_id(),
             "R3 different time"
         );
 
@@ -1195,8 +1266,8 @@ mod tests {
             "realization": null
         }))
         .unwrap();
-        assert_eq!(legacy.started_at_unix_ms, 0, "R4 default");
-        assert_eq!(legacy.effect_id, "persisted-v1-effect", "R4 identity");
+        assert_eq!(legacy.started_at_unix_ms(), 0, "R4 default");
+        assert_eq!(legacy.effect_id(), "persisted-v1-effect", "R4 identity");
         assert_eq!(operation.sandbox_effect_fence().unwrap(), None, "R5 legacy");
 
         let lease = crate::SessionRealizationLease {
@@ -1216,7 +1287,7 @@ mod tests {
             None,
         );
         let fence = fenced.sandbox_effect_fence().unwrap().unwrap();
-        assert_eq!(fence.operation_id(), fenced.effect_id, "R5 operation");
+        assert_eq!(fence.operation_id(), fenced.effect_id(), "R5 operation");
         assert_eq!(fence.owner(), "worker-a", "R5 owner");
         assert_eq!(fence.runtime_incarnation(), "runtime-a", "R5 runtime");
         assert_eq!(fence.epoch(), 9, "R5 epoch");
