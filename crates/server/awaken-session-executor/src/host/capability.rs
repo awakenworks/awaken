@@ -24,8 +24,6 @@ pub(crate) use dispatch::local_dispatch_owner;
 pub(crate) use execution::AttemptBackends;
 pub(super) use resources::ResourceInputs;
 pub use resources::WorkerContentAdapters;
-#[cfg(test)]
-pub(super) use resources::local_memory_extraction_repository;
 #[cfg(any(test, feature = "test-support"))]
 pub use resources::{LocalResourcePorts, LocalSkillPorts, test_memory_content};
 pub(crate) use resources::{ResourcePorts, ResourceSelection};

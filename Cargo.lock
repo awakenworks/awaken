@@ -3175,6 +3175,7 @@ dependencies = [
  "awaken-session-environment-contract",
  "awaken-session-event-contract",
  "awaken-session-execution-contract",
+ "awaken-session-executor-testkit",
  "awaken-session-mcp",
  "awaken-session-realization",
  "awaken-session-realization-contract",
