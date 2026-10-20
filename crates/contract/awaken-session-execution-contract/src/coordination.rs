@@ -213,6 +213,20 @@ pub fn coordinated_thread_closed(kind: CoordinatedThreadKind, state: &RunState) 
     }
 }
 
+/// Apply the canonical coordinated-Thread terminal policy to one committed
+/// disposition and latest Run state. This is a pure classifier; link and
+/// recovery-snapshot lookup remain the caller's responsibility.
+pub fn coordinated_thread_is_interruptible(
+    target: &CoordinatedThreadTarget,
+    disposition: awaken_agent_contract::ThreadDisposition,
+    latest_state: Option<&awaken_agent_contract::agent::run::RunState>,
+) -> bool {
+    if disposition == awaken_agent_contract::ThreadDisposition::Archived {
+        return false;
+    }
+    latest_state.is_none_or(|state| !coordinated_thread_closed(target.kind(), state))
+}
+
 /// Logical position of the claimed Run inside Agent-message settlement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionAgentBoundaryRole {
@@ -723,6 +737,79 @@ mod tests {
             CoordinatedThreadKind::from_is_advisor(false),
             CoordinatedThreadKind::Agent
         );
+    }
+
+    #[test]
+    fn committed_thread_state_decides_interruptibility_for_every_child_kind() {
+        use awaken_agent_contract::agent::run::EndCause;
+
+        // Cause/effect graph: C1 the committed disposition is Active or Archived;
+        // C2 the relationship is an ordinary Agent or one-shot Advisor; C3 the
+        // latest committed Run is absent, active, reusable terminal, or failed.
+        // Effects: E1 Archived is never targetable; E2 a pending/active child is
+        // targetable before any Managed projection; E3 ordinary Completed and
+        // Cancelled Threads remain reusable; E4 ordinary Failed and every terminal
+        // Advisor are absorbing. The canonical lifecycle classifier remains the
+        // sole ordinary-failure owner; this helper stores no parallel status.
+        //
+        // | Rule | Disposition | Kind | Latest state | Effect |
+        // |---|---|---|---|---|
+        // | IT1 | Archived | any | any | E1 false |
+        // | IT2 | Active | any | absent/Running/Awaiting | E2 true |
+        // | IT3 | Active | Agent | NaturalEnd/Cancelled | E3 true |
+        // | IT4 | Active | Agent | Failed class | E4 false |
+        // | IT5 | Active | Advisor | any Ended | E4 false |
+        let agent = CoordinatedThreadTarget::Agent {
+            agent_id: "researcher".into(),
+        };
+        let advisor = CoordinatedThreadTarget::Advisor {
+            model: "advisor-model".into(),
+        };
+        let active = awaken_agent_contract::ThreadDisposition::Active;
+        let archived = awaken_agent_contract::ThreadDisposition::Archived;
+        for target in [&agent, &advisor] {
+            assert!(
+                coordinated_thread_is_interruptible(target, active, None),
+                "IT2 absent: {target:?}"
+            );
+            for state in [RunState::Running, RunState::Awaiting] {
+                assert!(
+                    coordinated_thread_is_interruptible(target, active, Some(&state),),
+                    "IT2 active: {target:?} {state:?}"
+                );
+                assert!(
+                    !coordinated_thread_is_interruptible(target, archived, Some(&state),),
+                    "IT1: {target:?} {state:?}"
+                );
+            }
+        }
+        for cause in [EndCause::NaturalEnd, EndCause::Cancelled] {
+            let state = RunState::Ended(cause);
+            assert!(
+                coordinated_thread_is_interruptible(&agent, active, Some(&state),),
+                "IT3: {state:?}"
+            );
+            assert!(
+                !coordinated_thread_is_interruptible(&advisor, active, Some(&state),),
+                "IT5: {state:?}"
+            );
+        }
+        for cause in [
+            EndCause::MaxSteps,
+            EndCause::Stopped("policy".into()),
+            EndCause::Error(awaken_agent_contract::agent::run::Failure::StateConflict),
+            EndCause::Indeterminate,
+        ] {
+            let state = RunState::Ended(cause);
+            assert!(
+                !coordinated_thread_is_interruptible(&agent, active, Some(&state),),
+                "IT4: {state:?}"
+            );
+            assert!(
+                !coordinated_thread_is_interruptible(&advisor, active, Some(&state),),
+                "IT5: {state:?}"
+            );
+        }
     }
 
     #[test]

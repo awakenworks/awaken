@@ -1781,12 +1781,14 @@ async fn settle_coordinated_user_run_activity(
         "{rule}: one canonical User Run activity"
     );
     application
-        .settle_activity(
-            session_id,
+        .lifecycle()
+        .settle_activity_observed(
+            &awaken_session_types::SessionId::from(session_id),
             *session
                 .active_activity_epochs
                 .first()
                 .expect("one canonical User Run activity"),
+            None,
         )
         .await
         .unwrap_or_else(|error| panic!("{rule}: settle canonical User Run activity: {error}"));

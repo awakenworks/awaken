@@ -47,22 +47,6 @@ impl ManagedState {
         Some((event, state))
     }
 
-    /// Apply the canonical coordinated-Thread terminal policy to one committed
-    /// disposition and latest Run state. This is a pure classifier; link and
-    /// recovery-snapshot lookup remain the caller's responsibility.
-    pub(super) fn coordinated_thread_is_interruptible(
-        target: &CoordinatedThreadTarget,
-        disposition: awaken_agent_contract::ThreadDisposition,
-        latest_state: Option<&awaken_agent_contract::agent::run::RunState>,
-    ) -> bool {
-        if disposition == awaken_agent_contract::ThreadDisposition::Archived {
-            return false;
-        }
-        latest_state.is_none_or(|state| {
-            !awaken_session_execution_contract::coordinated_thread_closed(target.kind(), state)
-        })
-    }
-
     /// Classify one coordinated child from the same Runtime prefix already read
     /// for Event admission. Link membership is the topology authority; committed
     /// Thread disposition and latest Run state are its terminal authorities.
@@ -93,11 +77,13 @@ impl ManagedState {
                 )))
             })?
             .map(|run| &run.state);
-        Ok(!Self::coordinated_thread_is_interruptible(
-            &link.target,
-            disposition,
-            latest_state,
-        ))
+        Ok(
+            !awaken_session_execution_contract::coordinated_thread_is_interruptible(
+                &link.target,
+                disposition,
+                latest_state,
+            ),
+        )
     }
 
     /// Resolve the public optional Thread selector onto the Runtime's canonical

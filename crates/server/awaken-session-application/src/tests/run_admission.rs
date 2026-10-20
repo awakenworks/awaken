@@ -1330,10 +1330,8 @@ impl awaken_session_execution_contract::CoordinationRuntime for BlockingSessionR
             .get()
             .and_then(std::sync::Weak::upgrade)
             .expect("test Session application")
-            .settle_activity(
-                delivery.session_id.as_str(),
-                delivery.session_activity_epoch,
-            )
+            .lifecycle()
+            .settle_activity_observed(&delivery.session_id, delivery.session_activity_epoch, None)
             .await
             .expect("committed Run observation settles the exact activity");
         Ok(StepOutcome::ended(

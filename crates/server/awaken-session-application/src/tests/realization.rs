@@ -6119,7 +6119,12 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
     );
 
     let settled = application
-        .settle_activity("running-realization", 1)
+        .lifecycle()
+        .settle_activity_observed(
+            &awaken_session_types::SessionId::from("running-realization"),
+            1,
+            None,
+        )
         .await
         .expect("R2 activity settlement");
     assert_eq!(settled.execution, SessionExecutionState::Idle, "R2/E2");
