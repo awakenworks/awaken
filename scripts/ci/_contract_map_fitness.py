@@ -117,7 +117,10 @@ TARGET_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     "awaken-acp-contract": ("Environment and Worker", ()),
     "awaken-agent-channel": ("Environment and Worker", ()),
     "awaken-sandbox-control": ("Environment and Worker", ()),
-    "awaken-provisioning-contract": ("Environment and Worker", ("awaken-container-contract",)),
+    # Neutral provider roles serve filesystem and container implementations.
+    # Container wire, capacity and privileged broker effects are a separate seam.
+    "awaken-provisioning-contract": ("Environment and Worker", ()),
+    "awaken-container-contract": ("Container transport and broker", ()),
     "awaken-worker-contract": ("Environment and Worker", ()),
     "awaken-credential-contract": ("Access and resources", ()),
     "awaken-tenancy": ("Access and resources", ()),
@@ -509,7 +512,7 @@ def selftest() -> None:
     | T1   | contract crate is a target or merges into one                         | accept |
     | T2   | contract crate on neither side of the map                             | error |
     | T3   | crate listed as merging no longer exists                              | error: remove it |
-    | T4   | audited SDK, Session aggregate, Dream and Environment SPI boundaries | retained |
+    | T4   | audited SDK, Session, Environment SPI and Container boundaries       | retained |
     | T5   | duplicate source, several owners, self-merge, chain or cycle          | hard error |
     | T6   | absent target without pending sources, or an empty boundary           | hard error |
     | T7   | existing/new target absorbs sources from different bounded contexts | hard error |
@@ -602,6 +605,21 @@ def _selftest_target_map() -> None:
     assert TARGET_MAP["awaken-session-dream-contract"] == ("Session", ()), "T4 Dream aggregate"
     assert TARGET_MAP["awaken-session-environment-contract"] == ("Environment and Worker", ()), "T4 Environment SPI"
     assert TARGET_MAP["awaken-session-realization-contract"] == ("Session", ()), "T4 realization decisions"
+    # Sharing the Environment context does not make backend wire a neutral SPI.
+    # Keep both existing targets: removing either must report a missing boundary,
+    # rather than treating that disappearance as a completed pending merge.
+    provider_boundaries = {name: TARGET_MAP[name] for name in (
+        "awaken-provisioning-contract", "awaken-container-contract")}
+    assert all(not pending for _boundary, pending in provider_boundaries.values()), \
+        "T4 neutral provider and Container transport are not pending merge sources"
+    provider_contexts = dict.fromkeys(provider_boundaries, "environment")
+    assert target_map_errors(set(provider_boundaries), provider_boundaries,
+                             contexts=provider_contexts) == [], "T4 separate boundaries in one context"
+    for missing in provider_boundaries:
+        errors = target_map_errors(set(provider_boundaries) - {missing}, provider_boundaries,
+                                   contexts=provider_contexts)
+        assert any(missing in error and "absent target" in error for error in errors), \
+            "T4 deleting a retained boundary is not a completed merge"
     assert set(TARGET_MAP["awaken-session-contract"][1]) == {
         "awaken-session-state-contract", "awaken-session-event-contract",
         "awaken-session-budget-contract", "awaken-session-repository-contract"}, "T4 Session aggregate only"
