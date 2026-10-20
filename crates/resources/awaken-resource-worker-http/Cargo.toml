@@ -24,7 +24,6 @@ awaken-resource-contract.workspace = true
 awaken-dispatch-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-realization-contract.workspace = true
-awaken-session-repository-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-worker-contract.workspace = true
@@ -42,6 +41,9 @@ awaken-time.workspace = true
 test-support = []
 
 [dev-dependencies]
+awaken-session-application.workspace = true
+awaken-session-repository-contract.workspace = true
+awaken-session-execution-contract.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 awaken-credential-contract.workspace = true
 awaken-environment-contract.workspace = true
