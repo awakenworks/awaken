@@ -1244,21 +1244,22 @@ async fn finalize_applied_user_dispatch(
         &runtime.states.lock().unwrap()[&run_id.0],
     )
     .unwrap();
-    app.settle_user_event_dispatch_observed(
-        &SessionId::from(session_id),
-        activity_epoch,
-        awaken_session_state_contract::SessionRuntimeIntervalObservation {
+    app.lifecycle()
+        .settle_user_event_dispatch_observed(
+            &SessionId::from(session_id),
             activity_epoch,
-            thread_id: ThreadId(session_id.into()),
-            run_id: run_id.clone(),
-            lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor(activity_epoch),
-            source_commit_cursor: 1,
-        },
-        run_id,
-        boundary,
-    )
-    .await
-    .expect("simulated applied Dispatch finalizes the User Event");
+            awaken_session_state_contract::SessionRuntimeIntervalObservation {
+                activity_epoch,
+                thread_id: ThreadId(session_id.into()),
+                run_id: run_id.clone(),
+                lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor(activity_epoch),
+                source_commit_cursor: 1,
+            },
+            run_id,
+            boundary,
+        )
+        .await
+        .expect("simulated applied Dispatch finalizes the User Event");
 }
 
 fn tool_reply_input(tool_use_id: &str) -> SessionEventInput {
@@ -5809,21 +5810,22 @@ async fn queued_input_before_awaiting_boundary(with_system: bool, legacy: bool) 
         // application against the real fixture's Awaiting Run. The exact
         // Dispatch receipt/interval remain durable; no SQL repair is used.
         let epoch = runtime.activity_epoch(&run);
-        app.settle_user_event_dispatch_observed(
-            &SessionId::from(id),
-            epoch,
-            awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                activity_epoch: epoch,
-                thread_id: ThreadId(id.into()),
-                run_id: run.clone(),
-                lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor(epoch),
-                source_commit_cursor: 1,
-            },
-            &run,
-            awaken_session_execution_contract::SessionAgentRunBoundary::Completed,
-        )
-        .await
-        .expect("AQ2 old conservative settlement");
+        app.lifecycle()
+            .settle_user_event_dispatch_observed(
+                &SessionId::from(id),
+                epoch,
+                awaken_session_state_contract::SessionRuntimeIntervalObservation {
+                    activity_epoch: epoch,
+                    thread_id: ThreadId(id.into()),
+                    run_id: run.clone(),
+                    lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor(epoch),
+                    source_commit_cursor: 1,
+                },
+                &run,
+                awaken_session_execution_contract::SessionAgentRunBoundary::Completed,
+            )
+            .await
+            .expect("AQ2 old conservative settlement");
         assert_eq!(
             repository
                 .get(&SessionId::from(id))

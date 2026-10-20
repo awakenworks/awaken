@@ -1081,6 +1081,7 @@ async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report(
         .await;
     state
         .session_application()
+        .lifecycle()
         .settle_activity_observed(
             &awaken_session_types::SessionId::from(&id),
             child_epoch,

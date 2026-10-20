@@ -1226,7 +1226,12 @@ impl SessionApplication {
         else {
             return Ok(());
         };
-        self.settle_activity(session_id, activity_epoch)
+        self.lifecycle
+            .settle_activity_observed(
+                &awaken_session_types::SessionId::from(session_id),
+                activity_epoch,
+                None,
+            )
             .await
             .map_err(crate::SessionActivityError::run_error)?;
         Ok(())
@@ -1388,7 +1393,8 @@ impl SessionApplication {
         if let Some(epoch) = wake
             && session.active_activity_epochs.contains(&epoch)
         {
-            self.settle_activity(session.session_id.as_str(), epoch)
+            self.lifecycle
+                .settle_activity_observed(&session.session_id, epoch, None)
                 .await
                 .map_err(crate::SessionActivityError::run_error)?;
         }
@@ -1436,15 +1442,16 @@ impl SessionApplication {
                     })
                 })
             {
-                self.settle_user_event_dispatch_observed(
-                    session_id,
-                    root.activity_epoch,
-                    observation.clone(),
-                    &latest.id,
-                    awaken_session_execution_contract::SessionAgentRunBoundary::Awaiting,
-                )
-                .await
-                .map_err(crate::SessionActivityError::run_error)?;
+                self.lifecycle
+                    .settle_user_event_dispatch_observed(
+                        session_id,
+                        root.activity_epoch,
+                        observation.clone(),
+                        &latest.id,
+                        awaken_session_execution_contract::SessionAgentRunBoundary::Awaiting,
+                    )
+                    .await
+                    .map_err(crate::SessionActivityError::run_error)?;
             }
         }
         Ok(matches!(

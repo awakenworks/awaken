@@ -11,41 +11,20 @@ use crate::mutation::ROOT_CAS_ATTEMPTS;
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_session_event_contract::SessionEventProjectionAnchor;
+#[cfg(any(test, kani))]
+use awaken_session_state_contract::SessionActivitySettlementPlan;
+#[cfg(any(test, kani))]
+use awaken_session_state_contract::SessionExecutionState;
 #[cfg(any(test, kani))]
 use awaken_session_state_contract::session_activity_open_plan;
 #[cfg(test)]
 use awaken_session_state_contract::session_activity_settlement_plan;
-use awaken_session_state_contract::{
-    IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionActivitySettlementPlan,
-    SessionEventDispatchSettlementEffect, SessionExecutionState, SessionRuntimeIntervalObservation,
-};
+use awaken_session_state_contract::{IdempotencyRecord, PersistedSession};
 use awaken_session_types::RunError;
 use awaken_session_types::SessionRevision;
 use awaken_time::WallClockExt as _;
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
-
-fn closed_runtime_facts(
-    app: &SessionApplication,
-    session: &mut SessionAggregate,
-    plan: SessionActivitySettlementPlan,
-    owner: &str,
-    session_id: &awaken_session_types::SessionId,
-) -> Result<Vec<ManagedLifecycleFact>, SessionActivityError> {
-    if plan != SessionActivitySettlementPlan::CloseRunningInterval {
-        return Ok(Vec::new());
-    }
-    Ok(session
-        .activity()
-        .finish_running(app.clock.now_ms())
-        .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?
-        .map(|interval| {
-            ManagedLifecycleFact::runtime_interval_closed(owner, session_id.as_str(), interval)
-        })
-        .into_iter()
-        .collect::<Vec<_>>())
-}
 
 /// Failure from a Session activity transition.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -294,7 +273,7 @@ fn session_activity_plan_cause_effect_table_is_closed() {
 }
 
 impl SessionActivityError {
-    fn mutation(error: SessionMutationError) -> Self {
+    pub(super) fn mutation(error: SessionMutationError) -> Self {
         match error {
             SessionMutationError::NotFound => Self::NotFound,
             SessionMutationError::Conflict => Self::Conflict,
@@ -786,295 +765,6 @@ impl SessionApplication {
                 Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
-                Err(error) => return Err(SessionActivityError::mutation(error)),
-            }
-        }
-        Err(SessionActivityError::Conflict)
-    }
-
-    /// Settle one admitted driving event. Completion order is irrelevant: every
-    /// active epoch is removed exactly once, and only the last removal closes
-    /// the shared Running interval. Terminal truth fences every completion.
-    pub async fn settle_activity(
-        &self,
-        session_id: &str,
-        expected_epoch: u64,
-    ) -> Result<PersistedSession, SessionActivityError> {
-        self.settle_activity_observed(
-            &awaken_session_types::SessionId::from(session_id),
-            expected_epoch,
-            None,
-        )
-        .await
-    }
-
-    /// Settle one admitted activity while retaining the exact Runtime commit
-    /// boundary that caused it. Infrastructure-only and definitively rejected
-    /// activities carry no observation; they still close through this same root
-    /// CAS and never create a protocol-side lifecycle owner.
-    pub async fn settle_activity_observed(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        expected_epoch: u64,
-        observation: Option<SessionRuntimeIntervalObservation>,
-    ) -> Result<PersistedSession, SessionActivityError> {
-        self.settle_activity_observed_for_event(session_id, expected_epoch, observation, None)
-            .await
-    }
-
-    /// Consume an already-applied Dispatch settlement by joining its exact
-    /// User Event marker and activity removal in the existing Session root CAS.
-    pub(crate) async fn settle_user_event_dispatch_observed(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        expected_epoch: u64,
-        observation: SessionRuntimeIntervalObservation,
-        run_id: &RunId,
-        boundary: awaken_session_execution_contract::SessionAgentRunBoundary,
-    ) -> Result<PersistedSession, SessionActivityError> {
-        self.settle_activity_observed_for_event(
-            session_id,
-            expected_epoch,
-            Some(observation),
-            Some((run_id, boundary)),
-        )
-        .await
-    }
-
-    async fn settle_activity_observed_for_event(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        expected_epoch: u64,
-        observation: Option<SessionRuntimeIntervalObservation>,
-        event_run_id: Option<(
-            &RunId,
-            awaken_session_execution_contract::SessionAgentRunBoundary,
-        )>,
-    ) -> Result<PersistedSession, SessionActivityError> {
-        let mutations = &self.mutations;
-        for attempt in 0..ROOT_CAS_ATTEMPTS {
-            let owner_scope = mutations
-                .owner(session_id)
-                .await
-                .map_err(SessionActivityError::mutation)?;
-            let mut session = mutations
-                .session_aggregate(session_id)
-                .await
-                .map_err(repository_failure)
-                .map_err(SessionActivityError::mutation)?;
-            if session.is_terminal() {
-                return Ok(session.into_snapshot());
-            }
-            if let Some(observation) = observation.clone() {
-                if session.closed_runtime_intervals.iter().any(|interval| {
-                    interval
-                        .observations
-                        .iter()
-                        .any(|existing| existing == &observation)
-                }) {
-                    return Ok(session.into_snapshot());
-                }
-                // A reply may transfer the activity while its predecessor's
-                // leased Worker is still closing. Fence that stale observation
-                // before comparing it with the predecessor's already-closed
-                // boundary: it belongs to neither the closed interval nor the
-                // successor and is therefore an exact no-op.
-                if !(session.active_activity_epochs.contains(&expected_epoch)
-                    || (session.active_activity_epochs.is_empty()
-                        && session.execution == SessionExecutionState::Running
-                        && session.activity_epoch == expected_epoch))
-                {
-                    return Ok(session.into_snapshot());
-                }
-                if session.closed_runtime_intervals.iter().any(|interval| {
-                    interval.observations.iter().any(|existing| {
-                        existing.activity_epoch == expected_epoch && existing != &observation
-                    })
-                }) {
-                    return Err(SessionActivityError::Unavailable(
-                        "Session activity epoch was reused with another Runtime boundary".into(),
-                    ));
-                }
-                let exact_replay = session.running_interval.as_ref().is_some_and(|interval| {
-                    interval
-                        .observations
-                        .iter()
-                        .any(|existing| existing == &observation)
-                });
-                let before_admission =
-                    session.runtime_observation_precedes_interval_admission(&observation);
-                if before_admission && !exact_replay && event_run_id.is_some() {
-                    return Err(SessionActivityError::Unavailable(
-                        "User Event Runtime boundary precedes its Session activity admission"
-                            .into(),
-                    ));
-                }
-                // An externally realized Session may admit and activate a Run
-                // while its stronger Preparing/Activating phase is still
-                // authoritative. If cancellation commits before realization,
-                // no customer-visible Running interval ever opened; settle the
-                // admitted epoch without fabricating one or attaching the Run
-                // boundary to a nonexistent interval.
-                let settles_before_runtime_interval = session.running_interval.is_none()
-                    && matches!(
-                        session.execution,
-                        SessionExecutionState::Preparing | SessionExecutionState::Activating
-                    );
-                if !exact_replay
-                    && !settles_before_runtime_interval
-                    && !before_admission
-                    && !session.activity().observe_runtime_interval(observation)
-                {
-                    return Err(SessionActivityError::Unavailable(
-                        "Runtime boundary does not belong to the active Session interval".into(),
-                    ));
-                }
-            }
-            let settlement = match event_run_id {
-                Some((run_id, boundary)) => {
-                    let observation = observation.as_ref().ok_or_else(|| {
-                        SessionActivityError::Unavailable(
-                            "User Event Dispatch settlement has no commit observation".into(),
-                        )
-                    })?;
-                    match session
-                        .activity()
-                        .settle_user_event_dispatch(
-                            run_id,
-                            boundary,
-                            expected_epoch,
-                            SessionEventProjectionAnchor {
-                                source_commit_cursor: observation.source_commit_cursor,
-                            },
-                            self.clock.now_ms(),
-                        )
-                        .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?
-                    {
-                        SessionEventDispatchSettlementEffect::NotEvent
-                        | SessionEventDispatchSettlementEffect::Replayed {
-                            fully_settled: false,
-                        } => return Ok(session.into_snapshot()),
-                        SessionEventDispatchSettlementEffect::Replayed {
-                            fully_settled: true,
-                        } => Some(true),
-                        SessionEventDispatchSettlementEffect::Applied { fully_settled } => {
-                            Some(fully_settled)
-                        }
-                    }
-                }
-                None => session.activity().settle_activity_epoch(expected_epoch),
-            };
-            let settlement_plan =
-                SessionActivitySettlementPlan::from_epoch_settlement(settlement, session.execution);
-            if settlement_plan == SessionActivitySettlementPlan::Stutter {
-                return Ok(session.into_snapshot());
-            }
-            // Completion order does not grant inverse-transition ownership.
-            // Every admitted epoch is removed exactly once; only the removal of
-            // the final active epoch may close the one shared Running interval.
-            // Initial Worker realization may still be preparing/activating, in
-            // which case settlement records the activity completion without
-            // overwriting that stronger execution phase.
-            let lifecycle_facts = closed_runtime_facts(
-                self,
-                &mut session,
-                settlement_plan,
-                &owner_scope,
-                session_id,
-            )?;
-            let emitted_runtime_interval = !lifecycle_facts.is_empty();
-            match mutations
-                .commit_session_snapshot_with_outcome(
-                    &owner_scope,
-                    session,
-                    if event_run_id.is_some() {
-                        "settle-event-dispatch"
-                    } else {
-                        "settle-activity"
-                    },
-                    lifecycle_facts,
-                )
-                .await
-            {
-                Ok(commit) => {
-                    if emitted_runtime_interval {
-                        self.lifecycle.notify_fact();
-                    }
-                    return Ok(commit.into_session());
-                }
-                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
-                    continue;
-                }
-                Err(error) => return Err(SessionActivityError::mutation(error)),
-            }
-        }
-        Err(SessionActivityError::Conflict)
-    }
-
-    /// Retain a child or intermediate Runtime boundary without settling the
-    /// shared activity epoch. A child-to-primary report continuation uses this
-    /// path so the final interval carries both exact commit coordinates.
-    pub(crate) async fn observe_activity_runtime_boundary(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        observation: SessionRuntimeIntervalObservation,
-    ) -> Result<PersistedSession, SessionActivityError> {
-        let mutations = &self.mutations;
-        for attempt in 0..ROOT_CAS_ATTEMPTS {
-            let owner_scope = mutations
-                .owner(session_id)
-                .await
-                .map_err(SessionActivityError::mutation)?;
-            let mut session = mutations
-                .session_aggregate(session_id)
-                .await
-                .map_err(repository_failure)
-                .map_err(SessionActivityError::mutation)?;
-            if session.is_terminal()
-                || session.closed_runtime_intervals.iter().any(|interval| {
-                    interval
-                        .observations
-                        .iter()
-                        .any(|existing| existing == &observation)
-                })
-                || session.running_interval.as_ref().is_some_and(|interval| {
-                    interval
-                        .observations
-                        .iter()
-                        .any(|existing| existing == &observation)
-                })
-            {
-                return Ok(session.into_snapshot());
-            }
-            if session.closed_runtime_intervals.iter().any(|interval| {
-                interval.observations.iter().any(|existing| {
-                    existing.activity_epoch == observation.activity_epoch
-                        && existing != &observation
-                })
-            }) {
-                return Err(SessionActivityError::Unavailable(
-                    "Session activity epoch was reused with another Runtime boundary".into(),
-                ));
-            }
-            if !session
-                .activity()
-                .observe_runtime_interval(observation.clone())
-            {
-                return Err(SessionActivityError::Unavailable(
-                    "Runtime boundary does not belong to the active Session interval".into(),
-                ));
-            }
-            match mutations
-                .commit_session_snapshot_with_outcome(
-                    &owner_scope,
-                    session,
-                    "observe-runtime-boundary",
-                    Vec::new(),
-                )
-                .await
-            {
-                Ok(commit) => return Ok(commit.into_session()),
-                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
                 Err(error) => return Err(SessionActivityError::mutation(error)),
             }
         }

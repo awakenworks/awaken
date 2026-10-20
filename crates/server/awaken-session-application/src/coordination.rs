@@ -52,7 +52,8 @@ async fn admit_fresh_agent_report(
     let settled = app
         .reconcile_coordination_boundary_usage(settled, &continuation.source_thread_id)
         .await?;
-    app.observe_activity_runtime_boundary(&continuation.session_id, observation)
+    app.lifecycle
+        .observe_activity_runtime_boundary(&continuation.session_id, observation)
         .await
         .map_err(crate::SessionActivityError::run_error)?;
     app.install_dispatch_projection(owner, &settled)
@@ -117,7 +118,12 @@ impl SessionApplication {
             // operation. Dependency/internal failures deliberately retain the
             // activity receipt: enqueue/delivery may have committed before its
             // response was lost, and exact retry must reuse the same epoch.
-            self.settle_activity(session_id, activity_epoch)
+            self.lifecycle
+                .settle_activity_observed(
+                    &awaken_session_types::SessionId::from(session_id),
+                    activity_epoch,
+                    None,
+                )
                 .await
                 .map_err(crate::SessionActivityError::run_error)?;
         }
@@ -921,13 +927,14 @@ impl SessionAgentCoordination for SessionApplication {
             self.reconcile_coordination_boundary_usage(current, &command.source_thread_id)
                 .await?;
             if !retained_user_event {
-                self.settle_activity_observed(
-                    &command.session_id,
-                    command.session_activity_epoch,
-                    Some(observation),
-                )
-                .await
-                .map_err(crate::SessionActivityError::run_error)?;
+                self.lifecycle
+                    .settle_activity_observed(
+                        &command.session_id,
+                        command.session_activity_epoch,
+                        Some(observation),
+                    )
+                    .await
+                    .map_err(crate::SessionActivityError::run_error)?;
             }
             self.lifecycle.request_reconciliation();
             return Ok(());
@@ -1009,16 +1016,18 @@ impl SessionAgentCoordination for SessionApplication {
                 "committed Agent boundary is not yet visible in the lifecycle feed",
             )
         })?;
-        self.settle_user_event_dispatch_observed(
-            &command.session_id,
-            command.session_activity_epoch,
-            observation,
-            &command.source_run_id,
-            session_agent_run_boundary(&state)
-                .ok_or_else(|| RunError::bad_request("invalid committed settlement boundary"))?,
-        )
-        .await
-        .map_err(crate::SessionActivityError::run_error)?;
+        self.lifecycle
+            .settle_user_event_dispatch_observed(
+                &command.session_id,
+                command.session_activity_epoch,
+                observation,
+                &command.source_run_id,
+                session_agent_run_boundary(&state).ok_or_else(|| {
+                    RunError::bad_request("invalid committed settlement boundary")
+                })?,
+            )
+            .await
+            .map_err(crate::SessionActivityError::run_error)?;
         self.lifecycle.request_reconciliation();
         Ok(())
     }

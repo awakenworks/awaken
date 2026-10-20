@@ -631,6 +631,7 @@ async fn assert_late_hitl_frontier(
     );
     let settled = warm
         .application
+        .lifecycle()
         .settle_activity_observed(
             &SessionId::from(id),
             admitted.activity_epoch,
