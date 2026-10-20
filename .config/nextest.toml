@@ -19,6 +19,9 @@
 # so it fails with its own message instead of this one.
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 5 }
+# A completed assertion with descendants still holding its pipes is a failed
+# lifecycle test. Preserve nextest's 100ms detection interval and fail closed.
+leak-timeout = { period = "100ms", result = "fail" }
 # Report every failure, not just the first. `cargo test` used to run a whole
 # test binary before stopping, so a developer saw the full set; stopping at
 # the first test would make the gate say less than it used to, and the whole

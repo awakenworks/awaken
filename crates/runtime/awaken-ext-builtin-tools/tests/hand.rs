@@ -5,6 +5,10 @@ use awaken_ext_builtin_tools::{HandToolContext, all_hand_tools_in};
 use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError};
 use std::sync::Arc;
 
+#[cfg(windows)]
+#[path = "hand/windows_process.rs"]
+mod windows_process;
+
 fn tool(id: &str) -> Arc<dyn RawTool> {
     // Temporary fixtures may live on another drive or behind a junction.
     let temp_dir = std::env::temp_dir().canonicalize().expect("temp dir");
@@ -758,7 +762,6 @@ async fn bash_failure_surfaces_stderr_and_stdout_not_a_swallowed_error() {
 }
 
 #[tokio::test]
-#[cfg(unix)]
 async fn bash_shell_exit_preserves_diagnostics_status_and_next_call() {
     // X1 explicit exit 0/7, X2 set -e failure in this/a prior invocation,
     // X3 syntax failure, X4 signal -> drain both streams before classifying.
@@ -787,6 +790,7 @@ async fn bash_shell_exit_preserves_diagnostics_status_and_next_call() {
             "detail",
         ),
         ("true", "if ; then", Some(2), "syntax error"),
+        #[cfg(unix)]
         ("true", "printf saved; kill -9 $$", None, "saved"),
     ] {
         let dir = tempfile::tempdir().unwrap();
