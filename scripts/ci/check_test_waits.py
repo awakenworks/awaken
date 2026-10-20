@@ -1162,7 +1162,7 @@ def _selftest_cli() -> None:
         assert status == 0 and before == after and observed, f"TCLI1 equal {argv}"
         status, before, after, observed, _, _, errors = invoke(argv, {})
         assert status == 1 and before == after and observed and "--tighten" in errors, "TCLI1 strict fall"
-    writes = (["--tighten"], ["--write-baseline"], ["--write-baseline", "--reason", "reviewed"])
+    writes = (["--tighten"], ["--write-baseline"], ["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")])
     for argv in writes:
         status, before, after, _, _, _, _ = invoke(argv)
         assert status == 0 and before == after, "TCLI2 equal never rewrites bytes"
@@ -1184,7 +1184,7 @@ def _selftest_cli() -> None:
             assert "sleep-then-assert:" in errors and " -> " in errors and "fix:" in errors, "TCLI3 diagnostic"
     # TCLI3 mixed decrease of old path and increase of new path is not a net
     # zero allowance transfer: the same report must still name the new wait.
-    status, before, after, _, _, _, errors = invoke(["--write-baseline", "--reason", "move"],
+    status, before, after, _, _, _, errors = invoke(["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("move")],
                                                   {"e2e/new.mjs": sleep})
     assert status == 1 and before == after and "e2e/new.mjs:1" in errors, "TCLI3 mixed growth/fall"
 
@@ -1218,7 +1218,7 @@ def _selftest_cli() -> None:
             assert status == 1 and before is None and after is None and not observed, "TCLI6 missing refuses before scan"
     for argv in (["--awaken-gate-argument-probe"], ["--self-tes"], ["--selftest"], ["--write-baselin"],
                  ["--check", "--tighten"], ["--self-test", "--write-baseline"],
-                 ["--check", "--reason", "reviewed"], ["--tighten", "--reason", "reviewed"],
+                 ["--check", "--reason", _architecture_ratchet._test_growth_reason("reviewed")], ["--tighten", "--reason", _architecture_ratchet._test_growth_reason("reviewed")],
                  ["--write-baseline", "--reason", ""], ["--write-baseline", "--reason", "   "]):
         status, before, after, observed, _, _, errors = invoke(argv)
         assert status == 2 and before == after and not observed and "usage:" in errors, f"TCLI7 {argv}"

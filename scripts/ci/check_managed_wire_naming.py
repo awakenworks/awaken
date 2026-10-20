@@ -280,7 +280,7 @@ def _selftest_cli() -> None:
                 assert len(source_reads) == len(set(source_reads)), "C6 each actual source read once"
             return status, before, after, observed, tests, stdout.getvalue(), stderr.getvalue()
 
-    writes = (["--tighten"], ["--write-baseline"], ["--write-baseline", "--reason", "reviewed"])
+    writes = (["--tighten"], ["--write-baseline"], ["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")])
     modes = ([], ["--check"], *writes)
     for argv in modes:
         status, before, after, reads, _, _, _ = invoke(argv)
@@ -330,7 +330,7 @@ def _selftest_cli() -> None:
             assert status == 1 and before == after and "baseline record missing" in errors, "C3 existing record required in every mode"
     # C5 first initialization permits exactly the already-valid zero-debt tree,
     # never a new allowance. Missing default/tighten still require a baseline.
-    for argv in (["--write-baseline"], ["--write-baseline", "--reason", "first record"]):
+    for argv in (["--write-baseline"], ["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("first record")]):
         status, before, after, _, _, _, _ = invoke(argv, {}, None)
         assert status == 0 and before is None and json.loads(after) == {"unannotated": []}, "C5 zero initialization"
         for sources in ({"new.rs": "pub struct New;\n"}, {"inline.rs": "/// SDK: inline\npub struct Inline;\n"}):

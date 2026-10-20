@@ -28,6 +28,7 @@ import json
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import TypeVar
@@ -148,6 +149,33 @@ def growth_reason(earlier: str | None, reason: str) -> str:
     return reason if not earlier else earlier if reason in earlier else f"{earlier}; then: {reason}"
 
 
+def validate_growth_reason(reason: str) -> None:
+    """Validate a new D10 review record; historical reasons remain opaque.
+
+    This is record admission, not approval authentication. The existing writer
+    retains the exact supplied text and its history; no second record is made.
+    """
+    def unique_fields(pairs):
+        record = {}
+        for key, value in pairs:
+            if key in record:
+                raise ValueError(f"duplicate review field: {key}")
+            record[key] = value
+        return record
+
+    try:
+        record = json.loads(reason, object_pairs_hook=unique_fields)
+        fields = {"reason", "approved_by", "date", "remove_when"}
+        if (not isinstance(record, dict) or set(record) != fields
+                or any(not isinstance(value, str) or not value.strip() for value in record.values())):
+            raise ValueError("four nonempty review fields are required")
+        if date.fromisoformat(record["date"]).isoformat() != record["date"]:
+            raise ValueError("date must be YYYY-MM-DD")
+    except (ValueError, TypeError) as error:
+        raise ValueError("--reason must be a JSON object with nonempty string fields "
+                         "reason, approved_by, date (YYYY-MM-DD), and remove_when") from error
+
+
 def render(rules: tuple[Rule, ...], counts: Counts, previous: dict, reason: str | None, comment: str) -> dict:
     document: dict = {**previous, "$comment": comment}
     document.pop("growth_reasons", None)
@@ -213,7 +241,8 @@ def baseline_cli(
     modes.add_argument("--check", action="store_true", help="check without writing (the default)")
     modes.add_argument("--tighten", action="store_true", help="record tighter bounds in an existing baseline")
     modes.add_argument("--write-baseline", action="store_true", help="record the current tree (growth needs --reason)")
-    parser.add_argument("--reason", help="with --write-baseline: why a recorded allowance may grow")
+    parser.add_argument("--reason", help="with --write-baseline: JSON review record with reason, approved_by, "
+                        "date (YYYY-MM-DD), and remove_when")
     if report:
         (modes if report_only else parser).add_argument("--report", action="store_true", help="print the measurements")
     if stage:
@@ -222,6 +251,12 @@ def baseline_cli(
     if args.reason is not None and (not args.write_baseline or not args.reason.strip()):
         print("usage: --reason must be nonempty and only applies to --write-baseline", file=sys.stderr)
         return 2
+    if args.reason is not None:
+        try:
+            validate_growth_reason(args.reason)
+        except ValueError as error:
+            print(f"usage: {error}", file=sys.stderr)
+            return 2
     if getattr(args, "stage", False) and not args.tighten:
         print("usage: --stage only applies to --tighten", file=sys.stderr)
         return 2
@@ -258,7 +293,8 @@ def baseline_cli(
             initializing = not exists or (is_initialization is not None and is_initialization(previous))
             if grown and not initializing and not args.reason:
                 errors += [f"baseline would grow: {item}" for item in grown]
-                errors.append("Use --write-baseline --reason '<why this must grow>' to record the growth.")
+                errors.append("Use --write-baseline --reason '<JSON review: reason, approved_by, date, "
+                              "remove_when>' to record the growth.")
         else:
             errors = check(measured, previous)
     for error in errors:
@@ -315,6 +351,12 @@ def main(
                         tighten=lower,
                         write=lambda current, previous, reason: (
                             render(rules, current[0], previous, reason, comment), growth(rules, current[0], previous)))
+
+
+def _test_growth_reason(reason: str = "reviewed") -> str:
+    """Fictional review record shared by the real CLI decision-table fixtures."""
+    return json.dumps({"reason": reason, "approved_by": "fixture-reviewer",
+                       "date": "2026-10-20", "remove_when": "fixture completes"})
 
 
 def _cli_fixture(invoke, argv, baseline, measurement_name, measurement, **overrides):
@@ -400,15 +442,15 @@ def _selftest_cli() -> None:
     for argv in ([], ["--check"], ["--tighten"]):
         status, before, after, observed = invoke(argv, equal, None)
         assert status == 1 and before is None and after is None and not observed, "C5 no initialization/measurement"
-    for argv in (["--tighten"], ["--write-baseline", "--reason", "reviewed"]):
+    for argv in (["--tighten"], ["--write-baseline", "--reason", _test_growth_reason("reviewed")]):
         status, before, after, _ = invoke(argv, {"r": {"a": 1}}, hard=("hard failure",))
         assert status == 1 and before == after, "C6 hard rules also forbid reasoned writes"
     status, _, after, _ = invoke(["--write-baseline"], equal, None)
     assert status == 0 and json.loads(after)["r"] == {"a": 2}, "C7 first write retained"
     status, before, after, _ = invoke(["--write-baseline"], {"r": {"a": 3}})
     assert status == 1 and before == after, "C7 reason required for growth"
-    status, _, after, _ = invoke(["--write-baseline", "--reason", "necessary"], {"r": {"a": 3}})
-    assert status == 0 and json.loads(after)["growth_reasons"]["r"]["a"] == "necessary", "C7 reason"
+    status, _, after, _ = invoke(["--write-baseline", "--reason", _test_growth_reason("necessary")], {"r": {"a": 3}})
+    assert status == 0 and json.loads(after)["growth_reasons"]["r"]["a"] == _test_growth_reason("necessary"), "C7 reason"
     for argv in (["--check", "--tighten"], ["--self-test", "--write-baseline"],
                  ["--tighten", "--reason", "growth"], ["--check", "--reason", "growth"],
                  ["--tighten", "--reason", ""], ["--write-baseline", "--reason", ""],
@@ -417,6 +459,40 @@ def _selftest_cli() -> None:
         assert status == 2 and before == after and not observed, f"C8 {argv}"
     status, before, after, observed = invoke(["--self-test"], equal)
     assert status == 0 and before == after and not observed, "C9 self-test only"
+
+    # C10 cause/effect graph: explicit write + valid four-field review permits
+    # the original numeric/hard-rule decision; missing/blank/nonstring fields,
+    # duplicate keys, malformed JSON or a noncanonical/invalid date -> usage2
+    # before measurement or baseline writes. These fixtures name a fictional
+    # reviewer; formatting is not authentication or permission to waive a rule.
+    valid = json.loads(_test_growth_reason())
+    invalid = ["reviewed", "{", "null", "[]", '"text"',
+               _test_growth_reason()[:-1] + ', "approved_by": "other"}',
+               json.dumps({**valid, "extra": "not a second record"})]
+    for key in valid:
+        invalid.append(json.dumps({field: value for field, value in valid.items() if field != key}))
+        invalid.extend(json.dumps({**valid, key: value}) for value in ("", " \n ", None, 1, [], {}))
+    invalid.extend(json.dumps({**valid, "date": value}) for value in
+                   ("2026-02-29", "2026-13-01", "20261020", "2026-W43-2", "2026-10-20T00:00:00Z"))
+    for reason in invalid:
+        for baseline in (held, None):
+            status, before, after, observed = invoke(["--write-baseline", "--reason", reason],
+                                                     {"r": {"a": 3}}, baseline)
+            assert status == 2 and before == after and not observed, "C10 review admission before IO"
+    # C11 valid JSON keeps supplied text and existing historical reasons. A
+    # second growth appends through growth_reason; repeats retain that history.
+    # Date validation permits a real leap day, and does not consult wall time.
+    for record in (valid, {**valid, "reason": "兼容边界迁移", "date": "2024-02-29"}):
+        reason = json.dumps(record, ensure_ascii=False, indent=2)
+        previous = {**held, "growth_reasons": {"r": {"a": "legacy review text"}}}
+        status, _, after, observed = invoke(["--write-baseline", "--reason", reason], {"r": {"a": 3}}, previous)
+        expected = "legacy review text; then: " + reason
+        document = json.loads(after)
+        assert status == 0 and observed and document["growth_reasons"]["r"]["a"] == expected, "C11 exact history"
+        status, _, after, _ = invoke(["--write-baseline", "--reason", reason], {"r": {"a": 4}}, document)
+        assert status == 0 and json.loads(after)["growth_reasons"]["r"]["a"] == expected, "C11 repeat retained"
+        status, before, after, _ = invoke([], {"r": {"a": 4}}, json.loads(after))
+        assert status == 0 and before == after, "C11 check does not reclassify historical records"
 
 
 def _selftest_registered() -> None:

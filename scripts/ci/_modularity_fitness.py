@@ -615,12 +615,12 @@ def _selftest_cli() -> None:
     status, before, after, _, _ = invoke(["--write-baseline"], current)
     assert status == 1 and before == after, "MCLI3 unreasoned growth"
     prior = {**held, "growth_reasons": {**foreign, "impl-spread": {"c::T": "first"}}}
-    status, _, after, _, _ = invoke(["--write-baseline", "--reason", "reviewed"], current, prior)
+    status, _, after, _, _ = invoke(["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")], current, prior)
     document = json.loads(after)
     assert status == 0 and document["impl-spread"]["c::T"] == {"files": 9, "methods": 81,
                                                               "reason": "extract component"}, "MCLI3 exact facts"
-    assert document["growth_reasons"] == {**foreign, "impl-spread": {"c::T": "first; then: reviewed"},
-                                          "super-glob": {"c": "reviewed"}}, "MCLI3 reason history"
+    assert document["growth_reasons"] == {**foreign, "impl-spread": {"c::T": "first; then: " + _architecture_ratchet._test_growth_reason("reviewed")},
+                                          "super-glob": {"c": _architecture_ratchet._test_growth_reason("reviewed")}}, "MCLI3 reason history"
     assert document["future-counter"] == held["future-counter"], "MCLI3 foreign counter retained"
     # Unlike shape's explicit crates={} initial state, an existing empty
     # modularity file is not a global authorization to grow a held metric.
@@ -628,14 +628,14 @@ def _selftest_cli() -> None:
     status, before, after, _, _ = invoke(["--write-baseline"], ordinary, {})
     assert status == 1 and before == after, "MCLI3 no borrowed initialization waiver"
     for change in ({"unreachable-pub": False}, {"extracting-realization-lines": CRATE_REVIEW_LINES + 1}):
-        status, before, after, _, _ = invoke(["--write-baseline", "--reason", "reviewed"], {**measure, **change})
+        status, before, after, _, _ = invoke(["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")], {**measure, **change})
         assert status == 1 and before == after, "MCLI3 hard rule cannot be reasoned away"
     no_reason = {**held, "crate-budget": {"c": {**held["crate-budget"]["c"], "reason": ""}}}
-    status, before, after, _, _ = invoke(["--write-baseline", "--reason", "reviewed"], baseline=no_reason)
+    status, before, after, _, _ = invoke(["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")], baseline=no_reason)
     assert status == 1 and before == after, "MCLI3 original review metadata remains mandatory"
     # A new recorded exception must itself satisfy the original metadata
     # rule. First-write mode does not silently invent a review or lint waiver.
-    for argv, expected in ((["--write-baseline"], 1), (["--write-baseline", "--reason", "reviewed"], 0)):
+    for argv, expected in ((["--write-baseline"], 1), (["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")], 0)):
         status, _, after, _, _ = invoke(argv, baseline=None)
         assert status == expected and ((after is not None) == (expected == 0)), "MCLI3 first review"
     for argv in ([], ["--check"], ["--tighten"]):

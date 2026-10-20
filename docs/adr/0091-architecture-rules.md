@@ -144,6 +144,18 @@ many ADRs, and some of them pull the code apart. Measured on main `14ef08382e`:
    (none allowed); the noun `Turn` outside protocol adapters (0); the vocabulary check
    extended from documents to code identifiers; configuration reads outside binaries.
 
+   Explicit baseline growth uses the existing owning guard's `--write-baseline`
+   path and shared `_architecture_ratchet.baseline_cli` admission. A new `--reason`
+   value is one JSON object containing exactly four nonempty string fields:
+   `reason` (why the allowance must grow), `approved_by` (the actual reviewer),
+   `date` (a valid `YYYY-MM-DD` date), and `remove_when` (the condition for removing
+   the allowance). Duplicate fields and incomplete records are rejected before
+   reading or measuring the baseline. This validates a review record's format;
+   it does not authenticate an approver or waive a hard architecture rule.
+   The existing writer retains the supplied text beside each affected allowance
+   and appends it to prior review history. Historical free-text records remain
+   readable and are not rewritten or retroactively assigned an approver.
+
 9. **Renames follow the code.** A name changes when its code moves or its dependency
    bundle is split, not in a separate sweep. Renames visible to awaken-cloud are
    recorded in a dated ADR-0088 amendment with their awaken-cloud impact and made
