@@ -307,7 +307,7 @@
     "awaken-runtime::engine/inference.rs::infer_with_retry_observed": 152,
     "awaken-runtime::engine/resume.rs::drive_resumed": 324,
     "awaken-runtime::engine/run_loop.rs::drive": 495,
-    "awaken-runtime::engine/run_loop.rs::infer_step": 240,
+    "awaken-runtime::engine/run_loop.rs::infer_step": 216,
     "awaken-runtime::engine/run_loop.rs::run_agent_loop": 204,
     "awaken-sandbox-container::lib.rs::resolve_and_stage": 164,
     "awaken-sandbox-container::provider.rs::create_container_for_effect": 492,

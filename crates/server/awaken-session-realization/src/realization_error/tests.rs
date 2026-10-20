@@ -336,6 +336,9 @@ fn each_failure_class_has_one_disposition_on_the_synchronizer_and_driver_paths()
     // contract), P3 the realization driver (FailSessionRealization report and
     // the drive error's Worker class). Effect: one disposition per class on
     // every path, and the projected code is the error's own closed code.
+    // Environment rows D1-D3 use the existing contract projection on every
+    // path: capacity, transient and permanent failures cannot acquire a
+    // second table when the Provider routing vocabulary gains a variant.
     // | Class | P1 = P2 = P3 |
     // | D1 transient provider / D4 authority lost / D5 pending / D11 poisoned | Retry |
     // | D2 capacity | Defer (report keeps the budget) |

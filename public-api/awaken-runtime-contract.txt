@@ -537,6 +537,8 @@ pub use awaken_runtime_contract::llm::ModelRequestObservation
 pub use awaken_runtime_contract::llm::TokenUsage
 pub use awaken_runtime_contract::llm::ToolCall
 pub enum awaken_runtime_contract::llm::Error
+pub awaken_runtime_contract::llm::Error::Admission
+pub awaken_runtime_contract::llm::Error::Admission::source: alloc::boxed::Box<awaken_runtime_contract::llm::Error>
 pub awaken_runtime_contract::llm::Error::Binding(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::Cancelled(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::ContentFiltered(alloc::string::String)
@@ -661,7 +663,7 @@ pub trait awaken_runtime_contract::llm::ModelContentMaterializer: core::marker::
 pub fn awaken_runtime_contract::llm::ModelContentMaterializer::materialize<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatRequest>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::llm::ModelContentMaterializer::process_bound(&self) -> bool
 pub trait awaken_runtime_contract::llm::ModelRequestGate: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::llm::ModelRequestGate::admit_model_request<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ModelRequestAdmissionRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::llm::ModelRequestAdmission, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::llm::ModelRequestGate::admit_model_request<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ModelRequestAdmissionRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ModelRequestAdmission>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::llm::ModelRequestGate::process_bound(&self) -> bool
 pub type awaken_runtime_contract::llm::Result<T> = core::result::Result<T, awaken_runtime_contract::llm::Error>
 pub mod awaken_runtime_contract::metrics

@@ -9,6 +9,8 @@
 mod cancelled_model_observation;
 #[path = "execution/checkpoint_observation.rs"]
 mod checkpoint_observation;
+#[path = "execution/model_admission.rs"]
+mod model_admission;
 #[path = "execution/response_reentry.rs"]
 mod response_reentry;
 #[path = "execution/tool_domain_preparation.rs"]
@@ -1221,13 +1223,13 @@ impl ModelRequestGate for SequencedModelRequestGate {
     async fn admit_model_request(
         &self,
         request: ModelRequestAdmissionRequest,
-    ) -> Result<ModelRequestAdmission, String> {
+    ) -> Result<ModelRequestAdmission, awaken_runtime_contract::llm::Error> {
         self.requests.lock().unwrap().push(request);
-        self.decisions
-            .lock()
-            .unwrap()
-            .pop_front()
-            .ok_or_else(|| "test gate received an unexpected logical model request".into())
+        self.decisions.lock().unwrap().pop_front().ok_or_else(|| {
+            awaken_runtime_contract::llm::Error::Binding(
+                "test gate received an unexpected logical model request".into(),
+            )
+        })
     }
 }
 
@@ -2032,7 +2034,7 @@ async fn model_preparation_and_quota_pause_cannot_mask_a_participant_veto() {
         async fn admit_model_request(
             &self,
             _: ModelRequestAdmissionRequest,
-        ) -> Result<ModelRequestAdmission, String> {
+        ) -> Result<ModelRequestAdmission, awaken_runtime_contract::llm::Error> {
             self.admissions.fetch_add(1, Ordering::SeqCst);
             if self.at == 2 {
                 tokio::task::yield_now().await;

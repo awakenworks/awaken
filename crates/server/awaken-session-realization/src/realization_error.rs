@@ -460,7 +460,7 @@ impl RealizationError {
     #[must_use]
     pub fn disposition(&self) -> Disposition {
         match self {
-            Self::Environment(error) => environment_disposition(error),
+            Self::Environment(error) => Disposition::of_run_error(&environment_effect_error(error)),
             Self::AuthorityLost { .. } | Self::Pending { .. } | Self::Poisoned(_) => {
                 Disposition::Retry
             }
@@ -590,17 +590,6 @@ fn mcp_run_error(error: &awaken_session_mcp::McpError) -> RunError {
         },
         message: error.message.clone(),
         code: error.code.clone(),
-    }
-}
-
-fn environment_disposition(error: &SandboxError) -> Disposition {
-    use awaken_agent_contract::resilience::{Classify, Disposition as Provider};
-    if matches!(error, SandboxError::CapacityUnavailable(_)) {
-        return Disposition::Defer;
-    }
-    match error.disposition() {
-        Provider::Transient | Provider::Quota { .. } => Disposition::Retry,
-        Provider::Permanent => Disposition::Terminal,
     }
 }
 

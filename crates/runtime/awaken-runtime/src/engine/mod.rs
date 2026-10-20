@@ -48,7 +48,7 @@ use awaken_runtime_contract::execution::{
 };
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatMessage, ChatRequest, ChatResponse, DeltaSink, ModelRequestAdmission,
-    ModelRequestAdmissionRequest, StopReason, ThreadUsage, ThreadUsageKey, ToolCall,
+    StopReason, ThreadUsage, ThreadUsageKey, ToolCall,
 };
 use awaken_runtime_contract::permission::{GateAuthority, GateDecision, GateOutcome};
 use awaken_runtime_contract::plugin::{

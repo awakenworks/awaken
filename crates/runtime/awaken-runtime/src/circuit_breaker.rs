@@ -9,14 +9,15 @@
 //! through: success closes the circuit, failure reopens it. Only retryable
 //! errors count — a permanent error (bad key, overlong prompt) says nothing
 //! about provider health, and counting it would trip the breaker on caller
-//! mistakes. The counted set must therefore stay exactly
-//! `llm::Error::is_retryable()`.
+//! mistakes. Application admission failures are inconclusive even when their
+//! underlying grade is retryable. The typed permit owns this projection.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
 use awaken_time::mono::{self, Instant};
 
+use awaken_runtime_contract::llm::Error as LlmError;
 use awaken_runtime_contract::metrics::MetricsRecorder;
 use parking_lot::Mutex;
 
@@ -70,6 +71,14 @@ pub(crate) struct CircuitPermit<'a> {
     finished: bool,
 }
 
+fn counts_as_provider_failure(error: &LlmError) -> bool {
+    match error {
+        LlmError::Observed { source, .. } => counts_as_provider_failure(source),
+        LlmError::Admission { .. } => false,
+        _ => error.is_retryable(),
+    }
+}
+
 impl CircuitPermit<'_> {
     pub(crate) fn success(mut self) {
         self.breaker
@@ -77,8 +86,8 @@ impl CircuitPermit<'_> {
         self.finished = true;
     }
 
-    pub(crate) fn failure(mut self, retryable: bool) {
-        let outcome = if retryable {
+    pub(crate) fn failure(mut self, error: &LlmError) {
+        let outcome = if counts_as_provider_failure(error) {
             Completion::RetryableFailure
         } else {
             Completion::Inconclusive
@@ -194,14 +203,55 @@ mod tests {
     }
 
     #[test]
+    fn admission_failures_cannot_open_or_heal_a_provider_circuit() {
+        // R1 retryable application-admission refusals stay inconclusive and
+        // cannot open a healthy Provider circuit. R2 a genuine Provider
+        // failure still opens it. R3 an admission refusal during its half-open
+        // probe cannot report Provider success or close the original circuit.
+        // These are grade-identical errors; the explicit owner is decisive.
+        let cb = breaker(1, Duration::from_secs(60));
+        let admission = LlmError::Admission {
+            source: Box::new(LlmError::Provider("admission dependency".into())),
+        };
+        for _ in 0..3 {
+            cb.check("m", &NoopRecorder)
+                .expect("R1 prior admission failures must not open a Provider circuit")
+                .failure(&admission);
+        }
+        cb.check("m", &NoopRecorder)
+            .unwrap()
+            .failure(&LlmError::Provider("actual Provider unavailable".into()));
+        assert!(cb.check("m", &NoopRecorder).is_err(), "R2");
+
+        let cb = breaker(1, Duration::ZERO);
+        let spy = SpyRecorder::default();
+        cb.check("m", &spy)
+            .unwrap()
+            .failure(&LlmError::Provider("actual Provider unavailable".into()));
+        cb.check("m", &spy)
+            .expect("R3 probe is due")
+            .failure(&admission);
+        let observed = spy.transitions.lock().unwrap();
+        assert_eq!(observed.last().map(|event| event.1.as_str()), Some("open"));
+        assert!(
+            !observed.iter().any(|event| event.1 == "closed"),
+            "R3 no health success"
+        );
+    }
+
+    #[test]
     fn opens_after_threshold_and_rejects() {
         let cb = breaker(2, Duration::from_secs(60));
-        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        cb.check("m", &NoopRecorder)
+            .unwrap()
+            .failure(&LlmError::Provider("provider failure".into()));
         assert!(
             cb.check("m", &NoopRecorder).is_ok(),
             "below threshold still admits"
         );
-        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        cb.check("m", &NoopRecorder)
+            .unwrap()
+            .failure(&LlmError::Provider("provider failure".into()));
         let rejection = cb
             .check("m", &NoopRecorder)
             .err()
@@ -212,17 +262,23 @@ mod tests {
     #[test]
     fn success_closes_and_resets_the_count() {
         let cb = breaker(2, Duration::from_secs(60));
-        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        cb.check("m", &NoopRecorder)
+            .unwrap()
+            .failure(&LlmError::Provider("provider failure".into()));
         cb.check("m", &NoopRecorder).unwrap().success();
         // The count restarted: one more failure stays below the threshold.
-        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        cb.check("m", &NoopRecorder)
+            .unwrap()
+            .failure(&LlmError::Provider("provider failure".into()));
         assert!(cb.check("m", &NoopRecorder).is_ok());
     }
 
     #[test]
     fn cooldown_admits_one_probe_then_rejects_concurrent_probes() {
         let cb = breaker(1, Duration::from_millis(0));
-        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        cb.check("m", &NoopRecorder)
+            .unwrap()
+            .failure(&LlmError::Provider("provider failure".into()));
         // Cooldown already elapsed: the circuit half-opens for one probe.
         let _probe = cb.check("m", &NoopRecorder).expect("probe admitted");
         let rejection = cb
@@ -235,10 +291,12 @@ mod tests {
     #[test]
     fn probe_failure_reopens_probe_success_closes() {
         let cb = breaker(1, Duration::from_millis(0));
-        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        cb.check("m", &NoopRecorder)
+            .unwrap()
+            .failure(&LlmError::Provider("provider failure".into()));
         cb.check("m", &NoopRecorder)
             .expect("probe admitted")
-            .failure(true);
+            .failure(&LlmError::Provider("provider failure".into()));
         // Reopened with a fresh cooldown (0ms here), so the next check probes
         // again rather than staying closed.
         cb.check("m", &NoopRecorder).unwrap().success();
@@ -252,8 +310,12 @@ mod tests {
     #[test]
     fn abandoned_probe_reopens_without_counting_a_failure() {
         let cb = breaker(2, Duration::from_millis(0));
-        cb.check("m", &NoopRecorder).unwrap().failure(true);
-        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        cb.check("m", &NoopRecorder)
+            .unwrap()
+            .failure(&LlmError::Provider("provider failure".into()));
+        cb.check("m", &NoopRecorder)
+            .unwrap()
+            .failure(&LlmError::Provider("provider failure".into()));
         drop(
             cb.check("m", &NoopRecorder)
                 .expect("probe admitted after cooldown"),
@@ -262,7 +324,9 @@ mod tests {
         cb.check("m", &NoopRecorder).unwrap().success();
         // The failure count did not grow: one success closes and a single new
         // failure stays below the threshold of 2.
-        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        cb.check("m", &NoopRecorder)
+            .unwrap()
+            .failure(&LlmError::Provider("provider failure".into()));
         assert!(cb.check("m", &NoopRecorder).is_ok());
     }
 
@@ -287,7 +351,9 @@ mod tests {
         // metric an operator can see.
         let cb = breaker(1, Duration::from_millis(0));
         let spy = SpyRecorder::default();
-        cb.check("m", &spy).unwrap().failure(true); // opens
+        cb.check("m", &spy)
+            .unwrap()
+            .failure(&LlmError::Provider("provider failure".into())); // opens
         drop(
             cb.check("m", &spy)
                 .expect("cooldown elapsed → half-open probe"),
@@ -302,7 +368,9 @@ mod tests {
     #[test]
     fn models_are_isolated() {
         let cb = breaker(1, Duration::from_secs(60));
-        cb.check("down", &NoopRecorder).unwrap().failure(true);
+        cb.check("down", &NoopRecorder)
+            .unwrap()
+            .failure(&LlmError::Provider("provider failure".into()));
         assert!(cb.check("down", &NoopRecorder).is_err());
         assert!(cb.check("healthy", &NoopRecorder).is_ok());
     }
@@ -314,10 +382,12 @@ mod tests {
             cooldown: Duration::ZERO,
             half_open_max_probes: 2,
         });
-        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        cb.check("m", &NoopRecorder)
+            .unwrap()
+            .failure(&LlmError::Provider("provider failure".into()));
         let first = cb.check("m", &NoopRecorder).expect("first probe");
         let stale = cb.check("m", &NoopRecorder).expect("second probe");
-        first.failure(true);
+        first.failure(&LlmError::Provider("provider failure".into()));
 
         let current = cb.check("m", &NoopRecorder).expect("new generation probe");
         stale.success();
@@ -339,7 +409,9 @@ mod tests {
         // => the new probe still owns the sole slot, with no extra admission.
         let cb = breaker(1, Duration::ZERO);
         let stale = cb.check("m", &NoopRecorder).unwrap();
-        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        cb.check("m", &NoopRecorder)
+            .unwrap()
+            .failure(&LlmError::Provider("provider failure".into()));
         let current = cb.check("m", &NoopRecorder).unwrap();
         stale.success();
         assert!(cb.check("m", &NoopRecorder).is_err());
@@ -355,7 +427,9 @@ mod tests {
             cooldown: Duration::ZERO,
             half_open_max_probes: 0,
         });
-        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        cb.check("m", &NoopRecorder)
+            .unwrap()
+            .failure(&LlmError::Provider("provider failure".into()));
         assert!(cb.check("m", &NoopRecorder).is_err());
     }
 
@@ -364,7 +438,9 @@ mod tests {
         // R3: Open + elapsed cooldown + u64::MAX generation => absorbing
         // rejection. Never recycle an old permit's epoch through wrapping_add.
         let cb = breaker(1, Duration::ZERO);
-        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        cb.check("m", &NoopRecorder)
+            .unwrap()
+            .failure(&LlmError::Provider("provider failure".into()));
         cb.circuits.lock().get_mut("m").unwrap().kernel.generation = u64::MAX;
         assert!(cb.check("m", &NoopRecorder).is_err());
     }
@@ -379,7 +455,9 @@ mod tests {
                 let cb = breaker(1, Duration::ZERO);
                 let spy = SpyRecorder::default();
                 let stale = cb.check("m", &spy).unwrap();
-                cb.check("m", &spy).unwrap().failure(true);
+                cb.check("m", &spy)
+                    .unwrap()
+                    .failure(&LlmError::Provider("provider failure".into()));
                 let mut probe = (phase > 0).then(|| cb.check("m", &spy).unwrap());
                 if phase == 2 {
                     probe.take().unwrap().success();
@@ -390,8 +468,8 @@ mod tests {
                 };
                 match outcome {
                     0 => stale.success(),
-                    1 => stale.failure(true),
-                    2 => stale.failure(false),
+                    1 => stale.failure(&LlmError::Provider("provider failure".into())),
+                    2 => stale.failure(&LlmError::Unauthorized("request rejected".into())),
                     _ => drop(stale),
                 }
                 let guard = cb.circuits.lock();
@@ -419,7 +497,9 @@ mod tests {
                 cooldown: Duration::ZERO,
                 half_open_max_probes: budget,
             });
-            cb.check("m", &NoopRecorder).unwrap().failure(true);
+            cb.check("m", &NoopRecorder)
+                .unwrap()
+                .failure(&LlmError::Provider("provider failure".into()));
             let start = Barrier::new(9);
             let admitted = Barrier::new(9);
             let release = Barrier::new(9);

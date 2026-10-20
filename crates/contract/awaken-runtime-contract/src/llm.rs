@@ -292,7 +292,8 @@ pub enum ModelRequestAdmission {
 
 /// Neutral live authority checked before every logical model request. Durable
 /// accounting remains owned outside Runtime; this port only asks that owner for
-/// the current decision and never caches it.
+/// the current decision and never caches it. Errors carry their original grade;
+/// Runtime adds admission origin and pre-Provider evidence at the call boundary.
 #[async_trait]
 pub trait ModelRequestGate: Send + Sync {
     /// No independent governed execution survives the returned admission.
@@ -303,7 +304,7 @@ pub trait ModelRequestGate: Send + Sync {
     async fn admit_model_request(
         &self,
         request: ModelRequestAdmissionRequest,
-    ) -> std::result::Result<ModelRequestAdmission, String>;
+    ) -> Result<ModelRequestAdmission>;
 }
 
 /// A thread's accumulated token usage **attributed per model** (a session may span
@@ -452,6 +453,11 @@ mod thread_usage_key_tests {
 /// request cannot succeed), a hard `UsageLimit`, and `Cancelled`.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// An application-owned model admission failure, before Provider inference.
+    /// The nested grade controls bounded retry; this origin says nothing about
+    /// physical completion and cannot grant execution re-entry.
+    #[error("model admission failed: {source}")]
+    Admission { source: Box<Error> },
     /// The adapter's independent execution evidence. Unannotated failures are
     /// Unknown, never implicitly safe because a Rust future returned Err.
     /// Classification/health remains the enclosed error; this is not another
@@ -552,15 +558,16 @@ impl Error {
     pub fn execution_evidence(&self) -> crate::model_operation::ModelExecutionEvidence {
         match self {
             Self::Observed { execution, .. } => *execution,
+            Self::Admission { source } => source.execution_evidence(),
             _ => crate::model_operation::ModelExecutionEvidence::Unknown,
         }
     }
 
-    /// The existing error taxonomy, without changing its health/routing meaning.
+    /// The existing failure-grade payload; origin and physical evidence remain separate.
     #[must_use]
     pub fn classification(&self) -> &Self {
         match self {
-            Self::Observed { source, .. } => source.classification(),
+            Self::Observed { source, .. } | Self::Admission { source } => source.classification(),
             other => other,
         }
     }
@@ -600,6 +607,18 @@ impl Error {
     pub fn code(&self) -> &'static str {
         match self {
             Error::Observed { source, .. } => source.code(),
+            Error::Admission { source } => {
+                use crate::resilience::FailureClass;
+                match source.class() {
+                    FailureClass::Transient | FailureClass::Overloaded { .. } => {
+                        "model_admission_unavailable"
+                    }
+                    FailureClass::RateLimited { .. } => "model_admission_rate_limited",
+                    FailureClass::UsageLimit { .. } => "model_admission_usage_limit",
+                    FailureClass::Permanent => "model_admission_rejected",
+                    FailureClass::Cancelled => "cancelled",
+                }
+            }
             Error::Binding(_) => "binding_rejected",
             Error::Provider(_) | Error::InvalidResponse(_) => "provider_error",
             Error::RateLimited { .. } => "rate_limited",
@@ -906,3 +925,6 @@ mod error_classification_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod admission_tests;

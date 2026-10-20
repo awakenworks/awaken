@@ -145,7 +145,9 @@ pub fn environment_effect_error(error: &awaken_provisioning_contract::SandboxErr
         Disposition::Transient | Disposition::Quota { .. } => {
             RunError::unavailable_classified(ENVIRONMENT_UNAVAILABLE_CODE, message)
         }
-        Disposition::Permanent => RunError::classified(ENVIRONMENT_REJECTED_CODE, message),
+        Disposition::Permanent | Disposition::StopRouting => {
+            RunError::classified(ENVIRONMENT_REJECTED_CODE, message)
+        }
     }
 }
 

@@ -976,6 +976,7 @@ pub enum awaken_agent_contract::resilience::Disposition
 pub awaken_agent_contract::resilience::Disposition::Permanent
 pub awaken_agent_contract::resilience::Disposition::Quota
 pub awaken_agent_contract::resilience::Disposition::Quota::retry_after: core::option::Option<core::time::Duration>
+pub awaken_agent_contract::resilience::Disposition::StopRouting
 pub awaken_agent_contract::resilience::Disposition::Transient
 impl awaken_agent_contract::resilience::Disposition
 pub fn awaken_agent_contract::resilience::Disposition::prefers_failover(self) -> bool
