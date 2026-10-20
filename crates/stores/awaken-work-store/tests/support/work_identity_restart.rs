@@ -121,8 +121,12 @@ fn sqlite_identity_high_watermark_survives_a_native_process_restart() {
 
 #[tokio::test]
 async fn postgres_identity_high_watermark_survives_a_native_process_restart() {
-    let url = awaken_reliability_testkit::postgres_fixture_url()
-        .expect("native PostgreSQL restart requires fixture");
+    // A1 optional+absent reports a local skip; A2 required+absent or invalid
+    // configuration fails; A3 live runs the exact original seed/assert child
+    // processes and proves the physical generation/high-watermark survive.
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
     let fixture = WorkPostgresFixture::new(&url, 2).await;
     let endpoint = fixture.scoped_url.clone();
     let directory = tempfile::tempdir().unwrap();
