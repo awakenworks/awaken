@@ -226,3 +226,52 @@ such as Dream and Session, still require an explicit ownership decision. Tests p
 those decisions and exercise duplicate ownership, self-merges, chains, cycles,
 stale targets and cross-context merges. All CLI baseline-writing modes, including
 `--reason`, must reject an ambiguous map without changing the baseline.
+
+## Amendment — 2026-10-20: separate Provider SPI and Container transport boundaries
+
+The pending `awaken-container-contract` into `awaken-provisioning-contract` merge
+is withdrawn after reviewing callers and dependency direction on main
+`5c55874664`. Both existing crates remain independently listed targets. Sharing
+the `environment` bounded context does not make them the same interface boundary.
+
+Neutrality is relative to the published boundary. Provisioning keeps the provider
+replacement rule of ADR-0081 section 2. The existing Container contract publishes
+backend-specific language shared by its adapter and protocol participants; this
+is a scoped exception to that section's general backend-name rule, not permission
+to introduce backend clients or vocabulary into neutral Provider contracts.
+
+| Boundary | Callers | Implementer or vocabulary owner |
+|---|---|---|
+| Neutral Provisioning SPI | Session realization, environment composition and callers of `SandboxProvider` | Filesystem and container providers implement the same provider role; handles and live Sandbox roles remain provider-owned |
+| Container transport and broker | Container/Kubernetes adapters, Coordinator Create broker, Worker broker client and container-aware Session routing | Container owns wire/ticket/capacity values and their pure laws; the original Kubernetes ledger implements `K8sCreateBrokerEffects` |
+
+The ordinary Cargo graphs of `awaken-provisioning-contract` and
+`awaken-sandbox-local` contain no `awaken-container-contract`. Container depends
+on Provisioning to interpret its failures and policy through neutral Sandbox
+values; the reverse edge does not exist. Local implements the neutral provider
+without Kubernetes Create requests, ledger tickets or broker effects. Container
+and Kubernetes providers can depend on both contracts. Coordinator's broker
+receives its existing caller-owned effects role; its real ledger/client remains
+in the Kubernetes adapter and process composition selects that implementation.
+Development-only real-adapter fixtures are not production dependency edges.
+
+Combining the crates would make the neutral provider surface co-evolve with
+Kubernetes wire and privileged broker operations. It would not automatically add
+a Kubernetes client dependency or grant RBAC authority: the Container contract
+itself has no such client, and possession of a type is not a permission. The
+rejected coupling is vocabulary, caller responsibility and change scope.
+
+Keep this direction: Container transport may consume neutral Provisioning;
+Provisioning does not import Container transport or re-export its backend
+vocabulary. Pure provider laws stay in Provisioning, Container wire and shared
+backend policy stay in Container, physical clients/ledgers/codecs stay in their
+adapters, and deployment policy is selected by the composition root. A single
+`SandboxProvider` does not require a single contract for every backend concern.
+
+The map now has 30 targets and four pending sources, all belonging to the planned
+Core Session packaging change. The actual workspace still has 33 contract crates;
+neither figure is a quota. Target-map regressions retain both boundaries even
+with the same context and reject a disappeared boundary as an absent target,
+rather than accepting it as a completed pending merge. This amendment changes
+the plan and guard only; Rust APIs, dependency manifests, serialized values,
+effect fencing and physical ownership do not change.

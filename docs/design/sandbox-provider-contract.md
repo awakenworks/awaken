@@ -156,3 +156,31 @@ component-total/binary closure, physical cleanup or a Session cleanup receipt.
 SDK release types, source and snapshots are outside this migration. Final
 qualification and the normal Cargo-generated lock must bind the actual received
 source rather than these prepared source changes.
+
+## Provider and Container boundaries stay separate (2026-10-20)
+
+The caller/dependency review on main `5c55874664` withdraws the planned
+Container-to-Provisioning contract merge; see
+[ADR-0091's boundary amendment](../adr/0091-architecture-rules.md#amendment--2026-10-20-separate-provider-spi-and-container-transport-boundaries).
+One physical supply port remains `SandboxProvider`; this does not place every
+backend's wire language or privileged operation on that neutral boundary.
+
+| Concern | Existing owner and use |
+|---|---|
+| Create/adopt/observe/restore capabilities, effect ownership and opaque handles | Provisioning SPI, consumed by Session/environment orchestration and implemented by Local and Container providers |
+| Kubernetes Create wire, ticket/reply values and privileged broker effects | Container contract, shared by Coordinator/Worker and implemented by the original Kubernetes ledger/client |
+| Shared Container failure projection, capacity and deployment policy values | Container contract; adapters supply typed transport facts and composition selects policy |
+| Physical client, durable ledger, provider handle codec and lifecycle effects | Existing Container/Kubernetes/Local implementations, selected by process composition |
+
+The dependency remains `awaken-container-contract` to
+`awaken-provisioning-contract`; the reverse edge is absent. Ordinary locked Cargo
+trees for Provisioning and Local do not reach the Container contract. Container
+providers depend on both seams, and container-aware application paths explicitly
+name the Container vocabulary they need. Coordinator's broker consumes
+`K8sCreateBrokerEffects`; Worker implements the opposite signed transport role,
+not that privileged capability. Concrete clients stay in adapters; Coordinator's
+real-adapter tests and the shared CLI composition retain their own dependencies.
+
+There is no new crate, provider facade, optional role discovery, protocol version
+or state authority. Existing wire fields, ticket identity, error classification,
+claim retention and cleanup rules keep their current owners and behavior.
