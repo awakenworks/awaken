@@ -686,9 +686,13 @@ async fn multipart_bundle_preserves_binary_support_files() {
 // Test design: sdk_multipart_create_list_retrieve_and_version_lifecycle
 // Cause/effect graph: SDK multipart create establishes one Skill and immutable versions shared by every lifecycle route.
 // Decision table: live version=retrieve/download; retire non-sole=delete; sole/unknown=4xx/404; Skill delete=terminal.
+// Parsing-ownership rules: P1 initial frontmatter chooses the catalog identity
+// and stored metadata together; P2 body-only append retains that identity and
+// metadata but preserves its own immutable bytes. Read the actual versions,
+// since a thin wire projection cannot prove metadata or bundle preservation.
 #[tokio::test]
 async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
-    let (router, _store, dir) = router_with_store().await;
+    let (router, store, dir) = router_with_store().await;
 
     // Multipart create (SDK path) registers a v1 and returns the tagged catalog id.
     let created = post_multipart(&router, "/v1/skills", SKILL_V1)
@@ -698,6 +702,11 @@ async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
     assert_eq!(created["type"], "skill");
     assert_eq!(created["latest_version"], "1");
     assert_eq!(created["source"], "custom");
+    assert_eq!(
+        id,
+        awaken_resource_contract::skill_catalog_id("Greeter"),
+        "P1 identity follows the same parsed frontmatter"
+    );
 
     // List surfaces it.
     let list = get(&router, "/v1/skills").await.expect(StatusCode::OK);
@@ -729,6 +738,20 @@ async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
         .expect_for(StatusCode::OK, "expected status");
     assert_eq!(v2["type"], "skill_version");
     let vid = v2["id"].as_str().unwrap().to_string();
+    for (ordinal, content) in [(1, SKILL_V1), (2, SKILL_V2)] {
+        let stored = store.version("test", &id, ordinal).await.unwrap().unwrap();
+        assert_eq!(stored.skill_id.as_str(), id, "P1/P2 immutable owner");
+        assert_eq!(stored.name, "Greeter", "P1/P2 name");
+        assert_eq!(stored.description, "says hi", "P1/P2 description");
+        assert_eq!(stored.directory, "Greeter", "P1/P2 directory");
+        assert_eq!(stored.files.len(), 1, "P1/P2 original bundle");
+        assert_eq!(stored.files[0].path, "SKILL.md", "P1/P2 exact path");
+        assert_eq!(
+            stored.files[0].content,
+            content.as_bytes(),
+            "P1/P2 exact bytes"
+        );
+    }
 
     // List versions → two rows.
     let versions = read(
