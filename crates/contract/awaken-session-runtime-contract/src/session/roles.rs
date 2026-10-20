@@ -568,6 +568,16 @@ pub trait ThreadReadRuntime: Send + Sync {
 /// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
 pub trait TerminalCleanupRuntime: Send + Sync {
+    /// Observe original source retention from the complete frozen Session.
+    /// The root supplies preparation status; this read installs no slot and
+    /// grants no preparation, disposal, retirement or cleanup receipt.
+    async fn observe_terminal_cleanup_retention(
+        &self,
+        session_id: &crate::SessionId,
+        projection: &crate::FrozenSessionProjection,
+        source_prepared: bool,
+    ) -> Result<bool, RunError>;
+
     /// Make every source-dependent effect durable under the exact aggregate
     /// preparation fence without deleting the physical realization.
     async fn prepare_terminal_cleanup_for_effect(

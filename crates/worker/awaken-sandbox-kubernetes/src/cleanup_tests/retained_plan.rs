@@ -23,6 +23,10 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
     // original keeps source preparation through its retained Create guard;
     // an absent Pod + live claim remains denied. Neither
     // empty membership nor source preparation is a physical cleanup receipt.
+    // R5 before preparations are durable, Actor retirement must observe the
+    // same retained original terminal source and independent exact live claim.
+    // Removing its guard, terminal phase or GC independence denies retirement;
+    // observing this read never mutates or prepares/disposes the source.
     for row in [
         "empty",
         "control",
@@ -37,6 +41,15 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
         "already-absent",
         "deleting-pod",
         "absent-pod-live-claim",
+        "retirement-held",
+        "retirement-no-guard",
+        "retirement-running",
+        "retirement-deleting",
+        "retirement-pod-owner",
+        "retirement-claim-owner",
+        "retirement-prepared-running",
+        "retirement-prepared-absent",
+        "retirement-prepared-disposing",
     ] {
         let (mut runtime, state, _, _, server) = fixture(0, false).await;
         let control = row != "empty";
@@ -194,6 +207,35 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
                     state.pod.as_mut().unwrap().metadata.deletion_timestamp =
                         Some(serde_json::from_value(json!("2026-10-14T06:37:35Z")).unwrap())
                 }
+                "retirement-no-guard" => state.pod.as_mut().unwrap().metadata.finalizers = None,
+                "retirement-running" | "retirement-prepared-running" => {
+                    state.pod.as_mut().unwrap().status =
+                        Some(serde_json::from_value(json!({"phase":"Running"})).unwrap())
+                }
+                "retirement-deleting" => {
+                    state.pod.as_mut().unwrap().metadata.deletion_timestamp =
+                        Some(serde_json::from_value(json!("2026-10-14T06:37:35Z")).unwrap())
+                }
+                "retirement-pod-owner" | "retirement-claim-owner" => {
+                    let owner = serde_json::from_value(json!({"apiVersion":"v1","kind":"Pod",
+                        "name":"retiring-worker","uid":"worker-pod-uid"}))
+                    .unwrap();
+                    if row == "retirement-pod-owner" {
+                        state.pod.as_mut().unwrap().metadata.owner_references = Some(vec![owner]);
+                    } else {
+                        state.claim.as_mut().unwrap().metadata.owner_references = Some(vec![owner]);
+                    }
+                }
+                "retirement-prepared-absent" => {
+                    state.pod = None;
+                    state.claim = None;
+                }
+                "retirement-prepared-disposing" => {
+                    state.pod.as_mut().unwrap().metadata.deletion_timestamp =
+                        Some(serde_json::from_value(json!("2026-10-14T06:37:35Z")).unwrap());
+                    state.claim.as_mut().unwrap().metadata.deletion_timestamp =
+                        Some(serde_json::from_value(json!("2026-10-14T06:37:35Z")).unwrap());
+                }
                 _ => {}
             }
         }
@@ -209,6 +251,42 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
         }
         if row == "configuration" {
             spec.outputs_path = "/different-outputs".into();
+        }
+        if row.starts_with("retirement-") {
+            let source_prepared = row.starts_with("retirement-prepared-");
+            let mut adoption = SandboxAdoption::new(&spec, &handle);
+            adoption.observation_purpose =
+                awaken_provisioning_contract::SandboxObservationPurpose::WorkerRetirement {
+                    source_prepared,
+                };
+            let observed = provider
+                .observe(adoption, adoption.effect_basis(&create))
+                .await;
+            // R6 durable preparation belongs to the aggregate. Once supplied,
+            // a running substrate, disposing pair or exact absence retains
+            // the canonical physical replay path without new source I/O.
+            let recoverable = matches!(observed, Ok(pc::SandboxObservation::Terminal { .. }))
+                || (source_prepared
+                    && matches!(
+                        observed,
+                        Ok(pc::SandboxObservation::Ready
+                            | pc::SandboxObservation::Provisioning { .. }
+                            | pc::SandboxObservation::Disposing { .. }
+                            | pc::SandboxObservation::DefinitivelyUnavailable { .. })
+                    ));
+            assert_eq!(
+                recoverable,
+                source_prepared || matches!(row, "retirement-held" | "retirement-deleting"),
+                "R5/R6 {row}: {observed:?}"
+            );
+            {
+                let snapshot = state.lock().unwrap();
+                assert!(snapshot.writes.is_empty(), "R5 observation is read-only");
+                assert_eq!((json!(snapshot.pod), json!(snapshot.claim)), before);
+            }
+            server.abort();
+            assert!(server.await.unwrap_err().is_cancelled());
+            continue;
         }
         let prepared = provider
             .prepare_terminal_for_effect(&spec, Some(&handle), None, &terminal, &authority)

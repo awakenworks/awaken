@@ -1502,6 +1502,14 @@ impl ContainerRuntime for DockerRuntime {
         &self,
         expectation: crate::ContainerObservationExpectation<'_>,
     ) -> Result<pc::SandboxObservation, RuntimeError> {
+        if matches!(
+            expectation.purpose,
+            awaken_provisioning_contract::SandboxObservationPurpose::WorkerRetirement { .. }
+        ) {
+            return Err(backend(
+                "Docker does not qualify cross-Worker source retention",
+            ));
+        }
         if expectation.runtime_handle.is_some() {
             return Err(backend(
                 "Docker observation received foreign runtime continuation evidence",

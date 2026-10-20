@@ -1466,6 +1466,31 @@ mod process_role_surface_tests {
         assert_eq!(observed["physical_attempt_active"], false);
         assert_eq!(observed["work_claims_active"], false);
         assert_eq!(observed["session_realizations_active"], false);
+        // R7 the actual composed private Router consumes the qualification
+        // selector and emits its optional result. A Ready/unanchored Worker
+        // cannot retire even with empty owners. Merely declaring the DTO or
+        // parsing the selector in isolation cannot satisfy this wire check.
+        for (selector, expected) in [("false", None), ("true", Some(false))] {
+            let response = private_coordinator
+                .clone()
+                .oneshot(
+                    Request::get(format!("{domain_path}&qualify_retirement={selector}"))
+                        .header("authorization", "Bearer registration-token")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "R7 {selector}");
+            let response: awaken_coordinator::worker_observation_boundary::WorkerDomainObservation =
+                serde_json::from_slice(
+                    &axum::body::to_bytes(response.into_body(), 1_000_000)
+                        .await
+                        .unwrap(),
+                )
+                .unwrap();
+            assert_eq!(response.retirement_permitted, expected, "R7 {selector}");
+        }
         domain_work
             .assignment()
             .enqueue_session(

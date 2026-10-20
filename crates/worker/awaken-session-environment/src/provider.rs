@@ -558,6 +558,15 @@ impl SandboxEnvironmentProvider {
         basis: pc::SandboxObservationBasis<'_>,
         purpose: pc::SandboxObservationPurpose,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        if matches!(
+            purpose,
+            pc::SandboxObservationPurpose::WorkerRetirement { .. }
+        ) && !matches!(self, Self::Container { .. })
+        {
+            return Err(pc::SandboxError::unsupported(
+                "provider does not qualify cross-Worker source retention",
+            ));
+        }
         match self {
             Self::Workdir { provider, .. } => {
                 pc::SandboxProvider::observe(

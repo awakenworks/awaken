@@ -23,6 +23,7 @@ pub(crate) struct ContinuationObservationEvidence<'a> {
     pub(crate) pod_deleting: bool,
     pub(crate) cleanup_gate_held: bool,
     pub(crate) original_terminal_guard: bool,
+    pub(crate) gc_independent: bool,
     pub(crate) expected_uid: Option<&'a str>,
     pub(crate) observed_uid: Option<&'a str>,
     pub(crate) observed_terminating: bool,
@@ -46,12 +47,34 @@ pub(crate) fn continuation_observation_disposition(
         pod_deleting,
         cleanup_gate_held,
         original_terminal_guard,
+        gc_independent,
         expected_uid,
         observed_uid,
         observed_terminating,
         effect_fenced,
         effect_fenced_total_absence,
     } = evidence;
+    if matches!(
+        purpose,
+        SandboxObservationPurpose::WorkerRetirement {
+            source_prepared: false
+        }
+    ) {
+        return if pod_present
+            && original_terminal_guard
+            && gc_independent
+            && expected_uid.is_some()
+            && expected_uid == observed_uid
+            && !observed_terminating
+            && !cleanup_gate_held
+        {
+            Ok(ContinuationObservationDisposition::RetainedOriginal)
+        } else {
+            Err(backend(
+                "original Kubernetes source is not retained independently of its Worker",
+            ))
+        };
+    }
     if expected_uid != observed_uid {
         if !pod_present
             && expected_uid.is_some()
@@ -146,6 +169,7 @@ fn absent_pod_observation_never_confuses_recovery_with_completed_cleanup() {
         pod_deleting: false,
         cleanup_gate_held: false,
         original_terminal_guard: false,
+        gc_independent: false,
         expected_uid: Some("p"),
         observed_uid,
         observed_terminating: terminating,

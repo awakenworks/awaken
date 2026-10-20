@@ -1164,6 +1164,14 @@ impl ContainerRuntime for PodmanRuntime {
         &self,
         expectation: crate::ContainerObservationExpectation<'_>,
     ) -> Result<pc::SandboxObservation, RuntimeError> {
+        if matches!(
+            expectation.purpose,
+            awaken_provisioning_contract::SandboxObservationPurpose::WorkerRetirement { .. }
+        ) {
+            return Err(backend(
+                "Podman does not qualify cross-Worker source retention",
+            ));
+        }
         if expectation.runtime_handle.is_some() {
             return Err(backend(
                 "Podman observation received foreign runtime continuation evidence",

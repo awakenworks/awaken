@@ -658,14 +658,7 @@ impl crate::environment_holding::EnvironmentHolding {
         resolved_resources: Option<&session_resource::ResolvedSessionResources>,
         source_generation_id: Option<&str>,
     ) -> Result<ValidatedSessionEnvironmentAdoption, RealizationError> {
-        let handle: awaken_provisioning_contract::SandboxHandle = serde_json::from_str(encoded)
-            .map_err(crate::realization_error::EvidenceFault::InvalidBinding)?;
-        if handle.sandbox_id != thread {
-            return Err(RealizationError::invariant(format!(
-                "sandbox {} does not belong to Session {thread}",
-                handle.sandbox_id
-            )));
-        }
+        let handle = decode_session_environment_binding(thread, encoded)?;
         let spec =
             self.session_environment_adoption_spec(peers, thread, provider, resolved_resources)?;
         let spec = self.validate_session_environment_adoption(provider, &spec, &handle)?;
@@ -1309,4 +1302,21 @@ impl crate::environment_holding::EnvironmentHolding {
         retirement_result?;
         Ok(retired)
     }
+}
+
+/// Decode the same original binding for adoption and retention observation.
+/// Parsing never supplies a replacement identity or physical authority.
+pub(crate) fn decode_session_environment_binding(
+    thread: &str,
+    encoded: &str,
+) -> Result<awaken_provisioning_contract::SandboxHandle, RealizationError> {
+    let handle: awaken_provisioning_contract::SandboxHandle = serde_json::from_str(encoded)
+        .map_err(crate::realization_error::EvidenceFault::InvalidBinding)?;
+    if handle.sandbox_id != thread {
+        return Err(RealizationError::invariant(format!(
+            "sandbox {} does not belong to Session {thread}",
+            handle.sandbox_id
+        )));
+    }
+    Ok(handle)
 }

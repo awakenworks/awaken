@@ -81,6 +81,12 @@ impl SandboxCreateAttempt {
 pub enum SandboxObservationPurpose {
     Recovery,
     TerminalCleanup,
+    /// Read original participant retention without adopting or disposing it.
+    /// Prepared means the Session root already authorized its Dispose phase;
+    /// this observation grants neither cleanup authority nor an exit receipt.
+    WorkerRetirement {
+        source_prepared: bool,
+    },
 }
 
 /// Canonical inputs required to reattach or observe one existing Sandbox.

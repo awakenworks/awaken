@@ -684,6 +684,17 @@ mod tests {
     impl awaken_session_runtime_contract::TerminalCleanupRuntime
         for RecordingTerminalProjectionRuntime
     {
+        async fn observe_terminal_cleanup_retention(
+            &self,
+            session_id: &awaken_session_runtime_contract::__macro_support::SessionId,
+            projection: &awaken_session_runtime_contract::__macro_support::FrozenSessionProjection,
+            source_prepared: bool,
+        ) -> Result<bool, awaken_session_runtime_contract::__macro_support::RunError> {
+            awaken_session_runtime_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
+            &awaken_session_runtime_contract::NeutralRuntime, session_id, projection, source_prepared,
+        ).await
+        }
+
         // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Make every source-dependent effect durable under the exact aggregate

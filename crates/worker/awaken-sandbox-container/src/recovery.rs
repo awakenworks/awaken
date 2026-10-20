@@ -89,7 +89,7 @@ struct ReconstructedTerminalHandle {
 }
 
 impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
-    fn normalized_terminal_handle(
+    pub(super) fn normalized_terminal_handle(
         &self,
         spec: &pc::SandboxSpec,
         handle: Option<&pc::SandboxHandle>,

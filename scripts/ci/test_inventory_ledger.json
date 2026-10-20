@@ -32,6 +32,8 @@
     "legacy_session_and_conversation_share_run_identity_and_recovery": "conversation_bindings_share_run_identity_and_recovery",
     "consecutive_failure_tolerance_absorbs_a_failed_step_until_success": "inference_retry_owner_stops_permanent_refusal_before_another_step",
     "consecutive_failure_tolerance_exhausted_ends_with_the_last_error": "inference_retry_owner_does_not_restart_the_request_budget",
-    "returned_unknown_model_error_blocks_retry_failover_and_outer_tolerance": "returned_unknown_model_error_blocks_retry_failover_and_another_step"
+    "returned_unknown_model_error_blocks_retry_failover_and_outer_tolerance": "returned_unknown_model_error_blocks_retry_failover_and_another_step",
+    "draining_cleanup_claim_only_continues_its_live_exact_generation": "draining_cleanup_claim_only_continues_its_owned_terminal_root",
+    "draining_cleanup_claim_races_compensate_only_the_new_grant": "draining_cleanup_claim_races_preserve_owned_roots_and_compensate_new_ones"
   }
 }

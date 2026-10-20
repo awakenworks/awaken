@@ -15,6 +15,21 @@ pub fn resource_mount_is_create_time(mount: &pc::MountRequirement) -> bool {
     matches!(mount.source, pc::MountSource::MemoryStore { .. })
 }
 
+/// The one pure create-time projection of an aggregate Resource manifest.
+pub fn create_time_resource_mounts(
+    resources: &awaken_session_configuration_contract::resource::ResolvedSessionResources,
+    environment: Option<&environment_projection::FrozenEnvironmentInputs>,
+) -> Vec<pc::MountRequirement> {
+    resources
+        .inputs()
+        .iter()
+        .filter_map(|input| {
+            crate::managed_input_layout::resolved_input_validation_mount(input, environment)
+        })
+        .filter(resource_mount_is_create_time)
+        .collect()
+}
+
 /// An inference-only execution can omit a physical Environment only when its complete immutable
 /// execution surface is environment-free. Inference-only Native/A2A routes do
 /// not need a Sandbox; ACP owns a CLI process and every executable integration
@@ -57,6 +72,37 @@ pub struct ProjectedSandboxLayout<'a> {
     pub content_delivery: Option<crate::frozen_inputs::ManagedContentDelivery>,
     pub environment: Option<&'a environment_projection::FrozenEnvironmentInputs>,
     pub network_isolation: bool,
+}
+
+/// Complete frozen/installed inputs share this one spec projection. The caller
+/// resolves any legacy installed-environment fallback before entering here.
+pub fn project_sandbox_spec(
+    thread: &str,
+    projection: ProjectedSandboxLayout<'_>,
+    env: Vec<pc::EnvVar>,
+) -> pc::SandboxSpec {
+    let mounts = project_session_mounts(
+        projection.resource_mounts,
+        projection.baseline_mounts,
+        projection.content_delivery,
+    );
+    let spec = environment_projection::sandbox_spec_from_projection(
+        thread,
+        mounts,
+        env,
+        projection.environment,
+        projection.network_isolation,
+    );
+    if projection.environment.is_some_and(|environment| {
+        environment
+            .sandbox
+            .as_ref()
+            .is_some_and(|sandbox| sandbox.host_access == pc::HostAccessPolicy::TrustedHost)
+    }) {
+        spec
+    } else {
+        pc::session_sandbox_projection(&spec, projection.has_repositories, false).0
+    }
 }
 
 /// A bare Workdir spec for an ephemeral sub-run sandbox (judge / delegate / compact /
