@@ -98,9 +98,13 @@ async fn sqlite_both_published_histories_preserve_live_leases_and_fence_deleted_
 
 #[tokio::test]
 async fn postgres_both_published_histories_preserve_live_leases_and_fence_deleted_ids() {
+    // A1 optional+absent reports the canonical local skip; A2 required+absent
+    // or invalid configuration fails at admission/setup; A3 live runs both
+    // published histories and every lease/retired-id/replay assertion below.
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
     for legacy in [false, true] {
-        let url = awaken_reliability_testkit::postgres_fixture_url()
-            .expect("upgrade evidence requires PostgreSQL");
         let fixture = crate::work_postgres_fixture::WorkPostgresFixture::new(&url, 2).await;
         let pool = fixture.pool.clone();
         let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(

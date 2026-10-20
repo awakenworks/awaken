@@ -404,10 +404,11 @@ self_test() {
     echo "Postgres gate must run the complete ingress suite with test-support" >&2
     return 1
   }
-  # P11 WorkQueue parity uses one generic suite for all three backends. Its
-  # required test-support feature must be enabled by the live database gate.
-  grep -Fxq 'pg_test cargo test -p awaken-work-store --features test-support || record_failure "$?"' "$0" || {
-    echo "Postgres gate must run WorkQueue conformance with test-support" >&2
+  # P11 WorkQueue parity uses one generic suite for all three backends. The
+  # full Work selection also requires named identity/archive witnesses, so
+  # optional local skips cannot be mistaken for live PostgreSQL evidence.
+  grep -Fxq 'pg_required_test -p awaken-work-store --features test-support \' "$0" || {
+    echo "Postgres gate must qualify the complete Work suite with test-support" >&2
     return 1
   }
   # P12 initialization-only socket readiness must not qualify TCP clients.
@@ -836,7 +837,20 @@ pg_test cargo test -p awaken-executable-environment-catalog || record_failure "$
 pg_test cargo test -p awaken-environment-image-build \
   postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority \
   -- --exact --test-threads=1 || record_failure "$?"
-pg_test cargo test -p awaken-work-store --features test-support || record_failure "$?"
+# A1 the gate owns a required live fixture: every named storage witness must
+# actually pass; absence, a skipped fixture or selection drift fails. A2 the
+# two ignored private child entrypoints remain parent-only, exactly as before;
+# their original parent tests still launch and verify the real native phases.
+pg_required_test -p awaken-work-store --features test-support \
+  --require-case=schema::identity_upgrade_tests::postgres_both_published_histories_preserve_live_leases_and_fence_deleted_ids \
+  --require-case=postgres_archive_keeps_existing_session_authority_after_reconnect \
+  --require-case=postgres_work_identity_is_not_reused_after_lifecycle_removal \
+  --require-case=durable::postgres_independent_pools_allocate_concurrently_without_reset \
+  --require-case=durable::postgres_allocator_work_and_watermark_roll_back_as_one_transaction \
+  --require-case=durable::postgres_missing_malformed_and_exhausted_allocators_fail_closed \
+  --require-case=restart::postgres_identity_high_watermark_survives_a_native_process_restart \
+  -- --skip restart::identity_restart_child --skip environment_revision_restart_child \
+  --test-threads=1 || record_failure "$?"
 
 # The same live PostgreSQL and object-store substrates finish with a physical
 # point-in-time restore. This is a recovery drill, not another repository or
