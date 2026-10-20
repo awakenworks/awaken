@@ -11,6 +11,7 @@ import unittest
 PASS = re.compile(r"^\s*PASS\s+\[[^]]+\]\s+(?:\([^)]*\)\s+)?(\S+)\s+(\S+)", re.MULTILINE)
 SUMMARY = re.compile(r"Summary \[[^]]+\] (\d+) tests? run: (\d+) passed(?: \([^\n]*\))?(?:, (\d+) skipped)?\s*$", re.MULTILINE)
 SKIP = re.compile(r"^\s*(?:SKIPPED\b|\[skip\])", re.MULTILINE | re.IGNORECASE)
+LEAK = re.compile(r"^\s*(?:LEAK|LEAK-FAIL)\s+\[", re.MULTILINE)
 
 
 def selection(document: dict) -> tuple[Counter, list[dict]]:
@@ -49,6 +50,8 @@ def reconcile(document: dict, output: str, status: int) -> dict:
     summaries = SUMMARY.findall(output)
     if status:
         raise ValueError(f"Nextest execution failed with status {status}")
+    if LEAK.search(output):
+        raise ValueError("Nextest reported a process leak")
     if actual != expected:
         raise ValueError(f"Nextest identities differ: missing={dict(expected-actual)}, unexpected={dict(actual-expected)}")
     if len(summaries) != 1:
@@ -125,6 +128,15 @@ class ExecutionTests(unittest.TestCase):
                 suite["status"] = "skipped"
             with self.subTest(change=change), self.assertRaises(ValueError):
                 selection(document)
+
+    def test_leaks_fail_even_with_a_successful_exit_and_matching_pass(self):
+        # Old nextest defaults counted LEAK as successful. A later PASS or a
+        # consistent summary must not erase that observed lifecycle failure.
+        for outcome in ("LEAK", "LEAK-FAIL"):
+            for output in (self.output.replace("PASS", outcome),
+                           self.output + self.output.splitlines()[0].replace("PASS", outcome) + "\n"):
+                with self.subTest(outcome=outcome, output=output), self.assertRaisesRegex(ValueError, "process leak"):
+                    reconcile(self.inventory(), output, 0)
 
     def test_same_name_in_different_binaries_is_not_interchangeable(self):
         document = self.inventory()

@@ -257,6 +257,25 @@ that spawns `ping` introduces an unowned descendant and keeps captured output
 open for 30 seconds; it cannot qualify direct-child retirement. Unix's private
 process-group matrix separately proves real descendant retirement.
 
+The persistent Bash tool has a different ownership scope: the whole process
+tree belongs to its session. Windows attaches a kill-on-close Job Object while
+the shell is suspended, before it can launch descendants. Its L2 regression
+matrix observes an actual native child over an authenticated loopback
+connection, with readiness before cancellation and bounded EOF/reset checks
+before session reuse. Cancellation, timeout, explicit restart and tool drop
+must terminate that child; cancellation also leaves an independent session's
+child responsive. Successful foreground completion retains background jobs,
+and the next call after invalidation has clean shell state. Existing framing,
+timeout bounds, closed-stderr and numeric shell-exit tests also run on Windows;
+Unix process-group and signal assertions retain their native scope.
+
+Nextest treats a leaked process as a failed test, using the existing 100ms pipe
+closure interval. The orchestration checker rejects missing, success-valued or
+widened leak settings, including profile and per-test overrides. Named outcome
+reconciliation also rejects `LEAK`/`LEAK-FAIL` despite a zero exit status or an
+additional matching `PASS`. Assertion success with a surviving process cannot
+qualify the candidate.
+
 Durable SQLite fixtures release every repository/mount owner and await the
 canonical `EmbeddedSqlite::settled()` witness before opening a replacement or
 deleting their owned directory. Dropping a repository only schedules
