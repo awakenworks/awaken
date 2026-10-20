@@ -140,7 +140,7 @@ def create_archive(
 def write_checksum(archive: Path) -> Path:
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     checksum = archive.with_name(f"{archive.name}.sha256")
-    checksum.write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
+    checksum.write_text(f"{digest}  {archive.name}\n", encoding="utf-8", newline="\n")
     return checksum
 
 
@@ -262,8 +262,8 @@ class ReleaseContractTests(unittest.TestCase):
             archive.write_bytes(b"awaken")
             checksum = write_checksum(archive)
             self.assertEqual(
-                checksum.read_text(encoding="utf-8"),
-                f"{hashlib.sha256(b'awaken').hexdigest()}  asset.tar.gz\n",
+                checksum.read_bytes(),
+                f"{hashlib.sha256(b'awaken').hexdigest()}  asset.tar.gz\n".encode("utf-8"),
             )
 
     # Cause/effect graph: C1 Cargo config selects a target directory, C2 an
@@ -317,7 +317,7 @@ class ReleaseContractTests(unittest.TestCase):
         binary = package_root / "awaken"
         if include_binary:
             binary.write_text(
-                f"#!/bin/sh\nprintf 'awaken {reported_version}\\n'\n", encoding="utf-8"
+                f"#!/bin/sh\nprintf 'awaken {reported_version}\\n'\n", encoding="utf-8", newline="\n"
             )
             binary.chmod(0o755)
         companion = package_root / "awaken-sandbox"
@@ -326,17 +326,15 @@ class ReleaseContractTests(unittest.TestCase):
                 "#!/bin/sh\n"
                 + ("exit 0\n" if healthy_companion else "exit 1\n"),
                 encoding="utf-8",
+                newline="\n",
             )
             companion.chmod(0o755)
         archive = release / archive_name
         with tarfile.open(archive, "w:gz") as packaged:
             packaged.add(package_root, arcname=package_root.name)
-        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        checksum = write_checksum(archive)
         if not valid_checksum:
-            digest = "0" * 64
-        (release / f"{archive_name}.sha256").write_text(
-            f"{digest}  {archive_name}\n", encoding="utf-8"
-        )
+            checksum.write_bytes(f"{'0' * 64}  {archive_name}\n".encode("utf-8"))
         uname = fake_bin / "uname"
         uname.write_text(
             "#!/bin/sh\n"
@@ -346,6 +344,7 @@ class ReleaseContractTests(unittest.TestCase):
             "  *) exit 1 ;;\n"
             "esac\n",
             encoding="utf-8",
+            newline="\n",
         )
         uname.chmod(0o755)
         environment = os.environ.copy()
@@ -363,7 +362,7 @@ class ReleaseContractTests(unittest.TestCase):
         self, environment: dict[str, str], version: str = "v1.0.0"
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["sh", "-s", "--", version],
+            [shutil.which("sh") or "sh", "-s", "--", version],
             input=(REPOSITORY / "scripts/release/install.sh").read_text(encoding="utf-8"),
             text=True,
             capture_output=True,
@@ -401,12 +400,14 @@ class ReleaseContractTests(unittest.TestCase):
                 result = self._run_installer(environment)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(
-                    subprocess.check_output([install_dir / "awaken", "--version"], text=True),
+                    subprocess.check_output(
+                        [shutil.which("sh") or "sh", str(install_dir / "awaken"), "--version"], text=True
+                    ),
                     "awaken 1.0.0\n",
                 )
                 self.assertEqual(
                     subprocess.run(
-                        [install_dir / "awaken-sandbox", "hand", "--check"], check=False
+                        [shutil.which("sh") or "sh", str(install_dir / "awaken-sandbox"), "hand", "--check"], check=False
                     ).returncode,
                     0,
                 )

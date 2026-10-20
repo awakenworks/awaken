@@ -5,16 +5,17 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/ci"))
 import _strict_unittest as strict_unittest
 
 from image_archive import canonical_digest, retain_digest_name
+from _native_test_launcher import python_script_header
 
 
 ROOT = b'{"schemaVersion":2,"manifests":[]}'
@@ -113,7 +114,7 @@ class ImageArchiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='awaken-image-archive-') as tmp:
             root = Path(tmp)
             binary = root / 'docker'
-            binary.write_text(f'#!{sys.executable}\n' + '''import json, os, sys
+            binary.write_text(python_script_header(sys.executable) + '''import json, os, sys
 from pathlib import Path
 args = sys.argv[1:]
 Path(os.environ['CALLS']).write_text(json.dumps(args))
@@ -121,8 +122,17 @@ data = Path(os.environ['ARCHIVE']).read_bytes()
 if '-o' in args: Path(args[args.index('-o')+1]).write_bytes(data)
 else: sys.stdout.buffer.write(data)
 raise SystemExit(int(os.environ['STATUS']))
-''')
+''', encoding='utf-8', newline='\n')
             binary.chmod(0o755)
+            launcher_environment = {}
+            if os.name == 'nt':
+                from _native_test_launcher import native_fixture_launcher
+
+                # CreateProcess ignores extensionless Python stand-ins and can
+                # otherwise fall through to the developer's real Docker CLI.
+                shutil.copyfile(native_fixture_launcher(), root / 'docker.exe')
+                launcher_environment = dict(AWAKEN_FIXTURE_PROGRAM=sys.executable,
+                                            AWAKEN_FIXTURE_SCRIPT=str(binary))
             source, output, calls = root / 'input.tar', root / 'output.tar', root / 'calls'
             for reference, status, mode in (('sandbox:local', 0, 'valid'), (REFERENCE, 0, 'valid'),
                                             (REFERENCE, 0, 'provenance'), (REFERENCE, 0, 'duplicate-descriptor'),
@@ -132,8 +142,10 @@ raise SystemExit(int(os.environ['STATUS']))
                     result = subprocess.run([
                         sys.executable, str(Path(__file__).with_name('image_archive.py')),
                         '--platform', 'linux/amd64', '--output', str(output), reference,
-                    ], env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'],
-                                ARCHIVE=str(source), CALLS=str(calls), STATUS=str(status)),
+                    ], cwd=root,
+                       env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'],
+                                ARCHIVE=str(source), CALLS=str(calls), STATUS=str(status),
+                                **launcher_environment),
                        capture_output=True, text=True, timeout=5)
                     success = status == 0 and mode in ('valid', 'provenance')
                     self.assertEqual(result.returncode == 0, success, result.stderr)

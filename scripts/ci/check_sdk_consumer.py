@@ -183,7 +183,9 @@ def retain_sdk_command_output(directory: Path, label: str, completed) -> None:
     """Retain the original channels and the existing combined diagnostic log."""
     stdout, stderr = completed.stdout or "", completed.stderr or ""
     for suffix, value in ((".stdout.log", stdout), (".stderr.log", stderr), (".log", stdout + stderr)):
-        (directory / (label + suffix)).write_text(value)
+        # The receipt hashes these exact UTF-8 bytes. Preserve captured newline
+        # sequences on Windows as well as Unix when retaining the channels.
+        (directory / (label + suffix)).write_text(value, encoding="utf-8", newline="")
 
 
 def retain_sdk_result(directory: Path, document: dict) -> None:

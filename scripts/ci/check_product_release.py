@@ -9,12 +9,15 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from _native_shell import bash_executable
+from _native_test_launcher import python_script_header
 
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -284,8 +287,9 @@ def current_inputs() -> tuple[str, str, str, str, str, str, str, str, tuple[str,
 @contextmanager
 def management_fixture(fault: str, *, reuse: bool = False):
     """One synthetic Docker adapter for payload and full workflow regressions."""
-    shim_source = r'''#!/usr/bin/env python3
+    shim_source = python_script_header(sys.executable) + r'''
 import json, os, pathlib, shutil, sys
+sys.stdout.reconfigure(newline="\n")
 root = pathlib.Path(os.environ["FIXTURE_ROOT"])
 args = sys.argv[1:]
 tool = pathlib.Path(sys.argv[0]).name
@@ -348,19 +352,26 @@ else:
             (root / "image-manifest").write_bytes(b"wrong" if fault == "manifest" else b"manifest")
         (root / "verification-from-management-image.json").write_bytes(b"manifest")
         shim = root / "adapter"
-        shim.write_text(shim_source)
+        shim.write_text(shim_source, encoding="utf-8", newline="\n")
         shim.chmod(0o755)
         for tool in ("docker", "cosign", "git"):
-            (root / tool).symlink_to(shim)
+            alias = root / tool
+            shutil.copyfile(shim, alias)
+            alias.chmod(0o755)
         e2e = root / "scripts/e2e/management_image_e2e.sh"
         e2e.parent.mkdir(parents=True)
-        e2e.symlink_to(shim)
+        shutil.copyfile(shim, e2e)
+        e2e.chmod(0o755)
+        setup = root / "fixture-environment.sh"
+        setup.write_text('fixture_bin=$(cd -- "$FIXTURE_ROOT" && pwd -P)\n'
+                         'export PATH="$fixture_bin:$PATH"\n', encoding="utf-8", newline="\n")
         yield root, dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
-                         FIXTURE_ROOT=str(root), FAULT=fault, REUSE=str(int(reuse)), RUNNER_TEMP=str(root),
+                         FIXTURE_ROOT=root.as_posix(), BASH_ENV=setup.as_posix(),
+                         FAULT=fault, REUSE=str(int(reuse)), RUNNER_TEMP=root.as_posix(),
                          SOURCE_REPOSITORY="source", SOURCE_REVISION="revision", GITHUB_REF_NAME="v1",
                          GITHUB_SHA="revision", GITHUB_REPOSITORY="awakenworks/awaken",
                          GITHUB_REF="refs/tags/v1", GITHUB_RUN_ID="1", GITHUB_RUN_ATTEMPT="1",
-                         GITHUB_OUTPUT=str(root / "outputs"), WORKFLOW_PATH=".github/workflows/release.yml",
+                         GITHUB_OUTPUT=(root / "outputs").as_posix(), WORKFLOW_PATH=".github/workflows/release.yml",
                          SIGSTORE_OIDC_ISSUER="https://token.actions.githubusercontent.com",
                          MANAGEMENT_IMAGE_REPOSITORY="ghcr.io/awakenworks/awaken")
 
@@ -381,7 +392,7 @@ class ProductReleaseCheckerTests(unittest.TestCase):
         for reuse in (False, True):
             for fault in ("none", "published-manifest", "pull", "e2e", "signature", "digest"):
                 with self.subTest(reuse=reuse, fault=fault), management_fixture(fault, reuse=reuse) as (root, environment):
-                    result = subprocess.run(["bash", "-c", script], cwd=root, env=environment,
+                    result = subprocess.run([bash_executable(), "-c", script], cwd=root, env=environment,
                                             capture_output=True, text=True, timeout=30)
                     calls = [json.loads(line) for line in (root / "calls").read_text().splitlines()]
                     promoted = [call for call in calls if call[:4] == ["docker", "buildx", "imagetools", "create"]]
@@ -443,7 +454,7 @@ class ProductReleaseCheckerTests(unittest.TestCase):
         function = "verify_management_payload() {\n" + body + "\n}\n"
         for fault in ("none", "source", "revision", "version", "binary", "manifest", "missing-manifest"):
             with self.subTest(fault=fault), management_fixture(fault) as (root, environment):
-                result = subprocess.run(["bash", "-c", 'set -euo pipefail\n' + function + 'verify_management_payload "fixture-image"\n'],
+                result = subprocess.run([bash_executable(), "-c", 'set -euo pipefail\n' + function + 'verify_management_payload "fixture-image"\n'],
                                         cwd=root, capture_output=True, text=True, timeout=30, env=environment)
                 if fault == "none":
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
