@@ -26,6 +26,38 @@ use awaken_sandbox_container::{MissingHandleTerminalEvidence, PreparedContainer}
 use awaken_sandbox_control::SandboxControlServiceKind;
 use std::sync::atomic::Ordering;
 
+/// Reuse the canonical physical observer after a strict read-purpose preflight.
+/// Prepared source data needs only the existing participant-disposal replay;
+/// unprepared data still needs the independent retained claim checked below.
+fn retirement_observation_expectation<'a>(
+    mut expectation: ContainerObservationExpectation<'a>,
+) -> Result<ContainerObservationExpectation<'a>, RuntimeError> {
+    if let pc::SandboxObservationPurpose::WorkerRetirement { source_prepared } = expectation.purpose
+    {
+        if expectation.realization_fingerprint.is_none()
+            || expectation
+                .runtime_handle
+                .and_then(awaken_sandbox_container::ContainerContinuationHandle::kubernetes_incarnation)
+                .is_none()
+            || (!source_prepared
+                && expectation
+                    .runtime_handle
+                    .and_then(awaken_sandbox_container::ContainerContinuationHandle::kubernetes_incarnation)
+                    .is_none_or(|(_, claim)| claim.is_none()))
+        {
+            return Err(backend(
+                "Worker retirement requires original Kubernetes participant identities",
+            ));
+        }
+        if source_prepared {
+            // The root already made source effects durable. Reuse the one
+            // exact original-participant observation for remaining disposal.
+            expectation.purpose = pc::SandboxObservationPurpose::TerminalCleanup;
+        }
+    }
+    Ok(expectation)
+}
+
 impl K8sRuntime {
     /// Compose the runtime with the process's wall clock (see the `clock`
     /// field). The execution composition always installs it.
@@ -587,6 +619,7 @@ impl ContainerRuntime for K8sRuntime {
         &self,
         expectation: ContainerObservationExpectation<'_>,
     ) -> Result<pc::SandboxObservation, RuntimeError> {
+        let expectation = retirement_observation_expectation(expectation)?;
         observation::observe(self, expectation).await
     }
 

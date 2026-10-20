@@ -31,7 +31,7 @@ pub const WORKER_OBSERVATIONS_PATH: &str = "/internal/v1/workers/observations";
 pub const WORKER_OBSERVE_PERMISSION: &str = "worker:observe";
 pub(crate) const WORKER_BOOTSTRAP_CLOSE_PATH: &str = "/internal/v1/workers/bootstrap/close";
 const WORKER_BOOTSTRAP_CLOSE_PERMISSION: &str = "worker:close-bootstrap";
-pub(crate) const WORKER_DOMAIN_PATH: &str = "/internal/v1/workers/domain";
+pub const WORKER_DOMAIN_PATH: &str = "/internal/v1/workers/domain";
 pub use awaken_worker_contract::WORKER_RELAY_DESTINATION_PATH;
 #[cfg(all(test, feature = "test-support"))]
 mod relay_tests;
@@ -63,12 +63,54 @@ pub(crate) struct DomainState {
 
 /// A read-only composition of the original Registry, Dispatch, and WorkQueue
 /// owners. Neither this DTO nor its route can close or retire an attempt.
-#[derive(Serialize, Deserialize)]
-struct WorkerDomainObservation {
-    registered: RegisteredWorker,
-    physical_attempt_active: bool,
-    work_claims_active: bool,
-    session_realizations_active: bool,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WorkerDomainObservation {
+    pub registered: RegisteredWorker,
+    pub physical_attempt_active: bool,
+    pub work_claims_active: bool,
+    pub session_realizations_active: bool,
+    /// Present only for explicit release qualification. The original four
+    /// facts retain their meaning; pending cleanup is never projected as absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retirement_permitted: Option<bool>,
+}
+
+/// Transient read decision; never persisted or accepted as an exit/cleanup receipt.
+#[derive(Debug, PartialEq, Eq)]
+enum WorkerRetirementBasis {
+    Blocked,
+    Empty,
+    RetainedSources,
+}
+
+impl WorkerDomainObservation {
+    fn retirement_basis(&self) -> WorkerRetirementBasis {
+        use awaken_worker_contract::WorkerState;
+        let registered = &self.registered;
+        if self.physical_attempt_active
+            || self.work_claims_active
+            || registered.snapshot.in_flight != 0
+            || registered.create_ledger.is_none()
+            || !matches!(
+                registered.snapshot.state,
+                WorkerState::Draining | WorkerState::Quiesced | WorkerState::Dead
+            )
+        {
+            return WorkerRetirementBasis::Blocked;
+        }
+        if !self.session_realizations_active {
+            return WorkerRetirementBasis::Empty;
+        }
+        WorkerRetirementBasis::RetainedSources
+    }
+}
+
+// Partial read of the same query consumed by canonical WorkerIdentity. Its
+// identity fields must remain with that owner; this is never a request body.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct WorkerRetirementQuery {
+    #[serde(default)]
+    pub qualify_retirement: bool,
 }
 
 #[derive(Deserialize)]
@@ -137,11 +179,13 @@ async fn handle_bootstrap_close(
     }
     match state
         .sessions
-        .has_unfinished_worker_realizations(&request.worker_id)
+        .observe_worker_realizations(
+            awaken_session_application::WorkerRealizationRead::Occupancy(&request.worker_id),
+        )
         .await
     {
-        Ok(false) => {}
-        Ok(true) => return StatusCode::CONFLICT.into_response(),
+        Ok(observed) if !observed.occupied => {}
+        Ok(_) => return StatusCode::CONFLICT.into_response(),
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
     match close_bootstrap(
@@ -154,11 +198,17 @@ async fn handle_bootstrap_close(
     {
         Ok(observation) => match state
             .sessions
-            .has_unfinished_worker_realizations(&observation.worker_id)
+            .observe_worker_realizations(
+                awaken_session_application::WorkerRealizationRead::Occupancy(
+                    &observation.worker_id,
+                ),
+            )
             .await
         {
-            Ok(false) => (StatusCode::OK, Json(observation)).into_response(),
-            Ok(true) => StatusCode::CONFLICT.into_response(),
+            Ok(observed) if !observed.occupied => {
+                (StatusCode::OK, Json(observation)).into_response()
+            }
+            Ok(_) => StatusCode::CONFLICT.into_response(),
             Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
         },
         Err(status) => status.into_response(),
@@ -310,12 +360,17 @@ async fn handle_domain(
         Query<awaken_worker_registry::WorkerIdentity>,
         axum::extract::rejection::QueryRejection,
     >,
+    retirement: Result<Query<WorkerRetirementQuery>, axum::extract::rejection::QueryRejection>,
 ) -> axum::response::Response {
     if let Err(status) = authenticate_observer(state.authenticator.as_ref(), &headers) {
         return status.into_response();
     }
     let identity = match query {
         Ok(Query(identity)) => identity,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let retirement = match retirement {
+        Ok(Query(query)) => query.qualify_retirement,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
     if identity.worker_id.trim().is_empty()
@@ -346,24 +401,34 @@ async fn handle_domain(
         Ok(active) => active,
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
-    let session_realizations_active = match state
-        .sessions
-        .has_unfinished_worker_realizations(&identity.worker_id)
-        .await
-    {
-        Ok(active) => active,
+    let mut observation = WorkerDomainObservation {
+        registered,
+        physical_attempt_active,
+        work_claims_active,
+        session_realizations_active: true,
+        retirement_permitted: None,
+    };
+    // Select the exact same complete Session read once. Normal incarnation
+    // queries and blocked Actors never acquire a provider availability dependency.
+    let read =
+        if retirement && observation.retirement_basis() == WorkerRetirementBasis::RetainedSources {
+            awaken_session_application::WorkerRealizationRead::Retirement(&identity)
+        } else {
+            awaken_session_application::WorkerRealizationRead::Occupancy(&identity.worker_id)
+        };
+    let sessions = match state.sessions.observe_worker_realizations(read).await {
+        Ok(observed) => observed,
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
-    (
-        StatusCode::OK,
-        Json(WorkerDomainObservation {
-            registered,
-            physical_attempt_active,
-            work_claims_active,
-            session_realizations_active,
-        }),
-    )
-        .into_response()
+    observation.session_realizations_active = sessions.occupied;
+    if retirement {
+        observation.retirement_permitted = Some(match observation.retirement_basis() {
+            WorkerRetirementBasis::Blocked => false,
+            WorkerRetirementBasis::Empty => true,
+            WorkerRetirementBasis::RetainedSources => sessions.sources_retained,
+        });
+    }
+    (StatusCode::OK, Json(observation)).into_response()
 }
 
 pub fn router(
@@ -760,6 +825,108 @@ mod tests {
         }
     }
 
+    #[test]
+    fn retirement_qualification_keeps_every_existing_execution_blocker() {
+        // Q1 exact closing Actor + no Run/Work/in-flight activity + original anchor
+        // asks the independent source owner. Its cleanup lease may still be live:
+        // expiry alone neither permits stop nor proves source retention. Q2 every
+        // activity/anchor/phase blocker denies the read. Q3 vacant sources retain
+        // the same Native decision owner, without a provider dependency.
+        use awaken_worker_contract::WorkerState::*;
+        for (rule, phase, physical, work, in_flight, anchor, expected) in [
+            ("draining-live", Draining, false, false, 0, true, true),
+            ("draining-expired", Draining, false, false, 0, true, true),
+            ("quiesced", Quiesced, false, false, 0, true, true),
+            ("dead", Dead, false, false, 0, true, true),
+            ("ready", Ready, false, false, 0, true, false),
+            ("starting", Starting, false, false, 0, true, false),
+            ("physical", Draining, true, false, 0, true, false),
+            ("work", Draining, false, true, 0, true, false),
+            ("in-flight", Draining, false, false, 1, true, false),
+            ("missing-anchor", Draining, false, false, 0, false, false),
+        ] {
+            let mut registered = historical_worker(awaken_worker_contract::WorkerIdentity::new(
+                "worker", "boot", 1,
+            ));
+            registered.snapshot.state = phase;
+            registered.snapshot.in_flight = in_flight;
+            registered.snapshot.expires_at_ms = if rule == "draining-live" { u64::MAX } else { 1 };
+            if !anchor {
+                registered.create_ledger = None;
+            }
+            let observation = WorkerDomainObservation {
+                registered,
+                physical_attempt_active: physical,
+                work_claims_active: work,
+                session_realizations_active: true,
+                retirement_permitted: None,
+            };
+            assert_eq!(
+                observation.retirement_basis(),
+                if expected {
+                    WorkerRetirementBasis::RetainedSources
+                } else {
+                    WorkerRetirementBasis::Blocked
+                },
+                "{rule}"
+            );
+            let wire = serde_json::to_value(&observation).unwrap();
+            assert_eq!(wire["session_realizations_active"], true);
+            assert!(
+                wire.get("retirement_permitted").is_none(),
+                "source proof still required"
+            );
+            let mut empty = observation;
+            empty.session_realizations_active = false;
+            assert_eq!(
+                empty.retirement_basis(),
+                if expected {
+                    WorkerRetirementBasis::Empty
+                } else {
+                    WorkerRetirementBasis::Blocked
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn retirement_source_qualification_is_an_explicit_read_projection() {
+        // Q3 old exact-incarnation reads retain their original URI and four
+        // facts; provider availability cannot suppress their exit observation.
+        // Q4 the explicit selector changes no identity field; malformed
+        // selectors fail closed. Both extractors use the production Axum parser.
+        // The selector deliberately accepts identity keys owned by the other
+        // extractor, plus future read-only query keys; it never decodes a body.
+        let base =
+            format!("{WORKER_DOMAIN_PATH}?worker_id=worker&incarnation_id=boot&generation=1");
+        for (suffix, requested) in [
+            ("", false),
+            ("&qualify_retirement=false", false),
+            ("&qualify_retirement=true", true),
+            ("&future_read_projection=ignored", false),
+        ] {
+            let uri = format!("{base}{suffix}").parse().unwrap();
+            let identity = Query::<awaken_worker_contract::WorkerIdentity>::try_from_uri(&uri)
+                .unwrap()
+                .0;
+            assert_eq!(
+                identity,
+                awaken_worker_contract::WorkerIdentity::new("worker", "boot", 1)
+            );
+            assert_eq!(
+                Query::<WorkerRetirementQuery>::try_from_uri(&uri)
+                    .unwrap()
+                    .0
+                    .qualify_retirement,
+                requested
+            );
+        }
+        let malformed = format!("{base}&qualify_retirement=unknown")
+            .parse()
+            .unwrap();
+        assert!(Query::<WorkerRetirementQuery>::try_from_uri(&malformed).is_err());
+    }
+
     fn historical_worker(identity: awaken_worker_registry::WorkerIdentity) -> RegisteredWorker {
         let manifest = awaken_worker_contract::WorkerManifest::default();
         RegisteredWorker {
@@ -827,61 +994,62 @@ mod tests {
             let domain_calls = Arc::new(AtomicUsize::new(0));
             let list_calls = Arc::new(AtomicUsize::new(0));
             let app = Router::new()
-                .route(WORKER_DOMAIN_PATH, get({
-                    let domain_calls = domain_calls.clone();
-                    let original = original.clone();
-                    let expected = identity.clone();
-                    move |headers: HeaderMap, Query(actual): Query<awaken_worker_registry::WorkerIdentity>| {
+                    .route(WORKER_DOMAIN_PATH, get({
                         let domain_calls = domain_calls.clone();
                         let original = original.clone();
-                        let expected = expected.clone();
-                        async move {
-                            domain_calls.fetch_add(1, Ordering::SeqCst);
-                            assert_eq!(actual, expected, "R10 exact encoded query");
-                            assert_eq!(headers.get(header::AUTHORIZATION).unwrap(), "Bearer secret");
-                            if rule == "bad-json" {
-                                return (StatusCode::OK, "{").into_response();
+                        let expected = identity.clone();
+                        move |headers: HeaderMap, Query(actual): Query<awaken_worker_registry::WorkerIdentity>| {
+                            let domain_calls = domain_calls.clone();
+                            let original = original.clone();
+                            let expected = expected.clone();
+                            async move {
+                                domain_calls.fetch_add(1, Ordering::SeqCst);
+                                assert_eq!(actual, expected, "R10 exact encoded query");
+                                assert_eq!(headers.get(header::AUTHORIZATION).unwrap(), "Bearer secret");
+                                if rule == "bad-json" {
+                                    return (StatusCode::OK, "{").into_response();
+                                }
+                                let observation = WorkerDomainObservation {
+                                    registered: original,
+                                    physical_attempt_active: true,
+                                    work_claims_active: true,
+                                    session_realizations_active: true,
+                                    retirement_permitted: None,
+                                };
+                                let mut value = serde_json::to_value(observation).unwrap();
+                                let keys = value.as_object().unwrap().keys().map(String::as_str).collect::<std::collections::BTreeSet<_>>();
+                                assert_eq!(keys, std::collections::BTreeSet::from(["registered", "physical_attempt_active", "work_claims_active", "session_realizations_active"]), "R6 original four-key wire");
+                                let status = match rule {
+                                    "identity" => {
+                                        value["registered"]["snapshot"]["identity"]["generation"] = serde_json::json!(3);
+                                        StatusCode::OK
+                                    }
+                                    "field" => {
+                                        value.as_object_mut().unwrap().remove("physical_attempt_active");
+                                        StatusCode::OK
+                                    }
+                                    "accepted" => StatusCode::ACCEPTED,
+                                    "no-content" => StatusCode::NO_CONTENT,
+                                    "missing" => StatusCode::CONFLICT,
+                                    "bad-query" => StatusCode::BAD_REQUEST,
+                                    "unauthorized" => StatusCode::UNAUTHORIZED,
+                                    "unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                                    _ => StatusCode::OK,
+                                };
+                                (status, Json(value)).into_response()
                             }
-                            let observation = WorkerDomainObservation {
-                                registered: original,
-                                physical_attempt_active: true,
-                                work_claims_active: true,
-                                session_realizations_active: true,
-                            };
-                            let mut value = serde_json::to_value(observation).unwrap();
-                            let keys = value.as_object().unwrap().keys().map(String::as_str).collect::<std::collections::BTreeSet<_>>();
-                            assert_eq!(keys, std::collections::BTreeSet::from(["registered", "physical_attempt_active", "work_claims_active", "session_realizations_active"]), "R6 original four-key wire");
-                            let status = match rule {
-                                "identity" => {
-                                    value["registered"]["snapshot"]["identity"]["generation"] = serde_json::json!(3);
-                                    StatusCode::OK
-                                }
-                                "field" => {
-                                    value.as_object_mut().unwrap().remove("physical_attempt_active");
-                                    StatusCode::OK
-                                }
-                                "accepted" => StatusCode::ACCEPTED,
-                                "no-content" => StatusCode::NO_CONTENT,
-                                "missing" => StatusCode::CONFLICT,
-                                "bad-query" => StatusCode::BAD_REQUEST,
-                                "unauthorized" => StatusCode::UNAUTHORIZED,
-                                "unavailable" => StatusCode::SERVICE_UNAVAILABLE,
-                                _ => StatusCode::OK,
-                            };
-                            (status, Json(value)).into_response()
                         }
-                    }
-                }))
-                .route(WORKER_OBSERVATIONS_PATH, get({
-                    let list_calls = list_calls.clone();
-                    move || {
+                    }))
+                    .route(WORKER_OBSERVATIONS_PATH, get({
                         let list_calls = list_calls.clone();
-                        async move {
-                            list_calls.fetch_add(1, Ordering::SeqCst);
-                            StatusCode::CONFLICT
+                        move || {
+                            let list_calls = list_calls.clone();
+                            async move {
+                                list_calls.fetch_add(1, Ordering::SeqCst);
+                                StatusCode::CONFLICT
+                            }
                         }
-                    }
-                }));
+                    }));
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -966,6 +1134,7 @@ mod tests {
                                     physical_attempt_active: false,
                                     work_claims_active: false,
                                     session_realizations_active: false,
+                                    retirement_permitted: None,
                                 }),
                             )
                                 .into_response()

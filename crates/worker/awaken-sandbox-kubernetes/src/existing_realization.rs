@@ -320,6 +320,18 @@ pub(super) async fn observed_continuation_disposition_for_claim(
         pod_deleting: pod.is_some_and(|pod| pod.metadata.deletion_timestamp.is_some()),
         cleanup_gate_held,
         original_terminal_guard: pod.is_some_and(continuation::terminal_original_guard_retained),
+        gc_independent: pod.is_some_and(|pod| {
+            pod.metadata
+                .owner_references
+                .as_ref()
+                .is_none_or(Vec::is_empty)
+        }) && observed_claim.as_ref().is_some_and(|claim| {
+            claim
+                .metadata
+                .owner_references
+                .as_ref()
+                .is_none_or(Vec::is_empty)
+        }),
         expected_uid: expected_claim_uid,
         observed_uid: observed_claim
             .as_ref()

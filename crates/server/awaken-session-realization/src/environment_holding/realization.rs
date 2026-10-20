@@ -37,22 +37,7 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
     ) -> Result<&crate::session_environment::SessionEnvironmentProvider, RealizationError> {
-        match provisioning {
-            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. } => self
-                .providers
-                .backend_owned_session_provider
-                .as_ref()
-                .ok_or_else(|| {
-                    RealizationError::invariant(
-                        "BackendOwned provisioning requires a trusted-host Session provider",
-                    )
-                }),
-            awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. }
-            | awaken_runtime_contract::resolved::ModelProvisioning::Remote { .. }
-            | awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => {
-                Ok(&self.providers.session_provider)
-            }
-        }
+        select_provisioning_provider(&self.providers, provisioning)
     }
 
     /// Select one provider from the frozen Environment trust decision and the
@@ -64,50 +49,12 @@ impl crate::environment_holding::EnvironmentHolding {
         thread: &str,
         provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
     ) -> Result<&crate::session_environment::SessionEnvironmentProvider, RealizationError> {
-        let sandbox = self
-            .sessions
-            .frozen(thread)?
-            .environment_projection
-            .as_ref()
-            .and_then(|environment| environment.sandbox.as_ref())
-            .cloned();
-        if sandbox.as_ref().is_some_and(|sandbox| {
-            sandbox.host_access == awaken_provisioning_contract::HostAccessPolicy::TrustedHost
-        }) {
-            if self.providers.trusted_host
-                != crate::environment_providers::TrustedHostPolicy::Admitted
-            {
-                return Err(RealizationError::invalid_request(
-                    "trusted_host Environment is disabled on this Worker",
-                ));
-            }
-            let provider = self
-                .providers
-                .backend_owned_session_provider
-                .as_ref()
-                .ok_or_else(|| {
-                    RealizationError::invalid_request(
-                        "trusted_host Environment requires a local Workdir provider",
-                    )
-                })?;
-            if !provider.realizer().supports_host_identity() {
-                return Err(RealizationError::invariant(
-                    "trusted_host provider does not preserve host identity",
-                ));
-            }
-            return Ok(provider);
-        }
-        if matches!(
+        let frozen = self.sessions.frozen(thread)?;
+        session_environment_provider_for_environment(
+            &self.providers,
+            frozen.environment_projection.as_ref(),
             provisioning,
-            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. }
-        ) && sandbox.as_ref().and_then(|sandbox| sandbox.isolation)
-            >= Some(awaken_provisioning_contract::IsolationClass::Namespace)
-        {
-            return Err(RealizationError::invalid_request(
-                "backend-owned local Agent credentials require a trusted_host Workdir Environment",
-            ));
-        }
-        self.session_environment_provider(provisioning)
+        )
     }
 
     async fn create_session_environment_for_effect(
@@ -791,5 +738,71 @@ impl crate::environment_holding::EnvironmentHolding {
             provider,
         )
         .await
+    }
+}
+
+/// Select from explicit frozen inputs without installing a Session slot.
+pub(super) fn session_environment_provider_for_environment<'a>(
+    providers: &'a crate::environment_providers::EnvironmentProviders,
+    environment: Option<
+        &awaken_session_configuration_contract::environment_projection::FrozenEnvironmentInputs,
+    >,
+    provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
+) -> Result<&'a crate::session_environment::SessionEnvironmentProvider, RealizationError> {
+    let sandbox = environment.and_then(|environment| environment.sandbox.as_ref());
+    if sandbox.as_ref().is_some_and(|sandbox| {
+        sandbox.host_access == awaken_provisioning_contract::HostAccessPolicy::TrustedHost
+    }) {
+        if providers.trusted_host != crate::environment_providers::TrustedHostPolicy::Admitted {
+            return Err(RealizationError::invalid_request(
+                "trusted_host Environment is disabled on this Worker",
+            ));
+        }
+        let provider = providers
+            .backend_owned_session_provider
+            .as_ref()
+            .ok_or_else(|| {
+                RealizationError::invalid_request(
+                    "trusted_host Environment requires a local Workdir provider",
+                )
+            })?;
+        if !provider.realizer().supports_host_identity() {
+            return Err(RealizationError::invariant(
+                "trusted_host provider does not preserve host identity",
+            ));
+        }
+        return Ok(provider);
+    }
+    if matches!(
+        provisioning,
+        awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. }
+    ) && sandbox.as_ref().and_then(|sandbox| sandbox.isolation)
+        >= Some(awaken_provisioning_contract::IsolationClass::Namespace)
+    {
+        return Err(RealizationError::invalid_request(
+            "backend-owned local Agent credentials require a trusted_host Workdir Environment",
+        ));
+    }
+    select_provisioning_provider(providers, provisioning)
+}
+
+fn select_provisioning_provider<'a>(
+    providers: &'a crate::environment_providers::EnvironmentProviders,
+    provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
+) -> Result<&'a crate::session_environment::SessionEnvironmentProvider, RealizationError> {
+    match provisioning {
+        awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. } => providers
+            .backend_owned_session_provider
+            .as_ref()
+            .ok_or_else(|| {
+                RealizationError::invariant(
+                    "BackendOwned provisioning requires a trusted-host Session provider",
+                )
+            }),
+        awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. }
+        | awaken_runtime_contract::resolved::ModelProvisioning::Remote { .. }
+        | awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => {
+            Ok(&providers.session_provider)
+        }
     }
 }

@@ -11,11 +11,55 @@ use std::future::Future;
 
 use awaken_session_repository_contract::SessionRepository;
 use {
-    awaken_session_state_contract::{SessionRepositoryError, SessionScan},
+    awaken_session_state_contract::{SessionRepositoryError, SessionScan, SessionScanQuery},
     awaken_session_types::SessionRecoveryQuarantine,
 };
 
 use super::SessionRecoveryCandidates;
+
+/// Select a projection of the SAME complete Worker-owned Session read.
+#[derive(Clone, Copy, Debug)]
+pub enum WorkerRealizationRead<'a> {
+    Occupancy(&'a str),
+    Retirement(&'a awaken_worker_contract::WorkerIdentity),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorkerRealizationObservation {
+    pub occupied: bool,
+    /// Positive only for an explicit exact-Actor retirement read. Occupancy
+    /// remains true while the original source obligations survive that stop.
+    pub sources_retained: bool,
+}
+
+/// Complete, fail-closed read of the one durable Worker realization selection.
+/// Occupancy and retirement consume this same validated set; neither may turn
+/// an incomplete/foreign projection into absence.
+pub(super) async fn worker_realizations(
+    repository: &dyn SessionRepository,
+    worker_id: &str,
+) -> Result<Vec<awaken_session_state_contract::ScopedPersistedSession>, SessionRepositoryError> {
+    let scan = repository
+        .scan(SessionScanQuery::WorkerRealizationOwner { worker_id })
+        .await?;
+    if scan.next_cursor.is_some() || !scan.quarantined.is_empty() {
+        return Err(SessionRepositoryError::Corrupt(
+            "Worker realization-owner read is incomplete".into(),
+        ));
+    }
+    if scan.sessions.iter().any(|scoped| {
+        scoped
+            .session
+            .realization
+            .as_ref()
+            .is_none_or(|lease| lease.owner != worker_id)
+    }) {
+        return Err(SessionRepositoryError::Corrupt(
+            "Worker realization-owner read disagrees with Session root".into(),
+        ));
+    }
+    Ok(scan.sessions)
+}
 
 /// Consume each fixed-size page before requesting the next. Reducers may only
 /// read or build disposable projections: no effect or published observation is

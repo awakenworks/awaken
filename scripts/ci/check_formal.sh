@@ -1039,6 +1039,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/remote-worker-registration" \
     -config formal/tla/RemoteWorkerProtocolRegistration.cfg formal/tla/RemoteWorkerProtocol.tla
   python3 scripts/ci/check_formal_mutations.py --worker-registration-model-mutants "$tla_jar"
+  # The one mutation owner runs formal/tla/RetainedWorkerRetirement.tla with
+  # retained/prepared/unknown configurations before checking its counterexamples.
+  python3 scripts/ci/check_formal_mutations.py --retained-worker-retirement-model-mutants "$tla_jar"
   for trace_config in "$rendered_trace_dir"/RustTrace*.cfg "$observation_rendered_dir"/RustTrace*.cfg; do
     trace_module="${trace_config%.cfg}.tla"
     trace_name="$(basename "$trace_module" .tla)"

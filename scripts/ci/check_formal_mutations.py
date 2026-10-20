@@ -22,6 +22,7 @@ from formal_gate_mutations import must_fail, run_gate_mutations, write_json
 from formal_model_mutation_runner import check_tlc_model_mutations
 from formal_config_mutations import check_config_cas_model_mutant, check_config_activation_model_mutants
 from formal_worker_registration_mutations import check_worker_registration_model_mutants
+from formal_worker_retirement_mutations import check_retained_worker_retirement_model_mutants
 from formal_realization_capacity_mutations import check_realization_capacity_observation_mutants
 from formal_realization_trace_mutations import check_realization_trace_mutants
 from formal_event_batch_mutations import check_event_batch_model_mutants, check_event_batch_observation_mutants
@@ -78,6 +79,7 @@ class MutationOracleTests(unittest.TestCase):
             "eval-evidence-model-mutants",
             "webhook-subscription-model-mutants",
             "k8s-process-observation-model-mutants",
+            "retained-worker-retirement-model-mutants",
         )
         for flag in flags:
             handler = "check_" + flag.replace("-", "_")
@@ -347,6 +349,7 @@ def main() -> None:
     # One registry owns both accepted CLI flags and their execution handlers.
     model_checks = {
         "worker-registration-model-mutants": check_worker_registration_model_mutants,
+        "retained-worker-retirement-model-mutants": check_retained_worker_retirement_model_mutants,
         "memory-copy-model-mutant": check_memory_copy_model_mutant,
         "agent-input-model-mutant": check_agent_input_model_mutant,
         "resource-preparation-model-mutant": check_resource_preparation_model_mutant,
