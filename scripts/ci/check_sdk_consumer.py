@@ -196,7 +196,7 @@ def major_producer_packages(metadata: dict, sdk_root: Path, *, current: bool) ->
     if Path(metadata["workspace_root"]).resolve() != sdk_root.resolve():
         raise ValueError("SDK major producer metadata has a foreign root")
     packages = crate_test._members(metadata)
-    for name in (*semver_evidence.COHORT, *semver_evidence.WITNESS_OWNERS):
+    for name in semver_evidence.consumer_package_names():
         package = packages[name]
         expected = (semver_evidence.COHORT[name][int(current)]
                     if name in semver_evidence.COHORT else package["version"])
@@ -778,9 +778,9 @@ class SdkConsumerTests(unittest.TestCase):
                         if name in semver_evidence.COHORT else "1.0.0",
                     "publish": None, "dependencies": [], "features": {}, "source": None,
                     "metadata": {"awaken": {"product": "sdk", "api_snapshot": True}}}
-                    for name in [*sorted(semver_evidence.COHORT), *semver_evidence.WITNESS_OWNERS,
+                    for name in [*semver_evidence.consumer_package_names(),
                                  *("fixture-sdk-" + str(number).zfill(2) for number in range(
-                                     22 - len(semver_evidence.COHORT) - len(semver_evidence.WITNESS_OWNERS)))]]
+                                     22 - len(semver_evidence.consumer_package_names())))]]
                 if metadata_cause == "major-partial":
                     packages[0]["version"] = "1.0.0"
                 elif metadata_cause == "major-unknown":
