@@ -88,7 +88,12 @@ class SdkSemverEvidenceTests(unittest.TestCase):
             value += f"--- failure {lint}: fixture finding ---\nFailed in:\n"
             for item in failures:
                 if item[0] == lint:
-                    value += f"  {item[1]} {item[2]}, previously in file baseline.rs:1\n"
+                    if lint == "inherent_method_missing":
+                        value += f"  {item[2]}, previously in file baseline.rs:1\n"
+                    elif lint == "enum_variant_added":
+                        value += f"  variant {item[2]} in current.rs:1\n"
+                    else:
+                        value += f"  {item[1]} {item[2]}, previously in file baseline.rs:1\n"
         summary = (f"semver requires new major version: {failed} major and 0 minor checks failed"
                    if failed else "no semver update required")
         return value + f"Summary {summary}\nFinished [0.1s] {name}\n"
@@ -112,6 +117,35 @@ class SdkSemverEvidenceTests(unittest.TestCase):
         self.assertEqual(rows["awaken-ext-builtin-tools"]["failed"], 2)
         self.assertEqual(len(rows["awaken-ext-builtin-tools"]["findings"]), 3)
         self.assertEqual(rows["awaken-provider-genai"]["checks"], 222)
+
+    def test_pinned_variant_and_inherent_method_rows_are_complete_observations(self):
+        # B1-B5 cause/effect table, matching the actual pinned0.47 reports:
+        # typed removed item / unprefixed method / current variant -> retain
+        # each exact item; multiple items under one lint -> one failed query.
+        # Wrong lint/shape, duplicate item/block, or an unknown extra row in
+        # an otherwise complete block -> refusal. Parsing grants no approval;
+        # version policy and original tool status remain separate decisions.
+        findings = {
+            ("inherent_method_missing", "method", "Runtime::session"),
+            ("inherent_method_missing", "method", "Runtime::with_max_consecutive_inference_failures"),
+            ("enum_variant_added", "variant", "Error:Admission"),
+        }
+        output = self.report("awaken-runtime", failures=findings)
+        row = evidence.observations(output, ["awaken-runtime"], strict=True)["awaken-runtime"]
+        self.assertEqual(row["failed"], 2)
+        self.assertEqual(set(row["findings"]), findings)
+        variant = "  variant Error:Admission in current.rs:1\n"
+        method = "  Runtime::session, previously in file baseline.rs:1\n"
+        for changed in (
+            output.replace(variant, variant.replace(" in ", " at ")),
+            output.replace(method, "  method Runtime::session, previously in file baseline.rs:1\n"),
+            output.replace(method, method * 2),
+            output.replace(variant, variant + "  variant hidden with unsupported syntax\n"),
+            output.replace("--- failure enum_variant_added:", "--- failure function_missing:"),
+            output.replace("Failed in:\n", "Failed in:\nFailed in:\n", 1),
+        ):
+            with self.subTest(report=changed), self.assertRaises(ValueError):
+                evidence.observations(changed, ["awaken-runtime"], strict=True)
 
     def test_missing_duplicate_unknown_or_empty_audit_refuses(self):
         # A2 complete known set + checked + Finished + declared versions is

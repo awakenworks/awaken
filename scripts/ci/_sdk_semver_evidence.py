@@ -49,7 +49,7 @@ GENAI_SOURCES = {
 
 def observations(output: str, expected: list[str], *, strict=False) -> dict[str, dict]:
     output = re.sub(r"\x1b\[[0-9;]*m", "", output)
-    packages, current, lint = {}, None, None
+    packages, current, lint, failed_in = {}, None, None, False
     for line in output.splitlines():
         if strict and re.match(r"\s*(?:error(?:\[[A-Za-z0-9]+\])?:|Error:|fatal:|"
                                r"thread ['\"].+['\"] panicked|panicked at|Caused by:|"
@@ -59,7 +59,15 @@ def observations(output: str, expected: list[str], *, strict=False) -> dict[str,
         start = re.fullmatch(r"\s*Checking ([A-Za-z0-9_-]+) v([^ ]+) -> v([^ ]+) \(([^)]+)\)", line)
         checked = re.fullmatch(r"\s*Checked \[[^\]]+\] (\d+) checks: (\d+) pass(?:, (\d+) fail)?(?:, (\d+) warn)?(?:, (\d+) skip)?", line)
         failure = re.fullmatch(r"--- failure ([A-Za-z0-9_]+): .* ---", line)
-        finding = re.fullmatch(r"  ([A-Za-z_-]+) (.+), previously in file .+", line)
+        tagged = re.fullmatch(r"  ([A-Za-z_-]+) (.+), previously in file .+", line)
+        method = re.fullmatch(r"  (\S+::\S+), previously in file .+", line)
+        variant = re.fullmatch(r"  variant (\S+) in .+:\d+", line)
+        if lint == "inherent_method_missing":
+            finding = ("method", method[1]) if method else None
+        elif lint == "enum_variant_added":
+            finding = ("variant", variant[1]) if variant else None
+        else:
+            finding = tagged.groups() if tagged else None
         summary = re.fullmatch(r"\s*Summary (.+)", line)
         finished = re.fullmatch(r"\s*Finished \[[^\]]+\] ([A-Za-z0-9_-]+)", line)
         if start:
@@ -68,7 +76,7 @@ def observations(output: str, expected: list[str], *, strict=False) -> dict[str,
                 raise ValueError("SDK SemVer package is unfinished or duplicated")
             current = dict(package=name, old_version=old, new_version=new,
                            version_change=change, findings=[], failed_lints=[])
-            lint = None
+            lint, failed_in = None, False
         elif checked:
             if current is None or "checks" in current:
                 raise ValueError("SDK SemVer checked observation is missing or duplicated")
@@ -78,17 +86,23 @@ def observations(output: str, expected: list[str], *, strict=False) -> dict[str,
                 raise ValueError("SDK SemVer check totals disagree")
         elif failure:
             lint = failure[1]
+            failed_in = False
             if current is None or lint in current["failed_lints"]:
                 raise ValueError("SDK SemVer lint is unowned or duplicated")
             current["failed_lints"].append(lint)
+        elif line == "Failed in:":
+            if current is None or lint is None or failed_in:
+                raise ValueError("SDK SemVer findings block is unowned or duplicated")
+            failed_in = True
         elif finding:
-            if current is None or lint is None:
+            if current is None or lint is None or "summary" in current:
                 raise ValueError("SDK SemVer finding has no package or lint")
-            item = (lint, finding[1], finding[2])
+            item = (lint, *finding)
             if item in current["findings"]:
                 raise ValueError("SDK SemVer finding is duplicated")
             current["findings"].append(item)
         elif summary:
+            failed_in = False
             if strict and (current is None or "summary" in current):
                 raise ValueError("SDK major summary has no package or is duplicated")
             if current is not None:
@@ -110,7 +124,9 @@ def observations(output: str, expected: list[str], *, strict=False) -> dict[str,
                 elif actual_summary != "no semver update required":
                     raise ValueError("SDK major report has no successful pinned summary")
             packages[current["package"]] = current
-            current, lint = None, None
+            current, lint, failed_in = None, None, False
+        elif strict and failed_in and line.strip():
+            raise ValueError("SDK SemVer findings block contains an unrecognized row")
         elif strict and re.match(r"\s*(?:Checking |Checked |Summary |Finished |--- failure )", line):
             raise ValueError("SDK major report has a malformed pinned observation")
     if current is not None or len(packages) != len(expected) or set(packages) != set(expected):
