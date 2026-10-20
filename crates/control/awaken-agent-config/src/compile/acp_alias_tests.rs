@@ -16,7 +16,7 @@ fn acp_alias_publication_decision_table() {
     let candidate = |supported| {
         ResolvedModelCandidate::try_backend_owned(
             binding.clone(),
-            awaken_runtime_contract::CredentialRef {
+            awaken_agent_contract::credential::CredentialRef {
                 id: "identity".into(),
                 revision: 1,
             },

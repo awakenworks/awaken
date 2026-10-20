@@ -380,7 +380,7 @@ async fn run_nats(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime_contract::llm::ToolCall;
+    use awaken_tool_contract::tool::ToolCall;
     use awaken_tool_contract::tool::ToolError;
 
     #[tokio::test]
@@ -483,7 +483,7 @@ mod tests {
     async fn run_nats_serves_a_real_tool_when_a_broker_is_reachable() {
         use std::time::Duration;
 
-        use awaken_runtime_contract::llm::ToolCall;
+        use awaken_tool_contract::tool::ToolCall;
         use awaken_tool_relay::wire::{HandReply, HandRequest, HandResult};
 
         let url =

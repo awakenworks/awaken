@@ -19,7 +19,7 @@ pub trait PluginPublicationResolver: Send + Sync {
     async fn resolve(
         &self,
         workspace: &awaken_tenancy::ScopeId,
-        toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
+        toolsets: &[awaken_agent_contract::ToolsetPolicy],
         config: Option<&serde_json::Value>,
     ) -> Result<serde_json::Value, String>;
 }
@@ -178,9 +178,8 @@ mod tests {
 
     #[derive(Default)]
     struct Catalog {
-        seen_toolsets: std::sync::Arc<
-            std::sync::Mutex<Vec<Vec<awaken_runtime_contract::agent_bindings::ToolsetPolicy>>>,
-        >,
+        seen_toolsets:
+            std::sync::Arc<std::sync::Mutex<Vec<Vec<awaken_agent_contract::ToolsetPolicy>>>>,
     }
 
     #[async_trait::async_trait]
@@ -192,7 +191,7 @@ mod tests {
         async fn resolve(
             &self,
             workspace: &awaken_tenancy::ScopeId,
-            toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
+            toolsets: &[awaken_agent_contract::ToolsetPolicy],
             config: Option<&serde_json::Value>,
         ) -> Result<serde_json::Value, String> {
             self.seen_toolsets.lock().unwrap().push(toolsets.to_vec());
@@ -223,7 +222,7 @@ mod tests {
         //
         // The production resolver call is the single publication semantic
         // path; this probe captures its input instead of recreating resolution.
-        use awaken_runtime_contract::agent_bindings::{
+        use awaken_agent_contract::{
             ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
             ToolsetSource,
         };

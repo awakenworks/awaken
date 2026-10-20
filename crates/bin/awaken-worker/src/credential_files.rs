@@ -13,12 +13,13 @@ use awaken_credential_contract::CredentialEnvelopeValidation;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use awaken_agent_contract::{
+    RedactedString,
+    credential::{CredentialEnvelope, CredentialMaterialSource, CredentialUsage, PlaintextHolder},
+};
 use awaken_credential_contract::{
     CredentialMaterial, CredentialMaterialError, CredentialMaterialRequest,
     CredentialMaterialResolver, ResolvedCredentialMaterial, StructuredCredentialMaterial,
-};
-use awaken_runtime_contract::{
-    CredentialEnvelope, CredentialMaterialSource, CredentialUsage, PlaintextHolder, RedactedString,
 };
 
 #[path = "worker_projection.rs"]
@@ -135,11 +136,11 @@ impl CredentialMaterialResolver for WorkerCredentialFileResolver {
     ) -> BTreeSet<awaken_credential_contract::CredentialMaterialCapability> {
         [
             (
-                awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
+                awaken_agent_contract::credential::CredentialMaterialSource::WorkerReference,
                 false,
             ),
             (
-                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
                 true,
             ),
         ]
@@ -226,12 +227,12 @@ impl CredentialMaterialResolver for WorkerCredentialFileResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_credential_contract::CredentialAccessAdmission;
-    use awaken_credential_contract::CredentialMaterialBinding;
-    use awaken_runtime_contract::{
+    use awaken_agent_contract::credential::{
         CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialRef,
         ModelExposurePolicy, PlaintextBoundary, SealedCredentialEnvelopeRef, TrustDomainRef,
     };
+    use awaken_credential_contract::CredentialAccessAdmission;
+    use awaken_credential_contract::CredentialMaterialBinding;
 
     fn temp_root(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -321,8 +322,8 @@ mod tests {
                                 ModelExposurePolicy::Forbidden,
                             ),
                         )
-                        .with_target(awaken_runtime_contract::credential::CredentialTarget::new(
-                            awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                        .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                            awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
                             "provider-a",
                         ));
                         if envelope {

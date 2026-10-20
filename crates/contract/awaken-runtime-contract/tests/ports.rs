@@ -3,11 +3,11 @@
 
 use std::sync::Arc;
 
-use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::permission::{
     GateDecision, GateOutcome, ToolGateHook, ToolPermissionPolicy, ToolPermissionRuling,
     ToolPermissionVerdict,
 };
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{RawTool, ToolError, ToolExecutor, ToolOutput};
 
 struct EchoTool;
@@ -30,7 +30,7 @@ impl ToolPermissionPolicy for AllowAll {
         ToolPermissionRuling::policy(
             ToolPermissionVerdict::Allow,
             awaken_runtime_contract::permission::PermissionBasis::fixed(
-                awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                awaken_agent_contract::audit::permission::PermissionPolicy::Rule,
             ),
         )
     }

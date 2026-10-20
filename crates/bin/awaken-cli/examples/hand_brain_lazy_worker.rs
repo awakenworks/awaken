@@ -7,8 +7,9 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_credential_materializer::InferenceExecutorMaterializer;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
 };
+use awaken_tool_contract::tool::ToolCall;
 
 struct HandBrainModel;
 

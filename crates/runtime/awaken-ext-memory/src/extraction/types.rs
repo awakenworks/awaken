@@ -1,8 +1,8 @@
 // @formal entrypoint memory_extraction.unknown_execution_never_reenters_retry
 //! Value objects and terminal outcomes for durable Memory extraction.
 
+use awaken_agent_contract::credential::CandidateFingerprint;
 use awaken_lease_contract::fence::Epoch;
-use awaken_runtime_contract::CandidateFingerprint;
 use serde::{Deserialize, Serialize};
 
 /// Frozen, secret-free extractor configuration used by every retry.

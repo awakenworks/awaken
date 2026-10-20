@@ -285,7 +285,7 @@ fn environment_and_backend_compile_one_worker_sandbox_requirement_vector() {
     let mut trusted = host_models();
     trusted.model_binding = ResolvedModelCandidate::try_backend_owned(
         ModelBinding::new("local", "", "acp:codex"),
-        awaken_runtime_contract::CredentialRef {
+        awaken_agent_contract::credential::CredentialRef {
             id: "local".into(),
             revision: 1,
         },
@@ -979,10 +979,11 @@ fn coordinator_admission_requires_exact_acp_and_generic_a2a_capabilities() {
 
 #[test]
 fn worker_local_candidates_pin_every_exact_credential_for_claim_admission() {
-    use awaken_runtime_contract::{
+    use awaken_agent_contract::credential::{
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-        CredentialUsage, InferenceEndpoint,
+        CredentialUsage,
     };
+    use awaken_runtime_contract::InferenceEndpoint;
 
     let worker_candidate = |model: &str, credential: &str, revision: u64| {
         ResolvedModelCandidate::try_provider(
@@ -1000,10 +1001,12 @@ fn worker_local_candidates_pin_every_exact_credential_for_claim_admission() {
                     CredentialUsage::ProviderAdapter,
                     CredentialExecutionPolicy::self_hosted_provider(),
                 )
-                .with_target(awaken_runtime_contract::CredentialTarget::new(
-                    awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
-                    "provider",
-                )),
+                .with_target(
+                    awaken_agent_contract::credential::CredentialTarget::new(
+                        awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
+                        "provider",
+                    ),
+                ),
             ),
             InferenceEndpoint {
                 adapter_kind: "openai".into(),
@@ -1057,7 +1060,7 @@ fn backend_owned_candidate_uses_the_same_exact_worker_placement_fence() {
     let mut models = host_models();
     models.model_binding = ResolvedModelCandidate::try_backend_owned(
         ModelBinding::new("cred:local", "", "acp:codex"),
-        awaken_runtime_contract::CredentialRef {
+        awaken_agent_contract::credential::CredentialRef {
             id: "cred:local".into(),
             revision: 7,
         },

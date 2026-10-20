@@ -11,11 +11,11 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::credential::CredentialRef;
 use awaken_config_service::CredentialReferenceValidator;
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::CredentialStatus;
 use awaken_credential_vault::repo::CredentialRepo;
-use awaken_runtime_contract::credential::CredentialRef;
 use awaken_tenancy::ScopeId;
 
 pub struct CredentialRevisionValidator {

@@ -2,7 +2,7 @@ use super::*;
 use crate::model_operation::{
     ModelExecutionEvidence, NoDispatchProof, ResponseEnvelope, TerminalReceipt,
 };
-use crate::resilience::{Classify, Disposition};
+use awaken_agent_contract::resilience::{Classify, Disposition};
 
 fn refusal(kind: usize) -> Error {
     match kind {

@@ -10,11 +10,12 @@ use awaken_ext_state_machine::{
     ContinuationSettings, FsmTransition, Metrics, RunInstances, StateMachineConfig,
     StateMachinePlugin, ThreadInstances, ViolationLog,
 };
-use awaken_runtime_contract::permission::{GateOutcome, ToolCall};
+use awaken_runtime_contract::permission::GateOutcome;
 use awaken_runtime_contract::plugin::{
     AfterToolContext, HookReaction, PhaseContext, PhaseHook, PhaseKind, Plugin, RunEndContext,
     RunEndDecision, enforce_bound,
 };
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{ToolConcurrency, ToolOutput, ToolResourceAccess};
 use serde_json::json;
 

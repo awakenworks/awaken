@@ -19,7 +19,7 @@ use super::AgentRunError;
 /// One pre-effect check shared by direct creation and claimed recovery.
 pub(crate) fn validate_child_tool_configuration(
     snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
-    inherited: Option<&awaken_runtime_contract::activation::InheritedToolsets>,
+    inherited: Option<&awaken_agent_contract::toolset::InheritedToolsets>,
 ) -> Result<(), AgentRunError> {
     if inherited.is_none()
         && snapshot.resolved_spec.plugin_ids.iter().any(|id| {
@@ -40,7 +40,7 @@ pub(crate) fn validate_child_tool_configuration(
 pub(crate) fn configure_child_native_runtime(
     mut runtime: awaken_runtime::Runtime,
     snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
-    inherited: Option<&awaken_runtime_contract::activation::InheritedToolsets>,
+    inherited: Option<&awaken_agent_contract::toolset::InheritedToolsets>,
     adapters: &ChildExecutionAdapters,
 ) -> Result<awaken_runtime::Runtime, AgentRunError> {
     validate_child_tool_configuration(snapshot, inherited)?;
@@ -310,15 +310,15 @@ mod tests {
         // | N4 | missing sources | selected Web | pre-effect refusal |
         // | N5 | allowed host, URL absent from user input | serde rebuilt | no I/O |
         use awaken_agent_contract::agent::message::Role;
-        use awaken_runtime_contract::activation::InheritedToolsets;
-        use awaken_runtime_contract::agent_bindings::{
+        use awaken_agent_contract::toolset::InheritedToolsets;
+        use awaken_agent_contract::{
             ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
         };
         use awaken_runtime_contract::execution::RunExecutor as _;
         use awaken_runtime_contract::llm::{
             AssistantOutput, ChatRequest, ChatResponse, LlmExecutor,
         };
-        use awaken_runtime_contract::permission::ToolCall;
+        use awaken_tool_contract::tool::ToolCall;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         struct FetchModel {
             url: String,
@@ -534,24 +534,21 @@ mod tests {
                 .unwrap();
         acp_snapshot.resolved_spec.model_binding =
             awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
-        acp_snapshot.resolved_spec.plugin_config.agent.toolsets = vec![
-            awaken_runtime_contract::agent_bindings::ToolsetPolicy {
-                source: awaken_runtime_contract::agent_bindings::ToolsetSource::Agent,
-                default: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy {
+        acp_snapshot.resolved_spec.plugin_config.agent.toolsets =
+            vec![awaken_agent_contract::ToolsetPolicy {
+                source: awaken_agent_contract::ToolsetSource::Agent,
+                default: awaken_agent_contract::ToolExecutionPolicy {
                     enabled: true,
-                    permission:
-                        awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk,
+                    permission: awaken_agent_contract::ToolPermissionRequirement::AlwaysAsk,
                 },
-                overrides: vec![awaken_runtime_contract::agent_bindings::ToolPolicyOverride::new(
+                overrides: vec![awaken_agent_contract::ToolPolicyOverride::new(
                     "bash",
-                    awaken_runtime_contract::agent_bindings::ToolExecutionPolicy {
+                    awaken_agent_contract::ToolExecutionPolicy {
                         enabled: true,
-                        permission:
-                            awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAllow,
+                        permission: awaken_agent_contract::ToolPermissionRequirement::AlwaysAllow,
                     },
                 )],
-            },
-        ];
+            }];
         let materializations = Arc::new(AtomicUsize::new(0));
         let executions = Arc::new(AtomicUsize::new(0));
         let received_permission = Arc::new(std::sync::Mutex::new(None));
@@ -591,7 +588,7 @@ mod tests {
             .expect("A1/E3 passes the child policy to ACP");
         assert_eq!(
             permission
-                .evaluate(&awaken_runtime_contract::permission::ToolCall {
+                .evaluate(&awaken_tool_contract::tool::ToolCall {
                     tool_id: "bash".into(),
                     call_id: "child-bash".into(),
                     arguments: serde_json::json!({}),

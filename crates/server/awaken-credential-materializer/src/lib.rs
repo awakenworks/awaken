@@ -62,6 +62,9 @@ use awaken_time::WallClockExt as _;
 
 #[cfg(all(test, feature = "authority"))]
 use awaken_agent_contract::RedactedString;
+use awaken_agent_contract::credential::{
+    CredentialAccess, CredentialMaterialSource, CredentialUsage, PlaintextHolder,
+};
 use awaken_credential_contract::{
     CredentialMaterialBinding, CredentialMaterialError, CredentialMaterialRequest,
     CredentialMaterialResolver, CredentialRealizationKind, ResolvedCredentialMaterial,
@@ -70,9 +73,6 @@ use awaken_credential_contract::{
     candidate_credential_material_binding, credential_access_has_same_authority,
 };
 use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
-use awaken_runtime_contract::{
-    CredentialAccess, CredentialMaterialSource, CredentialUsage, PlaintextHolder,
-};
 
 #[derive(Clone)]
 struct RegisteredExtensionConsumer {
@@ -284,8 +284,8 @@ impl PinnedCredentialMaterializer {
             candidate,
             None,
             &PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Worker,
-                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+                awaken_agent_contract::credential::PlaintextBoundary::Worker,
+                awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
             ),
             CredentialRealizationKind::WorkerProviderAdapter,
         )
@@ -556,6 +556,11 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use awaken_agent_contract::credential::{
+        CredentialEnvelope, CredentialExecutionPolicy, CredentialRef, CredentialRefreshAccess,
+        CredentialUsage, ModelExposurePolicy, PlaintextBoundary, SealedCredentialEnvelopeRef,
+        TokenEndpointAuth,
+    };
     use awaken_credential_contract::CredentialMaterial;
     use awaken_credential_contract::CredentialRealizationCapabilities;
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
@@ -563,11 +568,7 @@ mod tests {
         CredentialCreateParams, CredentialError, CredentialKind, CredentialStatus,
         InMemorySecretStore, SecretRef, SecretStore,
     };
-    use awaken_runtime_contract::{
-        CredentialEnvelope, CredentialExecutionPolicy, CredentialRef, CredentialRefreshAccess,
-        CredentialUsage, InferenceEndpoint, ModelBinding, ModelExposurePolicy, PlaintextBoundary,
-        SealedCredentialEnvelopeRef, TokenEndpointAuth,
-    };
+    use awaken_runtime_contract::{InferenceEndpoint, ModelBinding};
 
     #[derive(Clone)]
     struct ExactExternalResolver {
@@ -584,18 +585,18 @@ mod tests {
         {
             let mut profiles = std::collections::BTreeSet::new();
             for holder in [
-                awaken_runtime_contract::PlaintextHolder::new(
-                    awaken_runtime_contract::PlaintextBoundary::Worker,
+                awaken_agent_contract::credential::PlaintextHolder::new(
+                    awaken_agent_contract::credential::PlaintextBoundary::Worker,
                     "awaken.worker",
                 ),
-                awaken_runtime_contract::PlaintextHolder::new(
-                    awaken_runtime_contract::PlaintextBoundary::Workload,
+                awaken_agent_contract::credential::PlaintextHolder::new(
+                    awaken_agent_contract::credential::PlaintextBoundary::Workload,
                     "awaken.workload.acp",
                 ),
             ] {
                 for source in [
-                    awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                    awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
+                    awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+                    awaken_agent_contract::credential::CredentialMaterialSource::WorkerReference,
                 ] {
                     for envelope in [false, true] {
                         profiles.insert(awaken_credential_contract::CredentialMaterialCapability {
@@ -656,7 +657,7 @@ mod tests {
     fn selected_holder() -> PlaintextHolder {
         PlaintextHolder::new(
             PlaintextBoundary::Worker,
-            awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
         )
     }
 
@@ -1183,7 +1184,7 @@ mod tests {
                     id: "sealed-1".into(),
                     payload_fingerprint: fingerprint.into(),
                 },
-                recipient: awaken_runtime_contract::TrustDomainRef(recipient.into()),
+                recipient: awaken_agent_contract::credential::TrustDomainRef(recipient.into()),
                 expires_at_unix_ms: expiry,
             })
         };
@@ -1670,11 +1671,12 @@ mod tests {
             candidate_fingerprint: bindings[0].candidate_fingerprint.clone(),
             access: awaken_credential_contract::credential_access_without_delivery(published)
                 .with_envelope(
-                    awaken_runtime_contract::CredentialEnvelope::SealedForWorker {
-                        envelope_ref: awaken_runtime_contract::SealedCredentialEnvelopeRef {
-                            id: "refresh".into(),
-                            payload_fingerprint: "refresh".into(),
-                        },
+                    awaken_agent_contract::credential::CredentialEnvelope::SealedForWorker {
+                        envelope_ref:
+                            awaken_agent_contract::credential::SealedCredentialEnvelopeRef {
+                                id: "refresh".into(),
+                                payload_fingerprint: "refresh".into(),
+                            },
                         recipient: holder.trust_domain.clone(),
                         expires_at_unix_ms: u64::MAX,
                     },
@@ -1801,7 +1803,7 @@ mod tests {
         credentials.put(source.clone()).await.unwrap();
         let holder = PlaintextHolder::new(
             PlaintextBoundary::Worker,
-            awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
         );
         let access = CredentialAccess::new(
             CredentialRef {

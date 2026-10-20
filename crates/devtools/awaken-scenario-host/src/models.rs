@@ -6,10 +6,10 @@
 
 use awaken_agent_contract::agent::content::{ContentBlock, ImageSource};
 use awaken_agent_contract::agent::message::Role;
+use awaken_agent_contract::audit::model_request::TokenUsage;
 use awaken_ext_builtin_tools::{LIST_AGENTS, SEND_MESSAGE};
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, TokenUsage, ToolCall,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+use awaken_tool_contract::tool::ToolCall;
 
 use awaken_session_executor::block_text;
 

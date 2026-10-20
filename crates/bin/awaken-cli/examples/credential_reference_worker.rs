@@ -27,7 +27,7 @@ impl LlmExecutor for GrantExecutor {
 }
 
 struct ReferenceMaterializer {
-    credential: awaken_runtime_contract::CredentialRef,
+    credential: awaken_agent_contract::credential::CredentialRef,
     state_file: Option<std::path::PathBuf>,
 }
 
@@ -50,12 +50,12 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
         &self,
     ) -> awaken_credential_contract::CredentialRealizationCapabilities {
         awaken_credential_contract::CredentialRealizationCapabilities {
-            holders: BTreeSet::from([awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Worker,
-                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            holders: BTreeSet::from([awaken_agent_contract::credential::PlaintextHolder::new(
+                awaken_agent_contract::credential::PlaintextBoundary::Worker,
+                awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
             )]),
             material_sources: BTreeSet::from([
-                awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
+                awaken_agent_contract::credential::CredentialMaterialSource::WorkerReference,
             ]),
             realization_kinds: BTreeSet::from([
                 awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
@@ -80,7 +80,7 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
             return None;
         };
         if credential.material_source
-            != awaken_runtime_contract::CredentialMaterialSource::WorkerReference
+            != awaken_agent_contract::credential::CredentialMaterialSource::WorkerReference
             || credential.credential != self.credential
         {
             return None;
@@ -100,18 +100,19 @@ impl awaken_credential_contract::CredentialMaterialResolver for ReferenceMateria
     ) -> std::collections::BTreeSet<awaken_credential_contract::CredentialMaterialCapability> {
         let mut profiles = std::collections::BTreeSet::new();
         for holder in [
-            awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Worker,
+            awaken_agent_contract::credential::PlaintextHolder::new(
+                awaken_agent_contract::credential::PlaintextBoundary::Worker,
                 "awaken.worker",
             ),
-            awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Workload,
+            awaken_agent_contract::credential::PlaintextHolder::new(
+                awaken_agent_contract::credential::PlaintextBoundary::Workload,
                 "awaken.workload.acp",
             ),
         ] {
             profiles.insert(awaken_credential_contract::CredentialMaterialCapability {
                 holder,
-                source: awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
+                source:
+                    awaken_agent_contract::credential::CredentialMaterialSource::WorkerReference,
                 envelope: false,
             });
         }
@@ -172,7 +173,7 @@ impl awaken_credential_contract::CredentialObservationSource for ReferenceMateri
 impl awaken_credential_contract::WorkerLocalReferenceRevalidator for ReferenceMaterializer {
     async fn revalidate_worker_reference(
         &self,
-        credential: &awaken_runtime_contract::CredentialRef,
+        credential: &awaken_agent_contract::credential::CredentialRef,
     ) -> Result<
         awaken_credential_contract::CredentialObservation,
         awaken_credential_contract::CredentialMaterialError,
@@ -218,7 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let credential_id = std::env::var("AWAKEN_TEST_CREDENTIAL_ID")?;
     let credential_revision = std::env::var("AWAKEN_TEST_CREDENTIAL_REVISION")?.parse()?;
     let materializer = Arc::new(ReferenceMaterializer {
-        credential: awaken_runtime_contract::CredentialRef {
+        credential: awaken_agent_contract::credential::CredentialRef {
             id: credential_id,
             revision: credential_revision,
         },

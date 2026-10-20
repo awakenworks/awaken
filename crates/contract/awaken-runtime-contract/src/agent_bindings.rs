@@ -12,10 +12,8 @@ use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 
 use crate::snapshot::AgentId;
-pub use awaken_agent_contract::{
-    ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
-    ToolsetSource,
-};
+
+use awaken_agent_contract::{ToolExecutionPolicy, ToolsetPolicy, ToolsetSource};
 use serde::{Deserialize, Serialize};
 
 /// Provider-neutral inference controls frozen into an Agent publication.
@@ -197,7 +195,7 @@ pub struct AgentMcpServerBinding {
     /// credential. `None` leaves identity selection to Session Vaults; the
     /// connection is anonymous only when no Session credential matches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential: Option<crate::credential::CredentialRef>,
+    pub credential: Option<awaken_agent_contract::credential::CredentialRef>,
     /// Explicitly project this server's MCP prompts into the Agent's unified
     /// Skill catalog. Off by default: ordinary MCP prompts remain prompts.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -460,9 +458,9 @@ mod tests {
 
     use super::{
         AgentBindings, AgentMcpServerBinding, AgentMcpTransportBinding, ToolExecutionPolicy,
-        ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+        ToolsetPolicy, ToolsetSource,
     };
-    use awaken_agent_contract::McpToolId;
+    use awaken_agent_contract::{McpToolId, ToolPermissionRequirement, ToolPolicyOverride};
 
     fn disabled_toolset(server_name: &str) -> AgentBindings {
         AgentBindings {

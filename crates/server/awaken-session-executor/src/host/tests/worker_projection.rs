@@ -214,8 +214,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             },
             visibility: EnvVisibility::Process,
         };
-        let holder = awaken_runtime_contract::PlaintextHolder::new(
-            awaken_runtime_contract::PlaintextBoundary::Worker,
+        let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+            awaken_agent_contract::credential::PlaintextBoundary::Worker,
             "test.worker",
         );
         let mounts = with_environment_inputs

@@ -23,9 +23,7 @@ use awaken_provisioning_contract::SandboxProvider;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
@@ -35,6 +33,7 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_sandbox_local::LocalProvider;
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{RawTool, ToolError, ToolExecutionTarget, ToolOutput};
 use awaken_tool_relay::{HandSession, RemoteToolExecutor, serve_hand};
 

@@ -5695,13 +5695,13 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
             "prompts" => request.prompts_as_skills = true,
             "holder" => {
                 request.selected_plaintext_holder =
-                    Some(awaken_runtime_contract::PlaintextHolder::new(
-                        awaken_runtime_contract::PlaintextBoundary::Worker,
+                    Some(awaken_agent_contract::credential::PlaintextHolder::new(
+                        awaken_agent_contract::credential::PlaintextBoundary::Worker,
                         "foreign",
                     ))
             }
             "credential" => {
-                use awaken_runtime_contract::{
+                use awaken_agent_contract::credential::{
                     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource,
                     CredentialRef, CredentialUsage, ModelExposurePolicy, PlaintextBoundary,
                     PlaintextHolder,

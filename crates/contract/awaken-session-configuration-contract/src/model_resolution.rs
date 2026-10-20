@@ -157,9 +157,8 @@ mod verification {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime_contract::resolved::{
-        AcpSessionConfiguration, BackendModelSelection, ModelBinding,
-    };
+    use awaken_agent_contract::AcpSessionConfiguration;
+    use awaken_runtime_contract::resolved::{BackendModelSelection, ModelBinding};
 
     #[test]
     fn equal_public_model_identity_reuses_the_agent_publication() {
@@ -227,7 +226,7 @@ mod tests {
 
         let unproved_acp = ResolvedModelCandidate::try_backend_owned(
             ModelBinding::new("local", "", "acp:codex"),
-            awaken_runtime_contract::CredentialRef {
+            awaken_agent_contract::credential::CredentialRef {
                 id: "codex-login".into(),
                 revision: 1,
             },

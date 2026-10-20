@@ -82,9 +82,9 @@ mod tests {
             candidate_fingerprint: awaken_credential_contract::candidate_fingerprint(candidate)
                 .unwrap(),
             credential: access.credential.clone(),
-            selected_plaintext_holder: awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Worker,
-                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            selected_plaintext_holder: awaken_agent_contract::credential::PlaintextHolder::new(
+                awaken_agent_contract::credential::PlaintextBoundary::Worker,
+                awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
             ),
             selected_realization_kind:
                 awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
@@ -114,7 +114,8 @@ mod tests {
         catalog: Arc<InMemoryCatalogRepo>,
         credentials: Arc<InMemoryCredentialRepo>,
     ) -> CatalogModelPublicationResolver {
-        let policy = awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider();
+        let policy =
+            awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider();
         let holder = policy
             .allowed_plaintext_holders
             .iter()
@@ -309,14 +310,14 @@ mod tests {
             "endpoint@1",
             "ws",
             Some(
-                awaken_runtime_contract::CredentialAccess::new(
-                    awaken_runtime_contract::CredentialRef {
+                awaken_agent_contract::credential::CredentialAccess::new(
+                    awaken_agent_contract::credential::CredentialRef {
                         id: source.id.0,
                         revision: 1,
                     },
-                    awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                    awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-                    awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                    awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+                    awaken_agent_contract::credential::CredentialUsage::ProviderAdapter,
+                    awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider(),
                 )
                 .with_target(CredentialTarget::new(
                     CredentialPurpose::ProviderAdapter,

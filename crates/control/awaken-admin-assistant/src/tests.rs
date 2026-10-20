@@ -736,7 +736,7 @@ async fn assistant_authors_only_typed_controlled_permissions_and_never_legacy_pl
     for name in ["write", "edit", "bash"] {
         assert_eq!(
             policy.policy_for(name).permission,
-            awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk,
+            awaken_agent_contract::ToolPermissionRequirement::AlwaysAsk,
             "A1/E2 {name}"
         );
     }
@@ -824,14 +824,14 @@ async fn assistant_authors_only_typed_controlled_permissions_and_never_legacy_pl
         .find(|toolset| {
             matches!(
                 &toolset.source,
-                awaken_runtime_contract::agent_bindings::ToolsetSource::Mcp { server_name }
+                awaken_agent_contract::ToolsetSource::Mcp { server_name }
                     if server_name == "docs"
             )
         })
         .expect("A4/E6 paired MCP Toolset");
     assert_eq!(
         mcp.default.permission,
-        awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk,
+        awaken_agent_contract::ToolPermissionRequirement::AlwaysAsk,
         "A4/E6"
     );
     stored
@@ -885,7 +885,7 @@ async fn assistant_authors_only_typed_controlled_permissions_and_never_legacy_pl
         "A5/E7"
     );
 
-    use awaken_runtime_contract::agent_bindings::{
+    use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
     };

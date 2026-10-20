@@ -45,6 +45,62 @@ async fn single_turn_exposes_identity_state_and_committed_output() {
             .iter()
             .any(|message| message.text_content() == "Hello from the SDK")
     );
+
+    // P1 the consumer names Provider's public enum with all 36 default-feature
+    // variants; P2 an endpoint and authentication are explicit. E1 the complete
+    // match compiles and the constructed provider implements the same SDK model
+    // port. The exhaustive compiler check has no catch-all arm: it observes the
+    // documented 2.0 surface without a second enum or adapter. Construction does
+    // not infer, contact the endpoint or alter the DemoModel turn above.
+    use awaken_provider_genai::{AdapterKind, GenaiExecutor};
+    fn accept_provider_variant(adapter: AdapterKind) {
+        match adapter {
+            AdapterKind::OpenAI
+            | AdapterKind::OpenAIResp
+            | AdapterKind::Gemini
+            | AdapterKind::GeminiIx
+            | AdapterKind::Anthropic
+            | AdapterKind::Fireworks
+            | AdapterKind::Together
+            | AdapterKind::Groq
+            | AdapterKind::Aihubmix
+            | AdapterKind::Kimi
+            | AdapterKind::Mimo
+            | AdapterKind::Moonshot
+            | AdapterKind::Nebius
+            | AdapterKind::Xai
+            | AdapterKind::DeepSeek
+            | AdapterKind::Mistral
+            | AdapterKind::Zai
+            | AdapterKind::BigModel
+            | AdapterKind::Aliyun
+            | AdapterKind::QwenCloud
+            | AdapterKind::Baidu
+            | AdapterKind::Cohere
+            | AdapterKind::Ollama
+            | AdapterKind::OllamaCloud
+            | AdapterKind::Omlx
+            | AdapterKind::Vertex
+            | AdapterKind::GithubCopilot
+            | AdapterKind::OpenCodeGo
+            | AdapterKind::BedrockApi
+            | AdapterKind::OpenRouter
+            | AdapterKind::AtlasCloud
+            | AdapterKind::Requesty
+            | AdapterKind::ApiRoute
+            | AdapterKind::Heabsy
+            | AdapterKind::MiniMax
+            | AdapterKind::Custom(_) => {}
+        }
+    }
+    accept_provider_variant(AdapterKind::OpenAI);
+    let provider = GenaiExecutor::from_materialized_endpoint(
+        AdapterKind::OpenAI,
+        "http://127.0.0.1:9/v1/",
+        "consumer-test-token",
+    );
+    assert!(provider.is_ok(), "P2/E1 explicit construction");
+    let _model_port: &dyn LlmExecutor = provider.as_ref().unwrap();
 }
 
 #[tokio::test]
@@ -306,7 +362,8 @@ async fn filesystem_restart_reads_receipt_and_replays_terminal_without_a_model()
 fn web_policy_configuration_remains_usable_through_sdk_reexports() {
     use awaken_agent_contract::ToolsetSource;
     use awaken_ext_builtin_tools::{
-        WebDomainFilter, WebFetchExecutionConfiguration, WebToolConfigurationCompiler,
+        WebDomainFilter, WebFetchExecutionConfiguration, WebSearchExecutionConfiguration,
+        WebSearchUserLocation, WebToolConfigurationCompiler,
     };
     use awaken_tool_contract::{ToolConfigurationCompiler, ToolConfigurationInput};
     use awaken_web_policy_contract::{
@@ -359,6 +416,46 @@ fn web_policy_configuration_remains_usable_through_sdk_reexports() {
         ),
         Err(WebAdmissionFailure::DomainRejected)
     );
+
+    // W1/W2 cross the two exhaustive domain variants with all four original
+    // location fields present. E1 each old root path constructs the canonical
+    // WebPolicy type, E2 its exact serde shape survives a round trip. Fetch's
+    // existing zero-limit/allow/block assertions above remain independent.
+    // The two domain rows cover their only differing cause; location fields
+    // and type identities are the same in both, so no parallel DTO is needed.
+    let old_location = WebSearchUserLocation {
+        city: Some("Singapore".into()),
+        country: Some("SG".into()),
+        region: Some("Central".into()),
+        timezone: Some("Asia/Singapore".into()),
+    };
+    let canonical_location: awaken_web_policy_contract::WebSearchUserLocation = old_location;
+    for filter in [
+        WebDomainFilter::Allow(vec!["example.com".into()]),
+        WebDomainFilter::Block(vec!["example.com".into()]),
+    ] {
+        let kind = match &filter {
+            WebDomainFilter::Allow(_) => "allow",
+            WebDomainFilter::Block(_) => "block",
+        };
+        let canonical_filter: awaken_web_policy_contract::WebDomainFilter = filter;
+        let old_search = WebSearchExecutionConfiguration {
+            domains: Some(canonical_filter),
+            user_location: Some(canonical_location.clone()),
+        };
+        let canonical_search: awaken_web_policy_contract::WebSearchExecutionConfiguration =
+            old_search;
+        let expected = json!({
+            "domains": {"type": kind, "domains": ["example.com"]},
+            "user_location": {
+                "city": "Singapore", "country": "SG", "region": "Central",
+                "timezone": "Asia/Singapore"
+            }
+        });
+        assert_eq!(serde_json::to_value(&canonical_search).unwrap(), expected);
+        let decoded: WebSearchExecutionConfiguration = serde_json::from_value(expected).unwrap();
+        assert_eq!(decoded, canonical_search, "W1/W2 E1/E2");
+    }
     // External implementations still use the existing public provider method
     // and legacy exported filter path after the kernel's ownership move.
     struct ExternalFetch;

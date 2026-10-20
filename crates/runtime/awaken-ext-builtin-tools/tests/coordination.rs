@@ -2,11 +2,11 @@
 
 use std::sync::{Arc, Mutex};
 
+use awaken_agent_contract::agent::{run::Id as RunId, thread::Id as ThreadId};
 use awaken_ext_builtin_tools::{
     AgentCoordinator, AgentListRequest, AgentMessageReceipt, AgentMessageRequest,
     AgentMessageTarget, AgentRosterEntry, LIST_AGENTS, SEND_MESSAGE, Toolset, coordination_tools,
 };
-use awaken_runtime_contract::{RunId, ThreadId};
 use awaken_tool_contract::tool::{
     RawTool, ToolCall, ToolError, ToolOperationContext, ToolRecoveryCapability, ToolRecoveryPolicy,
     with_tool_operation_context,

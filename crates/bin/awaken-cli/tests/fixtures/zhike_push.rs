@@ -298,7 +298,7 @@ impl LlmExecutor for ScriptedPush {
             .content
             .iter()
             .filter_map(|c| {
-                if let awaken_runtime_contract::ContentBlock::Text { text } = c {
+                if let awaken_agent_contract::agent::content::ContentBlock::Text { text } = c {
                     Some(text.as_str())
                 } else {
                     None
@@ -309,10 +309,10 @@ impl LlmExecutor for ScriptedPush {
             .messages
             .iter()
             .rev()
-            .filter(|m| m.role == awaken_runtime_contract::Role::User)
+            .filter(|m| m.role == awaken_agent_contract::agent::message::Role::User)
             .flat_map(|m| m.content.iter())
             .find_map(|c| {
-                let awaken_runtime_contract::ContentBlock::Text { text } = c else {
+                let awaken_agent_contract::agent::content::ContentBlock::Text { text } = c else {
                     return None;
                 };
                 let value: Value = serde_json::from_str(text).ok()?;
@@ -347,7 +347,7 @@ impl LlmExecutor for ScriptedPush {
             )
         } else if last.contains("channel.joined") {
             let corrected = request.messages.iter().any(|m| {
-                m.role == awaken_runtime_contract::Role::User
+                m.role == awaken_agent_contract::agent::message::Role::User
                     && serde_json::to_string(&m.content)
                         .unwrap()
                         .contains("三万元")

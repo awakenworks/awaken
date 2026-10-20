@@ -56,7 +56,7 @@ impl AuthenticatedPeer {
         card.security = serde_json::from_value(serde_json::json!([{"bearer": []}]))
             .expect("valid security requirement");
         let security_fingerprint =
-            awaken_runtime_contract::content_fingerprint(&(&card.security_schemes, &card.security))
+            awaken_agent_contract::content_fingerprint(&(&card.security_schemes, &card.security))
                 .map(|fingerprint| format!("sha256:{fingerprint}"))
                 .expect("fingerprint card security");
         let card_router = Router::new().route(

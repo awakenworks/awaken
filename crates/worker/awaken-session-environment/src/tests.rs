@@ -15,8 +15,8 @@ use awaken_provisioning_contract::{
 
 use awaken_agent_channel::AgentChannel as AgentChannelType;
 use awaken_provisioning_contract::SandboxReadiness as _;
-use awaken_runtime_contract::llm::ToolCall;
 use awaken_session_environment_contract::SessionEnvironmentProvider;
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::ToolExecutor;
 
 use awaken_sandbox_local::FilesystemHandleCodec as _;

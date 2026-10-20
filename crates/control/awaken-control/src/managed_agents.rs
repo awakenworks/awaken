@@ -13,6 +13,7 @@ use awaken_agent_config::{
     MultiagentConfig, MultiagentTarget,
 };
 use awaken_agent_contract::AgentSkillBinding;
+use awaken_agent_contract::ToolsetPolicy;
 use awaken_config_service::{
     ConfigPlane, RESERVED_ADMIN_SCOPE, parse_managed_model_id, render_managed_model_id,
 };
@@ -25,7 +26,6 @@ use awaken_protocol_managed::types::agent::{
 };
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
-use awaken_runtime_contract::agent_bindings::ToolsetPolicy;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_session_configuration_contract::preserve_runtime_agent_overrides;
 use awaken_tenancy::ScopeId;
@@ -649,13 +649,16 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
 mod tests {
 
     use awaken_agent_config::ModelSelection;
+    use awaken_agent_contract::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+        ToolsetSource,
+    };
     use awaken_protocol_managed::types::agent::{AgentUpdateParams, ModelInput};
     use awaken_protocol_managed::types::{
         ModelConfigParams, ModelEffort, ModelEffortInput, ModelInferenceGeo,
     };
     use awaken_runtime_contract::agent_bindings::{
-        InferenceGeography, InferenceOptions, InferenceSpeed, ReasoningEffort, ToolExecutionPolicy,
-        ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+        InferenceGeography, InferenceOptions, InferenceSpeed, ReasoningEffort,
     };
     use serde_json::json;
 

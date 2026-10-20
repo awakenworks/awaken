@@ -30,7 +30,7 @@ impl awaken_run_ingress_contract::DispatchControlReads for FlakyDispatchStore {
     async fn current_credential_binding(
         &self,
         claim: &awaken_run_ingress::RunClaim,
-        candidate: &awaken_runtime_contract::CandidateFingerprint,
+        candidate: &awaken_agent_contract::credential::CandidateFingerprint,
     ) -> Result<
         Option<awaken_run_ingress::AttemptCredentialBinding>,
         awaken_run_ingress::DispatchError,

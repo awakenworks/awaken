@@ -164,8 +164,8 @@ fn frozen_projection_with_model_override(
     environment: awaken_session_state_contract::SessionEnvironmentState,
     model_override: Option<awaken_session_configuration_contract::SessionModelOverride>,
 ) -> awaken_session_realization_contract::FrozenSessionProjection {
-    let holder = awaken_runtime_contract::PlaintextHolder::new(
-        awaken_runtime_contract::PlaintextBoundary::Worker,
+    let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+        awaken_agent_contract::credential::PlaintextBoundary::Worker,
         "terminal.provisioning.test",
     );
     let baseline = awaken_session_configuration_contract::SessionBaseline::compile(

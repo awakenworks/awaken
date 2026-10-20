@@ -9,10 +9,10 @@ use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::{SandboxFile, SessionSandbox};
-use awaken_runtime_contract::llm::ToolCall;
 use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::docker::DockerRuntime;
 use awaken_sandbox_container::{ContainerProvider, ContainerRuntime, ContainerState};
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::ToolExecutor;
 use tokio::io::AsyncReadExt;
 
@@ -132,7 +132,10 @@ async fn native_acp_and_hand_share_one_production_container() {
         })
         .await
         .expect("Native tool routed through the in-container hand");
-    assert!(awaken_runtime_contract::extract_text(&result.content).contains("real-hand-ok"));
+    assert!(
+        awaken_agent_contract::agent::content::extract_text(&result.content)
+            .contains("real-hand-ok")
+    );
 
     let harvest = pc::Command::new([
         "sh",

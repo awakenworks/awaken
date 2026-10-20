@@ -13,17 +13,19 @@ use awaken_tool_contract::tool::{RawTool, ToolOutputSpiller};
 struct RejectingWatermarkCommit;
 
 #[async_trait]
-impl awaken_runtime_contract::CommitCoordinator for RejectingWatermarkCommit {
+impl awaken_agent_contract::thread::commit::coordinator::Coordinator for RejectingWatermarkCommit {
     async fn commit(
         &self,
         _commit: ThreadCommit,
     ) -> std::result::Result<
         awaken_agent_contract::thread::commit::staged::CommitRecord,
-        awaken_runtime_contract::CommitError,
+        awaken_agent_contract::thread::commit::coordinator::Error,
     > {
-        Err(awaken_runtime_contract::CommitError::Rejected(
-            "injected watermark commit failure".to_string(),
-        ))
+        Err(
+            awaken_agent_contract::thread::commit::coordinator::Error::Rejected(
+                "injected watermark commit failure".to_string(),
+            ),
+        )
     }
 }
 
@@ -304,7 +306,7 @@ fn toolset_policy_changes_the_actual_model_tool_surface() {
     // Effects: only enabled, declared static/dynamic descriptors reach the model.
     // Constraints/invariants: visibility has one assembly seam; permission does
     // not change visibility and undeclared dynamic sources cannot leak.
-    use awaken_runtime_contract::agent_bindings::{
+    use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
     };
@@ -400,7 +402,7 @@ fn provider_server_tool_requires_explicit_always_allow() {
     // Cause/effect decision table: R1 absent policy -> hidden; R2 AlwaysAsk ->
     // hidden because inference-side execution cannot pause for approval; R3
     // enabled AlwaysAllow -> visible exact server projection.
-    use awaken_runtime_contract::agent_bindings::{
+    use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
     };
@@ -516,19 +518,17 @@ fn a_live_dynamic_tool_replaces_its_publication_selection_placeholder() {
     );
     assert_eq!(request.tools, vec![live.clone()], "R1/E1+E2");
 
-    configured.plugin_config.agent.toolsets = vec![
-        awaken_runtime_contract::agent_bindings::ToolsetPolicy {
-            source: awaken_runtime_contract::agent_bindings::ToolsetSource::Agent,
-            default: Default::default(),
-            overrides: vec![awaken_runtime_contract::agent_bindings::ToolPolicyOverride::new(
-                "evidence_lookup",
-                awaken_runtime_contract::agent_bindings::ToolExecutionPolicy {
-                    enabled: false,
-                    permission: awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAllow,
-                },
-            )],
-        },
-    ];
+    configured.plugin_config.agent.toolsets = vec![awaken_agent_contract::ToolsetPolicy {
+        source: awaken_agent_contract::ToolsetSource::Agent,
+        default: Default::default(),
+        overrides: vec![awaken_agent_contract::ToolPolicyOverride::new(
+            "evidence_lookup",
+            awaken_agent_contract::ToolExecutionPolicy {
+                enabled: false,
+                permission: awaken_agent_contract::ToolPermissionRequirement::AlwaysAllow,
+            },
+        )],
+    }];
     let hidden = build_chat_request(
         &configured,
         &[],
@@ -1470,7 +1470,7 @@ async fn an_actual_runtime_attempt_accepts_fifteen_minute_success_and_rejects_an
 
 #[tokio::test]
 async fn logical_model_request_observations_cover_success_without_usage_and_failure() {
-    use awaken_runtime_contract::llm::ModelRequestObservation;
+    use awaken_agent_contract::audit::model_request::ModelRequestObservation;
 
     // Causes: C1 success/failure; C2 provider usage absent; C3 no transparent
     // retry. Effects: E1 exactly one observation per logical request; E2 the
@@ -2470,7 +2470,8 @@ fn merge_thread_usage_fails_closed_and_does_not_reset_a_drifted_tally() {
     // it cannot read. A drifted `__usage` cell → skip the rollup, leave the cell
     // untouched (never overwrite it with a fresh, partial tally).
     use awaken_agent_contract::agent::state::{Key, MergePolicy};
-    use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage, TokenUsage};
+    use awaken_agent_contract::audit::model_request::TokenUsage;
+    use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage};
 
     let mut store = Store::new();
     let corrupt = serde_json::json!("corrupt-not-a-usage");
@@ -2572,7 +2573,7 @@ async fn sdk_supplied_activation_preserves_live_context_and_command_precedence()
     // RI19 no inherited sources + both Configured -> tools stay advertised;
     // inherited sources may independently narrow the tool surface. Every row
     // still checks RI14/15/17 identity and refusal precedence before inference.
-    use awaken_runtime_contract::activation::InheritedToolsets;
+    use awaken_agent_contract::toolset::InheritedToolsets;
     use std::sync::atomic::AtomicUsize;
     let a = InheritedToolsets::with_caller(Vec::new(), None);
     let b = InheritedToolsets::with_caller(Vec::new(), Some(&a));
@@ -2654,7 +2655,7 @@ async fn sdk_supplied_activation_preserves_live_context_and_command_precedence()
                         // actual pause prefix through the original coordinator,
                         // omitting only the new command; never append a clear.
                         let store = if legacy {
-                            use awaken_runtime_contract::CommitCoordinator as _;
+                            use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
                             use awaken_runtime_contract::permission::RunToolCapability;
                             let retained = store.committed();
                             let ticket = store.resume_ticket(&original.run_id).unwrap();

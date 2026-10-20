@@ -15,14 +15,13 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{Key, Scope, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::audit::permission::PermissionPolicy;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::permission::{
-    DenyAllTools, GateDecision, GateOutcome, PermissionBasis, PermissionPolicy, ToolGateHook,
+    DenyAllTools, GateDecision, GateOutcome, PermissionBasis, ToolGateHook,
 };
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, DynamicTool, HookReaction, IdBound, PhaseContext, PhaseHook,
@@ -36,6 +35,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, replay_state};
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 
 struct TextLlm;
@@ -148,7 +148,10 @@ async fn every_entered_phase_hook_vetoes_ack_on_drop_or_unwind_but_not_return() 
             let mut context = RuntimeRunContext::new();
             if recovered {
                 use awaken_agent_contract::agent::state::StateKey;
-                use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
+                use awaken_agent_contract::thread::commit::{
+                    coordinator::Coordinator as CommitCoordinator,
+                    staged::{RunDisposition, ThreadCommit},
+                };
                 use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolBatch};
                 // A committed Requested call needs no replay permission. A
                 // text-only model cannot accidentally supply a fresh AfterTool

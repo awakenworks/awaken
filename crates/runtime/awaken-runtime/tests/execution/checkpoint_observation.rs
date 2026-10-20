@@ -382,11 +382,13 @@ async fn checkpoint_observation_precedes_committed_tool_batch_recovery() {
             )],
         )
         .unwrap();
-        awaken_runtime_contract::CommitCoordinator::commit(
+        awaken_agent_contract::thread::commit::coordinator::Coordinator::commit(
             durable.as_ref(),
-            awaken_runtime_contract::ThreadCommit::assemble(
+            awaken_agent_contract::thread::commit::staged::ThreadCommit::assemble(
                 ThreadId("thread-1".into()),
-                awaken_runtime_contract::RunDisposition::running(RunId("run-1".into())),
+                awaken_agent_contract::thread::commit::staged::RunDisposition::running(RunId(
+                    "run-1".into(),
+                )),
                 true,
                 Vec::new(),
                 vec![ActiveToolBatch::write(&Some(batch))],

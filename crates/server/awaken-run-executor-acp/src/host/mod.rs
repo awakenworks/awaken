@@ -19,11 +19,11 @@ use crate::{AcpCli, acp_cli};
 use async_trait::async_trait;
 pub use awaken_acp_contract::AcpCapabilityNegotiator;
 use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationSource};
+use awaken_agent_contract::credential::CredentialRef;
 use awaken_credential_contract::{
     CredentialMaterialError, CredentialObservation, CredentialObservationSource,
     CredentialObservationState, WorkerLocalReferenceRevalidator,
 };
-use awaken_runtime_contract::CredentialRef;
 use awaken_time::{WallClock, WallClockExt};
 
 mod capability_probe;

@@ -124,7 +124,7 @@ pub use awaken_run_ingress_contract::{ClaimedStreamPublisher, SessionContinuatio
 pub use dispatch::{
     AttemptAcknowledgementRecord, AttemptAdmission, AttemptClosureEvent, AttemptClosurePage,
     AttemptClosureRecord, AttemptCredentialBinding, AttemptExecutionBinding, AttemptPhysicalFact,
-    AttemptReturnCause, CandidateFingerprint, CasOutcome, Claimed, ClaimedCheckpointTransport,
+    AttemptReturnCause, CasOutcome, Claimed, ClaimedCheckpointTransport,
     ClaimedCredentialDeliveryTransport, CommitEpochGuard, ContinuationAdmission,
     CredentialRealizationReceipt, DispatchCompletion, DispatchDepths, DispatchError, DispatchLease,
     DispatchOutcome, DispatchSettlementError, DispatchSettlementObserver, DispatchState,

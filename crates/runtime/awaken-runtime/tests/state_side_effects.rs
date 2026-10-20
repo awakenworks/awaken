@@ -25,9 +25,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::{PreparedToolExecutor, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, IdBound, Plugin, PluginManifest, ToolConcurrencyConstraint,
@@ -40,6 +38,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, replay_state};
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{
     RawTool, ToolConcurrency, ToolError, ToolOutput, ToolResource, ToolResourceAccess,
 };

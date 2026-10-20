@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
 use awaken_agent_contract::credential::{AuthChallenge, Credential, CredentialRefresher};
+use awaken_agent_contract::credential::{CredentialRefreshAccess, TokenEndpointAuth};
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_materializer::CredentialRefreshFactory;
 use awaken_credential_vault::repo::{
@@ -16,7 +17,6 @@ use awaken_credential_vault::repo::{
 use awaken_credential_vault::{
     CredentialStatus, OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretRef, SecretStore,
 };
-use awaken_runtime_contract::{CredentialRefreshAccess, TokenEndpointAuth};
 use awaken_session_configuration_contract::{
     CredentialRefreshExchange, ProbeHttpResponse, RefreshExchangeOutcome, RefreshExchangeStatus,
 };

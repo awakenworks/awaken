@@ -22,8 +22,8 @@ use crate::fold::{prefetch_fold_point, token_fold_point};
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::{StateKey, Store};
+use awaken_agent_contract::content_fingerprint;
 use awaken_runtime_contract::compaction::RunCompactionMarker;
-use awaken_runtime_contract::content_fingerprint;
 use awaken_runtime_contract::plugin::{
     CapabilityBound, ContextMessages, ContextWindow, ContextWindowPlan, Contributions,
     HookReaction, IdBound, PhaseContext, PhaseHook, PhaseHookPoint, Plugin, PluginConfigError,

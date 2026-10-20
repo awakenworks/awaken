@@ -20,10 +20,10 @@ default = []
 test-support = []
 
 [dependencies]
+awaken-agent-contract.workspace = true
 awaken-tool-contract.workspace = true
 # The auxiliary-run sandbox port this Workdir provider implements.
 awaken-session-environment-contract.workspace = true
-awaken-runtime-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-types.workspace = true

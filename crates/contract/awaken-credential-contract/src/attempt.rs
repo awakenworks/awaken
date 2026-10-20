@@ -12,7 +12,7 @@
 //! (ADR-0086 §7).
 
 use async_trait::async_trait;
-use awaken_runtime_contract::resolution::content_fingerprint;
+use awaken_agent_contract::content_fingerprint;
 use awaken_runtime_contract::resolved::{Backend, ModelProvisioning, ResolvedModelCandidate};
 use awaken_runtime_contract::{CredentialRealizationHandle, RuntimeRunContext};
 use serde::{Deserialize, Serialize};

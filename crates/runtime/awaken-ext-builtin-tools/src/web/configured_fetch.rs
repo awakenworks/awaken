@@ -153,17 +153,17 @@ mod tests {
 
     fn observed_phase(
         run_id: &str,
-        _: &[awaken_runtime_contract::Message],
+        _: &[awaken_agent_contract::agent::message::Message],
     ) -> awaken_runtime_contract::plugin::PhaseContext {
         awaken_runtime_contract::plugin::PhaseContext {
-            run_id: awaken_runtime_contract::RunId(run_id.into()),
+            run_id: awaken_agent_contract::agent::run::Id(run_id.into()),
             step: 0,
             kind: awaken_runtime_contract::plugin::PhaseKind::AfterInference,
         }
     }
 
     fn observed_input(
-        conversation: &[awaken_runtime_contract::Message],
+        conversation: &[awaken_agent_contract::agent::message::Message],
     ) -> Vec<awaken_runtime_contract::llm::ChatMessage> {
         conversation
             .iter()
@@ -258,7 +258,10 @@ mod tests {
         // R3 admitted URL -> exactly one credential attempt, whose failure
         // prevents dispatch and fallback. Both public executable entry points
         // share the private request construction above.
-        use awaken_runtime_contract::{Message, MessageId, Role, Store};
+        use awaken_agent_contract::agent::{
+            message::{Id as MessageId, Message, Role},
+            state::Store,
+        };
         use awaken_tool_contract::tool::with_tool_state_context;
         use awaken_web_policy_contract::WebFetchUrlSources;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -305,21 +308,21 @@ mod tests {
         registry
             .register_fetch(Arc::new(Paid(calls.clone())))
             .unwrap();
-        let holder = awaken_runtime_contract::PlaintextHolder::new(
+        let holder = awaken_agent_contract::credential::PlaintextHolder::new(
             PlaintextBoundary::Worker,
-            awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
         );
         let access = CredentialAccess::new(
             CredentialRef {
                 id: "cred:paid-probe".into(),
                 revision: 1,
             },
-            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+            awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
             CredentialUsage::HttpHeader {
                 name: "Authorization".into(),
                 scheme: None,
             },
-            awaken_runtime_contract::CredentialExecutionPolicy::exact(
+            awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
                 holder,
                 ModelExposurePolicy::Forbidden,
             ),
@@ -438,7 +441,10 @@ mod tests {
         // or unseen -> url_not_allowed with zero provider calls; R2 current
         // eligible URL -> exactly one effect; R3 restored view -> same rule;
         // R4 every C5 is applied. No second gate can be bypassed by direct call.
-        use awaken_runtime_contract::{Message, MessageId, Role, Store};
+        use awaken_agent_contract::agent::{
+            message::{Id as MessageId, Message, Role},
+            state::Store,
+        };
         use awaken_tool_contract::tool::with_tool_state_context;
         use awaken_web_policy_contract::WebFetchUrlSources;
         let provider = Arc::new(FakeFetchProvider {

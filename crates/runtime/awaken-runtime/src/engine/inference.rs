@@ -201,7 +201,7 @@ pub(super) async fn infer_with_retry(
 
 pub(super) struct ObservedModelRequest {
     pub(super) result: std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error>,
-    pub(super) observation: awaken_runtime_contract::llm::ModelRequestObservation,
+    pub(super) observation: awaken_agent_contract::audit::model_request::ModelRequestObservation,
 }
 
 #[tracing::instrument(
@@ -362,7 +362,7 @@ pub(super) async fn infer_with_retry_observed(
         input_tokens,
         output_tokens,
     });
-    let observation = awaken_runtime_contract::llm::ModelRequestObservation {
+    let observation = awaken_agent_contract::audit::model_request::ModelRequestObservation {
         is_error: result.is_err(),
         usage: result
             .as_ref()

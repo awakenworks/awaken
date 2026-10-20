@@ -16,7 +16,7 @@ use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatMessage, ChatRequest, ChatResponse, LlmExecutor, StopReason, ToolCall,
+    AssistantOutput, ChatMessage, ChatRequest, ChatResponse, LlmExecutor, StopReason,
 };
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
@@ -26,6 +26,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 
 use crate::{Case, CaseScore, Dataset, ExpectationResult, Report, ScriptedResponse, score_case};

@@ -364,7 +364,7 @@ fn background_supervisor(
     clock: &Arc<dyn awaken_time::WallClock>,
 ) -> Arc<awaken_ext_background_task::BackgroundTaskSupervisor> {
     Arc::new(awaken_ext_background_task::BackgroundTaskSupervisor::new(
-        awaken_runtime_contract::content_fingerprint(&(
+        awaken_agent_contract::content_fingerprint(&(
             "background-worker-v1",
             std::process::id(),
             uuid::Uuid::new_v4().simple().to_string(),

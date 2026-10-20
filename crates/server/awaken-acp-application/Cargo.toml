@@ -12,6 +12,7 @@ layer = "infrastructure"
 authority = "acp"
 
 [dependencies]
+awaken-agent-contract.workspace = true
 awaken-time.workspace = true
 awaken-run-executor-acp.workspace = true
 awaken-runtime-contract.workspace = true

@@ -8,8 +8,8 @@
 //! Config-page credential choices, MCP inspection, and the
 //! `mcp_oauth_validate` route over the existing Vault owner.
 use super::*;
+use awaken_agent_contract::credential::CredentialRef;
 use awaken_credential_vault::{CredentialError, CredentialStatus};
-use awaken_runtime_contract::CredentialRef;
 
 #[derive(Clone, Debug, serde::Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

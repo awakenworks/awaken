@@ -321,7 +321,7 @@ impl std::fmt::Debug for CredentialRealizationHandle {
 pub struct RuntimeRunContext {
     /// Process-local projection of the activation's frozen caller toolsets.
     /// The activation, rather than this live wiring, owns recovery identity.
-    pub inherited_toolsets: Option<crate::activation::InheritedToolsets>,
+    pub inherited_toolsets: Option<awaken_agent_contract::toolset::InheritedToolsets>,
     /// Derived from the frozen Session context seed for this attempt. ACP uses
     /// it only for process TZ; the shared request-context message owns task time.
     pub request_timezone: Option<String>,
@@ -377,11 +377,12 @@ pub struct RuntimeRunContext {
     /// executes tools in-process by id (the `LocalToolExecutor` degenerate case);
     /// present routes every already-gated call through this port — e.g. a remote
     /// hand. The kernel never learns placement; it calls the port either way.
-    pub tool_executor: Option<Arc<dyn crate::tool::ToolExecutor>>,
+    pub tool_executor: Option<Arc<dyn awaken_tool_contract::tool::ToolExecutor>>,
     /// Process-local admission shared by every foreground and detached call in
     /// the same realized environment generation. It is coordination only;
     /// ThreadCommit and the owning extension aggregate remain durable authority.
-    pub tool_execution_admission: Option<Arc<dyn crate::tool::ToolExecutionAdmission>>,
+    pub tool_execution_admission:
+        Option<Arc<dyn awaken_tool_contract::tool::ToolExecutionAdmission>>,
     /// Optional maximum number of compatible tool calls entered concurrently in
     /// one model step. `None` admits the complete compatible batch at once.
     pub tool_concurrency_limit: Option<NonZeroUsize>,
@@ -389,7 +390,7 @@ pub struct RuntimeRunContext {
     /// executors both consult this after execution/projection and before commit,
     /// so oversized content has one sandbox-backed policy rather than per-tool
     /// truncation paths.
-    pub tool_output_spiller: Option<Arc<dyn crate::tool::ToolOutputSpiller>>,
+    pub tool_output_spiller: Option<Arc<dyn awaken_tool_contract::tool::ToolOutputSpiller>>,
     /// Closed, durable attempt restriction projected from `RunActivation`.
     /// Runtime uses the same value both to hide tools from the model and to
     /// reject any call that enters through recovery or an untrusted provider.
@@ -444,7 +445,7 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_inherited_toolsets(
         mut self,
-        inherited: Option<crate::activation::InheritedToolsets>,
+        inherited: Option<awaken_agent_contract::toolset::InheritedToolsets>,
     ) -> Self {
         self.inherited_toolsets = inherited;
         self
@@ -640,7 +641,10 @@ impl RuntimeRunContext {
     /// Route this attempt's tool calls through `executor` (e.g. a remote hand)
     /// instead of the in-process registry (ADR-0044 D1).
     #[must_use]
-    pub fn with_tool_executor(mut self, executor: Arc<dyn crate::tool::ToolExecutor>) -> Self {
+    pub fn with_tool_executor(
+        mut self,
+        executor: Arc<dyn awaken_tool_contract::tool::ToolExecutor>,
+    ) -> Self {
         self.tool_executor = Some(executor);
         self
     }
@@ -648,7 +652,7 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_tool_execution_admission(
         mut self,
-        admission: Arc<dyn crate::tool::ToolExecutionAdmission>,
+        admission: Arc<dyn awaken_tool_contract::tool::ToolExecutionAdmission>,
     ) -> Self {
         self.tool_execution_admission = Some(admission);
         self
@@ -658,7 +662,7 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_tool_output_spiller(
         mut self,
-        spiller: Arc<dyn crate::tool::ToolOutputSpiller>,
+        spiller: Arc<dyn awaken_tool_contract::tool::ToolOutputSpiller>,
     ) -> Self {
         self.tool_output_spiller = Some(spiller);
         self

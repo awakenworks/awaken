@@ -1100,7 +1100,7 @@ export interface ConfigCapabilitiesView {
 /**
  * A cooldown signal an operator (or an external rate-limit integration) records
  * against a credential source. `kind` maps to a failure
- * [`Disposition`](awaken_runtime_contract::resilience::Disposition): `quota` cools
+ * [`Disposition`](awaken_agent_contract::resilience::Disposition): `quota` cools
  * until `retry_after_secs` (or a default window); `exhausted` cools until cleared;
  * `available` / `clear` lifts any cooldown; `transient` / `permanent` are no-ops on
  * availability (they are retry/next-binding decisions, not identity cooldowns).

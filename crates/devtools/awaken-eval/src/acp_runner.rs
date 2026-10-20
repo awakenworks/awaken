@@ -12,7 +12,7 @@ use awaken_run_executor_acp::{AcpLaunch, AcpRunExecutor, Codec, SubprocessChanne
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::permission::{
-    ToolCall, ToolPermissionPolicy, ToolPermissionRuling, ToolPermissionVerdict,
+    ToolPermissionPolicy, ToolPermissionRuling, ToolPermissionVerdict,
 };
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
@@ -22,6 +22,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_tool_contract::tool::ToolCall;
 
 struct DenyAllTools;
 

@@ -21,9 +21,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_ext_builtin_tools::{HandToolContext, all_hand_tools_in};
-use awaken_runtime_contract::ContentBlock;
-use awaken_runtime_contract::llm::ToolCall;
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{RawTool, ToolError, ToolExecutionTarget, ToolOutput};
 
 #[path = "namespace/memory_mount.rs"]
@@ -1213,7 +1213,7 @@ impl HandOutput {
     /// Derived text for diagnostics and text-only relay assertions.
     #[must_use]
     pub fn text(&self) -> String {
-        awaken_runtime_contract::extract_text(&self.content)
+        awaken_agent_contract::agent::content::extract_text(&self.content)
     }
 }
 

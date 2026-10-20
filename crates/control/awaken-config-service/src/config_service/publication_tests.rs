@@ -1303,7 +1303,7 @@ async fn web_compilation_rejects_every_config_entry_before_publication_effects()
         async fn validate(
             &self,
             _: &ScopeId,
-            _: &awaken_runtime_contract::credential::CredentialRef,
+            _: &awaken_agent_contract::credential::CredentialRef,
         ) -> Result<(), String> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Err("credential validation must not run".into())
@@ -1482,7 +1482,7 @@ async fn declared_mcp_configuration_uses_one_admission_for_validate_preview_and_
     // accept through the same source/parser, without connecting; L5 unknown
     // field -> all three refuse, preserving Draft/publications/catalog. S1-S7
     // owns other partitions; provider_push keeps all its original assertions.
-    use awaken_runtime_contract::agent_bindings::{ToolsetPolicy, ToolsetSource};
+    use awaken_agent_contract::{ToolsetPolicy, ToolsetSource};
     let catalog = Arc::new(ExecutableAgentCatalog::new());
     let service = Arc::new(ConfigService::new(
         Arc::new(FakeResolver),

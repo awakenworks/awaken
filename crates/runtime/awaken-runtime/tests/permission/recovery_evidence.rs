@@ -6,10 +6,13 @@ use awaken_agent_contract::observation::{Observed, UnknownCause};
 use awaken_agent_contract::stream::checkpoint::{
     StreamCheckpoint, StreamCheckpointError, StreamCheckpointStore,
 };
+use awaken_agent_contract::thread::commit::{
+    coordinator::Coordinator as CommitCoordinator,
+    staged::{RunDisposition, ThreadCommit},
+};
 use awaken_runtime_contract::model_operation::{
     ActiveModelOperation, ModelExecutionEvidence, ModelOperation,
 };
-use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
 use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolBatchPhase};
 
 #[derive(Clone, Copy)]

@@ -719,7 +719,7 @@ mod tests {
         // | R5 | boundary | Shared | yes/yes | E1+E4 configured plugin |
         // | R6 | boundary | Shared | yes/no | E5 fail closed |
         // | R7 | boundary | Shared | provider-server/restrictive policy | E6 capability-bound before inference |
-        use awaken_runtime_contract::agent_bindings::{
+        use awaken_agent_contract::{
             ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
             ToolsetSource,
         };
@@ -740,7 +740,7 @@ mod tests {
                 {
                     AssistantOutput::text("child done")
                 } else {
-                    AssistantOutput::from_tool_calls(vec![awaken_runtime_contract::llm::ToolCall {
+                    AssistantOutput::from_tool_calls(vec![awaken_tool_contract::tool::ToolCall {
                         call_id: format!("write-{}", self.file_name),
                         tool_id: "write".into(),
                         arguments: serde_json::json!({
@@ -835,7 +835,7 @@ mod tests {
                 .with_reader(commit)
                 .with_tool_executor(parent_executor.clone())
                 .with_inherited_toolsets(Some(
-                    awaken_runtime_contract::activation::InheritedToolsets::with_caller(
+                    awaken_agent_contract::toolset::InheritedToolsets::with_caller(
                         Vec::new(),
                         None,
                     ),
@@ -1284,7 +1284,7 @@ mod tests {
                 let output = if request.messages.iter().any(|m| m.role == Role::Tool) {
                     AssistantOutput::text("child done")
                 } else {
-                    AssistantOutput::from_tool_calls(vec![awaken_runtime_contract::llm::ToolCall {
+                    AssistantOutput::from_tool_calls(vec![awaken_tool_contract::tool::ToolCall {
                         call_id: "child-write".into(),
                         tool_id: "write".into(),
                         arguments: serde_json::json!({
@@ -1341,7 +1341,7 @@ mod tests {
         let no_delegates = HashSet::new();
         let permission_toolsets = vec![crate::config::test_agent_toolset_permission(
             "write",
-            awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk,
+            awaken_agent_contract::ToolPermissionRequirement::AlwaysAsk,
         )];
         let execution = |scheduler: RunScheduler| AgentExecution {
             agent_id: "worker",

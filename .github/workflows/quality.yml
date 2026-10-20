@@ -17,10 +17,10 @@ on:
   workflow_dispatch:
     inputs:
       sdk_qualification:
-        description: Explicit SDK package or pre-release source SemVer qualification
+        description: Explicit SDK package, archive consumer or pre-release source SemVer qualification
         type: choice
         default: none
-        options: [none, package, semver]
+        options: [none, package, artifact, semver]
       build_benchmark:
         description: Measure representative cold and warm Cargo builds
         type: boolean
@@ -146,6 +146,9 @@ jobs:
       - name: Qualify complete SDK package archives
         if: github.event_name == 'workflow_dispatch' && inputs.sdk_qualification == 'package'
         run: python3 scripts/ci/check_sdk_consumer.py --qualify-package
+      - name: Qualify SDK archive consumer tasks
+        if: github.event_name == 'workflow_dispatch' && inputs.sdk_qualification == 'artifact'
+        run: python3 scripts/ci/check_sdk_consumer.py --qualify-artifact
       - name: Qualify complete SDK pre-release source SemVer
         if: github.event_name == 'workflow_dispatch' && inputs.sdk_qualification == 'semver'
         run: python3 scripts/ci/check_sdk_consumer.py --qualify-semver --baseline-rev 50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940

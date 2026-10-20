@@ -1285,7 +1285,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     let host = (dependencies).build().expect("validated Host dependencies");
     let candidate = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
         awaken_runtime_contract::resolved::ModelBinding::new("local", "", "acp:codex"),
-        awaken_runtime_contract::CredentialRef {
+        awaken_agent_contract::credential::CredentialRef {
             id: "codex-login".into(),
             revision: 1,
         },
@@ -1667,7 +1667,7 @@ async fn frozen_environment_selects_trusted_host_exactly() {
     let backend_owned =
         awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
             awaken_runtime_contract::resolved::ModelBinding::new("local", "", "acp:codex"),
-            awaken_runtime_contract::CredentialRef {
+            awaken_agent_contract::credential::CredentialRef {
                 id: "codex-login".into(),
                 revision: 1,
             },

@@ -101,10 +101,11 @@ async fn cancellation_case(case: Case) {
     );
     let run = activation.run_id.clone();
     let mut dispatch = RunDispatch::new(activation);
-    dispatch.inference_plaintext_holder = Some(awaken_runtime_contract::PlaintextHolder::new(
-        awaken_runtime_contract::PlaintextBoundary::Worker,
-        awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-    ));
+    dispatch.inference_plaintext_holder =
+        Some(awaken_agent_contract::credential::PlaintextHolder::new(
+            awaken_agent_contract::credential::PlaintextBoundary::Worker,
+            awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+        ));
     // R4 expires the claim by advancing this clock at the HTTP boundary, and the
     // dispatch port now reads "now" from the store it was built with.
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));

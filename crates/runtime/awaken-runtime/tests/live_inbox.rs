@@ -277,7 +277,7 @@ async fn cancellation_preempts_pause_and_leaves_input_for_attempt_close() {
         .expect("cancellation commits terminal truth");
     assert_eq!(
         state,
-        RunState::Ended(awaken_runtime_contract::EndCause::Cancelled)
+        RunState::Ended(awaken_agent_contract::agent::run::EndCause::Cancelled)
     );
     assert_eq!(inbox.list().len(), 1, "B2 boundary did not consume input");
     assert_eq!(inbox.close().len(), 1, "B2 attempt owner routes leftovers");

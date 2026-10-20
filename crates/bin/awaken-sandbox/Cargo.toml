@@ -89,7 +89,6 @@ awaken-sandbox-local.workspace = true
 
 [dev-dependencies]
 awaken-resource-application.workspace = true
-awaken-runtime-contract.workspace = true
 awaken-lease-testkit.workspace = true
 async-trait.workspace = true
 awaken-agent-channel.workspace = true

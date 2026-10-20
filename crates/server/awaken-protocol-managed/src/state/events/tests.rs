@@ -11902,10 +11902,10 @@ async fn model_request_spans_are_paired_and_keep_required_zero_usage_on_error() 
     // selects only its stated effect and preserves the authority constraint.
     use awaken_agent_contract::agent::run::Record as RunRecord;
     use awaken_agent_contract::audit::kind::Kind as AuditKind;
+    use awaken_agent_contract::audit::model_request::{ModelRequestObservation, TokenUsage};
     use awaken_agent_contract::audit::record::Record as AuditRecord;
     use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
     use awaken_runtime_contract::compaction::RunCompactionMarker;
-    use awaken_runtime_contract::llm::{ModelRequestObservation, TokenUsage};
 
     let state = ManagedState::new(LifecycleRuntime::default()).await;
     let session = state

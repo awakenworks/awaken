@@ -4,8 +4,9 @@ use async_trait::async_trait;
 use awaken_ext_memory::{MEMORY_AGENT_ID, MemoryExtractionStatus, RecallSelector as _};
 use awaken_resource_contract::{MemoryVersionQueries as _, MemoryWriter as _};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult,
 };
+use awaken_tool_contract::tool::ToolCall;
 
 #[test]
 fn extractor_run_error_classification_never_replays_unknown_execution() {

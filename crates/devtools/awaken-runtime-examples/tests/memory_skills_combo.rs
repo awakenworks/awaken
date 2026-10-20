@@ -22,10 +22,9 @@ use awaken_ext_skills::{
     SKILL_TOOL_ID, SkillContext, SkillSpec, SkillTool, list_skills_tool_descriptor,
     skill_tool_descriptor,
 };
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_examples::prelude::*;
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 
 /// A deterministic model that drives the whole combined surface: discover →

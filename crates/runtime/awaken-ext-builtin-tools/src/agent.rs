@@ -6,8 +6,8 @@
 //! or a remote execution adapter, but that placement and lifecycle wiring stays
 //! outside the Runtime contract.
 
+use awaken_agent_contract::agent::message::Message;
 use awaken_runtime_contract::CancellationToken;
-use awaken_runtime_contract::Message;
 use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput, invoke_raw_tool};
 use serde::{Deserialize, Serialize};
 

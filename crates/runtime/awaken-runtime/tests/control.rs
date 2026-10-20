@@ -605,13 +605,11 @@ impl LlmExecutor for ToolCallingLlm {
         _request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         Ok(ChatResponse {
-            output: AssistantOutput::from_tool_calls(vec![
-                awaken_runtime_contract::llm::ToolCall {
-                    call_id: "call-hang".into(),
-                    tool_id: "hang".into(),
-                    arguments: serde_json::json!({}),
-                },
-            ]),
+            output: AssistantOutput::from_tool_calls(vec![awaken_tool_contract::tool::ToolCall {
+                call_id: "call-hang".into(),
+                tool_id: "hang".into(),
+                arguments: serde_json::json!({}),
+            }]),
             usage: None,
             stop_reason: None,
         })
@@ -629,12 +627,12 @@ impl LlmExecutor for MultiClientToolLlm {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(ChatResponse {
             output: AssistantOutput::from_tool_calls(vec![
-                awaken_runtime_contract::llm::ToolCall {
+                awaken_tool_contract::tool::ToolCall {
                     call_id: "call-a".into(),
                     tool_id: "client-a".into(),
                     arguments: serde_json::json!({}),
                 },
-                awaken_runtime_contract::llm::ToolCall {
+                awaken_tool_contract::tool::ToolCall {
                     call_id: "call-b".into(),
                     tool_id: "client-b".into(),
                     arguments: serde_json::json!({}),
@@ -1000,7 +998,7 @@ impl RawTool for HangingTool {
 
     async fn invoke(
         &self,
-        _call: awaken_runtime_contract::llm::ToolCall,
+        _call: awaken_tool_contract::tool::ToolCall,
     ) -> Result<ToolOutput, ToolError> {
         let _drop = ToolFutureDrop(self.dropped.clone());
         self.started.notify_one();

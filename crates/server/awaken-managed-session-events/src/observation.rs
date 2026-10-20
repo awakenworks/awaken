@@ -4,9 +4,9 @@
 //! Consumer: the protocol adapter's root and child projectors. This is the
 //! sole source of these facts; live Step results carry neither.
 
+use awaken_agent_contract::audit::model_request::ModelRequestObservation;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_runtime_contract::compaction::RunCompactionMarker;
-use awaken_runtime_contract::llm::ModelRequestObservation;
 
 use crate::{
     DerivedSessionEvent, EventIdentity, FactProvenance, ManagedEventType, ProjectionError,

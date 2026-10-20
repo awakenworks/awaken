@@ -139,14 +139,16 @@ impl RawTool for AuxAgentTool {
 mod tests {
     use super::*;
     use crate::run_exec::BoundRunExecutor;
+    use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    use awaken_agent_contract::{
+        agent::thread::Id as ThreadId,
+        thread::read::transcript::{TranscriptRange, TranscriptSnapshotRef, TranscriptView},
+    };
     use awaken_ext_goal::grader::{AgentGrader, DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
     use awaken_ext_goal::outcome::{GradeDecision, Grader, GraderError, GradingInput, Id, Rubric};
     use awaken_ext_goal::state::grader_thread_id;
+    use awaken_runtime_contract::RuntimeRunContext;
     use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
-    use awaken_runtime_contract::{Message, MessageId, Role, RuntimeRunContext};
-    use awaken_runtime_contract::{
-        ThreadId, TranscriptRange, TranscriptSnapshotRef, TranscriptView,
-    };
     use std::sync::Mutex;
 
     struct FixedJudge {

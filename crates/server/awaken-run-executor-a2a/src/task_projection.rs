@@ -7,13 +7,14 @@
 // @formal reason: claim.
 //! Projection between committed Awaken Runs and remote A2A task boundaries.
 
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::awaiting::{AwaitTarget, RemoteInputReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure};
 use awaken_protocol_a2a::{Task, TaskState};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{Error, Result};
-use awaken_runtime_contract::resume::{PermissionDecision, ResumeResult};
+use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 /// The Agent's reply from a returned task: its durable artifacts, else the

@@ -5,7 +5,8 @@
 // @formal reason: material.
 //! Validation and projection of authored integrations into runtime Agent bindings.
 
-use awaken_runtime_contract::agent_bindings::{AgentBindings, ToolsetPolicy, ToolsetSource};
+use awaken_agent_contract::{ToolsetPolicy, ToolsetSource};
+use awaken_runtime_contract::agent_bindings::AgentBindings;
 use awaken_runtime_contract::resolved::{ResolvedModelCandidate, ToolDescriptor};
 
 use super::CompileError;

@@ -439,9 +439,10 @@ mod acp_projection_tests {
     }
 
     fn request(
-        boundary: awaken_runtime_contract::PlaintextBoundary,
+        boundary: awaken_agent_contract::credential::PlaintextBoundary,
     ) -> awaken_session_configuration_contract::mcp::StageMcpAttachment {
-        let holder = awaken_runtime_contract::PlaintextHolder::new(boundary, "test-holder");
+        let holder =
+            awaken_agent_contract::credential::PlaintextHolder::new(boundary, "test-holder");
         awaken_session_configuration_contract::mcp::StageMcpAttachment {
             workspace_id: "workspace-a".into(),
             generation: generation(),
@@ -496,8 +497,8 @@ mod acp_projection_tests {
 
     #[test]
     fn client_injection_uses_only_the_exact_process_protocol_field() {
+        use awaken_agent_contract::credential::PlaintextBoundary;
         use awaken_credential_contract::CredentialRealizationKind;
-        use awaken_runtime_contract::PlaintextBoundary;
         // Cause/effect rules: P1 declared Claude/Codex + exact HTTP process-field
         // receipt -> private redacted auth; P2 another sink or tampered receipt
         // -> refusal for either declared client; P3 undeclared OpenCode ->
@@ -627,7 +628,7 @@ mod acp_projection_tests {
     #[test]
     fn acp_projection_never_contains_the_real_bearer() {
         let p = prepared(Some("sk-RAW-SECRET"));
-        let request = request(awaken_runtime_contract::PlaintextBoundary::Worker);
+        let request = request(awaken_agent_contract::credential::PlaintextBoundary::Worker);
         let receipt = legacy_receipt(&request);
         // Without a live relay, fail closed: this process has no alternate
         // reference resolver and may not report a non-functional projection.
@@ -670,7 +671,7 @@ mod acp_projection_tests {
                 args: vec!["--headless".into()],
             },
         };
-        let mut request = request(awaken_runtime_contract::PlaintextBoundary::Worker);
+        let mut request = request(awaken_agent_contract::credential::PlaintextBoundary::Worker);
         request.name = "playwright".into();
         request.target = awaken_agent_contract::McpTarget::sandbox_stdio(
             "playwright-mcp",
@@ -698,7 +699,7 @@ mod acp_projection_tests {
     async fn a_relay_projects_a_loopback_url_with_no_sandbox_credential() {
         let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
         let p = prepared(Some("sk-RAW-SECRET"));
-        let request = request(awaken_runtime_contract::PlaintextBoundary::Worker);
+        let request = request(awaken_agent_contract::credential::PlaintextBoundary::Worker);
         let receipt = legacy_receipt(&request);
         relay.set_route(&request.generation, &p);
         // Sandboxed + relay: the projected server dials the relay (loopback), holds NO

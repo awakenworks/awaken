@@ -16,15 +16,19 @@ import subprocess
 import sys
 import tempfile
 import tarfile
+import tomllib
 import unittest
 from unittest import mock
 
 import crate_test
+import _sdk_archives
+import _sdk_compiler_input
 import gate_tools
 import check_gate_freshness
 from public_api_selection import selected_crates
 import formal_sources
 import rust_test_plan
+import _sdk_semver_evidence as semver_evidence
 from generate_hooks import gate_mode_source, glob_matches
 
 # The independent manifest and its path dependencies are a different feature
@@ -36,6 +40,7 @@ INPUT_GLOBS = (
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "examples/sdk-consumer/Cargo.toml"
+SDK_TARGET = "x86_64-unknown-linux-gnu"
 EXPECTED = {
     "single_turn_exposes_identity_state_and_committed_output",
     "multiple_turns_share_one_store_and_thread",
@@ -92,32 +97,8 @@ def validate_task_evidence(output: str) -> None:
         raise RuntimeError(f"SDK consumer task evidence is incomplete: expected={sorted(EXPECTED)}, executed={sorted(executed)}")
 
 
-def validate_semver_evidence(output: str, expected: list[str]) -> None:
-    """Match pinned 0.47 checked/finished observations to the planned packages."""
-    # Preserve raw logs; colors do not change the pinned terminal vocabulary.
-    output = re.sub(r"\x1b\[[0-9;]*m", "", output)
-    current = None
-    checked = False
-    finished = []
-    for line in output.splitlines():
-        start = re.fullmatch(r"\s*Checking ([A-Za-z0-9_-]+) v.+", line)
-        result = re.fullmatch(r"\s*Checked \[[^\]]+\] (\d+) checks: (\d+) pass(?:, (\d+) skip)?", line)
-        end = re.fullmatch(r"\s*Finished \[[^\]]+\] ([A-Za-z0-9_-]+)", line)
-        if start:
-            if current is not None:
-                raise ValueError("SDK SemVer package finished without checked evidence")
-            current, checked = start.group(1), False
-        elif result:
-            if current is None or checked or int(result.group(1)) == 0 or result.group(1) != result.group(2):
-                raise ValueError("SDK SemVer checked evidence is empty, duplicate or unsuccessful")
-            checked = True
-        elif end:
-            if current != end.group(1) or not checked:
-                raise ValueError("SDK SemVer finished evidence has no matching checked package")
-            finished.append(current)
-            current, checked = None, False
-    if current is not None or len(finished) != len(expected) or set(finished) != set(expected) or len(set(finished)) != len(finished):
-        raise ValueError(f"SDK SemVer execution is incomplete: expected={expected}, finished={finished}")
+def validate_semver_evidence(output: str, expected: list[str], major_audit=None) -> None:
+    semver_evidence.validate_standard(output, expected, major_audit)
 
 
 def self_test() -> None:
@@ -131,6 +112,12 @@ def self_test() -> None:
             'case "$mode" in\n  --quick|--push)\n    true\n    ;;\n'
             '  --full)\n    true\n    ;;\nesac\n')
     assert not admission_errors(owner, gate)
+    # S3 causes: the actual sdk-consumer scope, original dependency subject,
+    # and exact command split across two continuations -> one admitted call.
+    # This is the same executable cause as the one-line scoped form below;
+    # wrong scope/comment/extra arguments/duplicates remain refusal causes.
+    wrapped = gate.replace(invocation, 'scoped_step "sdk-consumer" "fix" \\\n  "$(consumed_packages examples/sdk-consumer/Cargo.toml)" \\\n  ' + invocation)
+    assert not admission_errors(owner, wrapped)
     assert admission_errors(owner.replace("examples/sdk-consumer/**,", ""), gate)
     for changed in (gate.replace(invocation, "true"), gate + invocation + '\n',
                     gate.replace(invocation, '# ' + invocation),
@@ -168,6 +155,248 @@ def self_test() -> None:
         raise AssertionError("incomplete consumer execution evidence was accepted")
 
 
+def sdk_source_observation():
+    """Observe and render the original working source without choosing policy."""
+    observed, facts = rust_test_plan.working_subject()
+    source = {"revision": facts["revision"].decode().strip(),
+              "tree": facts["tree"].decode().strip(),
+              "index_tree": facts["index_tree"].decode().strip(),
+              "working_subject": observed}
+    return observed, facts, source
+
+
+def capture_sdk_command(command, *, merged: bool, **arguments):
+    """The SDK owner's one stdio adapter; command and status stay upstream."""
+    program = Path(command[0]).name.casefold().removesuffix(".exe").removesuffix(".cmd")
+    arguments_after_program = command[1:]
+    if arguments_after_program and arguments_after_program[0].startswith("+"):
+        arguments_after_program = arguments_after_program[1:]
+    metadata = program == "cargo" and bool(arguments_after_program) and arguments_after_program[0] == "metadata"
+    # Cargo progress and unused-patch warnings are diagnostics, even on success.
+    # Metadata's stdout is the JSON protocol; keep it separate before parsing.
+    merged = merged and not metadata
+    stdio = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT} if merged else {"capture_output": True}
+    return subprocess.run(command, text=True, **stdio, **arguments)
+
+
+def retain_sdk_command_output(directory: Path, label: str, completed) -> None:
+    """Retain the original channels and the existing combined diagnostic log."""
+    stdout, stderr = completed.stdout or "", completed.stderr or ""
+    for suffix, value in ((".stdout.log", stdout), (".stderr.log", stderr), (".log", stdout + stderr)):
+        (directory / (label + suffix)).write_text(value)
+
+
+def retain_sdk_result(directory: Path, document: dict) -> None:
+    """Serialize the existing SDK receipt; its caller owns failure policy."""
+    (directory / "commands.json").write_text(json.dumps(document, indent=2) + "\n")
+
+
+def major_producer_packages(metadata: dict, sdk_root: Path, *, current: bool) -> dict:
+    """Validate the existing Cargo member observation before rendering inputs."""
+    if Path(metadata["workspace_root"]).resolve() != sdk_root.resolve():
+        raise ValueError("SDK major producer metadata has a foreign root")
+    packages = crate_test._members(metadata)
+    for name in (*semver_evidence.COHORT, *semver_evidence.WITNESS_OWNERS):
+        package = packages[name]
+        expected = (semver_evidence.COHORT[name][int(current)]
+                    if name in semver_evidence.COHORT else package["version"])
+        path = Path(package["manifest_path"]).resolve()
+        if (package["version"] != expected or package.get("source") is not None
+                or not path.is_relative_to(sdk_root.resolve()) or not path.is_file()
+                or ((package.get("metadata") or {}).get("awaken") or {}).get("product") != "sdk"):
+            raise ValueError("SDK major producer identity is outside its declared source/cohort")
+        authored = tomllib.loads(path.read_text()).get("package", {})
+        version = authored.get("version")
+        if isinstance(version, dict):
+            if set(version) != {"workspace"} or version["workspace"] is not True:
+                raise ValueError("SDK major producer has invalid workspace version inheritance")
+            version = tomllib.loads((sdk_root / "Cargo.toml").read_text()).get("workspace", {}).get("package", {}).get("version")
+        if (authored.get("name") != name or version != expected
+                or ((authored.get("metadata") or {}).get("awaken") or {}).get("product") != "sdk"):
+            raise ValueError("SDK major producer metadata differs from its authored member identity")
+    return packages
+
+
+def validate_retained_major_receipt(receipt: dict, work: Path, source: dict, baseline: str,
+                                    feature: str, target: str) -> None:
+    """The existing SDK IO owner binds the pure receipt to retained evidence."""
+    try:
+        planned = semver_evidence.witness_steps(ROOT, work, baseline, feature, target)
+        outputs = {}
+        if len(receipt.get("steps", [])) != len(planned):
+            raise ValueError("SDK major retained step evidence is incomplete")
+        for row, step in zip(receipt["steps"], planned):
+            name = step["name"]
+            stdout = (work / (name + ".stdout.log")).read_bytes()
+            stderr = (work / (name + ".stderr.log")).read_bytes()
+            combined = (work / (name + ".log")).read_bytes()
+            if combined != stdout + stderr or hashlib.sha256(combined).hexdigest() != row.get("log_sha256"):
+                raise ValueError("SDK major retained output changed or is incomplete")
+            outputs[name] = (stdout.decode(), stderr.decode())
+        sides = {}
+        for current, sdk_root in ((False, work / "baseline-source"), (True, ROOT)):
+            side = "current" if current else "baseline"
+            consumer = work / (side + "-consumer")
+            packages = major_producer_packages(json.loads(outputs[side + "-sdk-metadata"][0]), sdk_root, current=current)
+            facts = semver_evidence.validate_consumer_metadata(
+                json.loads(outputs[side + "-consumer-metadata"][0]), consumer, packages, current=current, feature=feature)
+            manifest = consumer / "Cargo.toml"
+            if manifest.read_text() != semver_evidence.consumer_manifest(packages, current=current, feature=feature):
+                raise ValueError("SDK major consumer manifest differs from the original dependency inputs")
+            facts["manifest_sha256"] = hashlib.sha256(manifest.read_bytes()).hexdigest()
+            facts["lock_sha256"] = hashlib.sha256((consumer / "Cargo.lock").read_bytes()).hexdigest()
+            sides[side] = facts
+            for name, (code, marker) in semver_evidence.witness_cases(current).items():
+                text = semver_evidence.WITNESS_SOURCES[name]
+                if (consumer / "cases" / (name + ".rs")).read_text() != text:
+                    raise ValueError("SDK major downstream source changed")
+                output = "".join(outputs[side + "-" + name])
+                errors = semver_evidence.validate_compiler_case(output, 101 if code else 0, text,
+                    "cases/" + name + ".rs", code, marker)
+                recorded = [case for case in receipt["cases"] if case["side"] == side and case["case"] == name]
+                if len(recorded) != 1 or recorded[0]["compiler_errors"] != errors:
+                    raise ValueError("SDK major diagnostic differs from its retained original output")
+        if hashlib.sha256((work / "baseline.tar").read_bytes()).hexdigest() != receipt.get("baseline_archive_sha256"):
+            raise ValueError("SDK major baseline archive changed")
+        semver_evidence.validate_witness_receipt(receipt, source, baseline, feature,
+            target=target, root=ROOT, work=work, side_facts=sides)
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ValueError(str(error)) from error
+
+
+def run_major_consumer_audit(spec_path: Path) -> int:
+    """One explicit SDK test action; compiler refusals are its asserted data."""
+    values = crate_test.environment(ROOT)
+    clean_environment = formal_sources.detached_git_environment()
+    values = {**clean_environment, **{key: values[key] for key in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR")}}
+    completed, journal = None, {"steps": [], "cases": [], "sides": {}}
+    work = None
+    try:
+        spec = json.loads(spec_path.read_text())
+        target = Path(values["CARGO_BUILD_BUILD_DIR"]).resolve() / "test-timings"
+        if not spec_path.resolve().is_relative_to(target):
+            raise ValueError("SDK major test specification is outside its owned qualification evidence")
+        feature = spec["feature"]
+        if (feature not in ("default", "all") or spec["target"] != SDK_TARGET
+                or not re.fullmatch(r"[0-9a-f]{40}", spec["baseline_rev"])):
+            raise ValueError("SDK major test specification has an unknown feature or baseline")
+        journal.update(source=spec["source"], baseline_rev=spec["baseline_rev"], feature=feature, target=spec["target"])
+        owned_subjects = {}
+
+        def verify():
+            _, facts, actual = sdk_source_observation()
+            if actual != spec["source"] or facts["status"]:
+                raise ValueError("SDK major consumer source changed or is not clean")
+            for directory, (expected, ignore_lock) in owned_subjects.items():
+                observed = _sdk_archives.file_hashes(directory)
+                if ignore_lock:
+                    observed.pop("Cargo.lock", None)
+                if observed != expected:
+                    raise ValueError("SDK major owned baseline/consumer source or lock changed")
+        verify()
+        work = spec_path.parent / (feature + "-major-consumers")
+        work.mkdir()  # Fresh evidence only: never reuse an earlier baseline tree.
+        planned = {step["name"]: step["command"] for step in semver_evidence.witness_steps(
+            ROOT, work, spec["baseline_rev"], feature, spec["target"])}
+
+        def capture(command, **arguments):
+            nonlocal completed
+            completed = None
+            completed = capture_sdk_command(command, merged=True, **arguments)
+            return completed
+
+        def execute(name, *, directory=ROOT, validate=None):
+            nonlocal completed
+            completed = None
+            def record(rows):
+                row = rows[-1]
+                row.update(log=str(work / (name + ".log")),
+                    log_sha256=hashlib.sha256(((completed.stdout or "") + (completed.stderr or "")).encode()).hexdigest() if completed is not None else None)
+                # Keep the sequence's one mutable observation, including source
+                # and record faults; no second post-sequence step update/write.
+                journal["steps"].append(row)
+                if completed is not None:
+                    retain_sdk_command_output(work, name, completed)
+                if validate is not None and completed is not None:
+                    try:
+                        validate(completed.stdout, row)
+                    except (KeyError, TypeError, AttributeError) as error:
+                        raise ValueError(str(error)) from error
+                retain_sdk_result(work, journal)
+            return crate_test.execute_commands([planned[name]], values, root=directory,
+                verify=verify, record=record, run=capture)
+
+        archive = work / "baseline.tar"
+        def archive_result(output, row):
+            if row["exit_code"] == 0:
+                journal["baseline_archive_sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
+        status, _ = execute("baseline-archive", validate=archive_result)
+        if status:
+            return status
+        baseline = work / "baseline-source"
+        baseline.mkdir()
+        if not hasattr(tarfile, "data_filter"):
+            raise ValueError("SDK baseline extraction requires Python's standard tar data filter")
+        with tarfile.open(archive, "r:") as source:
+            source.extractall(baseline, filter="data")
+        owned_subjects[baseline] = (_sdk_archives.file_hashes(baseline), False)
+        for current, sdk_root in ((False, baseline), (True, ROOT)):
+            side = "current" if current else "baseline"
+            side_packages = {}
+            def sdk_metadata(output, row):
+                nonlocal side_packages
+                data = json.loads(output)
+                side_packages = major_producer_packages(data, sdk_root, current=current)
+            status, _ = execute(side + "-sdk-metadata", validate=sdk_metadata)
+            if status:
+                return status
+            consumer = work / (side + "-consumer")
+            (consumer / "cases").mkdir(parents=True)
+            manifest = consumer / "Cargo.toml"
+            manifest.write_text(semver_evidence.consumer_manifest(side_packages, current=current, feature=feature))
+            cases = semver_evidence.witness_cases(current)
+            for name in cases:
+                (consumer / "cases" / (name + ".rs")).write_text(semver_evidence.WITNESS_SOURCES[name])
+            owned_subjects[consumer] = (_sdk_archives.file_hashes(consumer), True)
+            def consumer_metadata(output, row):
+                journal["sides"][side] = semver_evidence.validate_consumer_metadata(
+                    json.loads(output), consumer, side_packages, current=current, feature=feature)
+                journal["sides"][side]["manifest_sha256"] = hashlib.sha256(manifest.read_bytes()).hexdigest()
+                journal["sides"][side]["lock_sha256"] = hashlib.sha256((consumer / "Cargo.lock").read_bytes()).hexdigest()
+                owned_subjects[consumer] = (_sdk_archives.file_hashes(consumer), False)
+            status, _ = execute(side + "-consumer-metadata", directory=consumer, validate=consumer_metadata)
+            if status:
+                return status
+            for name, (expected_code, marker) in cases.items():
+                source = semver_evidence.WITNESS_SOURCES[name]
+                accepted = False
+                def compiler_result(output, row):
+                    nonlocal accepted
+                    errors = semver_evidence.validate_compiler_case(output, row["exit_code"], source,
+                        "cases/" + name + ".rs", expected_code, marker)
+                    journal["cases"].append({"side": side, "case": name, "original_exit_code": row["exit_code"],
+                        "expected_code": expected_code, "compiler_errors": errors,
+                        "source_sha256": hashlib.sha256(source.encode()).hexdigest()})
+                    accepted = True
+                status, rows = execute(side + "-" + name, directory=consumer, validate=compiler_result)
+                # The generic owner still returns original101. Only this
+                # explicit negative test may assert its exact counterexample.
+                if status and not (status == 101 and expected_code and accepted
+                                   and rows and "subject_error" not in rows[-1]
+                                   and "record_error" not in rows[-1]):
+                    return status
+        verify()
+        journal["exit_code"] = 0
+        validate_retained_major_receipt(journal, work, spec["source"], spec["baseline_rev"], feature, spec["target"])
+        retain_sdk_result(work, journal)
+        return 0
+    except subprocess.CalledProcessError as error:
+        return error.returncode if error.returncode >= 0 else 128 - error.returncode
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, tarfile.TarError) as error:
+        print(f"SDK major consumer audit refused: {error}", file=sys.stderr)
+        return 1
+
+
 def run_consumer(*, qualification: str = "", baseline_rev: str = "") -> int:
     """Keep SDK admission policy; the existing sequence owns source and status."""
     values = crate_test.environment(ROOT)
@@ -179,94 +408,135 @@ def run_consumer(*, qualification: str = "", baseline_rev: str = "") -> int:
     completed = None
     evidence = None
     members = {}
-    document = {"qualification": qualification, "target": "x86_64-unknown-linux-gnu",
+    unpacked = {}
+    archive_subject = None
+    consumer_subject = None
+    consumer_lock = None
+    major_commands = {}
+    document = {"qualification": qualification, "target": SDK_TARGET,
                 "baseline_kind": "first pre-release source contract" if baseline_rev else None,
                 "baseline_rev": baseline_rev or None}
 
     def verify() -> None:
         nonlocal subject
-        observed, facts = rust_test_plan.working_subject()
+        observed, facts, source = sdk_source_observation()
         if qualification and (facts["status"] or facts["staged"] or facts["working"] or facts["untracked"]):
             raise ValueError("SDK qualification requires an exact clean source/index/worktree")
         if subject is None:
             subject = observed
             if qualification:
-                document["source"] = {"revision": facts["revision"].decode().strip(),
-                                      "tree": facts["tree"].decode().strip(),
-                                      "index_tree": facts["index_tree"].decode().strip(),
-                                      "working_subject": observed}
+                document["source"] = source
         elif observed != subject:
             raise ValueError("SDK consumer source changed before or during execution")
+        if archive_subject is not None:
+            if _sdk_archives.file_hashes(evidence / "unpacked") != archive_subject:
+                raise ValueError("unpacked package source changed during artifact consumption")
+            for artifact in document["artifacts"]["default"]:
+                if hashlib.sha256(Path(artifact["path"]).read_bytes()).hexdigest() != artifact["sha256"]:
+                    raise ValueError("package archive changed during artifact consumption")
+            files = _sdk_archives.file_hashes(evidence / "consumer")
+            files.pop("Cargo.lock", None)
+            if files != consumer_subject:
+                raise ValueError("copied consumer source changed during artifact consumption")
+            if consumer_lock is not None and hashlib.sha256(
+                    (evidence / "consumer/Cargo.lock").read_bytes()).hexdigest() != consumer_lock:
+                raise ValueError("artifact consumer lock changed after resolution")
 
     def capture(command, **arguments):
         # Only preserve the existing stdio contract. No retry, deadline, process
         # manager or command loop: Cargo admission and lifecycle stay upstream.
         nonlocal completed
         completed = None
-        stdio = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT} if qualification else {"capture_output": True}
-        completed = subprocess.run(command, text=True, **stdio, **arguments)
+        completed = capture_sdk_command(command, merged=bool(qualification), **arguments)
         if qualification and completed.stderr is None:
             completed.stderr = ""
         return completed
 
+    def assess_result(row):
+        action = major_commands.get(tuple(row["command"]))
+        if action is None or action[0] != "audit":
+            return None
+        feature = action[1]
+        witness = document.get("major_consumer_audits", {}).get(feature)
+        validate_retained_major_receipt(witness or {}, evidence / (feature + "-major-consumers"),
+                                       document["source"], baseline_rev, feature, document["target"])
+        observed = semver_evidence.validate_audit(completed.stdout + completed.stderr, row["exit_code"],
+                                                 approved=semver_evidence.APPROVED_FINDINGS)
+        document.setdefault("major_audits", {})[feature] = {
+            "source": document["source"], "baseline_rev": baseline_rev,
+            "feature": feature, "packages": observed, "consumer_audit": witness,
+        }
+        return "accepted_major" if row["exit_code"] == 1 else None
+
     def record(rows) -> None:
+        nonlocal unpacked, archive_subject, consumer_subject, consumer_lock
         if completed is None:
             return
         if rows[-1]["command"][1] == "test":
             sys.stdout.write(completed.stdout)
         sys.stderr.write(completed.stderr)
+        if qualification == "artifact":
+            phase = ("package", "metadata", "tasks", "sample")[len(rows) - 1]
+            retain_sdk_command_output(evidence, phase, completed)
+            try:
+                if rows[-1]["exit_code"] == 0:
+                    if phase == "package":
+                        archive_directory = Path(values["CARGO_BUILD_BUILD_DIR"])
+                        if not archive_directory.is_absolute():
+                            archive_directory = ROOT / archive_directory
+                        artifacts = _sdk_archives.capture_archives(
+                            archive_directory / "package", evidence / "default-artifacts",
+                            document["artifact_packages"], members, document["source"]["revision"], ROOT)
+                        document["artifacts"] = {"default": artifacts}
+                        unpacked = _sdk_archives.unpack_archives(artifacts, members, evidence / "unpacked")
+                        _sdk_archives.stage_consumer(MANIFEST, evidence / "consumer", unpacked, members)
+                        archive_subject = _sdk_archives.file_hashes(evidence / "unpacked")
+                        consumer_subject = _sdk_archives.file_hashes(evidence / "consumer")
+                        document["archive_source_hashes"] = archive_subject
+                        document["consumer_source_hashes"] = consumer_subject
+                    elif phase == "metadata":
+                        metadata = json.loads(completed.stdout)
+                        document["consumed_packages"] = _sdk_archives.validate_consumer_graph(
+                            metadata, evidence / "consumer", unpacked, members)
+                        (evidence / "consumer-metadata.json").write_text(completed.stdout)
+                        consumer_lock = hashlib.sha256((evidence / "consumer/Cargo.lock").read_bytes()).hexdigest()
+                        document["consumer_lock_sha256"] = consumer_lock
+                    elif phase == "tasks":
+                        validate_task_evidence(completed.stdout)
+                        document["executed_tasks"] = sorted(EXPECTED)
+                    elif "Hello from the SDK" not in completed.stdout:
+                        raise ValueError("artifact sample did not produce the original SDK response")
+            except (KeyError, TypeError, RuntimeError, tarfile.TarError) as error:
+                raise ValueError(str(error)) from error
+            document["commands"] = rows
+            retain_sdk_result(evidence, document)
+            return
         if qualification:
             command = rows[-1]["command"]
-            feature = "all" if "--all-features" in command else "default"
-            (evidence / (feature + ".log")).write_text(completed.stdout + completed.stderr)
-            if rows[-1]["exit_code"] == 0 and qualification == "semver":
-                validate_semver_evidence(completed.stdout + completed.stderr, document["sdk_crates"])
+            action = major_commands.get(tuple(command))
+            feature = action[1] if action else "all" if "--all-features" in command else "default"
+            label = feature + ("-major-" + action[0] if action else "")
+            retain_sdk_command_output(evidence, label, completed)
+            if rows[-1]["exit_code"] == 0 and action and action[0] == "consumers":
+                receipt = json.loads((evidence / (feature + "-major-consumers/commands.json")).read_text())
+                validate_retained_major_receipt(receipt, evidence / (feature + "-major-consumers"),
+                                               document["source"], baseline_rev, feature, document["target"])
+                document.setdefault("major_consumer_audits", {})[feature] = receipt
+            if rows[-1]["exit_code"] == 0 and qualification == "semver" and action is None:
+                audit = document.get("major_audits", {}).get(feature)
+                if major_commands and audit is None:
+                    raise ValueError("SDK major observation has no same-feature audited changes")
+                validate_semver_evidence(completed.stdout + completed.stderr, document["sdk_crates"],
+                                         audit["packages"] if audit else None)
             if rows[-1]["exit_code"] == 0 and qualification == "package":
-                artifacts = []
                 archive_directory = Path(values["CARGO_BUILD_BUILD_DIR"])
                 if not archive_directory.is_absolute():
                     archive_directory = ROOT / archive_directory
-                archive_directory /= "package"
-                for name in document["sdk_crates"]:
-                    archive = archive_directory / f"{name}-{members[name]['version']}.crate"
-                    data = archive.read_bytes()
-                    destination = evidence / (feature + "-artifacts")
-                    destination.mkdir(exist_ok=True)
-                    (destination / archive.name).write_bytes(data)
-                    normalized = {}
-                    try:
-                        package = tarfile.open(archive, "r:gz")
-                    except tarfile.TarError as error:
-                        raise ValueError(f"unreadable package archive: {name}") from error
-                    with package:
-                        for item in ("Cargo.toml", "Cargo.toml.orig", "Cargo.lock", ".cargo_vcs_info.json"):
-                            try:
-                                reader = package.extractfile(f"{name}-{members[name]['version']}/{item}")
-                            except KeyError as error:
-                                raise ValueError(f"missing normalized package member: {name}/{item}") from error
-                            if reader is None:
-                                raise ValueError(f"missing normalized package member: {name}/{item}")
-                            contents = reader.read()
-                            (destination / f"{name}--{item}").write_bytes(contents)
-                            normalized[item] = hashlib.sha256(contents).hexdigest()
-                            if item == ".cargo_vcs_info.json":
-                                vcs = json.loads(contents)
-                                if not isinstance(vcs, dict) or not isinstance(vcs.get("git"), dict):
-                                    raise ValueError(f"invalid package VCS observation: {name}")
-                                manifest_path = members[name].get("manifest_path")
-                                if not isinstance(manifest_path, str):
-                                    raise ValueError(f"package metadata has no manifest location: {name}")
-                                expected_path = Path(manifest_path).parent.resolve().relative_to(ROOT.resolve()).as_posix()
-                                # Cargo 1.96 omits git.dirty when it is false.
-                                if (vcs["git"].get("sha1") != document["source"]["revision"]
-                                        or vcs["git"].get("dirty", False) is not False
-                                        or vcs.get("path_in_vcs") != expected_path):
-                                    raise ValueError(f"package VCS observation does not bind the clean source: {name}")
-                    artifacts.append({"package": name, "path": str(destination / archive.name),
-                                      "sha256": hashlib.sha256(data).hexdigest(), "normalized": normalized})
-                document.setdefault("artifacts", {})[feature] = artifacts
+                document.setdefault("artifacts", {})[feature] = _sdk_archives.capture_archives(
+                    archive_directory / "package", evidence / (feature + "-artifacts"),
+                    document["sdk_crates"], members, document["source"]["revision"], ROOT)
             document["commands"] = rows
-            (evidence / "commands.json").write_text(json.dumps(document, indent=2) + "\n")
+            retain_sdk_result(evidence, document)
             return
         if rows[-1]["exit_code"]:
             return
@@ -316,6 +586,10 @@ def run_consumer(*, qualification: str = "", baseline_rev: str = "") -> int:
             if not sdk:
                 raise ValueError("SDK qualification has no publishable SDK members")
             document["sdk_crates"] = sdk
+            if qualification in ("package", "semver"):
+                document["compiler_inputs"] = _sdk_compiler_input.qualification(
+                    ROOT, document["source"]["revision"], members, sdk, metadata, values, baseline_rev)
+                values.update(document["compiler_inputs"]["environment"])
             target = Path(values["CARGO_BUILD_BUILD_DIR"])
             if not target.is_absolute():
                 target = ROOT / target
@@ -324,14 +598,49 @@ def run_consumer(*, qualification: str = "", baseline_rev: str = "") -> int:
             evidence = Path(tempfile.mkdtemp(prefix="sdk-qualification-", dir=target))
             (evidence / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
             selectors = [word for name in sdk for word in ("-p", name)]
-            if qualification == "package":
+            if qualification in ("package", "artifact"):
                 command = ["cargo", "+1.96.0", "package", "--locked", "--target", document["target"]]
-                commands = [command + selectors, command + ["--all-features"] + selectors]
+                if qualification == "package":
+                    commands = [command + selectors, command + ["--all-features"] + selectors]
+                else:
+                    names = _sdk_archives.consumer_packages(MANIFEST, members, sdk)
+                    document["artifact_packages"] = names
+                    manifest = str(evidence / "consumer/Cargo.toml")
+                    commands = [
+                        command + [word for name in names for word in ("-p", name)],
+                        ["cargo", "metadata", "--manifest-path", manifest, "--format-version", "1",
+                         "--filter-platform", document["target"]],
+                        ["cargo", "test", "--manifest-path", manifest, "--locked", "--target", document["target"],
+                         "--test", "tasks", "--", "--test-threads=1"],
+                        ["cargo", "run", "--manifest-path", manifest, "--locked", "--target", document["target"]],
+                    ]
             else:
                 command = ["cargo", "semver-checks", "check-release", "--baseline-rev", baseline_rev,
                            "--target", document["target"]]
                 commands = [command + [features] + selectors
                             for features in ("--default-features", "--all-features")]
+                if any(name in sdk and members[name]["version"] not in versions
+                       for name, versions in semver_evidence.COHORT.items()):
+                    raise ValueError("SDK declared major cohort has an unknown source version")
+                majors = sorted(name for name, versions in semver_evidence.COHORT.items()
+                                if name in sdk and members[name]["version"] == versions[1])
+                if majors:
+                    if set(majors) != set(semver_evidence.COHORT):
+                        raise ValueError("SDK declared major cohort is incomplete")
+                    original = commands
+                    commands = []
+                    major_selectors = [word for name in majors for word in ("-p", name)]
+                    for standard in original:
+                        feature = "all" if "--all-features" in standard else "default"
+                        spec_path = evidence / (feature + "-major-spec.json")
+                        spec_path.write_text(json.dumps({key: document[key] for key in ("source", "baseline_rev", "target")}
+                            | {"feature": feature}, indent=2) + "\n")
+                        witness = [sys.executable, str(Path(__file__).resolve()), "--major-consumer-audit", str(spec_path)]
+                        audit = command + ["--all-features" if feature == "all" else "--default-features",
+                                           "--release-type", "patch"] + major_selectors
+                        major_commands[tuple(witness)] = ("consumers", feature)
+                        major_commands[tuple(audit)] = ("audit", feature)
+                        commands.extend((witness, audit, standard))
         except subprocess.CalledProcessError as error:
             failure = error.returncode if error.returncode >= 0 else 128 - error.returncode
             print(f"SDK qualification metadata/source failed: {error}", file=sys.stderr)
@@ -350,12 +659,13 @@ def run_consumer(*, qualification: str = "", baseline_rev: str = "") -> int:
         print(f"SDK qualification evidence: {evidence}")
 
     status, rows = crate_test.execute_commands(commands, values,
-                                           root=ROOT, verify=verify, record=record, run=capture)
+                                           root=ROOT, verify=verify, record=record, run=capture,
+                                           assess_result=assess_result if major_commands else None)
     if qualification:
         document["commands"] = rows
         document["exit_code"] = status
         try:
-            (evidence / "commands.json").write_text(json.dumps(document, indent=2) + "\n")
+            retain_sdk_result(evidence, document)
         except OSError as error:
             print(f"Cannot retain SDK qualification result: {error}", file=sys.stderr)
             return status or 1
@@ -369,6 +679,41 @@ class SdkConsumerTests(unittest.TestCase):
     def git(root: Path, *arguments: str) -> None:
         subprocess.run(["git", "-C", str(root), *arguments], check=True,
                        env=formal_sources.detached_git_environment(), capture_output=True)
+
+    @staticmethod
+    def compiler_source(root: Path, *, sdk_k8s=False, model="v1_30", version="0.25.0"):
+        """Private Git facts for the existing controlled qualifier, never Cargo."""
+        feature = model if isinstance(model, list) else [model]
+        declaration = ('k8s-openapi={version=' + json.dumps(version) + ',features='
+                       + json.dumps(feature) + '}\n') if model is not None else ''
+        (root / "Cargo.toml").write_text('[workspace]\nmembers=["crates/*"]\n'
+            '[workspace.dependencies]\n' + declaration)
+        for name, product, dependencies in (
+            ("fixture-contract", "sdk", ''),
+            ("fixture-provider", "sdk", 'genai="0.0.0"\n' + ('kube={version="4.2.0",optional=true}\n' if sdk_k8s else '')),
+            ("fixture-internal", "platform", 'k8s-openapi={version=' + json.dumps(version)
+                + ',features=[' + json.dumps("v1_30" if version == "0.25.0" else "v1_32") + ']}\n'),
+        ):
+            path = root / "crates" / name / "Cargo.toml"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('[package]\nname=' + json.dumps(name) + '\nversion="1.0.0"\n'
+                '[package.metadata.awaken]\nproduct=' + json.dumps(product) + '\napi_snapshot=true\n'
+                '[dependencies]\n' + dependencies)
+        packages = [
+            ("fixture-contract", "1.0.0", None, []),
+            ("fixture-provider", "1.0.0", None, ["genai", *(["kube"] if sdk_k8s else [])]),
+            ("fixture-internal", "1.0.0", None, ["k8s-openapi"]),
+            ("genai", "0.0.0", "git+fixture", []),
+            ("kube", "4.2.0", "registry+https://github.com/rust-lang/crates.io-index", ["k8s-openapi"]),
+            ("k8s-openapi", version, "registry+https://github.com/rust-lang/crates.io-index", []),
+        ]
+        lock = "version=4\n"
+        for name, version, source, dependencies in packages:
+            lock += '\n[[package]]\nname=' + json.dumps(name) + '\nversion=' + json.dumps(version) + '\n'
+            if source:
+                lock += 'source=' + json.dumps(source) + '\n'
+            lock += 'dependencies=' + json.dumps(dependencies) + '\n'
+        (root / "Cargo.lock").write_text(lock)
 
     def repository(self, outer: Path, name: str = "subject", *, successor: bool = False) -> Path:
         root = outer / name
@@ -384,6 +729,7 @@ class SdkConsumerTests(unittest.TestCase):
             manifest.write_text('[package]\nname="sdk"\nversion="0.0.0"\n[workspace]\n')
         (root / ".gitignore").write_text("target/\n")
         (root / "tracked.txt").write_text("before\n")
+        self.compiler_source(root)
         self.git(root, "init", "--quiet")
         self.git(root, "config", "user.name", "SDK source fixture")
         self.git(root, "config", "user.email", "fixture@example.invalid")
@@ -399,7 +745,9 @@ class SdkConsumerTests(unittest.TestCase):
 
     def execute(self, root: Path, *, metadata_status=0, test_status=0,
                 mutation="", fault="", metadata_cause="", output_cause="", phase="metadata",
-                qualification="", baseline_rev=None, tool_cause="") -> tuple[int, list]:
+                qualification="", baseline_rev=None, tool_cause="",
+                artifact_metadata_status=None, compiler_cause="", compiler_observations=None,
+                active_major=False, major_action_run=None, major_failure=None) -> tuple[int, list]:
         manifest = root / "examples/sdk-consumer/Cargo.toml"
         metadata = {"workspace_root": str(manifest.parent), "workspace_members": ["sdk"],
                     "packages": [{"dependencies": []}]}
@@ -418,9 +766,45 @@ class SdkConsumerTests(unittest.TestCase):
                  "publish": [], "dependencies": [],
                  "metadata": {"awaken": {"product": "sdk", "api_snapshot": True}}},
             ]
+            if active_major:
+                # The active-major tests use this same IO fixture and the real
+                # cohort names, rather than a second qualifier or command loop.
+                # The remaining SDK members are selected, never omitted from
+                # either original standard command.
+                packages = [{"id": name, "name": name,
+                    "version": semver_evidence.COHORT.get(name, ("1.0.0", "2.0.0"))[1]
+                        if name in semver_evidence.COHORT else "1.0.0",
+                    "publish": None, "dependencies": [], "features": {}, "source": None,
+                    "metadata": {"awaken": {"product": "sdk", "api_snapshot": True}}}
+                    for name in [*sorted(semver_evidence.COHORT), *semver_evidence.WITNESS_OWNERS,
+                                 *("fixture-sdk-" + str(number).zfill(2) for number in range(
+                                     22 - len(semver_evidence.COHORT) - len(semver_evidence.WITNESS_OWNERS)))]]
+                if metadata_cause == "major-partial":
+                    packages[0]["version"] = "1.0.0"
+                elif metadata_cause == "major-unknown":
+                    for package in packages[:2]:
+                        package["version"] = "3.0.0"
             metadata = {"workspace_root": str(root), "workspace_members": [p["id"] for p in packages],
                         "packages": packages,
                         "resolve": {"nodes": [{"id": p["id"], "deps": []} for p in packages]}}
+            if compiler_cause:
+                registry = "registry+https://github.com/rust-lang/crates.io-index"
+                identity = registry + "#k8s-openapi@0.28.0"
+                package = {"id": identity, "name": "k8s-openapi", "version": "0.28.0", "source": registry,
+                           "features": {"std": [], "v1_32": [], "v1_33": []}}
+                metadata["packages"].append(package)
+                metadata["resolve"]["nodes"].append({"id": identity, "deps": []})
+                if compiler_cause == "unsupported":
+                    package["features"].pop("v1_32")
+                elif compiler_cause == "identity":
+                    package["source"] = "git+foreign"
+                elif compiler_cause == "version":
+                    package["version"] = "0.29.0"
+                elif compiler_cause == "duplicate":
+                    metadata["packages"].append({**package, "id": identity + "-other"})
+                    metadata["resolve"]["nodes"].append({"id": identity + "-other", "deps": []})
+                elif compiler_cause == "incomplete":
+                    metadata["resolve"]["nodes"].pop()
             if baseline_rev is None:
                 baseline_rev = subprocess.check_output(["git", "rev-parse", "HEAD^"], cwd=root,
                     env=formal_sources.detached_git_environment(), text=True).strip() if qualification == "semver" else ""
@@ -428,13 +812,25 @@ class SdkConsumerTests(unittest.TestCase):
                 env=formal_sources.detached_git_environment(), text=True).strip()
             for package in packages:
                 package["manifest_path"] = str(root / "crates" / package["name"] / "Cargo.toml")
+            if qualification == "artifact":
+                manifest.write_text('[package]\nname="sdk"\nversion="0.0.0"\n[workspace]\n'
+                                    '[dependencies]\nfixture-contract={path="../../crates/fixture-contract"}\n'
+                                    '[dev-dependencies]\nfixture-internal={path="../../crates/fixture-internal"}\n')
+                for relative in ("src/lib.rs", "src/main.rs", "tests/tasks.rs"):
+                    source = manifest.parent / relative
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    source.write_text("// original consumer fixture bytes; no Cargo is executed by this IO test\n")
+                self.git(root, "add", ".")
+                self.git(root, "commit", "--quiet", "-m", "private artifact input")
+                revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root,
+                    env=formal_sources.detached_git_environment(), text=True).strip()
             if output_cause != "archive":
                 # Test-owned archive data exercises only the record callback;
                 # the IO mock below never implements Cargo or grants real package
                 # qualification. Real Source/artifact receipts remain Root's.
                 archive_root = root / "target/package"
                 archive_root.mkdir(parents=True, exist_ok=True)
-                for package in packages[:2]:
+                for package in packages[:3] if qualification == "artifact" else packages[:2]:
                     filename = package["name"] + "-" + package["version"]
                     with tarfile.open(archive_root / (filename + ".crate"), "w:gz") as archive:
                         for member in ("Cargo.toml", "Cargo.toml.orig", "Cargo.lock", ".cargo_vcs_info.json"):
@@ -491,6 +887,17 @@ class SdkConsumerTests(unittest.TestCase):
                 output = re.sub(r"^.*Checked.*\n", "", output, flags=re.MULTILINE)
             elif output_cause == "semver-zero-checks":
                 output = output.replace("222 checks: 222 pass", "0 checks: 0 pass")
+            if active_major:
+                from sdk_semver_tests import SdkSemverEvidenceTests
+                output = "".join(SdkSemverEvidenceTests.report(p["name"],
+                    checks=0 if p["name"] in semver_evidence.COHORT else 222,
+                    major=p["name"] in semver_evidence.COHORT) for p in packages)
+                if output_cause == "semver-missing":
+                    output = output[:output.rfind("Checking ")]
+                elif output_cause == "semver-duplicate":
+                    output += SdkSemverEvidenceTests.report(packages[0]["name"], checks=0, major=True)
+                elif output_cause == "semver-zero-checks":
+                    output = output.replace("222 checks: 222 pass", "0 checks: 0 pass")
         if output_cause == "missing":
             output = output.split("\n", 1)[1]
         calls = []
@@ -503,6 +910,11 @@ class SdkConsumerTests(unittest.TestCase):
 
         def run(command, **arguments):
             program = Path(command[0]).name.casefold().removesuffix(".exe")
+            if active_major and "--major-consumer-audit" in command:
+                calls.append(list(command))
+                if major_action_run is None:
+                    raise AssertionError("active-major controlled action must use the original action fixture")
+                return major_action_run(command, **arguments)
             if program not in ("cargo", "cargo-semver-checks"):
                 return actual_run(command, **arguments)
             if program == "cargo":
@@ -512,6 +924,10 @@ class SdkConsumerTests(unittest.TestCase):
                 self.assertEqual(command[1:], ["semver-checks", "--version"])
             current_phase = ("package" if command[1] == "+1.96.0" else
                              "tool" if program == "cargo-semver-checks" else command[1])
+            if compiler_observations is not None and current_phase in ("package", "semver-checks"):
+                compiler_observations.append({"command": list(command),
+                    "compiler_input": arguments["env"].get("K8S_OPENAPI_ENABLED_VERSION"),
+                    "ambient": os.environ.get("K8S_OPENAPI_ENABLED_VERSION")})
             calls.append([program, *command[1:]])
             if mutation and current_phase == phase:
                 if mutation == "working":
@@ -525,11 +941,73 @@ class SdkConsumerTests(unittest.TestCase):
             if fault == "spawn":
                 raise OSError("exact SDK spawn refusal")
             status = metadata_status if current_phase == "metadata" else test_status
+            if qualification == "artifact" and current_phase not in ("metadata", phase):
+                status = 0
             stdout = ("broken-json" if metadata_cause == "json" else json.dumps(metadata)) if current_phase == "metadata" else output
             if current_phase == "tool":
                 status = 23 if tool_cause == "query" else 0
                 stdout = "cargo-semver-checks 0.46.0\n" if tool_cause == "version" else "cargo-semver-checks 0.47.0\n"
+            if active_major and current_phase == "semver-checks":
+                from sdk_semver_tests import SdkSemverEvidenceTests
+                feature = "all" if "--all-features" in command else "default"
+                stage = "audit" if "--release-type" in command else "standard"
+                if stage == "audit":
+                    _, stdout = SdkSemverEvidenceTests().fixture()
+                    status = 1
+                    if output_cause == "audit-unknown":
+                        stdout = stdout.replace("fixture::removed", "fixture::unreviewed")
+                    elif output_cause == "audit-fatal":
+                        stdout += "error: internal/tool failure\n"
+                if major_failure and (feature, stage) == (major_failure["feature"], major_failure["stage"]):
+                    status = major_failure["raw"]
+                    if major_failure.get("source"):
+                        (root / "tracked.txt").write_text("changed active-major source\n")
+            if qualification == "artifact" and "--manifest-path" in command:
+                consumer = Path(command[command.index("--manifest-path") + 1]).parent
+                if current_phase == "metadata":
+                    (consumer / "Cargo.lock").write_text("# private resolved lock fixture\n")
+                    reached = [{"id": "consumer", "name": "sdk", "version": "0.0.0",
+                                "manifest_path": str(consumer / "Cargo.toml"), "source": None}]
+                    for package in packages[:3]:
+                        reached.append({**package, "source": None, "manifest_path": str(
+                            consumer.parent / "unpacked" / (package["name"] + "-1.0.0") / "Cargo.toml")})
+                    if output_cause == "artifact-checkout":
+                        reached[1]["manifest_path"] = packages[0]["manifest_path"]
+                    elif output_cause == "artifact-registry":
+                        reached[1]["source"] = "registry+fixture"
+                    elif output_cause == "artifact-version":
+                        reached[1]["version"] = "2.0.0"
+                    elif output_cause == "artifact-duplicate":
+                        reached.append(dict(reached[1]))
+                    graph = {"workspace_root": str(consumer), "workspace_members": ["consumer"],
+                             "packages": reached, "resolve": {"nodes": [
+                                 {"id": p["id"], "deps": [{"pkg": d["id"]} for d in reached[1:]]
+                                  if p["id"] == "consumer" else []} for p in reached]}}
+                    if output_cause == "artifact-unreached":
+                        graph["resolve"]["nodes"][0]["deps"] = [{"pkg": reached[2]["id"]}]
+                    elif output_cause == "artifact-shape":
+                        graph.pop("resolve")
+                    stdout = json.dumps(graph)
+                elif current_phase == "run":
+                    stdout = "Run fixture: completed\nHello from the SDK\n"
+                if output_cause in ("artifact-source", "artifact-consumer", "artifact-lock") and current_phase == phase:
+                    target = (consumer.parent / "unpacked/fixture-contract-1.0.0/Cargo.toml"
+                              if output_cause == "artifact-source" else consumer / (
+                                  "src/lib.rs" if output_cause == "artifact-consumer" else "Cargo.lock"))
+                    target.write_text("changed artifact input\n")
             stderr = "SDK captured diagnostic\n" if current_phase == phase else ""
+            if (qualification == "artifact" and current_phase == "metadata"
+                    and "--manifest-path" in command
+                    and metadata_cause in ("warnings", "warnings-json")):
+                # A7 models the real Cargo protocol at this existing IO edge:
+                # metadata stdout is JSON; index/unused-patch messages are stderr.
+                stderr = "    Updating crates.io index\nwarning: patch fixture was not used\n"
+                if metadata_cause == "warnings-json":
+                    stdout = "broken-json"
+                if artifact_metadata_status is not None:
+                    status = artifact_metadata_status
+                if arguments.get("stderr") == subprocess.STDOUT:
+                    stdout, stderr = stderr + stdout, None
             if status and arguments.get("check"):
                 raise subprocess.CalledProcessError(status, command, output=stdout, stderr=stderr)
             return subprocess.CompletedProcess(command, status, stdout, stderr)
@@ -574,6 +1052,7 @@ class SdkConsumerTests(unittest.TestCase):
         for arguments, expected in (
             ([], {"qualification": "", "baseline_rev": ""}),
             (["--qualify-package"], {"qualification": "package", "baseline_rev": ""}),
+            (["--qualify-artifact"], {"qualification": "artifact", "baseline_rev": ""}),
             (["--qualify-semver", "--baseline-rev", "a" * 40],
              {"qualification": "semver", "baseline_rev": "a" * 40}),
         ):
@@ -586,7 +1065,9 @@ class SdkConsumerTests(unittest.TestCase):
         for arguments in (["--qualify-semver"], ["--baseline-rev", "a" * 40],
                           ["--qualify-package", "--baseline-rev", "a" * 40],
                           ["--qualify-package", "--qualify-semver"],
-                          ["--self-test", "--qualify-package"], ["--qualify-packag"]):
+                          ["--self-test", "--qualify-package"], ["--qualify-packag"],
+                          ["--qualify-artifact", "--qualify-package"],
+                          ["--qualify-artifact", "--baseline-rev", "a" * 40]):
             with self.subTest(arguments=arguments), mock.patch.object(sys, "argv", ["sdk", *arguments]), \
                     mock.patch.object(sys.modules[__name__], "run_consumer") as commands, \
                     mock.patch.object(unittest, "TextTestRunner") as suite, contextlib.redirect_stderr(io.StringIO()):
@@ -643,6 +1124,172 @@ class SdkConsumerTests(unittest.TestCase):
                 else:
                     self.assertEqual(data["baseline_kind"], "first pre-release source contract")
                     self.assertNotEqual(data["source"]["revision"], data["baseline_rev"])
+
+    def test_archive_extraction_rejects_aliases_escape_and_changed_bytes(self):
+        # A4: exact .crate bytes + ordinary unique files => one unpacked peer.
+        # Changed hash, escaped/wrong prefix, duplicate names, symlink/hardlink,
+        # or missing manifest => refusal, with no write outside the fresh
+        # extraction directory. No Cargo/process/source identity is mocked by
+        # this real archive IO table; capture_archives owns VCS acceptance.
+        for cause in ("valid", "checksum", "escape", "prefix", "duplicate", "symlink", "hardlink", "manifest"):
+            with self.subTest(cause=cause), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                archive = directory / "peer-1.0.0.crate"
+                member = "peer-1.0.0/Cargo.toml" if cause != "manifest" else "peer-1.0.0/src/lib.rs"
+                with tarfile.open(archive, "w:gz") as package:
+                    content = b'[package]\nname="peer"\nversion="1.0.0"\n'
+                    item = tarfile.TarInfo(member)
+                    item.size = len(content)
+                    package.addfile(item, io.BytesIO(content))
+                    if cause in ("escape", "prefix", "duplicate", "symlink", "hardlink"):
+                        item = tarfile.TarInfo({"escape": "../escape", "prefix": "other/Cargo.toml"}.get(
+                            cause, member if cause == "duplicate" else "peer-1.0.0/link"))
+                        if cause in ("symlink", "hardlink"):
+                            item.type = tarfile.SYMTYPE if cause == "symlink" else tarfile.LNKTYPE
+                            item.linkname = "../../escape"
+                        package.addfile(item)
+                artifact = {"package": "peer", "path": str(archive), "sha256":
+                            "0" * 64 if cause == "checksum" else hashlib.sha256(archive.read_bytes()).hexdigest()}
+                if cause == "valid":
+                    unpacked = _sdk_archives.unpack_archives([artifact], {"peer": {"version": "1.0.0"}}, directory / "out")
+                    self.assertEqual((unpacked["peer"] / "Cargo.toml").read_bytes(), content)
+                else:
+                    with self.assertRaises(ValueError):
+                        _sdk_archives.unpack_archives([artifact], {"peer": {"version": "1.0.0"}}, directory / "out")
+                self.assertFalse((directory / "escape").exists())
+
+    def test_artifact_manifest_preserves_fields_with_authored_path_and_version(self):
+        # A6 causes: the original independent consumer declares a path alone or
+        # a path with its release constraint, in any inline field order; an alias
+        # and feature flags remain authored input. Effects: exactly one exact
+        # archive version replaces the location/constraint, all other fields and
+        # original task bytes remain identical. No duplicate TOML key or source
+        # checkout fallback may be generated. These IO rows own transformation;
+        # the real archive Cargo metadata still owns actual dependency resolution.
+        fields = (
+            'path="../../provider",package="fixture-provider",default-features=false,features=["first","version"]',
+            'version="2.0",path="../../provider",package="fixture-provider",default-features=false,features=["first","version"]',
+            'path="../../provider",package="fixture-provider",default-features=false,features=["first","version"],version="2.0"',
+            'package="fixture-provider",path="../../provider",version="2.0",default-features=false,features=["first","version"]',
+            'package="fixture-provider",default-features=false,features=["first","version"],version="2.0",path="../../provider"',
+        )
+        for declaration in fields:
+            with self.subTest(declaration=declaration), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                original = root / "original"
+                for directory in ("src", "tests"):
+                    (original / directory).mkdir(parents=True)
+                    (original / directory / "original.rs").write_text("// original consumer bytes\n")
+                manifest = original / "Cargo.toml"
+                manifest.write_text('[package]\nname="consumer"\nversion="0.0.0"\n[workspace]\n'
+                                    '[dev-dependencies]\nadapter={' + declaration + '}\n')
+                expected = tomllib.loads(manifest.read_text())
+                dependency = expected["dev-dependencies"]["adapter"]
+                dependency.pop("path")
+                dependency["version"] = "=2.0.0"
+                archive = root / "fixture-provider-2.0.0"
+                expected["patch"] = {"crates-io": {"fixture-provider": {"path": str(archive)}}}
+                staged = _sdk_archives.stage_consumer(
+                    manifest, root / "consumer", {"fixture-provider": archive},
+                    {"fixture-provider": {"version": "2.0.0"}},
+                )
+                self.assertEqual(tomllib.loads(staged.read_text()), expected)
+                for directory in ("src", "tests"):
+                    self.assertEqual(_sdk_archives.file_hashes(original / directory),
+                                     _sdk_archives.file_hashes(staged.parent / directory))
+
+    def test_artifact_mode_executes_the_original_tasks_and_sample_from_the_full_closure(self):
+        # A1: clean source + SDK selection (including the blocked provider) +
+        # original consumer Platform path => package the three fixture peers,
+        # then resolve the independent graph, execute all eight exact tasks and
+        # run the original sample. Effects: archive/VCS/graph/lock/source hashes
+        # retained; no checkout import or private registry. This controlled IO
+        # case validates orchestration only; real Cargo receipts are separate.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.repository(Path(temporary))
+            status, calls = self.execute(root, qualification="artifact")
+            self.assertEqual(status, 0)
+            self.assertEqual([c[1] for c in calls], ["metadata", "+1.96.0", "metadata", "test", "run"])
+            package = calls[1]
+            self.assertNotIn("--no-verify", package)
+            self.assertNotIn("--allow-dirty", package)
+            self.assertEqual(package[-6:], ["-p", "fixture-contract", "-p", "fixture-internal", "-p", "fixture-provider"])
+            receipt = next((root / "target/test-timings").glob("sdk-qualification-*/commands.json"))
+            data = json.loads(receipt.read_text())
+            self.assertEqual(data["sdk_crates"], ["fixture-contract", "fixture-provider"])
+            self.assertEqual(data["consumed_packages"], data["artifact_packages"])
+            self.assertEqual(data["executed_tasks"], sorted(EXPECTED))
+            for command in calls[2:]:
+                self.assertIn("x86_64-unknown-linux-gnu", command)
+                manifest = Path(command[command.index("--manifest-path") + 1])
+                self.assertEqual(manifest.parent, receipt.parent / "consumer")
+            for directory in ("src", "tests"):
+                self.assertEqual(_sdk_archives.file_hashes(root / "examples/sdk-consumer" / directory),
+                                 _sdk_archives.file_hashes(receipt.parent / "consumer" / directory))
+
+    def test_artifact_metadata_json_and_diagnostics_keep_the_original_protocol(self):
+        # A7 cause/effect table from actual archive2729: C1 metadata stdout is
+        # valid/invalid JSON; C2 normal index/unused-patch diagnostics are stderr;
+        # C3 Cargo returns0/75. R1 valid+C2+0 => consume all eight original tasks
+        # and sample; R2 invalid+C2+0 => reject1 before either successor;
+        # R3 valid+C2+75 => preserve75. Preserve both raw channels without prefix
+        # stripping, quieting diagnostics, or relabelling the child result.
+        # Controlled IO only: real package/consumer qualification runs separately.
+        for cause, raw, expected, count in (
+            ("warnings", 0, 0, 5),
+            ("warnings-json", 0, 1, 3),
+            ("warnings", 75, 75, 3),
+        ):
+            with self.subTest(cause=cause, raw=raw), tempfile.TemporaryDirectory() as temporary:
+                root = self.repository(Path(temporary), successor=True)
+                status, calls = self.execute(root, qualification="artifact",
+                                             metadata_cause=cause, artifact_metadata_status=raw)
+                self.assertEqual((status, len(calls)), (expected, count))
+                evidence = next((root / "target/test-timings").glob("sdk-qualification-*"))
+                receipt = json.loads((evidence / "commands.json").read_text())
+                self.assertEqual(receipt["commands"][1]["exit_code"], raw)
+                self.assertEqual(receipt["exit_code"], expected)
+                stdout = (evidence / "metadata.stdout.log").read_text()
+                stderr = (evidence / "metadata.stderr.log").read_text()
+                self.assertEqual(stderr, "    Updating crates.io index\nwarning: patch fixture was not used\n")
+                self.assertEqual((evidence / "metadata.log").read_text(), stdout + stderr)
+                if cause == "warnings-json":
+                    self.assertEqual(stdout, "broken-json")
+                else:
+                    self.assertIn("workspace_root", json.loads(stdout))
+                if expected == 0:
+                    self.assertEqual(receipt["executed_tasks"], sorted(EXPECTED))
+                    self.assertEqual(calls[-1][1], "run")
+
+    def test_artifact_graph_and_byte_faults_stop_before_the_next_command(self):
+        # A2: successful package but SDK checkout/registry/version fallback =>
+        # refusal before tasks. A3: archive/copied source or locked graph changes
+        # at tasks => refusal before sample. Cross each successful step with a
+        # nonzero original status: 75/143 keeps precedence over secondary byte
+        # evidence faults. Existing Q3 owns malformed archives/VCS in the same
+        # extracted recorder, E5 owns exact task completeness.
+        for cause in ("artifact-checkout", "artifact-registry", "artifact-version", "artifact-duplicate",
+                      "artifact-unreached", "artifact-shape"):
+            with self.subTest(cause=cause), tempfile.TemporaryDirectory() as temporary:
+                root = self.repository(Path(temporary))
+                status, calls = self.execute(root, qualification="artifact", output_cause=cause)
+                self.assertEqual(status, 1)
+                self.assertEqual([c[1] for c in calls], ["metadata", "+1.96.0", "metadata"])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.repository(Path(temporary))
+            status, calls = self.execute(root, qualification="artifact", output_cause="missing")
+            self.assertEqual(status, 1, "A5 a missing original task is not archive consumption")
+            self.assertNotIn("run", [c[1] for c in calls])
+        for cause in ("artifact-source", "artifact-consumer", "artifact-lock"):
+            for raw, expected in ((0, 1), (75, 75), (-15, 143)):
+                with self.subTest(cause=cause, raw=raw), tempfile.TemporaryDirectory() as temporary:
+                    root = self.repository(Path(temporary))
+                    # Earlier package/metadata must succeed. The controlled edge
+                    # selects the test failure below rather than emulating Cargo.
+                    status, calls = self.execute(root, qualification="artifact", phase="test",
+                                                 output_cause=cause, test_status=raw)
+                    self.assertEqual(status, expected)
+                    self.assertNotIn("run", [c[1] for c in calls])
 
     def test_qualification_refusals_preserve_first_failure_and_start_no_successor(self):
         # Q2 metadata/first qualifier x 23/75/-15 -> same23/75/143, zero next
@@ -823,24 +1470,35 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--self-test", action="store_true")
     mode.add_argument("--qualify-package", action="store_true")
+    mode.add_argument("--qualify-artifact", action="store_true")
     mode.add_argument("--qualify-semver", action="store_true")
+    mode.add_argument("--major-consumer-audit", type=Path)
     parser.add_argument("--baseline-rev")
     args = parser.parse_args()
     if args.qualify_semver != bool(args.baseline_rev):
         parser.error("--baseline-rev is required only with --qualify-semver")
     self_test()
     if args.self_test:
+        from sdk_semver_tests import SdkSemverEvidenceTests, shared_sdk_io_tests, compiler_input_tests
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(SdkConsumerTests)
+        suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(SdkSemverEvidenceTests))
+        suite.addTests(shared_sdk_io_tests(sys.modules[__name__]))
+        suite.addTests(compiler_input_tests(sys.modules[__name__]))
         if not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful():
             return 1
         print("SDK consumer self-test: admission paths and exact task execution are enforced")
         return 0
-    qualification = "package" if args.qualify_package else "semver" if args.qualify_semver else ""
+    if args.major_consumer_audit:
+        return run_major_consumer_audit(args.major_consumer_audit)
+    qualification = ("package" if args.qualify_package else "artifact" if args.qualify_artifact
+                     else "semver" if args.qualify_semver else "")
     status = run_consumer(qualification=qualification, baseline_rev=args.baseline_rev or "")
     if status:
         return status
-    if qualification:
-        print(f"SDK {qualification} qualification: all selected SDK crates passed both Linux feature subjects")
+    if qualification == "artifact":
+        print(f"SDK artifact qualification: original {len(EXPECTED)} tasks and sample passed from verified archives on Linux")
+    elif qualification:
+        print(f"SDK {qualification} qualification: both Linux feature subjects and their required change audits passed")
     else:
         print(f"SDK consumer: all {len(EXPECTED)} task cases passed in an independent minimal-feature workspace")
     return 0

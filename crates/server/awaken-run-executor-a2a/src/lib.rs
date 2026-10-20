@@ -434,7 +434,7 @@ mod tests {
         );
         assert!(ensure_supported_narrowing(&configured, &current).is_err());
         let inherited =
-            awaken_runtime_contract::activation::InheritedToolsets::with_caller(Vec::new(), None);
+            awaken_agent_contract::toolset::InheritedToolsets::with_caller(Vec::new(), None);
         assert!(
             ensure_supported_narrowing(
                 &configured

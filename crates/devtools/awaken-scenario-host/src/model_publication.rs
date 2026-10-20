@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_runtime_contract::{
+use awaken_agent_contract::credential::{
     CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialSource,
     CredentialRef, CredentialUsage, SealedCredentialEnvelopeRef, TrustDomainRef,
 };
+use awaken_runtime_contract::resolved::ModelBinding;
 
 const DISTRIBUTED_PROVIDER_REF: &str = "adr71-provider@1";
 const DISTRIBUTED_ROUTE_REF: &str = "adr71-anthropic@1";
@@ -163,8 +163,8 @@ impl awaken_config_service::ModelPublicationResolver for DistributedProviderPubl
                         CredentialUsage::ProviderAdapter,
                         CredentialExecutionPolicy::self_hosted_provider(),
                     )
-                    .with_target(awaken_runtime_contract::CredentialTarget::new(
-                        awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                    .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                        awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
                         "adr71-provider",
                     ))
                     .with_envelope(CredentialEnvelope::SealedForWorker {

@@ -413,7 +413,7 @@ fn backend_owned_candidate_serializes_only_identity_and_model_policy() {
         };
         let candidate = ResolvedModelCandidate::try_backend_owned(
             ModelBinding::new("cred:local", model, "acp:codex"),
-            crate::CredentialRef {
+            awaken_agent_contract::credential::CredentialRef {
                 id: "cred:local".into(),
                 revision: 3,
             },
@@ -569,7 +569,7 @@ fn descriptor_state_owns_one_derived_content_identity() {
     let kind_changed = base.clone().with_kind(ToolKind::Advisor);
     let recovery_changed = base
         .clone()
-        .with_recovery(crate::tool::ToolRecoveryPolicy::durable_request());
+        .with_recovery(awaken_tool_contract::tool::ToolRecoveryPolicy::durable_request());
     let targets_changed = base.clone().with_detached_targets(["target".into()]);
     assert_ne!(base.content_hash(), kind_changed.content_hash());
     assert_ne!(base.content_hash(), recovery_changed.content_hash());
@@ -750,7 +750,7 @@ fn content_hash_is_length_prefixed_against_field_concatenation_collisions() {
     // Without length-prefixing, ("ab","c") and ("a","bc") would concatenate to
     // the same byte stream and collide. The id is part of the readable prefix,
     // so vary the description/schema boundary where the digest actually matters.
-    let recovery = crate::tool::ToolRecoveryPolicy::default();
+    let recovery = awaken_tool_contract::tool::ToolRecoveryPolicy::default();
     let a = content_hash(
         "p",
         "t",

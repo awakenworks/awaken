@@ -1,8 +1,8 @@
 //! Outcome-oriented conversational evaluation over the same MCP provider.
 //! Customer private facts go only to the simulator, never to the sales Agent.
 use super::*;
+use awaken_agent_contract::agent::{content::ContentBlock, message::Role};
 use awaken_runtime_contract::llm::ChatMessage;
-use awaken_runtime_contract::{ContentBlock, Role};
 
 #[path = "zhike_grounding.rs"]
 mod grounding;

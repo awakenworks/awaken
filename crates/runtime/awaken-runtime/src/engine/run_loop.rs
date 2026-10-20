@@ -10,7 +10,7 @@
 //! The Agent step loop and its per-step orchestration.
 
 use super::*;
-use awaken_runtime_contract::resilience::{Classify, Disposition};
+use awaken_agent_contract::resilience::{Classify, Disposition};
 
 /// Fresh and activated resumes select the same publication-bounded model
 /// without rewriting the immutable snapshot or its catalog identity.

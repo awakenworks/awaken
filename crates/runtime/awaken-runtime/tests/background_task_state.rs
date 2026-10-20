@@ -26,9 +26,7 @@ use awaken_ext_background_task::{
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
@@ -38,6 +36,7 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{
     RawTool, ToolConcurrency, ToolOutput, ToolRecoveryCapability, ToolRecoveryMode,
     ToolRecoveryPolicy, ToolResource, ToolResourceAccess,

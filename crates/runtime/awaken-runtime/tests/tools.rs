@@ -19,9 +19,7 @@ use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_runtime::{DetachedToolError, PreparedToolExecutor, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
@@ -31,6 +29,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{
     DurableTaskTool, RawTool, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput,
     ToolOutputSpiller, ToolTaskHandle, ToolTaskPoll, ToolTaskStart,
@@ -707,7 +706,7 @@ async fn executor_receives_the_attempt_execution_workspace() {
         .execute(
             activation(),
             RuntimeRunContext::new().with_execution_scope(
-                awaken_runtime_contract::ExecutionScopeRef("workspace-tenant".into()),
+                awaken_agent_contract::ExecutionScopeRef("workspace-tenant".into()),
             ),
         )
         .await
@@ -1333,11 +1332,13 @@ async fn fresh_and_recovered_tool_uncertainty_use_the_same_terminal_decision() {
                 )],
             )
             .unwrap();
-            awaken_runtime_contract::CommitCoordinator::commit(
+            awaken_agent_contract::thread::commit::coordinator::Coordinator::commit(
                 commit.as_ref(),
-                awaken_runtime_contract::ThreadCommit::assemble(
+                awaken_agent_contract::thread::commit::staged::ThreadCommit::assemble(
                     activation.thread_id.clone(),
-                    awaken_runtime_contract::RunDisposition::running(activation.run_id.clone()),
+                    awaken_agent_contract::thread::commit::staged::RunDisposition::running(
+                        activation.run_id.clone(),
+                    ),
                     true,
                     Vec::new(),
                     // Current Requested control carries the same original

@@ -15,10 +15,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_mcp_wire::{
     McpTask, McpToolDefinition, McpTransportError, TaskStatus, TaskSupport, ToolContent,
 };
-use awaken_runtime_contract::ContentBlock;
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolKind};
 use awaken_tool_contract::tool::{
     DurableTaskTool, RawTool, ToolCall, ToolError, ToolOutput, ToolTaskHandle, ToolTaskPoll,

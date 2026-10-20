@@ -122,8 +122,8 @@ mod tests {
     use awaken_provisioning_contract::{
         IsolationClass, NetworkPolicy, ResourceLimits, SandboxSpec,
     };
-    use awaken_runtime_contract::llm::ToolCall;
     use awaken_sandbox_local::LocalProvider;
+    use awaken_tool_contract::tool::ToolCall;
 
     fn spec() -> SandboxSpec {
         SandboxSpec {

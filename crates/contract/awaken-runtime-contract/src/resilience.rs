@@ -27,7 +27,7 @@ use crate::model_operation::ModelReentry;
 
 /// The routing vocabulary lives beneath every contract that classifies
 /// failures; the inference [`Error`] projection stays here with its owner.
-pub use awaken_agent_contract::resilience::{Classify, Disposition};
+use awaken_agent_contract::resilience::{Classify, Disposition};
 
 /// What a failed inference says about trying again. Consumed by
 /// [`RetryPolicy::decide`], [`Error::is_retryable`] and the routing

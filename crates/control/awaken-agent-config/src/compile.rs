@@ -3,6 +3,7 @@
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Compilation: a pure config → executable-snapshot function.
 
+use awaken_agent_contract::{ToolPermissionRequirement, ToolsetSource};
 use awaken_runtime_contract::resolved::ResolvedModelCandidate;
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolKind};
 use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
@@ -110,7 +111,7 @@ fn compile_with_models(
     // the same descriptor set as exact `tool_ids` (one execution path).
     let resolved_toolsets = agent_bindings::resolve_toolsets(config, tools)?;
     for toolset in &resolved_toolsets {
-        if toolset.source != awaken_runtime_contract::agent_bindings::ToolsetSource::Agent {
+        if toolset.source != ToolsetSource::Agent {
             continue;
         }
         for entry in &toolset.overrides {
@@ -164,17 +165,15 @@ fn compile_with_models(
     // dispatch, so `always_ask` would be a false safety promise. Reject that
     // combination during publication for every execution backend; selecting an
     // Awaken-hosted provider is the explicit way to retain per-call HITL.
-    if let Some(agent_toolset) = resolved_toolsets.iter().find(|policy| {
-        policy.source == awaken_runtime_contract::agent_bindings::ToolsetSource::Agent
-    }) {
+    if let Some(agent_toolset) = resolved_toolsets
+        .iter()
+        .find(|policy| policy.source == ToolsetSource::Agent)
+    {
         for descriptor in &descriptors {
             let policy = agent_toolset.policy_for(&descriptor.id);
             if descriptor.provider_server_tool.is_some()
                 && policy.enabled
-                && matches!(
-                    policy.permission,
-                    awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk
-                )
+                && matches!(policy.permission, ToolPermissionRequirement::AlwaysAsk)
             {
                 return Err(CompileError::InvalidBinding {
                     agent: config.id.clone(),

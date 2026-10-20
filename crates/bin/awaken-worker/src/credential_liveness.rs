@@ -298,10 +298,10 @@ fn lease_capability_observations(
 mod tests {
     use super::*;
     use awaken_acp_contract::{AcpCapabilityObservationSource, NegotiatedAcpCapabilities};
+    use awaken_agent_contract::credential::CredentialRef;
     use awaken_credential_contract::{
         CredentialObservation, CredentialObservationSource, WorkerLocalReferenceRevalidator,
     };
-    use awaken_runtime_contract::CredentialRef;
     use awaken_worker_contract::WorkerCredentialRevision;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::Notify;

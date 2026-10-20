@@ -198,7 +198,7 @@ async fn acp_fixture(
     });
     let candidate = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
         awaken_runtime_contract::resolved::ModelBinding::parse("local", "", "acp:codex").unwrap(),
-        awaken_runtime_contract::CredentialRef {
+        awaken_agent_contract::credential::CredentialRef {
             id: "fixture-login".into(),
             revision: 1,
         },

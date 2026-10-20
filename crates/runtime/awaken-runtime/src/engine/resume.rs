@@ -97,7 +97,7 @@ fn approved_tool_commit(
     call: &ToolCall,
     state: Vec<StateCommand>,
     resume: Option<&ResumeCommit>,
-) -> Result<awaken_runtime_contract::ThreadCommit> {
+) -> Result<awaken_agent_contract::thread::commit::staged::ThreadCommit> {
     assemble_attempt_commit(
         ticket.thread_id.clone(),
         RunDisposition::running(ticket.run_id.clone()),

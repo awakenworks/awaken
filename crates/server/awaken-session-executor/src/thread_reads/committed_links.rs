@@ -389,7 +389,7 @@ mod tests {
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::RunState;
     use awaken_agent_contract::thread::read::lifecycle::RunLifecycleCursor;
-    use awaken_runtime_contract::llm::ToolCall;
+    use awaken_tool_contract::tool::ToolCall;
     use awaken_tool_contract::tool::{ToolOutput, ToolRecoveryPolicy};
 
     #[test]

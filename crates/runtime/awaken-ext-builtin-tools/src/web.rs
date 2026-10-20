@@ -10,16 +10,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::credential::Credential;
-use awaken_runtime_contract::credential::CredentialPurpose;
+use awaken_agent_contract::credential::CredentialPurpose;
+use awaken_agent_contract::credential::{
+    CredentialAccess, CredentialRef, CredentialTarget, CredentialUsage, ModelExposurePolicy,
+    PlaintextBoundary,
+};
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, IdBound, Plugin, PluginConfigError, PluginManifest,
 };
 use awaken_runtime_contract::resolved::{
     OpenRouterWebFetchParameters, OpenRouterWebSearchParameters, ProviderServerTool, ToolDescriptor,
-};
-use awaken_runtime_contract::{
-    CredentialAccess, CredentialRef, CredentialTarget, CredentialUsage, ModelExposurePolicy,
-    PlaintextBoundary,
 };
 use awaken_tool_contract::tool::{RawTool, Tool, ToolError, ToolExecutionTarget};
 use serde::{Deserialize, Serialize};
@@ -570,7 +570,7 @@ impl WebSearchPlugin {
     pub fn with_inherited_execution_configuration(
         mut self,
         own: Option<WebSearchExecutionConfiguration>,
-        inherited: &awaken_runtime_contract::activation::InheritedToolsets,
+        inherited: &awaken_agent_contract::toolset::InheritedToolsets,
     ) -> Result<Self, String> {
         self.execution_configuration =
             configuration::effective_search_configuration(own, inherited)?;
@@ -784,7 +784,7 @@ fn validate_target(
                 .all(|holder| {
                     holder.boundary == PlaintextBoundary::Worker
                         && holder.trust_domain.0
-                            == awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN
+                            == awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN
                 }) =>
         {
             Ok(())
@@ -907,7 +907,7 @@ impl WebFetchPlugin {
     pub fn with_inherited_execution_configuration(
         mut self,
         own: Option<WebFetchExecutionConfiguration>,
-        inherited: &awaken_runtime_contract::activation::InheritedToolsets,
+        inherited: &awaken_agent_contract::toolset::InheritedToolsets,
     ) -> Result<Self, String> {
         self.execution_configuration =
             configuration::effective_fetch_configuration(own, inherited)?;
@@ -1156,18 +1156,18 @@ mod tests {
     }
 
     fn published_access(provider_id: &str, usage: CredentialUsage) -> CredentialAccess {
-        let holder = awaken_runtime_contract::PlaintextHolder::new(
+        let holder = awaken_agent_contract::credential::PlaintextHolder::new(
             PlaintextBoundary::Worker,
-            awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
         );
         CredentialAccess::new(
             CredentialRef {
                 id: format!("cred:{provider_id}"),
                 revision: 2,
             },
-            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+            awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
             usage,
-            awaken_runtime_contract::CredentialExecutionPolicy::exact(
+            awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
                 holder,
                 ModelExposurePolicy::Forbidden,
             ),
@@ -1238,8 +1238,8 @@ mod tests {
         // I4 incompatible realization is refused; I5 location reaches provider
         // and blocked search results are omitted. Both allow and refusal are
         // witnessed, including an explicit unrestricted source.
-        use awaken_runtime_contract::activation::InheritedToolsets;
-        use awaken_runtime_contract::agent_bindings::{
+        use awaken_agent_contract::toolset::InheritedToolsets;
+        use awaken_agent_contract::{
             ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
         };
         let inherited = |name: &str, value| {
@@ -1695,7 +1695,7 @@ mod tests {
     /// unconfigured Web tool.
     #[tokio::test]
     async fn normalized_web_configuration_controls_existing_execution_edges() {
-        use awaken_runtime_contract::agent_bindings::{
+        use awaken_agent_contract::{
             ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
         };
 

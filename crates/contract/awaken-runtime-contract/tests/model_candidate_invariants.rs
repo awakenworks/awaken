@@ -1,8 +1,9 @@
+use awaken_agent_contract::credential::CredentialRef;
+use awaken_runtime_contract::InferenceEndpoint;
 use awaken_runtime_contract::resolved::{
     AcpExecutionProfile, BackendModelSelection, ModelBinding, ModelProvisioning,
     ProviderExecutionProfile, ResolvedModelCandidate, UnspecifiedReasoning,
 };
-use awaken_runtime_contract::{CredentialRef, InferenceEndpoint};
 
 fn endpoint() -> InferenceEndpoint {
     InferenceEndpoint {
@@ -190,11 +191,11 @@ fn executable_candidate_construction_is_a_closed_decision_table() {
             route_ref: "route@1".into(),
             access_kind: awaken_runtime_contract::resolved::ProviderAccessKind::Brokered,
             scope_id: "workspace-a".into(),
-            credential: Some(Box::new(awaken_runtime_contract::CredentialAccess::new(
+            credential: Some(Box::new(awaken_agent_contract::credential::CredentialAccess::new(
                 credential(),
-                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+                awaken_agent_contract::credential::CredentialUsage::ProviderAdapter,
+                awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider(),
             ))),
             endpoint: Box::new(endpoint()),
             unspecified_reasoning: Default::default(),
@@ -393,11 +394,11 @@ fn legacy_provider_access_decoding_is_evidence_bounded() {
         "provider@1",
         "route@1",
         "workspace-a",
-        Some(awaken_runtime_contract::CredentialAccess::new(
+        Some(awaken_agent_contract::credential::CredentialAccess::new(
             credential(),
-            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-            awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-            awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+            awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+            awaken_agent_contract::credential::CredentialUsage::ProviderAdapter,
+            awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider(),
         )),
         endpoint(),
     )

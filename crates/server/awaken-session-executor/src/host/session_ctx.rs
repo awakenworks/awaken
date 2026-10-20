@@ -195,7 +195,7 @@ impl RuntimePublicationIdentity {
             })
             .collect::<Vec<_>>();
         targets.sort_unstable();
-        let publication_fingerprint = awaken_runtime_contract::content_fingerprint(&(
+        let publication_fingerprint = awaken_agent_contract::content_fingerprint(&(
             root.fingerprint.0.as_str(),
             effective_model_ref,
             targets,

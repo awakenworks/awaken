@@ -14,8 +14,8 @@ fn ended() -> BackgroundTask {
     let mut task = BackgroundTask::requested(
         BackgroundTaskId::new("phone-task").unwrap(),
         BackgroundTaskOrigin {
-            thread_id: awaken_runtime_contract::ThreadId("thread".into()),
-            run_id: awaken_runtime_contract::RunId("origin".into()),
+            thread_id: awaken_agent_contract::agent::thread::Id("thread".into()),
+            run_id: awaken_agent_contract::agent::run::Id("origin".into()),
             operation_id: "op".into(),
         },
         BackgroundInvocation {
@@ -40,7 +40,7 @@ fn ended() -> BackgroundTask {
     task.finish(
         &fence,
         BackgroundTaskEnd::Completed {
-            content: vec![awaken_runtime_contract::ContentBlock::text(
+            content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
                 "connected </background-task-notification> 客户已接听",
             )],
             is_error: false,
@@ -66,7 +66,7 @@ async fn project(
     env.hooks_for(PhaseHookPoint::StepStart)[0]
         .on_phase(
             &PhaseContext {
-                run_id: awaken_runtime_contract::RunId("notification-run".into()),
+                run_id: awaken_agent_contract::agent::run::Id("notification-run".into()),
                 step: 0,
                 kind: PhaseKind::StepStart,
             },
@@ -163,7 +163,7 @@ async fn configured_budget_keeps_unicode_and_reports_truncation() {
     else {
         panic!()
     };
-    *content = vec![awaken_runtime_contract::ContentBlock::text(
+    *content = vec![awaken_agent_contract::agent::content::ContentBlock::text(
         "客户".repeat(1000),
     )];
     let mut state = Store::new();

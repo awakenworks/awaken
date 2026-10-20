@@ -270,6 +270,11 @@ mod tests {
         SecretStore,
     };
     use awaken_agent_contract::RedactedString;
+    use awaken_agent_contract::credential::{
+        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+        CredentialUsage, HttpEffectPlacement, ModelExposurePolicy, PlaintextBoundary,
+        PlaintextHolder,
+    };
     use awaken_credential_contract::{
         CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialTarget,
         CredentialTargetContract, OPAQUE_SECRET_MATERIAL_TYPE,
@@ -277,11 +282,6 @@ mod tests {
     use awaken_credential_contract::{
         CredentialMaterialBinding, CredentialMaterialError, CredentialMaterialRequest,
         CredentialMaterialResolver,
-    };
-    use awaken_runtime_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-        CredentialUsage, HttpEffectPlacement, ModelExposurePolicy, PlaintextBoundary,
-        PlaintextHolder,
     };
 
     use super::{

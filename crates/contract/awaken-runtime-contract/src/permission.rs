@@ -11,13 +11,14 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::state::Store;
 use serde::{Deserialize, Serialize};
 
-use crate::tool::ToolOutput;
+use awaken_tool_contract::tool::ToolOutput;
 
 mod run_capability;
 pub use run_capability::RunToolCapability;
 
-pub use crate::llm::ToolCall;
-pub use awaken_agent_contract::audit::permission::{
+use awaken_tool_contract::tool::ToolCall;
+
+use awaken_agent_contract::audit::permission::{
     PermissionDecider, PermissionPolicy, PermissionReasonCode,
 };
 use awaken_agent_contract::audit::run_event::RunEvent;

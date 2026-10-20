@@ -9,15 +9,14 @@ use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadV
 use awaken_lease_testkit::ManualClock;
 use awaken_runtime::tools::{Tool, ToolError, ToolRegistration};
 use awaken_runtime::{ApprovalError, ApprovalOptions, RunOutcome, Runtime};
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
 use awaken_store_inmem::MemoryCommitCoordinator;
 use awaken_time::WallClockExt;
+use awaken_tool_contract::tool::ToolCall;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::{
@@ -553,7 +552,7 @@ async fn cold_recovery_rejects_each_identity_mismatch_before_approval_or_effects
     // R1 absent context restores A; R2 matching A stays A; R3 a mismatched
     // present context rejects after the original callback/current-ticket law.
     // This does not fill original input or authorize a current catalog default.
-    use awaken_runtime_contract::activation::InheritedToolsets;
+    use awaken_agent_contract::toolset::InheritedToolsets;
     let a = InheritedToolsets::with_caller(Vec::new(), None);
     let b = InheritedToolsets::with_caller(Vec::new(), Some(&a));
     for ticket_source in [None, Some(a.clone())] {

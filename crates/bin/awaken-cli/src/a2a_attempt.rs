@@ -69,7 +69,8 @@ impl awaken_run_executor_a2a::TransportResolver for PinnedA2aTransportResolver {
             .ok_or_else(|| {
                 "authenticated A2A publication has no credential material".to_string()
             })?;
-        let awaken_runtime_contract::CredentialUsage::HttpHeader { name, scheme } = &access.usage
+        let awaken_agent_contract::credential::CredentialUsage::HttpHeader { name, scheme } =
+            &access.usage
         else {
             return Err("A2A credential usage is not an HTTP header".into());
         };

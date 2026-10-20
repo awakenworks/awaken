@@ -847,7 +847,7 @@ mod publication_projection_tests {
         // config supplies bytes, but only the catalog's AgentDelegation semantic
         // role may cross the projection. A same-name custom/dynamic descriptor
         // cannot inherit historical permission. The observed revision fences CAS.
-        use awaken_runtime_contract::agent_bindings::{
+        use awaken_agent_contract::{
             ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
             ToolsetSource,
         };
@@ -1051,7 +1051,7 @@ mod publication_projection_tests {
         // allow and write is ask; E3 no preset marker or legacy permission
         // section is stored; E4 C3 is rejected without another write.
         // R1=C1+C2=>E1-E3; R2=C3=>400+E4.
-        use awaken_runtime_contract::agent_bindings::{ToolPermissionRequirement, ToolsetSource};
+        use awaken_agent_contract::{ToolPermissionRequirement, ToolsetSource};
 
         let plane = ConfigPlane::new(
             Arc::new(test_service()),

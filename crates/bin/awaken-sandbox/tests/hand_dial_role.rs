@@ -8,8 +8,8 @@
 #![cfg(feature = "hand")]
 
 use awaken_connection_plan::{ConnectionPlan, bind_tcp};
-use awaken_runtime_contract::llm::ToolCall;
 use awaken_sandbox::hand::{HandBind, serve_with_operation_ledger};
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_relay::{FsOperationLedger, RemoteToolExecutor, wire::HandResult};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1478,8 +1478,8 @@ mod tests {
         };
         assert!(matches!(error, pc::SandboxError::Conflict(_)), "{error}");
         assert_eq!(
-            awaken_runtime_contract::resilience::Classify::disposition(&error),
-            awaken_runtime_contract::resilience::Disposition::Permanent
+            awaken_agent_contract::resilience::Classify::disposition(&error),
+            awaken_agent_contract::resilience::Disposition::Permanent
         );
     }
 

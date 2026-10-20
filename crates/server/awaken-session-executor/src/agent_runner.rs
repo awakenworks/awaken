@@ -109,11 +109,12 @@ mod tests {
         // FMECA: a root/child/recovery-specific compiler can strand an otherwise
         // autonomous Run at Awaiting or let an initiator silently broaden another
         // Agent. The same effective authorization compiler owns every Run shape.
-        use awaken_runtime_contract::agent_bindings::{
+        use awaken_agent_contract::{
             ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
             ToolsetSource,
         };
-        use awaken_runtime_contract::permission::{GateOutcome, ToolCall};
+        use awaken_runtime_contract::permission::GateOutcome;
+        use awaken_tool_contract::tool::ToolCall;
 
         let mut child = agent("research-child", "research");
         child.resolved_spec.plugin_config.agent.toolsets = vec![ToolsetPolicy {

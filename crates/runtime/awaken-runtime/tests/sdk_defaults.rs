@@ -7,11 +7,9 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, StopReason,
 };
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
-use awaken_runtime_contract::tool::{
-    RawTool, ToolCall, ToolError, ToolExecutionTarget, ToolOutput,
-};
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError, ToolExecutionTarget, ToolOutput};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},

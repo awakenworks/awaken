@@ -7,10 +7,12 @@
 //! identities and persists the resulting state transitions.
 
 use async_trait::async_trait;
-use awaken_runtime_contract::llm::TokenUsage;
-use awaken_runtime_contract::{
-    ExecutableAgentSnapshot, Message, RunId, TranscriptRange, TranscriptSnapshotRef,
+use awaken_agent_contract::audit::model_request::TokenUsage;
+use awaken_agent_contract::{
+    agent::{message::Message, run::Id as RunId},
+    thread::read::transcript::{TranscriptRange, TranscriptSnapshotRef},
 };
+use awaken_runtime_contract::ExecutableAgentSnapshot;
 use serde::{Deserialize, Serialize};
 
 pub const MIN_ITERATIONS: u32 = 1;

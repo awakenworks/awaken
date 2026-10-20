@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::credential::CredentialRefreshAccess;
 use awaken_agent_contract::credential::CredentialRefresher;
 use awaken_credential_contract::CredentialSourceId;
-use awaken_runtime_contract::CredentialRefreshAccess;
 
 /// Factory for one exact credential revision's challenge recovery. Runtime
 /// carries only the resulting transport refresher and never receives a

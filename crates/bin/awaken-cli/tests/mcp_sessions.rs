@@ -35,6 +35,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::RedactedString;
+use awaken_agent_contract::credential::{CredentialRefreshAccess, TokenEndpointAuth};
 use awaken_cli::build_all_in_one_router_with_model;
 use awaken_control::VaultRefresher;
 use awaken_credential_contract::CredentialSourceId;
@@ -45,7 +46,6 @@ use awaken_credential_vault::{
 };
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher};
 use awaken_protocol_managed_testkit::DurableFact;
-use awaken_runtime_contract::{CredentialRefreshAccess, TokenEndpointAuth};
 use awaken_scenario_host::McpToolModel;
 use awaken_session_configuration_contract::{
     McpProbe, McpProbeFailure, McpProbeStatus, ProbeHttpResponse,

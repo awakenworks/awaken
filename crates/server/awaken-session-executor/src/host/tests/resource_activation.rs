@@ -141,13 +141,13 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
                     block_text(&last.content)
                 ))
             } else if let Some(url) = self.fetch_url.lock().unwrap().clone() {
-                AssistantOutput::from_tool_calls(vec![awaken_runtime_contract::llm::ToolCall {
+                AssistantOutput::from_tool_calls(vec![awaken_tool_contract::tool::ToolCall {
                     call_id: "runtime-web-fetch".into(),
                     tool_id: "web_fetch".into(),
                     arguments: serde_json::json!({ "url": url }),
                 }])
             } else {
-                AssistantOutput::from_tool_calls(vec![awaken_runtime_contract::llm::ToolCall {
+                AssistantOutput::from_tool_calls(vec![awaken_tool_contract::tool::ToolCall {
                     call_id: "runtime-read-memory".into(),
                     tool_id: "read_memory".into(),
                     arguments: serde_json::json!({

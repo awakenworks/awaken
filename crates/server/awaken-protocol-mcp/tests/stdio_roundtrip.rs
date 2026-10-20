@@ -6,9 +6,9 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_ext_mcp::transport::McpToolTransport;
 use awaken_ext_mcp::{DEFAULT_TIMEOUT, StdioTransport, connect_tools};
-use awaken_runtime_contract::ContentBlock;
 use awaken_tool_contract::tool::ToolCall;
 
 async fn demo_server() -> StdioTransport {

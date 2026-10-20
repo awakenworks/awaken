@@ -9,6 +9,7 @@
 //! process owner, and the Worker relay route. The Managed adapter implements
 //! the realizer port by delegating here.
 
+use awaken_agent_contract::credential::{CredentialUsage, ModelExposurePolicy};
 use awaken_credential_contract::CredentialAccessAdmission;
 use std::sync::{Arc, Weak};
 
@@ -499,7 +500,7 @@ impl McpSessions {
                     ));
                 }
                 match &access.usage {
-                    awaken_runtime_contract::CredentialUsage::HttpHeader { name, scheme }
+                    CredentialUsage::HttpHeader { name, scheme }
                         if name.eq_ignore_ascii_case("authorization")
                             && scheme
                                 .as_deref()
@@ -513,8 +514,7 @@ impl McpSessions {
                 }
                 if is_acp
                     && mediated
-                    && access.policy.model_exposure
-                        != awaken_runtime_contract::ModelExposurePolicy::VirtualOnly
+                    && access.policy.model_exposure != ModelExposurePolicy::VirtualOnly
                 {
                     return Err(RunError::classified(
                         "mcp_model_exposure_forbidden",

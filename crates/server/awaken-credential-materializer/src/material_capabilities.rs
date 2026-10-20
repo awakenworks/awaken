@@ -6,10 +6,12 @@
 //! One projection from installed material tuples to last-mile execution evidence.
 use std::collections::BTreeSet;
 
+use awaken_agent_contract::credential::{
+    CredentialMaterialSource, PlaintextBoundary, PlaintextHolder,
+};
 use awaken_credential_contract::{
     CredentialMaterialCapability, CredentialRealizationCapabilities, CredentialRealizationKind,
 };
-use awaken_runtime_contract::{CredentialMaterialSource, PlaintextBoundary, PlaintextHolder};
 
 use super::PinnedCredentialMaterializer;
 
@@ -24,11 +26,11 @@ impl PinnedCredentialMaterializer {
             for holder in [
                 PlaintextHolder::new(
                     PlaintextBoundary::Worker,
-                    awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+                    awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
                 ),
                 PlaintextHolder::new(
                     PlaintextBoundary::Workload,
-                    awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+                    awaken_agent_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
                 ),
             ] {
                 installed.insert(CredentialMaterialCapability {

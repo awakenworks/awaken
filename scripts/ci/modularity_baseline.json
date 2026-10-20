@@ -248,7 +248,7 @@
   "long-function": {
     "awaken-admin-assistant::lib.rs::admin_tool_descriptors": 248,
     "awaken-admin-config-api::provider_connection.rs::connect": 285,
-    "awaken-agent-config::compile.rs::compile_with_models": 360,
+    "awaken-agent-config::compile.rs::compile_with_models": 358,
     "awaken-cli::config/resolve.rs::resolve_file": 502,
     "awaken-cli::control_component.rs::prepare_control_routers": 238,
     "awaken-cli::deployment_process.rs::prepare_runtime_process_with_coordinator_services_and_installations": 211,
@@ -350,7 +350,7 @@
     "awaken-session-executor::host/session/context/plan.rs::prepare": 193,
     "awaken-session-executor::host/session/context/resources.rs::acquire": 287,
     "awaken-session-executor::skills.rs::build_skill_registry": 154,
-    "awaken-session-mcp::mcp/attachment.rs::stage_with_admission": 596,
+    "awaken-session-mcp::mcp/attachment.rs::stage_with_admission": 595,
     "awaken-session-mcp::mcp/sessions.rs::drain_projection_selection": 178,
     "awaken-session-mcp::mcp_relay.rs::forward": 170,
     "awaken-session-mcp::test_mcp.rs::start_with_options": 175,

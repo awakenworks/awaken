@@ -17,7 +17,7 @@ impl LlmExecutor for BrainSkillModel {
         {
             AssistantOutput::text("done")
         } else {
-            AssistantOutput::from_tool_calls(vec![awaken_runtime_contract::llm::ToolCall {
+            AssistantOutput::from_tool_calls(vec![awaken_tool_contract::tool::ToolCall {
                 call_id: "skills-1".into(),
                 tool_id: awaken_ext_skills::SKILL_LIST_TOOL_ID.into(),
                 arguments: serde_json::json!({}),
@@ -82,7 +82,7 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
             {
                 AssistantOutput::text("used managed filesystem Skill")
             } else if system.contains(&skill_path()) {
-                AssistantOutput::from_tool_calls(vec![awaken_runtime_contract::llm::ToolCall {
+                AssistantOutput::from_tool_calls(vec![awaken_tool_contract::tool::ToolCall {
                     call_id: "read-managed-skill".into(),
                     tool_id: "read".into(),
                     arguments: serde_json::json!({
@@ -290,7 +290,7 @@ impl LlmExecutor for HandReadModel {
         {
             AssistantOutput::text("done")
         } else {
-            AssistantOutput::from_tool_calls(vec![awaken_runtime_contract::llm::ToolCall {
+            AssistantOutput::from_tool_calls(vec![awaken_tool_contract::tool::ToolCall {
                 call_id: "read-1".into(),
                 tool_id: "read".into(),
                 arguments: serde_json::json!({"path": "missing.txt"}),

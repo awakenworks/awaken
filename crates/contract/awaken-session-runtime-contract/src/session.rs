@@ -297,7 +297,7 @@ mod tests {
             by_model: std::collections::BTreeMap::from([
                 (
                     "model-a".into(),
-                    awaken_runtime_contract::llm::TokenUsage {
+                    awaken_agent_contract::audit::model_request::TokenUsage {
                         prompt_tokens: 3,
                         completion_tokens: 5,
                         cache_read_tokens: 7,
@@ -306,7 +306,7 @@ mod tests {
                 ),
                 (
                     "model-b".into(),
-                    awaken_runtime_contract::llm::TokenUsage {
+                    awaken_agent_contract::audit::model_request::TokenUsage {
                         prompt_tokens: 13,
                         completion_tokens: 17,
                         cache_read_tokens: 19,
@@ -320,7 +320,7 @@ mod tests {
             session_usage_from_thread_usage(awaken_runtime_contract::llm::ThreadUsage {
                 by_model: std::collections::BTreeMap::from([(
                     "model-a".into(),
-                    awaken_runtime_contract::llm::TokenUsage {
+                    awaken_agent_contract::audit::model_request::TokenUsage {
                         prompt_tokens: 3,
                         completion_tokens: 5,
                         cache_read_tokens: 7,

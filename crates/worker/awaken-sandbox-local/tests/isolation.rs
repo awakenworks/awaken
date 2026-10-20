@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::Sandbox as _;
-use awaken_runtime_contract::llm::ToolCall;
 use awaken_sandbox_local::{LocalProvider, LocalSandbox};
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 
 /// A bare Workdir spec, egress denied when `deny` (carried on the opaque `extra`).

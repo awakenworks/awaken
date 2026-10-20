@@ -7,7 +7,7 @@ use crate::runtime_context::RuntimeRunContext;
 /// A Worker can reconstruct extension policies from frozen caller toolsets.
 pub const INHERITED_TOOLSETS_CAPABILITY: &str = "inherited-toolsets/v1";
 
-pub use awaken_agent_contract::toolset::InheritedToolsets;
+use awaken_agent_contract::toolset::InheritedToolsets;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RunActivationWire")]

@@ -1,8 +1,7 @@
 //! Tool vocabulary and ports: tool implementations, the executor and admission
 //! ports, the durable tool-call batch, and the tool-discovery input.
 //!
-//! `awaken-runtime-contract` re-exports this crate under its historical module
-//! paths, so consumers may name either path while they migrate.
+//! Consumers name these types and ports directly through this defining crate.
 
 pub mod tool;
 pub mod tool_batch;

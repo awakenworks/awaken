@@ -7,17 +7,17 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Role;
+use awaken_agent_contract::{
+    ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+    ToolsetSource,
+};
 use awaken_protocol_managed_testkit::DurableFact;
 use awaken_runtime_contract::ExecutableAgentSnapshot;
-use awaken_runtime_contract::agent_bindings::{
-    AgentBindings, ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride,
-    ToolsetPolicy, ToolsetSource,
-};
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
-};
+use awaken_runtime_contract::agent_bindings::AgentBindings;
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_scenario_host::build_router_and_host_with_agent_publications;
+use awaken_tool_contract::tool::ToolCall;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

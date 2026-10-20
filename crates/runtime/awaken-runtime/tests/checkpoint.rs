@@ -390,7 +390,9 @@ async fn filesystem_recovery_waits_for_reopened_committed_predecessor() {
                 commit
                     .commit(ThreadCommit::assemble(
                         ThreadId(THREAD_ID.to_string()),
-                        awaken_runtime_contract::RunDisposition::running(RunId(RUN_ID.to_string())),
+                        awaken_agent_contract::thread::commit::staged::RunDisposition::running(
+                            RunId(RUN_ID.to_string()),
+                        ),
                         true,
                         Vec::new(),
                         vec![ActiveModelOperation::write(&Some(operation))],

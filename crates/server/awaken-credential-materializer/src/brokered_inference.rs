@@ -719,7 +719,7 @@ impl BrokeredCandidateExecutor {
                 )
             })?;
         self.verify_ownership().await?;
-        let idempotency_fingerprint = awaken_runtime_contract::content_fingerprint(&(
+        let idempotency_fingerprint = awaken_agent_contract::content_fingerprint(&(
             operation.operation_id(),
             &self.provider,
             &self.model,

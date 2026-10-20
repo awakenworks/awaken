@@ -4,8 +4,8 @@
 //! `awaken-session-environment`.
 use super::*;
 use awaken_provisioning_contract as pc;
-use awaken_runtime_contract::llm::ToolCall;
 use awaken_session_environment::test_support::*;
+use awaken_tool_contract::tool::ToolCall;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tokio::io::AsyncReadExt;

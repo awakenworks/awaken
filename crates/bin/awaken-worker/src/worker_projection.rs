@@ -2,8 +2,8 @@
 //! Exact projection of an operator-selected trust domain into the sole
 //! plaintext-holder boundary implemented by the Worker file resolver.
 
+use awaken_agent_contract::credential::PlaintextHolder;
 use awaken_credential_contract::project_worker_plaintext_holder;
-use awaken_runtime_contract::PlaintextHolder;
 
 /// Preserve the exact opaque trust-domain identity while fixing the boundary
 /// to Worker. There is no boundary input and therefore no downgrade/fallback
@@ -17,7 +17,7 @@ pub(super) fn exact_worker_holder(trust_domain: impl Into<String>) -> PlaintextH
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime_contract::PlaintextBoundary;
+    use awaken_agent_contract::credential::PlaintextBoundary;
 
     #[test]
     fn concrete_holder_keeps_the_exact_trust_domain() {

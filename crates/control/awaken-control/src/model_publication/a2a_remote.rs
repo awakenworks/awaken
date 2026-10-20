@@ -177,6 +177,7 @@ mod tests {
     use super::*;
     use awaken_agent_config::ModelSelection;
     use awaken_agent_contract::RedactedString;
+    use awaken_agent_contract::credential::{CredentialExecutionPolicy, CredentialUsage};
     use awaken_config_service::ModelPublicationResolver;
     use awaken_credential_contract::{
         CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialTarget,
@@ -186,7 +187,6 @@ mod tests {
     use awaken_credential_vault::{CredentialCreateParams, InMemorySecretStore};
     use awaken_model_catalog::ProviderCatalog;
     use awaken_runtime_contract::resolved::ModelProvisioning;
-    use awaken_runtime_contract::{CredentialExecutionPolicy, CredentialUsage};
     use std::sync::Arc;
 
     struct FixedA2aCard(awaken_protocol_a2a::AgentCard);

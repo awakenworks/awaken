@@ -663,17 +663,17 @@ async fn resolve_credential(
 
 /// The cooldown deadline a failure disposition implies, in wall-clock ms, or `None`
 /// if the failure is not a quota/rate signal. The bridge from
-/// [`Disposition`](awaken_runtime_contract::resilience::Disposition) to the vault's
+/// [`Disposition`](awaken_agent_contract::resilience::Disposition) to the vault's
 /// [`AvailabilityLedger`](awaken_credential_vault::AvailabilityLedger): a
 /// `Quota{retry_after}` cools the identity that hit it until `now + retry_after`
 /// (or a default window when the provider sent no hint), which the caller records
 /// so the next selection rotates past it.
 #[must_use]
 pub fn cooldown_deadline(
-    disposition: awaken_runtime_contract::resilience::Disposition,
+    disposition: awaken_agent_contract::resilience::Disposition,
     now_ms: u64,
 ) -> Option<u64> {
-    use awaken_runtime_contract::resilience::Disposition;
+    use awaken_agent_contract::resilience::Disposition;
     /// Fallback cooldown when a 429/quota carries no `Retry-After` (60s).
     const DEFAULT_COOLDOWN_MS: u64 = 60_000;
     match disposition {
@@ -1169,7 +1169,7 @@ mod tests {
 
     #[test]
     fn cooldown_deadline_only_fires_for_quota_and_honors_the_retry_hint() {
-        use awaken_runtime_contract::resilience::Disposition;
+        use awaken_agent_contract::resilience::Disposition;
         use std::time::Duration;
 
         // A 429 with a Retry-After cools until now + that hint.

@@ -159,7 +159,7 @@ enum TaskLifecycleView<'a> {
     Waiting,
     Cancelling,
     Completed {
-        content: &'a [awaken_runtime_contract::ContentBlock],
+        content: &'a [awaken_agent_contract::agent::content::ContentBlock],
         is_error: bool,
     },
     Failed {
@@ -263,7 +263,7 @@ impl RawTool for RunInBackground {
                 "background task operation id is empty".into(),
             ));
         }
-        let fingerprint = awaken_runtime_contract::content_fingerprint(&(
+        let fingerprint = awaken_agent_contract::content_fingerprint(&(
             "background-task-v1",
             &thread_id.0,
             &run_id.0,

@@ -12,7 +12,8 @@
 use std::collections::BTreeMap;
 
 use awaken_agent_config::{ModelSelection, ModelTarget};
-use awaken_runtime_contract::resolved::{AcpSessionConfiguration, Backend, ModelBinding};
+use awaken_agent_contract::AcpSessionConfiguration;
+use awaken_runtime_contract::resolved::{Backend, ModelBinding};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ManagedModelIdError {

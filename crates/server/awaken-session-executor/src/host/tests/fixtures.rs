@@ -171,7 +171,7 @@ impl LlmExecutor for MemoryHostModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        use awaken_runtime_contract::llm::ToolCall;
+        use awaken_tool_contract::tool::ToolCall;
         let is_extractor = request.messages.iter().any(|m| {
             m.role == Role::System
                 && m.content.iter().any(|b| match b {

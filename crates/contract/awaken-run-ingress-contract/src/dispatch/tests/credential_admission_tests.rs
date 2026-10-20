@@ -35,8 +35,8 @@ fn cancellation_credential_scope_is_exact_minimal_and_epoch_bound() {
         },
         CredentialExecutionPolicy::exact(worker.clone(), ModelExposurePolicy::Forbidden),
     )
-    .with_target(awaken_runtime_contract::CredentialTarget::new(
-        awaken_runtime_contract::credential::CredentialPurpose::RemoteAgentAuthorization,
+    .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+        awaken_agent_contract::credential::CredentialPurpose::RemoteAgentAuthorization,
         "https://agent.invalid",
     ));
     let remote = candidate_with_access("remote", "", "a2a:https://agent.invalid", remote_access);

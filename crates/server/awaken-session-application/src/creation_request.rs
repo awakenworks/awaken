@@ -610,10 +610,10 @@ impl SessionApplication {
             .toolsets
             .iter()
             .filter_map(|toolset| match &toolset.source {
-                awaken_runtime_contract::agent_bindings::ToolsetSource::Mcp { server_name } => {
+                awaken_agent_contract::ToolsetSource::Mcp { server_name } => {
                     Some(server_name.clone())
                 }
-                awaken_runtime_contract::agent_bindings::ToolsetSource::Agent => None,
+                awaken_agent_contract::ToolsetSource::Agent => None,
             })
             .collect::<Vec<_>>();
         validate_mcp_toolset_pairing(&effective_server_names, &effective_toolset_names)

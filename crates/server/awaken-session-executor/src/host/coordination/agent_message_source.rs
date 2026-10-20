@@ -179,7 +179,7 @@ fn session_agent_message_admission_requires_every_committed_field() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime_contract::llm::ToolCall;
+    use awaken_tool_contract::tool::ToolCall;
     use awaken_tool_contract::tool::ToolRecoveryPolicy;
     use awaken_tool_contract::tool_batch::ToolBatch;
 

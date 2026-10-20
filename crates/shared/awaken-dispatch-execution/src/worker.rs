@@ -1193,7 +1193,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 ))
             })?;
             for required in &claimed.request.placement.required_credentials {
-                let expected = awaken_runtime_contract::CredentialRef {
+                let expected = awaken_agent_contract::credential::CredentialRef {
                     id: required.id.clone(),
                     revision: required.revision,
                 };

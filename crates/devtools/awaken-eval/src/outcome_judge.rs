@@ -10,10 +10,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::{
+    agent::thread::Id as ThreadId,
+    thread::read::transcript::{TranscriptRange, TranscriptSnapshotRef, TranscriptView},
+};
 use awaken_ext_goal::outcome::{
     DeliverableEvidence, GradeDecision, GradingInput, Id, Rubric, parse_grade,
 };
-use awaken_runtime_contract::{ThreadId, TranscriptRange, TranscriptSnapshotRef, TranscriptView};
 use serde::{Deserialize, Serialize};
 
 use crate::observation_index::index_observations;

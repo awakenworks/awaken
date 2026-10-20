@@ -257,7 +257,8 @@ impl awaken_runtime_contract::llm::LlmExecutor for DreamScenarioModel {
         request: awaken_runtime_contract::llm::ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse> {
         use awaken_agent_contract::agent::message::Role;
-        use awaken_runtime_contract::llm::{AssistantOutput, ChatResponse, ToolCall};
+        use awaken_runtime_contract::llm::{AssistantOutput, ChatResponse};
+        use awaken_tool_contract::tool::ToolCall;
 
         let is_dream = request.messages.iter().any(|message| {
             message.role == Role::User

@@ -9,7 +9,8 @@ impl crate::RunAssembly {
     pub(crate) fn inference_plaintext_holder(
         &self,
         activation: &RunActivation,
-    ) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, SessionExecutionError> {
+    ) -> Result<Option<awaken_agent_contract::credential::PlaintextHolder>, SessionExecutionError>
+    {
         awaken_dispatch_execution::session_dispatch::inference_plaintext_holder(activation, || {
             self.thread_credential_realization(&activation.thread_id.0)
                 .map_err(|error| {
@@ -146,10 +147,9 @@ mod tests {
     #[tokio::test]
     async fn fresh_and_resumed_root_dispatch_use_the_ticket_format() {
         use awaken_agent_contract::agent::run::Id as RunId;
+        use awaken_agent_contract::toolset::InheritedToolsets;
         use awaken_runtime_contract::RunActivation;
-        use awaken_runtime_contract::activation::{
-            INHERITED_TOOLSETS_CAPABILITY, InheritedToolsets,
-        };
+        use awaken_runtime_contract::activation::INHERITED_TOOLSETS_CAPABILITY;
 
         // Causes: C1 a fresh Session root can author an awaiting ticket; C2 a
         // resumed Run carries frozen V1 sources; C3 a legacy ticket has none.

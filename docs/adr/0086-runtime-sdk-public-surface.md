@@ -271,7 +271,7 @@ Cargo `publish` metadata, using the public-API selector shared by the snapshot
 check and the explicit SDK qualifier. The current deep public paths remain part
 of their reviewed snapshots; qualification does not reshape or hide them.
 
-`check_sdk_consumer.py` retains its independent seven-task path by default.
+`check_sdk_consumer.py` retains its independent eight-task path by default.
 `--qualify-package` separately requests standard Cargo package verification for
 all publishable SDK members, default and all features, on
 `x86_64-unknown-linux-gnu`. A registry dependency blocker fails the complete
@@ -291,7 +291,7 @@ The quality workflow's dispatch selection is `none` by default, with explicit
 `package` or `semver` choices. The canonical Native 13-group gate and its record
 remain unchanged. SDK logs and archive hashes are evidence of their exact
 source/feature/target subject. They do not prove registry publication, the full
-artifact closure of the seven-task consumer, or cross-platform compatibility.
+artifact closure of the eight-task consumer, or cross-platform compatibility.
 The controlled-IO test suite runs only under `--self-test`; real qualification
 retains the ordinary lightweight admission-rule check.
 
@@ -361,3 +361,184 @@ removed entry, accept the migrated caller, and audit the actual SemVer findings
 before publication. This decision does not alter a SemVer exception list or
 relax another published path's compatibility obligation. It adds no execution
 state, dependency, constructor, forwarding export or alternate recovery path.
+
+### 2026-10-18: Execute the original consumer from package archives
+
+The explicit `--qualify-artifact` mode uses that same qualifier, source identity
+and command sequence owner. It packages every selected SDK member and the normal
+workspace dependency closure required by the original eight-task consumer,
+including its real filesystem restart adapter. Supplementary Platform archives
+are test dependencies, not newly selected SDK members or a publication decision.
+
+After standard Cargo package verification, the qualifier validates each archive's
+hash, normalized members and exact clean-source VCS identity. A fresh independent
+copy of the original consumer uses exact package versions and a supported
+top-level Cargo [`[patch.crates-io]`](https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html)
+pointing only at those unpacked archives.
+The complete resolved graph must contain no workspace dependency from the source
+checkout; archive and copied-source bytes remain fixed through the original
+eight tasks and sample. This is archive consumption, not a registry, a source
+replacement, or the private Cargo package overlay API.
+
+The default path consumer and both existing package/SemVer feature subjects keep
+their original behavior. Artifact tasks exercise their actual minimal-feature
+consumer graph on the explicit Linux target; they do not turn all packaged SDK
+features into consumer features. Actual public-registry publication/consumption,
+cross-platform execution and real-provider acceptance remain separate receipts.
+The existing quality workflow exposes this mode as the explicit dispatch choice
+`artifact`, after exact SHA binding and before dependency installation. Its
+default remains `none`; it does not redefine the Native gate's thirteen groups.
+
+### 2026-10-19: Explicit Provider and Builtin breaking release cohort
+
+Decision: accepted after the original-source compile controls succeeded. The
+same two consumers against the registry candidate failed with E0004 (the four
+added exhaustive enum variants) and E0308 (the original Git Client argument).
+The controls used source commit 7c58904f3c7961df24a36fbf50d4b7a4512aeed2;
+the failing candidate source tree was 7265f150dfd7e2fb7482314aab1d53f47156e2f7.
+Both compiler failures retained exit 101. This decision acknowledges those
+breaks; it does not bless the current 1.0 candidate or qualify a 2.0 artifact.
+
+The SDK selector still includes the same 22 published members. Only
+`awaken-provider-genai` and `awaken-ext-builtin-tools` enter an explicit 2.0.0
+release cohort. The other twenty package versions, the root workspace default
+version, Runtime Contract's ninety historical facade paths and nine renamed paths,
+and their reviewed public API snapshots remain unchanged by this decision.
+
+Provider's original 1.0 source contract exposes the Git-pinned genai Client and
+other genai types and reexports its exhaustive AdapterKind. A single registry
+genai 0.7.0-rc.8 source changes that public dependency identity and adds four
+AdapterKind variants. These are acknowledged source breaks. The original Git
+Client argument and exhaustive old match remain immutable failing observations
+against the new candidate, alongside successful original-source controls. The
+new release uses one registry genai source in development and packaging; it adds
+no second genai dependency, public adapter enum, type bridge, store or transport.
+A migrated downstream selects the same registry Client and explicitly handles
+Mistral, Requesty, ApiRoute and Heabsy. Its success proves the documented migration,
+not compatibility with the old 1.0 source contract.
+
+Builtin's public selected_hand_recovery_modes function was removed while Hand
+membership projection was consolidated into the Platform Session Configuration
+owner. This release acknowledges the removed 1.0 SDK path. Platform callers use
+the existing Hand projection at that boundary; the SDK does not depend on that
+Platform owner or recreate its algorithm. The four original Web policy root types
+remain public paths to the one existing Web Policy SDK implementation, with their
+original variants, fields and serialization. No duplicate Web DTO is introduced.
+
+The first pre-release source baseline remains
+50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940. Original 1.0 failure receipts are retained.
+The original twenty-two-package default/all-feature SemVer qualifier runs against
+that baseline and the explicit new package versions; a major-version allowance
+is a versioned release observation, never a claim that old source now compiles.
+Cross-crate rustdoc limitations and actual downstream compiler outcomes are
+reported separately. API snapshots are checked without a blanket bless or
+exclusion. Unexpected additional breaks block the cohort.
+
+Clean-source standard package verification, actual archive consumer tasks and
+sample, public registry publication/resolve, physical Provider behavior,
+cross-platform behavior and the Native thirteen-group record keep their separate
+evidence boundaries. Every qualified command binds its exact final clean source,
+package versions, target, features and artifact hashes. Nothing in this amendment
+authorizes a push or registry publication or changes the SDK member selector,
+baseline, deny policy, ordinary consumer task set or full-gate acceptance.
+
+### 2026-10-19: Bind the Runtime break to the existing release qualifier
+
+The separate Conversation decision above advances `awaken-runtime` to `2.0.0`
+for its real baseline API removals. Together with the earlier Provider/Builtin
+release decision, the current release observation covers three `2.0.0` packages;
+the other nineteen SDK package versions and the workspace default remain `1.0.0`.
+The earlier two-package observations remain historical evidence of their exact
+source, not evidence for this later Runtime change.
+
+The same qualifier adds the two original Runtime source calls against `50b3`,
+their two exact compiler refusals against the canonical source, and a successful
+Conversation type/method migration. The original nine compile controls and their
+fourteen core steps remain; each feature subject now has fourteen controls and
+nineteen steps. All use the existing source, archive, metadata, compiler and
+retained-byte receipt owner. No compatibility entry or second audit runner is
+introduced.
+
+The Runtime findings have not yet been observed or approved. Its forced-patch
+report must have nonempty queries and exact reviewed findings; the former
+Provider/Builtin approval cannot admit it. Missing or unknown Runtime evidence
+keeps the same fail-closed result, even when the other packages are complete.
+Both original twenty-two-package standard SemVer feature subjects, standard
+package verification, consumer tasks/sample and real archive consumption still
+require their own final clean-source evidence. This preparation neither qualifies
+a Runtime artifact nor authorizes a registry publication.
+
+
+### 2026-10-20: Version the original retry-policy argument break
+
+The immutable first pre-release baseline `50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940`
+already exposes `resilience::RetryPolicy::decide` with a concrete
+`ModelExecutionEvidence` argument. The returned-response retry correction now
+uses the canonical `ModelReentry` projection of phase, original effect scope
+and execution evidence. These are distinct argument types; the original SDK
+call is a source break, including through Runtime's same-type reexport.
+Runtime's separate `2.0.0` decision cannot version the defining Contract package.
+
+Retain the one corrected retry implementation and declare
+`awaken-runtime-contract` explicitly `2.0.0`, with its workspace dependency
+requirement updated to `2.0.0`. The workspace default and every unrelated package
+version stay unchanged. The existing qualifier's declared release cohort now
+includes Contract alongside Provider, Builtin and Runtime. The previous three
+package and two package observations remain historical; no old receipt is
+rewritten or claimed for this source. Cargo owns both lock updates on reception.
+
+The same compile-only witness owner adds three designed observations: identical
+old-decide input on the baseline, its current typed argument refusal, and the
+canonical phase/scope/execution projection on current source. The original nine
+controls/fourteen core steps and Runtime's fourteen controls/nineteen steps
+remain explicitly checked subsets; the complete subject has seventeen controls
+and twenty-two steps per existing default/all feature profile. Expected E0308
+and raw101 describe a test design, not an executed result or SemVer finding.
+
+The existing outer six actions, full twenty-two-package standard selection,
+source/target/feature checks, raw output and primary failure retention, metadata
+and archive ownership remain unchanged. Only the forced audit's declared
+package selection grows; it must produce its own complete nonempty Contract
+report. Runtime and Contract findings and approvals remain unestablished and
+absent from the production approval data. Missing or unknown evidence continues
+to fail closed through the same validator; no empty approval is inferred.
+
+This declares the package source break; it does not qualify an artifact,
+approve a report, authorize registry publication, alter snapshots blindly or
+add a second retry classifier, old-decide wrapper, alias, runner or profile.
+Actual baseline/current compiler controls, default/all SemVer reports, standard
+package/archive consumption and the original release evidence are still required.
+
+### 2026-10-20: Canonical Agent and Tool imports in the same Contract2 source cohort
+
+Runtime Contract's ninety first-party forwarding leaves (Agent86, Tool4), nine
+renamed leaves and fifty-one dependent local forwarding locations are real
+public baseline paths. Remove this redundant Contract surface together, before
+freezing the final Contract2 release subject. Callers name the existing Agent
+or Tool defining owner directly; the hundred-and-thirty-six same-owner outlets
+and third-party CancellationToken remain. No definition, identity minting,
+codec, hash, credential policy, tool effect, persistence or retry law moves.
+The forwarding-only credential module is removed, along with the two Ingress
+Contract CandidateFingerprint forwarding outlets. Runtime's already-public
+ToolCall facade names point directly to Tool, preserving those facade names.
+
+Agent and Tool keep their actual existing versions. They are ordinary compiler
+consumer dependencies, selected from each original side's authored metadata,
+not additional major-cohort members. The one existing witness renderer and
+metadata validator bind their source/version/features. Original nine/fourteen,
+fourteen/nineteen and seventeen/twenty-two compiler-control subsets remain;
+baseline full-route inventory, five isolated old-route shape controls and a
+both-side canonical-owner positive extend the complete design to thirty cases
+and thirty-five steps per default/all profile. Expected compiler refusals are
+test design only; actual raw exits, findings and source receipts are unobserved
+until the original executor records them. The four-package major COHORT,
+original six outer actions and complete twenty-two standard SDK packages stay.
+
+The existing exact approval data for Runtime and Contract remain absent pending
+actual nonempty default/all forced-patch reports and review. This source change
+makes earlier SDK17-only receipts insufficient for the later public API subject;
+it does not predict findings, approve a report, qualify a package or authorize
+registry publication. Both lock files and public snapshots are future outputs
+of their original generators and must bind the final received source. Flow and
+each Cloud consumer need a separate import/selector/pin migration and their own
+actual build receipts; no downstream source or pin changes are made here.

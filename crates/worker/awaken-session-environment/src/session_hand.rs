@@ -14,8 +14,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::Sandbox as _;
-use awaken_runtime_contract::llm::ToolCall;
 use awaken_sandbox_local::{LocalSandbox, NamespaceSandbox};
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{ToolError, ToolExecutor, ToolOutput, ToolRecoveryCapability};
 use tokio::sync::Mutex;
 

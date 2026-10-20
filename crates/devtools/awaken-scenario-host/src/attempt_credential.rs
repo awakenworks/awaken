@@ -5,14 +5,15 @@ use std::sync::Arc;
 use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
 
 pub(crate) fn direct_provider_execution() -> (
-    awaken_runtime_contract::CredentialExecutionPolicy,
-    awaken_runtime_contract::PlaintextHolder,
+    awaken_agent_contract::credential::CredentialExecutionPolicy,
+    awaken_agent_contract::credential::PlaintextHolder,
 ) {
     // Scenario deployment decision D1: direct provider bytes are materialized
     // by the canonical self-hosted Worker adapter. Publication and attempt
     // context must consume this same explicit pair; neither may rediscover a
     // holder from config or choose an ambient process boundary independently.
-    let policy = awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider();
+    let policy =
+        awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider();
     let holder = policy
         .allowed_plaintext_holders
         .iter()

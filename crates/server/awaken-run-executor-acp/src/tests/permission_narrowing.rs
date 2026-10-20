@@ -73,7 +73,7 @@ async fn acp_tool_ceiling_is_recorded_and_unsupported_no_tools_never_launches() 
             assert_eq!(polls.load(Ordering::SeqCst), 0);
             assert!(home.calls.lock().unwrap().is_empty());
         }
-        let commands = awaken_runtime_contract::CommittedThreadView::committed_state(
+        let commands = awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::committed_state(
             committed.as_ref(),
             &thread_id,
         );

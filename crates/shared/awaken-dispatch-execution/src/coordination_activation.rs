@@ -46,7 +46,7 @@ pub fn coordinated_run_activation(
     )
     .with_delegation_origin(origin)
     .with_inherited_toolsets(Some(
-        awaken_runtime_contract::activation::InheritedToolsets::with_caller(caller_toolsets, None),
+        awaken_agent_contract::toolset::InheritedToolsets::with_caller(caller_toolsets, None),
     ))
 }
 

@@ -6,10 +6,10 @@
 // @formal evidence model_binding.constructor_and_wire_share_one_admission
 use std::collections::{BTreeMap, BTreeSet};
 
-pub use awaken_agent_contract::AcpSessionConfiguration;
+use awaken_agent_contract::AcpSessionConfiguration;
 use serde::{Deserialize, Serialize};
 
-use crate::tool_discovery::ToolSearchLimit;
+use awaken_tool_contract::tool_discovery::ToolSearchLimit;
 
 fn is_default_delegation_limits(
     limits: &awaken_agent_contract::agent::delegation::DelegationLimits,
@@ -707,7 +707,7 @@ pub enum ModelProvisioning {
     /// material. Awaken pins only the exact Worker-local liveness reference and
     /// the model-selection policy; it never materializes this credential.
     BackendOwned {
-        credential: crate::CredentialRef,
+        credential: awaken_agent_contract::credential::CredentialRef,
         model_selection: BackendModelSelection,
         /// Exact live ACP capability profile validated at publication. Empty
         /// legacy values fail closed in placement and launch.
@@ -726,7 +726,7 @@ pub enum ModelProvisioning {
         /// range and authorization function remain orthogonal.
         scope_id: awaken_agent_contract::ScopeId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        credential: Option<Box<crate::CredentialAccess>>,
+        credential: Option<Box<awaken_agent_contract::credential::CredentialAccess>>,
         endpoint: Box<crate::InferenceEndpoint>,
         /// Explicit behavior when an Agent leaves reasoning effort unspecified.
         /// Provider-specific wire fields are derived by the transport adapter;
@@ -751,7 +751,7 @@ pub enum ModelProvisioning {
         /// Opaque ownership coordinate for the pinned credential.
         scope_id: awaken_agent_contract::ScopeId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        credential: Option<Box<crate::CredentialAccess>>,
+        credential: Option<Box<awaken_agent_contract::credential::CredentialAccess>>,
         /// Fingerprint of the Agent Card security declaration accepted at
         /// publication. Launch-time discovery must match it before dialing.
         security_fingerprint: String,
@@ -843,7 +843,7 @@ impl ResolvedModelCandidate {
 
     pub fn try_backend_owned(
         binding: ModelBinding,
-        credential: crate::CredentialRef,
+        credential: awaken_agent_contract::credential::CredentialRef,
         model_selection: BackendModelSelection,
         capability_adapter_version: impl Into<String>,
         capability_fingerprint: impl Into<String>,
@@ -868,7 +868,7 @@ impl ResolvedModelCandidate {
     pub fn try_remote(
         binding: ModelBinding,
         scope_id: impl Into<awaken_agent_contract::ScopeId>,
-        credential: Option<crate::CredentialAccess>,
+        credential: Option<awaken_agent_contract::credential::CredentialAccess>,
         security_fingerprint: impl Into<String>,
     ) -> Result<Self, InvalidResolvedModelCandidate> {
         Self::try_from_parts(
@@ -1092,7 +1092,7 @@ pub struct ToolDescriptor {
     /// tool schema; the runtime validates it against the executable tool's
     /// trusted capability before any recovery action.
     #[serde(default, skip_serializing_if = "is_default_tool_recovery")]
-    pub recovery_policy: crate::tool::ToolRecoveryPolicy,
+    pub recovery_policy: awaken_tool_contract::tool::ToolRecoveryPolicy,
     /// Optional provider-native realization of this same builtin capability.
     /// The canonical tool id remains the Agent-facing identity; an exact
     /// provider adapter may project it to this server-tool wire instead of a
@@ -1284,7 +1284,7 @@ struct ToolDescriptorWire {
     #[serde(default)]
     detached_targets: BTreeSet<String>,
     #[serde(default)]
-    recovery_policy: crate::tool::ToolRecoveryPolicy,
+    recovery_policy: awaken_tool_contract::tool::ToolRecoveryPolicy,
     #[serde(default)]
     provider_server_tool: Option<ProviderServerTool>,
 }
@@ -1358,27 +1358,29 @@ impl ToolKind {
     }
 }
 
-fn is_default_tool_recovery(policy: &crate::tool::ToolRecoveryPolicy) -> bool {
-    policy == &crate::tool::ToolRecoveryPolicy::default()
+fn is_default_tool_recovery(policy: &awaken_tool_contract::tool::ToolRecoveryPolicy) -> bool {
+    policy == &awaken_tool_contract::tool::ToolRecoveryPolicy::default()
 }
 
 impl ToolDescriptor {
     /// Generate the descriptor of a compiled typed tool. `Tool::Args` is the
     /// only input-schema authority: callers provide neither JSON nor a repeated
     /// id/description, so the executable and advertised contracts cannot drift.
-    pub fn for_tool<T: crate::tool::Tool>(prefix: &str) -> Self {
+    pub fn for_tool<T: awaken_tool_contract::tool::Tool>(prefix: &str) -> Self {
         Self::try_for_tool::<T>(prefix)
             .expect("trusted typed tool arguments must carry a valid object parameter schema")
     }
 
     /// Fallible typed constructor for application-defined tools.
-    pub fn try_for_tool<T: crate::tool::Tool>(prefix: &str) -> Result<Self, ToolSchemaError> {
+    pub fn try_for_tool<T: awaken_tool_contract::tool::Tool>(
+        prefix: &str,
+    ) -> Result<Self, ToolSchemaError> {
         let parameters = model_tool_schema::<T::Args>();
         Self::try_pinned(prefix, T::ID, T::DESCRIPTION, parameters)
     }
 
     /// Generate a descriptor for a typed model-visible capability that is not
-    /// executed as a [`Tool`](crate::tool::Tool), such as Agent delegation.
+    /// executed as a [`Tool`](awaken_tool_contract::tool::Tool), such as Agent delegation.
     /// The capability still cannot supply a hand-written parameter schema.
     pub fn for_args<A: schemars::JsonSchema>(
         prefix: &str,
@@ -1420,7 +1422,7 @@ impl ToolDescriptor {
             parameters,
             kind: ToolKind::Regular,
             detached_targets: BTreeSet::new(),
-            recovery_policy: crate::tool::ToolRecoveryPolicy::default(),
+            recovery_policy: awaken_tool_contract::tool::ToolRecoveryPolicy::default(),
             provider_server_tool: None,
         })
     }
@@ -1488,7 +1490,10 @@ impl ToolDescriptor {
     /// schema. The policy still enters the content address so changing recovery
     /// semantics produces a different resolved snapshot.
     #[must_use]
-    pub fn with_recovery(mut self, recovery: crate::tool::ToolRecoveryPolicy) -> Self {
+    pub fn with_recovery(
+        mut self,
+        recovery: awaken_tool_contract::tool::ToolRecoveryPolicy,
+    ) -> Self {
         self.recovery_policy = recovery;
         self
     }
@@ -1682,7 +1687,7 @@ pub enum ToolPromptInjection {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolDiscoverySettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_results: Option<crate::tool_discovery::ToolSearchLimit>,
+    pub max_results: Option<awaken_tool_contract::tool_discovery::ToolSearchLimit>,
     #[serde(default, skip_serializing_if = "ToolPromptInjection::is_automatic")]
     pub prompt: ToolPromptInjection,
 }
@@ -1708,11 +1713,14 @@ impl ToolDiscoverySettings {
 /// tools. Only names and short descriptions are listed here; full schemas are returned
 /// by the search result and become visible on the following step.
 fn tool_search_descriptor(settings: &ToolDiscoverySettings) -> ToolDescriptor {
-    let mut parameters = model_tool_schema::<crate::tool_discovery::ToolSearchInput>();
+    let mut parameters =
+        model_tool_schema::<awaken_tool_contract::tool_discovery::ToolSearchInput>();
     if let Some(maximum) = parameters.pointer_mut("/properties/max_results/maximum") {
         debug_assert_eq!(
             maximum.as_u64(),
-            Some(u64::from(crate::tool_discovery::ToolSearchLimit::MAX))
+            Some(u64::from(
+                awaken_tool_contract::tool_discovery::ToolSearchLimit::MAX
+            ))
         );
     }
     parameters["properties"]["max_results"]["maximum"] =
@@ -1869,7 +1877,7 @@ fn content_hash(
     parameters: &serde_json::Value,
     kind: ToolKind,
     detached_targets: &BTreeSet<String>,
-    recovery: &crate::tool::ToolRecoveryPolicy,
+    recovery: &awaken_tool_contract::tool::ToolRecoveryPolicy,
     provider_server_tool: Option<&ProviderServerTool>,
 ) -> String {
     use sha2::{Digest, Sha256};
@@ -1885,10 +1893,10 @@ fn content_hash(
         ToolKind::Advisor => "advisor",
     };
     let recovery_mode = match recovery.mode() {
-        crate::tool::ToolRecoveryMode::NeverReplay => "never_replay",
-        crate::tool::ToolRecoveryMode::ReplaySafe => "replay_safe",
-        crate::tool::ToolRecoveryMode::Idempotent => "idempotent",
-        crate::tool::ToolRecoveryMode::DurableRequest => "durable_request",
+        awaken_tool_contract::tool::ToolRecoveryMode::NeverReplay => "never_replay",
+        awaken_tool_contract::tool::ToolRecoveryMode::ReplaySafe => "replay_safe",
+        awaken_tool_contract::tool::ToolRecoveryMode::Idempotent => "idempotent",
+        awaken_tool_contract::tool::ToolRecoveryMode::DurableRequest => "durable_request",
     };
     let server_projection = provider_server_tool
         .map(|projection| serde_json::to_string(projection).expect("provider tool serializes"))

@@ -10,8 +10,9 @@
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::credential::PlaintextHolder;
 use awaken_provisioning_contract::SandboxCapacityShapeId;
-use awaken_runtime_contract::{PlaintextHolder, activation::RunActivation};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
 pub use awaken_tenancy::ExecutionScopeRef;
 pub use awaken_worker_contract::PlacementRequirements;
@@ -325,7 +326,7 @@ impl RunDispatch {
     /// while every execution-bearing field must remain byte-equivalent.
     #[must_use]
     pub fn canonical_fingerprint(&self) -> String {
-        let fingerprint = awaken_runtime_contract::content_fingerprint(&self.canonicalized())
+        let fingerprint = awaken_agent_contract::content_fingerprint(&self.canonicalized())
             .expect("RunDispatch's serializable contract has no fallible value");
         format!("sha256:{fingerprint}")
     }
@@ -400,7 +401,7 @@ impl RunDispatch {
     /// incoming request.
     #[must_use]
     pub fn legacy_session_reservation_fingerprint(&self) -> String {
-        let fingerprint = awaken_runtime_contract::content_fingerprint(&(
+        let fingerprint = awaken_agent_contract::content_fingerprint(&(
             &self.activation.run_id,
             &self.activation.thread_id,
             &self.activation.input,
@@ -663,18 +664,18 @@ mod tests {
     }
 
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    use awaken_agent_contract::credential::CredentialPurpose;
+    use awaken_agent_contract::credential::{
+        CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialSource,
+        CredentialRef, CredentialTarget, CredentialUsage, SealedCredentialEnvelopeRef,
+        TrustDomainRef,
+    };
     use awaken_credential_contract::CredentialMaterial;
-    use awaken_runtime_contract::credential::CredentialPurpose;
     use awaken_runtime_contract::resolved::{
         CatalogFingerprint, ModelBinding, ModelProvisioning, ResolvedSpec,
     };
     use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
-    };
-    use awaken_runtime_contract::{
-        CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialSource,
-        CredentialRef, CredentialTarget, CredentialUsage, SealedCredentialEnvelopeRef,
-        TrustDomainRef,
     };
 
     fn provider_candidate(
@@ -1205,7 +1206,7 @@ mod tests {
                     payload_fingerprint: "sha256:sealed-payload-23".into(),
                 },
                 recipient: TrustDomainRef(
-                    awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN.into(),
+                    awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN.into(),
                 ),
                 expires_at_unix_ms: 9_999,
             }),

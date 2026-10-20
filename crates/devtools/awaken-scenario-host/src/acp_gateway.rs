@@ -78,14 +78,14 @@ impl awaken_run_executor_acp::LaunchResolver for ScenarioEnvAcpModel {
         &self,
     ) -> awaken_credential_contract::CredentialRealizationCapabilities {
         awaken_credential_contract::CredentialRealizationCapabilities {
-            holders: [awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Workload,
-                awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+            holders: [awaken_agent_contract::credential::PlaintextHolder::new(
+                awaken_agent_contract::credential::PlaintextBoundary::Workload,
+                awaken_agent_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
             )]
             .into_iter()
             .collect(),
             material_sources: [
-                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
             ]
             .into_iter()
             .collect(),

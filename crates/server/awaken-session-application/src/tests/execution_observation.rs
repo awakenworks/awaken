@@ -3,8 +3,8 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Record as RunRecord, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as AuditKind;
+use awaken_agent_contract::audit::model_request::{ModelRequestObservation, TokenUsage};
 use awaken_agent_contract::audit::record::Record as AuditRecord;
-use awaken_runtime_contract::llm::{ModelRequestObservation, TokenUsage};
 use awaken_session_types::SessionId;
 
 fn observed_session(id: &str) -> PersistedSession {

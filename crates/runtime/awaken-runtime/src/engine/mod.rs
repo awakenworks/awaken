@@ -9,6 +9,7 @@
 //! source (G1/G13).
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::awaiting::{
     AwaitReason, AwaitTarget, PauseReason, PendingTool, ResumeTicket, ToolAwaitReason,
 };
@@ -48,7 +49,7 @@ use awaken_runtime_contract::execution::{
 };
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatMessage, ChatRequest, ChatResponse, DeltaSink, ModelRequestAdmission,
-    StopReason, ThreadUsage, ThreadUsageKey, ToolCall,
+    StopReason, ThreadUsage, ThreadUsageKey,
 };
 use awaken_runtime_contract::permission::{GateAuthority, GateDecision, GateOutcome};
 use awaken_runtime_contract::plugin::{
@@ -59,13 +60,12 @@ use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ResolvedRun, ToolDescriptor, ToolKind, ToolPresentation,
 };
 use awaken_runtime_contract::resolver::{self, RunResolver};
-use awaken_runtime_contract::resume::{
-    PermissionDecision, ResumeCommand, ResumeResult, validate_resume,
-};
+use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runtime_context::{
     RuntimeRunContext, TranscriptContextDestination, transcript_prefix_projects_to,
 };
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId;
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{
     RawTool, ToolConcurrency, ToolError, ToolExecutionFacts, ToolExecutionFactsResolver,
     ToolExecutionTarget, ToolExecutionWave, ToolExecutor, ToolOperationContext, ToolOutput,

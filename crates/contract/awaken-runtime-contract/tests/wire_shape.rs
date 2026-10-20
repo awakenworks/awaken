@@ -143,17 +143,18 @@ fn provider_model_candidate_provisioning_is_pinned() {
         "route-a@3",
         "workspace-a",
         Some(
-            awaken_runtime_contract::CredentialAccess::new(
-                awaken_runtime_contract::CredentialRef {
+            awaken_agent_contract::credential::CredentialAccess::new(
+                awaken_agent_contract::credential::CredentialRef {
                     id: "credential-a".into(),
                     revision: 4,
                 },
-                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+                awaken_agent_contract::credential::CredentialUsage::ProviderAdapter,
+                awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider(
+                ),
             )
-            .with_target(awaken_runtime_contract::CredentialTarget::new(
-                awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+            .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
                 "provider-a",
             )),
         ),
@@ -214,7 +215,7 @@ fn acp_execution_profile_preserves_backend_wire_and_is_optional_on_provider_wire
         supports_tool_aliases: false,
         capability_adapter_version: "1.2.3".into(),
         capability_fingerprint: "sha256:profile".into(),
-        session_configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration {
+        session_configuration: awaken_agent_contract::AcpSessionConfiguration {
             mode: Some("plan".into()),
             options: [("reasoning_effort".into(), "high".into())]
                 .into_iter()
@@ -224,7 +225,7 @@ fn acp_execution_profile_preserves_backend_wire_and_is_optional_on_provider_wire
     };
     let backend = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
         ModelBinding::new("local-codex", "", "acp:codex"),
-        awaken_runtime_contract::CredentialRef {
+        awaken_agent_contract::credential::CredentialRef {
             id: "local-codex".into(),
             revision: 1,
         },

@@ -7,7 +7,7 @@ use awaken_runtime_contract::attempt_termination::{
     ActiveNativeAttemptCoverage, NativeAttemptCoverage,
 };
 use awaken_runtime_contract::model_operation::ActiveModelOperation;
-use awaken_runtime_contract::tool_batch::ActiveToolBatch;
+use awaken_tool_contract::tool_batch::ActiveToolBatch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeAttemptTermination {
@@ -96,7 +96,7 @@ pub struct NativeAttemptFootprint {
     all_model_effects_closed: bool,
     models_response_only: bool,
     response_only: bool,
-    domains: Vec<awaken_runtime_contract::tool_batch::ToolExecutionDomain>,
+    domains: Vec<awaken_tool_contract::tool_batch::ToolExecutionDomain>,
 }
 
 impl NativeAttemptFootprint {
@@ -107,7 +107,7 @@ impl NativeAttemptFootprint {
         self.profile == NativeAttemptCoverage::ModelOnlyV1
     }
 
-    pub fn process_domains(&self) -> &[awaken_runtime_contract::tool_batch::ToolExecutionDomain] {
+    pub fn process_domains(&self) -> &[awaken_tool_contract::tool_batch::ToolExecutionDomain] {
         &self.domains
     }
 
@@ -139,7 +139,7 @@ impl NativeAttemptFootprint {
 
     pub fn classify(
         &self,
-        closed: &[awaken_runtime_contract::tool_batch::ToolExecutionDomain],
+        closed: &[awaken_tool_contract::tool_batch::ToolExecutionDomain],
     ) -> NativeAttemptTermination {
         // This classifies execution containment only. An origin label does not
         // prove membership, resource exclusivity, closure or target access.
@@ -319,20 +319,20 @@ mod tests {
     use super::*;
     use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_runtime_contract::llm::ToolCall;
     use awaken_runtime_contract::model_operation::{
         ModelExecutionEvidence, ModelOperation, ModelOperationPhase, NoDispatchProof,
         TerminalReceipt,
     };
     use awaken_runtime_contract::resolved::ModelBinding;
-    use awaken_runtime_contract::tool::ToolRecoveryPolicy;
-    use awaken_runtime_contract::tool_batch::ToolBatch;
+    use awaken_tool_contract::tool::ToolCall;
+    use awaken_tool_contract::tool::ToolRecoveryPolicy;
+    use awaken_tool_contract::tool_batch::ToolBatch;
     use std::num::NonZeroU64;
 
     #[test]
     fn journalled_closure_requires_every_exact_domain_and_preserves_unknown_results() {
         use awaken_runtime_contract::model_operation::ModelEffectScope;
-        use awaken_runtime_contract::tool_batch::ToolExecutionDomain;
+        use awaken_tool_contract::tool_batch::ToolExecutionDomain;
         // C1 pre-effect coverage; C2 model is response-only/opaque; C3 exact
         // process closure delivered/missing/wrong; C4 Requested prefix before
         // executor entry. R1=C1+C4+response-only+exact

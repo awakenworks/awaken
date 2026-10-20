@@ -17,9 +17,7 @@ use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadV
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolKind,
@@ -30,6 +28,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, replay_latest_state};
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput, ToolOutputSpiller};
 use awaken_tool_contract::{ActiveToolBatch, ToolBatch};
 
@@ -297,8 +296,8 @@ async fn inherited_configuration_is_ticket_truth_after_serialization_and_resume(
     // | T1 | A | serde round-trip | - | exact A |
     // | T2 | A | A | B | error, zero effects, ticket retained |
     // | T3 | A | A | none | restore A, one effect, ticket cleared |
-    use awaken_runtime_contract::activation::InheritedToolsets;
-    use awaken_runtime_contract::agent_bindings::{
+    use awaken_agent_contract::toolset::InheritedToolsets;
+    use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
     };
     let source = |domain: &str| {
@@ -392,7 +391,7 @@ async fn runtime_convenience_entries_freeze_inherited_sources_before_await() {
     // | R2 | start_run | yes | E1 |
     // | R3 | run_to_completion | answered internally | E1,E2 |
     // | R4 | run_to_completion_with_id | answered internally | E1,E2 |
-    use awaken_runtime_contract::activation::InheritedToolsets;
+    use awaken_agent_contract::toolset::InheritedToolsets;
     let source = InheritedToolsets::with_caller(Vec::new(), None);
     let context = |commit: &Arc<MemoryCommitCoordinator>| {
         RuntimeRunContext::new()
@@ -490,7 +489,7 @@ async fn activated_resume_rejects_a_different_source_before_tool_effect() {
     // | P1 | A | B | reject, zero effect |
     // | P2 | A | none | reject, zero effect |
     // | P3 | A | A | one effect, terminal |
-    use awaken_runtime_contract::activation::InheritedToolsets;
+    use awaken_agent_contract::toolset::InheritedToolsets;
     use awaken_runtime_contract::execution::RunAttemptExecutor;
     let a = InheritedToolsets::with_caller(Vec::new(), None);
     let b = InheritedToolsets::with_caller(Vec::new(), Some(&a));

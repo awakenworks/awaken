@@ -12,6 +12,10 @@ use awaken_agent_contract::RedactedString;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::credential::{
+    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+    CredentialUsage,
+};
 use awaken_coordinator::ExecutorComponents;
 use awaken_credential_contract::{CredentialPurpose, CredentialTarget};
 use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
@@ -20,19 +24,14 @@ use awaken_protocol_a2a::{Response, Transport};
 use awaken_run_executor_a2a::{A2aRunExecutor, TransportResolver};
 use awaken_runtime_contract::StaticPublishedAgentSnapshots;
 use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
-use awaken_runtime_contract::{
-    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-    CredentialUsage,
-};
 use awaken_scenario_host::{
     EchoModel, build_router, build_unmounted_dependencies_with_agent_publications,
 };
 use awaken_service_lifecycle::run_composed_async_test;
+use awaken_tool_contract::tool::ToolCall;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

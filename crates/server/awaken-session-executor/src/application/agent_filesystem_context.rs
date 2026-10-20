@@ -63,8 +63,9 @@ pub(super) fn consistent_agent_filesystem_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::AcpSessionConfiguration;
     use awaken_runtime_contract::resolved::{
-        AcpSessionConfiguration, BackendModelSelection, ModelBinding, ResolvedModelCandidate,
+        BackendModelSelection, ModelBinding, ResolvedModelCandidate,
     };
     use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 
@@ -74,7 +75,7 @@ mod tests {
     ) -> ResolvedModelCandidate {
         ResolvedModelCandidate::try_backend_owned(
             ModelBinding::new("local", model, "acp:codex"),
-            awaken_runtime_contract::CredentialRef {
+            awaken_agent_contract::credential::CredentialRef {
                 id: "codex-login".into(),
                 revision: 1,
             },

@@ -159,7 +159,7 @@ pub enum ResolvedModel {
         model_selection: BackendModelSelection,
         model: String,
         capability: awaken_protocol_acp::AcpCapabilityExpectation,
-        session_configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration,
+        session_configuration: awaken_agent_contract::AcpSessionConfiguration,
     },
 }
 
@@ -229,7 +229,7 @@ impl ResolvedModel {
         adapter_id: impl Into<String>,
         adapter_version: impl Into<String>,
         fingerprint: impl Into<String>,
-        session_configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration,
+        session_configuration: awaken_agent_contract::AcpSessionConfiguration,
     ) -> Self {
         Self::BackendOwned {
             model_selection,

@@ -65,10 +65,7 @@ impl crate::RunAssembly {
             });
         if let Some(agent) = toolsets.and_then(|toolsets| {
             toolsets.iter().find(|toolset| {
-                matches!(
-                    toolset.source,
-                    awaken_runtime_contract::agent_bindings::ToolsetSource::Agent
-                )
+                matches!(toolset.source, awaken_agent_contract::ToolsetSource::Agent)
             })
         }) {
             return Ok(agent.policy_for(tool).enabled);

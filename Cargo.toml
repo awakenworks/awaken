@@ -51,7 +51,7 @@ awaken-time = { path = "crates/runtime/awaken-time", version = "1.0.0" }
 awaken-lease-testkit = { path = "crates/devtools/awaken-lease-testkit" }
 awaken-credential-contract = { path = "crates/contract/awaken-credential-contract" }
 awaken-data-governance-contract = { path = "crates/contract/awaken-data-governance-contract" }
-awaken-runtime-contract = { path = "crates/contract/awaken-runtime-contract", version = "1.0.0" }
+awaken-runtime-contract = { path = "crates/contract/awaken-runtime-contract", version = "2.0.0" }
 awaken-tool-contract = { path = "crates/contract/awaken-tool-contract", version = "1.0.0" }
 awaken-tenancy = { path = "crates/contract/awaken-tenancy" }
 awaken-service-lifecycle = { path = "crates/server/awaken-service-lifecycle" }
@@ -82,7 +82,7 @@ awaken-memory-store = { path = "crates/resources/awaken-memory-store" }
 awaken-skill-store = { path = "crates/resources/awaken-skill-store" }
 awaken-runtime = { path = "crates/runtime/awaken-runtime" }
 awaken-tool-pattern = { path = "crates/runtime/awaken-tool-pattern", version = "0.1.0" }
-awaken-provider-genai = { path = "crates/runtime/awaken-provider-genai" }
+awaken-provider-genai = { path = "crates/runtime/awaken-provider-genai", version = "2.0.0" }
 awaken-ext-permission = { path = "crates/runtime/awaken-ext-permission" }
 awaken-outbound-http = { path = "crates/runtime/awaken-outbound-http", version = "1.0.0" }
 awaken-authority-clock = { path = "crates/runtime/awaken-authority-clock" }
@@ -95,7 +95,7 @@ awaken-ext-goal = { path = "crates/runtime/awaken-ext-goal" }
 awaken-ext-state-machine = { path = "crates/runtime/awaken-ext-state-machine" }
 awaken-ext-compact = { path = "crates/runtime/awaken-ext-compact" }
 awaken-ext-memory = { path = "crates/runtime/awaken-ext-memory" }
-awaken-ext-builtin-tools = { path = "crates/runtime/awaken-ext-builtin-tools" }
+awaken-ext-builtin-tools = { path = "crates/runtime/awaken-ext-builtin-tools", version = "2.0.0" }
 awaken-protocol-a2a = { path = "crates/server/awaken-protocol-a2a" }
 awaken-protocol-mcp = { path = "crates/server/awaken-protocol-mcp" }
 awaken-protocol-ag-ui = { path = "crates/server/awaken-protocol-ag-ui" }
@@ -225,7 +225,7 @@ yamux = "0.14"
 url = "2.5"
 # One version/feature choice for Skill ingestion and its test-only ZIP writers.
 zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
-genai = { git = "https://github.com/awakenworks/rust-genai.git", rev = "da7b568fb413b3197acc13c93f334884f97c81ad" }
+genai = "=0.7.0-rc.8"
 axum = "0.8"
 # Property-based (lightweight formal) verification: dev-only. Encodes universally-
 # quantified invariants (tenant-isolation fence, lease-reclaim monotonicity, archive/
