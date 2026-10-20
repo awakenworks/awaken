@@ -667,7 +667,8 @@ impl SessionApplication {
                     // before executing it. Reclaim the just-opened activity;
                     // dependency/internal failures remain active because their
                     // staging outcome is ambiguous and update replay repairs it.
-                    self.settle_activity(session_id.as_str(), session_activity_epoch)
+                    self.lifecycle
+                        .settle_activity_observed(&session_id, session_activity_epoch, None)
                         .await
                         .map_err(|error| SessionUpdateError::ProjectionAfterCommit {
                             outcome: Box::new(outcome.clone()),
@@ -686,7 +687,8 @@ impl SessionApplication {
                 }
             };
             if disposition == SessionBudgetResumeDisposition::Stale {
-                self.settle_activity(session_id.as_str(), session_activity_epoch)
+                self.lifecycle
+                    .settle_activity_observed(&session_id, session_activity_epoch, None)
                     .await
                     .map_err(|error| SessionUpdateError::ProjectionAfterCommit {
                         outcome: Box::new(outcome.clone()),

@@ -340,9 +340,11 @@ mod tests {
         assert_eq!(active_epochs.len(), 1, "L1 has one admitted Run activity");
         state
             .session_application()
-            .settle_activity(
-                &session.id,
+            .lifecycle()
+            .settle_activity_observed(
+                &awaken_session_types::SessionId::from(&session.id),
                 *active_epochs.iter().next().expect("L1 activity epoch"),
+                None,
             )
             .await
             .expect("L1 production-equivalent settlement observation");

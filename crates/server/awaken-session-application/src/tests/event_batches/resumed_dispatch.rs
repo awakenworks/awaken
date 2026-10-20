@@ -142,6 +142,7 @@ async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_in
                 source_commit_cursor: source,
             };
             let root = cold
+                .lifecycle()
                 .settle_user_event_dispatch_observed(
                     &SessionId::from(id),
                     epoch,
@@ -162,25 +163,27 @@ async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_in
             );
             assert_eq!(published(&root), original, "R3");
             let bytes = serde_json::to_value(&root).unwrap();
-            cold.settle_user_event_dispatch_observed(
-                &SessionId::from(id),
-                epoch,
-                observation.clone(),
-                &run,
-                boundary,
-            )
-            .await
-            .unwrap();
-            if let Some((old_epoch, old_observation)) = previous {
-                cold.settle_user_event_dispatch_observed(
+            cold.lifecycle()
+                .settle_user_event_dispatch_observed(
                     &SessionId::from(id),
-                    old_epoch,
-                    old_observation,
+                    epoch,
+                    observation.clone(),
                     &run,
                     boundary,
                 )
                 .await
                 .unwrap();
+            if let Some((old_epoch, old_observation)) = previous {
+                cold.lifecycle()
+                    .settle_user_event_dispatch_observed(
+                        &SessionId::from(id),
+                        old_epoch,
+                        old_observation,
+                        &run,
+                        boundary,
+                    )
+                    .await
+                    .unwrap();
             }
             assert_eq!(
                 serde_json::to_value(repository.get(&SessionId::from(id)).await.unwrap()).unwrap(),

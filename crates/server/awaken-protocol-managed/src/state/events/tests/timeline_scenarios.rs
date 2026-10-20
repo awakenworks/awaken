@@ -483,6 +483,7 @@ impl RootTimeline {
         if let Some(epoch) = epoch {
             self.warm
                 .application
+                .lifecycle()
                 .settle_activity_observed(
                     &session,
                     epoch,
@@ -1584,6 +1585,7 @@ async fn closed_interval_usage_keeps_its_committed_value_when_clock_and_activity
         RunState::Ended(EndCause::NaturalEnd),
     ));
     warm.application
+        .lifecycle()
         .settle_activity_observed(
             &session_id,
             activity.activity_epoch,
@@ -1784,5 +1786,106 @@ async fn current_child_ticket_never_classifies_another_runs_unmatched_call() {
     assert!(
         !events.iter().any(|event| event.0 == old_id),
         "R2 negative: current ticket cannot classify another Run's unmatched call"
+    );
+}
+
+#[tokio::test]
+async fn root_terminal_defers_idle_until_the_session_activity_cas_settles() {
+    // Causes: the fixtures below establish `root terminal defers idle until the session activity
+    // cas settles` with the concrete inputs, state, dependencies, and failure triggers used by this
+    // case.
+    // Constraints/invariants: committed Session, Run, and transcript facts are the only durable
+    // truth; live, warm, and cold projections may not diverge or mint a second lifecycle.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    // Cause/effect graph: C1 the root Run terminal commit is visible; C2 the
+    // Session activity epoch is still active when the first refresh reads
+    // durable aggregate state; C3 that exact epoch settles before a later
+    // refresh; C4 the root lifecycle cursor was already consumed by C2.
+    // Effects: E1 C1+C2 projects the root output/terminal once but no false
+    // aggregate idle; E2 the one idle carries the terminal's stop reason,
+    // decided from the committed lifecycle rather than from a reason held
+    // in the replica between refreshes; E3 C3+C4 emits exactly one idle
+    // without requiring a second lifecycle event; E4 further refreshes are
+    // idempotent. This is the commit-order window exercised by coordinated
+    // child reports: the report Run terminal can precede Session settlement.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effects |
+    // | R1   | T  | T  | F  | F  | E1,E2   |
+    // | R2   | T  | F  | T  | T  | E3      |
+    // | R3   | T  | F  | T  | T  | E4      |
+    let runtime = LifecycleRuntime::default();
+    let state = ManagedState::new(runtime.clone()).await;
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        )
+        .await
+        .unwrap();
+    let active = state
+        .application
+        .begin_activity(&SessionId::from(&session.id))
+        .await
+        .expect("R1/C2 opens the authoritative Session activity");
+    runtime.lifecycle.lock().unwrap().push(lifecycle(
+        1,
+        &session.id,
+        &RunId("run-root-report".into()),
+        RunLifecycleEventKind::Completed,
+        RunState::Ended(EndCause::NaturalEnd),
+    ));
+
+    state.refresh_committed_events(&session.id).await.unwrap();
+    {
+        let record = state.sessions.lock().unwrap();
+        let record = record.get(&session.id).unwrap();
+        assert_eq!(
+            record
+                .events
+                .iter()
+                .filter(|event| event.type_str() == "session.status_idle")
+                .count(),
+            0,
+            "R1/E1"
+        );
+    }
+
+    state
+        .application
+        .lifecycle()
+        .settle_activity_observed(
+            &awaken_session_types::SessionId::from(&session.id),
+            active.activity_epoch,
+            None,
+        )
+        .await
+        .expect("R2/C3 settles the exact activity epoch");
+    state.refresh_committed_events(&session.id).await.unwrap();
+    state.refresh_committed_events(&session.id).await.unwrap();
+
+    let record = state.sessions.lock().unwrap();
+    let record = record.get(&session.id).unwrap();
+    assert_eq!(
+        record
+            .events
+            .iter()
+            .filter(|event| event.type_str() == "session.status_idle")
+            .count(),
+        1,
+        "R2-R3/E3-E4"
+    );
+    assert!(
+        record.events.iter().any(|event| matches!(
+            event.kind,
+            OutboundKind::SessionStatusIdle {
+                stop_reason: StopReason::EndTurn,
+                ..
+            }
+        )),
+        "R1-R2/E2 the idle carries the terminal's reason"
     );
 }

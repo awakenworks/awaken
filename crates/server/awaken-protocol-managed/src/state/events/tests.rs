@@ -105,6 +105,7 @@ async fn indeterminate_root_projects_one_standard_error_across_warm_and_cold_rea
         ),
     ]);
     warm.application
+        .lifecycle()
         .settle_activity_observed(
             &SessionId::from(&session.id),
             activity.activity_epoch,
@@ -659,6 +660,7 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
         ),
     ]);
     warm.application
+        .lifecycle()
         .settle_activity_observed(
             &SessionId::from(&session.id),
             activity.activity_epoch,
@@ -4493,102 +4495,6 @@ async fn failed_committed_projection_does_not_poison_warm_recovery() {
 }
 
 #[tokio::test]
-async fn root_terminal_defers_idle_until_the_session_activity_cas_settles() {
-    // Causes: the fixtures below establish `root terminal defers idle until the session activity
-    // cas settles` with the concrete inputs, state, dependencies, and failure triggers used by this
-    // case.
-    // Constraints/invariants: committed Session, Run, and transcript facts are the only durable
-    // truth; live, warm, and cold projections may not diverge or mint a second lifecycle.
-    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
-    // selects only its stated effect and preserves the authority constraint.
-    // Cause/effect graph: C1 the root Run terminal commit is visible; C2 the
-    // Session activity epoch is still active when the first refresh reads
-    // durable aggregate state; C3 that exact epoch settles before a later
-    // refresh; C4 the root lifecycle cursor was already consumed by C2.
-    // Effects: E1 C1+C2 projects the root output/terminal once but no false
-    // aggregate idle; E2 the one idle carries the terminal's stop reason,
-    // decided from the committed lifecycle rather than from a reason held
-    // in the replica between refreshes; E3 C3+C4 emits exactly one idle
-    // without requiring a second lifecycle event; E4 further refreshes are
-    // idempotent. This is the commit-order window exercised by coordinated
-    // child reports: the report Run terminal can precede Session settlement.
-    //
-    // | Rule | C1 | C2 | C3 | C4 | Effects |
-    // | R1   | T  | T  | F  | F  | E1,E2   |
-    // | R2   | T  | F  | T  | T  | E3      |
-    // | R3   | T  | F  | T  | T  | E4      |
-    let runtime = LifecycleRuntime::default();
-    let state = ManagedState::new(runtime.clone()).await;
-    let session = state
-        .create_session(
-            serde_json::from_value(serde_json::json!({
-                "agent":"coder", "environment_id":"env_local"
-            }))
-            .unwrap(),
-            awaken_tenancy::DEFAULT_WORKSPACE_ID,
-        )
-        .await
-        .unwrap();
-    let active = state
-        .application
-        .begin_activity(&SessionId::from(&session.id))
-        .await
-        .expect("R1/C2 opens the authoritative Session activity");
-    runtime.lifecycle.lock().unwrap().push(lifecycle(
-        1,
-        &session.id,
-        &RunId("run-root-report".into()),
-        RunLifecycleEventKind::Completed,
-        RunState::Ended(EndCause::NaturalEnd),
-    ));
-
-    state.refresh_committed_events(&session.id).await.unwrap();
-    {
-        let record = state.sessions.lock().unwrap();
-        let record = record.get(&session.id).unwrap();
-        assert_eq!(
-            record
-                .events
-                .iter()
-                .filter(|event| event.type_str() == "session.status_idle")
-                .count(),
-            0,
-            "R1/E1"
-        );
-    }
-
-    state
-        .application
-        .settle_activity(&session.id, active.activity_epoch)
-        .await
-        .expect("R2/C3 settles the exact activity epoch");
-    state.refresh_committed_events(&session.id).await.unwrap();
-    state.refresh_committed_events(&session.id).await.unwrap();
-
-    let record = state.sessions.lock().unwrap();
-    let record = record.get(&session.id).unwrap();
-    assert_eq!(
-        record
-            .events
-            .iter()
-            .filter(|event| event.type_str() == "session.status_idle")
-            .count(),
-        1,
-        "R2-R3/E3-E4"
-    );
-    assert!(
-        record.events.iter().any(|event| matches!(
-            event.kind,
-            OutboundKind::SessionStatusIdle {
-                stop_reason: StopReason::EndTurn,
-                ..
-            }
-        )),
-        "R1-R2/E2 the idle carries the terminal's reason"
-    );
-}
-
-#[tokio::test]
 async fn newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason() {
     // Cause/effect graph: C1 a root Run commits ScheduledAction Awaiting with an
     // answerable tool while its Session activity remains Running; C2 the Worker
@@ -4706,7 +4612,12 @@ async fn newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason() {
 
     state
         .application
-        .settle_activity(&session.id, active.activity_epoch)
+        .lifecycle()
+        .settle_activity_observed(
+            &awaken_session_types::SessionId::from(&session.id),
+            active.activity_epoch,
+            None,
+        )
         .await
         .expect("S3 settles the exact activity epoch");
     state.refresh_committed_events(&session.id).await.unwrap();
@@ -4829,6 +4740,7 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
         RunState::Ended(EndCause::NaturalEnd),
     ));
     warm.application
+        .lifecycle()
         .settle_activity_observed(
             &SessionId::from(&session.id),
             active.activity_epoch,
@@ -5163,6 +5075,7 @@ async fn first_interval_lineage_preserves_the_issued_legacy_lifecycle_prefix() {
     ));
     state
         .application
+        .lifecycle()
         .settle_activity_observed(
             &SessionId::from(&session.id),
             active.activity_epoch,
@@ -5384,6 +5297,7 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
             )
             .await;
             warm.application
+                .lifecycle()
                 .settle_activity_observed(
                     &SessionId::from(&session.id),
                     first_activity.activity_epoch,
@@ -5400,6 +5314,7 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
                 .await
                 .unwrap();
             warm.application
+                .lifecycle()
                 .settle_activity_observed(
                     &SessionId::from(&session.id),
                     overlapping_activity.activity_epoch,
@@ -5495,6 +5410,7 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
         *runtime.message_cursors.lock().unwrap() = vec![9, 11, 11, 13, 19, 21];
         persist_batch_projection_anchors(&warm, &session_id, &second_batch.batch_id, &[19]).await;
         warm.application
+            .lifecycle()
             .settle_activity_observed(
                 &SessionId::from(&session_id),
                 second_activity.activity_epoch,
@@ -6227,7 +6143,12 @@ async fn primary_reschedule_projects_one_complete_sequence_warm_and_after_restar
         RunState::Ended(EndCause::NaturalEnd),
     ));
     warm.application
-        .settle_activity(&session.id, active.activity_epoch)
+        .lifecycle()
+        .settle_activity_observed(
+            &awaken_session_types::SessionId::from(&session.id),
+            active.activity_epoch,
+            None,
+        )
         .await
         .unwrap();
     warm.refresh_committed_events(&session.id).await.unwrap();
@@ -8502,6 +8423,7 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
         ),
     ]);
     warm.application
+        .lifecycle()
         .settle_activity_observed(
             &SessionId::from(&session.id),
             child_activity.activity_epoch,
@@ -8518,6 +8440,7 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
         .await
         .unwrap();
     warm.application
+        .lifecycle()
         .settle_activity_observed(
             &SessionId::from(&session.id),
             root_activity.activity_epoch,
@@ -12667,6 +12590,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                 });
                 state
                     .application
+                    .lifecycle()
                     .settle_activity_observed(
                         &SessionId::from(&session.id),
                         first.activity_epoch,
@@ -12800,7 +12724,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                     if terminal == 2 {
                         state
                             .application
-                            .settle_activity_observed(
+                            .lifecycle().settle_activity_observed(
                                 &SessionId::from(&session.id),
                                 second.activity_epoch,
                                 Some(awaken_session_state_contract::SessionRuntimeIntervalObservation {

@@ -20,6 +20,7 @@ mod coordinated_resources;
 mod creation_inputs;
 mod credential_ingress;
 use credential_ingress::FaultInjectingCredentialMaterialIngress;
+mod activity_settlement_owner;
 mod first_materialization;
 mod input_mounts;
 mod interval_admission;
@@ -2977,307 +2978,6 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
     );
 }
 
-/// Activity-fence FMECA cause/effect graph. Causes: C1 the Session exists; C2 it
-/// is ready (idle/running or Worker-owned preparing); C3 the epoch can advance;
-/// C4 settlement names an admitted active epoch; C5 other active epochs remain;
-/// C6 completion is duplicate/unknown; C7 a terminal transition races. Effects: E1 every
-/// admission advances the monotonic environment fence and joins one interval;
-/// E2 settlement removes exactly its epoch regardless of completion order; E3
-/// only the last active settlement commits Idle and the one interval fact; E4
-/// duplicate/stale/terminal completions are no-ops; E5 invalid admissions do not
-/// mutate truth; E6 terminal intent clears all active epochs and closes the same
-/// interval; E7 a Worker-owned initial activity stays Preparing until realization.
-///
-/// | Rule | Active before | Completion/admission | Terminal | Effect |
-/// |---|---|---|---|---|
-/// | A1 | none | two admissions | no | E1, two distinct active epochs |
-/// | A2 | oldest+newest | oldest completes first | no | E2, newest remains Running |
-/// | A3 | newest | newest completes last | no | E3, Idle + one fact |
-/// | A4 | oldest+newest | newest completes first | no | E2, oldest remains Running |
-/// | A5 | oldest | oldest completes last | no | E3, Idle + one fact |
-/// | A6 | any | duplicate/unknown completion | no | E4, exact no-op |
-/// | A7 | any | completion/admission | terminal | E4/E5/E6 |
-/// | A8 | none | admission | exhausted/missing/not-ready | E5 |
-/// | A9 | none | Worker admission | preparing | E1/E7 |
-#[tokio::test]
-async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() {
-    run_activity_fence_decision_table().await;
-}
-
-async fn run_activity_fence_decision_table() {
-    // Constraint/Invariant: one monotonic root activity epoch fences all
-    // admission/completion and terminal truth dominates every replay. Decision rule:
-    // execute A1-A9 to cover completion order, duplicates, terminal state,
-    // policy rejection, and Worker preparation.
-    let repo = authority_repository("session repository").await;
-    create(
-        repo.as_ref(),
-        persisted("activity-oldest-first", false, "idle"),
-    )
-    .await;
-    create(
-        repo.as_ref(),
-        persisted("activity-newest-first", false, "idle"),
-    )
-    .await;
-    let app = application(
-        repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-
-    // Keep each decision partition in its own heap-backed state machine. This
-    // preserves one A1-A9 table while preventing unrelated retained snapshots
-    // from consuming the test thread's stack during repository decoding.
-    Box::pin(async {
-        let session_id = SessionId::from("activity-oldest-first");
-        let (first, second) = tokio::join!(
-            app.begin_activity(&session_id),
-            app.begin_activity(&session_id)
-        );
-        let first = first.expect("A1 first admission");
-        let second = second.expect("A1 concurrent admission");
-        let mut epochs = [first.activity_epoch, second.activity_epoch];
-        epochs.sort_unstable();
-        assert_eq!(epochs, [1, 2], "A1");
-        let active = repo
-            .get(&SessionId::from("activity-oldest-first"))
-            .await
-            .expect("A1 durable Session");
-        assert_eq!(active.execution.as_str(), "running", "A1");
-        assert_eq!(
-            active.active_activity_epochs,
-            std::collections::BTreeSet::from(epochs),
-            "A1"
-        );
-        let first_interval = active
-            .running_interval
-            .clone()
-            .expect("A1 one durable interval");
-        assert_eq!(first_interval.activity_epoch, epochs[0], "A1 joins overlap");
-
-        let oldest_settled = app
-            .settle_activity("activity-oldest-first", epochs[0])
-            .await
-            .expect("A2 oldest completion");
-        assert_eq!(oldest_settled.execution.as_str(), "running", "A2");
-        assert_eq!(oldest_settled.activity_epoch, epochs[1], "A2");
-        assert_eq!(
-            oldest_settled.active_activity_epochs,
-            std::collections::BTreeSet::from([epochs[1]]),
-            "A2"
-        );
-        assert_eq!(
-            oldest_settled.running_interval,
-            Some(first_interval.clone()),
-            "A2"
-        );
-
-        let idle = app
-            .settle_activity("activity-oldest-first", epochs[1])
-            .await
-            .expect("A3 newest completes last");
-        assert_eq!(idle.execution.as_str(), "idle", "A3");
-        assert!(idle.active_activity_epochs.is_empty(), "A3");
-        assert!(idle.running_interval.is_none(), "A3");
-        let pending = repo.pending_lifecycle().await.expect("A3 outbox");
-        let closed = pending
-            .iter()
-            .find(|fact| fact.object_id == "activity-oldest-first")
-            .expect("A3 one interval fact")
-            .runtime_interval
-            .as_ref()
-            .expect("A3 typed interval");
-        assert_eq!(closed.interval_id, first_interval.interval_id, "A3");
-        assert!(closed.ended_at_unix_ms >= closed.started_at_unix_ms, "A3");
-
-        let session_id = SessionId::from("activity-newest-first");
-        let (first, second) = tokio::join!(
-            app.begin_activity(&session_id),
-            app.begin_activity(&session_id)
-        );
-        let mut reverse_epochs = [
-            first.expect("A4 first admission").activity_epoch,
-            second.expect("A4 second admission").activity_epoch,
-        ];
-        reverse_epochs.sort_unstable();
-        let newest_settled = app
-            .settle_activity("activity-newest-first", reverse_epochs[1])
-            .await
-            .expect("A4 newest completion");
-        assert_eq!(
-            newest_settled.execution,
-            SessionExecutionState::Running,
-            "A4"
-        );
-        assert_eq!(
-            newest_settled.active_activity_epochs,
-            std::collections::BTreeSet::from([reverse_epochs[0]]),
-            "A4"
-        );
-        let duplicate = app
-            .settle_activity("activity-newest-first", reverse_epochs[1])
-            .await
-            .expect("A6 duplicate completion");
-        assert_eq!(duplicate, newest_settled, "A6 duplicate is an exact no-op");
-        let unknown = app
-            .settle_activity("activity-newest-first", u64::MAX)
-            .await
-            .expect("A6 unknown completion");
-        assert_eq!(unknown, newest_settled, "A6 unknown is an exact no-op");
-        let reverse_idle = app
-            .settle_activity("activity-newest-first", reverse_epochs[0])
-            .await
-            .expect("A5 oldest completes last");
-        assert_eq!(reverse_idle.execution, SessionExecutionState::Idle, "A5");
-        assert!(reverse_idle.active_activity_epochs.is_empty(), "A5");
-        assert!(reverse_idle.running_interval.is_none(), "A5");
-        let pending = repo.pending_lifecycle().await.expect("A5 outbox");
-        assert_eq!(
-            pending
-                .iter()
-                .filter(|fact| {
-                    fact.object_id == "activity-newest-first" && fact.runtime_interval.is_some()
-                })
-                .count(),
-            1,
-            "A5 exactly one interval fact"
-        );
-    })
-    .await;
-
-    Box::pin(async {
-        let running = app
-            .begin_activity(&SessionId::from("activity-oldest-first"))
-            .await
-            .expect("A7 activity before terminal transition");
-        app.force_terminate_session(
-            "activity-oldest-first",
-            "2026-08-11T00:00:00Z",
-            awaken_session_state_contract::ManagedLifecycleFact {
-                id: "activity-terminal".into(),
-                object_id: "activity-oldest-first".into(),
-                workspace_id: Some("workspace".into()),
-                event_type: "session.status_terminated".into(),
-                timestamp: 1,
-                runtime_interval: None,
-            },
-        )
-        .await
-        .expect("A7 terminal transition");
-        let terminated = repo
-            .get(&SessionId::from("activity-oldest-first"))
-            .await
-            .expect("A7 durable terminal cleanup");
-        assert!(terminated.active_activity_epochs.is_empty(), "A7/E6");
-        assert!(terminated.running_interval.is_none(), "A7/E6");
-        let fenced = app
-            .settle_activity("activity-oldest-first", running.activity_epoch)
-            .await
-            .expect("A7 terminal settlement is idempotent");
-        assert_eq!(fenced, terminated, "A7");
-        assert_eq!(
-            app.begin_activity(&SessionId::from("activity-oldest-first"))
-                .await,
-            Err(SessionActivityError::Terminal),
-            "A7"
-        );
-    })
-    .await;
-
-    Box::pin(async {
-        let mut exhausted = persisted("activity-exhausted", false, "idle");
-        exhausted.activity_epoch = u64::MAX;
-        create(repo.as_ref(), exhausted).await;
-        let exhausted_before = repo
-            .get(&SessionId::from("activity-exhausted"))
-            .await
-            .expect("A8 durable Session before admission");
-        assert_eq!(
-            app.begin_activity(&SessionId::from("activity-exhausted"))
-                .await,
-            Err(SessionActivityError::EpochExhausted),
-            "A8"
-        );
-        assert_eq!(
-            repo.get(&SessionId::from("activity-exhausted"))
-                .await
-                .expect("A8 durable Session"),
-            exhausted_before,
-            "A8"
-        );
-        assert_eq!(
-            app.begin_activity(&SessionId::from("missing")).await,
-            Err(SessionActivityError::NotFound),
-            "A8"
-        );
-
-        create(
-            repo.as_ref(),
-            persisted("activity-preparing", false, "preparing"),
-        )
-        .await;
-        assert_eq!(
-            app.begin_activity(&SessionId::from("activity-preparing"))
-                .await,
-            Err(SessionActivityError::NotReady),
-            "A8/E5"
-        );
-        let still_preparing = repo
-            .get(&SessionId::from("activity-preparing"))
-            .await
-            .expect("A8 durable");
-        assert_eq!(still_preparing.activity_epoch, 0, "A8/E5");
-        assert_eq!(still_preparing.execution.as_str(), "preparing", "A8/E5");
-
-        let mut worker_preparing = persisted("activity-worker-preparing", false, "preparing");
-        let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
-            &mut worker_preparing.baseline
-        else {
-            unreachable!("fixture is frozen")
-        };
-        baseline.runtime_placement = SessionRuntimePlacement::Worker;
-        create(repo.as_ref(), worker_preparing).await;
-        let admitted = app
-            .begin_activity(&SessionId::from("activity-worker-preparing"))
-            .await
-            .expect("A9 Worker claim must be triggered by the driving event");
-        assert_eq!(admitted.activity_epoch, 1, "A9/E1");
-        assert_eq!(
-            admitted.active_activity_epochs,
-            std::collections::BTreeSet::from([1]),
-            "A9/E7"
-        );
-        assert_eq!(
-            admitted.execution,
-            SessionExecutionState::Preparing,
-            "A9/E7"
-        );
-
-        let mut failed = still_preparing;
-        failed.execution = SessionExecutionState::ActivationFailed;
-        let failed = app
-            .mutations
-            .commit_session_snapshot_with_outcome(
-                "workspace",
-                awaken_session_state_contract::SessionAggregate::try_from(failed)
-                    .expect("valid test snapshot"),
-                "activity-test-realization-failed",
-                Vec::new(),
-            )
-            .await
-            .expect("A7 terminal realization")
-            .into_session();
-        assert_eq!(
-            app.settle_activity("activity-preparing", 0)
-                .await
-                .expect("A7 stale settlement"),
-            failed,
-            "A7/E4"
-        );
-    })
-    .await;
-}
-
 #[tokio::test]
 async fn recovered_scalar_activity_is_settled_or_superseded_without_parallel_truth() {
     // Constraint/Invariant: the authoritative Session inputs and repository CAS
@@ -3303,7 +3003,12 @@ async fn recovered_scalar_activity_is_settled_or_superseded_without_parallel_tru
     assert!(recovered.active_activity_epochs.is_empty(), "A10/C1");
     create(repo.as_ref(), recovered).await;
     let idle = app
-        .settle_activity("activity-recovered-settle", 7)
+        .lifecycle()
+        .settle_activity_observed(
+            &awaken_session_types::SessionId::from("activity-recovered-settle"),
+            7,
+            None,
+        )
         .await
         .expect("A10 settle");
     assert_eq!(idle.execution, SessionExecutionState::Idle, "A10/E1");
@@ -3324,14 +3029,24 @@ async fn recovered_scalar_activity_is_settled_or_superseded_without_parallel_tru
         "A11/E2"
     );
     assert_eq!(
-        app.settle_activity("activity-recovered-successor", 9)
+        app.lifecycle()
+            .settle_activity_observed(
+                &awaken_session_types::SessionId::from("activity-recovered-successor"),
+                9,
+                None
+            )
             .await
             .expect("A11 predecessor fenced"),
         successor,
         "A11/E3"
     );
     let idle = app
-        .settle_activity("activity-recovered-successor", 10)
+        .lifecycle()
+        .settle_activity_observed(
+            &awaken_session_types::SessionId::from("activity-recovered-successor"),
+            10,
+            None,
+        )
         .await
         .expect("A12 successor completion");
     assert_eq!(idle.execution, SessionExecutionState::Idle, "A12/E4");
@@ -3391,7 +3106,12 @@ async fn operation_activity_replay_uses_the_root_receipt_as_its_only_epoch_autho
     );
 
     let settled = app
-        .settle_activity("activity-operation", left_epoch)
+        .lifecycle()
+        .settle_activity_observed(
+            &awaken_session_types::SessionId::from("activity-operation"),
+            left_epoch,
+            None,
+        )
         .await
         .expect("O3 settle");
     let settled_revision = settled.revision;
@@ -4635,7 +4355,12 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
         .begin_activity_for_operation(&SessionId::from(session_id), "source-operation")
         .await
         .expect("R2 source activity");
-    app.settle_activity(session_id, source_epoch)
+    app.lifecycle()
+        .settle_activity_observed(
+            &awaken_session_types::SessionId::from(session_id),
+            source_epoch,
+            None,
+        )
         .await
         .expect("R2 observer effect committed before queue settlement");
     let (_, successor_epoch) = app

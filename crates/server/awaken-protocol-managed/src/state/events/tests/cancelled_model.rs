@@ -121,6 +121,7 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
                 runtime.state_cursors.lock().unwrap().push(4);
             }
             warm.application
+                .lifecycle()
                 .settle_activity_observed(
                     &awaken_session_types::SessionId::from(&session.id),
                     activity.activity_epoch,
