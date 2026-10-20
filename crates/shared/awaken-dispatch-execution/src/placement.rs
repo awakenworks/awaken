@@ -4,8 +4,8 @@
 
 use crate::AdmissionError;
 use crate::model_capability::model_realization_capability;
+use awaken_agent_contract::credential::CredentialMaterialSource;
 use awaken_dispatch_contract::PlacementRequirements;
-use awaken_runtime_contract::CredentialMaterialSource;
 use awaken_runtime_contract::RunActivation;
 use awaken_session_realization_contract::requires_local_environment;
 use std::collections::BTreeSet;
@@ -70,8 +70,8 @@ fn worker_acp_capabilities(
 /// same decision instead of duplicating the self-hosted boundary mapping.
 pub enum InferencePlaintextHolderDecision {
     NotRequired,
-    Exact(awaken_runtime_contract::PlaintextHolder),
-    Boundary(awaken_runtime_contract::PlaintextBoundary),
+    Exact(awaken_agent_contract::credential::PlaintextHolder),
+    Boundary(awaken_agent_contract::credential::PlaintextBoundary),
 }
 
 pub fn inference_plaintext_holder_decision(
@@ -105,11 +105,11 @@ pub fn inference_plaintext_holder_decision(
             candidate.binding().identity().2,
         ) {
             awaken_runtime_contract::resolved::Backend::Acp(_) => {
-                awaken_runtime_contract::PlaintextBoundary::Workload
+                awaken_agent_contract::credential::PlaintextBoundary::Workload
             }
             awaken_runtime_contract::resolved::Backend::Native
             | awaken_runtime_contract::resolved::Backend::Remote(_) => {
-                awaken_runtime_contract::PlaintextBoundary::Worker
+                awaken_agent_contract::credential::PlaintextBoundary::Worker
             }
             awaken_runtime_contract::resolved::Backend::Invalid(invalid) => {
                 return Err(AdmissionError::rejected(format!(
@@ -144,15 +144,15 @@ pub fn inference_plaintext_holder_decision(
 }
 
 pub fn self_hosted_holder_for_boundary(
-    boundary: awaken_runtime_contract::PlaintextBoundary,
-) -> awaken_runtime_contract::PlaintextHolder {
+    boundary: awaken_agent_contract::credential::PlaintextBoundary,
+) -> awaken_agent_contract::credential::PlaintextHolder {
     match boundary {
-        awaken_runtime_contract::PlaintextBoundary::Workload => {
+        awaken_agent_contract::credential::PlaintextBoundary::Workload => {
             awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp()
                 .inference_holder
         }
-        awaken_runtime_contract::PlaintextBoundary::Worker
-        | awaken_runtime_contract::PlaintextBoundary::Platform => {
+        awaken_agent_contract::credential::PlaintextBoundary::Worker
+        | awaken_agent_contract::credential::PlaintextBoundary::Platform => {
             awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
                 .inference_holder
         }
@@ -161,7 +161,7 @@ pub fn self_hosted_holder_for_boundary(
 
 pub fn self_hosted_inference_holder(
     activation: &RunActivation,
-) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, AdmissionError> {
+) -> Result<Option<awaken_agent_contract::credential::PlaintextHolder>, AdmissionError> {
     Ok(match inference_plaintext_holder_decision(activation)? {
         InferencePlaintextHolderDecision::NotRequired => None,
         InferencePlaintextHolderDecision::Exact(holder) => Some(holder),
@@ -340,7 +340,7 @@ pub fn bind_root_tool_configuration_format(
                 .is_empty())
     {
         activation.with_inherited_toolsets(Some(
-            awaken_runtime_contract::activation::InheritedToolsets::V1(Vec::new()),
+            awaken_agent_contract::toolset::InheritedToolsets::V1(Vec::new()),
         ))
     } else {
         activation

@@ -15,11 +15,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::delegation::ChildRunCancellation;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_ext_builtin_tools::AGENT_RUN;
 use awaken_runtime_contract::delegation::{
-    CancellableRunDelegationService, ChildRunCancellation, DelegationExecutionError,
-    DelegationRequest, DelegationResume, DelegationStep, DelegationToolInput, RunDelegationService,
+    CancellableRunDelegationService, DelegationExecutionError, DelegationRequest, DelegationResume,
+    DelegationStep, DelegationToolInput, RunDelegationService,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::{
@@ -99,8 +100,8 @@ fn advisor_seed_messages(
 /// first-class child Run identity and lifecycle; only placement differs.
 #[derive(Clone)]
 pub(crate) struct CallerToolConfiguration {
-    pub(crate) toolsets: Vec<awaken_runtime_contract::agent_bindings::ToolsetPolicy>,
-    pub(crate) inherited: Option<awaken_runtime_contract::activation::InheritedToolsets>,
+    pub(crate) toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
+    pub(crate) inherited: Option<awaken_agent_contract::toolset::InheritedToolsets>,
 }
 
 #[derive(Clone)]
@@ -131,7 +132,7 @@ struct ResolvedDelegationTarget {
 
 impl HostRunDelegationService {
     fn target_is_terminal_without_external_action(snapshot: &ExecutableAgentSnapshot) -> bool {
-        use awaken_runtime_contract::agent_bindings::ToolPermissionRequirement;
+        use awaken_agent_contract::ToolPermissionRequirement;
         use awaken_runtime_contract::resolved::ToolKind;
 
         let bindings = &snapshot.resolved_spec.plugin_config.agent;
@@ -508,7 +509,7 @@ impl RunDelegationService for HostRunDelegationService {
         let input = input.input;
         let mut context = request.context;
         context.inherited_toolsets = Some(
-            awaken_runtime_contract::activation::InheritedToolsets::with_caller(
+            awaken_agent_contract::toolset::InheritedToolsets::with_caller(
                 self.tool_configuration.toolsets.clone(),
                 self.tool_configuration.inherited.as_ref(),
             ),
@@ -665,12 +666,11 @@ mod durable_cancel_tests {
     use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
     use awaken_dispatch_contract::DispatchReads;
 
+    use awaken_agent_contract::audit::model_request::TokenUsage;
     use awaken_runtime_contract::agent_bindings::{
         AgentAdvisorBinding, AgentBindings, AgentDelegateBinding, InferenceOptions, ReasoningEffort,
     };
-    use awaken_runtime_contract::llm::{
-        AssistantOutput, ChatRequest, ChatResponse, ThreadUsage, TokenUsage,
-    };
+    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, ThreadUsage};
     use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate, ToolDescriptor};
     use awaken_runtime_contract::runtime_context::RuntimeRunContext;
     use awaken_store_inmem::MemoryCommitCoordinator;
@@ -944,7 +944,7 @@ mod durable_cancel_tests {
         // documented here remain the only decision source; no parallel path is admitted.
         // Decision rule: execute every reachable cause partition documented here and
         // require its stated effects, including each fail-closed outcome.
-        use awaken_runtime_contract::agent_bindings::{
+        use awaken_agent_contract::{
             ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
             ToolsetSource,
         };
@@ -1137,7 +1137,7 @@ mod durable_cancel_tests {
         ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
             Ok(ChatResponse {
                 output: AssistantOutput::from_tool_calls(vec![
-                    awaken_runtime_contract::llm::ToolCall {
+                    awaken_tool_contract::tool::ToolCall {
                         call_id: "child-write".into(),
                         tool_id: "write".into(),
                         arguments: serde_json::json!({"path": "child.txt", "content": "x"}),
@@ -1507,7 +1507,7 @@ mod durable_cancel_tests {
         child_snapshot.resolved_spec.plugin_config.agent.toolsets =
             vec![crate::config::test_agent_toolset_permission(
                 "write",
-                awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk,
+                awaken_agent_contract::ToolPermissionRequirement::AlwaysAsk,
             )];
         let parent_snapshot = crate::config::server_config(
             "assistant",

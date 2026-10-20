@@ -166,8 +166,8 @@ impl McpStdioServer {
 mod tests {
     use super::*;
     use crate::export::{McpExportedTool, SharedExports, StaticExports};
-    use awaken_runtime_contract::permission::ToolCall;
     use awaken_runtime_contract::resolved::ToolDescriptor;
+    use awaken_tool_contract::tool::ToolCall;
     use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
     use std::future::Future;
     use std::task::Poll;

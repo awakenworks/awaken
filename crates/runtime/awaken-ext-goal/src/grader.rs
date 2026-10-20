@@ -3,12 +3,20 @@
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Agent-backed Outcome grading over the ordinary Runtime Run boundary.
 
+use awaken_agent_contract::audit::model_request::TokenUsage;
+use awaken_agent_contract::{
+    agent::{
+        message::{Id as MessageId, Message, Role},
+        run::{EndCause, RunState},
+        thread::Id as ThreadId,
+    },
+    thread::read::{committed_thread_view::CommittedThreadView, transcript::TranscriptSliceSpec},
+};
 use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::llm::{ThreadUsage, TokenUsage};
+use awaken_runtime_contract::llm::ThreadUsage;
 use awaken_runtime_contract::resolved::InvalidModelBinding;
 use awaken_runtime_contract::{
-    CommittedThreadView, EndCause, ExecutableAgentSnapshot, Message, MessageId, ModelBinding, Role,
-    RunActivation, RunState, RuntimeRunContext, ThreadId, TranscriptSliceSpec,
+    ExecutableAgentSnapshot, ModelBinding, RunActivation, RuntimeRunContext,
 };
 
 use crate::outcome::{Grade, Grader, GraderError, GradingInput, parse_grade};
@@ -133,7 +141,9 @@ impl Grader for AgentGrader<'_> {
         let legacy_range = u64::try_from(input.message_start)
             .ok()
             .zip(u64::try_from(input.message_end).ok())
-            .map(|(start, end)| awaken_runtime_contract::TranscriptRange::new(start, end));
+            .map(|(start, end)| {
+                awaken_agent_contract::thread::read::transcript::TranscriptRange::new(start, end)
+            });
         if input.transcript_ranges.as_slice() != legacy_range.as_slice() {
             return Err(GraderError::Execution(
                 "grading range evidence is inconsistent".into(),
@@ -205,8 +215,9 @@ impl Grader for AgentGrader<'_> {
 mod tests {
     use super::*;
     use crate::outcome::{Id, Rubric};
-    use awaken_runtime_contract::{
-        ResumeTicket, RunRecord, ThreadId, TranscriptRange, TranscriptSnapshotRef, TranscriptView,
+    use awaken_agent_contract::{
+        agent::{awaiting::ResumeTicket, run::Record as RunRecord, thread::Id as ThreadId},
+        thread::read::transcript::{TranscriptRange, TranscriptSnapshotRef, TranscriptView},
     };
 
     fn input() -> GradingInput {
@@ -335,14 +346,14 @@ mod tests {
     }
 
     /// A committed view that answers only what `judge_usage` reads.
-    struct UsageOnlyView(Vec<awaken_runtime_contract::StateCommand>);
+    struct UsageOnlyView(Vec<awaken_agent_contract::agent::state::Command>);
 
     impl CommittedThreadView for UsageOnlyView {
         fn committed_messages(&self, _thread_id: &ThreadId) -> Vec<Message> {
             Vec::new()
         }
 
-        fn run(&self, _run_id: &awaken_runtime_contract::RunId) -> Option<RunRecord> {
+        fn run(&self, _run_id: &awaken_agent_contract::agent::run::Id) -> Option<RunRecord> {
             None
         }
 
@@ -350,29 +361,32 @@ mod tests {
             None
         }
 
-        fn resume_ticket(&self, _run_id: &awaken_runtime_contract::RunId) -> Option<ResumeTicket> {
+        fn resume_ticket(
+            &self,
+            _run_id: &awaken_agent_contract::agent::run::Id,
+        ) -> Option<ResumeTicket> {
             None
         }
 
         fn open_wait_for_thread(
             &self,
             _thread_id: &ThreadId,
-        ) -> Option<(awaken_runtime_contract::RunId, ResumeTicket)> {
+        ) -> Option<(awaken_agent_contract::agent::run::Id, ResumeTicket)> {
             None
         }
 
         fn committed_state(
             &self,
             _thread_id: &ThreadId,
-        ) -> Vec<awaken_runtime_contract::StateCommand> {
+        ) -> Vec<awaken_agent_contract::agent::state::Command> {
             self.0.clone()
         }
     }
 
-    fn committed_usage(usage: &ThreadUsage) -> awaken_runtime_contract::StateCommand {
-        awaken_runtime_contract::StateCommand::set(
-            awaken_runtime_contract::Scope::Thread,
-            awaken_runtime_contract::MergePolicy::Commutative,
+    fn committed_usage(usage: &ThreadUsage) -> awaken_agent_contract::agent::state::Command {
+        awaken_agent_contract::agent::state::Command::set(
+            awaken_agent_contract::agent::state::Scope::Thread,
+            awaken_agent_contract::agent::state::MergePolicy::Commutative,
             awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY,
             serde_json::to_value(usage).expect("a thread usage tally serializes"),
         )

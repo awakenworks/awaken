@@ -1,7 +1,7 @@
 use super::*;
 use awaken_agent_contract::agent::state::Action;
+use awaken_agent_contract::audit::model_request::TokenUsage;
 use awaken_runtime_contract::delegation::{ChildRunResultInbox, DelegationResultError};
-use awaken_runtime_contract::llm::TokenUsage;
 
 #[test]
 fn cached_child_lookup_preserves_the_complete_inbox_value_and_producer_law() {

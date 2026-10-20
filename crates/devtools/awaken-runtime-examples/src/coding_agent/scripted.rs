@@ -5,9 +5,8 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+use awaken_tool_contract::tool::ToolCall;
 
 /// Scripts the three model turns of one edit: read the file, replace `old` with
 /// `new`, then report. Each `infer` advances one step.

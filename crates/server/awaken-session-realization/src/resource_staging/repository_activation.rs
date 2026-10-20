@@ -9,6 +9,7 @@ use super::ResourceStaging;
 use crate::realization_error::{PendingState, RealizationError};
 use crate::staged_resources::RepositoryPublicationActivationError;
 use crate::staged_resources::{RepositoryActivation, ResourceBindingCheck};
+use awaken_agent_contract::credential::PlaintextBoundary;
 use awaken_provisioning_contract as pc;
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
@@ -206,10 +207,10 @@ impl ResourceStaging {
             };
         };
         match pin.selected_plaintext_holder.boundary {
-            awaken_runtime_contract::PlaintextBoundary::Worker => Err(RealizationError::invariant(
+            PlaintextBoundary::Worker => Err(RealizationError::invariant(
                 "Runtime Host or Worker cannot hold a Repository transport credential",
             )),
-            awaken_runtime_contract::PlaintextBoundary::Workload => {
+            PlaintextBoundary::Workload => {
                 if publication_transport.as_ref().is_some_and(|transport| {
                     !matches!(
                         transport,
@@ -246,7 +247,7 @@ impl ResourceStaging {
                     .map(Some)
                     .map_err(RealizationError::invariant)
             }
-            awaken_runtime_contract::PlaintextBoundary::Platform => {
+            PlaintextBoundary::Platform => {
                 let workspace = self.sessions.workspace(thread, fallback_workspace)?;
                 let transport = match publication_transport {
                     Some(transport) => transport,

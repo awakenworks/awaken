@@ -28,6 +28,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{StateKey, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::audit::model_request::TokenUsage;
 use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error as CommitError,
 };
@@ -40,7 +41,7 @@ use awaken_runtime_contract::delegation::{
 };
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ThreadUsage, TokenUsage, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ThreadUsage,
 };
 use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
@@ -52,6 +53,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{
     RawTool, ToolError, ToolOutput, ToolOutputSpiller, ToolRecoveryCapability, ToolRecoveryMode,
     ToolRecoveryPolicy, current_tool_operation_context,

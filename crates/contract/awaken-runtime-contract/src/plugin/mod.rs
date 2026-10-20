@@ -184,7 +184,7 @@ mod tests {
         }
         async fn gate(
             &self,
-            _ctx: &crate::permission::ToolCall,
+            _ctx: &awaken_tool_contract::tool::ToolCall,
             _state: &Store,
         ) -> crate::permission::GateDecision {
             crate::permission::GateDecision::plugin_gate(crate::permission::GateOutcome::Allow)
@@ -212,8 +212,11 @@ mod tests {
             self.0
         }
 
-        fn constrain(&self, _call: &crate::tool::ToolCall) -> crate::tool::ToolConcurrency {
-            crate::tool::ToolConcurrency::Parallel
+        fn constrain(
+            &self,
+            _call: &awaken_tool_contract::tool::ToolCall,
+        ) -> awaken_tool_contract::tool::ToolConcurrency {
+            awaken_tool_contract::tool::ToolConcurrency::Parallel
         }
     }
 
@@ -399,15 +402,19 @@ mod tests {
     struct FakeRawTool(&'static str);
 
     #[async_trait]
-    impl crate::tool::RawTool for FakeRawTool {
+    impl awaken_tool_contract::tool::RawTool for FakeRawTool {
         fn id(&self) -> &str {
             self.0
         }
         async fn invoke(
             &self,
-            call: crate::tool::ToolCall,
-        ) -> Result<crate::tool::ToolOutput, crate::tool::ToolError> {
-            Ok(crate::tool::ToolOutput::ok(call.call_id, "ok"))
+            call: awaken_tool_contract::tool::ToolCall,
+        ) -> Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>
+        {
+            Ok(awaken_tool_contract::tool::ToolOutput::ok(
+                call.call_id,
+                "ok",
+            ))
         }
     }
 

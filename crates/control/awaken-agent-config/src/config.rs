@@ -5,13 +5,13 @@
 
 use std::collections::BTreeMap;
 
+use awaken_agent_contract::AcpSessionConfiguration;
 use awaken_agent_contract::ModelTarget;
+use awaken_agent_contract::ToolsetPolicy;
+use awaken_agent_contract::agent::delegation::DelegationLimits;
 use awaken_runtime_contract::agent_bindings::InferenceOptions;
-use awaken_runtime_contract::agent_bindings::ToolsetPolicy;
-use awaken_runtime_contract::delegation::DelegationLimits;
 use awaken_runtime_contract::resolved::{
-    AcpBackend, AcpSessionConfiguration, ContextPolicy, ExactModelRef, InvalidModelBinding,
-    ModelBinding, ToolDescriptor,
+    AcpBackend, ContextPolicy, ExactModelRef, InvalidModelBinding, ModelBinding, ToolDescriptor,
 };
 use awaken_tool_contract::tool::ToolRecoveryPolicy;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -895,7 +895,7 @@ impl AgentConfig {
     /// policy are one logical integration even though the Managed Agents wire
     /// projects them into `mcp_servers[]` and `tools[].mcp_toolset`.
     pub fn validate_tool_bindings(&self) -> Result<(), String> {
-        use awaken_runtime_contract::agent_bindings::ToolsetSource;
+        use awaken_agent_contract::ToolsetSource;
 
         if self.mcp_servers.len() > 20 {
             return Err("mcp_servers supports at most 20 entries".into());
@@ -986,10 +986,10 @@ impl AgentConfig {
             .toolsets
             .iter()
             .filter_map(|toolset| match &toolset.source {
-                awaken_runtime_contract::agent_bindings::ToolsetSource::Mcp { server_name } => {
+                awaken_agent_contract::ToolsetSource::Mcp { server_name } => {
                     Some(server_name.as_str())
                 }
-                awaken_runtime_contract::agent_bindings::ToolsetSource::Agent => None,
+                awaken_agent_contract::ToolsetSource::Agent => None,
             })
             .collect::<std::collections::BTreeSet<_>>();
         let servers = self
@@ -1126,7 +1126,7 @@ mod tool_binding_tests {
 #[cfg(test)]
 mod model_selection_tests {
     use super::{AgentConfig, AgentKind, ModelSelection};
-    use awaken_runtime_contract::resolved::AcpSessionConfiguration;
+    use awaken_agent_contract::AcpSessionConfiguration;
 
     #[test]
     fn profile_is_explicit_and_catalog_reconciled() {

@@ -238,11 +238,13 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
             .unwrap();
             prior.phase = ModelOperationPhase::Returned;
             prior.execution = evidence;
-            awaken_runtime_contract::CommitCoordinator::commit(
+            awaken_agent_contract::thread::commit::coordinator::Coordinator::commit(
                 commit.as_ref(),
-                awaken_runtime_contract::ThreadCommit::assemble(
+                awaken_agent_contract::thread::commit::staged::ThreadCommit::assemble(
                     ThreadId(THREAD.into()),
-                    awaken_runtime_contract::RunDisposition::running(RunId("run-ckpt".into())),
+                    awaken_agent_contract::thread::commit::staged::RunDisposition::running(RunId(
+                        "run-ckpt".into(),
+                    )),
                     true,
                     Vec::new(),
                     vec![ActiveModelOperation::write(&Some(prior))],

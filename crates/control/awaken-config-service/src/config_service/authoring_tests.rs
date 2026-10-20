@@ -149,7 +149,7 @@ async fn mutable_writes_reject_legacy_permission_authoring_without_a_partial_com
         "W3/E3 pending audit intent"
     );
 
-    use awaken_runtime_contract::agent_bindings::{
+    use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
     };

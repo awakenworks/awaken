@@ -7,8 +7,8 @@
 // @formal reason: proof claim.
 //! Last-mile HTTP projection for already-admitted credential material.
 
+use awaken_agent_contract::credential::CredentialAccess;
 use awaken_credential_contract::{CredentialMaterial, CredentialMaterialError};
-use awaken_runtime_contract::CredentialAccess;
 
 /// Convert already-admitted material into the narrow HTTP credential shared by
 /// MCP, A2A, and builtin Web adapters. Provider code receives only the final
@@ -18,7 +18,8 @@ pub fn materialized_http_credential(
     material: &CredentialMaterial,
 ) -> Result<awaken_agent_contract::credential::Credential, CredentialMaterialError> {
     material.validate_usage(&access.usage)?;
-    let awaken_runtime_contract::CredentialUsage::HttpHeader { name, scheme } = &access.usage
+    let awaken_agent_contract::credential::CredentialUsage::HttpHeader { name, scheme } =
+        &access.usage
     else {
         return Err(CredentialMaterialError::MaterialKindMismatch);
     };
@@ -44,18 +45,18 @@ pub fn materialized_http_credential(
 #[cfg(test)]
 mod tests {
     use awaken_agent_contract::RedactedString;
-    use awaken_credential_contract::{CredentialMaterial, CredentialMaterialError};
-    use awaken_runtime_contract::{
+    use awaken_agent_contract::credential::{
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
         CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
     };
+    use awaken_credential_contract::{CredentialMaterial, CredentialMaterialError};
 
     use super::materialized_http_credential;
 
     fn http_access(usage: CredentialUsage) -> CredentialAccess {
         let holder = PlaintextHolder::new(
             PlaintextBoundary::Worker,
-            awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
         );
         CredentialAccess::new(
             CredentialRef {

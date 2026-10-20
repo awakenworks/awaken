@@ -29,17 +29,17 @@ use crate::Error;
 use crate::RecoveryProjection;
 use crate::dispatch::{DispatchOutcome, PendingInput};
 use crate::{FencedStreamCheckpointStore, RunClaim};
+use awaken_agent_contract::credential::{
+    CandidateFingerprint, CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource,
+    CredentialRef, CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+};
 use awaken_credential_contract::CredentialRealizationKind;
 use awaken_credential_contract::{AttemptCredentialBinding, AttemptCredentialDelivery};
 use awaken_dispatch::MemoryDispatchStore;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::AttemptRecoveryMode;
 use awaken_runtime_contract::resume::ResumeResult;
-use awaken_runtime_contract::{
-    CandidateFingerprint, CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource,
-    CredentialRef, CredentialUsage, ExecutableAgentSnapshot, ModelExposurePolicy,
-    PlaintextBoundary, PlaintextHolder, RuntimeRunContext,
-};
+use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
 use tokio_util::sync::CancellationToken;
 
 #[path = "tests/operation_receipts.rs"]

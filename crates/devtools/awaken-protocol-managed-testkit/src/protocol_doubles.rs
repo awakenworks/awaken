@@ -126,7 +126,7 @@ impl CoordinatedRuntimeFake {
         let mut usage = awaken_runtime_contract::llm::ThreadUsage::default();
         usage.record(
             "test-model",
-            awaken_runtime_contract::llm::TokenUsage {
+            awaken_agent_contract::audit::model_request::TokenUsage {
                 prompt_tokens: if thread_id == Self::CHILD_THREAD_ID {
                     5
                 } else {

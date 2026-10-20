@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use awaken_agent_contract::credential::Credential;
-use awaken_runtime_contract::CredentialUsage;
+use awaken_agent_contract::credential::CredentialUsage;
 use awaken_tool_contract::tool::ToolError;
 use serde::Deserialize;
 use serde_json::{Value, json};

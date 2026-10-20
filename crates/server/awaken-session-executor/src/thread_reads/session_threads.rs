@@ -513,7 +513,7 @@ mod tests {
                 let mut usage = awaken_runtime_contract::llm::ThreadUsage::default();
                 usage.record(
                     "usage-state-model",
-                    awaken_runtime_contract::llm::TokenUsage {
+                    awaken_agent_contract::audit::model_request::TokenUsage {
                         prompt_tokens: tokens,
                         completion_tokens: 5,
                         ..Default::default()
@@ -717,7 +717,7 @@ mod tests {
                         serde_json::to_value(awaken_runtime_contract::llm::ThreadUsage {
                             by_model: std::collections::BTreeMap::from([(
                                 "snapshot-model".into(),
-                                awaken_runtime_contract::llm::TokenUsage {
+                                awaken_agent_contract::audit::model_request::TokenUsage {
                                     prompt_tokens: 13,
                                     completion_tokens: 5,
                                     cache_read_tokens: 3,

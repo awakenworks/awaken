@@ -6,9 +6,9 @@
 //! current ownership, plaintext access, and the corresponding durable receipt.
 
 use awaken_agent_contract::RedactedString;
+use awaken_agent_contract::credential::CredentialAccess;
 use awaken_credential_contract::CredentialRealizationKind;
 use awaken_credential_contract::{AttemptCredentialBinding, AttemptCredentialRealization};
-use awaken_runtime_contract::CredentialAccess;
 use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
 
 use super::PinnedCredentialMaterializer;

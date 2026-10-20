@@ -16,7 +16,7 @@ fn awaiting_tool_batch_state(
         run_id.clone(),
         0,
         [(
-            awaken_runtime_contract::llm::ToolCall {
+            awaken_tool_contract::tool::ToolCall {
                 call_id: call_id.clone(),
                 tool_id: tool.tool_id.clone(),
                 arguments: tool.arguments.clone(),
@@ -60,7 +60,7 @@ impl LlmExecutor for AwaitOnWriteModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        use awaken_runtime_contract::llm::ToolCall;
+        use awaken_tool_contract::tool::ToolCall;
         let saw_tool = request.messages.iter().any(|m| m.role == Role::Tool);
         let output = if saw_tool {
             AssistantOutput::text("done")
@@ -1513,7 +1513,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
             run_id.clone(),
             0,
             [(
-                awaken_runtime_contract::llm::ToolCall {
+                awaken_tool_contract::tool::ToolCall {
                     call_id: "primary-reply-tool-use".into(),
                     tool_id: "client_lookup".into(),
                     arguments: serde_json::json!({"query": "another request"}),

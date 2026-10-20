@@ -1,6 +1,6 @@
 [package]
 name = "awaken-provider-genai"
-version.workspace = true
+version = "2.0.0"
 edition.workspace = true
 license.workspace = true
 
@@ -15,6 +15,7 @@ authority = "provider-genai"
 separation = "publish"
 
 [dependencies]
+awaken-tool-contract.workspace = true
 awaken-time.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
@@ -33,7 +34,6 @@ tokio.workspace = true
 tracing = "0.1"
 
 [dev-dependencies]
-awaken-tool-contract.workspace = true
 awaken-ext-builtin-tools.workspace = true
 schemars = "1"
 tokio = { workspace = true, features = [

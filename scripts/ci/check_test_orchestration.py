@@ -521,12 +521,14 @@ def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
     # Explicit SDK qualification is a dispatch-only supplement, not a second
     # full-gate manifest. Its caller supplies the one first Source baseline.
     choice = re.search(r"^      sdk_qualification:\n(?:(?!^      \S).|\n)*", quality, re.MULTILINE)
-    for marker in ("type: choice", "default: none", "options: [none, package, semver]"):
+    for marker in ("type: choice", "default: none", "options: [none, package, artifact, semver]"):
         if not choice or marker not in choice.group(0):
-            errors.append("SDK qualification must be explicit dispatch none/package/semver with default none")
+            errors.append("SDK qualification must be explicit dispatch none/package/artifact/semver with default none")
     for label, option, command in (
         ("Qualify complete SDK package archives", "package",
          "python3 scripts/ci/check_sdk_consumer.py --qualify-package"),
+        ("Qualify SDK archive consumer tasks", "artifact",
+         "python3 scripts/ci/check_sdk_consumer.py --qualify-artifact"),
         ("Qualify complete SDK pre-release source SemVer", "semver",
          "python3 scripts/ci/check_sdk_consumer.py --qualify-semver --baseline-rev 50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940"),
     ):
@@ -1725,7 +1727,7 @@ def self_test() -> None:
     }
     check_all_text = (ROOT / "scripts/ci/check-all.sh").read_text(encoding="utf-8")
     assert not workflow_gate_errors(workflows), "W1"
-    # WSDK cause/effect: dispatch choice none/package/semver defaults none;
+    # WSDK cause/effect: dispatch choice none/package/artifact/semver defaults none;
     # each exact SDK command has one matching dispatch condition and follows
     # exact SHA binding, before the unchanged mandatory Native gate. Accept only
     # all causes together. Missing optin/baseline, modified command, duplicate,
@@ -1734,11 +1736,15 @@ def self_test() -> None:
     quality_source = workflows[QUALITY_WORKFLOW]
     for original, changed_text in (
         ("default: none", "default: package"),
-        ("options: [none, package, semver]", "options: [package, semver]"),
+        ("options: [none, package, artifact, semver]", "options: [package, artifact, semver]"),
+        ("options: [none, package, artifact, semver]", "options: [none, package, semver]"),
         ("inputs.sdk_qualification == 'package'", "inputs.sdk_qualification != 'none'"),
         ("github.event_name == 'workflow_dispatch' && inputs.sdk_qualification == 'semver'",
          "inputs.sdk_qualification == 'semver'"),
         ("--qualify-package\n", "--qualify-package || true\n"),
+        ("--qualify-artifact\n", "--qualify-artifact || true\n"),
+        ("github.event_name == 'workflow_dispatch' && inputs.sdk_qualification == 'artifact'",
+         "inputs.sdk_qualification == 'artifact'"),
         ("--baseline-rev 50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940", "--baseline-rev HEAD"),
     ):
         changed = dict(workflows)
@@ -1760,6 +1766,25 @@ def self_test() -> None:
         changed = dict(workflows)
         changed[QUALITY_WORKFLOW] = broken
         assert any("SDK qualification" in e for e in workflow_gate_errors(changed)), "WSDK duplicate/order"
+    # WSDK-A: the new archive consumer has the same unique-command and
+    # exact-source order obligations; duplicate/early/late archive execution
+    # must not be accepted because the older package step remains valid.
+    artifact_step = re.search(
+        r"^      - name: Qualify SDK archive consumer tasks\n(?:(?!^      - ).|\n)*",
+        quality_source, re.MULTILINE,
+    ).group(0)
+    for broken in (
+        quality_source.replace(artifact_step, artifact_step + artifact_step, 1),
+        quality_source.replace(artifact_step, "", 1).replace(
+            "      - name: Bind evidence to the exact workflow SHA\n",
+            artifact_step + "      - name: Bind evidence to the exact workflow SHA\n", 1),
+        quality_source.replace(artifact_step, "", 1).replace(
+            "      - name: Compare representative ordinary Cargo builds\n",
+            artifact_step + "      - name: Compare representative ordinary Cargo builds\n", 1),
+    ):
+        changed = dict(workflows)
+        changed[QUALITY_WORKFLOW] = broken
+        assert any("SDK qualification" in e for e in workflow_gate_errors(changed)), "WSDK-A duplicate/order"
     assert not workflow_command_copy_errors(workflows, check_all_text), \
         "W13 the live workflows spell every gate command the way the manifest does"
     # W13 a workflow other than the canonical pair keeps its own spelling of a

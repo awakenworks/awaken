@@ -192,7 +192,7 @@ pub(super) fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), 
 pub(super) fn acp_configuration_to_preserve(
     config: &AgentConfig,
     incoming_model_id: &str,
-) -> Option<awaken_runtime_contract::resolved::AcpSessionConfiguration> {
+) -> Option<awaken_agent_contract::AcpSessionConfiguration> {
     let same_model = render_managed_model_id(&config.model_binding)
         .is_ok_and(|current| current == incoming_model_id);
     (same_model && matches!(config.kind(), AgentKind::Acp(_)))

@@ -1,6 +1,7 @@
 //! Provider-wire contract tests for schemas generated from typed Awaken tools.
 //! These run without credentials: a local HTTP peer captures the exact JSON body
-//! emitted by each SDK adapter before returning an intentionally empty response.
+//! emitted by each SDK adapter. Schema cases return empty JSON; round trips
+//! return protocol fixtures through the same capture boundary.
 
 use std::time::Duration;
 
@@ -36,7 +37,10 @@ fn request(model: &str, tool: ToolDescriptor) -> ChatRequest {
     }
 }
 
-async fn capture_one_request() -> (String, tokio::sync::oneshot::Receiver<Value>) {
+async fn capture_one_request(
+    body: Vec<u8>,
+    content_type: &'static str,
+) -> (String, tokio::sync::oneshot::Receiver<Value>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind local provider fixture");
@@ -83,24 +87,23 @@ async fn capture_one_request() -> (String, tokio::sync::oneshot::Receiver<Value>
             }
         }
 
-        // The payload is the assertion target. A minimal response is enough to
-        // let the adapter return without coupling this test to response parsing.
-        let body = b"{}";
+        // Schema-only callers supply the original empty JSON. Round-trip cases
+        // supply a protocol response through this same HTTP/capture boundary.
         let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
             body.len()
         );
         socket
             .write_all(response.as_bytes())
             .await
             .expect("response head");
-        socket.write_all(body).await.expect("response body");
+        socket.write_all(&body).await.expect("response body");
     });
     (format!("http://{address}/v1"), receive)
 }
 
 async fn provider_payload(adapter: AdapterKind) -> Value {
-    let (base_url, payload) = capture_one_request().await;
+    let (base_url, payload) = capture_one_request(b"{}".to_vec(), "application/json").await;
     let executor = GenaiExecutor::from_materialized_endpoint(adapter, base_url, "fixture-secret")
         .expect("explicit client construction");
     let model = if adapter == AdapterKind::Vertex {
@@ -134,7 +137,7 @@ async fn frozen_deepseek_chat_reasoning_policy_reaches_the_streaming_wire() {
             (UnspecifiedReasoning::Disabled, Some("disabled")),
             (UnspecifiedReasoning::ProviderDefault, None),
         ] {
-            let (base_url, payload) = capture_one_request().await;
+            let (base_url, payload) = capture_one_request(b"{}".to_vec(), "application/json").await;
             let executor = GenaiExecutor::from_materialized_provider_endpoint(
                 "deepseek",
                 AdapterKind::OpenAI,
@@ -213,7 +216,7 @@ async fn deepseek_tool_history_serializes_empty_reasoning_on_the_actual_wire() {
     // model-quality verdict. No real transcript or credential enters the test.
     for reasoning in [None, Some(""), Some("synthetic retained context")] {
         for with_call in [false, true] {
-            let (base_url, payload) = capture_one_request().await;
+            let (base_url, payload) = capture_one_request(b"{}".to_vec(), "application/json").await;
             let executor = GenaiExecutor::from_materialized_provider_endpoint(
                 "deepseek",
                 AdapterKind::OpenAI,
@@ -314,7 +317,7 @@ async fn discovered_tool_reference_survives_nested_tool_result_on_provider_wire(
     // Captures actual HTTP, not just neutral values.
     for adapter in [AdapterKind::OpenAI, AdapterKind::Anthropic] {
         for mixed in [false, true] {
-            let (base_url, payload) = capture_one_request().await;
+            let (base_url, payload) = capture_one_request(b"{}".to_vec(), "application/json").await;
             let executor =
                 GenaiExecutor::from_materialized_endpoint(adapter, base_url, "fixture-secret")
                     .unwrap();
@@ -371,6 +374,308 @@ async fn discovered_tool_reference_survives_nested_tool_result_on_provider_wire(
                     "tool_reference"
                 );
                 assert_eq!(result["content"][usize::from(mixed)]["tool_name"], "read");
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn openrouter_reply_keeps_the_existing_neutral_reasoning_boundary() {
+    // Cause/effect table OR1–OR8: C1 reasoning_details absent/present, C2 scalar
+    // reasoning absent/present, C3 text-only/text+typed-call. E1 public bytes,
+    // tool identity/arguments and the optional scalar survive exactly; E2 the
+    // next request replays only that existing neutral grammar. Cross C1×C2×C3.
+    // Constraint: beta21 already ignored reasoning_details. rc8's new Custom
+    // parts do not acquire a new SDK content variant, opaque store or replay
+    // capability. This proves the old boundary, not new signed OpenRouter support.
+    for details in [false, true] {
+        for scalar in [false, true] {
+            for tool in [false, true] {
+                let mut message = serde_json::json!({"role":"assistant","content":"public 世界"});
+                if details {
+                    message["reasoning_details"] = serde_json::json!([
+                        {"type":"reasoning.text","text":"private","signature":"opaque-proof","format":"anthropic-claude-v1","index":0},
+                        {"type":"reasoning.encrypted","data":"opaque-encrypted","format":"openai-responses-v1","index":1}
+                    ]);
+                }
+                if scalar {
+                    message["reasoning"] = Value::String("private scalar".into());
+                }
+                if tool {
+                    message["tool_calls"] = serde_json::json!([{
+                        "id":"call/original","type":"function",
+                        "function":{"name":"read","arguments":"{\"file_path\":\"fixture.txt\"}"}
+                    }]);
+                }
+                let reply = serde_json::json!({
+                    "model":"claude-sonnet-4-6",
+                    "choices":[{"message":message,"finish_reason":if tool {"tool_calls"} else {"stop"}}],
+                    "usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}
+                });
+                let (base, first_wire) =
+                    capture_one_request(serde_json::to_vec(&reply).unwrap(), "application/json")
+                        .await;
+                let executor = GenaiExecutor::from_materialized_provider_endpoint(
+                    "openrouter",
+                    AdapterKind::OpenAI,
+                    base,
+                    "fixture-secret",
+                    UnspecifiedReasoning::ProviderDefault,
+                )
+                .unwrap();
+                let response = with_budget(
+                    budget(Duration::from_secs(5), Duration::from_secs(5)),
+                    executor.infer(request("claude-sonnet-4-6", generated_read_descriptor())),
+                )
+                .await
+                .unwrap();
+                assert_eq!(first_wire.await.unwrap()["model"], "claude-sonnet-4-6");
+                let mut expected = Vec::new();
+                if scalar {
+                    expected.push(ContentBlock::thinking("private scalar"));
+                }
+                expected.push(ContentBlock::text("public 世界"));
+                if tool {
+                    expected.push(ContentBlock::tool_use(
+                        "call/original",
+                        "read",
+                        serde_json::json!({"file_path":"fixture.txt"}),
+                    ));
+                }
+                assert_eq!(
+                    response.output.blocks, expected,
+                    "OR {details}/{scalar}/{tool}: E1"
+                );
+                let (base, replay_wire) =
+                    capture_one_request(b"{}".to_vec(), "application/json").await;
+                let replay = GenaiExecutor::from_materialized_provider_endpoint(
+                    "openrouter",
+                    AdapterKind::OpenAI,
+                    base,
+                    "fixture-secret",
+                    UnspecifiedReasoning::ProviderDefault,
+                )
+                .unwrap();
+                let mut next = request("claude-sonnet-4-6", generated_read_descriptor());
+                next.messages.push(ChatMessage {
+                    role: Role::Assistant,
+                    content: response.output.blocks,
+                });
+                if tool {
+                    next.messages.push(ChatMessage {
+                        role: Role::Tool,
+                        content: vec![ContentBlock::tool_result(
+                            "call/original",
+                            vec![ContentBlock::text("result")],
+                        )],
+                    });
+                }
+                let _ = with_budget(
+                    budget(Duration::from_secs(5), Duration::from_secs(5)),
+                    replay.infer(next),
+                )
+                .await;
+                let wire = tokio::time::timeout(Duration::from_secs(5), replay_wire)
+                    .await
+                    .expect("the replay reaches the existing HTTP boundary")
+                    .expect("the capture peer returns its payload");
+                let assistant = &wire["messages"][1];
+                assert_eq!(assistant["content"], "public 世界", "OR E2");
+                assert_eq!(
+                    assistant.get("reasoning_content"),
+                    scalar
+                        .then(|| Value::String("private scalar".into()))
+                        .as_ref(),
+                    "OR E2"
+                );
+                assert!(
+                    assistant.get("reasoning_details").is_none(),
+                    "OR E2 no new capability"
+                );
+                if tool {
+                    assert_eq!(assistant["tool_calls"][0]["id"], "call/original", "OR E2");
+                    assert_eq!(
+                        wire["messages"][2]["tool_call_id"], "call/original",
+                        "OR E2"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gemini_round_trip_keeps_content_order_and_tool_correlation_on_the_wire() {
+    // Cause/effect table GG1–GG16: cross C1 Gemini/Vertex, C2 buffered/streamed,
+    // C3 synthetic/provider call ids, C4 absent/present call signatures. E1 two
+    // same-name calls keep distinct ids and exact args; E2 buffered content keeps
+    // wire order, while streaming keeps the existing captured-text aggregation;
+    // E3 the next HTTP request correlates each result by the original name and
+    // only real ids. All 16 combinations are exercised at the real SDK boundary.
+    // Constraint: the existing neutral grammar has never retained signature-only
+    // Gemini call proofs. Do not promote rc8's per-call mirror to a new store or
+    // silently claim new signed-Gemini support. The original schema and live
+    // round-trip cases remain separate witnesses.
+    for adapter in [AdapterKind::Gemini, AdapterKind::Vertex] {
+        for streaming in [false, true] {
+            for provider_ids in [false, true] {
+                for signed in [false, true] {
+                    let mut parts = vec![serde_json::json!({"text":"before "})];
+                    let ids = if provider_ids {
+                        ["opaque/first".to_owned(), "opaque/second".to_owned()]
+                    } else {
+                        ["call#read#0".to_owned(), "call#read#1".to_owned()]
+                    };
+                    for (index, id) in ids.iter().enumerate() {
+                        let mut call = serde_json::json!({"functionCall":{"name":"read","args":{"file_path":format!("{index}.txt")}}});
+                        if provider_ids {
+                            call["functionCall"]["id"] = Value::String(id.clone());
+                        }
+                        if signed {
+                            call["thoughtSignature"] = Value::String(format!("proof-{index}"));
+                        }
+                        parts.push(call);
+                        parts.push(
+                            serde_json::json!({"text":if index == 0 {"between "} else {"after"}}),
+                        );
+                    }
+                    let reply = serde_json::json!({
+                        "candidates":[{"content":{"role":"model","parts":parts},"finishReason":"STOP"}],
+                        "usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1,"totalTokenCount":3}
+                    });
+                    let (body, content_type) = if streaming {
+                        (
+                            format!("data: {reply}\n\n").into_bytes(),
+                            "text/event-stream",
+                        )
+                    } else {
+                        (serde_json::to_vec(&reply).unwrap(), "application/json")
+                    };
+                    let (base, first_wire) = capture_one_request(body, content_type).await;
+                    let executor =
+                        GenaiExecutor::from_materialized_endpoint(adapter, base, "fixture-secret")
+                            .unwrap();
+                    let req = request("gemini-2.5-flash", generated_read_descriptor());
+                    let response = with_budget(
+                        budget(Duration::from_secs(5), Duration::from_secs(5)),
+                        async {
+                            if streaming {
+                                executor.infer_streaming(req, &NoopSink).await
+                            } else {
+                                executor.infer(req).await
+                            }
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    assert!(
+                        first_wire.await.unwrap().get("contents").is_some(),
+                        "GG exact dialect"
+                    );
+                    let calls = response.output.tool_calls();
+                    assert_eq!(calls.len(), 2, "GG E1");
+                    for (index, call) in calls.iter().enumerate() {
+                        assert_eq!(call.call_id, ids[index], "GG E1");
+                        assert_eq!(call.tool_id, "read", "GG E1");
+                        assert_eq!(
+                            call.arguments,
+                            serde_json::json!({"file_path":format!("{index}.txt")}),
+                            "GG E1"
+                        );
+                    }
+                    let call_block = |index: usize| {
+                        ContentBlock::tool_use(
+                            ids[index].clone(),
+                            "read",
+                            serde_json::json!({"file_path":format!("{index}.txt")}),
+                        )
+                    };
+                    let expected = if streaming {
+                        vec![
+                            ContentBlock::text("before between after"),
+                            call_block(0),
+                            call_block(1),
+                        ]
+                    } else {
+                        vec![
+                            ContentBlock::text("before "),
+                            call_block(0),
+                            ContentBlock::text("between "),
+                            call_block(1),
+                            ContentBlock::text("after"),
+                        ]
+                    };
+                    assert_eq!(
+                        response.output.blocks, expected,
+                        "GG E2 {adapter:?}/{streaming}/{provider_ids}/{signed}"
+                    );
+                    let (base, replay_wire) =
+                        capture_one_request(b"{}".to_vec(), "application/json").await;
+                    let replay =
+                        GenaiExecutor::from_materialized_endpoint(adapter, base, "fixture-secret")
+                            .unwrap();
+                    let mut next = request("gemini-2.5-flash", generated_read_descriptor());
+                    next.messages.push(ChatMessage {
+                        role: Role::Assistant,
+                        content: response.output.blocks,
+                    });
+                    next.messages.push(ChatMessage {
+                        role: Role::Tool,
+                        content: ids
+                            .iter()
+                            .enumerate()
+                            .map(|(index, id)| {
+                                ContentBlock::tool_result(
+                                    id.clone(),
+                                    vec![ContentBlock::text(format!("result-{index}"))],
+                                )
+                            })
+                            .collect(),
+                    });
+                    let _ = with_budget(
+                        budget(Duration::from_secs(5), Duration::from_secs(5)),
+                        replay.infer(next),
+                    )
+                    .await;
+                    let wire = tokio::time::timeout(Duration::from_secs(5), replay_wire)
+                        .await
+                        .expect("the replay reaches the existing HTTP boundary")
+                        .expect("the capture peer returns its payload");
+                    let contents = wire["contents"].as_array().unwrap();
+                    let model = contents.iter().find(|row| row["role"] == "model").unwrap();
+                    let sent_calls: Vec<_> = model["parts"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter_map(|part| part.get("functionCall"))
+                        .collect();
+                    let sent_results: Vec<_> = contents
+                        .iter()
+                        .flat_map(|row| row["parts"].as_array().unwrap())
+                        .filter_map(|part| part.get("functionResponse"))
+                        .collect();
+                    assert_eq!(sent_calls.len(), 2, "GG E3");
+                    assert_eq!(sent_results.len(), 2, "GG E3");
+                    for index in 0..2 {
+                        assert_eq!(sent_calls[index]["name"], "read", "GG E3");
+                        assert_eq!(sent_results[index]["name"], "read", "GG E3");
+                        assert_eq!(
+                            sent_calls[index].get("id").and_then(Value::as_str),
+                            provider_ids.then_some(ids[index].as_str()),
+                            "GG E3"
+                        );
+                        assert_eq!(
+                            sent_results[index].get("id").and_then(Value::as_str),
+                            provider_ids.then_some(ids[index].as_str()),
+                            "GG E3"
+                        );
+                        assert_eq!(
+                            sent_results[index]["response"]["content"],
+                            format!("result-{index}"),
+                            "GG E3"
+                        );
+                    }
+                }
             }
         }
     }

@@ -29,7 +29,7 @@ pub(super) struct ContextResources {
     pub(super) content_delivery: crate::frozen_inputs::ManagedContentDelivery,
     pub(super) session_tools:
         Option<awaken_session_configuration_contract::SessionToolConfiguration>,
-    pub(super) toolsets: Vec<awaken_runtime_contract::agent_bindings::ToolsetPolicy>,
+    pub(super) toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
     pub(super) authored_skills_subdir: String,
     pub(super) skill_source_roots: Option<Vec<String>>,
     pub(super) authorization: crate::config::EffectiveToolAuthorization,

@@ -54,7 +54,7 @@ pub fn inference_plaintext_holder(
         Option<awaken_credential_contract::CredentialRealizationProfile>,
         AdmissionError,
     >,
-) -> Result<Option<awaken_runtime_contract::PlaintextHolder>, AdmissionError> {
+) -> Result<Option<awaken_agent_contract::credential::PlaintextHolder>, AdmissionError> {
     Ok(match inference_plaintext_holder_decision(activation)? {
         InferencePlaintextHolderDecision::NotRequired => None,
         InferencePlaintextHolderDecision::Exact(holder) => Some(holder),

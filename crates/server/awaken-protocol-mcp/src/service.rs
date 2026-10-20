@@ -22,13 +22,13 @@
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::content::{ContentBlock, ImageSource};
 use awaken_agent_contract::agent::state::Store;
 use awaken_mcp_server_core::{McpCall, McpHostError, McpServer, McpToolHost};
 use awaken_mcp_wire::jsonrpc::ServerRequestError;
 use awaken_mcp_wire::progress::McpProgressUpdate;
 use awaken_mcp_wire::{CallToolResult, McpToolDefinition, ToolContent};
 use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
-use awaken_runtime_contract::{ContentBlock, ImageSource};
 use awaken_tool_contract::tool::{ToolCall, ToolError, ToolOutput};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;

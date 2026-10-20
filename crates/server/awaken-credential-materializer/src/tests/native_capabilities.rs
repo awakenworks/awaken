@@ -59,7 +59,7 @@ fn native_manifest_admission_uses_installed_materializer_evidence() {
                         PlaintextHolder::new(PlaintextBoundary::Worker, "another-worker-domain"),
                         PlaintextHolder::new(
                             PlaintextBoundary::Workload,
-                            awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+                            awaken_agent_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
                         ),
                     ] {
                         for kind in [

@@ -7,8 +7,8 @@ use awaken_mcp_server_testkit::{McpConformanceDriver, assert_mcp_server_conforma
 use awaken_mcp_wire::jsonrpc::ServerRequestError;
 use awaken_mcp_wire::progress::McpProgressUpdate;
 use awaken_protocol_mcp::{McpExportedTool, McpToolService, ProgressRawTool, StaticExports};
-use awaken_runtime_contract::permission::ToolCall;
 use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;

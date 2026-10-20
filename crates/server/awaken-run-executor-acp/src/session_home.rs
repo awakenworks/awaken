@@ -67,8 +67,7 @@ impl FsSessionBlobStore {
     }
 
     fn digest(value: &str) -> String {
-        awaken_runtime_contract::resolution::content_fingerprint(value)
-            .expect("a string always serializes")
+        awaken_agent_contract::content_fingerprint(value).expect("a string always serializes")
     }
 
     fn subject_dir(&self, subject: Option<&str>) -> PathBuf {

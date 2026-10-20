@@ -382,7 +382,7 @@ impl LlmExecutor for MemLoopModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        use awaken_runtime_contract::llm::ToolCall;
+        use awaken_tool_contract::tool::ToolCall;
         let system_text: String = request
             .messages
             .iter()
@@ -1452,7 +1452,7 @@ impl LlmExecutor for ResumeMemModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        use awaken_runtime_contract::llm::ToolCall;
+        use awaken_tool_contract::tool::ToolCall;
         let saw_tool = request.messages.iter().any(|m| m.role == Role::Tool);
         // The extractor's own write_memory succeeded (its result text), distinct
         // from the main Run's `write` result that is also in its seeded context.
@@ -1586,7 +1586,7 @@ impl LlmExecutor for CursorModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        use awaken_runtime_contract::llm::ToolCall;
+        use awaken_tool_contract::tool::ToolCall;
         let is_extractor = request.messages.iter().any(|m| {
             m.role == Role::System
                 && m.content.iter().any(|b| match b {

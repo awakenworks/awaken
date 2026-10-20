@@ -8,8 +8,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::{
+    content::ContentBlock,
+    message::{Message, Role},
+    state::{MergePolicy, Scope, Store},
+};
 use awaken_runtime_contract::plugin::{HookReaction, PhaseContext, PhaseHook, PhaseHookPoint};
-use awaken_runtime_contract::{ContentBlock, MergePolicy, Message, Role, Scope, Store};
 #[cfg(test)]
 use awaken_tool_contract::tool::ToolError;
 #[cfg(test)]
@@ -87,7 +91,7 @@ impl VisibleUrls {
         state
             .get(
                 Scope::Thread,
-                &awaken_runtime_contract::StateKey(STATE_KEY.into()),
+                &awaken_agent_contract::agent::state::Key(STATE_KEY.into()),
             )
             .and_then(|value| serde_json::from_value::<Self>(value.clone()).ok())
             .filter(|facts| facts.format == 3)
@@ -136,7 +140,7 @@ impl VisibleUrls {
 
     fn record_outcome(
         &mut self,
-        run_id: &awaken_runtime_contract::RunId,
+        run_id: &awaken_agent_contract::agent::run::Id,
         catalogue: &SourceCatalogue,
         call: &awaken_tool_contract::tool::ToolCall,
         output: &awaken_tool_contract::tool::ToolOutput,
@@ -193,7 +197,7 @@ impl VisibleUrls {
                             calls.insert(
                                 id.clone(),
                                 (
-                                    awaken_runtime_contract::RunId(run_id.into()),
+                                    awaken_agent_contract::agent::run::Id(run_id.into()),
                                     name.clone(),
                                     input,
                                 ),
@@ -216,7 +220,9 @@ impl VisibleUrls {
                                     self.text(
                                         kind,
                                         name,
-                                        &awaken_runtime_contract::extract_text(content),
+                                        &awaken_agent_contract::agent::content::extract_text(
+                                            content,
+                                        ),
                                     );
                                 }
                             }
@@ -261,7 +267,7 @@ impl VisibleUrls {
     }
 
     fn reaction(self) -> HookReaction {
-        HookReaction::state(vec![awaken_runtime_contract::StateCommand::set(
+        HookReaction::state(vec![awaken_agent_contract::agent::state::Command::set(
             Scope::Thread,
             MergePolicy::Disjoint,
             STATE_KEY,
@@ -271,7 +277,7 @@ impl VisibleUrls {
 }
 
 fn outcome_fingerprint(
-    run_id: &awaken_runtime_contract::RunId,
+    run_id: &awaken_agent_contract::agent::run::Id,
     name: &str,
     call_id: &str,
     arguments: &serde_json::Value,
@@ -347,7 +353,7 @@ fn admit_url(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime_contract::{MessageId, RunId};
+    use awaken_agent_contract::agent::{message::Id as MessageId, run::Id as RunId};
     use awaken_tool_contract::tool::with_tool_state_context;
     use serde_json::json;
 
@@ -626,7 +632,7 @@ mod tests {
         let mut unsupported = serde_json::to_value(restored).unwrap();
         unsupported["format"] = json!(99);
         let mut damaged = Store::new();
-        damaged.apply(&awaken_runtime_contract::StateCommand::set(
+        damaged.apply(&awaken_agent_contract::agent::state::Command::set(
             Scope::Thread,
             MergePolicy::Disjoint,
             STATE_KEY,
@@ -734,7 +740,7 @@ mod tests {
         facts.format = 99;
         assert!(super::admit_url(url, &policies, Some(&facts)).is_err());
         let mut state = Store::new();
-        state.apply(&awaken_runtime_contract::StateCommand::set(
+        state.apply(&awaken_agent_contract::agent::state::Command::set(
             Scope::Thread,
             MergePolicy::Disjoint,
             STATE_KEY,
@@ -791,7 +797,7 @@ mod tests {
         recorded.observe(&conversation, &catalogue(&[]));
         recorded.urls.clear();
         recorded.observed_messages.clear();
-        state.apply(&awaken_runtime_contract::StateCommand::set(
+        state.apply(&awaken_agent_contract::agent::state::Command::set(
             Scope::Thread,
             MergePolicy::Disjoint,
             STATE_KEY,

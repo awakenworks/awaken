@@ -1616,7 +1616,7 @@ mod tests {
                     run_id.clone(),
                     0,
                     [(
-                        awaken_runtime_contract::llm::ToolCall {
+                        awaken_tool_contract::tool::ToolCall {
                             call_id: "root-call".into(),
                             tool_id: awaken_runtime_contract::resolved::ADVISOR_TOOL_ID.into(),
                             arguments: serde_json::json!({}),

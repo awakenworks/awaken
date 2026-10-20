@@ -13,8 +13,8 @@ use std::num::NonZeroU64;
 use serde::{Deserialize, Serialize};
 
 use crate::resolved::ModelBinding;
-use crate::{MergePolicy, Scope};
 use awaken_agent_contract::agent::state::StateKey;
+use awaken_agent_contract::agent::state::{MergePolicy, Scope};
 
 /// The private witness carried by every minted proof. It is nameable only
 /// inside this module, so no struct literal and no functional-update syntax
@@ -451,7 +451,7 @@ impl ModelOperationContext {
     /// Equality identifies one invocation, not permission to invoke it again.
     #[must_use]
     pub fn operation_id(&self) -> String {
-        let fingerprint = crate::resolution::content_fingerprint(&(
+        let fingerprint = awaken_agent_contract::content_fingerprint(&(
             "model-operation-v1",
             &self.thread_id,
             &self.run_id,
@@ -1453,7 +1453,7 @@ mod tests {
     #[test]
     fn execution_evidence_does_not_change_failure_taxonomy_or_retry_hints() {
         use crate::llm::Error;
-        use crate::resilience::Classify;
+        use awaken_agent_contract::resilience::Classify;
         // C1 every closed error class; C2 absent or each evidence value.
         // E1 absent => Unknown; E2 code, message, health, routing and delay
         // are preserved for all C1*C2; E3 only evidence controls physical

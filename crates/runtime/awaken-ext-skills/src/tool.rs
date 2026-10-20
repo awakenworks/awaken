@@ -1218,7 +1218,7 @@ mod tests {
 
     fn platform_basis() -> awaken_runtime_contract::permission::PermissionBasis {
         awaken_runtime_contract::permission::PermissionBasis::fixed(
-            awaken_runtime_contract::permission::PermissionPolicy::AlwaysAllow,
+            awaken_agent_contract::audit::permission::PermissionPolicy::AlwaysAllow,
         )
     }
 
@@ -1321,7 +1321,7 @@ mod tests {
                         reason: "platform policy".into(),
                     },
                     awaken_runtime_contract::permission::PermissionBasis::fixed(
-                        awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                        awaken_agent_contract::audit::permission::PermissionPolicy::Rule,
                     ),
                 )
             }
@@ -1341,7 +1341,7 @@ mod tests {
             decision.authority,
             awaken_runtime_contract::permission::GateAuthority::Policy(
                 awaken_runtime_contract::permission::PermissionBasis::fixed(
-                    awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                    awaken_agent_contract::audit::permission::PermissionPolicy::Rule,
                 )
             ),
             "the platform's refusal keeps the platform's authority"

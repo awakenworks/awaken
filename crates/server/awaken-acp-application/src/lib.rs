@@ -1,13 +1,13 @@
 // @formal entrypoint worker_credential.host_observation_projection_is_backend_scoped
 // @formal entrypoint worker_credential.local_binding_batch_is_atomic
 //! Coordinator ACP registration. Host mechanisms live in the Worker ACP adapter.
+use awaken_agent_contract::credential::CredentialRef;
 use awaken_credential_vault::repo::{CredentialRepo, ensure_worker_local};
 use awaken_credential_vault::{
     CredentialKind, CredentialSource, CredentialStatus, WorkerLocalBinding,
 };
 use awaken_run_executor_acp::acp_cli;
 pub use awaken_run_executor_acp::host::*;
-use awaken_runtime_contract::CredentialRef;
 use awaken_runtime_contract::resolved::Backend;
 use awaken_time::WallClock;
 use std::collections::BTreeSet;

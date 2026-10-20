@@ -24,6 +24,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::StateKey;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::audit::model_request::{ModelRequestObservation, TokenUsage};
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
@@ -37,8 +38,7 @@ use awaken_runtime_contract::delegation::{
 use awaken_runtime_contract::execution::{Error, RunExecutor};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ModelRequestAdmission,
-    ModelRequestAdmissionRequest, ModelRequestGate, ModelRequestObservation, StopReason,
-    ThreadUsage, TokenUsage, ToolCall,
+    ModelRequestAdmissionRequest, ModelRequestGate, StopReason, ThreadUsage,
 };
 use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
@@ -51,6 +51,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_state};
+use awaken_tool_contract::tool::ToolCall;
 
 async fn interrupted_model_checkpoint() -> (
     Arc<awaken_store_inmem::MemoryStreamCheckpointStore>,
@@ -119,11 +120,13 @@ async fn commit_model_operations(
         )
         .unwrap();
         state.push(ActiveModelOperation::write(&Some(operation)));
-        awaken_runtime_contract::CommitCoordinator::commit(
+        awaken_agent_contract::thread::commit::coordinator::Coordinator::commit(
             durable,
-            awaken_runtime_contract::ThreadCommit::assemble(
+            awaken_agent_contract::thread::commit::staged::ThreadCommit::assemble(
                 ThreadId("thread-1".into()),
-                awaken_runtime_contract::RunDisposition::running(RunId("run-1".into())),
+                awaken_agent_contract::thread::commit::staged::RunDisposition::running(RunId(
+                    "run-1".into(),
+                )),
                 true,
                 Vec::new(),
                 state,
@@ -181,11 +184,14 @@ struct ModelEvidencePause {
 }
 
 #[async_trait::async_trait]
-impl awaken_runtime_contract::CommitCoordinator for ModelEvidenceFault {
+impl awaken_agent_contract::thread::commit::coordinator::Coordinator for ModelEvidenceFault {
     async fn commit(
         &self,
-        commit: awaken_runtime_contract::ThreadCommit,
-    ) -> Result<awaken_runtime_contract::CommitRecord, awaken_runtime_contract::CommitError> {
+        commit: awaken_agent_contract::thread::commit::staged::ThreadCommit,
+    ) -> Result<
+        awaken_agent_contract::thread::commit::staged::CommitRecord,
+        awaken_agent_contract::thread::commit::coordinator::Error,
+    > {
         use awaken_agent_contract::agent::state::Action;
         use awaken_runtime_contract::model_operation::{ActiveModelOperation, ModelOperation};
         let fault = commit.state.iter().any(|command| {
@@ -210,9 +216,11 @@ impl awaken_runtime_contract::CommitCoordinator for ModelEvidenceFault {
             if self.lose_ack {
                 self.durable.commit(commit).await?;
             }
-            Err(awaken_runtime_contract::CommitError::Rejected(
-                "injected model evidence failure".into(),
-            ))
+            Err(
+                awaken_agent_contract::thread::commit::coordinator::Error::Rejected(
+                    "injected model evidence failure".into(),
+                ),
+            )
         } else {
             self.durable.commit(commit).await
         }
@@ -462,10 +470,13 @@ async fn restored_model_history_cannot_hide_an_older_unknown_invocation() {
 #[tokio::test]
 async fn restored_model_history_rejects_damage_hidden_by_a_valid_latest_value() {
     use awaken_agent_contract::agent::state::Action;
+    use awaken_agent_contract::thread::commit::{
+        coordinator::Coordinator as CommitCoordinator,
+        staged::{RunDisposition, ThreadCommit},
+    };
     use awaken_runtime_contract::model_operation::{
         ActiveModelOperation, ModelExecutionEvidence, ModelOperation,
     };
-    use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
     // D1 malformed/zero/null/Remove/rebinding followed by a valid latest value;
     // D2 damage owned by this Run or another Run. R1 owned => Commit error,
     // no model entry and sticky physical veto; R2 foreign => ordinary execution.
@@ -544,7 +555,10 @@ async fn restored_model_history_rejects_damage_hidden_by_a_valid_latest_value() 
 #[tokio::test]
 async fn restored_tool_history_rejects_damage_hidden_by_a_valid_latest_batch() {
     use awaken_agent_contract::agent::state::{Action, MergePolicy};
-    use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
+    use awaken_agent_contract::thread::commit::{
+        coordinator::Coordinator as CommitCoordinator,
+        staged::{RunDisposition, ThreadCommit},
+    };
     use awaken_tool_contract::tool::{ToolOutput, ToolRecoveryPolicy};
     use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolBatch};
     // T1 owned/foreign history; T2 malformed/wrong merge followed by the
@@ -628,10 +642,10 @@ async fn restored_tool_history_rejects_damage_hidden_by_a_valid_latest_batch() {
 #[tokio::test]
 async fn restored_model_evidence_is_run_scoped_and_invalid_coordinates_fail_closed() {
     use awaken_agent_contract::agent::state::{Command, MergePolicy, Scope};
+    use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
     use awaken_runtime_contract::model_operation::{
         ActiveModelOperation, ModelOperationPhase::Returned,
     };
-    use awaken_runtime_contract::{RunDisposition, ThreadCommit};
     // C1 prior state belongs to this/another Run; C2 ordinal valid/zero/MAX;
     // E1 next exact ordinal; E2 foreign state cannot advance this Run;
     // E3 malformed/exhausted owned state admits no provider invocation.
@@ -645,7 +659,7 @@ async fn restored_model_evidence_is_run_scoped_and_invalid_coordinates_fail_clos
         ("run-1", u64::MAX, None),
     ] {
         let durable = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
-        awaken_runtime_contract::CommitCoordinator::commit(
+        awaken_agent_contract::thread::commit::coordinator::Coordinator::commit(
             durable.as_ref(),
             ThreadCommit::assemble(
                 ThreadId("thread-1".into()),
@@ -1057,8 +1071,8 @@ async fn returned_unknown_model_error_blocks_retry_failover_and_another_step() {
 #[tokio::test]
 async fn restored_unknown_invocation_blocks_checkpoint_salvage_and_provider_reentry() {
     use awaken_agent_contract::agent::state::{Command, MergePolicy, Scope};
+    use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
     use awaken_runtime_contract::model_operation::ActiveModelOperation;
-    use awaken_runtime_contract::{RunDisposition, ThreadCommit};
     // U1 journal absent, or legacy phase Entered/Returned/TimedOut with
     // absent/explicit Unknown;
     // U2 complete tool JSON in checkpoint. Effects: zero new model invocations,
@@ -1077,7 +1091,7 @@ async fn restored_unknown_invocation_blocks_checkpoint_salvage_and_provider_reen
                 value["execution"] = serde_json::json!("Unknown");
             }
             if phase != "Missing" {
-                awaken_runtime_contract::CommitCoordinator::commit(
+                awaken_agent_contract::thread::commit::coordinator::Coordinator::commit(
                     durable.as_ref(),
                     ThreadCommit::assemble(
                         ThreadId("thread-1".into()),
@@ -1561,12 +1575,15 @@ fn activation(fingerprint: &str) -> RunActivation {
 
 #[tokio::test]
 async fn native_attempt_coverage_is_committed_only_before_a_fresh_closed_execution_surface() {
+    use awaken_agent_contract::thread::commit::{
+        coordinator::Coordinator as CommitCoordinator,
+        staged::{RunDisposition, ThreadCommit},
+    };
     use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
     use awaken_runtime_contract::attempt_termination::{
         ActiveNativeAttemptCoverage, NativeAttemptCoverage,
     };
     use awaken_runtime_contract::model_operation::ActiveModelOperation;
-    use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
 
     // Cause/effect decision table:
     // R1 fresh Run + no tools/plugins => one coverage marker is committed before

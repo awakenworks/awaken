@@ -10,6 +10,11 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::credential::{
+    CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialSource,
+    CredentialRef, CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    SealedCredentialEnvelopeRef,
+};
 use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_agent_contract::thread::commit::RunDisposition;
@@ -27,6 +32,7 @@ use awaken_dispatch::{
     RunDispatch, WorkerIdentity,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_runtime_contract::InferenceEndpoint;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ModelBinding, ResolvedModelCandidate, ResolvedSpec,
@@ -34,11 +40,6 @@ use awaken_runtime_contract::resolved::{
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
-};
-use awaken_runtime_contract::{
-    CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialSource,
-    CredentialRef, CredentialUsage, InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary,
-    PlaintextHolder, SealedCredentialEnvelopeRef,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
 use awaken_coordinator_client::HttpDispatchQueue;
@@ -87,7 +88,7 @@ fn credential_dispatch_with_expiry(
 ) -> (RunDispatch, CredentialRealizationCapabilities) {
     let holder = PlaintextHolder::new(
         PlaintextBoundary::Worker,
-        awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+        awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
     );
     let mut activation = activation(run, thread);
     let mut access = CredentialAccess::new(
@@ -99,8 +100,8 @@ fn credential_dispatch_with_expiry(
         CredentialUsage::ProviderAdapter,
         CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
     )
-    .with_target(awaken_runtime_contract::CredentialTarget::new(
-        awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+    .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+        awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
         "provider",
     ));
     if let Some(expires_at_unix_ms) = envelope_expiry {

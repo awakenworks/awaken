@@ -7,9 +7,9 @@
 //! the exact Vault materialization effect it deliberately cannot own. ACP tool
 //! transport is supplied through the neutral Host export port.
 
+use awaken_agent_contract::credential::{CredentialAccess, PlaintextBoundary, PlaintextHolder};
 use awaken_credential_contract::CredentialRealizationKind;
 use awaken_ext_builtin_tools::WebSearchCredentialResolver;
-use awaken_runtime_contract::{CredentialAccess, PlaintextBoundary, PlaintextHolder};
 use std::sync::Arc;
 
 use awaken_credential_materializer::PinnedCredentialMaterializer;
@@ -127,7 +127,7 @@ impl crate::RunCapabilities {
         &self,
         thread: &str,
         spec: &awaken_runtime_contract::resolved::ResolvedSpec,
-        toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
+        toolsets: &[awaken_agent_contract::ToolsetPolicy],
         is_acp: bool,
         mut runtime: awaken_runtime::Runtime,
     ) -> Result<
@@ -272,7 +272,7 @@ impl crate::RunCapabilities {
                         policy.enabled
                             && matches!(
                                 policy.permission,
-                                awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk
+                                awaken_agent_contract::ToolPermissionRequirement::AlwaysAsk
                             )
                     })
             }) {
@@ -320,7 +320,7 @@ impl WebSearchCredentialResolver for HostWebSearchCredentialResolver {
     ) -> Result<awaken_agent_contract::credential::Credential, String> {
         let holder = PlaintextHolder::new(
             PlaintextBoundary::Worker,
-            awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
         );
         let resolved = self
             .materializer
@@ -344,7 +344,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use awaken_runtime_contract::{
+    use awaken_agent_contract::credential::{
         CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef, CredentialUsage,
         ModelExposurePolicy,
     };
@@ -492,10 +492,11 @@ mod tests {
         // | R3   | HostFetch+ProviderSearch   | Search Ask | exact    | error  |
         // | R4   | HostFetch                  | Fetch Ask  | n/a      | Host   |
         // | R5   | ProviderSearch             | Allow      | mismatch | error  |
-        use awaken_runtime_contract::agent_bindings::{
-            AgentBindings, ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride,
-            ToolsetPolicy, ToolsetSource,
+        use awaken_agent_contract::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
         };
+        use awaken_runtime_contract::agent_bindings::AgentBindings;
         let host = (crate::acp_backend::with_fixture_acp(
             crate::SessionExecutorBuilder::ephemeral(
                 Arc::new(crate::no_model::NoModelConfiguredExecutor),
@@ -746,8 +747,8 @@ mod tests {
                 ),
                 [
                     awaken_credential_contract::CredentialTargetContract::new(
-                        awaken_runtime_contract::CredentialTarget::new(
-                            awaken_runtime_contract::credential::CredentialPurpose::WebProviderAuthorization,
+                        awaken_agent_contract::credential::CredentialTarget::new(
+                            awaken_agent_contract::credential::CredentialPurpose::WebProviderAuthorization,
                             "brave",
                         ),
                         usage.clone(),
@@ -774,7 +775,7 @@ mod tests {
         };
         let holder = PlaintextHolder::new(
             PlaintextBoundary::Worker,
-            awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
         );
         let access = CredentialAccess::new(
             exact.clone(),
@@ -782,8 +783,8 @@ mod tests {
             usage.clone(),
             CredentialExecutionPolicy::exact(holder, ModelExposurePolicy::Forbidden),
         )
-        .with_target(awaken_runtime_contract::CredentialTarget::new(
-            awaken_runtime_contract::credential::CredentialPurpose::WebProviderAuthorization,
+        .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+            awaken_agent_contract::credential::CredentialPurpose::WebProviderAuthorization,
             "brave",
         ));
         let search_calls = Arc::new(AtomicUsize::new(0));
@@ -937,10 +938,10 @@ mod tests {
         assert_eq!(search_calls.load(Ordering::SeqCst), 1, "R7/E1 Search");
         assert_eq!(fetch_calls.load(Ordering::SeqCst), 1, "R7/E1 Fetch");
 
-        use awaken_runtime_contract::agent_bindings::{
-            ResolvedConfiguration, ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy,
-            ToolsetSource,
+        use awaken_agent_contract::{
+            ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
         };
+        use awaken_runtime_contract::agent_bindings::ResolvedConfiguration;
         use awaken_runtime_contract::permission::GateOutcomeKind;
         for (granted, blocked) in [
             (

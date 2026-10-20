@@ -285,6 +285,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-acp-contract",
+ "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-credential-vault",
  "awaken-run-executor-acp",
@@ -1005,7 +1006,6 @@ dependencies = [
  "awaken-lease-testkit",
  "awaken-provisioning-contract",
  "awaken-reliability-testkit",
- "awaken-runtime-contract",
  "awaken-time",
  "schemars 1.2.1",
  "serde",
@@ -1056,7 +1056,6 @@ dependencies = [
  "async-trait",
  "awaken-data-subject-application",
  "awaken-reliability-testkit",
- "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-sql-storage",
  "awaken-sqlite-pool",
@@ -1573,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-builtin-tools"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -1612,6 +1611,7 @@ name = "awaken-ext-goal"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-agent-contract",
  "awaken-runtime-contract",
  "awaken-store-inmem",
  "awaken-time",
@@ -1662,6 +1662,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-runtime-contract",
+ "awaken-tool-contract",
  "awaken-tool-pattern",
  "serde",
  "serde_json",
@@ -2061,7 +2062,6 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-lease-testkit",
  "awaken-outbound-http",
- "awaken-runtime-contract",
  "awaken-session-application-contract",
  "awaken-session-types",
  "awaken-tenancy",
@@ -2306,7 +2306,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-provider-genai"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -2558,7 +2558,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-runtime-contract"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -2622,7 +2622,6 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-resource-application",
  "awaken-resource-contract",
- "awaken-runtime-contract",
  "awaken-sandbox-control",
  "awaken-sandbox-control-transport",
  "awaken-sandbox-local",
@@ -2648,6 +2647,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-channel",
+ "awaken-agent-contract",
  "awaken-connection-plan",
  "awaken-container-contract",
  "awaken-environment-contract",
@@ -2656,7 +2656,6 @@ dependencies = [
  "awaken-memory-store",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
- "awaken-runtime-contract",
  "awaken-sandbox-container",
  "awaken-sandbox-control",
  "awaken-sandbox-control-transport",
@@ -2710,6 +2709,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-channel",
+ "awaken-agent-contract",
  "awaken-connection-plan",
  "awaken-container-contract",
  "awaken-environment-contract",
@@ -2719,7 +2719,6 @@ dependencies = [
  "awaken-outbound-http",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
- "awaken-runtime-contract",
  "awaken-sandbox-container",
  "awaken-sandbox-control",
  "awaken-sandbox-control-transport",
@@ -2748,6 +2747,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-channel",
+ "awaken-agent-contract",
  "awaken-ext-builtin-tools",
  "awaken-file-store",
  "awaken-fs-durability",
@@ -2756,7 +2756,6 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-resource-application",
  "awaken-resource-contract",
- "awaken-runtime-contract",
  "awaken-sandbox-control",
  "awaken-sandbox-control-transport",
  "awaken-sandbox-memoryd",
@@ -3014,6 +3013,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-session-types",
  "awaken-time",
+ "awaken-tool-contract",
  "chrono",
  "chrono-tz",
  "http",
@@ -3050,7 +3050,6 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-resource-contract",
  "awaken-run-executor-acp",
- "awaken-runtime-contract",
  "awaken-sandbox-container",
  "awaken-sandbox-control",
  "awaken-sandbox-local",
@@ -3630,9 +3629,9 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-channel",
+ "awaken-agent-contract",
  "awaken-fs-durability",
  "awaken-lease-testkit",
- "awaken-runtime-contract",
  "awaken-time",
  "awaken-tool-contract",
  "bytes",
@@ -3717,6 +3716,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-acp-contract",
+ "awaken-agent-contract",
  "awaken-authority-clock",
  "awaken-container-contract",
  "awaken-coordinator-client",
@@ -4829,17 +4829,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "eventsource-stream"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74fef4569247a5f429d9156b9d0a2599914385dd189c539334c625d8099d90ab"
-dependencies = [
- "futures-core",
- "nom",
- "pin-project-lite",
-]
-
-[[package]]
 name = "fallible-iterator"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5112,13 +5101,13 @@ dependencies = [
 
 [[package]]
 name = "genai"
-version = "0.7.0-beta.21"
-source = "git+https://github.com/awakenworks/rust-genai.git?rev=da7b568fb413b3197acc13c93f334884f97c81ad#da7b568fb413b3197acc13c93f334884f97c81ad"
+version = "0.7.0-rc.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56ec11ecdfeec749fa0fc0133b2ce3069a826a1a28cb8b008d7ecbeb7c7e03e3"
 dependencies = [
  "base64 0.23.1",
  "bytes",
  "derive_more",
- "eventsource-stream",
  "futures",
  "macro_rules_attribute",
  "mime_guess",
@@ -6232,12 +6221,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "minimal-lexical"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
-
-[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6320,16 +6303,6 @@ name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
-
-[[package]]
-name = "nom"
-version = "7.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
-dependencies = [
- "memchr",
- "minimal-lexical",
-]
 
 [[package]]
 name = "nu-ansi-term"
@@ -9358,7 +9331,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

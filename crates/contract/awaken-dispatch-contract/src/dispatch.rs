@@ -34,9 +34,9 @@ pub use awaken_credential_contract::{
 };
 #[cfg(test)]
 use awaken_credential_contract::{CredentialAdmissionError, CredentialRealizationKind};
-pub use awaken_runtime_contract::CandidateFingerprint;
+
 #[cfg(test)]
-use awaken_runtime_contract::{CredentialUsage, PlaintextBoundary};
+use awaken_agent_contract::credential::{CredentialUsage, PlaintextBoundary};
 use awaken_time::{Expiry, UtcTime};
 use awaken_worker_contract::{PlacementPolicy, WorkerAssignment, WorkerIdentity, WorkerSnapshot};
 use serde::{Deserialize, Serialize};
@@ -97,6 +97,7 @@ include!("dispatch/queue.rs");
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::credential::CandidateFingerprint;
     use awaken_credential_contract::CredentialAccessAdmission;
 
     #[test]
@@ -123,11 +124,12 @@ mod tests {
             );
         }
     }
-    use awaken_runtime_contract::{
+    use awaken_agent_contract::credential::{
         CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialSource,
-        CredentialRef, CredentialRefreshAccess, InferenceEndpoint, ModelExposurePolicy,
-        PlaintextHolder, SealedCredentialEnvelopeRef, TokenEndpointAuth, TrustDomainRef,
+        CredentialRef, CredentialRefreshAccess, ModelExposurePolicy, PlaintextHolder,
+        SealedCredentialEnvelopeRef, TokenEndpointAuth, TrustDomainRef,
     };
+    use awaken_runtime_contract::InferenceEndpoint;
     use std::collections::BTreeSet;
     use std::sync::Mutex;
 
@@ -195,8 +197,8 @@ mod tests {
                     ModelExposurePolicy::Forbidden,
                 ),
             )
-            .with_target(awaken_runtime_contract::CredentialTarget::new(
-                awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+            .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
                 provider,
             )),
         )
@@ -540,13 +542,13 @@ mod tests {
                 policy,
             )
             .with_target(if matches!(rule.fixture, BindingFixture::RemoteWorker) {
-                awaken_runtime_contract::CredentialTarget::new(
-                    awaken_runtime_contract::credential::CredentialPurpose::RemoteAgentAuthorization,
+                awaken_agent_contract::credential::CredentialTarget::new(
+                    awaken_agent_contract::credential::CredentialPurpose::RemoteAgentAuthorization,
                     "https://agent.invalid",
                 )
             } else {
-                awaken_runtime_contract::CredentialTarget::new(
-                    awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                awaken_agent_contract::credential::CredentialTarget::new(
+                    awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
                     "provider-a",
                 )
             });

@@ -262,7 +262,7 @@ impl AcceptedRemoteOperation {
 }
 
 fn fingerprint(value: &impl serde::Serialize, what: &str) -> Result<String> {
-    awaken_runtime_contract::resolution::content_fingerprint(value)
+    awaken_agent_contract::content_fingerprint(value)
         .map_err(|error| Error::Execution(format!("failed to fingerprint A2A {what}: {error}")))
 }
 

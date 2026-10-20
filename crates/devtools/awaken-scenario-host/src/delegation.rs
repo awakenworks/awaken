@@ -6,10 +6,11 @@ use std::sync::Arc;
 use awaken_agent_config::{
     AgentConfig, ModelSelection, MultiagentConfig, MultiagentTarget, compile_published,
 };
-use awaken_runtime_contract::agent_bindings::{
-    AgentBindings, AgentDelegateBinding, ToolExecutionPolicy, ToolPermissionRequirement,
-    ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+use awaken_agent_contract::{
+    ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+    ToolsetSource,
 };
+use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate, ToolKind};
 use awaken_runtime_contract::snapshot::{
     AgentConfigRevisionRef, AgentId, AgentSnapshotMetadata, ExecutableAgentSnapshot,

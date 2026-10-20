@@ -105,8 +105,8 @@ pub fn worker_credential_realization_capabilities(
 /// alternatives preserves adapter correlation: evidence from distinct profiles
 /// can never be combined into a synthetic capability.
 fn acp_mcp_client_injection_profile_admits(
-    access: &awaken_runtime_contract::CredentialAccess,
-    holder: &awaken_runtime_contract::PlaintextHolder,
+    access: &awaken_agent_contract::credential::CredentialAccess,
+    holder: &awaken_agent_contract::credential::PlaintextHolder,
     backend_ref: &str,
     installed: &CredentialRealizationCapabilities,
     now_unix_ms: u64,
@@ -152,21 +152,21 @@ enum McpRequirementRoute {
 /// usage must still fail closed. A Platform holder has no MCP route.
 const fn mcp_requirement_route(
     usage: McpCredentialUsageClass,
-    boundary: awaken_runtime_contract::PlaintextBoundary,
+    boundary: awaken_agent_contract::credential::PlaintextBoundary,
 ) -> McpRequirementRoute {
     match (usage, boundary) {
         (McpCredentialUsageClass::Unsupported, _) => McpRequirementRoute::RejectUsage,
         (
             McpCredentialUsageClass::AuthorizationBearer,
-            awaken_runtime_contract::PlaintextBoundary::Worker,
+            awaken_agent_contract::credential::PlaintextBoundary::Worker,
         ) => McpRequirementRoute::WorkerRelay,
         (
             McpCredentialUsageClass::AuthorizationBearer,
-            awaken_runtime_contract::PlaintextBoundary::Workload,
+            awaken_agent_contract::credential::PlaintextBoundary::Workload,
         ) => McpRequirementRoute::ClientInjection,
         (
             McpCredentialUsageClass::AuthorizationBearer,
-            awaken_runtime_contract::PlaintextBoundary::Platform,
+            awaken_agent_contract::credential::PlaintextBoundary::Platform,
         ) => McpRequirementRoute::RejectHolder,
     }
 }
@@ -309,9 +309,9 @@ fn mcp_requirement_route_admits_only_bearer_relay_or_workload_injection() {
         McpCredentialUsageClass::Unsupported
     };
     let boundary = match kani::any::<u8>() % 3 {
-        0 => awaken_runtime_contract::PlaintextBoundary::Worker,
-        1 => awaken_runtime_contract::PlaintextBoundary::Workload,
-        _ => awaken_runtime_contract::PlaintextBoundary::Platform,
+        0 => awaken_agent_contract::credential::PlaintextBoundary::Worker,
+        1 => awaken_agent_contract::credential::PlaintextBoundary::Workload,
+        _ => awaken_agent_contract::credential::PlaintextBoundary::Platform,
     };
     let route = mcp_requirement_route(usage, boundary);
     match usage {
@@ -319,13 +319,13 @@ fn mcp_requirement_route_admits_only_bearer_relay_or_workload_injection() {
             assert_eq!(route, McpRequirementRoute::RejectUsage, "R1");
         }
         McpCredentialUsageClass::AuthorizationBearer => match boundary {
-            awaken_runtime_contract::PlaintextBoundary::Worker => {
+            awaken_agent_contract::credential::PlaintextBoundary::Worker => {
                 assert_eq!(route, McpRequirementRoute::WorkerRelay, "R2");
             }
-            awaken_runtime_contract::PlaintextBoundary::Workload => {
+            awaken_agent_contract::credential::PlaintextBoundary::Workload => {
                 assert_eq!(route, McpRequirementRoute::ClientInjection, "R3");
             }
-            awaken_runtime_contract::PlaintextBoundary::Platform => {
+            awaken_agent_contract::credential::PlaintextBoundary::Platform => {
                 assert_eq!(route, McpRequirementRoute::RejectHolder, "R4");
             }
         },
@@ -466,13 +466,15 @@ fn claim_credential_binding_revalidation_rejects_missing_widened_reordered_or_st
     // covers every field coordinate; this proof owns collection completeness
     // and order using the production slice comparator.
     let binding = |identity: &str, epoch| AttemptCredentialBinding {
-        candidate_fingerprint: awaken_runtime_contract::CandidateFingerprint(identity.into()),
-        credential: awaken_runtime_contract::CredentialRef {
+        candidate_fingerprint: awaken_agent_contract::credential::CandidateFingerprint(
+            identity.into(),
+        ),
+        credential: awaken_agent_contract::credential::CredentialRef {
             id: identity.into(),
             revision: 1,
         },
-        selected_plaintext_holder: awaken_runtime_contract::PlaintextHolder::new(
-            awaken_runtime_contract::PlaintextBoundary::Worker,
+        selected_plaintext_holder: awaken_agent_contract::credential::PlaintextHolder::new(
+            awaken_agent_contract::credential::PlaintextBoundary::Worker,
             identity,
         ),
         selected_realization_kind:

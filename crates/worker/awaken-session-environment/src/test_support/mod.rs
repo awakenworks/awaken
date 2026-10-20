@@ -11,13 +11,13 @@ use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel as AgentChannelType;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::{IsolationClass, NetworkPolicy, ResourceLimits, SandboxSpec};
-use awaken_runtime_contract::llm::ToolCall;
 use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::{
     PublishedSandboxControlService, SandboxControlPublishError, SandboxControlService,
     SandboxControlServiceKind, SandboxControlServicePublisher,
 };
 use awaken_session_environment_contract::HandExecutorFactory;
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::ToolExecutor;
 use tokio::io::AsyncReadExt;
 

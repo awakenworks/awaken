@@ -6,16 +6,16 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::credential::CredentialPurpose;
+use awaken_agent_contract::credential::{
+    CredentialExecutionPolicy, CredentialTarget, ModelExposurePolicy, PlaintextBoundary,
+    PlaintextHolder,
+};
 use awaken_config_service::PluginPublicationResolver;
 use awaken_credential_contract::CredentialMaterialBinding;
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::{ExactCredentialAccessRequest, compile_exact_credential_access};
-use awaken_runtime_contract::credential::CredentialPurpose;
-use awaken_runtime_contract::{
-    CredentialExecutionPolicy, CredentialTarget, ModelExposurePolicy, PlaintextBoundary,
-    PlaintextHolder,
-};
 use awaken_time::{WallClock, WallClockExt as _};
 
 async fn compile_target_access(
@@ -41,7 +41,7 @@ async fn compile_target_access(
     }
     let holder = PlaintextHolder::new(
         PlaintextBoundary::Worker,
-        awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+        awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
     );
     let provider_target = CredentialTarget::new(
         CredentialPurpose::WebProviderAuthorization,
@@ -138,7 +138,7 @@ impl PluginPublicationResolver for WebSearchPublicationResolver {
     async fn resolve(
         &self,
         workspace: &awaken_tenancy::ScopeId,
-        toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
+        toolsets: &[awaken_agent_contract::ToolsetPolicy],
         config: Option<&serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
         awaken_ext_builtin_tools::WebSearchPlugin::new(self.providers.clone(), None)
@@ -195,7 +195,7 @@ impl PluginPublicationResolver for WebFetchPublicationResolver {
     async fn resolve(
         &self,
         workspace: &awaken_tenancy::ScopeId,
-        toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
+        toolsets: &[awaken_agent_contract::ToolsetPolicy],
         config: Option<&serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
         awaken_ext_builtin_tools::WebFetchPlugin::new(self.providers.clone(), None)
@@ -241,7 +241,7 @@ mod tests {
                 id: "brave".into(),
                 label: "Paid fetch probe".into(),
                 credential: awaken_ext_builtin_tools::WebSearchCredentialRequirement::Exact(
-                    awaken_runtime_contract::CredentialUsage::HttpHeader {
+                    awaken_agent_contract::credential::CredentialUsage::HttpHeader {
                         name: "X-Subscription-Token".into(),
                         scheme: None,
                     },
@@ -265,7 +265,7 @@ mod tests {
         workspace: &str,
         provider: &str,
     ) -> awaken_credential_vault::CredentialSource {
-        let usage = awaken_runtime_contract::CredentialUsage::HttpHeader {
+        let usage = awaken_agent_contract::credential::CredentialUsage::HttpHeader {
             name: "X-Subscription-Token".into(),
             scheme: None,
         };
@@ -299,15 +299,17 @@ mod tests {
     fn agent_policy(
         name: &str,
         configuration: serde_json::Value,
-    ) -> awaken_runtime_contract::agent_bindings::ToolsetPolicy {
-        awaken_runtime_contract::agent_bindings::ToolsetPolicy {
-            source: awaken_runtime_contract::agent_bindings::ToolsetSource::Agent,
-            default: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy::default(),
-            overrides: vec![awaken_runtime_contract::agent_bindings::ToolPolicyOverride::with_optional_configuration(
-                name,
-                awaken_runtime_contract::agent_bindings::ToolExecutionPolicy::default(),
-                Some(configuration),
-            )],
+    ) -> awaken_agent_contract::ToolsetPolicy {
+        awaken_agent_contract::ToolsetPolicy {
+            source: awaken_agent_contract::ToolsetSource::Agent,
+            default: awaken_agent_contract::ToolExecutionPolicy::default(),
+            overrides: vec![
+                awaken_agent_contract::ToolPolicyOverride::with_optional_configuration(
+                    name,
+                    awaken_agent_contract::ToolExecutionPolicy::default(),
+                    Some(configuration),
+                ),
+            ],
         }
     }
 
@@ -427,7 +429,7 @@ mod tests {
             .await
             .expect("P1");
         assert!(published.get("credential").is_none(), "P1/E1");
-        let access: awaken_runtime_contract::CredentialAccess =
+        let access: awaken_agent_contract::credential::CredentialAccess =
             serde_json::from_value(published["credential_access"].clone()).unwrap();
         assert_eq!(access.credential.revision, 1, "P1/E1");
         assert_eq!(

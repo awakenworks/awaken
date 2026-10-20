@@ -659,10 +659,13 @@ async fn assert_native_cancel_observes_history_before_physical_ack<S>(
     S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads + 'static,
 {
     use awaken_agent_contract::agent::state::StateKey;
+    use awaken_agent_contract::thread::commit::{
+        coordinator::Coordinator as CommitCoordinator,
+        staged::{RunDisposition, ThreadCommit},
+    };
     use awaken_runtime_contract::model_operation::{
         ActiveModelOperation, ModelExecutionEvidence, ModelOperation,
     };
-    use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
     // C1 a cancellation claims an empty physical slot; C2 committed model
     // evidence is Unknown/Terminated (e.g. a legacy slot already released).
     // R1 Unknown => logical Cancelled but physical slot retained and settlement

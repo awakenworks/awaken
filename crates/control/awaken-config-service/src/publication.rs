@@ -332,7 +332,7 @@ pub(crate) async fn prepare_agent_publication(
                 .map(|binding| binding.identity().1.to_owned())
                 .unwrap_or_default(),
             version: awaken_runtime_contract::ResolvedInputVersion::ContentHash(
-                awaken_runtime_contract::content_fingerprint(&model_bytes)
+                awaken_agent_contract::content_fingerprint(&model_bytes)
                     .map_err(|error| PublishError::Unresolvable(error.to_string()))?,
             ),
         },
@@ -372,8 +372,9 @@ pub(crate) fn snapshot_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::credential::CredentialRef;
     use awaken_runtime_contract::{
-        CredentialRef, InferenceEndpoint,
+        InferenceEndpoint,
         resolved::{BackendModelSelection, ModelBinding, ResolvedModelCandidate},
     };
 

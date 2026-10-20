@@ -57,8 +57,7 @@
     "awaken-credential-contract": 29,
     "awaken-executable-agent-contract": 1,
     "awaken-provisioning-contract": 1,
-    "awaken-dispatch-contract": 60,
-    "awaken-runtime-contract": 90,
+    "awaken-dispatch-contract": 58,
     "awaken-session-application-contract": 3,
     "awaken-session-configuration-contract": 3,
     "awaken-session-realization-contract": 3,
@@ -68,7 +67,6 @@
     "awaken-worker-contract": 2
   },
   "renamed-reexport": {
-    "awaken-runtime-contract": 9,
     "awaken-session-configuration-contract": 2,
     "awaken-session-execution-contract": 1,
     "awaken-worker-contract": 2

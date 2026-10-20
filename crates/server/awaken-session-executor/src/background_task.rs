@@ -48,7 +48,7 @@ const REMOTE_OBSERVATION_RETRIES: usize = 3;
 const DEFAULT_REMOTE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 fn attention_identity(
-    thread_id: &awaken_runtime_contract::ThreadId,
+    thread_id: &awaken_agent_contract::agent::thread::Id,
     task_id: &BackgroundTaskId,
     fence: &TaskTenure,
     kind: &BackgroundAttention,
@@ -91,7 +91,7 @@ impl BackgroundAttention {
 }
 
 fn attention_message(
-    thread_id: &awaken_runtime_contract::ThreadId,
+    thread_id: &awaken_agent_contract::agent::thread::Id,
     task_id: &BackgroundTaskId,
     fence: &TaskTenure,
     kind: &BackgroundAttention,
@@ -116,7 +116,7 @@ fn attention_message(
 
 async fn publish_attention(
     application: Option<std::sync::Weak<dyn SessionRunBackgroundApplication>>,
-    thread_id: &awaken_runtime_contract::ThreadId,
+    thread_id: &awaken_agent_contract::agent::thread::Id,
     task_id: &BackgroundTaskId,
     fence: &TaskTenure,
     kind: BackgroundAttention,
@@ -352,7 +352,7 @@ impl BackgroundTaskTerminalObserver {
         self.background
             .spawn(class, async move {
                 let run_id =
-                    awaken_runtime_contract::RunId(format!("background-{}", task_id.as_str()));
+                    awaken_agent_contract::agent::run::Id(format!("background-{}", task_id.as_str()));
                 let result = prepared
                     .start_task(
                         &run_id,
@@ -582,7 +582,7 @@ impl BackgroundTaskTerminalObserver {
         self.background
             .spawn(class, async move {
                 let run_id =
-                    awaken_runtime_contract::RunId(format!("background-{}", task_id.as_str()));
+                    awaken_agent_contract::agent::run::Id(format!("background-{}", task_id.as_str()));
                 let renew_at = lease_expires_at_ms
                     .saturating_sub(BackgroundTaskSupervisor::lease_ms() / 2);
                 let mut cancelling = cancelling;
@@ -1321,7 +1321,7 @@ mod tests {
         async fn on_phase(
             &self,
             _ctx: &awaken_runtime_contract::plugin::PhaseContext,
-            _conversation: &[awaken_runtime_contract::Message],
+            _conversation: &[awaken_agent_contract::agent::message::Message],
             _state: &Store,
         ) -> awaken_runtime_contract::plugin::HookReaction {
             self.0.fetch_add(1, Ordering::SeqCst);
@@ -1483,7 +1483,7 @@ mod tests {
         let terminal = CommittedTerminalRun {
             run_id: origin_run.clone(),
             thread_id: thread_id.clone(),
-            cause: awaken_runtime_contract::EndCause::NaturalEnd,
+            cause: awaken_agent_contract::agent::run::EndCause::NaturalEnd,
         };
         observer.observe(&terminal).await.expect("R1 observer");
         assert_eq!(counter.0.load(Ordering::SeqCst), 0, "R1/E1");
@@ -1548,7 +1548,7 @@ mod tests {
         assert!(matches!(
             &completion.end,
             BackgroundTaskEnd::Completed { content, is_error: false }
-                if content == &vec![awaken_runtime_contract::ContentBlock::text(
+                if content == &vec![awaken_agent_contract::agent::content::ContentBlock::text(
                     "artifact://background-task-test/call"
                 )]
         ));
@@ -1759,7 +1759,7 @@ mod tests {
                 thread_id.clone(),
                 RunDisposition::ended(
                     RunId(run.into()),
-                    awaken_runtime_contract::EndCause::NaturalEnd,
+                    awaken_agent_contract::agent::run::EndCause::NaturalEnd,
                 ),
                 true,
                 Vec::new(),
@@ -1775,7 +1775,7 @@ mod tests {
             .observe(&CommittedTerminalRun {
                 run_id: RunId("origin".into()),
                 thread_id: thread_id.clone(),
-                cause: awaken_runtime_contract::EndCause::NaturalEnd,
+                cause: awaken_agent_contract::agent::run::EndCause::NaturalEnd,
             })
             .await
             .expect("R1 observe");
@@ -1794,7 +1794,7 @@ mod tests {
             .observe(&CommittedTerminalRun {
                 run_id: RunId("wait-attention".into()),
                 thread_id: thread_id.clone(),
-                cause: awaken_runtime_contract::EndCause::NaturalEnd,
+                cause: awaken_agent_contract::agent::run::EndCause::NaturalEnd,
             })
             .await
             .expect("R2 observe");

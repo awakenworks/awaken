@@ -33,6 +33,7 @@ use run_input::MarkPlugin;
 #[path = "delegation/reader_sealing.rs"]
 mod reader_sealing;
 
+use awaken_agent_contract::audit::model_request::TokenUsage;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::delegation::{
@@ -42,7 +43,7 @@ use awaken_runtime_contract::delegation::{
 };
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ThreadUsage, TokenUsage, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ThreadUsage,
 };
 use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
@@ -56,6 +57,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{
     RawTool, ToolConcurrency, ToolError, ToolOutput, ToolRecoveryPolicy,
 };
@@ -1610,7 +1612,7 @@ async fn resuming_a_delegation_done_folds_the_reply_and_completes() {
 async fn delegation_resume_distinguishes_cached_absent_and_malformed_delivery() {
     use awaken_agent_contract::agent::delegation::DelegationId;
     use awaken_agent_contract::agent::state::Action;
-    use awaken_runtime_contract::RunDisposition;
+    use awaken_agent_contract::thread::commit::staged::RunDisposition;
     use awaken_runtime_contract::execution::Error;
     // CL6 exact cached child value => zero live child-resume calls, full usage
     // folded once and envelope consumed by the original parent commit. CL7 no
@@ -1847,8 +1849,11 @@ async fn delegation_resume_distinguishes_cached_absent_and_malformed_delivery() 
 
 #[tokio::test]
 async fn unknown_parent_model_evidence_blocks_child_resume_before_external_effect() {
+    use awaken_agent_contract::thread::commit::{
+        coordinator::Coordinator as CommitCoordinator,
+        staged::{RunDisposition, ThreadCommit},
+    };
     use awaken_runtime_contract::model_operation::{ActiveModelOperation, ModelOperation};
-    use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
     // C1 durable awaiting child; C2 parent model evidence is Unknown alone or
     // hidden by a later distinct completed invocation. Both histories must veto.
     // R1 C1+C2 => Indeterminate and physical veto before child resume. The

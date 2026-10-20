@@ -60,11 +60,10 @@ use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAge
 use awaken_provider_genai::GenaiExecutor;
 use awaken_dispatch::SessionRunReservations as _;
 use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate, ToolKind};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
+use awaken_tool_contract::tool::ToolCall;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
@@ -1167,7 +1166,7 @@ struct ScheduleGate;
 impl awaken_runtime_contract::permission::ToolGateHook for ScheduleGate {
     async fn gate(
         &self,
-        ctx: &awaken_runtime_contract::permission::ToolCall,
+        ctx: &awaken_tool_contract::tool::ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> awaken_runtime_contract::permission::GateDecision {
         awaken_runtime_contract::permission::GateDecision::plugin_gate(

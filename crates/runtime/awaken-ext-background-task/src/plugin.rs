@@ -152,8 +152,8 @@ impl PhaseHook for ReconcileBackgroundTasks {
     async fn on_phase(
         &self,
         _ctx: &PhaseContext,
-        _conversation: &[awaken_runtime_contract::Message],
-        state: &awaken_runtime_contract::Store,
+        _conversation: &[awaken_agent_contract::agent::message::Message],
+        state: &awaken_agent_contract::agent::state::Store,
     ) -> HookReaction {
         let Ok(tasks) = tasks_from_state(state) else {
             return HookReaction::default();

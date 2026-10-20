@@ -698,7 +698,7 @@ mod acp_context_tests {
 
     #[test]
     fn claimed_attempt_projects_the_complete_session_tool_configuration() {
-        use awaken_runtime_contract::agent_bindings::{
+        use awaken_agent_contract::{
             ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
             ToolsetSource,
         };

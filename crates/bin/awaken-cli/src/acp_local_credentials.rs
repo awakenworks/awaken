@@ -392,6 +392,7 @@ mod tests {
     use async_trait::async_trait;
     use awaken_acp_application::AcpDetectionState;
     use awaken_acp_contract::NegotiatedAcpCapabilities;
+    use awaken_agent_contract::credential::{CredentialMaterialSource, CredentialRef};
     use awaken_credential_contract::{
         CredentialMaterialError, CredentialObservationSource, WorkerLocalReferenceRevalidator,
     };
@@ -400,7 +401,6 @@ mod tests {
     };
     use awaken_credential_vault::{CredentialSource, CredentialStatus, WorkerLocalBinding};
     use awaken_run_executor_acp::AcpCli;
-    use awaken_runtime_contract::{CredentialMaterialSource, CredentialRef};
 
     use super::*;
 

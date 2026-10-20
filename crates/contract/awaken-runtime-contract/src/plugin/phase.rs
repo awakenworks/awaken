@@ -15,7 +15,7 @@ use awaken_agent_contract::agent::state::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::tool::{ToolCall, ToolOutput};
+use awaken_tool_contract::tool::{ToolCall, ToolOutput};
 
 /// The phases a hook can observe in one model/tool step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

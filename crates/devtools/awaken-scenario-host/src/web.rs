@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::credential::CredentialUsage;
 use awaken_ext_builtin_tools::{
     WebSearchCredentialRequirement, WebSearchProvider, WebSearchProviderDescriptor,
     WebSearchProviderRegistry, WebSearchRequest, WebSearchResult,
 };
-use awaken_runtime_contract::CredentialUsage;
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_tool_contract::tool::ToolError;
 use axum::Router;

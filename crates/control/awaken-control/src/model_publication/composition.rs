@@ -41,12 +41,12 @@ impl CatalogSource {
 /// one complete holder; an allowed policy set never invents a trust domain.
 #[derive(Clone)]
 pub struct ProviderCredentialHolders {
-    pub(super) provider: awaken_runtime_contract::PlaintextHolder,
-    acp: awaken_runtime_contract::PlaintextHolder,
+    pub(super) provider: awaken_agent_contract::credential::PlaintextHolder,
+    acp: awaken_agent_contract::credential::PlaintextHolder,
 }
 
-impl From<awaken_runtime_contract::PlaintextHolder> for ProviderCredentialHolders {
-    fn from(holder: awaken_runtime_contract::PlaintextHolder) -> Self {
+impl From<awaken_agent_contract::credential::PlaintextHolder> for ProviderCredentialHolders {
+    fn from(holder: awaken_agent_contract::credential::PlaintextHolder) -> Self {
         Self {
             provider: holder.clone(),
             acp: holder,
@@ -56,14 +56,14 @@ impl From<awaken_runtime_contract::PlaintextHolder> for ProviderCredentialHolder
 
 impl
     From<(
-        awaken_runtime_contract::PlaintextHolder,
-        awaken_runtime_contract::PlaintextHolder,
+        awaken_agent_contract::credential::PlaintextHolder,
+        awaken_agent_contract::credential::PlaintextHolder,
     )> for ProviderCredentialHolders
 {
     fn from(
         (provider, acp): (
-            awaken_runtime_contract::PlaintextHolder,
-            awaken_runtime_contract::PlaintextHolder,
+            awaken_agent_contract::credential::PlaintextHolder,
+            awaken_agent_contract::credential::PlaintextHolder,
         ),
     ) -> Self {
         Self { provider, acp }
@@ -71,7 +71,10 @@ impl
 }
 
 impl ProviderCredentialHolders {
-    pub(super) fn for_backend(&self, backend: &str) -> &awaken_runtime_contract::PlaintextHolder {
+    pub(super) fn for_backend(
+        &self,
+        backend: &str,
+    ) -> &awaken_agent_contract::credential::PlaintextHolder {
         if matches!(
             awaken_runtime_contract::resolved::Backend::from_ref(backend),
             awaken_runtime_contract::resolved::Backend::Acp(_)
@@ -106,7 +109,7 @@ impl CatalogModelPublicationResolver {
             brokered_access_enabled: true,
             brokered_publication: None,
             direct_credential_policy:
-                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider(),
             direct_holders: None,
             credential_material_delivery: None,
             workers: None,
@@ -136,7 +139,7 @@ impl CatalogModelPublicationResolver {
             brokered_access_enabled: true,
             brokered_publication: None,
             direct_credential_policy:
-                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider(),
             direct_holders: None,
             credential_material_delivery: None,
             workers: None,
@@ -228,7 +231,7 @@ impl CatalogModelPublicationResolver {
     #[must_use]
     pub fn with_direct_provider_credential_execution(
         mut self,
-        policy: awaken_runtime_contract::CredentialExecutionPolicy,
+        policy: awaken_agent_contract::credential::CredentialExecutionPolicy,
         holders: impl Into<ProviderCredentialHolders>,
     ) -> Self {
         self.direct_credential_policy = policy;

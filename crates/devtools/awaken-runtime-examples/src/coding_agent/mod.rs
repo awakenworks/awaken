@@ -239,9 +239,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_policy_allows_reads_and_asks_before_mutations() {
-        use awaken_runtime_contract::permission::{
-            ToolCall, ToolPermissionPolicy, ToolPermissionVerdict,
-        };
+        use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
+        use awaken_tool_contract::tool::ToolCall;
         let policy = coding_policy();
         let decide = |tool: &str| {
             let policy = &policy;

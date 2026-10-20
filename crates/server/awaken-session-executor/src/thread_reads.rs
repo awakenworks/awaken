@@ -350,7 +350,7 @@ impl ThreadReads {
         outcome_id: &str,
     ) -> Result<Option<CommittedOutcome>, SessionExecutionError> {
         let commit = self.commit_for_read(thread).await?;
-        let thread_id = awaken_runtime_contract::ThreadId(thread.to_owned());
+        let thread_id = awaken_agent_contract::agent::thread::Id(thread.to_owned());
         let state = awaken_ext_goal::state::ThreadOutcomeState::new(
             &thread_id,
             commit.as_ref(),

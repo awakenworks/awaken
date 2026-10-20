@@ -9,7 +9,7 @@ impl CatalogModelPublicationResolver {
         binding: ModelBinding,
         sources: &[CredentialSource],
         model_selection: BackendModelSelection,
-        session_configuration: &awaken_runtime_contract::resolved::AcpSessionConfiguration,
+        session_configuration: &awaken_agent_contract::AcpSessionConfiguration,
     ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
         self.validate_acp_binding(&binding, model_selection)?;
         let mut matches = sources.iter().filter(|source| {

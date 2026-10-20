@@ -1344,7 +1344,7 @@ impl awaken_dispatch_contract::DispatchControlReads for PostgresDispatchStore {
     async fn current_credential_binding(
         &self,
         claim: &RunClaim,
-        candidate: &awaken_runtime_contract::CandidateFingerprint,
+        candidate: &awaken_agent_contract::credential::CandidateFingerprint,
     ) -> Result<Option<AttemptCredentialBinding>, DispatchError> {
         let p = NS;
         let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;

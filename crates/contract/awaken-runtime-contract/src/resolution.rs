@@ -2,9 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Stable SHA-256 content identity for one serializable resolver input.
-pub use awaken_agent_contract::content_fingerprint;
-
 /// The identity form used to pin one resolver input.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
@@ -60,6 +57,7 @@ pub enum ResolutionManifestError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::content_fingerprint;
 
     fn input(kind: &str, id: &str, revision: u64) -> ResolvedInputRef {
         ResolvedInputRef {

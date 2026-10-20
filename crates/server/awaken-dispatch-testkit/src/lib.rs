@@ -16,6 +16,10 @@ use awaken_agent_contract::agent::delegation::DelegationOrigin;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::credential::{
+    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+    CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+};
 use awaken_credential_contract::{CredentialRealizationCapabilities, CredentialRealizationKind};
 use awaken_dispatch_contract::dispatch::{
     AttemptAdmission, CasOutcome, ContinuationAdmission, CredentialRealizationReceipt,
@@ -32,15 +36,12 @@ use awaken_dispatch_contract::{
     WorkerCredentialObservation, WorkerCredentialRevision, WorkerIdentity, WorkerManifest,
     WorkerSnapshot, WorkerState,
 };
+use awaken_runtime_contract::InferenceEndpoint;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
-};
-use awaken_runtime_contract::{
-    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-    CredentialUsage, InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
 use awaken_session_execution_contract::{AdmitSessionRun, SessionRunExecutionRequirements};
 use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};

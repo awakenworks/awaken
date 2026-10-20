@@ -509,7 +509,7 @@ impl ResourceStaging {
                 if resource_authority.is_none()
                     && let (Some(binding), Some(pin)) = (&config.credential_binding, credential_pin)
                     && pin.selected_plaintext_holder.boundary
-                        == awaken_runtime_contract::PlaintextBoundary::Platform
+                        == awaken_agent_contract::credential::PlaintextBoundary::Platform
                 {
                     pin.validate_for_repository(binding, &config.remote_url)
                         .map_err(|error| {
@@ -531,12 +531,12 @@ impl ResourceStaging {
                                 ))
                             })?;
                         match pin.selected_plaintext_holder.boundary {
-                            awaken_runtime_contract::PlaintextBoundary::Worker => {
+                            awaken_agent_contract::credential::PlaintextBoundary::Worker => {
                                 return Err(RunError::bad_request(format!(
                                     "repository `{repository_id}` credential cannot be held by the Runtime Host or Worker"
                                 )));
                             }
-                            awaken_runtime_contract::PlaintextBoundary::Platform => match transport {
+                            awaken_agent_contract::credential::PlaintextBoundary::Platform => match transport {
                                 awaken_resource_contract::RepositoryTransport::GatewayMediated {
                                     remote_url,
                                     ..
@@ -547,7 +547,7 @@ impl ResourceStaging {
                                     )));
                                 }
                             },
-                            awaken_runtime_contract::PlaintextBoundary::Workload => {
+                            awaken_agent_contract::credential::PlaintextBoundary::Workload => {
                                 if !matches!(transport, awaken_resource_contract::RepositoryTransport::Direct) {
                                     return Err(RunError::bad_request(format!(
                                         "repository `{repository_id}` Sandbox credential cannot use a mediated transport"

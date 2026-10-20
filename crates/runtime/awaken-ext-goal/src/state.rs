@@ -6,12 +6,23 @@
 //! crosses the existing idempotent commit-operation boundary; reads rebuild one
 //! internally consistent committed Thread prefix through `RunRecoverySource`.
 
-use awaken_runtime_contract::{
-    CommitOperation, CommitOperationCoordinator, CommitOperationId, EndCause,
-    ExecutableAgentSnapshot, MergePolicy, Message, RunDisposition, RunId, RunRecoverySnapshot,
-    RunRecoverySource, Scope, StateCell, StateCommand, Store, ThreadCommit, ThreadId,
-    commit_payload_hash,
+use awaken_agent_contract::{
+    agent::{
+        message::Message,
+        run::{EndCause, Id as RunId},
+        state::{Command as StateCommand, MergePolicy, Scope, StateCell, Store},
+        thread::Id as ThreadId,
+    },
+    thread::{
+        commit::{
+            coordinator::OperationCoordinator as CommitOperationCoordinator,
+            operation::{CommitOperation, CommitOperationId, commit_payload_hash},
+            staged::{RunDisposition, ThreadCommit},
+        },
+        read::recovery::{RunRecoverySnapshot, RunRecoverySource},
+    },
 };
+use awaken_runtime_contract::ExecutableAgentSnapshot;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::outcome::{Definition, Evaluation, Id, State};

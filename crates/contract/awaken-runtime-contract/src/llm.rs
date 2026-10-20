@@ -14,7 +14,7 @@ use awaken_agent_contract::agent::state::{MergePolicy, Scope, StateKey};
 use serde::{Deserialize, Serialize};
 use {async_trait::async_trait, std::time::Duration};
 
-pub use awaken_agent_contract::audit::model_request::{ModelRequestObservation, TokenUsage};
+use awaken_agent_contract::audit::model_request::TokenUsage;
 use thiserror::Error;
 
 use crate::agent_bindings::InferenceOptions;
@@ -87,9 +87,7 @@ impl ChatMessage {
     }
 }
 
-// The tool-call vocabulary is owned by `awaken-tool-contract`; the model port
-// still names it here so `llm::ToolCall` keeps resolving.
-pub use awaken_tool_contract::tool::ToolCall;
+use awaken_tool_contract::tool::ToolCall;
 
 /// One model response: the assistant message plus optional usage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

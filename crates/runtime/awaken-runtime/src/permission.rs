@@ -14,8 +14,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 pub use awaken_agent_contract::agent::state::Store;
 pub use awaken_runtime_contract::permission::{
-    GateDecision, GateOutcome, ToolCall, ToolGateHook, ToolPermissionPolicy,
+    GateDecision, GateOutcome, ToolGateHook, ToolPermissionPolicy,
 };
+pub use awaken_tool_contract::tool::ToolCall;
 
 /// A [`ToolGateHook`] backed by a [`ToolPermissionPolicy`].
 pub struct PermissionGate {

@@ -8,7 +8,6 @@ pub mod boundary;
 pub mod capture;
 pub mod compaction;
 pub mod control;
-pub mod credential;
 pub mod data_subject;
 pub mod delegation;
 pub mod diagnostic;
@@ -30,27 +29,18 @@ pub mod runtime_context;
 pub mod snapshot;
 mod snapshot_builder;
 pub mod terminal;
-// The tool vocabulary lives in `awaken-tool-contract`; these module paths are
-// kept as a facade so existing `awaken_runtime_contract::tool*` imports resolve.
-pub use awaken_tool_contract::{tool, tool_batch, tool_discovery};
 
 pub use activation::RunActivation;
 pub use boundary::{BoundaryOutcome, evaluate_boundary};
 pub use capture::{CaptureDecision, ContentCapture, ContentKind, ContentRedactor, NoopRedactor};
 pub use control::LiveRunControl;
-pub use credential::{
-    CandidateFingerprint, CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy,
-    CredentialMaterialSource, CredentialRef, CredentialRefreshAccess, CredentialTarget,
-    CredentialUsage, CredentialUsageError, HttpEffectPlacement, ModelExposurePolicy,
-    PlaintextBoundary, PlaintextHolder, SealedCredentialEnvelopeRef, TokenEndpointAuth,
-    TrustDomainRef,
-};
+
 pub use data_subject::{CaptureError, CaptureSink, DataSubjectId, Purpose};
 pub use delegation::{
-    ChildRunCancellation, ChildRunResult, ChildRunResultInbox, DelegationExecutionError,
-    DelegationFailureKind, DelegationLimits, DelegationRequest, DelegationResultError,
-    DelegationResume, DelegationStep, DelegationToolInput, PendingChildRunResults, ResultRecord,
-    RunDelegationService, RunDelegations,
+    ChildRunResult, ChildRunResultInbox, DelegationExecutionError, DelegationFailureKind,
+    DelegationRequest, DelegationResultError, DelegationResume, DelegationStep,
+    DelegationToolInput, PendingChildRunResults, ResultRecord, RunDelegationService,
+    RunDelegations,
 };
 pub use execution::{
     A2A_RUNTIME_CAPABILITY, AttemptExecutorRegistry, AttemptExecutorRegistryError,
@@ -65,46 +55,9 @@ pub use plugin::{
     CapabilityBound, Contributions, IdBound, PhaseHook, PhaseHookPoint, Plugin, PluginManifest,
     ResolvedExecutionEnv, RunEndContext, RunEndDecision, RunEndGuard,
 };
-// The conversation/id types surfaced through this crate's own ports (e.g.
-// `RunEndContext.conversation: &[Message]`). Re-exported so an extension that
-// consumes those ports names them here, without a direct `agent-contract` edge.
-pub use awaken_agent_contract::agent::awaiting::ResumeTicket;
-pub use awaken_agent_contract::agent::content::{ContentBlock, ImageSource, extract_text};
-pub use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-pub use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Record as RunRecord, RunState};
-pub use awaken_agent_contract::agent::state::{
-    Command as StateCommand, Key as StateKey, StateCell,
-};
-pub use awaken_agent_contract::agent::state::{MergePolicy, Scope, Store};
-pub use awaken_agent_contract::agent::thread::Id as ThreadId;
-// Credential material ports expose this opaque value in their signatures.
-// Re-export it with the rest of the runtime-facing agent types so boundary
-// adapters do not need a second, upward dependency on the agent contract.
-pub use awaken_agent_contract::RedactedString;
-pub use awaken_agent_contract::thread::commit::coordinator::{
-    Coordinator as CommitCoordinator, Error as CommitError,
-    OperationCoordinator as CommitOperationCoordinator,
-};
-pub use awaken_agent_contract::thread::commit::operation::{
-    CommitHashError, CommitOperation, CommitOperationId, CommitPayloadHash, CommitReceipt,
-    commit_payload_hash,
-};
-pub use awaken_agent_contract::thread::commit::staged::{
-    CommitRecord, RunDisposition, ThreadCommit,
-};
-pub use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-pub use awaken_agent_contract::thread::read::recovery::{
-    RecoveryError, RunRecoverySnapshot, RunRecoverySource,
-};
-pub use awaken_agent_contract::thread::read::transcript::{
-    TranscriptRange, TranscriptSliceSpec, TranscriptSnapshotRef, TranscriptView,
-};
-// The cancellation token surfaced through `RunEndContext`/`RuntimeRunContext`;
-// re-exported so an extension forwards it without a direct `tokio-util` edge.
-pub use awaken_agent_contract::ExecutionScopeRef;
+
 pub use resolution::{
     ResolutionManifest, ResolutionManifestError, ResolvedInputRef, ResolvedInputVersion,
-    content_fingerprint,
 };
 pub use resolved::{
     CatalogFingerprint, InferenceEndpoint, ModelBinding, ProviderExecutionProfile, ResolvedSpec,
@@ -127,14 +80,6 @@ pub use snapshot::{
 pub use snapshot_builder::{
     DEFAULT_MAX_STEPS, ExecutableAgentSnapshotBuilder, deserialize_max_steps,
 };
+// The cancellation token surfaced through `RunEndContext`/`RuntimeRunContext`;
+// re-exported so an extension forwards it without a direct `tokio-util` edge.
 pub use tokio_util::sync::CancellationToken;
-pub use tool::{
-    RawTool, RawToolRegistry, Tool, ToolConcurrency, ToolExecutionAdmission, ToolExecutionPermit,
-    ToolExecutionTarget, ToolExecutionWave, ToolExecutor, ToolOperationToken, ToolOutput,
-    ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy, ToolResource, ToolResourceAccess,
-    ToolTaskHandle, ToolTaskPoll, ToolTaskStart, tool_execution_waves,
-};
-pub use tool_batch::{
-    ActiveToolBatch, ToolBatch, ToolBatchId, ToolBatchPhase, ToolCallPhase, ToolWait, ToolWaitKind,
-};
-pub use tool_discovery::{ToolSearchInput, ToolSearchLimit, ToolSearchLimitError};

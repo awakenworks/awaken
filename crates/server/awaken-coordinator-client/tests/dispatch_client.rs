@@ -80,17 +80,18 @@ fn provider_candidate(
         "route@1",
         "workspace-a",
         Some(
-            awaken_runtime_contract::CredentialAccess::new(
-                awaken_runtime_contract::CredentialRef {
+            awaken_agent_contract::credential::CredentialAccess::new(
+                awaken_agent_contract::credential::CredentialRef {
                     id: reference.into(),
                     revision: 1,
                 },
-                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+                awaken_agent_contract::credential::CredentialUsage::ProviderAdapter,
+                awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider(
+                ),
             )
-            .with_target(awaken_runtime_contract::CredentialTarget::new(
-                awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+            .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
                 "provider",
             )),
         ),
@@ -126,9 +127,9 @@ async fn spawn_transport_server() -> (
     let now_ms = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(now_ms.clone()));
     let stream_calls = Arc::new(AtomicUsize::new(0));
-    let holder = awaken_runtime_contract::PlaintextHolder::new(
-        awaken_runtime_contract::PlaintextBoundary::Worker,
-        awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+    let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+        awaken_agent_contract::credential::PlaintextBoundary::Worker,
+        awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
     );
     let state = Arc::new(TransportState {
         store: store.clone(),
@@ -136,7 +137,7 @@ async fn spawn_transport_server() -> (
         credential_capabilities: awaken_credential_contract::CredentialRealizationCapabilities {
             holders: [holder].into_iter().collect(),
             material_sources: [
-                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
             ]
             .into_iter()
             .collect(),
@@ -920,9 +921,9 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     queue
         .enqueue(
             RunDispatch::new(activation).with_inference_plaintext_holder(
-                awaken_runtime_contract::PlaintextHolder::new(
-                    awaken_runtime_contract::PlaintextBoundary::Worker,
-                    awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+                awaken_agent_contract::credential::PlaintextHolder::new(
+                    awaken_agent_contract::credential::PlaintextBoundary::Worker,
+                    awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
                 ),
             ),
         )

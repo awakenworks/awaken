@@ -181,21 +181,20 @@ struct AgentToolsetProjection {
 }
 
 fn agent_toolset_permission_rules(
-    toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
+    toolsets: &[awaken_agent_contract::ToolsetPolicy],
 ) -> AgentToolsetProjection {
-    use awaken_runtime_contract::agent_bindings::{ToolPermissionRequirement, ToolsetSource};
+    use awaken_agent_contract::{ToolPermissionRequirement, ToolsetSource};
     let mut deferred_members = Vec::new();
     // A fixed requirement compiles into an exact rule that still names the
     // requirement it came from, so the audit (and the Managed `evaluation`)
     // reports `always_allow`/`always_ask` rather than an anonymous rule. An
     // enabled `auto` compiles into no rule: it is deferred to the evaluator.
-    let fixed_rule =
-        |pattern: &str, policy: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy| {
-            PermissionRule::from_fixed_policy(
-                ToolCallPattern::parse(pattern).expect("typed toolset produces a valid pattern"),
-                policy,
-            )
-        };
+    let fixed_rule = |pattern: &str, policy: awaken_agent_contract::ToolExecutionPolicy| {
+        PermissionRule::from_fixed_policy(
+            ToolCallPattern::parse(pattern).expect("typed toolset produces a valid pattern"),
+            policy,
+        )
+    };
     let mut rules = Vec::new();
     for toolset in toolsets {
         match &toolset.source {
@@ -245,7 +244,7 @@ fn agent_toolset_permission_rules(
 pub(crate) fn effective_policy_with_toolsets(
     authored: Option<PermissionRuleset>,
     extra_allowed: &[String],
-    toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
+    toolsets: &[awaken_agent_contract::ToolsetPolicy],
     evaluator: Arc<dyn awaken_ext_permission::AutoPermissionEvaluator>,
 ) -> RuleBasedToolPermissionPolicy {
     let projection = agent_toolset_permission_rules(toolsets);
@@ -276,9 +275,9 @@ pub(crate) fn platform_auto_evaluator() -> Arc<dyn awaken_ext_permission::AutoPe
 #[cfg(test)]
 pub(crate) fn test_agent_toolset_permission(
     name: &str,
-    permission: awaken_runtime_contract::agent_bindings::ToolPermissionRequirement,
-) -> awaken_runtime_contract::agent_bindings::ToolsetPolicy {
-    use awaken_runtime_contract::agent_bindings::{
+    permission: awaken_agent_contract::ToolPermissionRequirement,
+) -> awaken_agent_contract::ToolsetPolicy {
+    use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
     };
     ToolsetPolicy {
@@ -307,7 +306,7 @@ pub(crate) struct EffectiveToolAuthorization {
 pub(crate) fn effective_tool_authorization(
     configuration: &awaken_runtime_contract::agent_bindings::ResolvedConfiguration,
     extra_allowed: &[String],
-    toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
+    toolsets: &[awaken_agent_contract::ToolsetPolicy],
 ) -> EffectiveToolAuthorization {
     let authored = config_permission_ruleset(configuration.plugins());
     let explicit = authored.is_some() || !toolsets.is_empty() || !extra_allowed.is_empty();
@@ -780,13 +779,13 @@ mod tests {
         // | T1 | T | F | F | E1 allow |
         // | T2 | F | T | F | E2 ask |
         // | T3 | F | T | always_allow | E3 allow — the author outranks the evaluator |
-        use awaken_runtime_contract::agent_bindings::{
+        use awaken_agent_contract::{
             ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
             ToolsetSource,
         };
         use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
 
-        let call = |tool: &str| awaken_runtime_contract::permission::ToolCall {
+        let call = |tool: &str| awaken_tool_contract::tool::ToolCall {
             tool_id: tool.into(),
             call_id: "auto-host".into(),
             arguments: serde_json::json!({}),
@@ -859,13 +858,12 @@ mod tests {
         // | H2 | bash (controlled) | indeterminate | ask — via the evaluator, not a forced rule |
         // | H3 | read (observes) | deny | deny — proves the evaluator, not a rule, decided |
         // | H4 | bash (controlled) | deny | deny |
-        use awaken_ext_permission::{AutoDecision, AutoPermissionEvaluator};
-        use awaken_runtime_contract::agent_bindings::{
+        use awaken_agent_contract::{
             ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy, ToolsetSource,
         };
-        use awaken_runtime_contract::permission::{
-            ToolCall, ToolPermissionPolicy, ToolPermissionVerdict,
-        };
+        use awaken_ext_permission::{AutoDecision, AutoPermissionEvaluator};
+        use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
+        use awaken_tool_contract::tool::ToolCall;
 
         #[derive(Debug)]
         struct Fixed(AutoDecision);
@@ -1224,7 +1222,7 @@ mod tests {
         // | bash (exact opt-out)         | true    | allow        | allow       |
         // | mcp__docs__search            | true    | allow        | allow       |
         // | mcp__docs__fetch (default)   | true    | ask          | ask         |
-        use awaken_runtime_contract::agent_bindings::{
+        use awaken_agent_contract::{
             ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
             ToolsetSource,
         };
@@ -1286,7 +1284,7 @@ mod tests {
                 awaken_runtime_contract::permission::GateOutcomeKind::RequireConfirmation,
             ),
         ] {
-            let call = awaken_runtime_contract::llm::ToolCall {
+            let call = awaken_tool_contract::tool::ToolCall {
                 call_id: "typed-policy".into(),
                 tool_id: tool_id.into(),
                 arguments: serde_json::json!({}),
@@ -1324,10 +1322,11 @@ mod tests {
         // | V3   | Agent  | bash/write/edit  | exact ask    | ask    | ask |
         // | V4   | Agent  | omitted glob     | default deny | deny   | deny |
         // | V5   | Agent  | runtime agent_run| exact ask    | ask    | ask |
-        use awaken_runtime_contract::agent_bindings::{
-            ResolvedConfiguration, ToolExecutionPolicy, ToolPermissionRequirement,
-            ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+        use awaken_agent_contract::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
         };
+        use awaken_runtime_contract::agent_bindings::ResolvedConfiguration;
         use awaken_runtime_contract::permission::GateOutcomeKind;
 
         let ask = ToolExecutionPolicy {
@@ -1377,7 +1376,7 @@ mod tests {
             ("agent_run", GateOutcomeKind::RequireConfirmation, "V5"),
         ];
         for (tool_id, expected, rule) in cases {
-            let call = awaken_runtime_contract::llm::ToolCall {
+            let call = awaken_tool_contract::tool::ToolCall {
                 call_id: format!("call-{tool_id}"),
                 tool_id: tool_id.into(),
                 arguments: serde_json::json!({}),
@@ -1406,10 +1405,11 @@ mod tests {
         // another source -> ordinary unmatched ask, with no cross-server grant.
         // This includes the live Cowork counterexample: default disabled plus
         // an enabled attest override must allow; a fallback is not a deny rule.
-        use awaken_runtime_contract::agent_bindings::{
-            ResolvedConfiguration, ToolExecutionPolicy, ToolPermissionRequirement,
-            ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+        use awaken_agent_contract::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
         };
+        use awaken_runtime_contract::agent_bindings::ResolvedConfiguration;
         use awaken_runtime_contract::permission::GateOutcomeKind;
         let allow = ToolExecutionPolicy::default();
         let ask = ToolExecutionPolicy {
@@ -1462,7 +1462,7 @@ mod tests {
                             } else {
                                 GateOutcomeKind::Allow
                             };
-                            let call = awaken_runtime_contract::llm::ToolCall {
+                            let call = awaken_tool_contract::tool::ToolCall {
                                 call_id: "mcp-matrix".into(),
                                 tool_id: awaken_agent_contract::McpToolId::new(server, "attest")
                                     .expect("canonical id")
@@ -1518,7 +1518,7 @@ mod tests {
             ("edit", GateOutcomeKind::RequireConfirmation, "L2"),
         ];
         for (tool_id, expected, rule) in cases {
-            let call = awaken_runtime_contract::llm::ToolCall {
+            let call = awaken_tool_contract::tool::ToolCall {
                 call_id: format!("legacy-{tool_id}"),
                 tool_id: tool_id.into(),
                 arguments: serde_json::json!({}),
@@ -1564,10 +1564,11 @@ mod tests {
         // Read-only Git therefore cannot be auto-allowed while commit/push/delete
         // are distinguished; every exact Bash call asks and the user confirms
         // the complete command.
-        use awaken_runtime_contract::agent_bindings::{
-            ResolvedConfiguration, ToolExecutionPolicy, ToolPermissionRequirement,
-            ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+        use awaken_agent_contract::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
         };
+        use awaken_runtime_contract::agent_bindings::ResolvedConfiguration;
         use awaken_runtime_contract::permission::GateOutcomeKind;
 
         let allow = ToolExecutionPolicy::default();
@@ -1670,7 +1671,7 @@ mod tests {
             ),
         ];
         for (index, (tool_id, arguments, expected, rule)) in cases.into_iter().enumerate() {
-            let call = awaken_runtime_contract::llm::ToolCall {
+            let call = awaken_tool_contract::tool::ToolCall {
                 call_id: format!("git-authority-{index}"),
                 tool_id: tool_id.into(),
                 arguments,
@@ -1700,7 +1701,7 @@ mod tests {
         // denial -> denies. PreparedToolExecutor tests and the sales MCP E2E
         // exercise the separate target gate before physical execution.
         use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
-        let call = |tool: &str| awaken_runtime_contract::permission::ToolCall {
+        let call = |tool: &str| awaken_tool_contract::tool::ToolCall {
             tool_id: tool.into(),
             call_id: "background-policy".into(),
             arguments: serde_json::json!({}),

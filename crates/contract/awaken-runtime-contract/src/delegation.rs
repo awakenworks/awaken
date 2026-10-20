@@ -8,7 +8,8 @@
 //! identities and receives either an ended result or an awaiting continuation.
 
 use async_trait::async_trait;
-pub use awaken_agent_contract::agent::delegation::{ChildRunCancellation, DelegationLimits};
+
+use awaken_agent_contract::agent::delegation::ChildRunCancellation;
 use awaken_agent_contract::agent::delegation::{
     DelegationId, DelegationOrigin, DelegationRegistry,
 };

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::{SandboxProvider, SandboxReadiness};
-use awaken_runtime_contract::llm::ToolCall;
+use awaken_tool_contract::tool::ToolCall;
 mod common;
 use awaken_file_store::{FileStore, FsFileStore};
 use awaken_sandbox_local::LocalProvider;

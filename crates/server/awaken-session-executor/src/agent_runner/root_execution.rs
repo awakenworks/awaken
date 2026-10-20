@@ -60,7 +60,7 @@ pub(crate) struct AgentExecution<'a> {
     #[cfg(test)]
     pub(crate) scheduler: Option<RunScheduler>,
     #[cfg(test)]
-    pub(crate) toolsets: &'a [awaken_runtime_contract::agent_bindings::ToolsetPolicy],
+    pub(crate) toolsets: &'a [awaken_agent_contract::ToolsetPolicy],
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -516,7 +516,7 @@ mod tests {
         async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
             Ok(ChatResponse {
                 output: AssistantOutput::text("ok"),
-                usage: Some(awaken_runtime_contract::llm::TokenUsage {
+                usage: Some(awaken_agent_contract::audit::model_request::TokenUsage {
                     prompt_tokens: 13,
                     completion_tokens: 5,
                     cache_read_tokens: 0,

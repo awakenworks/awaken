@@ -279,7 +279,7 @@ mod tests {
             .into_session_provider();
         let host = (dependencies).build().expect("validated Host dependencies");
         let backend_owned = awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
-            credential: awaken_runtime_contract::CredentialRef {
+            credential: awaken_agent_contract::credential::CredentialRef {
                 id: "local".into(),
                 revision: 1,
             },

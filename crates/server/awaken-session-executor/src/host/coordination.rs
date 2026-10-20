@@ -1390,12 +1390,18 @@ mod tests {
                 "W1 exact source"
             );
             let updated_tools = awaken_session_configuration_contract::SessionToolConfiguration {
-                toolsets: vec![awaken_runtime_contract::agent_bindings::ToolsetPolicy {
-                    source: awaken_runtime_contract::agent_bindings::ToolsetSource::Agent,
+                toolsets: vec![awaken_agent_contract::ToolsetPolicy {
+                    source: awaken_agent_contract::ToolsetSource::Agent,
                     default: Default::default(),
-                    overrides: vec![awaken_runtime_contract::agent_bindings::ToolPolicyOverride::with_optional_configuration(
-                        "web_fetch", Default::default(), Some(serde_json::json!({"type":"web_fetch","domains":{"type":"allow","domains":["docs.example.com"]}})),
-                    )],
+                    overrides: vec![
+                        awaken_agent_contract::ToolPolicyOverride::with_optional_configuration(
+                            "web_fetch",
+                            Default::default(),
+                            Some(
+                                serde_json::json!({"type":"web_fetch","domains":{"type":"allow","domains":["docs.example.com"]}}),
+                            ),
+                        ),
+                    ],
                 }],
                 client_tools: Vec::new(),
             };

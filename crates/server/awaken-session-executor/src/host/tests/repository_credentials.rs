@@ -339,8 +339,8 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             Some("credential-platform".into()),
         );
         let binding_id = resources.inputs()[0].binding_id.clone();
-        let holder = awaken_runtime_contract::PlaintextHolder::new(
-            awaken_runtime_contract::PlaintextBoundary::Platform,
+        let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+            awaken_agent_contract::credential::PlaintextBoundary::Platform,
             "awaken.platform.egress-gateway",
         );
         resources
@@ -354,9 +354,9 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
                 };
                 credential.selected_plaintext_holder = holder.clone();
                 credential.access.policy =
-                    awaken_runtime_contract::CredentialExecutionPolicy::exact(
+                    awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
                         holder,
-                        awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+                        awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
                     );
             })
             .unwrap()
@@ -995,40 +995,40 @@ async fn repository_credential_realization_follows_the_decision_table() {
                     }
                     Case::WrongUsage => {
                         credential.as_mut().unwrap().access.usage =
-                            awaken_runtime_contract::CredentialUsage::QueryParameter {
+                            awaken_agent_contract::credential::CredentialUsage::QueryParameter {
                                 name: "token".into(),
                             };
                     }
                     Case::HolderNotAllowed => {
-                        let workload = awaken_runtime_contract::PlaintextHolder::new(
-                            awaken_runtime_contract::PlaintextBoundary::Workload,
-                            awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+                        let workload = awaken_agent_contract::credential::PlaintextHolder::new(
+                            awaken_agent_contract::credential::PlaintextBoundary::Workload,
+                            awaken_agent_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
                         );
                         credential.as_mut().unwrap().access.policy =
-                            awaken_runtime_contract::CredentialExecutionPolicy::exact(
+                            awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
                                 workload,
-                                awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+                                awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
                             );
                     }
                     Case::VirtualExposure => {
                         let credential = credential.as_mut().unwrap();
                         credential.access.policy =
-                            awaken_runtime_contract::CredentialExecutionPolicy::exact(
+                            awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
                                 credential.selected_plaintext_holder.clone(),
-                                awaken_runtime_contract::ModelExposurePolicy::VirtualOnly,
+                                awaken_agent_contract::credential::ModelExposurePolicy::VirtualOnly,
                             );
                     }
                     Case::UnsupportedHolder => {
-                        let worker = awaken_runtime_contract::PlaintextHolder::new(
-                            awaken_runtime_contract::PlaintextBoundary::Worker,
-                            awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+                        let worker = awaken_agent_contract::credential::PlaintextHolder::new(
+                            awaken_agent_contract::credential::PlaintextBoundary::Worker,
+                            awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
                         );
                         let credential = credential.as_mut().unwrap();
                         credential.selected_plaintext_holder = worker.clone();
                         credential.access.policy =
-                            awaken_runtime_contract::CredentialExecutionPolicy::exact(
+                            awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
                                 worker,
-                                awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+                                awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
                             );
                     }
                     Case::StaleRevision => {

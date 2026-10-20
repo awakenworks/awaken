@@ -88,7 +88,7 @@ pub fn relay_hand_executor_factory()
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use awaken_runtime_contract::llm::ToolCall;
+    use awaken_tool_contract::tool::ToolCall;
     use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 
     #[cfg(target_os = "linux")]

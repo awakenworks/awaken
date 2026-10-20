@@ -70,7 +70,7 @@ pub(super) fn local_client_instance_id(workspace_root: Option<&std::path::Path>)
     let coordinate = workspace_root
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_else(|| "ephemeral".to_owned());
-    let fingerprint = awaken_runtime_contract::content_fingerprint(&coordinate)
+    let fingerprint = awaken_agent_contract::content_fingerprint(&coordinate)
         .unwrap_or_else(|_| "unavailable".to_owned());
     format!("awaken-installation:{fingerprint}")
 }

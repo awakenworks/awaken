@@ -125,8 +125,8 @@ fn remote_credential_dispatch(
                         ModelExposurePolicy::Forbidden,
                     ),
                 )
-                .with_target(awaken_runtime_contract::CredentialTarget::new(
-                    awaken_runtime_contract::credential::CredentialPurpose::RemoteAgentAuthorization,
+                .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                    awaken_agent_contract::credential::CredentialPurpose::RemoteAgentAuthorization,
                     endpoint,
                 )),
             ),
@@ -160,8 +160,8 @@ fn credential_candidate(
                 CredentialUsage::ProviderAdapter,
                 CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
             )
-            .with_target(awaken_runtime_contract::CredentialTarget::new(
-                awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+            .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
                 provider_id,
             )),
         ),

@@ -5,16 +5,17 @@
 //! reference's state-based policy/overrides merge, regex (`=~`) matching, and the
 //! `actions::` mutation helpers are intentionally out of scope for this crate.
 
+use awaken_agent_contract::ToolPermissionRequirement;
+use awaken_agent_contract::audit::permission::{PermissionPolicy, PermissionReasonCode};
 use awaken_ext_permission::{
     AutoDecision, AutoPermissionEvaluator, ObservingToolEvaluator, PermissionRule,
     PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern, ToolPermissionBehavior,
     parse_ruleset,
 };
-use awaken_runtime_contract::agent_bindings::ToolPermissionRequirement;
 use awaken_runtime_contract::permission::{
-    PermissionBasis, PermissionPolicy, PermissionReasonCode, RulingAuthority, ToolCall,
-    ToolPermissionPolicy, ToolPermissionVerdict,
+    PermissionBasis, RulingAuthority, ToolPermissionPolicy, ToolPermissionVerdict,
 };
+use awaken_tool_contract::tool::ToolCall;
 use serde_json::json;
 
 fn rule(spec: &str, behavior: ToolPermissionBehavior) -> PermissionRule {
@@ -591,17 +592,14 @@ fn allow_when_unmatched() -> PermissionRuleset {
     }
 }
 
-fn disabled_mcp_toolset(
-    server_name: &str,
-) -> awaken_runtime_contract::agent_bindings::ToolsetPolicy {
-    awaken_runtime_contract::agent_bindings::ToolsetPolicy {
-        source: awaken_runtime_contract::agent_bindings::ToolsetSource::Mcp {
+fn disabled_mcp_toolset(server_name: &str) -> awaken_agent_contract::ToolsetPolicy {
+    awaken_agent_contract::ToolsetPolicy {
+        source: awaken_agent_contract::ToolsetSource::Mcp {
             server_name: server_name.into(),
         },
-        default: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy {
+        default: awaken_agent_contract::ToolExecutionPolicy {
             enabled: false,
-            permission:
-                awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk,
+            permission: awaken_agent_contract::ToolPermissionRequirement::AlwaysAsk,
         },
         overrides: Vec::new(),
     }
@@ -670,17 +668,13 @@ async fn a_toolset_never_governs_a_differently_punctuated_neighbour() {
 #[derive(Debug)]
 struct FixedAuto(AutoDecision);
 impl AutoPermissionEvaluator for FixedAuto {
-    fn evaluate(&self, _call: &awaken_runtime_contract::permission::ToolCall) -> AutoDecision {
+    fn evaluate(&self, _call: &awaken_tool_contract::tool::ToolCall) -> AutoDecision {
         self.0
     }
 }
 
-fn mcp_toolset(
-    default: ToolPermissionRequirement,
-) -> awaken_runtime_contract::agent_bindings::ToolsetPolicy {
-    use awaken_runtime_contract::agent_bindings::{
-        ToolExecutionPolicy, ToolsetPolicy, ToolsetSource,
-    };
+fn mcp_toolset(default: ToolPermissionRequirement) -> awaken_agent_contract::ToolsetPolicy {
+    use awaken_agent_contract::{ToolExecutionPolicy, ToolsetPolicy, ToolsetSource};
     ToolsetPolicy {
         source: ToolsetSource::Mcp {
             server_name: "context".into(),
@@ -837,11 +831,11 @@ async fn a_disabled_tool_is_denied_before_the_evaluator_is_ever_consulted() {
         ("X2", ToolPermissionRequirement::AlwaysAllow),
     ] {
         let policy = RuleBasedToolPermissionPolicy::new(PermissionRuleset::default())
-            .with_mcp_toolsets(&[awaken_runtime_contract::agent_bindings::ToolsetPolicy {
-                source: awaken_runtime_contract::agent_bindings::ToolsetSource::Mcp {
+            .with_mcp_toolsets(&[awaken_agent_contract::ToolsetPolicy {
+                source: awaken_agent_contract::ToolsetSource::Mcp {
                     server_name: "context".into(),
                 },
-                default: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy {
+                default: awaken_agent_contract::ToolExecutionPolicy {
                     enabled: false,
                     permission,
                 },
@@ -1038,7 +1032,7 @@ fn a_fixed_requirement_compiles_into_a_rule_that_still_names_it() {
     // | C2 | T | always_ask | ask | always_ask |
     // | C3 | T | auto | (no rule) | - |
     // | C4 | F | always_allow | deny | rule |
-    use awaken_runtime_contract::agent_bindings::ToolExecutionPolicy;
+    use awaken_agent_contract::ToolExecutionPolicy;
     let pattern = || ToolCallPattern::parse("read").unwrap();
     let policy = |enabled, permission| ToolExecutionPolicy {
         enabled,
