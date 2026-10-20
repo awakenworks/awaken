@@ -225,17 +225,17 @@ def witness_cases(current: bool) -> dict[str, tuple[str | None, str]]:
         "old_builtin": ("E0425", "awaken_ext_builtin_tools::selected_hand_recovery_modes"),
         "migrated_provider": (None, ""),
         "web_paths": (None, ""),
-        "old_runtime_type": ("E0412", "Option<awaken_runtime::EmbeddedSession"),
+        "old_runtime_type": ("E0425", "Option<awaken_runtime::EmbeddedSession"),
         "old_runtime_method": ("E0599", "runtime.session("),
         "migrated_runtime": (None, ""),
         "old_retry_policy_decide": ("E0308", "ModelExecutionEvidence::Unknown"),
         "migrated_retry_policy_decide": (None, ""),
         # Designed compiler controls only; original capture records actual codes/statuses.
-        "owner_old_message_id": ("E0412", "awaken_runtime_contract::MessageId"),
+        "owner_old_message_id": ("E0425", "awaken_runtime_contract::MessageId"),
         "owner_old_credential_module": ("E0433", "awaken_runtime_contract::credential::CredentialRef"),
-        "owner_old_credential_root": ("E0412", "awaken_runtime_contract::CredentialRef"),
+        "owner_old_credential_root": ("E0425", "awaken_runtime_contract::CredentialRef"),
         "owner_old_tool_module": ("E0433", "awaken_runtime_contract::tool::ToolOutput"),
-        "owner_old_tool_root": ("E0412", "awaken_runtime_contract::ToolOutput"),
+        "owner_old_tool_root": ("E0425", "awaken_runtime_contract::ToolOutput"),
         "owner_canonical": (None, ""),
         # New-main source controls: expected codes only, never observed findings.
         "inference_old_disposition": ("E0004", "match disposition {"),
@@ -569,7 +569,7 @@ fn main() { let _ = original_fields(); }
 ''',
     'old_runtime_type': r'''// Runtime release cause/effect R1: the first pre-release source exposes the
 // former opaque binding type -> the identical downstream compiles there.
-// R2: canonical candidate deletes that name -> original rustc E0412 at the
+// R2: canonical candidate deletes that name -> observed rustc E0425 at the
 // single type span; retain raw101. This is a compile-only negative input,
 // never a production alias or a replacement lifecycle implementation.
 pub fn original_type(_: Option<awaken_runtime::EmbeddedSession<'_>>) {}

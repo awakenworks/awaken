@@ -315,14 +315,16 @@ def run_major_consumer_audit(spec_path: Path) -> int:
                 # Keep the sequence's one mutable observation, including source
                 # and record faults; no second post-sequence step update/write.
                 journal["steps"].append(row)
-                if completed is not None:
-                    retain_sdk_command_output(work, name, completed)
-                if validate is not None and completed is not None:
-                    try:
-                        validate(completed.stdout, row)
-                    except (KeyError, TypeError, AttributeError) as error:
-                        raise ValueError(str(error)) from error
-                retain_sdk_result(work, journal)
+                try:
+                    if completed is not None:
+                        retain_sdk_command_output(work, name, completed)
+                    if validate is not None and completed is not None:
+                        try:
+                            validate(completed.stdout, row)
+                        except (KeyError, TypeError, AttributeError) as error:
+                            raise ValueError(str(error)) from error
+                finally:
+                    retain_sdk_result(work, journal)
             return crate_test.execute_commands([planned[name]], values, root=directory,
                 verify=verify, record=record, run=capture)
 
