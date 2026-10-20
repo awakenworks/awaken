@@ -303,18 +303,17 @@ fn bundle_skill_md(bundle: &CanonicalSkillBundle) -> Result<&str, String> {
         })
 }
 
-/// Build a version's projected metadata from SKILL.md content (parse frontmatter
-/// for name + description). Delivery to the durable catalog is the caller's job —
+/// Build a version's projected metadata from the already parsed SKILL.md.
+/// Delivery to the durable catalog is the caller's job —
 /// the SDK path delivers under the skill's name, the legacy path under its id — so
 /// a skill is stored under exactly one durable id (no double-write).
 fn build_version(
     skill_id: &str,
-    content: &str,
+    spec: &awaken_ext_skills::SkillSpec,
     ordinal: u64,
     bundle: CanonicalSkillBundle,
     created_unix_nanos: u64,
 ) -> SkillVersion {
-    let spec = awaken_ext_skills::parse_skill_md("skill", content);
     let files = bundle.files;
     SkillVersion {
         id: format!("skver_{}_{ordinal}", skill_stem(skill_id)).into(),
@@ -379,15 +378,14 @@ async fn create_skill(
         Ok(bundle) => bundle,
         Err(error) => return err(StatusCode::BAD_REQUEST, error),
     };
-    let content = match bundle_skill_md(&bundle) {
-        Ok(content) => content.to_string(),
+    let parsed = match bundle_skill_md(&bundle) {
+        Ok(content) => awaken_ext_skills::parse_skill_md("skill", content),
         Err(error) => return err(StatusCode::BAD_REQUEST, error),
     };
-    let parsed = awaken_ext_skills::parse_skill_md("skill", &content);
     let id = skill_catalog_id(&parsed.name);
     let version = build_version(
         &id,
-        &content,
+        &parsed,
         1,
         bundle,
         state.clock.now().as_unix_nanos_u64(),
@@ -625,13 +623,13 @@ async fn create_version(
         Ok(bundle) => bundle,
         Err(error) => return err(StatusCode::BAD_REQUEST, error),
     };
-    let content = match bundle_skill_md(&bundle) {
-        Ok(content) => content.to_string(),
+    let parsed = match bundle_skill_md(&bundle) {
+        Ok(content) => awaken_ext_skills::parse_skill_md("skill", content),
         Err(error) => return err(StatusCode::BAD_REQUEST, error),
     };
     let version = build_version(
         &id,
-        &content,
+        &parsed,
         definition.last_version + 1,
         bundle,
         state.clock.now().as_unix_nanos_u64(),
@@ -1109,7 +1107,7 @@ mod tests {
         .unwrap();
         let version = build_version(
             id,
-            content,
+            &awaken_ext_skills::parse_skill_md("skill", content),
             1,
             bundle,
             awaken_time::system_clock().now().as_unix_nanos_u64(),
