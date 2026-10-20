@@ -71,7 +71,13 @@ async fn sqlite_independent_handles_allocate_concurrently_and_reopen_without_res
 
 #[tokio::test]
 async fn postgres_independent_pools_allocate_concurrently_without_reset() {
-    let fixture = fixture().await;
+    // A1 optional+absent reports a local skip; A2 required+absent or invalid
+    // configuration fails; A3 live verifies independent clients, concurrent
+    // allocation and reopen against this one isolated physical schema.
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
+    let fixture = WorkPostgresFixture::new(&url, 4).await;
     let a = PostgresWorkQueue::with_pool(fixture.pool.clone(), awaken_time::system_clock())
         .await
         .unwrap();
@@ -88,12 +94,6 @@ async fn postgres_independent_pools_allocate_concurrently_without_reset() {
     assert_eq!(pg_state(&fixture.pool).await.1, 34);
     drop(c);
     fixture.cleanup().await;
-}
-
-async fn fixture() -> WorkPostgresFixture {
-    let url = awaken_reliability_testkit::postgres_fixture_url()
-        .expect("identity evidence requires PostgreSQL");
-    WorkPostgresFixture::new(&url, 4).await
 }
 
 async fn sqlite_pool(path: &std::path::Path) -> sqlx::SqlitePool {
@@ -205,12 +205,18 @@ async fn sqlite_allocator_work_and_watermark_roll_back_as_one_transaction() {
 
 #[tokio::test]
 async fn postgres_allocator_work_and_watermark_roll_back_as_one_transaction() {
+    // A1 optional+absent reports a local skip; A2 required+absent or invalid
+    // configuration fails; A3 live injects each SQL failure and checks the
+    // allocator, Work and revision rollback in the same transaction.
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
     for table in [
         "work_queue_identity_allocator",
         "work_queue_item",
         "work_queue_environment_revision",
     ] {
-        let fixture = fixture().await;
+        let fixture = WorkPostgresFixture::new(&url, 4).await;
         let queue = PostgresWorkQueue::with_pool(fixture.pool.clone(), awaken_time::system_clock())
             .await
             .unwrap();
@@ -336,8 +342,14 @@ async fn sqlite_missing_malformed_and_exhausted_allocators_fail_closed() {
 
 #[tokio::test]
 async fn postgres_missing_malformed_and_exhausted_allocators_fail_closed() {
+    // A1 optional+absent reports a local skip; A2 required+absent or invalid
+    // configuration fails; A3 live runs all three allocator faults without
+    // reconstructing a missing or malformed identity authority on reopen.
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
     for fault in ["missing", "malformed", "exhausted"] {
-        let fixture = fixture().await;
+        let fixture = WorkPostgresFixture::new(&url, 4).await;
         let queue = PostgresWorkQueue::with_pool(fixture.pool.clone(), awaken_time::system_clock())
             .await
             .unwrap();
