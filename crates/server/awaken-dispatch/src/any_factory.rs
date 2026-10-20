@@ -98,7 +98,13 @@ pub async fn with_existing_postgres_pool(
 pub async fn with_postgres_pool_and_wake(
     pool: sqlx::PgPool,
     channel: &str,
-) -> Result<(AnyCoordinatorDispatch, Arc<dyn crate::wake::WakeSignal>), String> {
+) -> Result<
+    (
+        AnyCoordinatorDispatch,
+        Arc<dyn awaken_dispatch_contract::WakeSignal>,
+    ),
+    String,
+> {
     with_postgres_pool_and_wake_access(pool, channel, false).await
 }
 
@@ -108,7 +114,13 @@ pub async fn with_postgres_pool_and_wake(
 pub async fn with_existing_postgres_pool_and_wake(
     pool: sqlx::PgPool,
     channel: &str,
-) -> Result<(AnyCoordinatorDispatch, Arc<dyn crate::wake::WakeSignal>), String> {
+) -> Result<
+    (
+        AnyCoordinatorDispatch,
+        Arc<dyn awaken_dispatch_contract::WakeSignal>,
+    ),
+    String,
+> {
     with_postgres_pool_and_wake_access(pool, channel, true).await
 }
 
@@ -117,14 +129,20 @@ async fn with_postgres_pool_and_wake_access(
     pool: sqlx::PgPool,
     channel: &str,
     verify_only: bool,
-) -> Result<(AnyCoordinatorDispatch, Arc<dyn crate::wake::WakeSignal>), String> {
+) -> Result<
+    (
+        AnyCoordinatorDispatch,
+        Arc<dyn awaken_dispatch_contract::WakeSignal>,
+    ),
+    String,
+> {
     let store = if verify_only {
         PostgresDispatchStore::with_existing_pool(pool).await
     } else {
         PostgresDispatchStore::with_pool(pool).await
     }
     .map_err(|error| error.to_string())?;
-    let wake: Arc<dyn crate::wake::WakeSignal> =
+    let wake: Arc<dyn awaken_dispatch_contract::WakeSignal> =
         Arc::new(crate::wake::PgNotifyWake::new(store.wake_pool(), channel));
     Ok((from_postgres_store(store), wake))
 }
@@ -140,11 +158,17 @@ pub async fn connect_postgres_with_wake(
     url: &str,
     channel: &str,
     max_connections: u32,
-) -> Result<(AnyCoordinatorDispatch, Arc<dyn crate::wake::WakeSignal>), String> {
+) -> Result<
+    (
+        AnyCoordinatorDispatch,
+        Arc<dyn awaken_dispatch_contract::WakeSignal>,
+    ),
+    String,
+> {
     let store = PostgresDispatchStore::connect(url, max_connections)
         .await
         .map_err(|e| e.to_string())?;
-    let wake: Arc<dyn crate::wake::WakeSignal> =
+    let wake: Arc<dyn awaken_dispatch_contract::WakeSignal> =
         Arc::new(crate::wake::PgNotifyWake::new(store.wake_pool(), channel));
     Ok((from_postgres_store(store), wake))
 }
@@ -156,11 +180,17 @@ pub async fn connect_postgres_existing_with_wake(
     url: &str,
     channel: &str,
     max_connections: u32,
-) -> Result<(AnyCoordinatorDispatch, Arc<dyn crate::wake::WakeSignal>), String> {
+) -> Result<
+    (
+        AnyCoordinatorDispatch,
+        Arc<dyn awaken_dispatch_contract::WakeSignal>,
+    ),
+    String,
+> {
     let store = PostgresDispatchStore::connect_existing(url, max_connections)
         .await
         .map_err(|e| e.to_string())?;
-    let wake: Arc<dyn crate::wake::WakeSignal> =
+    let wake: Arc<dyn awaken_dispatch_contract::WakeSignal> =
         Arc::new(crate::wake::PgNotifyWake::new(store.wake_pool(), channel));
     Ok((from_postgres_store(store), wake))
 }
@@ -171,7 +201,7 @@ pub async fn connect_postgres_existing_with_wake(
 /// durable STORE stays Postgres (the queue authority); only the best-effort wake
 /// fan-out moves to a NATS `subject`, for a fleet that already runs a NATS broker
 /// (ADR-0019/0028). Returns the store plus the ready wake signal. Like every
-/// [`WakeSignal`](crate::wake::WakeSignal) the hint is non-authoritative — a lost NATS message only defers
+/// [`WakeSignal`](awaken_dispatch_contract::WakeSignal) the hint is non-authoritative — a lost NATS message only defers
 /// a drain to the poll fallback, so correctness never depends on it.
 #[cfg(feature = "nats")]
 pub async fn connect_postgres_with_nats_wake(
@@ -179,11 +209,17 @@ pub async fn connect_postgres_with_nats_wake(
     nats_url: &str,
     subject: &str,
     max_connections: u32,
-) -> Result<(AnyCoordinatorDispatch, Arc<dyn crate::wake::WakeSignal>), String> {
+) -> Result<
+    (
+        AnyCoordinatorDispatch,
+        Arc<dyn awaken_dispatch_contract::WakeSignal>,
+    ),
+    String,
+> {
     let store = PostgresDispatchStore::connect(db_url, max_connections)
         .await
         .map_err(|e| e.to_string())?;
-    let wake: Arc<dyn crate::wake::WakeSignal> = Arc::new(
+    let wake: Arc<dyn awaken_dispatch_contract::WakeSignal> = Arc::new(
         crate::wake::NatsWakeSignal::connect(nats_url, subject.to_string())
             .await
             .map_err(|e| e.to_string())?,
@@ -199,11 +235,17 @@ pub async fn connect_postgres_existing_with_nats_wake(
     nats_url: &str,
     subject: &str,
     max_connections: u32,
-) -> Result<(AnyCoordinatorDispatch, Arc<dyn crate::wake::WakeSignal>), String> {
+) -> Result<
+    (
+        AnyCoordinatorDispatch,
+        Arc<dyn awaken_dispatch_contract::WakeSignal>,
+    ),
+    String,
+> {
     let store = PostgresDispatchStore::connect_existing(db_url, max_connections)
         .await
         .map_err(|e| e.to_string())?;
-    let wake: Arc<dyn crate::wake::WakeSignal> = Arc::new(
+    let wake: Arc<dyn awaken_dispatch_contract::WakeSignal> = Arc::new(
         crate::wake::NatsWakeSignal::connect(nats_url, subject.to_string())
             .await
             .map_err(|e| e.to_string())?,

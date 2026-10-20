@@ -24,17 +24,7 @@ use async_trait::async_trait;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use crate::dispatch::DispatchError;
-
-/// A best-effort cross-node wake hint.
-#[async_trait]
-pub trait WakeSignal: Send + Sync {
-    /// Publish a wake hint. Best-effort: a failure or a lost hint is tolerable.
-    async fn publish(&self) -> Result<(), DispatchError>;
-
-    /// Wait for the next wake hint.
-    async fn wait(&self);
-}
+use awaken_dispatch_contract::{DispatchError, WakeSignal};
 
 /// Notifications are latency hints, never durable admission or stop evidence.
 /// One budget at the calling boundary prevents an unavailable transport from
@@ -84,6 +74,23 @@ impl DispatchHint {
 /// Single-process wake signal over a shared `tokio` notify. A hint published when
 /// no one is awaiting is held for the next `wait` (one permit), so an in-process
 /// nudge is never lost.
+///
+/// Source-owner table W1/W2: old root/module trait exports are absent; W3 the
+/// original Local implementation satisfies the ONE canonical contract. These
+/// controls prove source paths only. The publication/polling tables below and
+/// in Ingress remain the observable wake/cancellation/recovery oracles.
+/// ```compile_fail,E0432
+/// use awaken_dispatch_execution::WakeSignal;
+/// ```
+/// ```compile_fail,E0603
+/// use awaken_dispatch_execution::wake::WakeSignal;
+/// ```
+/// ```
+/// use awaken_dispatch_execution::LocalWakeSignal;
+/// use awaken_dispatch_contract::WakeSignal;
+/// fn same_port<T: WakeSignal>() {}
+/// same_port::<LocalWakeSignal>();
+/// ```
 #[derive(Clone, Default)]
 pub struct LocalWakeSignal {
     notify: Arc<Notify>,
@@ -114,6 +121,9 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn publication_budget_covers_failure_hang_and_pre_cancel_without_retry() {
+        // W0 owner-only migration: every old C1/C2 row still exercises the same
+        // selected adapter and 100ms/cancellation kernel through the canonical
+        // contract type. Moving that declaration cannot add storage/claim power.
         // C1 transport success/error/pending; C2 caller cancelled before send.
         // R1 !C2 => exactly one send, success/error return immediately, pending
         // returns at 100ms. R2 C2 => zero sends. All paths preserve caller-owned

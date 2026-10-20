@@ -19,9 +19,11 @@
 mod binding;
 mod bundle;
 mod local_commit;
+mod runtime_authority;
 pub use binding::{DispatchBinding, DispatchTopology};
 pub use bundle::{Dispatch, DurableDispatch, RemoteDispatch};
 pub use local_commit::{LocalCommit, LocalCommitAdapter, LocalCommitQueries, ProjectedQueries};
+pub use runtime_authority::{RuntimeAuthority, RuntimeAuthorityError};
 use std::sync::Arc;
 
 use async_trait::async_trait;

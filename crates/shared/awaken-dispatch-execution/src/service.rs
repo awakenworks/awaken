@@ -22,9 +22,9 @@ use awaken_runtime_contract::activation::RunActivation;
 
 use crate::Error;
 use crate::dispatch::PendingInput;
-use crate::wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
+use crate::wake::{LocalWakeSignal, publish_dispatch_hint};
 use crate::worker::DispatchWorker;
-use awaken_dispatch_contract::RunDispatch;
+use awaken_dispatch_contract::{RunDispatch, WakeSignal};
 use awaken_time::WallClock;
 use awaken_time::WallClockExt;
 

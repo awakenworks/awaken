@@ -121,7 +121,7 @@ struct ProcessBase {
     iam: Option<Arc<ManagementAuthz>>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
     managed_rate_limiter: Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>,
-    runtime_authority: Option<Arc<dyn awaken_session_executor::RuntimeAuthority>>,
+    runtime_authority: Option<Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>>,
     placement: awaken_session_application::SessionExecutionPlacement,
     worker_directory: awaken_coordinator::WorkerDirectoryHandle,
     worker_transport: worker_transport_security::WorkerTransport,
@@ -194,7 +194,7 @@ async fn open_process_base(
 async fn selected_runtime_authority(
     process: &mut ProcessStartup,
     stores: &ProcessStores,
-) -> Result<Option<Arc<dyn awaken_session_executor::RuntimeAuthority>>, String> {
+) -> Result<Option<Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>>, String> {
     #[cfg(any(test, feature = "test-support"))]
     if process.runtime_authority.is_none() {
         let selected = process
