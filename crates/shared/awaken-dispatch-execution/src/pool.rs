@@ -51,9 +51,9 @@ use crate::service::{
     DispatchServiceConfig, LocalMaintenanceSchedule, spawn_dispatch_depth_sampler,
     wait_for_terminal_reconciliation,
 };
-use crate::wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
+use crate::wake::{LocalWakeSignal, publish_dispatch_hint};
 use crate::worker::{DispatchWorker, renew_claim_while_active};
-use awaken_dispatch_contract::RunDispatch;
+use awaken_dispatch_contract::{RunDispatch, WakeSignal};
 use awaken_time::WallClock;
 use awaken_time::WallClockExt;
 

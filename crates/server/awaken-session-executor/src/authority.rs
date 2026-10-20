@@ -10,6 +10,7 @@
 use crate::memory_binding::SessionMemoryReferenceEncoder;
 use std::sync::Arc;
 
+#[cfg(any(test, feature = "test-support"))]
 use crate::LocalCommit;
 #[cfg(any(test, feature = "test-support"))]
 use crate::LocalCommitAdapter;
@@ -28,6 +29,9 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleFeedError, RunLifecyclePage,
 };
+use awaken_dispatch_erasure::RuntimeAuthority;
+#[cfg(any(test, feature = "test-support"))]
+use awaken_dispatch_erasure::RuntimeAuthorityError;
 #[cfg(test)]
 use awaken_dispatch_erasure::{LocalCommitQueries, ProjectedQueries};
 
@@ -126,46 +130,6 @@ impl LocalCommitQueries<awaken_store_inmem::MemoryCommitCoordinator> for Scripte
     }
 }
 
-/// The complete durable capability injected into one Coordinator Runtime Host.
-#[async_trait::async_trait]
-pub trait RuntimeAuthority: Send + Sync {
-    async fn open_commit(
-        &self,
-        thread: &str,
-    ) -> Result<Arc<dyn LocalCommit>, RuntimeAuthorityError>;
-
-    async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RuntimeAuthorityError>;
-
-    fn dispatch_store(&self) -> Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>;
-
-    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_execution::WakeSignal>>;
-
-    fn stream_checkpoint(
-        &self,
-        thread: &str,
-    ) -> Result<Arc<dyn StreamCheckpointStore>, RuntimeAuthorityError>;
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum RuntimeAuthorityError {
-    #[error("runtime authority unavailable: {0}")]
-    Unavailable(String),
-    #[error("runtime authority is corrupt: {0}")]
-    Corrupt(String),
-    #[error("runtime authority is misconfigured: {0}")]
-    Misconfigured(String),
-}
-
-impl RuntimeAuthorityError {
-    pub fn unavailable(error: impl Into<String>) -> Self {
-        Self::Unavailable(error.into())
-    }
-
-    pub fn misconfigured(error: impl Into<String>) -> Self {
-        Self::Misconfigured(error.into())
-    }
-}
-
 /// Process-local authority used only by unit tests and scenario fixtures.
 ///
 /// This is the sole non-durable reference adapter for the runtime boundary. It
@@ -258,7 +222,7 @@ impl RuntimeAuthority for EphemeralRuntimeAuthority {
         self.dispatch.clone()
     }
 
-    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_execution::WakeSignal>> {
+    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_contract::WakeSignal>> {
         None
     }
 
@@ -336,7 +300,7 @@ pub(crate) trait SessionAuthority: Send + Sync {
     fn dispatch_binding(&self) -> Option<awaken_dispatch_erasure::DispatchBinding>;
 
     /// The cross-node dispatch wake this process owns, if any.
-    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_execution::WakeSignal>>;
+    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_contract::WakeSignal>>;
 
     /// Cancelling a Run records the durable cancellation intent (`true`), or
     /// only signals the attempt resident in this process (`false`): a Worker's
@@ -433,7 +397,7 @@ impl SessionAuthority for LocalAuthority {
         ))
     }
 
-    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_execution::WakeSignal>> {
+    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_contract::WakeSignal>> {
         self.runtime.dispatch_wake()
     }
 
@@ -616,7 +580,7 @@ impl SessionAuthority for UpstreamAuthority {
         self.dispatch.clone()
     }
 
-    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_execution::WakeSignal>> {
+    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_contract::WakeSignal>> {
         None
     }
 

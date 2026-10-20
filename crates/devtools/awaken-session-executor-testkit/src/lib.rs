@@ -157,7 +157,7 @@ fn with_workdir_fallback(
 #[must_use]
 pub fn volatile_runtime_authority(
     clock: Arc<dyn awaken_time::WallClock>,
-) -> Arc<dyn awaken_session_executor::RuntimeAuthority> {
+) -> Arc<dyn awaken_dispatch_erasure::RuntimeAuthority> {
     // Cause/effect fixture rule: C1 a volatile scenario selects its authority
     // before Host construction; C2 the same clock stamps Dispatch and Thread commits.
     // R1 C1+C2 -> one Ingress MemoryDispatchStore is selected here, retains its

@@ -127,14 +127,16 @@ impl HostResume {
     }
 }
 
-impl From<crate::RuntimeAuthorityError> for SessionExecutionError {
-    fn from(error: crate::RuntimeAuthorityError) -> Self {
+impl From<awaken_dispatch_erasure::RuntimeAuthorityError> for SessionExecutionError {
+    fn from(error: awaken_dispatch_erasure::RuntimeAuthorityError) -> Self {
         match error {
-            crate::RuntimeAuthorityError::Unavailable(message) => Self::unavailable(message),
-            crate::RuntimeAuthorityError::Corrupt(message) => {
+            awaken_dispatch_erasure::RuntimeAuthorityError::Unavailable(message) => {
+                Self::unavailable(message)
+            }
+            awaken_dispatch_erasure::RuntimeAuthorityError::Corrupt(message) => {
                 Self::classified("runtime_authority_corrupt", message)
             }
-            crate::RuntimeAuthorityError::Misconfigured(message) => {
+            awaken_dispatch_erasure::RuntimeAuthorityError::Misconfigured(message) => {
                 Self::classified("runtime_authority_misconfigured", message)
             }
         }

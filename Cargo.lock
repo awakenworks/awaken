@@ -488,6 +488,7 @@ dependencies = [
  "awaken-deployment-application",
  "awaken-deployment-contract",
  "awaken-dispatch",
+ "awaken-dispatch-erasure",
  "awaken-dispatch-http",
  "awaken-dispatch-testkit",
  "awaken-env-store",
@@ -794,6 +795,7 @@ dependencies = [
  "awaken-deployment-application",
  "awaken-deployment-contract",
  "awaken-dispatch",
+ "awaken-dispatch-contract",
  "awaken-dispatch-erasure",
  "awaken-dispatch-http",
  "awaken-dispatch-testkit",
@@ -1177,6 +1179,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-store-inmem",
  "awaken-time",
+ "thiserror",
  "tokio",
 ]
 
@@ -2845,6 +2848,7 @@ dependencies = [
  "awaken-credential-store",
  "awaken-credential-vault",
  "awaken-dispatch",
+ "awaken-dispatch-erasure",
  "awaken-dream-application",
  "awaken-executable-agent-catalog",
  "awaken-executable-agent-contract",
@@ -3210,6 +3214,7 @@ name = "awaken-session-executor-testkit"
 version = "1.0.0"
 dependencies = [
  "awaken-dispatch",
+ "awaken-dispatch-erasure",
  "awaken-ext-memory",
  "awaken-file-store",
  "awaken-memory-store",

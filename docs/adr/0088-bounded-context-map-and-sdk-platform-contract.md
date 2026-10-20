@@ -697,3 +697,35 @@ The bounded Cloud/Flow source review found no import of the removed native
 filesystem namespaces; no downstream compatibility alias is retained. Actual
 Git-pin, archive and downstream consumption remain separate qualification, and
 SDK versions, deep paths and release-cohort decisions do not change here.
+
+
+## Implementation note 2026-10-20: canonical wake and durable capability declarations
+
+The single two-method `WakeSignal` declaration belongs to the existing
+`awaken-dispatch-contract`, alongside its original `DispatchError` vocabulary.
+Local notification and the cancellation/100ms publication budget remain in
+`awaken-dispatch-execution`; PostgreSQL and NATS adapters and their factories
+remain with Ingress. A hint still grants no queue, claim, cancellation-settlement
+or terminal authority, and durable polling remains the recovery truth.
+
+The existing five-method `RuntimeAuthority` and its unchanged typed error are
+declared by `awaken-dispatch-erasure`, beside its existing LocalCommit and erased
+Dispatch roles. This module opens no backend. Coordinator keeps its selected
+Clock, process pool, per-Thread initialization and checkpoint policies; Executor
+keeps SessionAuthority, Local/Upstream permission choices and the explicit
+Ephemeral reference implementation. The declaration's wake type no longer
+requires a reverse dependency on the execution implementation.
+
+All known workspace consumers use those defining owners. Old public trait/error
+exports from Executor and the old WakeSignal exports from Execution/Ingress are
+removed, without aliases or duplicate declarations. Construction and effect
+ordering are unchanged. The explicit direct dependency edges name actual new
+source consumers; they are not a claim that Coordinator's remaining deployment
+configuration or Host implementation dependency is closed.
+
+These are Platform source paths, outside the SDK22 release boundary. Flow's
+known pinned RuntimeAuthority implementation and WakeSignal return type need
+canonical import/dependency migration when that pin is upgraded; no Flow/Cloud
+source, pin, SDK snapshot, registry or persisted wire changes here. Source-only
+controls and historical caller searches do not replace final-source compilation,
+configured transport execution or real downstream qualification.

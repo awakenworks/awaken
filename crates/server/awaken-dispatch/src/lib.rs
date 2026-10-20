@@ -13,6 +13,13 @@
 //! (G1/G13). Historical reexports preserve caller source compatibility without
 //! retaining another execution implementation here.
 //!
+//! Source-owner rule W4: the old host WakeSignal export is removed; callers
+//! import its existing two-method port from run-ingress-contract. No new wake
+//! implementation or delivery law is introduced by this source control.
+//! ```compile_fail,E0432
+//! use awaken_dispatch::WakeSignal;
+//! ```
+//!
 //! The aggregates follow the dispatch design's DDD split: [`DispatchEnqueue`] and [`DispatchClaims`] owns
 //! delivery opportunity (claim/lease/recovery), [`Inbox`] owns the
 //! thread's pending input, and run outcome stays in committed facts, read back
@@ -140,7 +147,6 @@ pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};
 pub use wake::NatsWakeSignal;
 #[cfg(feature = "durable")]
 pub use wake::PgNotifyWake;
-pub use wake::WakeSignal;
 
 #[cfg(any(feature = "durable", test))]
 fn next_supersession_epoch(max_epoch: i64) -> Result<i64, DispatchError> {

@@ -2376,7 +2376,8 @@ async fn lease_renewal_store_spec() {
 
 #[tokio::test]
 async fn local_wake_signal_delivers_a_held_hint() {
-    use awaken_dispatch::{LocalWakeSignal, WakeSignal};
+    use awaken_dispatch::LocalWakeSignal;
+    use awaken_dispatch_contract::WakeSignal;
     let wake = LocalWakeSignal::new();
     // A hint published before anyone waits is held (one permit), so wait returns.
     wake.publish().await.unwrap();

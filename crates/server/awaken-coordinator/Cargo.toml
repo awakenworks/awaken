@@ -13,6 +13,7 @@ separation = "process"
 
 
 [dependencies]
+awaken-dispatch-contract.workspace = true
 # Real Web compiler used by this bootstrap crate's explicit scenario assembly only.
 awaken-ext-builtin-tools = { workspace = true, optional = true }
 awaken-tool-contract.workspace = true

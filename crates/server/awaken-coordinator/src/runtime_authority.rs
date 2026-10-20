@@ -23,11 +23,12 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleFeed, RunLifecycleFeedError, RunLifecyclePage,
 };
-use awaken_dispatch_erasure::{LocalCommit, LocalCommitAdapter, LocalCommitQueries};
-use awaken_dispatch::{AnyCoordinatorDispatch, WakeSignal};
-use awaken_session_executor::{
-    DeploymentConfig, DispatchBackend, RuntimeAuthority, RuntimeAuthorityError, StoreKind, Wake,
+use awaken_dispatch_erasure::{
+    LocalCommit, LocalCommitAdapter, LocalCommitQueries, RuntimeAuthority, RuntimeAuthorityError,
 };
+use awaken_dispatch::AnyCoordinatorDispatch;
+use awaken_dispatch_contract::WakeSignal;
+use awaken_session_executor::{DeploymentConfig, DispatchBackend, StoreKind, Wake};
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_postgres::PostgresCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;
@@ -753,6 +754,10 @@ mod tests {
     /// | A3 | no | n/a | absent | E3 |
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn runtime_authority_startup_decision_table() {
+        // A0 declaration ownership alone changes: this original startup table
+        // still owns backend/pool/Clock/wake selection and every refusal below.
+        // The canonical shared interface opens no store and adds no authority;
+        // same-Thread, initialization and HostCommit tables keep their effects.
         let missing = DeploymentConfig::ephemeral();
         let missing_error = match DurableRuntimeAuthority::open(
             &missing,
