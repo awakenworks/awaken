@@ -305,6 +305,25 @@ pub trait SessionResourceMaterializationControl: Send + Sync {
     ) -> Result<String, SessionRealizationControlFailure>;
 }
 
+/// Session-root observation for a File read under an independently held Run
+/// claim. The caller verifies Worker identity and keeps that exact claim guard
+/// through the File read; this observation grants no claim or materialization
+/// authority. `observed_at_unix_ms` is the caller's trusted request-start Clock
+/// sample, shared with its Registry and claim checks, never a wire parameter.
+/// Missing, mismatched or unreadable roots refuse the observation. The separate
+/// exact-generation materialization-intent port retains its own admission law.
+#[async_trait]
+pub trait SessionFileReadAuthorization: Send + Sync {
+    async fn session_file_is_frozen_for_worker(
+        &self,
+        session_id: &crate::SessionId,
+        workspace_id: &str,
+        identity: &awaken_worker_contract::WorkerIdentity,
+        file_id: &str,
+        observed_at_unix_ms: u64,
+    ) -> bool;
+}
+
 /// Authorization for checkpoint source-release Artifact publication.
 #[async_trait]
 pub trait SessionCheckpointArtifactControl: Send + Sync {

@@ -1414,7 +1414,7 @@ async fn mount_with_managed_over_and_models(
             worker_clock.clone(),
         )
         .with_worker_directory(worker_directory.clone())
-        .with_session_repository(session_application.session_repository_handle())
+        .with_session_file_authorization(session_application.queries())
         .with_session_control(session_application.clone())
         .with_recovery(host.worker_recovery_source()),
     ));

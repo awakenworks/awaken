@@ -41,7 +41,6 @@
     "SandboxCheckpointStore <- awaken-session-realization": 1,
     "SandboxExecutionPolicyStore <- awaken-protocol-awaken": 1,
     "SandboxExecutionPolicyStore <- awaken-protocol-managed": 1,
-    "SessionRepositoryReads <- awaken-resource-worker-http": 1,
     "SkillStore <- awaken-protocol-managed": 1,
     "SkillStore <- awaken-session-executor": 1
   },
