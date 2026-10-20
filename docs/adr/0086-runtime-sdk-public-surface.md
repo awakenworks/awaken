@@ -542,3 +542,31 @@ registry publication. Both lock files and public snapshots are future outputs
 of their original generators and must bind the final received source. Flow and
 each Cloud consumer need a separate import/selector/pin migration and their own
 actual build receipts; no downstream source or pin changes are made here.
+
+
+### 2026-10-20: Record observed Runtime and Contract major findings
+
+Pinned cargo-semver-checks 0.47 actually produced matching default/all forced-
+patch observations for source `7df94e4654` against the original `50b3` baseline.
+Both packages executed 222 nonempty checks. Runtime reports the removed
+`Runtime::session`, `Runtime::with_max_consecutive_inference_failures` and
+`EmbeddedSession`; Contract reports the added `Error:Admission` variant and the
+removed forwarding-only `credential` module. These exact sets now join the
+already reviewed Provider/Builtin findings in the existing qualifier's data.
+The earlier unestablished observations above remain historical statements.
+
+The complete SDK22 normal/build workspace source closure is unchanged through
+`f5316e0dbc`. This source comparison supports review of the actual findings;
+it does not relabel an old command as final-source execution. Original compiler
+controls and fresh default/all reports, raw statuses, nonempty queries, complete
+package accounting and archive receipts remain required by the same validator.
+Missing or extra findings still refuse. No generic allowance, exception list,
+compatibility wrapper, witness renderer or release executor is added.
+
+The separately executed Agent `1.0.0` report found the added exhaustive-enum
+variant `Disposition:StopRouting`. This four-package observation does not admit
+that unversioned break or settle Agent/Contract public dependency identity.
+Versions and release-cohort membership are unchanged here. Full22 diagnostics,
+actual downstream interoperability, version decisions and the complete final-
+source SDK package/SemVer/archive/registry qualification remain open. No push or
+registry publication is authorized by this finding review.

@@ -232,6 +232,34 @@ class SdkSemverEvidenceTests(unittest.TestCase):
                 observed = evidence.validate_audit(output, 1, approved=known)
                 self.assertGreater(observed[name]["checks"], 0)
 
+        # R8-R10 exercise the production default policy, independently of the
+        # controlled empty Runtime fixtures above. The two actual reviewed
+        # report sets are necessary; dropping a reviewed item or adding an
+        # unreviewed one refuses. This checks policy application only, never
+        # substitutes for original compiler/report/source-profile receipts.
+        reviewed = {
+            "awaken-runtime": {
+                ("inherent_method_missing", "method", "Runtime::session"),
+                ("inherent_method_missing", "method", "Runtime::with_max_consecutive_inference_failures"),
+                ("struct_missing", "struct", "awaken_runtime::EmbeddedSession"),
+            },
+            "awaken-runtime-contract": {
+                ("enum_variant_added", "variant", "Error:Admission"),
+                ("module_missing", "mod", "awaken_runtime_contract::credential"),
+            },
+        }
+        reports = {
+            name: self.report(name, failures=reviewed.get(name, evidence.APPROVED_FINDINGS[name]))
+            for name in evidence.COHORT
+        }
+        production_output = "".join(reports.values())
+        self.assertEqual(set(evidence.validate_audit(production_output, 1)), set(evidence.COHORT))
+        for name, findings in reviewed.items():
+            for changed in [*(findings - {item} for item in findings),
+                            findings | {("function_missing", "function", "fixture::unreviewed")}]:
+                with self.subTest(package=name, findings=changed), self.assertRaises(ValueError):
+                    evidence.validate_audit(production_output.replace(reports[name], self.report(name, failures=changed)), 1)
+
     @staticmethod
     def compiler_output(code=None, *, file="cases/old_enum.rs", line=2, finished=True):
         rows = []

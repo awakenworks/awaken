@@ -24,11 +24,14 @@ COHORT = {"awaken-ext-builtin-tools": ("1.0.0", "2.0.0"),
 # enum/Client E0004/E0308 and successful migration controls remain mandatory.
 # These data never replace nonempty queries, exact source/profile receipts, or
 # raw statuses; an unestablished/unknown set still refuses in the same parser.
-# Runtime and RuntimeContract are separately declared breaking packages. Their
-# actual forced-patch findings have NOT been reviewed: do not add empty approvals.
-# The same exact-key check keeps this four-package policy incomplete until both
-# source/profile-bound reports are read and separately approved. Compile witness
-# E0308 below is a test expectation, never a predicted SemVer finding or raw exit.
+# Runtime/Contract findings were independently observed in the pinned0.47
+# default/all reports for 7df94e4654 versus 50b3, with 222 nonempty checks each.
+# The SDK normal/build source closure is unchanged through f5316e0dbc. Record
+# their exact already-declared 2.0 removals, never an empty or predicted set.
+# Actual consumer controls and fresh source/profile receipts remain required.
+# Agent 1's separately observed Disposition:StopRouting break is unqualified;
+# this four-package policy neither versions nor admits that package or its
+# public dependency identities. Unknown/extra findings still refuse.
 APPROVED_FINDINGS = {
     "awaken-ext-builtin-tools": {
         ("enum_missing", "enum", "awaken_ext_builtin_tools::WebDomainFilter"),
@@ -38,6 +41,15 @@ APPROVED_FINDINGS = {
         ("struct_missing", "struct", "awaken_ext_builtin_tools::WebSearchExecutionConfiguration"),
     },
     "awaken-provider-genai": set(),
+    "awaken-runtime": {
+        ("inherent_method_missing", "method", "Runtime::session"),
+        ("inherent_method_missing", "method", "Runtime::with_max_consecutive_inference_failures"),
+        ("struct_missing", "struct", "awaken_runtime::EmbeddedSession"),
+    },
+    "awaken-runtime-contract": {
+        ("enum_variant_added", "variant", "Error:Admission"),
+        ("module_missing", "mod", "awaken_runtime_contract::credential"),
+    },
 }
 GENAI_GIT = "https://github.com/awakenworks/rust-genai.git"
 GENAI_REV = "da7b568fb413b3197acc13c93f334884f97c81ad"
