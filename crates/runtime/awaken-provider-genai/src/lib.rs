@@ -969,7 +969,8 @@ pub fn from_genai_response(response: genai::chat::ChatResponse) -> Result<ChatRe
 }
 
 fn require_usable_response(response: ChatResponse) -> Result<ChatResponse> {
-    if response.output.text_content().trim().is_empty() && response.output.tool_calls().is_empty() {
+    let text = response.output.text_content();
+    if text.trim().is_empty() && response.output.tool_calls().is_empty() {
         // A reasoning model can spend its entire output allowance before a
         // public token or typed tool call fits. Preserve only the explicitly
         // truncated form so Runtime's one bounded MaxTokens continuation owner
@@ -988,11 +989,12 @@ fn require_usable_response(response: ChatResponse) -> Result<ChatResponse> {
     // or execute it here: only the SDK's typed ToolCall is trusted. A retryable
     // provider error lets the canonical run retry policy obtain a structured
     // response without creating a second provider-specific tool parser.
+    // A leaked suffix or truncated invocation can omit the tool_calls opening
+    // tag entirely. Both reserved frame delimiters identify the same fault.
     if response.output.tool_calls().is_empty()
-        && response
-            .output
-            .text_content()
-            .contains("<｜｜DSML｜｜tool_calls>")
+        && ["<｜｜DSML｜｜", "</｜｜DSML｜｜"]
+            .iter()
+            .any(|delimiter| text.contains(delimiter))
     {
         return Err(Error::InvalidResponse(
             "model serialized a tool call as assistant text instead of structured tool data".into(),
@@ -1051,8 +1053,9 @@ mod visible_response_tests {
     }
 
     /// Textual-tool-call cause/effect graph, decision table, and FMECA. Causes:
-    /// C1 typed tool calls exist; C2 assistant text has the unambiguous DSML
-    /// tool-call sentinel. Effects: E1 accept typed or ordinary text; E2 reject
+    /// C1 typed tool calls exist; C2 assistant text contains reserved DSML
+    /// opening or closing framing, including a partial frame or a suffix after
+    /// otherwise ordinary JSON. Effects: E1 accept typed or ordinary text; E2 reject
     /// serialized tool syntax as a retryable provider fault without executing
     /// it. Rules T1=C1=>E1, T2=!C1&C2=>E2, and T3=!C1&!C2=>E1. FMECA: committing
     /// serialized tool syntax is critical because an expected external effect
@@ -1063,34 +1066,61 @@ mod visible_response_tests {
     /// sentinel text is detected but never parsed as a second tool authority.
     #[test]
     fn textual_dsml_tool_calls_always_fail_closed() {
-        let serialized = || ChatResponse {
-            output: AssistantOutput::text(
-                "<｜｜DSML｜｜tool_calls> <｜｜DSML｜｜invoke name=\"publish\">",
+        // T2 rows distinguish all frame positions. The first suffix reproduces
+        // the real Flow review failure: valid-looking JSON followed only by
+        // closing protocol tags. Do not strip the suffix or accept a JSON prefix;
+        // that would also silently accept its conflicting duplicate member.
+        for text in [
+            concat!(
+                r#"{"review_result":"failed","code_findings":"first","code_findings":"second"}"#,
+                "</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>"
             ),
-            usage: None,
-            stop_reason: Some(StopReason::NaturalEnd),
-        };
+            "<｜｜DSML｜｜tool_calls> <｜｜DSML｜｜invoke name=\"publish\">",
+            "<｜｜DSML｜｜invoke name=\"publish\">",
+            "<｜｜DSML｜｜parameter name=\"path\">/workspace/material",
+            "</｜｜DSML｜｜tool_calls>",
+            "</｜｜DSML｜｜invoke>",
+            "</｜｜DSML｜｜parameter>",
+            "<｜｜DSML｜｜",
+            "</｜｜DSML｜｜",
+        ] {
+            let response = ChatResponse {
+                output: AssistantOutput::text(text),
+                usage: None,
+                stop_reason: Some(StopReason::NaturalEnd),
+            };
+            let error = require_usable_response(response).expect_err("T2/E2");
+            assert!(matches!(error, Error::InvalidResponse(_)), "T2/E2");
+            assert!(error.is_retryable(), "T2/E2");
 
-        let error = require_usable_response(serialized()).expect_err("T2/E2");
-        assert!(matches!(error, Error::InvalidResponse(_)), "T2/E2");
-        assert!(error.is_retryable(), "T2/E2");
+            // T1: the typed SDK call remains authoritative for every text row;
+            // this guard never parses text into a competing executable call.
+            let typed = ChatResponse {
+                output: AssistantOutput::from_blocks(vec![
+                    ContentBlock::text(text),
+                    ContentBlock::tool_use("call-1", "publish", serde_json::json!({})),
+                ]),
+                usage: None,
+                stop_reason: Some(StopReason::ToolUse),
+            };
+            assert!(require_usable_response(typed).is_ok(), "T1/E1");
+        }
 
-        let ordinary = ChatResponse {
-            output: AssistantOutput::text("ordinary final answer"),
-            usage: None,
-            stop_reason: Some(StopReason::NaturalEnd),
-        };
-        assert!(require_usable_response(ordinary).is_ok(), "T3/E1");
-
-        let typed = ChatResponse {
-            output: AssistantOutput::from_blocks(vec![
-                ContentBlock::text("<｜｜DSML｜｜tool_calls>"),
-                ContentBlock::tool_use("call-1", "publish", serde_json::json!({})),
-            ]),
-            usage: None,
-            stop_reason: Some(StopReason::ToolUse),
-        };
-        assert!(require_usable_response(typed).is_ok(), "T1/E1");
+        // T3: ordinary JSON and mentions without reserved protocol framing are
+        // not provider faults. ASCII lookalikes are not the DSML delimiter.
+        for text in [
+            "ordinary final answer",
+            r#"{"review_result":"passed"}"#,
+            "DSML tool_calls are provider-private",
+            "<|DSML|tool_calls> is an ASCII lookalike",
+        ] {
+            let ordinary = ChatResponse {
+                output: AssistantOutput::text(text),
+                usage: None,
+                stop_reason: Some(StopReason::NaturalEnd),
+            };
+            assert!(require_usable_response(ordinary).is_ok(), "T3/E1");
+        }
     }
 }
 
