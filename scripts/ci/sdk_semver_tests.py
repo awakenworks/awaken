@@ -618,6 +618,25 @@ def shared_sdk_io_tests(owner):
                     helper.git(root, "commit", "--quiet", "-m", "private " + ("current" if current else "baseline") + " major cohort")
                 yield helper, root
 
+        def test_retained_channels_preserve_captured_utf8_bytes_and_hash(self):
+            import hashlib
+            # B1 LF, B2 existing CRLF, B3 mixed Unicode/channels, B4 empty:
+            # retained bytes must match the UTF-8 bytes bound by log_sha256.
+            # Platform newline conversion must never revoke a valid witness.
+            for stdout, stderr in (("first\nsecond\n", "diagnostic\n"),
+                                   ("first\r\n", "diagnostic\r\n"),
+                                   ("λ\n汉字\r\n", "é\r\nlast\n"), ("", "")):
+                with self.subTest(stdout=stdout, stderr=stderr), tempfile.TemporaryDirectory() as temporary:
+                    directory = Path(temporary)
+                    completed = subprocess.CompletedProcess(["fixture"], 0, stdout, stderr)
+                    owner.retain_sdk_command_output(directory, "captured", completed)
+                    self.assertEqual((directory / "captured.stdout.log").read_bytes(), stdout.encode("utf-8"))
+                    self.assertEqual((directory / "captured.stderr.log").read_bytes(), stderr.encode("utf-8"))
+                    combined = (directory / "captured.log").read_bytes()
+                    self.assertEqual(combined, (stdout + stderr).encode("utf-8"))
+                    self.assertEqual(hashlib.sha256(combined).hexdigest(),
+                                     hashlib.sha256((stdout + stderr).encode("utf-8")).hexdigest())
+
         def active_execute(self, helper, root, *, approved=True, failure=None, output_cause="", metadata_cause="", witness_cause=""):
             """Reuse the original outer fixture and the one existing action."""
             observations = []
