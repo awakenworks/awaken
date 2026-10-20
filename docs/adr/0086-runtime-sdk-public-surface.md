@@ -542,3 +542,94 @@ registry publication. Both lock files and public snapshots are future outputs
 of their original generators and must bind the final received source. Flow and
 each Cloud consumer need a separate import/selector/pin migration and their own
 actual build receipts; no downstream source or pin changes are made here.
+
+
+### 2026-10-20: Record observed Runtime and Contract major findings
+
+Pinned cargo-semver-checks 0.47 actually produced matching default/all forced-
+patch observations for source `7df94e4654` against the original `50b3` baseline.
+Both packages executed 222 nonempty checks. Runtime reports the removed
+`Runtime::session`, `Runtime::with_max_consecutive_inference_failures` and
+`EmbeddedSession`; Contract reports the added `Error:Admission` variant and the
+removed forwarding-only `credential` module. These exact sets now join the
+already reviewed Provider/Builtin findings in the existing qualifier's data.
+The earlier unestablished observations above remain historical statements.
+
+The complete SDK22 normal/build workspace source closure is unchanged through
+`f5316e0dbc`. This source comparison supports review of the actual findings;
+it does not relabel an old command as final-source execution. Original compiler
+controls and fresh default/all reports, raw statuses, nonempty queries, complete
+package accounting and archive receipts remain required by the same validator.
+Missing or extra findings still refuse. No generic allowance, exception list,
+compatibility wrapper, witness renderer or release executor is added.
+
+The separately executed Agent `1.0.0` report found the added exhaustive-enum
+variant `Disposition:StopRouting`. This four-package observation does not admit
+that unversioned break or settle Agent/Contract public dependency identity.
+Versions and release-cohort membership are unchanged here. Full22 diagnostics,
+actual downstream interoperability, version decisions and the complete final-
+source SDK package/SemVer/archive/registry qualification remain open. No push or
+registry publication is authorized by this finding review.
+
+
+### 2026-10-20: Close the public defining-type release boundary
+
+Complete pinned 0.47 forced-patch diagnostics on clean `f5316e0dbc` actually
+checked all twenty-two selected SDK packages, with 222 nonempty queries each,
+under both default/all profiles against the original `50b3` baseline. The exact
+findings agree across profiles. Agent adds the exhaustive `Disposition` variant
+`StopRouting`; keeping Agent at `1.0.0` would leave that source break unversioned.
+The original baseline-positive, current E0004 and migrated-positive controls
+already execute that distinction. Preserve the corrected routing behavior.
+
+Public dependency identity is a separate source obligation. Actual default
+compiler inputs use the real `OtelMetricsRecorder`, `PiiRedactor` and
+`CompactPlugin`, with the accepted Contract fixed to the original immutable
+Git source. All three baseline compositions compile; all three current SDK
+compositions with accepted Contract1 refuse with E0277 at the original value
+flow; all three current Contract2 compositions compile. Their real Cargo
+metadata contains both exact Contract identities in the negative graph and
+only the canonical identity in each positive graph. These are bounded actual
+compiler observations, not Provider, registry or final-release qualification.
+
+The existing API/source review finds Agent-defined public values or traits in
+fourteen other selected SDK packages. Observability separately exposes Contract
+traits without an Agent payload. These are actual fields, arguments, results
+and trait implementations; an indirect private dependency alone is insufficient.
+Keeping their old package versions would allow a supposedly compatible upgrade
+to replace the defining identity seen by a downstream caller. Identical API text
+and primitive payload fields do not make Contract1 and Contract2 the same trait.
+
+Declare Agent and Tool explicitly `2.0.0`; retain the separately justified
+Builtin, Provider, Runtime and RuntimeContract `2.0.0` decisions. BackgroundTask,
+Compact, Goal, Memory, Permission, Observability and StoreInmem declare `2.0.0`
+for their public defining-type change. MCP, Skills and StateMachine retain their
+pre-1.0 status and use the incompatible `0.2.0` boundary. Update the existing
+workspace dependency requirements to these authored versions. The six leaves
+LeaseContract, McpWire, OutboundHttp, Time, ToolPattern and WebPolicy retain their
+actual versions. The workspace default and Platform versions remain unchanged.
+No production dependency edge, type definition, retry classifier, conversion,
+forwarding API or compatibility implementation is added.
+
+The one existing release-cohort and exact-observation data describe this
+sixteen-package boundary. The forced reports' empty sets on public carriers
+are recorded tool observations, never assertions of cross-version compatibility.
+Unknown/additional findings still refuse; new versions require their own fresh
+nonempty default/all reports, original compiler controls, standard twenty-two
+package observations and archive/consumer receipts. Historical receipts keep
+their original source. No blanket approval or release mode is introduced.
+
+A package may now have both a release role and a defining-owner role. The same
+SDK input owner renders their union once across manifest, producer metadata,
+consumer metadata and retained receipt. Neither role suppresses the other:
+Agent/Tool still require their exact direct normal dependencies. Attached U1-U3
+controlled rules exercise disjoint/overlapping roles on both source sides and
+feature profiles, including transitively reached but dev-only direct edges.
+The baseline version tests retain real workspace1 inheritance and the three
+literal0.1 declarations; claimed metadata cannot replace authored identity.
+
+Cargo owns both root and independent-consumer lock updates. Tests, normal
+commit checks, final clean-source API/SemVer/package/artifact consumption,
+registry resolution, downstream migrations and the Native thirteen-group
+qualification remain distinct required evidence. This source/version decision
+neither publishes a registry artifact nor authorizes a push.

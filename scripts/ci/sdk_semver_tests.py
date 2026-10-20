@@ -17,11 +17,13 @@ import _sdk_semver_evidence as evidence
 def major_source_files(current, declared=None):
     """Private source data reused by the action and outer controlled fixtures."""
     declared = {name: (declared or {}).get(name, {})
-                for name in (*evidence.COHORT, *evidence.WITNESS_OWNERS)}
+                for name in evidence.consumer_package_names()}
     files = {"Cargo.toml": '[workspace]\nmembers=["crates/*"]\n[workspace.package]\nversion="1.0.0"\n', "Cargo.lock": 'version=4\n'}
-    for name in (*evidence.COHORT, *evidence.WITNESS_OWNERS):
+    for name in evidence.consumer_package_names():
         versions = evidence.COHORT.get(name, ("1.0.0", "1.0.0"))
-        text = ('[package]\nname=' + json.dumps(name) + ('\nversion=' + json.dumps(versions[1]) if current and name in evidence.COHORT else '\nversion.workspace=true')
+        version = versions[int(current)]
+        authored = '\nversion.workspace=true' if version == "1.0.0" else '\nversion=' + json.dumps(version)
+        text = ('[package]\nname=' + json.dumps(name) + authored
                 + '\n[package.metadata.awaken]\nproduct="sdk"\napi_snapshot=true\n')
         if declared[name]:
             text += '[features]\n' + ''.join(key + '=' + json.dumps(value) + '\n' for key, value in declared[name].items())
@@ -35,10 +37,10 @@ def major_source_files(current, declared=None):
 def major_metadata_fixture(sdk_root, *, current, feature, consumer=None, declared=None):
     """Cargo protocol fixture data; this function starts no process."""
     declared = {name: (declared or {}).get(name, {})
-                for name in (*evidence.COHORT, *evidence.WITNESS_OWNERS)}
+                for name in evidence.consumer_package_names()}
     packages, nodes = [], []
-    identities = {name: ('current:' if current else 'baseline:') + name for name in (*evidence.COHORT, *evidence.WITNESS_OWNERS)}
-    for name in (*evidence.COHORT, *evidence.WITNESS_OWNERS):
+    identities = {name: ('current:' if current else 'baseline:') + name for name in evidence.consumer_package_names()}
+    for name in evidence.consumer_package_names():
         versions = evidence.COHORT.get(name, ("1.0.0", "1.0.0"))
         packages.append({'id': identities[name], 'name': name, 'version': versions[int(current)],
             'manifest_path': str(sdk_root / 'crates' / name / 'Cargo.toml'), 'source': None,
@@ -231,6 +233,34 @@ class SdkSemverEvidenceTests(unittest.TestCase):
                     evidence.validate_audit(zero, 1, approved=known)
                 observed = evidence.validate_audit(output, 1, approved=known)
                 self.assertGreater(observed[name]["checks"], 0)
+
+        # R8-R10 exercise the production default policy, independently of the
+        # controlled empty Runtime fixtures above. The two actual reviewed
+        # report sets are necessary; dropping a reviewed item or adding an
+        # unreviewed one refuses. This checks policy application only, never
+        # substitutes for original compiler/report/source-profile receipts.
+        reviewed = {
+            "awaken-runtime": {
+                ("inherent_method_missing", "method", "Runtime::session"),
+                ("inherent_method_missing", "method", "Runtime::with_max_consecutive_inference_failures"),
+                ("struct_missing", "struct", "awaken_runtime::EmbeddedSession"),
+            },
+            "awaken-runtime-contract": {
+                ("enum_variant_added", "variant", "Error:Admission"),
+                ("module_missing", "mod", "awaken_runtime_contract::credential"),
+            },
+        }
+        reports = {
+            name: self.report(name, failures=reviewed.get(name, evidence.APPROVED_FINDINGS[name]))
+            for name in evidence.COHORT
+        }
+        production_output = "".join(reports.values())
+        self.assertEqual(set(evidence.validate_audit(production_output, 1)), set(evidence.COHORT))
+        for name, findings in reviewed.items():
+            for changed in [*(findings - {item} for item in findings),
+                            findings | {("function_missing", "function", "fixture::unreviewed")}]:
+                with self.subTest(package=name, findings=changed), self.assertRaises(ValueError):
+                    evidence.validate_audit(production_output.replace(reports[name], self.report(name, failures=changed)), 1)
 
     @staticmethod
     def compiler_output(code=None, *, file="cases/old_enum.rs", line=2, finished=True):
@@ -570,7 +600,7 @@ def shared_sdk_io_tests(owner):
                     path.parent.rmdir()
                 for current in (False, True):
                     files = major_source_files(current)
-                    for number in range(22 - len(evidence.COHORT) - len(evidence.WITNESS_OWNERS)):
+                    for number in range(22 - len(evidence.consumer_package_names())):
                         name = "fixture-sdk-" + str(number).zfill(2)
                         files["crates/" + name + "/Cargo.toml"] = ('[package]\nname=' + json.dumps(name)
                             + '\nversion="1.0.0"\n[package.metadata.awaken]\nproduct="sdk"\napi_snapshot=true\n')
@@ -880,8 +910,8 @@ def shared_sdk_io_tests(owner):
             # or enabled Bedrock variant invalidates the fixed input; it must
             # not be repaired by wildcarding the enum or unifying Client types.
             # Runtime/Contract retain their original source/version/path/feature
-            # axes; W38 adds the same axes for ordinary Agent/Tool dependencies.
-            # Their version1 fixtures must not be coerced into the major COHORT.
+            # axes; W38 keeps the same axes for Agent/Tool defining dependencies.
+            # Their separately declared versions cannot erase this owner role.
             # Missing/foreign/unreached/feature/version failures remain refusal.
             # Both owners remain transitively reached through Contract when the
             # consumer direct edge is removed or changed to dev-only. Those rows
@@ -889,9 +919,9 @@ def shared_sdk_io_tests(owner):
             with tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 consumer = root / "consumer"
-                declared = {name: {"chosen": []} for name in (*evidence.COHORT, *evidence.WITNESS_OWNERS)}
+                declared = {name: {"chosen": []} for name in evidence.consumer_package_names()}
                 producer = major_metadata_fixture(root, current=True, feature="all", declared=declared)
-                members = {p["name"]: p for p in producer["packages"] if p["name"] in (*evidence.COHORT, *evidence.WITNESS_OWNERS)}
+                members = {p["name"]: p for p in producer["packages"] if p["name"] in evidence.consumer_package_names()}
                 good = major_metadata_fixture(root, current=True, feature="all", consumer=consumer, declared=declared)
                 evidence.validate_consumer_metadata(good, consumer, members, current=True, feature="all")
                 for cause in ("duplicate-package", "duplicate-node", "unresolved", "unreached", "feature", "malformed-feature", "sdk-source", "provider-source", "old-client", "registry-client", "bedrock", "foreign-root", "runtime-missing", "runtime-feature", "runtime-version", "runtime-path", "contract-missing", "contract-feature", "contract-version", "contract-path",
@@ -931,6 +961,46 @@ def shared_sdk_io_tests(owner):
                     with self.subTest(cause=cause), self.assertRaises(ValueError):
                         evidence.validate_consumer_metadata(bad, consumer, members, current=True, feature="all")
 
+            # U1/U2 cause-effect table: disjoint roles, or an independently
+            # declared release that also defines a witness type, produce one
+            # authored dependency/package/node with the side's exact version.
+            # U3 overlap never removes the defining-owner direct-normal rule:
+            # a dev-only consumer edge refuses even while Contract reaches the
+            # same package transitively. Both sides/profiles are controlled
+            # protocol inputs here, not Cargo or release qualification evidence.
+            for overlap in (False, True):
+                versions = {name: pair for name, pair in evidence.COHORT.items() if name not in evidence.WITNESS_OWNERS}
+                if overlap:
+                    versions.update({name: ("1.0.0", "2.0.0") for name in evidence.WITNESS_OWNERS})
+                with mock.patch.dict(evidence.COHORT, versions, clear=True), tempfile.TemporaryDirectory() as temporary:
+                    names = evidence.consumer_package_names()
+                    self.assertEqual(len(names), len(set(names)))
+                    self.assertEqual(set(names), set(evidence.COHORT) | set(evidence.WITNESS_OWNERS))
+                    for current in (False, True):
+                        for feature in ("default", "all"):
+                            root = Path(temporary) / ("current" if current else "baseline") / feature
+                            for relative, value in major_source_files(current).items():
+                                path = root / relative
+                                path.parent.mkdir(parents=True, exist_ok=True)
+                                path.write_text(value)
+                            consumer = root.parent / (feature + "-consumer")
+                            producer = major_metadata_fixture(root, current=current, feature=feature)
+                            members = owner.major_producer_packages(producer, root, current=current)
+                            manifest = owner.tomllib.loads(evidence.consumer_manifest(members, current=current, feature=feature))
+                            self.assertTrue(set(names).issubset(manifest["dependencies"]))
+                            self.assertEqual(len([p for p in producer["packages"] if p["name"] in names]), len(names))
+                            good = major_metadata_fixture(root, current=current, feature=feature, consumer=consumer)
+                            observed = evidence.validate_consumer_metadata(good, consumer, members, current=current, feature=feature)
+                            self.assertEqual(set(observed["sdk_packages"]), set(names))
+                            for name in evidence.WITNESS_OWNERS:
+                                package = members[name]
+                                self.assertEqual(manifest["dependencies"][name]["version"], "=" + package["version"])
+                                bad = copy.deepcopy(good)
+                                node = next(n for n in bad["resolve"]["nodes"] if n["id"] == "consumer")
+                                next(edge for edge in node["deps"] if edge["name"] == name.replace("-", "_"))["dep_kinds"] = [{"kind": "dev", "target": None}]
+                                with self.subTest(overlap=overlap, current=current, feature=feature, owner=name), self.assertRaisesRegex(ValueError, "direct normal dependency"):
+                                    evidence.validate_consumer_metadata(bad, consumer, members, current=current, feature=feature)
+
         def test_producer_member_identity_must_be_authored_inside_the_observed_side(self):
             # S2: valid metadata is not authority to rename another manifest.
             # Same-root unrelated/wrong-name manifest, outside-root source,
@@ -944,7 +1014,7 @@ def shared_sdk_io_tests(owner):
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(value)
                 good = major_metadata_fixture(root, current=True, feature="default")
-                self.assertEqual(set(owner.major_producer_packages(good, root, current=True)), set((*evidence.COHORT, *evidence.WITNESS_OWNERS)))
+                self.assertEqual(set(owner.major_producer_packages(good, root, current=True)), set(evidence.consumer_package_names()))
                 for cause in ("foreign-root", "outside-path", "unrelated-path", "wrong-version", "authored-name", "authored-version"):
                     bad = copy.deepcopy(good)
                     package = bad["packages"][0]
@@ -964,9 +1034,9 @@ def shared_sdk_io_tests(owner):
                             owner.major_producer_packages(bad, root, current=True)
                     finally:
                         path.write_text(original)
-                # O1-O4: ordinary defining owners keep real workspace1 rather
-                # than entering COHORT2. Corrupt only that owner's identity or
-                # inherited version; all four major members remain exact.
+                # O1-O4: a defining owner's authored/metadata identity must stay
+                # exact even when it also belongs to the release cohort. Change
+                # only its identity/version; every other member remains exact.
                 for name in evidence.WITNESS_OWNERS:
                     for cause in ("authored-name", "authored-version", "metadata-version", "outside-path"):
                         bad = copy.deepcopy(good)
@@ -974,7 +1044,9 @@ def shared_sdk_io_tests(owner):
                         path = Path(package["manifest_path"])
                         original = path.read_text()
                         if cause == "authored-name": path.write_text(original.replace(name, "unrelated-owner", 1))
-                        elif cause == "authored-version": path.write_text(original.replace("version.workspace=true", 'version="9.0.0"'))
+                        elif cause == "authored-version":
+                            authored_version = next(line for line in original.splitlines() if line.startswith("version"))
+                            path.write_text(original.replace(authored_version, 'version="9.0.0"', 1))
                         elif cause == "metadata-version": package["version"] = "9.0.0"
                         else:
                             outside = root.parent / (name + ".toml")
@@ -985,13 +1057,13 @@ def shared_sdk_io_tests(owner):
                                 owner.major_producer_packages(bad, root, current=True)
                         finally:
                             path.write_text(original)
-                # Exact50b3 all cohort manifests inherit workspace1.0; current
-                # all explicitly declare2.0. Metadata's resolved version may
-                # not substitute for missing/wrong authored inheritance.
+                # Exact50b3 stable members inherit workspace1.0; the three
+                # 0.1 members author their literal versions. Metadata cannot
+                # substitute for missing/wrong authored version or inheritance.
                 for relative, value in major_source_files(False).items():
                     (root / relative).write_text(value)
                 baseline = major_metadata_fixture(root, current=False, feature="all")
-                self.assertEqual(set(owner.major_producer_packages(baseline, root, current=False)), set((*evidence.COHORT, *evidence.WITNESS_OWNERS)))
+                self.assertEqual(set(owner.major_producer_packages(baseline, root, current=False)), set(evidence.consumer_package_names()))
                 workspace = root / "Cargo.toml"
                 original_root = workspace.read_text()
                 path = Path(baseline["packages"][0]["manifest_path"])
@@ -1008,6 +1080,23 @@ def shared_sdk_io_tests(owner):
                             owner.major_producer_packages(baseline, root, current=False)
                     finally:
                         workspace.write_text(original_root)
+                        path.write_text(original)
+
+                # V1/V2: baseline 0.1 -> current 0.2 is independently authored;
+                # changing only the baseline declaration to workspace1 refuses
+                # despite unchanged claimed0.1 metadata. A graph/version label
+                # cannot stand in for the package's real source declaration.
+                for name, (old_version, _) in evidence.COHORT.items():
+                    if old_version == "1.0.0":
+                        continue
+                    package = next(p for p in baseline["packages"] if p["name"] == name)
+                    path = Path(package["manifest_path"])
+                    original = path.read_text()
+                    path.write_text(original.replace('version=' + json.dumps(old_version), "version.workspace=true", 1))
+                    try:
+                        with self.subTest(package=name, old_version=old_version), self.assertRaises(ValueError):
+                            owner.major_producer_packages(baseline, root, current=False)
+                    finally:
                         path.write_text(original)
 
         def test_complete_witness_stops_on_owned_drift_primary_failure_or_unsafe_archive(self):
@@ -1092,9 +1181,11 @@ def shared_sdk_io_tests(owner):
                                 self.assertEqual(action["state"]["rows"][-1]["exit_code"], original)
 
         def test_active_major_cohort_runs_original_six_items_and_twenty_two_selectors(self):
-            # Active-major S1/S5-S7 + R1-R7: four cohort names2.0 +18
-            # other selected SDKs -> original9/14 +Runtime5 +Contract3, forced4,
-            # original standard22 for
+            # Active-major S1/S5-S7 + R1-R7/U4: every declared release package
+            # plus its unique remaining peers -> the original compiler controls,
+            # exact forced reports and all22 standard selectors. The private
+            # Git fixture and metadata use the same role union: overlap cannot
+            # omit a baseline package or duplicate its manifest identity for
             # default then all. The approved set below is controlled fixture
             # data only; production findings come from separately retained and
             # reviewed real reports. Raw audit1 stays1; only its explicit

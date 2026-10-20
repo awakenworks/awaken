@@ -11,10 +11,24 @@ import hashlib
 import re
 from pathlib import Path
 
-COHORT = {"awaken-ext-builtin-tools": ("1.0.0", "2.0.0"),
-          "awaken-provider-genai": ("1.0.0", "2.0.0"),
-          "awaken-runtime": ("1.0.0", "2.0.0"),
-          "awaken-runtime-contract": ("1.0.0", "2.0.0")}
+COHORT = {
+    "awaken-ext-builtin-tools": ("1.0.0", "2.0.0"),
+    "awaken-provider-genai": ("1.0.0", "2.0.0"),
+    "awaken-runtime": ("1.0.0", "2.0.0"),
+    "awaken-runtime-contract": ("1.0.0", "2.0.0"),
+    "awaken-agent-contract": ("1.0.0", "2.0.0"),
+    "awaken-ext-background-task": ("1.0.0", "2.0.0"),
+    "awaken-ext-compact": ("1.0.0", "2.0.0"),
+    "awaken-ext-goal": ("1.0.0", "2.0.0"),
+    "awaken-ext-mcp": ("0.1.0", "0.2.0"),
+    "awaken-ext-memory": ("1.0.0", "2.0.0"),
+    "awaken-ext-permission": ("1.0.0", "2.0.0"),
+    "awaken-ext-skills": ("0.1.0", "0.2.0"),
+    "awaken-ext-state-machine": ("0.1.0", "0.2.0"),
+    "awaken-observability": ("1.0.0", "2.0.0"),
+    "awaken-store-inmem": ("1.0.0", "2.0.0"),
+    "awaken-tool-contract": ("1.0.0", "2.0.0"),
+}
 # Reviewed cargo-semver-checks0.47 default/all forced-patch observations:
 # a2cb0cc9b92f03062058ea88c55c97cc0ad65ced versus50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940.
 # Four Web reports reflect definition relocation: the original Builtin root
@@ -24,11 +38,18 @@ COHORT = {"awaken-ext-builtin-tools": ("1.0.0", "2.0.0"),
 # enum/Client E0004/E0308 and successful migration controls remain mandatory.
 # These data never replace nonempty queries, exact source/profile receipts, or
 # raw statuses; an unestablished/unknown set still refuses in the same parser.
-# Runtime and RuntimeContract are separately declared breaking packages. Their
-# actual forced-patch findings have NOT been reviewed: do not add empty approvals.
-# The same exact-key check keeps this four-package policy incomplete until both
-# source/profile-bound reports are read and separately approved. Compile witness
-# E0308 below is a test expectation, never a predicted SemVer finding or raw exit.
+# Runtime/Contract findings were independently observed in the pinned0.47
+# default/all reports for 7df94e4654 versus 50b3, with 222 nonempty checks each.
+# The SDK normal/build source closure is unchanged through f5316e0dbc. Record
+# their exact already-declared 2.0 removals, never an empty or predicted set.
+# Actual consumer controls and fresh source/profile receipts remain required.
+# The complete f5316e0dbc default/all22 forced reports additionally observed
+# Agent's Disposition:StopRouting. Real baseline/current/migrated compiler
+# inputs showed the E0004 enum break and E0277 public Contract identity break.
+# Public Agent/Contract carriers therefore join the explicit breaking release;
+# their empty pinned-tool findings are a blindspot, not a compatibility claim.
+# All declarations still need fresh source/profile-bound nonempty reports and
+# the original compiler/archive/consumer evidence; unknown/extra items refuse.
 APPROVED_FINDINGS = {
     "awaken-ext-builtin-tools": {
         ("enum_missing", "enum", "awaken_ext_builtin_tools::WebDomainFilter"),
@@ -38,6 +59,27 @@ APPROVED_FINDINGS = {
         ("struct_missing", "struct", "awaken_ext_builtin_tools::WebSearchExecutionConfiguration"),
     },
     "awaken-provider-genai": set(),
+    "awaken-runtime": {
+        ("inherent_method_missing", "method", "Runtime::session"),
+        ("inherent_method_missing", "method", "Runtime::with_max_consecutive_inference_failures"),
+        ("struct_missing", "struct", "awaken_runtime::EmbeddedSession"),
+    },
+    "awaken-runtime-contract": {
+        ("enum_variant_added", "variant", "Error:Admission"),
+        ("module_missing", "mod", "awaken_runtime_contract::credential"),
+    },
+    "awaken-agent-contract": {("enum_variant_added", "variant", "Disposition:StopRouting")},
+    "awaken-ext-background-task": set(),
+    "awaken-ext-compact": set(),
+    "awaken-ext-goal": set(),
+    "awaken-ext-mcp": set(),
+    "awaken-ext-memory": set(),
+    "awaken-ext-permission": set(),
+    "awaken-ext-skills": set(),
+    "awaken-ext-state-machine": set(),
+    "awaken-observability": set(),
+    "awaken-store-inmem": set(),
+    "awaken-tool-contract": set(),
 }
 GENAI_GIT = "https://github.com/awakenworks/rust-genai.git"
 GENAI_REV = "da7b568fb413b3197acc13c93f334884f97c81ad"
@@ -199,16 +241,22 @@ def validate_compiler_case(output: str, status: int, source: str, file_name: str
     return messages
 
 
-# Ordinary defining-owner compiler dependencies, not new breaking-cohort members.
+# Defining-owner roles require a direct normal compiler dependency even when
+# a package also belongs to the separately declared release cohort.
 # Versions and enabled features come from each side's original SDK metadata.
 WITNESS_OWNERS = ("awaken-agent-contract", "awaken-tool-contract")
+
+
+def consumer_package_names() -> tuple[str, ...]:
+    """Render each package once while preserving its independent policy roles."""
+    return tuple(dict.fromkeys((*COHORT, *WITNESS_OWNERS)))
 
 
 def consumer_manifest(sdk_packages: dict, *, current: bool, feature: str) -> str:
     """Render only compile-only inputs, never a production compatibility path."""
     text = ('[package]\nname="sdk-major-observation"\nversion="0.0.0"\nedition="2024"\n'
             '[workspace]\n[dependencies]\n')
-    for name in (*COHORT, *WITNESS_OWNERS):
+    for name in consumer_package_names():
         package = sdk_packages[name]
         directory = Path(package['manifest_path']).parent
         version = COHORT[name][int(current)] if name in COHORT else package["version"]
@@ -303,7 +351,7 @@ def validate_consumer_metadata(metadata: dict, consumer: Path, sdk_packages: dic
             raise ValueError("major consumer graph does not satisfy the original enum input's feature condition")
         return package
     selected = {}
-    for name in (*COHORT, *WITNESS_OWNERS):
+    for name in consumer_package_names():
         found = [package for package in packages if package["name"] == name]
         package = sdk_packages[name]
         version = COHORT[name][int(current)] if name in COHORT else package["version"]
@@ -334,7 +382,7 @@ def validate_consumer_metadata(metadata: dict, consumer: Path, sdk_packages: dic
         raise ValueError("major consumer baseline Client is not the Provider's Git type")
     return {"sdk_packages": {name: package["id"] for name, package in selected.items()},
             "requested_sdk_features": {name: sorted(package['features']) if feature == 'all' else []
-                                       for name, package in sdk_packages.items() if name in (*COHORT, *WITNESS_OWNERS)},
+                                       for name, package in sdk_packages.items() if name in consumer_package_names()},
             "resolved_sdk_features": {name: nodes[package['id']]['features'] for name, package in selected.items()},
             "genai": {key: linked[key] for key in ("id", "source", "version")},
             "genai_features": nodes[linked["id"]]["features"]}
@@ -366,9 +414,9 @@ def validate_witness_receipt(receipt: dict, source: dict, baseline: str, feature
         raise ValueError('SDK major consumer receipt differs from retained dependency facts')
     for current, side in ((False, 'baseline'), (True, 'current')):
         facts = side_facts[side]
-        if (set(facts['sdk_packages']) != set((*COHORT, *WITNESS_OWNERS))
-                or set(facts['requested_sdk_features']) != set((*COHORT, *WITNESS_OWNERS))
-                or set(facts['resolved_sdk_features']) != set((*COHORT, *WITNESS_OWNERS))
+        if (set(facts['sdk_packages']) != set(consumer_package_names())
+                or set(facts['requested_sdk_features']) != set(consumer_package_names())
+                or set(facts['resolved_sdk_features']) != set(consumer_package_names())
                 or any(facts['genai'].get(key) != value for key, value in GENAI_SOURCES[current].items())
                 or not isinstance(facts['genai'].get('id'), str) or not facts['genai']['id']
                 or 'bedrock-sigv4' in facts['genai_features']
