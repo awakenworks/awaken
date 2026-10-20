@@ -195,6 +195,10 @@ run() {
 run static "repository-hygiene self-test" python3 scripts/ci/check_repository_hygiene.py --self-test
 run static "repository-hygiene" python3 scripts/ci/check_repository_hygiene.py
 run static "dependency-sources self-test" python3 scripts/ci/check_dependency_sources.py --self-test
+run static "trust-roots self-test" python3 scripts/ci/check_trust_roots.py --self-test
+run static "trust-root compatibility" python3 scripts/ci/check_trust_roots.py
+run static "cold dependency fetch self-test" python3 scripts/ci/check_dependency_fetch.py --self-test
+run static "receive hook integration" python3 scripts/ci/install_receive_hooks.py --self-test
 run static "authority-arithmetic self-test" python3 scripts/ci/check_authority_arithmetic.py --self-test
 run static "crate-boundaries" python3 scripts/ci/check_crate_boundaries.py
 run static "hook-glob generator self-test" python3 scripts/ci/generate_hooks.py --self-test

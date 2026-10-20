@@ -17,6 +17,8 @@ INPUT_GLOBS: tuple[str, ...] = (
     "scripts/ci/pre-push/qualify.sh",
     "scripts/ci/_lefthook_fitness.py",
     "scripts/ci/_native_shell.py",
+    "scripts/ci/_native_shell_tests.py",
+    "scripts/ci/_windows_job.py",
 )
 HOOK_ENTRY = "scripts/ci/pre-push/qualify.sh"
 
@@ -27,7 +29,7 @@ def hook_entry_errors(hooks: str) -> list[str]:
              if line.strip() and not line.lstrip().startswith("#")] if bridge else []
     qualification = re.search(r"(?ms)^push-qualification:\n(.*?)(?=^\S|\Z)", hooks)
     commands = re.findall(r"(?m)^      run: (.+)$", qualification.group(1)) if qualification else []
-    required = ["scripts/ci/check-docs.sh", "scripts/ci/check-rust.sh --push",
+    required = ["scripts/ci/check-docs.sh", "python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --push",
                 "scripts/ci/check_public_api.sh --require-tools --affected-upstream",
                 "scripts/ci/check-frontend.sh --quick"]
     if (re.findall(r"(?m)^source_dir:\s*(\S+)\s*$", hooks) != ["scripts/ci"]
@@ -38,6 +40,7 @@ def hook_entry_errors(hooks: str) -> list[str]:
 
 
 def self_test(root: Path) -> None:
+    subprocess.run([sys.executable, str(root / "scripts/ci/_native_shell.py"), "--self-test"], check=True)
     hooks = (root / "lefthook.yml").read_text(encoding="utf-8")
     assert not hook_entry_errors(hooks), "E1 mandatory script entry"
     for old, new in (("source_dir: scripts/ci", "source_dir: elsewhere"),

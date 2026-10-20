@@ -34,7 +34,48 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dependency_fetch:
+    # A warm Cargo cache can hide an unpublished locked Git commit. This small
+    # tier deliberately restores no cache and blocks expensive qualification.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact candidate revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.96.0
+      - name: Verify dependency policy and failure cases
+        shell: bash
+        run: |
+          python scripts/ci/check_dependency_sources.py --self-test
+          python scripts/ci/check_dependency_sources.py
+          python scripts/ci/check_trust_roots.py --self-test
+          python scripts/ci/check_trust_roots.py
+          python scripts/ci/check_dependency_fetch.py --self-test
+          python scripts/ci/install_receive_hooks.py --self-test
+      - name: Fetch public locked dependencies with empty Git and Cargo caches
+        shell: bash
+        run: python scripts/ci/check_dependency_fetch.py --output target/test-timings/dependency-fetch
+      - name: Retain cold dependency evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dependencies-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.runner }}
+          path: target/test-timings/dependency-fetch/
+          if-no-files-found: error
+
   trusted_host_portability:
+    needs: dependency_fetch
     strategy:
       fail-fast: false
       matrix:
@@ -46,6 +87,9 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: 1.96.0
@@ -99,6 +143,7 @@ jobs:
           if-no-files-found: error
 
   full_quality:
+    needs: dependency_fetch
     env:
       AWAKEN_STATIC_JOBS: "4"
     # The strict sandbox group requires Docker, unprivileged user namespaces,

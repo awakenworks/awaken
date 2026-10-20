@@ -663,7 +663,7 @@ def _declared_tool_homes() -> set[str]:
     for raw in re.findall(r'"(\$\{?[^"]*)"', body):
         candidate = re.sub(r"\$\{([A-Z_]+):-([^}]*)\}", r"${\1}", raw)
         expanded = expand(candidate)
-        if expanded.startswith("/"):
+        if Path(expanded).is_absolute():
             homes.add(expanded.rstrip("/"))
         else:  # `${XDG_BIN_HOME}` with the variable unset resolves through its default
             homes.add(expand(re.sub(r"\$\{?([A-Z_]+)\}?", r"${\1}", raw)).rstrip("/"))
@@ -735,6 +735,16 @@ def _third_outcome_problems() -> list[str]:
 
     problems: list[str] = []
     original_path = os.environ.get("PATH", "")
+    fixture_names = ("AWAKEN_FIXTURE_PROGRAM", "AWAKEN_FIXTURE_SCRIPT")
+    original_fixture_environment = {name: os.environ.get(name) for name in fixture_names}
+    native_launcher = None
+    native_shell = None
+    if os.name == "nt":
+        from _native_shell import bash_executable
+        from _native_test_launcher import native_fixture_launcher
+
+        native_shell = bash_executable()
+        native_launcher = native_fixture_launcher()
     engines = {
         "present": '#!/bin/sh\nexit 0\n',
         "absent": '#!/bin/sh\necho "Error: No such image: fixture:1" >&2\nexit 1\n',
@@ -757,8 +767,12 @@ def _third_outcome_problems() -> list[str]:
             home = Path(temporary) / expected
             home.mkdir()
             executable = home / "docker"
-            executable.write_text(body, encoding="utf-8")
+            executable.write_text(body, encoding="utf-8", newline="\n")
             executable.chmod(0o755)
+            if native_launcher is not None:
+                shutil.copyfile(native_launcher, home / "docker.exe")
+                os.environ.update(AWAKEN_FIXTURE_PROGRAM=native_shell,
+                                  AWAKEN_FIXTURE_SCRIPT=str(executable))
             os.environ["PATH"] = str(home)
             try:
                 found = locate(row)
@@ -775,6 +789,11 @@ def _third_outcome_problems() -> list[str]:
                     )
             finally:
                 os.environ["PATH"] = original_path
+                for name, previous in original_fixture_environment.items():
+                    if previous is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = previous
         empty = Path(temporary) / "empty"
         empty.mkdir()
         os.environ["PATH"] = str(empty)

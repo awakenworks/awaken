@@ -726,14 +726,14 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
     pre_push = hooks.split("\npush-qualification:", 1)[-1] if "\npush-qualification:" in hooks else ""
     owner = re.search(r"(?m)^    rust-quick:\n((?:      .*\n)+)", pre_commit)
     owner_text = owner.group(1) if owner else ""
-    if owner_text.count("run: scripts/ci/check-rust.sh --quick") != 1:
+    if owner_text.count("run: python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --quick") != 1:
         errors.append("Rust pre-commit must delegate to the canonical gate once")
     errors.extend(sdk_admission_errors(owner_text, gate))
     if hooks.count("run: python3 scripts/ci/check_crate_boundaries.py") != 1:
         errors.append("crate boundaries must have one universal pre-commit owner")
     push_owner = re.search(r"(?m)^    rust-quick:\n((?:      .*\n)+)", pre_push)
     push_text = push_owner.group(1) if push_owner else ""
-    if push_text.count("run: scripts/ci/check-rust.sh --push") != 1:
+    if push_text.count("run: python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --push") != 1:
         errors.append("Rust pre-push must delegate to the canonical gate's --push mode once")
     if "check-rust.sh --quick" in pre_push:
         errors.append("Rust pre-push still runs --quick, which skips clippy and the formal ledger")
