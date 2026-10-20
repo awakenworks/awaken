@@ -68,6 +68,17 @@ the existing stall, heartbeat, empty-response and open-connection tests.
 These are executable boundary checks, not a formal proof of the SDK/network or
 evidence that an unrelated live provider decoding failure has been resolved.
 
+The same provider response guard rejects reserved DSML opening or closing
+framing in assistant text when the SDK supplied no typed tool call. Closing
+tags after an otherwise ordinary response and incomplete framing are protocol
+faults too; the guard never strips them, accepts a JSON prefix, or interprets
+them as another executable tool format. Both completed-body and stream-End
+paths retain their existing terminal receipt on this retryable
+`InvalidResponse`. Runtime's existing bounded retry policy discards the invalid
+wire text and retries the original request; it does not continue or checkpoint
+that text as an accepted assistant response. Ordinary text and authoritative
+SDK-typed tool calls retain their existing handling.
+
 ## First Vertical Slice
 
 1. Define one neutral error from each owner: activation, capability, permission,
