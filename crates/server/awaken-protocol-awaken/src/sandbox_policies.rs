@@ -160,23 +160,20 @@ async fn publish_sandbox_policy(
     Path(id): Path<String>,
     Json(input): Json<SandboxPolicyPublish>,
 ) -> Result<Json<SandboxExecutionPolicy>, StatusCode> {
-    let next = input
-        .expected_current
-        .checked_add(1)
-        .ok_or(StatusCode::CONFLICT)?;
+    let current = SandboxExecutionPolicyVersion(input.expected_current);
+    // The value type owns succession; this adapter preserves the existing
+    // exhausted-version conflict before checking store availability.
+    let next = current.checked_next().map_err(|_| StatusCode::CONFLICT)?;
     let policy = SandboxExecutionPolicy {
         id: SandboxExecutionPolicyId(id),
-        version: SandboxExecutionPolicyVersion(next),
+        version: next,
         config: input.config,
         provisioning: input.provisioning,
         idle_retention: input.idle_retention,
         disabled: input.disabled,
     };
     policy_store(&state)?
-        .publish(
-            SandboxExecutionPolicyVersion(input.expected_current),
-            policy.clone(),
-        )
+        .publish(current, policy.clone())
         .await
         .map_err(map_policy_error)?;
     Ok(Json(policy))
@@ -606,6 +603,9 @@ mod tests {
         // requests into immutable versions; R1 v1 exists -> return the exact v1 config; R2 v2
         // exists with different config -> each URL preserves its own version;
         // R3 absent id/version -> 404; R4 unavailable policy store -> 503. The
+        // successor/store decision table adds R5 exhausted+available -> 409
+        // without changing either exact version; R6 exhausted+unavailable ->
+        // 409 before store admission; R7 nonexhausted+unavailable -> 503.
         // test drives the public Awaken-only router so path extraction, status
         // mapping, and response serialization are covered together.
         let store =
@@ -685,6 +685,16 @@ mod tests {
             .unwrap();
         assert_eq!(published.status(), StatusCode::OK, "R0");
 
+        let exhausted = app
+            .clone()
+            .oneshot(post(
+                "/v1/awaken/sandbox-execution-policies/design-runtime/versions",
+                serde_json::json!({"expected_current": u64::MAX, "config": {}}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(exhausted.status(), StatusCode::CONFLICT, "R5");
+
         let response = app
             .clone()
             .oneshot(get(
@@ -720,7 +730,7 @@ mod tests {
             .unwrap();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND, "R3");
 
-        let unavailable = environment_extensions_router(
+        let unavailable_router = environment_extensions_router(
             Arc::new(EnvironmentApplication::new(
                 Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
                     awaken_time::system_clock(),
@@ -731,12 +741,28 @@ mod tests {
                 None,
             )),
             None,
-        )
-        .oneshot(get(
-            "/v1/awaken/sandbox-execution-policies/design-runtime/versions/1",
-        ))
-        .await
-        .unwrap();
+        );
+        let unavailable = unavailable_router
+            .clone()
+            .oneshot(get(
+                "/v1/awaken/sandbox-execution-policies/design-runtime/versions/1",
+            ))
+            .await
+            .unwrap();
         assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE, "R4");
+        for (expected_current, status, rule) in [
+            (u64::MAX, StatusCode::CONFLICT, "R6"),
+            (1, StatusCode::SERVICE_UNAVAILABLE, "R7"),
+        ] {
+            let response = unavailable_router
+                .clone()
+                .oneshot(post(
+                    "/v1/awaken/sandbox-execution-policies/design-runtime/versions",
+                    serde_json::json!({"expected_current": expected_current, "config": {}}),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status, "{rule}");
+        }
     }
 }
