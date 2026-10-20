@@ -483,16 +483,16 @@ def _selftest_cli() -> None:
     status, before, after, _, _ = invoke(["--write-baseline"], grown, {"r": 3})
     assert status == 1 and before == after, "LCLI4 reason needed"
     prior = {**held, "growth_reasons": {**foreign, "upward-edges": {"r -> h": "first"}}}
-    status, _, after, _, _ = invoke(["--write-baseline", "--reason", "reviewed"], grown, {"r": 3}, prior)
+    status, _, after, _, _ = invoke(["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")], grown, {"r": 3}, prior)
     document = json.loads(after)
     assert status == 0 and document["upward-edges"] == {"r -> h": ["new", "old"]}, "LCLI4 exact facts"
-    assert document["growth_reasons"] == {**foreign, "upward-edges": {"r -> h": "first; then: reviewed"},
-                                          "shared-host-impl": {"r": "reviewed"}}, "LCLI4 reason history"
+    assert document["growth_reasons"] == {**foreign, "upward-edges": {"r -> h": "first; then: " + _architecture_ratchet._test_growth_reason("reviewed")},
+                                          "shared-host-impl": {"r": _architecture_ratchet._test_growth_reason("reviewed")}}, "LCLI4 reason history"
     assert document["owner"] == held["owner"] and document["expiry"] == held["expiry"], "LCLI4 metadata"
     assert document["future-counter"] == held["future-counter"], "LCLI4 foreign counter/reason retained"
     status, before, after, _, _ = invoke(["--write-baseline"], grown, {"r": 3}, {})
     assert status == 1 and before == after, "LCLI4 no borrowed shape initialization waiver"
-    for argv in (["--tighten"], ["--write-baseline", "--reason", "reviewed"], ["--report"]):
+    for argv in (["--tighten"], ["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")], ["--report"]):
         status, before, after, _, output = invoke(argv, grown, {"r": 1}, errors=("unclassified module",))
         assert status == 1 and before == after and not output, "LCLI5 hard classification"
     for argv in ([], ["--check"], ["--tighten"]):
