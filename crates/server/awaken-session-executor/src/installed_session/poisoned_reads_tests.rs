@@ -114,9 +114,13 @@ async fn poisoned_registry_refuses_every_session_read() {
             .unwrap_err(),
         "R1 model",
     );
+    // H1: the deleted Assembly forwarder read this exact canonical frozen profile;
+    // its capability owner keeps R1 typed refusal without a new fallback/read law.
     assert_poisoned(
-        assembly
-            .thread_credential_realization(SESSION)
+        capabilities
+            .installed_sessions
+            .realizations()
+            .credential_realization(SESSION)
             .map(|_| ())
             .unwrap_err(),
         "R1 credential profile",

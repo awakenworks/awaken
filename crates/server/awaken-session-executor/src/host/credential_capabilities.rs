@@ -49,6 +49,26 @@ pub(crate) fn acp_mcp_client_injection_capabilities(
 }
 
 impl crate::RunCapabilities {
+    /// Resolve the one exact inference plaintext holder used by both direct and
+    /// dispatched attempts from the immutable candidate publication.
+    pub(crate) fn inference_plaintext_holder(
+        &self,
+        activation: &RunActivation,
+    ) -> Result<Option<awaken_agent_contract::credential::PlaintextHolder>, SessionExecutionError>
+    {
+        awaken_dispatch_execution::session_dispatch::inference_plaintext_holder(activation, || {
+            self.installed_sessions
+                .realizations()
+                .credential_realization(&activation.thread_id.0)
+                .map_err(|error| {
+                    awaken_dispatch_execution::AdmissionError::from(
+                        awaken_session_types::RunError::from(error),
+                    )
+                })
+        })
+        .map_err(SessionExecutionError::from)
+    }
+
     /// Root delegation and cold child recovery carry the same installed adapter
     /// set. Custody evidence is composed here, never narrowed by transport or
     /// inferred from the child's requested backend.

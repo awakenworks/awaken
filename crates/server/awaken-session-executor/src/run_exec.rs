@@ -420,7 +420,7 @@ impl crate::SessionRuns {
             .snapshot
             .resolved_spec
             .attempt_candidates(activation.model_ref_override.as_deref());
-        let holder = self.run_assembly.inference_plaintext_holder(activation)?;
+        let holder = self.capabilities.inference_plaintext_holder(activation)?;
         let epoch = LOCAL_ATTEMPT_EPOCH
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             .max(1);

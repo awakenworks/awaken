@@ -32,7 +32,7 @@
     },
     "awaken-session-executor::RunAssembly": {
       "files": 15,
-      "methods": 64,
+      "methods": 62,
       "reason": "executor split (plan v4 D5): RunAssembly owns Session context assembly and the realization roles' executor part, with its MCP root authority, application-input target and durable Run cancellation as owned parts instead of weak Host back-references; the SharedHost forwarding it replaces is deleted as the remaining components land"
     },
     "awaken-session-executor::SessionRuns": {

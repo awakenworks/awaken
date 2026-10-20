@@ -846,7 +846,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         awaken_runtime_contract::resolved::ModelBinding::new("host", "anonymous", "native"),
     );
     assert_eq!(
-        host.run_assembly
+        host.capabilities
             .inference_plaintext_holder(&activation(anonymous, Vec::new()))
             .unwrap(),
         None,
@@ -862,7 +862,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         "R2"
     );
     assert_eq!(
-        host.run_assembly
+        host.capabilities
             .inference_plaintext_holder(&native_activation)
             .unwrap(),
         awaken_dispatch_execution::placement::self_hosted_inference_holder(&native_activation)
@@ -870,7 +870,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         "the public cold-start decision and Host fallback must remain identical"
     );
     assert_eq!(
-        host.run_assembly
+        host.capabilities
             .inference_plaintext_holder(&activation(candidate("acp", "acp:codex"), Vec::new()))
             .unwrap()
             .unwrap()
@@ -912,7 +912,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         "R8"
     );
     assert!(
-        host.run_assembly
+        host.capabilities
             .inference_plaintext_holder(&activation(
                 candidate("native", "native"),
                 vec![candidate("acp", "acp:codex")],
@@ -949,7 +949,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         )
         .expect("install a prepared self-hosted Environment profile");
     assert_eq!(
-        host.run_assembly
+        host.capabilities
             .inference_plaintext_holder(&platform_activation)
             .unwrap(),
         Some(platform_holder),
@@ -971,7 +971,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         .expect("replace the prepared Environment profile");
     assert!(
         conflicting_host
-            .run_assembly
+            .capabilities
             .inference_plaintext_holder(&native_activation)
             .is_err(),
         "R7"
