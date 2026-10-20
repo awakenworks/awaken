@@ -26,8 +26,6 @@ pub struct LocalResourcePorts {
     pub skills: Option<LocalSkillPorts>,
     /// Resource lifecycle/reference state, when the composition has one.
     pub reclamation: Option<Arc<dyn awaken_resource_contract::ResourceReclamationRepository>>,
-    /// The composition's clock, which also becomes the Host's process clock.
-    pub clock: Arc<dyn awaken_time::WallClock>,
 }
 
 /// The durable Skill catalog and the two Resources applications over it that

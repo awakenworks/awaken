@@ -222,21 +222,19 @@ impl SessionExecutorBuilder {
         )
     }
 
-    /// A test or Scenario composition over local Resource authorities, its
-    /// resolved platform Workspace, and its Deployment. The process clock is
-    /// the Resources clock, so Resource records and Host Workers share one
-    /// timeline.
+    /// A test or Scenario composition over local Resource authorities and the
+    /// process selected by that same root. The root projects its Deployment
+    /// once using the Resources clock, so records and Host Workers share one
+    /// timeline without carrying a second clock in the Resource-port view.
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_local_resources(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
         resources: capability::LocalResourcePorts,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
-        local_workspace: impl Into<String>,
-        deployment: crate::DeploymentConfig,
+        process: SessionExecutionProcess,
         runtime_authority: Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>,
     ) -> Self {
-        let clock = resources.clock.clone();
         select(
             llm,
             model_ref.into(),
@@ -245,9 +243,7 @@ impl SessionExecutorBuilder {
                 worker_content: None,
                 extraction_repository: Some(extraction_repository),
             },
-            deployment
-                .session_execution_process(local_workspace.into(), clock)
-                .expect("a local fixture selects a valid process"),
+            process,
             Arc::new(crate::LocalAuthority::new(runtime_authority)),
         )
     }

@@ -580,8 +580,12 @@ async fn assemble_execution_host(
                     &resources.resource_authorities,
                 ),
                 execution.memory_extractions.clone(),
-                base.stores.platform_workspace.clone(),
-                deployment.clone(),
+                deployment
+                    .session_execution_process(
+                        base.stores.platform_workspace.clone(),
+                        resources.resource_authorities.clock(),
+                    )
+                    .expect("a local fixture selects a valid process"),
                 runtime_authority.clone(),
             );
             (deployment, host_builder)

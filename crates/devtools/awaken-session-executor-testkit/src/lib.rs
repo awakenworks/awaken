@@ -22,8 +22,9 @@ use awaken_session_executor::{
 use awaken_time::WallClock;
 
 /// The Host's Resource ports over one selected set of Resources
-/// authorities: their Memory, File and Skill stores, reclamation state and
-/// clock. Consumer: the CLI's local runtime process and the Scenario host.
+/// authorities: their Memory, File and Skill stores and reclamation state.
+/// The same root gives the Resources clock to its SessionExecutionProcess.
+/// Consumer: the CLI's local runtime process and the Scenario host.
 #[must_use]
 pub fn local_resource_ports(authorities: &ResourceAuthorities) -> LocalResourcePorts {
     LocalResourcePorts {
@@ -35,7 +36,6 @@ pub fn local_resource_ports(authorities: &ResourceAuthorities) -> LocalResourceP
             authorities.clock(),
         )),
         reclamation: Some(authorities.reclamation()),
-        clock: authorities.clock(),
     }
 }
 
@@ -123,17 +123,38 @@ pub async fn volatile_dependencies_with_deployment(
     model_ref: impl Into<String>,
     deployment: DeploymentConfig,
 ) -> SessionExecutorBuilder {
-    let resources = volatile_resource_ports().await;
-    let authority = volatile_runtime_authority(resources.clock.clone());
+    // Preserve the original fixture opening order while the process owns its
+    // sole clock: Files, clock, Memory SQLite, authority, sandbox base,
+    // extraction SQLite, Workspace, model conversion, then process projection.
+    let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+    let clock = awaken_time::system_clock();
+    let memory = Arc::new(
+        awaken_memory_store::SqliteMemoryRepository::open_in_memory(clock.clone())
+            .await
+            .expect("open ephemeral memory-fs sqlite store"),
+    );
+    let resources = LocalResourcePorts {
+        memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
+        file_store: files.clone(),
+        file_catalog: files,
+        skills: None,
+        reclamation: None,
+    };
+    let authority = volatile_runtime_authority(clock.clone());
     let base = awaken_session_executor::session_sandbox_base(&deployment);
+    let extraction_repository = memory_extraction_repository(None).await;
+    let local_workspace = ExecutorComponents::mint_local_workspace();
+    let model_ref: String = model_ref.into();
+    let process = deployment
+        .session_execution_process(local_workspace, clock)
+        .expect("a local fixture selects a valid process");
     with_workdir_fallback(
         SessionExecutorBuilder::for_local_resources(
             llm,
             model_ref,
             resources,
-            memory_extraction_repository(None).await,
-            ExecutorComponents::mint_local_workspace(),
-            deployment,
+            extraction_repository,
+            process,
             authority,
         ),
         base,
@@ -195,24 +216,6 @@ pub async fn with_durable_store_dir(
     )
 }
 
-async fn volatile_resource_ports() -> LocalResourcePorts {
-    let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-    let clock = awaken_time::system_clock();
-    let memory = Arc::new(
-        awaken_memory_store::SqliteMemoryRepository::open_in_memory(clock.clone())
-            .await
-            .expect("open ephemeral memory-fs sqlite store"),
-    );
-    LocalResourcePorts {
-        memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
-        file_store: files.clone(),
-        file_catalog: files,
-        skills: None,
-        reclamation: None,
-        clock,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,10 +265,16 @@ mod tests {
         );
     }
 
-    /// Decision table (authorities → Host ports): P1 every port the Host
-    /// reads comes from the one selected set of authorities, so a Skill,
-    /// reclamation state and clock are always present together; P2 the Host's
-    /// clock is the exact Resources handle used to stamp and judge records.
+    /// Cause/effect graph: C1 one Resources authority selection supplies the
+    /// File/Memory/Skill/reclamation ports; C2 its clock fills the existing
+    /// process value; C3 the sole local constructor consumes those inputs.
+    /// P1 C1 -> the original Skill/reclamation/Memory identities are present.
+    /// P2 C1+C2+C3 -> the actual Builder clock is that same Resources Arc,
+    /// rather than a second clock copied into LocalResourcePorts. This row
+    /// observes the constructed Builder; comparing two inputs is insufficient.
+    /// Existing topology/kernel and root suites own invalid-deployment panic,
+    /// provider/capture and authority rules; this row performs no model I/O and
+    /// adds no parallel model fake, clock selection policy or permission path.
     #[tokio::test]
     async fn resource_ports_carry_every_authority_of_one_selection() {
         let clock = awaken_time::system_clock();
@@ -279,10 +288,27 @@ mod tests {
         let ports = local_resource_ports(&authorities);
         assert!(ports.skills.is_some(), "P1 Skill catalog present");
         assert!(ports.reclamation.is_some(), "P1 reclamation present");
-        assert!(Arc::ptr_eq(&ports.clock, &authorities.clock()), "P2 clock");
         assert!(
             Arc::ptr_eq(&ports.memory.queries(), &authorities.memory_queries()),
             "P1 the same Memory authority"
+        );
+        let process = DeploymentConfig::ephemeral()
+            .session_execution_process(
+                ExecutorComponents::mint_local_workspace(),
+                authorities.clock(),
+            )
+            .expect("a local fixture selects a valid process");
+        let dependencies = SessionExecutorBuilder::for_local_resources(
+            Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
+            awaken_session_executor::UNCONFIGURED_MODEL_REF,
+            ports,
+            memory_extraction_repository(None).await,
+            process,
+            volatile_runtime_authority(authorities.clock()),
+        );
+        assert!(
+            Arc::ptr_eq(&dependencies.clock(), &authorities.clock()),
+            "P2 clock"
         );
     }
 }
