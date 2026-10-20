@@ -295,16 +295,6 @@ impl ResourceSelection {
 }
 
 impl ExecutorComponents {
-    /// The local extraction repository the Host's own volatile/local unit
-    /// fixtures use. Other compositions obtain theirs from
-    /// `awaken-session-executor-testkit` or inject a role-owned one.
-    #[cfg(test)]
-    pub async fn test_memory_extraction_repository(
-        storage_dir: Option<&std::path::Path>,
-    ) -> Arc<dyn awaken_ext_memory::MemoryExtractionRepository> {
-        local_memory_extraction_repository(storage_dir).await
-    }
-
     #[cfg(any(test, feature = "test-support"))]
     pub fn resource_reclamation(
         &self,
@@ -332,32 +322,6 @@ impl ExecutorComponents {
         &self,
     ) -> Option<Arc<dyn awaken_resource_contract::FileApplicationService>> {
         self.resources.file_application.clone()
-    }
-}
-
-/// The local extraction repository of this crate's own unit-test Hosts: the
-/// canonical Session store at `storage_dir/sessions.db`, or in memory.
-#[cfg(test)]
-pub(in crate::host) async fn local_memory_extraction_repository(
-    storage_dir: Option<&std::path::Path>,
-) -> Arc<dyn awaken_ext_memory::MemoryExtractionRepository> {
-    match storage_dir {
-        Some(dir) => {
-            std::fs::create_dir_all(dir)
-                .expect("create durable Memory extraction repository directory");
-            Arc::new(
-                awaken_session_store::SqliteManagedSessionRepository::open(
-                    &dir.join("sessions.db").to_string_lossy(),
-                )
-                .await
-                .expect("open durable Memory extraction repository"),
-            )
-        }
-        None => Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-                .await
-                .expect("open ephemeral Memory extraction repository"),
-        ),
     }
 }
 

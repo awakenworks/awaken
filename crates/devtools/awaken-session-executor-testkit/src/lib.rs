@@ -229,6 +229,16 @@ mod tests {
         }
     }
 
+    /// Ownership-preservation graph: C1 no storage directory, C2 a selected
+    /// directory; E1 opens only volatile SQLite, E2 creates that directory and
+    /// opens its sessions.db. The Executor unit constructors now consume this
+    /// same selection body through the common MemoryExtractionRepository port;
+    /// no Executor value crosses the dev-only fixture edge. The original
+    /// mkdir/open panic text and await position remain in this one body.
+    /// These E1/E2 rows observe storage effects, not a live process restart or
+    /// the failure branches; durable Host/Store suites retain those distinct
+    /// responsibilities. The pure source move changes no storage decision.
+    ///
     /// Decision table (storage dir → extraction repository):
     ///
     /// | Case | storage dir | Effect                                     |

@@ -363,7 +363,7 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
                 memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
             }
         },
-        ExecutorComponents::test_memory_extraction_repository(None).await,
+        awaken_session_executor_testkit::memory_extraction_repository(None).await,
         crate::DeploymentConfig::ephemeral()
             .session_execution_process(ExecutorComponents::mint_local_workspace(), system_clock())
             .expect("ephemeral process"),

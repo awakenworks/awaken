@@ -101,6 +101,9 @@ test-support = [
 k8s-tests = ["awaken-session-realization/k8s-tests"]
 
 [dev-dependencies]
+# Unit fixtures reuse the testkit's sole storage-dir extraction selection.
+# It returns the common MemoryExtractionRepository port, never a second Host.
+awaken-session-executor-testkit.workspace = true
 awaken-environment-contract.workspace = true
 
 awaken-agent-channel.workspace = true

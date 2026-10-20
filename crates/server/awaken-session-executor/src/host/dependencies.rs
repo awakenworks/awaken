@@ -279,8 +279,10 @@ impl SessionExecutorBuilder {
         // A test fixture is its own composition: it chooses the host clock and
         // selects the volatile Runtime authority here.
         let clock = awaken_time::system_clock();
-        let extraction_repository =
-            capability::local_memory_extraction_repository(deployment.storage_dir.as_deref()).await;
+        let extraction_repository = awaken_session_executor_testkit::memory_extraction_repository(
+            deployment.storage_dir.as_deref(),
+        )
+        .await;
         select(
             llm,
             model_ref.into(),
@@ -427,7 +429,8 @@ impl SessionExecutorBuilder {
     #[cfg(test)]
     pub async fn with_store_dir(self, dir: impl Into<PathBuf>) -> Self {
         let dir = dir.into();
-        let repository = capability::local_memory_extraction_repository(Some(&dir)).await;
+        let repository =
+            awaken_session_executor_testkit::memory_extraction_repository(Some(&dir)).await;
         self.with_durable_store_dir(dir, repository, |provider, base| {
             awaken_session_environment::test_support::relocated_provider(provider, base)
         })
