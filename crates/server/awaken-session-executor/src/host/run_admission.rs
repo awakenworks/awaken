@@ -4,24 +4,6 @@
 use super::*;
 
 impl crate::RunAssembly {
-    /// Resolve the one exact inference plaintext holder used by both direct and
-    /// dispatched attempts from the immutable candidate publication.
-    pub(crate) fn inference_plaintext_holder(
-        &self,
-        activation: &RunActivation,
-    ) -> Result<Option<awaken_agent_contract::credential::PlaintextHolder>, SessionExecutionError>
-    {
-        awaken_dispatch_execution::session_dispatch::inference_plaintext_holder(activation, || {
-            self.thread_credential_realization(&activation.thread_id.0)
-                .map_err(|error| {
-                    awaken_dispatch_execution::AdmissionError::from(
-                        awaken_session_types::RunError::from(error),
-                    )
-                })
-        })
-        .map_err(SessionExecutionError::from)
-    }
-
     /// Bind the same fresh-root format before direct execution can commit an
     /// Awaiting ticket. Its later durable resume reads that frozen ticket.
     pub(crate) fn bind_fresh_root_tool_configuration(

@@ -844,22 +844,6 @@ impl crate::RunAssembly {
         })?
     }
 
-    /// Return the exact credential-custody profile frozen in this Session's
-    /// Environment. Inference admission uses this projection only when the
-    /// immutable Agent publication constrains a plaintext boundary without
-    /// naming one exact holder.
-    pub(crate) fn thread_credential_realization(
-        &self,
-        thread: &str,
-    ) -> Result<
-        Option<awaken_credential_contract::CredentialRealizationProfile>,
-        crate::realization_error::RealizationError,
-    > {
-        self.installed_sessions
-            .realizations()
-            .credential_realization(thread)
-    }
-
     #[cfg(test)]
     pub(crate) fn thread_session_prompts(&self, thread: &str) -> Vec<String> {
         let realizations = self.installed_sessions.realizations();

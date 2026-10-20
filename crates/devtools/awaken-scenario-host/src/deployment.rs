@@ -300,15 +300,19 @@ async fn resource_host_with_selected_runtime(
         .filter(|workspace| !workspace.trim().is_empty());
     let resource_ports =
         awaken_session_executor_testkit::local_resource_ports(&resources.authorities());
-    let authority =
-        select_scenario_runtime_authority(&deployment, resource_ports.clock.clone(), selected);
+    let clock = resources.authorities().clock();
+    let authority = select_scenario_runtime_authority(&deployment, clock.clone(), selected);
+    let local_workspace = scenario_workspace.unwrap_or(installation_workspace);
+    let model_ref: String = model_ref.into();
+    let process = deployment
+        .session_execution_process(local_workspace, clock)
+        .expect("a local fixture selects a valid process");
     let dependencies = SessionExecutorBuilder::for_local_resources(
         llm,
         model_ref,
         resource_ports,
         extraction_repository,
-        scenario_workspace.unwrap_or(installation_workspace),
-        deployment.clone(),
+        process,
         authority,
     )
     .with_file_application(
@@ -505,7 +509,7 @@ mod tests {
         // against the wrong store (severity high, detection previously low).
         // Causes: C1 durable root selected, C2 one ResourcesApplication retained,
         // C3 Host receives its exact authorities, C4 route mounting consumes the
-        // retained application. Effects: E1 identical Memory/Skill/File Arc
+        // retained application. Effects: E1 identical Memory/Skill/File/Clock Arc
         // identities, E2 only canonical `skills` storage exists, E3 no legacy
         // `skills_catalog` authority. Cause graph: C1&&C2&&C3&&C4 -> E1+E2+E3.
         //
@@ -530,6 +534,10 @@ mod tests {
             &awaken_session_executor::test_memory_content(&host).queries(),
             &authorities.memory_queries()
         ));
+        assert!(
+            Arc::ptr_eq(&host.clock(), &authorities.clock()),
+            "R1/E1 Host uses the one selected Resources clock"
+        );
         assert!(Arc::ptr_eq(
             &host
                 .run_assembly()
