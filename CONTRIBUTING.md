@@ -22,6 +22,27 @@ commands and their flags by `check_gate_arguments.py`).
   The script hook also starts qualification on the first push after another
   worktree regenerated the shared hook. Missing bootstrap or qualification
   definitions fail the push.
+- **Cold dependency verification**: `python3 scripts/ci/check_dependency_fetch.py`
+  fetches every pinned public Git revision into new object stores, then runs
+  `cargo fetch --locked` from a source snapshot with an empty `CARGO_HOME`.
+  It removes inherited Git/Cargo overrides and ignores global/system Git config.
+  A cached unpublished commit therefore cannot make this tier green. The Linux
+  and Windows quality jobs run it before restoring build caches; evidence is in
+  `target/test-timings/dependency-fetch/`. The ordinary source-policy check stays
+  offline. Publish a dependency commit before pinning it in this repository.
+- **Git receiving repositories**: after `lefthook install`, run
+  `python3 scripts/ci/install_receive_hooks.py --repository . --install` in the
+  receiving repository, and verify with
+  `python3 scripts/ci/install_receive_hooks.py --repository . --check`.
+  The installer preserves the old hook by content hash and installs the same
+  standalone main-linearity guard used by Lefthook. Receiving runs in `GIT_DIR`,
+  so it must not rely on finding a worktree's Lefthook configuration. The guard
+  works for bare repositories and shared linked worktrees, preserves stdin and
+  incoming Git object visibility, and rejects rewinds, merges and deletion of
+  main. Re-check it after any hook reinstall; other hooks stay with Lefthook.
+  This does not change `receive.denyCurrentBranch`, grant a history rewrite or
+  replace CI. A checked-out receiving main must still satisfy Git's clean-tree
+  requirements for an explicitly selected `updateInstead` receive mode.
 - **What is missing on this machine**: `scripts/ci/doctor.sh` reports each
   absent tool and the check group it costs ([`gate_tools.json`](scripts/ci/gate_tools.json)
   declares them all).
@@ -171,3 +192,10 @@ Rust as rustfmt will leave it, so a reflow cannot push a file over its limit.
   test. Judge a check by its own exit status and summary line, and before
   calling a failure pre-existing, reproduce it on a clean `main` with the same
   command.
+
+The certificate compatibility exception is checked by
+`python3 scripts/ci/check_trust_roots.py`. Only the immutable registry
+`webpki-roots 0.26.11` re-export is admitted; its single real data dependency
+must be registry v1.0.10 or newer. A changed checksum, source, forwarding edge,
+old data version or stale exception fails the static and Rust gates. The
+exception must be removed with the last compatibility consumer.

@@ -2,7 +2,13 @@
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
+
+
+INPUT_GLOBS = ("scripts/ci/_native_shell.py", "scripts/ci/_native_shell_tests.py",
+               "scripts/ci/_windows_job.py")
 
 
 def bash_executable(*, windows=None, environment=None, find=shutil.which):
@@ -52,3 +58,69 @@ def self_test():
             else:
                 raise AssertionError("missing native shell cannot fall back to WSL")
         assert bash_executable(windows=False, environment={}, find=lambda _: "/usr/bin/bash") == "/usr/bin/bash"
+
+
+def shell_environment(shell, *, windows=None, environment=None):
+    windows = os.name == "nt" if windows is None else windows
+    environment = os.environ if environment is None else environment
+    child = dict(environment)
+    if windows:
+        # Nested executable scripts use /usr/bin/env bash. Keep Git's native
+        # shell and coreutils ahead of System32's WSL launcher in the child only.
+        directory = Path(shell).resolve().parent
+        paths = [directory]
+        tools = directory.parent / "usr/bin"
+        if tools.is_dir() and tools != directory:
+            paths.append(tools)
+        previous = child.get("PATH", "")
+        child["PATH"] = ";".join([*(str(path) for path in paths), previous])
+    return child
+
+
+def windows_shell_command(command):
+    # MSYS parses the raw Windows command line with POSIX escaping; Python's
+    # default CRT quoting loses literal quotes, empty args and trailing slashes.
+    return " ".join('"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+                    for value in command)
+
+
+def main(argv):
+    if argv[:1] == ["--windows-job-child"]:
+        if os.name != "nt" or len(argv) < 4 or argv[2] != "--":
+            return 2
+        from _windows_job import attach_current_process
+        attach_current_process(argv[1])
+        shell = bash_executable()
+        return subprocess.call(windows_shell_command([shell, "--", *argv[3:]]),
+                               env=shell_environment(shell))
+    if argv == ["--self-test"]:
+        self_test()
+        from _native_shell_tests import run_tests
+        return run_tests()
+    if not argv or argv[0].startswith("-"):
+        print("usage: _native_shell.py SCRIPT [ARG ...] | --self-test", file=sys.stderr)
+        return 2
+    shell = bash_executable()
+    environment = shell_environment(shell)
+    command = [shell, "--", *argv]
+    if os.name != "nt":
+        os.execvpe(shell, command, environment)
+    from _windows_job import WindowsJob
+    # Use the existing join-before-launch Job mechanism; the parent alone owns
+    # the Job handle so cancellation cannot strand native Bash descendants.
+    with WindowsJob() as job:
+        child = subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
+                                  "--windows-job-child", job.name, "--", *argv],
+                                 env=environment)
+        try:
+            return child.wait()
+        except BaseException:
+            job.close()
+            if child.poll() is None:
+                child.kill()
+            child.wait()
+            raise
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
