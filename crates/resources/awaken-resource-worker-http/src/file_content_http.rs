@@ -56,7 +56,7 @@ pub struct WorkerFileContentService {
     dispatch: Arc<dyn DispatchCommitAuthority>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
-    session_repository: Option<Arc<dyn awaken_session_repository_contract::SessionRepository>>,
+    session_repository: Option<Arc<dyn awaken_session_repository_contract::SessionRepositoryReads>>,
     recovery: Option<Arc<dyn RunRecoverySource>>,
     materialization_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionResourceMaterializationControl>>,
@@ -93,10 +93,25 @@ impl WorkerFileContentService {
     /// Install the durable Session authority used to validate a claimed frozen
     /// Resource generation. The live claim and exact realization lease still
     /// fence every read.
+    ///
+    /// Capability rule R1: a caller supplies only the original Store's read
+    /// view; configuring this transport needs no root-write or reconciliation
+    /// capability. The reader contract owns the create/commit/maintenance
+    /// compile refusals; the File HTTP tests own claim and Resource admission.
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use awaken_resource_worker_http::WorkerFileContentService;
+    /// use awaken_session_repository_contract::SessionRepositoryReads;
+    /// fn configure(service: WorkerFileContentService, reads: Arc<dyn SessionRepositoryReads>)
+    ///     -> WorkerFileContentService {
+    ///     service.with_session_repository(reads)
+    /// }
+    /// ```
     #[must_use]
     pub fn with_session_repository(
         mut self,
-        sessions: Arc<dyn awaken_session_repository_contract::SessionRepository>,
+        sessions: Arc<dyn awaken_session_repository_contract::SessionRepositoryReads>,
     ) -> Self {
         self.session_repository = Some(sessions);
         self

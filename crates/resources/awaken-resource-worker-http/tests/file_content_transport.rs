@@ -559,6 +559,10 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
 /// durable Session aggregate, while preserving
 /// the same claim, Workspace, Worker-incarnation, realization-lease, and File
 /// fences used by an inline dispatch envelope.
+/// Capability rule R1: seed the original SQLite Store, then erase its write
+/// capability before supplying it to the HTTP service. Exact and unfrozen File
+/// results must stay unchanged; the canonical reader's compile-fail examples
+/// cover unavailable create/commit/maintenance methods, without a second Store.
 #[tokio::test]
 async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
     let store = Arc::new(awaken_file_store::InMemoryFileStore::new());
@@ -628,7 +632,11 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
             awaken_time::system_clock(),
         )
         .with_worker_directory(directory)
-        .with_session_repository(sessions),
+        .with_session_repository({
+            let reads: Arc<dyn awaken_session_repository_contract::SessionRepositoryReads> =
+                sessions;
+            reads
+        }),
     );
     let address = support::serve(worker_file_content_router(service)).await;
     let source = HttpFileContentSource::new(
