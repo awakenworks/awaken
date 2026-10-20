@@ -40,7 +40,7 @@ impl LlmExecutor for PinnedReadModel {
             .count();
         self.requests.lock().unwrap().push(request);
         let output = if let Some(path) = self.paths.get(tool_results) {
-            AssistantOutput::from_tool_calls(vec![awaken_runtime_contract::llm::ToolCall {
+            AssistantOutput::from_tool_calls(vec![awaken_tool_contract::tool::ToolCall {
                 call_id: format!("read-{tool_results}"),
                 tool_id: "read".into(),
                 arguments: serde_json::json!({"file_path": path}),

@@ -281,7 +281,7 @@ impl SessionApplication {
     ) -> Result<SessionExecutionObservation, crate::SessionProjectionRecoveryError> {
         let thread_reads = self.runtime().thread_reads();
 
-        use awaken_runtime_contract::llm::ModelRequestObservation as RuntimeModelRequestObservation;
+        use awaken_agent_contract::audit::model_request::ModelRequestObservation as RuntimeModelRequestObservation;
 
         let recovered = self
             .queries

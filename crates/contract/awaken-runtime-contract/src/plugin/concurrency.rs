@@ -5,7 +5,7 @@
 //! but composition is always conservative: the runtime unions every claim and
 //! no plugin can widen another source's declaration.
 
-use crate::tool::{ToolCall, ToolConcurrency};
+use awaken_tool_contract::tool::{ToolCall, ToolConcurrency};
 
 /// One named source of additional resource claims for a concrete tool call.
 pub trait ToolConcurrencyConstraint: Send + Sync {

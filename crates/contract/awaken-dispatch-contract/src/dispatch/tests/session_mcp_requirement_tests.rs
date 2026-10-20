@@ -134,8 +134,8 @@ fn mcp_access(selected: &PlaintextHolder, usage: CredentialUsage) -> CredentialA
         usage,
         CredentialExecutionPolicy::exact(selected.clone(), ModelExposurePolicy::Forbidden),
     )
-    .with_target(awaken_runtime_contract::CredentialTarget::new(
-        awaken_runtime_contract::credential::CredentialPurpose::McpAuthorization,
+    .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+        awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
         "https://mcp.example.test/",
     ))
 }

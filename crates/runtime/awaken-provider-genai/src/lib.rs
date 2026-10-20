@@ -12,13 +12,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{ContentBlock, DocumentSource, ImageSource};
 use awaken_agent_contract::agent::message::Role;
+use awaken_agent_contract::audit::model_request::TokenUsage;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, Error, LlmExecutor, Result, StopReason, TokenUsage,
-    ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, Error, LlmExecutor, Result, StopReason,
 };
 use awaken_runtime_contract::model_operation::{
     ModelExecutionEvidence, NoDispatchProof, ResponseEnvelope, TerminalReceipt,
 };
+use awaken_tool_contract::tool::ToolCall;
 use genai::Client;
 use genai::chat::{
     Binary, ChatMessage, ChatRequest as GenaiChatRequest, ContentPart, MessageContent,

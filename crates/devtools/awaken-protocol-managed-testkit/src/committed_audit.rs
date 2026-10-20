@@ -36,12 +36,13 @@ pub fn fixture_usage_command(
     usage: awaken_session_budget_contract::SessionUsage,
 ) -> awaken_agent_contract::agent::state::Command {
     let mut attributed = awaken_runtime_contract::llm::ThreadUsage::default();
-    let token_usage = |input, output, read, creation| awaken_runtime_contract::llm::TokenUsage {
-        prompt_tokens: input,
-        completion_tokens: output,
-        cache_read_tokens: read,
-        cache_creation_tokens: creation,
-    };
+    let token_usage =
+        |input, output, read, creation| awaken_agent_contract::audit::model_request::TokenUsage {
+            prompt_tokens: input,
+            completion_tokens: output,
+            cache_read_tokens: read,
+            cache_creation_tokens: creation,
+        };
     if usage.by_model.is_empty() {
         attributed.record(
             "test-fixture",

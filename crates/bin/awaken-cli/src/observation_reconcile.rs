@@ -104,7 +104,7 @@ fn worker_observation_fingerprint(
             )
         })
         .collect();
-    awaken_runtime_contract::content_fingerprint(&observations).map_err(|error| error.to_string())
+    awaken_agent_contract::content_fingerprint(&observations).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

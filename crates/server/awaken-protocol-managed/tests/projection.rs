@@ -343,7 +343,7 @@ impl CommittedEvidence {
         let mut tally = awaken_runtime_contract::llm::ThreadUsage::default();
         tally.record(
             "test-model",
-            awaken_runtime_contract::llm::TokenUsage {
+            awaken_agent_contract::audit::model_request::TokenUsage {
                 prompt_tokens: usage.input_tokens,
                 completion_tokens: usage.output_tokens,
                 cache_read_tokens: usage.cache_read_tokens,

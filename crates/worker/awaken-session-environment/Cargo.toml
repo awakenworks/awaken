@@ -20,7 +20,6 @@ awaken-session-environment-contract.workspace = true
 awaken-container-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-agent-channel.workspace = true
-awaken-runtime-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-time.workspace = true

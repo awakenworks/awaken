@@ -16,7 +16,6 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error as LlmError, LlmExecutor, StopReason,
-    ToolCall,
 };
 use awaken_runtime_contract::metrics::{InferenceMetric, MetricsRecorder};
 use awaken_runtime_contract::resolved::{
@@ -27,6 +26,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 
 /// Captures every metric the engine emits, so a test can assert on the labels.
@@ -64,7 +64,7 @@ impl LlmExecutor for OkLlm {
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         Ok(ChatResponse {
             output: AssistantOutput::text("done".to_string()),
-            usage: Some(awaken_runtime_contract::llm::TokenUsage {
+            usage: Some(awaken_agent_contract::audit::model_request::TokenUsage {
                 prompt_tokens: 11,
                 completion_tokens: 7,
                 cache_read_tokens: 0,

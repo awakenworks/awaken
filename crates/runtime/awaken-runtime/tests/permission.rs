@@ -19,19 +19,17 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
+use awaken_agent_contract::audit::permission::{PermissionPolicy, PermissionReasonCode};
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_ext_compact::{
     CompactArtifact, CompactBackend, CompactConfig, CompactPlugin, CompactRequest,
 };
 use awaken_runtime::{PermissionGate, Runtime};
-use awaken_runtime_contract::CommittedThreadView;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::permission::{
-    PermissionBasis, PermissionPolicy, PermissionReasonCode, ToolPermissionPolicy,
-    ToolPermissionRuling, ToolPermissionVerdict,
+    PermissionBasis, ToolPermissionPolicy, ToolPermissionRuling, ToolPermissionVerdict,
 };
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
@@ -43,6 +41,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 
 const FP: &str = "catalog-a";
@@ -138,7 +137,7 @@ impl ToolPermissionPolicy for FixedPolicy {
         ToolPermissionRuling::policy(
             self.0.clone(),
             awaken_runtime_contract::permission::PermissionBasis::fixed(
-                awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                awaken_agent_contract::audit::permission::PermissionPolicy::Rule,
             ),
         )
     }
@@ -520,7 +519,7 @@ impl ToolPermissionPolicy for RecordingDenyCanonical {
                 ToolPermissionVerdict::Allow
             },
             awaken_runtime_contract::permission::PermissionBasis::fixed(
-                awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                awaken_agent_contract::audit::permission::PermissionPolicy::Rule,
             ),
         )
     }
@@ -672,7 +671,7 @@ impl ToolPermissionPolicy for AskByCall {
                 correlation_id: format!("permission-{}", call.call_id),
             },
             awaken_runtime_contract::permission::PermissionBasis::fixed(
-                awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                awaken_agent_contract::audit::permission::PermissionPolicy::Rule,
             ),
         )
     }

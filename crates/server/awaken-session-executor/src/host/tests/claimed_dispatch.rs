@@ -768,21 +768,23 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         .build()
         .expect("validated Host dependencies");
     let candidate_with_policy =
-        |model: &str, backend: &str, policy: awaken_runtime_contract::CredentialExecutionPolicy| {
+        |model: &str,
+         backend: &str,
+         policy: awaken_agent_contract::credential::CredentialExecutionPolicy| {
             let binding =
                 awaken_runtime_contract::resolved::ModelBinding::new("provider", model, backend);
             let credential = Some(
-                awaken_runtime_contract::CredentialAccess::new(
-                    awaken_runtime_contract::CredentialRef {
+                awaken_agent_contract::credential::CredentialAccess::new(
+                    awaken_agent_contract::credential::CredentialRef {
                         id: format!("credential-{model}"),
                         revision: 1,
                     },
-                    awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                    awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                    awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+                    awaken_agent_contract::credential::CredentialUsage::ProviderAdapter,
                     policy,
                 )
-                .with_target(awaken_runtime_contract::CredentialTarget::new(
-                    awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                    awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
                     "provider",
                 )),
             );
@@ -824,7 +826,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         candidate_with_policy(
             model,
             backend,
-            awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+            awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider(),
         )
     };
     let activation = |primary, fallbacks| {
@@ -856,7 +858,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
             .unwrap()
             .unwrap()
             .boundary,
-        awaken_runtime_contract::PlaintextBoundary::Worker,
+        awaken_agent_contract::credential::PlaintextBoundary::Worker,
         "R2"
     );
     assert_eq!(
@@ -873,7 +875,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
             .unwrap()
             .unwrap()
             .boundary,
-        awaken_runtime_contract::PlaintextBoundary::Workload,
+        awaken_agent_contract::credential::PlaintextBoundary::Workload,
         "R3"
     );
     let remote = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_remote(
@@ -883,17 +885,17 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
             "a2a:https://agent.example",
         ),
         awaken_tenancy::ScopeId::from("workspace-a"),
-        Some(awaken_runtime_contract::CredentialAccess::new(
-            awaken_runtime_contract::CredentialRef {
+        Some(awaken_agent_contract::credential::CredentialAccess::new(
+            awaken_agent_contract::credential::CredentialRef {
                 id: "credential-remote".into(),
                 revision: 1,
             },
-            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-            awaken_runtime_contract::CredentialUsage::HttpHeader {
+            awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+            awaken_agent_contract::credential::CredentialUsage::HttpHeader {
                 name: "authorization".into(),
                 scheme: Some("Bearer".into()),
             },
-            awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+            awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider(),
         )),
         "sha256:card",
     )
@@ -906,7 +908,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
         .unwrap()
         .unwrap()
         .boundary,
-        awaken_runtime_contract::PlaintextBoundary::Worker,
+        awaken_agent_contract::credential::PlaintextBoundary::Worker,
         "R8"
     );
     assert!(
@@ -918,16 +920,16 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
             .is_err(),
         "R4"
     );
-    let platform_holder = awaken_runtime_contract::PlaintextHolder::new(
-        awaken_runtime_contract::PlaintextBoundary::Platform,
+    let platform_holder = awaken_agent_contract::credential::PlaintextHolder::new(
+        awaken_agent_contract::credential::PlaintextBoundary::Platform,
         "awaken.cloud.egress-gateway",
     );
     let platform_candidate = candidate_with_policy(
         "platform",
         "hosted",
-        awaken_runtime_contract::CredentialExecutionPolicy::exact(
+        awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
             platform_holder.clone(),
-            awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+            awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
         ),
     );
     let platform_activation = activation(platform_candidate, Vec::new());
@@ -978,19 +980,19 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
     let worker_candidate = candidate_with_policy(
         "worker-exact",
         "native",
-        awaken_runtime_contract::CredentialExecutionPolicy::exact(
+        awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
             awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
                 .inference_holder,
-            awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+            awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
         ),
     );
     let workload_candidate = candidate_with_policy(
         "workload-exact",
         "native",
-        awaken_runtime_contract::CredentialExecutionPolicy::exact(
+        awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
             awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp()
                 .inference_holder,
-            awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+            awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
         ),
     );
     let error = awaken_dispatch_execution::placement::self_hosted_inference_holder(&activation(

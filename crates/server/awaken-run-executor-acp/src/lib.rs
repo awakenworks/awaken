@@ -59,6 +59,8 @@ use awaken_protocol_acp::{
 // declarations live only in awaken-acp-contract; new consumers use that owner.
 pub use awaken_acp_contract::{AcpLaunchEvent, AcpLaunchStage, LaunchObserver, SessionMcpServer};
 // The concrete codec and process supervisor remain protocol-owned.
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
+use awaken_agent_contract::audit::model_request::TokenUsage;
 pub use awaken_protocol_acp::{Codec, Supervisor};
 use awaken_provisioning_contract::ProcessHandle;
 pub use awaken_provisioning_contract::{SandboxError, SecretBroker, SecretWritebackTarget};
@@ -68,16 +70,15 @@ use awaken_runtime_contract::execution::{
     Cancellation, Error, ExecutorCapabilities, Result, RunAttemptExecutor, RunExecutor, Wait,
     verify_attempt_ownership,
 };
-use awaken_runtime_contract::llm::{ThreadUsage, ThreadUsageKey, TokenUsage};
+use awaken_runtime_contract::llm::{ThreadUsage, ThreadUsageKey};
 use awaken_runtime_contract::permission::{
-    GateAuthority, ToolCall, ToolPermissionPolicy, ToolPermissionRuling, ToolPermissionVerdict,
+    GateAuthority, ToolPermissionPolicy, ToolPermissionRuling, ToolPermissionVerdict,
 };
 use awaken_runtime_contract::resolved::Backend;
-use awaken_runtime_contract::resume::{
-    PermissionDecision, ResumeCommand, ResumeResult, validate_resume,
-};
+use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runtime_context::{AttemptOwnershipVerifier, RuntimeRunContext};
 use awaken_runtime_contract::terminal::{CommittedTerminalRun, deliver_committed_terminal};
+use awaken_tool_contract::tool::ToolCall;
 
 /// An already-launched ACP agent: the duplex channel plus the process handle for
 /// reaping. The host produces this — locally by launching the CLI into a sandbox,

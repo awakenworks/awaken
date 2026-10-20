@@ -172,13 +172,8 @@ pub fn is_hand_member(name: &str) -> bool {
 /// decision over the result.
 #[must_use]
 pub fn hand_recovery_modes<'a>(
-    selected: impl IntoIterator<
-        Item = (
-            &'a str,
-            &'a awaken_runtime_contract::tool::ToolRecoveryPolicy,
-        ),
-    >,
-) -> std::collections::BTreeSet<awaken_runtime_contract::tool::ToolRecoveryMode> {
+    selected: impl IntoIterator<Item = (&'a str, &'a awaken_tool_contract::tool::ToolRecoveryPolicy)>,
+) -> std::collections::BTreeSet<awaken_tool_contract::tool::ToolRecoveryMode> {
     selected
         .into_iter()
         .filter(|(id, _)| is_hand_member(id))
@@ -697,7 +692,7 @@ mod tests {
         // R3 a Hand member keeps its own NeverReplay mode for the caller to
         // filter. This single projection keeps placement and publication
         // admission from maintaining parallel concrete tool-id filters.
-        use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
+        use awaken_tool_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
         let durable = ToolRecoveryPolicy::durable_request();
         let never = ToolRecoveryPolicy::default();
         let hand = AGENT_TOOLSET_MEMBERS

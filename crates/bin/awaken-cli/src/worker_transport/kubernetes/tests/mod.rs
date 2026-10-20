@@ -47,9 +47,9 @@ async fn commit_actual_model_only_result<R>(
     recovery: Arc<R>,
     activation: awaken_runtime_contract::activation::RunActivation,
 ) where
-    R: awaken_runtime_contract::CommitCoordinator
-        + awaken_runtime_contract::CommittedThreadView
-        + awaken_runtime_contract::RunRecoverySource
+    R: awaken_agent_contract::thread::commit::coordinator::Coordinator
+        + awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView
+        + awaken_agent_contract::thread::read::recovery::RunRecoverySource
         + 'static,
 {
     use awaken_agent_contract::agent::state::StateKey;

@@ -23,8 +23,8 @@ pub(crate) fn acp_mcp_client_injection_capabilities(
     cli: &str,
     http_transport: bool,
 ) -> Option<CredentialRealizationCapabilities> {
+    use awaken_agent_contract::credential::PlaintextBoundary;
     use awaken_credential_contract::CredentialRealizationKind;
-    use awaken_runtime_contract::PlaintextBoundary;
 
     let delivery = awaken_credential_contract::select_mcp_credential_delivery(
         PlaintextBoundary::Workload,
@@ -150,11 +150,13 @@ impl crate::RunCapabilities {
 mod tests {
     use std::sync::Arc;
 
+    use awaken_agent_contract::credential::{
+        CredentialMaterialSource, PlaintextBoundary, PlaintextHolder,
+    };
     use awaken_credential_contract::{
         CredentialMaterialError, CredentialMaterialRequest, CredentialMaterialResolver,
         CredentialRealizationKind, ResolvedCredentialMaterial,
     };
-    use awaken_runtime_contract::{CredentialMaterialSource, PlaintextBoundary, PlaintextHolder};
 
     struct ControlReferenceResolver;
 
@@ -166,12 +168,12 @@ mod tests {
         {
             let mut profiles = std::collections::BTreeSet::new();
             for holder in [
-                awaken_runtime_contract::PlaintextHolder::new(
-                    awaken_runtime_contract::PlaintextBoundary::Worker,
+                awaken_agent_contract::credential::PlaintextHolder::new(
+                    awaken_agent_contract::credential::PlaintextBoundary::Worker,
                     "awaken.worker",
                 ),
-                awaken_runtime_contract::PlaintextHolder::new(
-                    awaken_runtime_contract::PlaintextBoundary::Workload,
+                awaken_agent_contract::credential::PlaintextHolder::new(
+                    awaken_agent_contract::credential::PlaintextBoundary::Workload,
                     "awaken.workload.acp",
                 ),
             ] {
@@ -200,7 +202,7 @@ mod tests {
             .any(|profile| {
                 profile.holders.contains(&PlaintextHolder::new(
                     PlaintextBoundary::Worker,
-                    awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+                    awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
                 )) && profile
                     .material_sources
                     .contains(&CredentialMaterialSource::ControlPlaneReference)

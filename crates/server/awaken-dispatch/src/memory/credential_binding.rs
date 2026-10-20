@@ -5,8 +5,8 @@
 // @formal reason: return absence. The production delivery-admission kernel and shared
 // @formal reason: Memory/SQLite/PostgreSQL conformance table own exact authority and epoch rules; this
 // @formal reason: classification does not claim a proof of mutex scheduling or backend refinement.
+use awaken_agent_contract::credential::CandidateFingerprint;
 use awaken_credential_contract::AttemptCredentialBinding;
-use awaken_runtime_contract::CandidateFingerprint;
 
 use super::{DispatchState, RunClaim, State};
 

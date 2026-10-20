@@ -279,7 +279,7 @@ fn test_model_binding() -> awaken_runtime_contract::resolved::ModelBinding {
 fn write_confirmation_gate() -> Arc<awaken_runtime::PermissionGate> {
     let toolsets = [crate::config::test_agent_toolset_permission(
         "write",
-        awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk,
+        awaken_agent_contract::ToolPermissionRequirement::AlwaysAsk,
     )];
     let policy = crate::config::effective_policy_with_toolsets(
         None,
@@ -973,16 +973,16 @@ fn effective_repository(
         .resource_holder;
     let credential = credential_binding.as_ref().map(|binding| {
         Box::new(crate::session_resource::ResolvedRepositoryCredential {
-            access: awaken_runtime_contract::CredentialAccess::new(
-                awaken_runtime_contract::CredentialRef {
+            access: awaken_agent_contract::credential::CredentialAccess::new(
+                awaken_agent_contract::credential::CredentialRef {
                     id: binding.clone(),
                     revision: 1,
                 },
-                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
                 crate::session_resource::repository_transport_credential_usage(),
-                awaken_runtime_contract::CredentialExecutionPolicy::exact(
+                awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
                     holder.clone(),
-                    awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+                    awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
                 ),
             )
             .with_target(
@@ -1499,7 +1499,7 @@ impl LlmExecutor for ClientLookupModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        use awaken_runtime_contract::llm::ToolCall;
+        use awaken_tool_contract::tool::ToolCall;
         let tool_text = request
             .messages
             .iter()

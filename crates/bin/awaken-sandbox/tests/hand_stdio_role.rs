@@ -3,7 +3,7 @@
 
 use std::process::Stdio;
 
-use awaken_runtime_contract::llm::ToolCall;
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_relay::{RemoteToolExecutor, wire::HandResult};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::process::Command;

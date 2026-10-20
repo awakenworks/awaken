@@ -872,9 +872,9 @@ mod tests {
         CredentialRealizationToken::new(serde_json::json!({
             "candidate_fingerprint": "candidate-a",
             "credential": { "id": "credential-a", "revision": 3 },
-            "selected_plaintext_holder": awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Worker,
-                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            "selected_plaintext_holder": awaken_agent_contract::credential::PlaintextHolder::new(
+                awaken_agent_contract::credential::PlaintextBoundary::Worker,
+                awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
             ),
             "actual_realization_kind": "worker_provider_adapter",
             "claim_epoch": generation,

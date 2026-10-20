@@ -19,7 +19,6 @@ protocol = "a2a"
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true
-awaken-runtime-contract.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-types.workspace = true
 # The Org admission vocabulary this adapter classifies and encodes.

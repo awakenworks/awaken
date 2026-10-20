@@ -33,13 +33,14 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_dispatch_contract::{PlacementPolicy, WorkerSnapshot};
 use awaken_runtime_contract::resume::ResumeResult;
 
+use awaken_agent_contract::credential::CandidateFingerprint;
 use awaken_dispatch_contract::RunDispatch;
 use awaken_dispatch_contract::{
-    AttemptCredentialBinding, CandidateFingerprint, CasOutcome, Claimed, CommitEpochGuard,
-    CredentialRealizationReceipt, DispatchCompletion, DispatchDepths, DispatchError,
-    DispatchOutcome, DispatchSummary, Inbox, InboxRead, LeaseRenewalOutcome, Outbox, PendingInput,
-    PendingRecord, RunClaim, SessionChildAdmission, SessionRunReservationActivation,
-    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
+    AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
+    DispatchCompletion, DispatchDepths, DispatchError, DispatchOutcome, DispatchSummary, Inbox,
+    InboxRead, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, RunClaim,
+    SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
+    SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
 use awaken_dispatch_contract::{DispatchCursor, DispatchOperationalFeed, DispatchPage};
 

@@ -2,8 +2,8 @@
 // @formal reason: One Web-owned pure kernel parses, validates, composes and admits execution policy;
 // @formal reason: the adjacent native tables cover typed and opaque inputs without effectful dependencies.
 //! Web adapter over the one pure SDK policy kernel.
-use awaken_runtime_contract::activation::InheritedToolsets;
-use awaken_runtime_contract::agent_bindings::{ToolsetPolicy, ToolsetSource};
+use awaken_agent_contract::toolset::InheritedToolsets;
+use awaken_agent_contract::{ToolsetPolicy, ToolsetSource};
 pub(super) use awaken_web_policy_contract::WebExecutionConfiguration;
 pub(super) use awaken_web_policy_contract::{
     EffectiveWebFetchConfiguration, EffectiveWebSearchConfiguration, domains_permit_any_url,
@@ -76,7 +76,7 @@ pub fn web_search_execution_configuration(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime_contract::agent_bindings::{ToolExecutionPolicy, ToolPolicyOverride};
+    use awaken_agent_contract::{ToolExecutionPolicy, ToolPolicyOverride};
 
     fn source(value: Value, name: &str) -> Vec<ToolsetPolicy> {
         vec![ToolsetPolicy {

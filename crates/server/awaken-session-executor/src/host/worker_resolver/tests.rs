@@ -756,8 +756,8 @@ impl awaken_session_realization_contract::SessionRealizationControl for Recordin
 }
 
 fn ordinary_frozen_projection() -> awaken_session_realization_contract::FrozenSessionProjection {
-    let holder = awaken_runtime_contract::PlaintextHolder::new(
-        awaken_runtime_contract::PlaintextBoundary::Worker,
+    let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+        awaken_agent_contract::credential::PlaintextBoundary::Worker,
         "test.worker",
     );
     empty_frozen_projection(
@@ -1969,7 +1969,7 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
     let thread = "thread-backend-owned-adoption";
     let candidate = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
         awaken_runtime_contract::resolved::ModelBinding::new("provider", "", "acp:codex"),
-        awaken_runtime_contract::CredentialRef {
+        awaken_agent_contract::credential::CredentialRef {
             id: "local".into(),
             revision: 1,
         },

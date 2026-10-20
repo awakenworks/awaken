@@ -725,8 +725,8 @@ mod tests {
 
     pub(super) fn frozen_projection() -> awaken_session_realization_contract::FrozenSessionProjection
     {
-        let holder = awaken_runtime_contract::PlaintextHolder::new(
-            awaken_runtime_contract::PlaintextBoundary::Worker,
+        let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+            awaken_agent_contract::credential::PlaintextBoundary::Worker,
             "test.worker",
         );
         let baseline = awaken_session_configuration_contract::SessionBaseline::compile(

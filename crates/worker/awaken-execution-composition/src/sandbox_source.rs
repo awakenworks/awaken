@@ -457,7 +457,7 @@ mod tests {
                 "codex",
                 "test",
                 "sha256:test",
-                awaken_runtime_contract::resolved::AcpSessionConfiguration {
+                awaken_agent_contract::AcpSessionConfiguration {
                     working_directory: Some("repo/src".into()),
                     ..Default::default()
                 },

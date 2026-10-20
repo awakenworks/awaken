@@ -27,7 +27,7 @@ use awaken_memory_store::{MemoryWriter, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider;
 use awaken_provisioning_contract::{SandboxAdoption, SessionSandbox};
-use awaken_runtime_contract::llm::ToolCall;
+use awaken_tool_contract::tool::ToolCall;
 
 use awaken_sandbox_container::{
     ContainerHandleCodec as _, ContainerProvider, ContainerRuntime, ContainerSandbox,

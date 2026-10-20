@@ -666,7 +666,7 @@ pub trait DispatchControlReads: DispatchAttemptRecordReads {
     async fn current_credential_binding(
         &self,
         claim: &RunClaim,
-        candidate: &awaken_runtime_contract::CandidateFingerprint,
+        candidate: &awaken_agent_contract::credential::CandidateFingerprint,
     ) -> Result<Option<AttemptCredentialBinding>, DispatchError>;
 
     /// Read the existing occupied physical identity, independently of the newer

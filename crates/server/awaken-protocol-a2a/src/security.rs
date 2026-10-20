@@ -19,7 +19,7 @@ pub struct A2aSecurityProfile {
 
 pub fn project_agent_card_security(card: &AgentCard) -> Result<A2aSecurityProfile, String> {
     let fingerprint =
-        awaken_runtime_contract::content_fingerprint(&(&card.security_schemes, &card.security))
+        awaken_agent_contract::content_fingerprint(&(&card.security_schemes, &card.security))
             .map(|fingerprint| format!("sha256:{fingerprint}"))
             .map_err(|error| format!("fingerprint A2A Agent Card security: {error}"))?;
     if card.security.is_empty() {

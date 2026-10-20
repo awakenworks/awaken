@@ -164,25 +164,24 @@ impl ModelPublicationResolver for FakeProviderResolver {
             .resolved()
             .cloned()
             .ok_or_else(|| "test requires a pinned model".to_string())?;
-        let candidate =
-            |binding: ModelBinding| {
-                ResolvedModelCandidate::try_provider(
+        let candidate = |binding: ModelBinding| {
+            ResolvedModelCandidate::try_provider(
                 binding.clone(),
                 "provider@2",
                 "endpoint@4",
                 workspace.clone(),
                 Some(
-                    awaken_runtime_contract::CredentialAccess::new(
-                        awaken_runtime_contract::CredentialRef {
+                    awaken_agent_contract::credential::CredentialAccess::new(
+                        awaken_agent_contract::credential::CredentialRef {
                             id: format!("credential-{workspace}"),
                             revision: 3,
                         },
-                        awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                        awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-                        awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                        awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+                        awaken_agent_contract::credential::CredentialUsage::ProviderAdapter,
+                        awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider(),
                     )
-                    .with_target(awaken_runtime_contract::CredentialTarget::new(
-                        awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                    .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                        awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
                         "provider",
                     )),
                 ),
@@ -194,7 +193,7 @@ impl ModelPublicationResolver for FakeProviderResolver {
                     processing_placement: None,
                 },
             )
-            };
+        };
         Ok(ResolvedPublicationModels {
             primary: candidate(primary).map_err(|error| error.to_string())?,
             candidates: candidates

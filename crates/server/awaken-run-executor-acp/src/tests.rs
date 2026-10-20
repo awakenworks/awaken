@@ -80,7 +80,7 @@ async fn acp_permission_titles_use_the_canonical_mcp_tool_identity() {
             ToolPermissionRuling::policy(
                 ToolPermissionVerdict::Allow,
                 awaken_runtime_contract::permission::PermissionBasis::fixed(
-                    awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                    awaken_agent_contract::audit::permission::PermissionPolicy::Rule,
                 ),
             )
         }
@@ -240,7 +240,7 @@ async fn acp_mcp_server_name_drift_uses_only_conservative_session_alias_consensu
                     },
                 },
                 awaken_runtime_contract::permission::PermissionBasis::fixed(
-                    awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                    awaken_agent_contract::audit::permission::PermissionPolicy::Rule,
                 ),
             )
         }
@@ -2595,7 +2595,8 @@ async fn a_usage_event_is_committed_as_thread_state() {
     // attributed to the bound model — the same committed truth a native run writes,
     // so a session's ACP usage is readable identically.
     use awaken_agent_contract::agent::state::Action;
-    use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage, TokenUsage};
+    use awaken_agent_contract::audit::model_request::TokenUsage;
+    use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage};
 
     let e = exec(vec![
         r#"{"type":"message","text":"hi"}"#.into(),
@@ -2919,9 +2920,8 @@ async fn neutral_permission_resolver_projects_the_policy_decision() {
     // Allow→Allow, Deny→Deny, and Ask carries its durable correlation instead of
     // collapsing into a denial.
     use awaken_protocol_acp::{PermissionAsk, PermissionResolver, PermissionVerdict};
-    use awaken_runtime_contract::permission::{
-        ToolCall, ToolPermissionPolicy, ToolPermissionVerdict,
-    };
+    use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
+    use awaken_tool_contract::tool::ToolCall;
 
     struct FixedPolicy(ToolPermissionVerdict);
     #[async_trait]
@@ -2930,7 +2930,7 @@ async fn neutral_permission_resolver_projects_the_policy_decision() {
             ToolPermissionRuling::policy(
                 self.0.clone(),
                 awaken_runtime_contract::permission::PermissionBasis::fixed(
-                    awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                    awaken_agent_contract::audit::permission::PermissionPolicy::Rule,
                 ),
             )
         }
@@ -2993,9 +2993,9 @@ async fn every_acp_permission_decision_is_recorded_with_the_policy_that_made_it(
     use awaken_agent_contract::audit::permission::{PermissionPolicy, PermissionReasonCode};
     use awaken_protocol_acp::{PermissionAsk, PermissionResolver, PermissionVerdict};
     use awaken_runtime_contract::permission::{
-        PermissionBasis, ToolCall, ToolPermissionPolicy, ToolPermissionRuling,
-        ToolPermissionVerdict,
+        PermissionBasis, ToolPermissionPolicy, ToolPermissionRuling, ToolPermissionVerdict,
     };
+    use awaken_tool_contract::tool::ToolCall;
 
     struct RulingPolicy(ToolPermissionRuling);
     #[async_trait]
@@ -3312,7 +3312,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                     correlation_id: if changed { "approval-2" } else { "approval-1" }.to_string(),
                 },
                 awaken_runtime_contract::permission::PermissionBasis::fixed(
-                    awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                    awaken_agent_contract::audit::permission::PermissionPolicy::Rule,
                 ),
             )
         }
@@ -4876,8 +4876,9 @@ async fn usage_accumulates_across_relaunched_runs() {
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
     use awaken_agent_contract::agent::state::Action;
+    use awaken_agent_contract::audit::model_request::TokenUsage;
     use awaken_runtime_contract::live_inbox::{LiveInbox, MessageOrigin};
-    use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage, TokenUsage};
+    use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage};
 
     // Every launched Run (the ScriptedSource re-emits its frames on each open) reports
     // the same usage; two Runs → the tally must double.
@@ -4945,7 +4946,8 @@ async fn usage_accumulates_across_independent_runs_with_a_rebuilt_reader() {
     // and failure triggers used by this case.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage, TokenUsage};
+    use awaken_agent_contract::audit::model_request::TokenUsage;
+    use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage};
 
     let frames = || {
         vec![

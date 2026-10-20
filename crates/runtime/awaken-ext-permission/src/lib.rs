@@ -21,13 +21,15 @@
 //! nothing can short-circuit the rule scan and neutralize a `deny`.
 
 use async_trait::async_trait;
-use awaken_runtime_contract::agent_bindings::{
-    AgentBindings, ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy, ToolsetSource,
+use awaken_agent_contract::audit::permission::{PermissionPolicy, PermissionReasonCode};
+use awaken_agent_contract::{
+    ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy, ToolsetSource,
 };
+use awaken_runtime_contract::agent_bindings::AgentBindings;
 use awaken_runtime_contract::permission::{
-    PermissionBasis, PermissionPolicy, PermissionReasonCode, ToolCall, ToolPermissionPolicy,
-    ToolPermissionRuling, ToolPermissionVerdict,
+    PermissionBasis, ToolPermissionPolicy, ToolPermissionRuling, ToolPermissionVerdict,
 };
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_pattern::{
     ArgMatcher, MatchOp, MatchResult, Specificity, ToolMatcher, parse_pattern, pattern_matches,
 };
@@ -917,7 +919,7 @@ mod tests {
 
     #[tokio::test]
     async fn policy_maps_behavior_to_decision() {
-        use awaken_runtime_contract::permission::ToolCall;
+        use awaken_tool_contract::tool::ToolCall;
         let policy = RuleBasedToolPermissionPolicy::new(PermissionRuleset {
             default_behavior: ToolPermissionBehavior::RequireConfirmation,
             rules: vec![
@@ -988,11 +990,9 @@ mod tests {
                             server_name: "context".into(),
                         },
                         default: disabled,
-                        overrides: vec![
-                            awaken_runtime_contract::agent_bindings::ToolPolicyOverride::new(
-                                "attest", typed,
-                            ),
-                        ],
+                        overrides: vec![awaken_agent_contract::ToolPolicyOverride::new(
+                            "attest", typed,
+                        )],
                     }]);
                     let call = ToolCall {
                         call_id: "typed-mcp".into(),
@@ -1037,9 +1037,9 @@ mod tests {
                 server_name: "context".into(),
             },
             default: disabled,
-            overrides: vec![
-                awaken_runtime_contract::agent_bindings::ToolPolicyOverride::new("attest", allow),
-            ],
+            overrides: vec![awaken_agent_contract::ToolPolicyOverride::new(
+                "attest", allow,
+            )],
         }]);
         for scope in ["public", "secret"] {
             let call = ToolCall {

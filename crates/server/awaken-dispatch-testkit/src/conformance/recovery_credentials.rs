@@ -672,7 +672,7 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
 ) {
     let holder = PlaintextHolder::new(
         PlaintextBoundary::Worker,
-        awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+        awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
     );
     let incompatible_holder = PlaintextHolder::new(PlaintextBoundary::Worker, "other-worker");
     let mut invalid =
@@ -1097,6 +1097,8 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         1,
         "A3 rejected admission did not mutate the durable lease epoch"
     );
+    // R4/R5: exact and foreign fingerprints use the sole Agent definition.
+    // Only the exact persisted candidate binds; no Ingress forwarding is needed.
     let first_binding = &first.credential_bindings[0];
     assert_eq!(first_binding.claim_epoch, first.lease.epoch());
     assert_eq!(
@@ -1118,7 +1120,7 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         store
             .current_credential_binding(
                 &RunClaim::from(&first.lease),
-                &awaken_runtime_contract::CandidateFingerprint("foreign".into()),
+                &awaken_agent_contract::credential::CandidateFingerprint("foreign".into()),
             )
             .await
             .expect("R5 foreign candidate query")

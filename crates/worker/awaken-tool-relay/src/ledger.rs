@@ -272,7 +272,7 @@ impl FsOperationLedger {
         // longer, so those use a bounded SHA-256 stem and persist the complete
         // identity inside the claim file for collision detection.
         if operation_id.len() > LOSSLESS_STEM_ID_LIMIT {
-            let digest = awaken_runtime_contract::resolution::content_fingerprint(operation_id)
+            let digest = awaken_agent_contract::content_fingerprint(operation_id)
                 .expect("a string operation identity always serializes");
             return format!("sha256-{digest}");
         }

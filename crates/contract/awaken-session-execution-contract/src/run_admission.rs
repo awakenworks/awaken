@@ -69,7 +69,7 @@ impl AdmitSessionRun {
     /// Runtime projection is applied to it.
     #[must_use]
     pub fn command_fingerprint(&self) -> SessionRunCommandFingerprint {
-        let digest = awaken_runtime_contract::content_fingerprint(&(
+        let digest = awaken_agent_contract::content_fingerprint(&(
             "session-command-v1",
             &self.session_id,
             &self.agent_id,

@@ -7,13 +7,24 @@
 //! protocol projection.
 
 #[cfg(test)]
-use awaken_runtime_contract::RunRecord;
-use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::{
-    CommitOperationCoordinator, CommittedThreadView, EndCause, Message, MessageId, Role,
-    RunActivation, RunId, RunRecoverySource, RunState, RuntimeRunContext, ThreadId,
-    TranscriptRange, TranscriptSliceSpec, TranscriptView,
+use awaken_agent_contract::agent::run::Record as RunRecord;
+use awaken_agent_contract::{
+    agent::{
+        message::{Id as MessageId, Message, Role},
+        run::{EndCause, Id as RunId, RunState},
+        thread::Id as ThreadId,
+    },
+    thread::{
+        commit::coordinator::OperationCoordinator as CommitOperationCoordinator,
+        read::{
+            committed_thread_view::CommittedThreadView,
+            recovery::RunRecoverySource,
+            transcript::{TranscriptRange, TranscriptSliceSpec, TranscriptView},
+        },
+    },
 };
+use awaken_runtime_contract::execution::RunExecutor;
+use awaken_runtime_contract::{RunActivation, RuntimeRunContext};
 
 use crate::outcome::{
     Definition, Evaluation, EvaluationResult, ExecutionFailure, Grade, GradeDecision, Grader,
@@ -35,7 +46,7 @@ pub struct IterationReport {
     /// What grading this round cost, as observed on the Judge Run's own Thread.
     /// `None` where no usage was recorded for it — including the synthesized
     /// round below, which closes an interrupted Outcome without ever grading.
-    pub usage: Option<awaken_runtime_contract::llm::TokenUsage>,
+    pub usage: Option<awaken_agent_contract::audit::model_request::TokenUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -703,10 +714,19 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
-    use awaken_runtime_contract::{
-        CommitCoordinator, CommitError, CommitOperation, CommitOperationCoordinator, CommitReceipt,
-        CommitRecord, RecoveryError, ResumeTicket, RunRecoverySnapshot, RunRecoverySource,
-        StateCommand, ThreadCommit,
+    use awaken_agent_contract::{
+        agent::{awaiting::ResumeTicket, state::Command as StateCommand},
+        thread::{
+            commit::{
+                coordinator::{
+                    Coordinator as CommitCoordinator, Error as CommitError,
+                    OperationCoordinator as CommitOperationCoordinator,
+                },
+                operation::{CommitOperation, CommitReceipt},
+                staged::{CommitRecord, ThreadCommit},
+            },
+            read::recovery::{RecoveryError, RunRecoverySnapshot, RunRecoverySource},
+        },
     };
     use awaken_store_inmem::MemoryCommitCoordinator;
 
@@ -746,7 +766,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl awaken_runtime_contract::CommitCoordinator for World {
+    impl awaken_agent_contract::thread::commit::coordinator::Coordinator for World {
         async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
             let receipt = self.store.commit(commit.clone()).await?;
             self.commits.lock().unwrap().push(commit);
@@ -882,13 +902,17 @@ mod tests {
             self.commit(ThreadCommit::assemble(
                 activation.thread_id,
                 match &state {
-                    RunState::Ended(cause) => awaken_runtime_contract::RunDisposition::ended(
-                        activation.run_id,
-                        cause.clone(),
-                    ),
+                    RunState::Ended(cause) => {
+                        awaken_agent_contract::thread::commit::staged::RunDisposition::ended(
+                            activation.run_id,
+                            cause.clone(),
+                        )
+                    }
                     RunState::Awaiting => return Ok(RunState::Awaiting),
                     RunState::Running => {
-                        awaken_runtime_contract::RunDisposition::running(activation.run_id)
+                        awaken_agent_contract::thread::commit::staged::RunDisposition::running(
+                            activation.run_id,
+                        )
                     }
                 },
                 false,
@@ -943,8 +967,8 @@ mod tests {
     /// A fixed, recognizable cost for the deterministic Judge double, so a test
     /// can tell a report that carried the Judge's observed usage from one that
     /// defaulted it.
-    const RANGE_GRADER_USAGE: awaken_runtime_contract::llm::TokenUsage =
-        awaken_runtime_contract::llm::TokenUsage {
+    const RANGE_GRADER_USAGE: awaken_agent_contract::audit::model_request::TokenUsage =
+        awaken_agent_contract::audit::model_request::TokenUsage {
             prompt_tokens: 41,
             completion_tokens: 5,
             cache_read_tokens: 2,
@@ -1884,7 +1908,7 @@ mod tests {
         world
             .commit(ThreadCommit::assemble(
                 thread.clone(),
-                awaken_runtime_contract::RunDisposition::ended(
+                awaken_agent_contract::thread::commit::staged::RunDisposition::ended(
                     RunId("old-run".into()),
                     EndCause::NaturalEnd,
                 ),

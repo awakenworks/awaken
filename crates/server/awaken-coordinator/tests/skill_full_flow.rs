@@ -14,10 +14,9 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::Role;
 use awaken_coordinator::SkillSpec;
 use awaken_protocol_managed_testkit::DurableFact;
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_scenario_host::build_router_with_managed_skills;
+use awaken_tool_contract::tool::ToolCall;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

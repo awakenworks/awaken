@@ -29,7 +29,7 @@ impl AttemptOwnershipVerifier for BackgroundTaskOwnership {
             .committed_state(&self.expected.origin.thread_id)
             .await
             .map_err(AttemptOwnershipError::Unavailable)?;
-        let state = awaken_runtime_contract::Store::rebuild(&commands);
+        let state = awaken_agent_contract::agent::state::Store::rebuild(&commands);
         let current = task_state_cell(&self.expected.id)
             .load(&state)
             .map_err(|error| AttemptOwnershipError::Unavailable(error.to_string()))?
@@ -253,7 +253,7 @@ mod tests {
                 task.origin.thread_id.clone(),
                 RunDisposition::ended(
                     RunId(run.into()),
-                    awaken_runtime_contract::EndCause::NaturalEnd,
+                    awaken_agent_contract::agent::run::EndCause::NaturalEnd,
                 ),
                 true,
                 Vec::new(),
@@ -398,7 +398,7 @@ mod tests {
                 .unwrap();
                 let expected = task.clone();
                 let execution = tokio::spawn(async move {
-                    let state = awaken_runtime_contract::Store::new();
+                    let state = awaken_agent_contract::agent::state::Store::new();
                     let run = RunId("detached".into());
                     let thread = &expected.origin.thread_id;
                     let call = &expected.invocation.call;
@@ -563,7 +563,7 @@ mod tests {
                     .unwrap(),
                 );
                 let invoke = |prepared: Arc<PreparedToolExecutor>, expected: BackgroundTask| async move {
-                    let state = awaken_runtime_contract::Store::new();
+                    let state = awaken_agent_contract::agent::state::Store::new();
                     let run = RunId("effect".into());
                     let call = &expected.invocation.call;
                     let thread = &expected.origin.thread_id;

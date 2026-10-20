@@ -11,9 +11,8 @@ pub mod coding_agent;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
 
 /// A deterministic stand-in for a model: it calls the `echo` tool once, then ends

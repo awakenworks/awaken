@@ -132,7 +132,7 @@ fn toolsets_compile_into_one_exact_executable_capability_path() {
     // toolset executable or unpublished catalog member can enter the snapshot.
     // Decision rule T1: apply each table row once, then change one policy bit
     // and require a different fingerprint.
-    use awaken_runtime_contract::agent_bindings::{
+    use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
     };
@@ -184,7 +184,7 @@ fn toolsets_compile_into_one_exact_executable_capability_path() {
 
 #[test]
 fn provider_server_tool_with_always_ask_is_rejected_before_publication() {
-    use awaken_runtime_contract::agent_bindings::{
+    use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
     };
@@ -228,9 +228,7 @@ fn competing_or_unresolvable_toolset_authoring_fails_closed() {
     // | duplicate source              | invalid tools binding |
     // | MCP source undeclared         | invalid tools binding |
     // | legacy permission + toolsets  | reject competing owner |
-    use awaken_runtime_contract::agent_bindings::{
-        ToolExecutionPolicy, ToolsetPolicy, ToolsetSource,
-    };
+    use awaken_agent_contract::{ToolExecutionPolicy, ToolsetPolicy, ToolsetSource};
     let agent = ToolsetPolicy {
         source: ToolsetSource::Agent,
         default: ToolExecutionPolicy::default(),
@@ -266,7 +264,7 @@ fn competing_or_unresolvable_toolset_authoring_fails_closed() {
 fn mcp_credential_reference_requires_a_stable_id_and_positive_revision() {
     let mut cfg = config(&[]);
     cfg.mcp_servers = vec![mcp("docs", "https://mcp.example.test")];
-    cfg.mcp_servers[0].credential = Some(awaken_runtime_contract::credential::CredentialRef {
+    cfg.mcp_servers[0].credential = Some(awaken_agent_contract::credential::CredentialRef {
         id: String::new(),
         revision: 1,
     });
@@ -278,7 +276,7 @@ fn mcp_credential_reference_requires_a_stable_id_and_positive_revision() {
         })
     ));
 
-    cfg.mcp_servers[0].credential = Some(awaken_runtime_contract::credential::CredentialRef {
+    cfg.mcp_servers[0].credential = Some(awaken_agent_contract::credential::CredentialRef {
         id: "cred:workspace:docs".into(),
         revision: 0,
     });
@@ -321,7 +319,8 @@ fn delegation_limits_are_resolved_and_enter_the_fingerprint() {
     let base = config(&[]);
     let base_compiled = compile(&base, &[]).unwrap();
     let mut bounded = base;
-    bounded.delegation_limits = awaken_runtime_contract::delegation::DelegationLimits::new(2, 3, 5);
+    bounded.delegation_limits =
+        awaken_agent_contract::agent::delegation::DelegationLimits::new(2, 3, 5);
     let bounded_compiled = compile(&bounded, &[]).unwrap();
     assert_eq!(
         bounded_compiled.resolved_spec.delegation_limits,
@@ -737,7 +736,7 @@ fn every_model_selection_has_one_strict_tagged_wire_shape() {
     let backend_exact = ModelSelection::try_backend_exact(
         "acp:codex",
         "gpt-exact",
-        awaken_runtime_contract::resolved::AcpSessionConfiguration {
+        awaken_agent_contract::AcpSessionConfiguration {
             mode: Some("plan".into()),
             options: [("reasoning_effort".into(), "high".into())]
                 .into_iter()
@@ -796,17 +795,17 @@ fn publication_pinned_model_provisioning_is_part_of_the_fingerprint() {
             "primary@1",
             "workspace-a",
             Some(
-                awaken_runtime_contract::CredentialAccess::new(
-                    awaken_runtime_contract::CredentialRef {
+                awaken_agent_contract::credential::CredentialAccess::new(
+                    awaken_agent_contract::credential::CredentialRef {
                         id: credential.into(),
                         revision: 1,
                     },
-                    awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                    awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-                    awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                    awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+                    awaken_agent_contract::credential::CredentialUsage::ProviderAdapter,
+                    awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider(),
                 )
-                .with_target(awaken_runtime_contract::CredentialTarget::new(
-                    awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                    awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
                     "anthropic",
                 )),
             ),

@@ -490,7 +490,7 @@ mod tests {
                     correlation_id: format!("approval:{}", call.call_id),
                 },
                 awaken_runtime_contract::permission::PermissionBasis::fixed(
-                    awaken_runtime_contract::permission::PermissionPolicy::Rule,
+                    awaken_agent_contract::audit::permission::PermissionPolicy::Rule,
                 ),
             )
         }
@@ -769,6 +769,8 @@ mod tests {
         use awaken_agent_contract::agent::thread::Id as ThreadId;
         use awaken_agent_contract::thread::commit::coordinator::Coordinator;
         use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
+        use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+        use awaken_runtime_contract::RuntimeRunContext;
         use awaken_runtime_contract::resolved::{
             CatalogFingerprint, ModelBinding, ResolvedModelCandidate, ResolvedSpec,
         };
@@ -776,7 +778,6 @@ mod tests {
         use awaken_runtime_contract::snapshot::{
             AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
         };
-        use awaken_runtime_contract::{CommittedThreadView, RuntimeRunContext};
         use awaken_tool_contract::{ActiveToolBatch, ToolBatch, ToolWaitKind};
 
         struct RecordingTool(Arc<std::sync::Mutex<Vec<ToolCall>>>);
@@ -911,7 +912,7 @@ mod tests {
                         awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
                     ),
                     2 => context.with_inherited_toolsets(Some(
-                        awaken_runtime_contract::activation::InheritedToolsets::with_caller(
+                        awaken_agent_contract::toolset::InheritedToolsets::with_caller(
                             Vec::new(),
                             None,
                         ),
@@ -923,7 +924,7 @@ mod tests {
                 };
                 if mode == 3 {
                     activation = activation.with_inherited_toolsets(Some(
-                        awaken_runtime_contract::activation::InheritedToolsets::with_caller(
+                        awaken_agent_contract::toolset::InheritedToolsets::with_caller(
                             Vec::new(),
                             None,
                         ),

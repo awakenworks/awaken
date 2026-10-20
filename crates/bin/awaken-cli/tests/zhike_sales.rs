@@ -8,8 +8,9 @@ mod provider_push;
 use async_trait::async_trait;
 use awaken_protocol_managed_testkit::DurableFact;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, DeltaSink, LlmExecutor, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, DeltaSink, LlmExecutor,
 };
+use awaken_tool_contract::tool::ToolCall;
 use axum::{
     Json, Router,
     body::Body,
@@ -274,7 +275,7 @@ impl LlmExecutor for ObservedModel {
         request: ChatRequest,
         sink: &dyn DeltaSink,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        if request.messages.iter().any(|m| m.content.iter().any(|b| matches!(b, awaken_runtime_contract::ContentBlock::Text { text } if text.contains("call.connected") && text.contains("background_task")))) {
+        if request.messages.iter().any(|m| m.content.iter().any(|b| matches!(b, awaken_agent_contract::agent::content::ContentBlock::Text { text } if text.contains("call.connected") && text.contains("background_task")))) {
             self.connected_inputs.fetch_add(1, Ordering::SeqCst);
         }
         let response = self
@@ -317,14 +318,16 @@ impl LlmExecutor for ScriptedSales {
             .messages
             .iter()
             .rev()
-            .take_while(|message| message.role == awaken_runtime_contract::Role::User)
+            .take_while(|message| message.role == awaken_agent_contract::agent::message::Role::User)
             .count()
             .max(1);
         let last = request.messages[request.messages.len() - trailing_inputs..]
             .iter()
             .flat_map(|message| message.content.iter())
             .filter_map(|b| match b {
-                awaken_runtime_contract::ContentBlock::Text { text } => Some(text.as_str()),
+                awaken_agent_contract::agent::content::ContentBlock::Text { text } => {
+                    Some(text.as_str())
+                }
                 _ => None,
             })
             .collect::<Vec<_>>()

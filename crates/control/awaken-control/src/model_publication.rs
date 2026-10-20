@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex};
 
 use awaken_acp_contract::AcpPublicationCapability;
 use awaken_agent_config::ModelSelection;
+use awaken_agent_contract::credential::CredentialExecutionPolicy;
+use awaken_agent_contract::credential::CredentialRef;
 use awaken_config_resolver::{
     ExecutorModelCapability, InferenceProfileStore, ModelTarget, derive_vendor_pool,
     get_workspace_profile, validate_executor_offering,
@@ -24,8 +26,6 @@ use awaken_credential_vault::{
     CredentialBinding, CredentialKind, CredentialSource, CredentialStatus,
 };
 use awaken_model_catalog::{Offering, ProviderCatalog};
-use awaken_runtime_contract::CredentialExecutionPolicy;
-use awaken_runtime_contract::CredentialRef;
 use awaken_runtime_contract::resolved::{
     Backend, BackendModelSelection, ModelBinding, ResolvedModelCandidate,
 };
@@ -102,7 +102,7 @@ impl CatalogModelPublicationResolver {
         sources: &[CredentialSource],
         workspace: &ScopeId,
         binding: ModelBinding,
-        session_configuration: Option<&awaken_runtime_contract::resolved::AcpSessionConfiguration>,
+        session_configuration: Option<&awaken_agent_contract::AcpSessionConfiguration>,
         exact_target: Option<&ModelTarget>,
     ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
         if matches!(Backend::from_ref(binding.identity().2), Backend::Native)
@@ -356,6 +356,7 @@ mod tests {
 
     use super::*;
     use awaken_agent_contract::RedactedString;
+    use awaken_agent_contract::credential::{CredentialMaterialSource, CredentialUsage};
     use awaken_config_resolver::InferenceProfile;
     use awaken_config_resolver::{InMemoryProfileStore, ProfileCandidate};
     use awaken_credential_contract::{
@@ -374,7 +375,6 @@ mod tests {
         ApiDialect, ModelAttributes, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
     };
     use awaken_runtime_contract::resolved::ModelProvisioning;
-    use awaken_runtime_contract::{CredentialMaterialSource, CredentialUsage};
     use awaken_worker_registry::{
         MemoryWorkerDirectory, WorkerAcpCapabilityObservation, WorkerCredentialObservation,
         WorkerCredentialRevision, WorkerDirectory, WorkerHeartbeat, WorkerManifest,
@@ -538,8 +538,8 @@ mod tests {
         credentials: Arc<dyn CredentialRepo>,
     ) -> CatalogModelPublicationResolver {
         let policy = CredentialExecutionPolicy::self_hosted_provider();
-        let holder = awaken_runtime_contract::PlaintextHolder::new(
-            awaken_runtime_contract::PlaintextBoundary::Worker,
+        let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+            awaken_agent_contract::credential::PlaintextBoundary::Worker,
             awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
         );
         CatalogModelPublicationResolver::new(catalog, credentials, test_clock())
@@ -1423,7 +1423,7 @@ mod tests {
                 endpoint_name: None,
             },
             backend_ref: "acp:codex".into(),
-            configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration {
+            configuration: awaken_agent_contract::AcpSessionConfiguration {
                 mode: Some("plan".into()),
                 options: [("reasoning_effort".into(), value.into())]
                     .into_iter()

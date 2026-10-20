@@ -13,7 +13,7 @@ use super::*;
 pub struct ManagedWebGatewayEndpoint {
     pub gateway_base_url: String,
     pub route_ref: String,
-    pub lease_token: awaken_runtime_contract::RedactedString,
+    pub lease_token: awaken_agent_contract::RedactedString,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -394,7 +394,7 @@ mod tests {
             Ok(ManagedWebGatewayEndpoint {
                 gateway_base_url: self.gateway_base_url.clone(),
                 route_ref: route_ref.to_owned(),
-                lease_token: awaken_runtime_contract::RedactedString::new("route-capability"),
+                lease_token: awaken_agent_contract::RedactedString::new("route-capability"),
             })
         }
     }

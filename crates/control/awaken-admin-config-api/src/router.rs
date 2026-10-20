@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
+use awaken_agent_contract::resilience::Disposition;
 use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER};
 use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, ConfigRepositoryError, InferenceProfile,
@@ -38,7 +39,6 @@ use awaken_model_catalog::repo::{CatalogRepo, RepoError};
 use awaken_model_catalog::{
     CatalogSyncResult, ModelAttributeSource, ModelAttributes, OfferingSource, OfferingStatus,
 };
-use awaken_runtime_contract::resilience::Disposition;
 use awaken_tenancy::WorkspaceScope as ResourceWorkspace;
 use axum::extract::{Extension, FromRef, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header::CONTENT_TYPE};
@@ -970,7 +970,7 @@ async fn credential_in_scope(
 
 /// A cooldown signal an operator (or an external rate-limit integration) records
 /// against a credential source. `kind` maps to a failure
-/// [`Disposition`](awaken_runtime_contract::resilience::Disposition): `quota` cools
+/// [`Disposition`](awaken_agent_contract::resilience::Disposition): `quota` cools
 /// until `retry_after_secs` (or a default window); `exhausted` cools until cleared;
 /// `available` / `clear` lifts any cooldown; `transient` / `permanent` are no-ops on
 /// availability (they are retry/next-binding decisions, not identity cooldowns).

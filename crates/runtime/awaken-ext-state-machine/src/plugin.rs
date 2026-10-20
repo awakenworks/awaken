@@ -11,12 +11,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::{FoldStateKey, StateKey, Store};
-use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolCall, ToolGateHook};
+use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::plugin::{
     CapabilityBound, ContextMessages, Contributions, HookReaction, IdBound, PhaseContext,
     PhaseHook, PhaseHookPoint, PhaseKind, Plugin, PluginConfigError, PluginManifest, RunEndContext,
     RunEndDecision, RunEndGuard, ToolConcurrencyConstraint,
 };
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{ToolConcurrency, ToolResource, ToolResourceAccess};
 use serde_json::{Value, json};
 

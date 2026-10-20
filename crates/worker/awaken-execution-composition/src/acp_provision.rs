@@ -302,6 +302,10 @@ mod tests {
     use awaken_agent_contract::RedactedString;
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_agent_contract::credential::{
+        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+        CredentialUsage,
+    };
     use awaken_credential_contract::{
         AttemptCredentialBinding, AttemptCredentialRealization, CredentialRealizationReceipt,
         CredentialRealizationRecordError, CredentialRealizationRecorder,
@@ -316,9 +320,7 @@ mod tests {
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
     use awaken_runtime_contract::{
-        AttemptOwnershipError, AttemptOwnershipVerifier, CredentialAccess,
-        CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef, CredentialUsage,
-        InferenceEndpoint,
+        AttemptOwnershipError, AttemptOwnershipVerifier, InferenceEndpoint,
     };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -458,8 +460,8 @@ mod tests {
             CredentialUsage::ProviderAdapter,
             CredentialExecutionPolicy::self_hosted_provider(),
         )
-        .with_target(awaken_runtime_contract::CredentialTarget::new(
-            awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+        .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+            awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
             "anthropic",
         ))
     }
@@ -482,9 +484,9 @@ mod tests {
             candidate_fingerprint: awaken_credential_contract::candidate_fingerprint(candidate)
                 .unwrap(),
             credential,
-            selected_plaintext_holder: awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Workload,
-                awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+            selected_plaintext_holder: awaken_agent_contract::credential::PlaintextHolder::new(
+                awaken_agent_contract::credential::PlaintextBoundary::Workload,
+                awaken_agent_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
             ),
             selected_realization_kind: kind,
             claim_epoch: 1,

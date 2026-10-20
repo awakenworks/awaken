@@ -26,7 +26,7 @@ pub(super) fn stable_message_id(
             "A2A resume message requires a committed correlation identity".to_string(),
         ));
     }
-    let fingerprint = awaken_runtime_contract::resolution::content_fingerprint(&(
+    let fingerprint = awaken_agent_contract::content_fingerprint(&(
         MESSAGE_ID_DOMAIN,
         run_id.0.as_str(),
         resume_correlation,

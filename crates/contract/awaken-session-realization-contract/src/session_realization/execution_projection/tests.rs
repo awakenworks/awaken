@@ -18,7 +18,7 @@ fn candidate(kind: &str) -> ResolvedModelCandidate {
         "owned" => ResolvedModelCandidate::try_backend_owned(
             ModelBinding::parse("credential", "model", "acp:cli")
                 .expect("valid backend model fixture"),
-            awaken_runtime_contract::CredentialRef {
+            awaken_agent_contract::credential::CredentialRef {
                 id: "credential".into(),
                 revision: 1,
             },

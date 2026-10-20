@@ -12,8 +12,9 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_runtime_contract::execution::{Error, Result};
-use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ToolCall};
+use awaken_runtime_contract::llm::{ChatMessage, ChatRequest};
 use awaken_runtime_contract::resolved::{ContextPolicy, ResolvedSpec, ToolDescriptor};
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::ToolOutput;
 use awaken_tool_contract::tool_batch::ToolBatch;
 
@@ -116,8 +117,7 @@ pub(crate) fn executable_tool_descriptors(
         .iter()
         .map(|tool| tool.id.as_str())
         .collect::<std::collections::BTreeSet<_>>();
-    spec
-        .tool_descriptors
+    spec.tool_descriptors
         .iter()
         .filter(|tool| !dynamic_ids.contains(tool.id.as_str()))
         .chain(dynamic.iter())
@@ -149,7 +149,7 @@ pub(crate) fn executable_tool_descriptors(
                     .is_some_and(|policy| {
                         policy.enabled
                             && policy.permission
-                                == awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAllow
+                                == awaken_agent_contract::ToolPermissionRequirement::AlwaysAllow
                     })
         })
         .cloned()

@@ -186,7 +186,7 @@ impl WorkerBootstrap {
                 .credential_material_root
                 .unwrap_or_else(|| data_dir.join("worker-credentials")),
             credential_trust_domain: input.credential_trust_domain.unwrap_or_else(|| {
-                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN.into()
+                awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN.into()
             }),
             admin_listen: input.admin_listen.or_else(|| Some("0.0.0.0:9090".into())),
             drain_grace_secs: input.drain_grace_secs.unwrap_or(20),
@@ -1022,8 +1022,8 @@ mod tests {
         // W5 all selected CLIs missing => startup fails, never a fabricated route.
         // W6 Windows Namespace is unsupported => startup rejects explicitly;
         // Local still executes the full wiring/projection table on every OS.
+        use awaken_agent_contract::credential::CredentialRef;
         use awaken_run_executor_acp::host::AcpLocalCredentialBinding;
-        use awaken_runtime_contract::CredentialRef;
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("worker.toml");
         let signer = directory.path().join("signer.json");

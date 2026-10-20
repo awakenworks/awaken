@@ -1421,7 +1421,7 @@ impl awaken_dispatch_contract::DispatchControlReads for MemoryDispatchStore {
     async fn current_credential_binding(
         &self,
         claim: &RunClaim,
-        candidate: &awaken_runtime_contract::CandidateFingerprint,
+        candidate: &awaken_agent_contract::credential::CandidateFingerprint,
     ) -> Result<Option<AttemptCredentialBinding>, DispatchError> {
         let now_ms = self.clock.now_ms();
         let state = lock(&self.state)?;

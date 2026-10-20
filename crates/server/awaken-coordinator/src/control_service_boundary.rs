@@ -88,7 +88,7 @@ struct SourceCommand {
     source_id: CredentialSourceId,
     workspace_id: String,
     target: awaken_agent_contract::McpTarget,
-    selected_holder: awaken_runtime_contract::PlaintextHolder,
+    selected_holder: awaken_agent_contract::credential::PlaintextHolder,
     binding: awaken_credential_contract::CredentialMaterialBinding,
 }
 
@@ -96,10 +96,10 @@ struct SourceCommand {
 struct CredentialAccessCommand {
     source_id: CredentialSourceId,
     workspace_id: String,
-    target: awaken_runtime_contract::CredentialTarget,
-    usage: awaken_runtime_contract::CredentialUsage,
-    policy: awaken_runtime_contract::CredentialExecutionPolicy,
-    selected_holder: awaken_runtime_contract::PlaintextHolder,
+    target: awaken_agent_contract::credential::CredentialTarget,
+    usage: awaken_agent_contract::credential::CredentialUsage,
+    policy: awaken_agent_contract::credential::CredentialExecutionPolicy,
+    selected_holder: awaken_agent_contract::credential::PlaintextHolder,
     binding: awaken_credential_contract::CredentialMaterialBinding,
 }
 
@@ -622,9 +622,9 @@ impl SessionCredentialSource for HttpControlServiceClient {
         source_id: &CredentialSourceId,
         workspace_id: &str,
         target: &awaken_agent_contract::McpTarget,
-        selected_holder: &awaken_runtime_contract::PlaintextHolder,
+        selected_holder: &awaken_agent_contract::credential::PlaintextHolder,
         binding: &awaken_credential_contract::CredentialMaterialBinding,
-    ) -> Result<awaken_runtime_contract::CredentialAccess, String> {
+    ) -> Result<awaken_agent_contract::credential::CredentialAccess, String> {
         self.post(
             MCP_ACCESS_PATH,
             &SourceCommand {
@@ -643,7 +643,7 @@ impl SessionCredentialSource for HttpControlServiceClient {
         source_id: &CredentialSourceId,
         workspace_id: &str,
         request: SessionCredentialAccessRequest,
-    ) -> Result<awaken_runtime_contract::CredentialAccess, String> {
+    ) -> Result<awaken_agent_contract::credential::CredentialAccess, String> {
         let SessionCredentialAccessRequest {
             target,
             usage,

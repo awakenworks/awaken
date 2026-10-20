@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::permission::ToolGateHook;
 use crate::resolved::ToolDescriptor;
-use crate::tool::RawTool;
+use awaken_tool_contract::tool::RawTool;
 
 use super::capability::IdBound;
 use super::capability::{BoundViolation, PluginManifest, enforce_bound};

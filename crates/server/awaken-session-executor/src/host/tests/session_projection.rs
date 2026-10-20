@@ -214,7 +214,7 @@ async fn session_tool_policy_preserves_the_published_snapshot_identity() {
     // documented here remain the only decision source; no parallel path is admitted.
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
-    use awaken_runtime_contract::agent_bindings::{
+    use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
     };
@@ -312,7 +312,7 @@ async fn session_web_policy_overlay_reaches_the_configured_plugin_before_inferen
     //
     // | Rule | realization | final Session policy | Effect |
     // | S1 | provider-server | max_content_tokens | capability-bound terminal; inference=0 |
-    use awaken_runtime_contract::agent_bindings::{
+    use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
     };
 
@@ -2228,7 +2228,7 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
                 },
                 CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::VirtualOnly),
             )
-            .with_target(awaken_runtime_contract::CredentialTarget::new(
+            .with_target(awaken_agent_contract::credential::CredentialTarget::new(
                 awaken_credential_contract::CredentialPurpose::McpAuthorization,
                 audience,
             )),

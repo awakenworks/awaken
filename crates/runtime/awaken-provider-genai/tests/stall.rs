@@ -386,6 +386,10 @@ enum StreamFixture {
         terminal: bool,
         broken_body: bool,
     },
+    Utf8Chunks {
+        chunks: Vec<Vec<u8>>,
+        requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    },
     AnthropicStall,
     AnthropicHeartbeat,
     OpenAiEmptyChoiceStall,
@@ -544,6 +548,25 @@ async fn spawn_sse_server(fixture: StreamFixture) -> String {
                         .expect("failure response");
                     return;
                 }
+                if let StreamFixture::Utf8Chunks { chunks, requests } = &fixture {
+                    requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    socket.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n").await.unwrap();
+                    // HTTP chunk framing, rather than TCP write timing, fixes
+                    // the raw-body boundaries consumed by the SDK UTF-8 carry.
+                    for chunk in chunks {
+                        if socket
+                            .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                            .await
+                            .is_err()
+                            || socket.write_all(chunk).await.is_err()
+                            || socket.write_all(b"\r\n").await.is_err()
+                        {
+                            return;
+                        }
+                    }
+                    let _ = socket.write_all(b"0\r\n\r\n").await;
+                    return;
+                }
                 if let StreamFixture::Boundary {
                     anthropic,
                     tool,
@@ -573,6 +596,7 @@ async fn spawn_sse_server(fixture: StreamFixture) -> String {
                     StreamFixture::Controlled { .. } => unreachable!("handled at HTTP boundary"),
                     StreamFixture::HttpFailure { .. } => unreachable!("handled at HTTP boundary"),
                     StreamFixture::Boundary { .. } => unreachable!("handled at HTTP boundary"),
+                    StreamFixture::Utf8Chunks { .. } => unreachable!("handled at HTTP boundary"),
                     StreamFixture::AnthropicStall => {
                         let events = concat!(
                             "event: message_start\n",
@@ -670,6 +694,7 @@ async fn spawn_sse_server(fixture: StreamFixture) -> String {
         } => "/v1",
         StreamFixture::AnthropicStall | StreamFixture::AnthropicHeartbeat => "/",
         StreamFixture::Controlled { .. }
+        | StreamFixture::Utf8Chunks { .. }
         | StreamFixture::OpenAiEmptyChoiceStall
         | StreamFixture::OpenAiEmptyTerminal
         | StreamFixture::OpenAiCompleteAfterEmptyChoices
@@ -1367,4 +1392,98 @@ async fn openai_empty_terminal_response_fails_closed() {
             ResponseEnvelope::StreamEndFrame
         ))
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn utf8_stream_chunks_preserve_complete_text_and_reject_invalid_or_truncated_bytes() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    // Cause/effect graph: C1 a complete text prefix; C2 valid Unicode split over
+    // raw HTTP chunks / invalid byte / incomplete final codepoint; C3 protocol
+    // End vs HTTP EOF. Effects E1 exact live and committed bytes only with End;
+    // E2 invalid/truncated input returns a retryable provider error with Unknown
+    // physical evidence, never a partial success or permission to retry; E3 one
+    // initiating request and no pending future. Rules U1=C1+valid split+End=>E1+E3;
+    // U2=C1+invalid=>E2+E3; U3=C1+truncated+EOF=>E2+E3. C2 cases are exclusive.
+    // The existing fixture owns HTTP; no parser substitute or extra watchdog.
+    let event = |text: &str| {
+        format!("data: {}\n\n", serde_json::json!({
+        "id":"utf8-fixture","object":"chat.completion.chunk","created":1,
+        "model":"model-test","choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]
+    })).into_bytes()
+    };
+    let prefix = event("first ");
+    let unicode = event("世界");
+    let split = unicode
+        .windows("世".len())
+        .position(|bytes| bytes == "世".as_bytes())
+        .unwrap()
+        + 1;
+    for rule in ["split", "invalid", "truncated"] {
+        let mut chunks = vec![prefix.clone()];
+        match rule {
+            "split" => {
+                chunks.extend([
+                    unicode[..split].to_vec(),
+                    unicode[split..split + 1].to_vec(),
+                    unicode[split + 1..].to_vec(),
+                    [openai_finish(), b"data: [DONE]\n\n"].concat(),
+                ]);
+            }
+            "invalid" => chunks.push(vec![0xff]),
+            "truncated" => chunks.push(vec![0xe4, 0xb8]),
+            _ => unreachable!(),
+        }
+        let requests = Arc::new(AtomicUsize::new(0));
+        let base = spawn_sse_server(StreamFixture::Utf8Chunks {
+            chunks,
+            requests: requests.clone(),
+        })
+        .await;
+        let executor =
+            GenaiExecutor::from_materialized_endpoint(AdapterKind::OpenAI, base, "fixture-secret")
+                .unwrap();
+        let sink = ObservedSink::default();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            with_budget(
+                budget(Duration::from_secs(3), Duration::from_secs(3)),
+                executor.infer_streaming(request(), &sink),
+            ),
+        )
+        .await
+        .expect("U1/U2/U3 E3 finite settlement");
+        assert_eq!(requests.load(Ordering::SeqCst), 1, "{rule}: E3");
+        if rule == "split" {
+            let response = result.expect("U1 exact complete response");
+            assert_eq!(response.output.text_content(), "first 世界", "U1/E1");
+            assert_eq!(response.stop_reason, Some(StopReason::NaturalEnd), "U1/E1");
+            assert_eq!(
+                sink.text.lock().unwrap().concat(),
+                "first 世界",
+                "U1/E1 live bytes"
+            );
+        } else {
+            let error = result.expect_err("U2/U3 never a partial response");
+            assert_eq!(error.code(), "provider_error", "{rule}: E2");
+            assert!(error.is_retryable(), "{rule}: E2 health class");
+            assert_eq!(
+                error.execution_evidence(),
+                ModelExecutionEvidence::Unknown,
+                "{rule}: E2"
+            );
+            assert_eq!(
+                verdict(&error),
+                RetryVerdict::Stop(RetryStop::ExecutionUncertain),
+                "{rule}: E2"
+            );
+            assert_eq!(
+                sink.text.lock().unwrap().concat(),
+                "first ",
+                "{rule}: E1 exact observed prefix"
+            );
+        }
+    }
 }

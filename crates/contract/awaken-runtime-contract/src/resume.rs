@@ -7,7 +7,7 @@
 //! fails closed (G5/G28). The clock is supplied by the caller so the runtime
 //! core stays deterministic and replayable.
 
-pub use awaken_agent_contract::agent::awaiting::PermissionDecision;
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::awaiting::{
     AwaitTarget, PauseReason, ResumeTicket, ToolAwaitReason,
 };
@@ -19,7 +19,7 @@ use thiserror::Error;
 
 use crate::resolved::CatalogFingerprint;
 use crate::snapshot::ExecutableAgentSnapshotId;
-use crate::tool::ToolOutput;
+use awaken_tool_contract::tool::ToolOutput;
 
 /// What a resume delivers back into the awaiting run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -267,7 +267,7 @@ pub trait OwnedToolContinuation: Send + Sync {
 
     /// Wait for a Host-exported client tool to reach the MCP execution edge.
     /// Implementations without client-executed tools retain an inert future.
-    async fn next_client_execution(&self) -> Option<crate::tool::ToolCall> {
+    async fn next_client_execution(&self) -> Option<awaken_tool_contract::tool::ToolCall> {
         std::future::pending().await
     }
 

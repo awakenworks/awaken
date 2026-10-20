@@ -9,8 +9,8 @@
 use std::time::Duration;
 
 use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory};
-use awaken_runtime_contract::llm::ToolCall;
 use awaken_sandbox::hand::{HandBind, serve_with_operation_ledger};
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_relay::{FsOperationLedger, RemoteToolExecutor, wire::HandResult};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

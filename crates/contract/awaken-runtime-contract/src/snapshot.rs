@@ -112,7 +112,7 @@ impl ExecutableAgentSnapshot {
         content.fingerprint.0.clear();
         content.resolved_spec.catalog_fingerprint.0.clear();
         content.metadata.fingerprint.0.clear();
-        let fingerprint = crate::resolution::content_fingerprint(&content)?;
+        let fingerprint = awaken_agent_contract::content_fingerprint(&content)?;
         self.fingerprint.0.clone_from(&fingerprint);
         self.resolved_spec
             .catalog_fingerprint

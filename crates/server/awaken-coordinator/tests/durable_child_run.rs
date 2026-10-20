@@ -14,11 +14,12 @@ use awaken_dispatch::{AnyCoordinatorDispatch, MemoryDispatchStore};
 use awaken_runtime_contract::StaticPublishedAgentSnapshots;
 use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
 };
 use awaken_runtime_contract::resolved::{ModelBinding, ToolKind};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use awaken_session_executor::HostResume;
+use awaken_tool_contract::tool::ToolCall;
 
 struct ParentChildModel {
     parent_calls: AtomicUsize,
@@ -114,25 +115,21 @@ async fn durable_child_run_scenario() {
 
     let assistant = test_snapshot("assistant", vec![AgentId("researcher".into())]);
     let mut researcher = test_snapshot("researcher", Vec::new());
-    researcher.resolved_spec.plugin_config.agent.toolsets = vec![
-        awaken_runtime_contract::agent_bindings::ToolsetPolicy {
-            source: awaken_runtime_contract::agent_bindings::ToolsetSource::Agent,
-            default: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy {
+    researcher.resolved_spec.plugin_config.agent.toolsets =
+        vec![awaken_agent_contract::ToolsetPolicy {
+            source: awaken_agent_contract::ToolsetSource::Agent,
+            default: awaken_agent_contract::ToolExecutionPolicy {
                 enabled: true,
-                permission:
-                    awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAllow,
+                permission: awaken_agent_contract::ToolPermissionRequirement::AlwaysAllow,
             },
-            overrides: vec![
-                awaken_runtime_contract::agent_bindings::ToolPolicyOverride::new(
-                    "write",
-                    awaken_runtime_contract::agent_bindings::ToolExecutionPolicy {
-                        enabled: true,
-                        permission: awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk,
-                    },
-                ),
-            ],
-        },
-    ];
+            overrides: vec![awaken_agent_contract::ToolPolicyOverride::new(
+                "write",
+                awaken_agent_contract::ToolExecutionPolicy {
+                    enabled: true,
+                    permission: awaken_agent_contract::ToolPermissionRequirement::AlwaysAsk,
+                },
+            )],
+        }];
     let host = (awaken_session_executor_testkit::with_durable_store_dir(
         awaken_scenario_host::build_unmounted_dependencies(
             Arc::new(ParentChildModel {

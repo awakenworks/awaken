@@ -16,7 +16,7 @@ impl ResolvedModelCandidate {
         provider_ref: impl Into<String>,
         route_ref: impl Into<String>,
         scope_id: impl Into<awaken_agent_contract::ScopeId>,
-        credential: Option<crate::CredentialAccess>,
+        credential: Option<awaken_agent_contract::credential::CredentialAccess>,
         endpoint: crate::InferenceEndpoint,
     ) -> Result<Self, InvalidResolvedModelCandidate> {
         Self::try_provider_with_reasoning(
@@ -35,7 +35,7 @@ impl ResolvedModelCandidate {
         provider_ref: impl Into<String>,
         route_ref: impl Into<String>,
         scope_id: impl Into<awaken_agent_contract::ScopeId>,
-        credential: Option<crate::CredentialAccess>,
+        credential: Option<awaken_agent_contract::credential::CredentialAccess>,
         endpoint: crate::InferenceEndpoint,
         unspecified_reasoning: UnspecifiedReasoning,
     ) -> Result<Self, InvalidResolvedModelCandidate> {
@@ -143,7 +143,7 @@ impl ResolvedModelCandidate {
         provider_ref: impl Into<String>,
         route_ref: impl Into<String>,
         scope_id: impl Into<awaken_agent_contract::ScopeId>,
-        credential: Option<crate::CredentialAccess>,
+        credential: Option<awaken_agent_contract::credential::CredentialAccess>,
         endpoint: crate::InferenceEndpoint,
         acp: AcpExecutionProfile,
     ) -> Result<Self, InvalidResolvedModelCandidate> {
@@ -166,7 +166,7 @@ impl ResolvedModelCandidate {
         provider_ref: impl Into<String>,
         route_ref: impl Into<String>,
         scope_id: impl Into<awaken_agent_contract::ScopeId>,
-        credential: Option<crate::CredentialAccess>,
+        credential: Option<awaken_agent_contract::credential::CredentialAccess>,
         endpoint: crate::InferenceEndpoint,
         profile: ProviderExecutionProfile,
     ) -> Result<Self, InvalidResolvedModelCandidate> {

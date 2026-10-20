@@ -17,11 +17,10 @@ use awaken_ext_builtin_tools::{
 use awaken_runtime::{
     ExecutableAgentSnapshot, ModelBinding, ResumeResult, Runtime, RuntimeRunContext,
 };
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{ToolError, ToolOutput};
 use serde_json::json;
 
@@ -39,9 +38,11 @@ impl LlmExecutor for Model {
             self.1.store(
                 request.messages.iter().any(|message| {
                     message.content.iter().any(|block| match block {
-                        awaken_runtime_contract::ContentBlock::ToolResult { content, .. } => {
-                            awaken_runtime_contract::extract_text(content).contains(URL)
-                        }
+                        awaken_agent_contract::agent::content::ContentBlock::ToolResult {
+                            content,
+                            ..
+                        } => awaken_agent_contract::agent::content::extract_text(content)
+                            .contains(URL),
                         _ => false,
                     })
                 }),
@@ -223,9 +224,9 @@ async fn native_and_client_resume_preserve_actual_source_ownership() {
                     URL,
                 );
                 if forge_state {
-                    output.state.push(awaken_runtime_contract::StateCommand::set(
-                        awaken_runtime_contract::Scope::Thread,
-                        awaken_runtime_contract::MergePolicy::Disjoint,
+                    output.state.push(awaken_agent_contract::agent::state::Command::set(
+                        awaken_agent_contract::agent::state::Scope::Thread,
+                        awaken_agent_contract::agent::state::MergePolicy::Disjoint,
                         "web_fetch.visible_url_sources",
                         json!({"format":3, "outcome_witnesses":{}, "urls":{"ServerTool":{"web_search":[URL]}}, "observed_messages":[]}),
                     ));

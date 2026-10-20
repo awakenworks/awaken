@@ -165,7 +165,7 @@ fn run_operation_inventory(
     run: &awaken_agent_contract::agent::run::Id,
 ) -> Result<SessionExecutionOperationInventory, Gap> {
     use awaken_agent_contract::agent::content::ContentBlock;
-    use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolCallPhase};
+    use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolCallPhase};
     let scope = crate::NativeAttemptFootprint::model_effect_scope_for_run(snapshot, run)
         .map_err(|_| Gap::IdentityMismatch)?
         .ok_or(Gap::InventoryIncomplete)?;
@@ -889,8 +889,8 @@ mod tests {
             ActiveModelOperation, ModelEffectScope, ModelOperation,
         };
         use awaken_runtime_contract::resolved::ModelBinding;
-        use awaken_runtime_contract::tool::{ToolCall, ToolRecoveryPolicy};
-        use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatch};
+        use awaken_tool_contract::tool::{ToolCall, ToolRecoveryPolicy};
+        use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolBatch};
         // Causes C1 original coverage; C2 every model's frozen scope is
         // ResponseOnly; C3 no ToolBatch history; C4 original aligned, positive
         // commit coordinates put the marker strictly before every entry.
@@ -1018,8 +1018,8 @@ mod tests {
             ActiveModelOperation, ModelEffectScope, ModelOperation,
         };
         use awaken_runtime_contract::resolved::ModelBinding;
-        use awaken_runtime_contract::tool::{ToolCall, ToolRecoveryPolicy};
-        use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatch};
+        use awaken_tool_contract::tool::{ToolCall, ToolRecoveryPolicy};
+        use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolBatch};
         // Cause/effect table: I0 Requested before message -> retain original id;
         // I1 Executing then logical clear -> same inventory, never stop evidence;
         // I2 missing Requested prefix, I4 malformed history, I5 clear-only ->
@@ -1371,8 +1371,8 @@ mod tests {
                     let root = id.as_str().to_owned();
                     Arc::new(move || {
                         use awaken_agent_contract::agent::state::StateKey;
-                        use awaken_runtime_contract::tool::{ToolCall, ToolRecoveryPolicy};
-                        use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatch};
+                        use awaken_tool_contract::tool::{ToolCall, ToolRecoveryPolicy};
+                        use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolBatch};
                         let mut snapshots = runtime.0.lock().unwrap();
                         let snapshot = snapshots.get_mut(&root).unwrap();
                         if snapshot.state.len() == 2 {

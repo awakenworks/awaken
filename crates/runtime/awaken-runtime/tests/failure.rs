@@ -11,14 +11,15 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::audit::model_request::TokenUsage;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime::{CircuitBreakerConfig, RetryPolicy, Runtime};
-use awaken_runtime_contract::CommittedThreadView;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error as LlmError, LlmExecutor, StopReason,
-    ThreadUsage, TokenUsage,
+    ThreadUsage,
 };
 use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
 use awaken_runtime_contract::resolved::{

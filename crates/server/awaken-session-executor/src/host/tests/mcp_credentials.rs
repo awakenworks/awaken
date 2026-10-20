@@ -5,11 +5,11 @@ use awaken_session_realization::peers::EnvironmentPeer as _;
 
 #[tokio::test]
 async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_revision() {
-    use awaken_ext_mcp::McpToolTransport;
-    use awaken_runtime_contract::{
+    use awaken_agent_contract::credential::{
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
         CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
     };
+    use awaken_ext_mcp::McpToolTransport;
     use awaken_session_execution_contract::McpAttachmentRealizer;
 
     struct PinnedBearerRefresher;
@@ -32,7 +32,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         fn refresher(
             &self,
             _credential_id: awaken_credential_contract::CredentialSourceId,
-            _access: awaken_runtime_contract::CredentialRefreshAccess,
+            _access: awaken_agent_contract::credential::CredentialRefreshAccess,
         ) -> Arc<dyn awaken_ext_mcp::CredentialRefresher> {
             Arc::new(PinnedBearerRefresher)
         }
@@ -126,10 +126,12 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
                         ModelExposurePolicy::VirtualOnly,
                     ),
                 )
-                .with_target(awaken_runtime_contract::CredentialTarget::new(
-                    awaken_credential_contract::CredentialPurpose::McpAuthorization,
-                    mcp_audience.clone(),
-                )),
+                .with_target(
+                    awaken_agent_contract::credential::CredentialTarget::new(
+                        awaken_credential_contract::CredentialPurpose::McpAuthorization,
+                        mcp_audience.clone(),
+                    ),
+                ),
             ),
             prompts_as_skills: false,
             selected_plaintext_holder: Some(holder.clone()),
@@ -1231,7 +1233,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             .resolved_model(
                 awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
                     awaken_runtime_contract::resolved::ModelBinding::new("local", "", "acp:test"),
-                    awaken_runtime_contract::CredentialRef {
+                    awaken_agent_contract::credential::CredentialRef {
                         id: "backend-login".into(),
                         revision: 1,
                     },
@@ -1444,11 +1446,11 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     refreshable.selected_plaintext_holder = Some(workload_holder.clone());
     let access = refreshable.credential.take().unwrap();
     refreshable.credential = Some(access.with_refresh(
-        awaken_runtime_contract::CredentialRefreshAccess::new(
+        awaken_agent_contract::credential::CredentialRefreshAccess::new(
             1,
             "https://auth.example/token".into(),
             "client".into(),
-            awaken_runtime_contract::TokenEndpointAuth::None,
+            awaken_agent_contract::credential::TokenEndpointAuth::None,
             None,
             "refresh-ref".into(),
             "access-ref".into(),
@@ -1527,13 +1529,13 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
 
 #[tokio::test]
 async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization() {
+    use awaken_agent_contract::credential::{
+        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+        CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    };
     use awaken_credential_contract::{
         CredentialMaterialError, CredentialMaterialRequest, CredentialMaterialResolver,
         ResolvedCredentialMaterial,
-    };
-    use awaken_runtime_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-        CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
     };
 
     struct ExactTargetResolver {
@@ -1550,7 +1552,7 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
             let mut profiles = std::collections::BTreeSet::new();
             for holder in [self.holder.clone()] {
                 for source in
-                    [awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference]
+                    [awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference]
                 {
                     for envelope in [false, true] {
                         profiles.insert(awaken_credential_contract::CredentialMaterialCapability {
@@ -1599,7 +1601,7 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
         usage.clone(),
         CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::VirtualOnly),
     )
-    .with_target(awaken_runtime_contract::CredentialTarget::new(
+    .with_target(awaken_agent_contract::credential::CredentialTarget::new(
         awaken_credential_contract::CredentialPurpose::McpAuthorization,
         awaken_agent_contract::McpTarget::identity(target.http_url().unwrap())
             .unwrap()
@@ -1696,13 +1698,11 @@ async fn session_mcp_realizer_is_constructed_once_without_a_host_cycle() {
 /// | R2 | yes | failure | exact external error | never |
 #[tokio::test]
 async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
-    use awaken_session_execution_contract::McpAttachmentRealizer;
-    use {
-        awaken_agent_contract::McpTarget,
-        awaken_session_configuration_contract::mcp::{
-            McpGenerationRef, McpRealizationReceipt, StageMcpAttachment,
-        },
+    use awaken_agent_contract::McpTarget;
+    use awaken_session_configuration_contract::mcp::{
+        McpGenerationRef, McpRealizationReceipt, StageMcpAttachment,
     };
+    use awaken_session_execution_contract::McpAttachmentRealizer;
 
     #[derive(Default)]
     struct RecordingRealizer {

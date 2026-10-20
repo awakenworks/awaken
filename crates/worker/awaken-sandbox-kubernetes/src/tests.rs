@@ -1212,7 +1212,7 @@ fn secret_stdin_prelude_becomes_process_env_and_preserves_agent_protocol_input()
     ]);
     command.env.push(pc::MaterializedEnvVar {
         name: "TOKEN".into(),
-        value: pc::MaterializedEnvValue::Secret(awaken_runtime_contract::RedactedString::new(
+        value: pc::MaterializedEnvValue::Secret(awaken_agent_contract::RedactedString::new(
             "test-secret",
         )),
     });
@@ -2132,7 +2132,7 @@ fn null_secret_exec_observes_eof_without_closing_transport_stdin() {
     command.stdio = pc::Stdio::Null;
     command.env.push(pc::MaterializedEnvVar {
         name: "TOKEN".into(),
-        value: pc::MaterializedEnvValue::Secret(awaken_runtime_contract::RedactedString::new(
+        value: pc::MaterializedEnvValue::Secret(awaken_agent_contract::RedactedString::new(
             "fixture",
         )),
     });

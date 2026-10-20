@@ -34,7 +34,7 @@
     },
     "awaken-managed-session-events": {
       "awaken_runtime_contract::compaction": 3,
-      "awaken_runtime_contract::llm": 2,
+      "awaken_runtime_contract::llm": 1,
       "awaken_runtime_contract::model_operation": 1
     },
     "awaken-protocol-a2a": {
@@ -69,18 +69,12 @@
     },
     "awaken-session-application": {
       "awaken_agent_contract::stream::sink": 9,
-      "awaken_runtime_contract::llm": 2
+      "awaken_runtime_contract::llm": 1
     },
     "awaken-coordinator-client": {
       "awaken_agent_contract::stream::checkpoint": 1,
       "awaken_agent_contract::stream::sink": 1,
       "awaken_agent_contract::thread::commit": 3
-    },
-    "awaken-sandbox-local": {
-      "awaken_runtime_contract::llm": 1
-    },
-    "awaken-session-environment": {
-      "awaken_runtime_contract::llm": 2
     }
   }
 }
