@@ -88,7 +88,12 @@ class SdkSemverEvidenceTests(unittest.TestCase):
             value += f"--- failure {lint}: fixture finding ---\nFailed in:\n"
             for item in failures:
                 if item[0] == lint:
-                    value += f"  {item[1]} {item[2]}, previously in file baseline.rs:1\n"
+                    if lint == "inherent_method_missing":
+                        value += f"  {item[2]}, previously in file baseline.rs:1\n"
+                    elif lint == "enum_variant_added":
+                        value += f"  variant {item[2]} in current.rs:1\n"
+                    else:
+                        value += f"  {item[1]} {item[2]}, previously in file baseline.rs:1\n"
         summary = (f"semver requires new major version: {failed} major and 0 minor checks failed"
                    if failed else "no semver update required")
         return value + f"Summary {summary}\nFinished [0.1s] {name}\n"
@@ -112,6 +117,35 @@ class SdkSemverEvidenceTests(unittest.TestCase):
         self.assertEqual(rows["awaken-ext-builtin-tools"]["failed"], 2)
         self.assertEqual(len(rows["awaken-ext-builtin-tools"]["findings"]), 3)
         self.assertEqual(rows["awaken-provider-genai"]["checks"], 222)
+
+    def test_pinned_variant_and_inherent_method_rows_are_complete_observations(self):
+        # B1-B5 cause/effect table, matching the actual pinned0.47 reports:
+        # typed removed item / unprefixed method / current variant -> retain
+        # each exact item; multiple items under one lint -> one failed query.
+        # Wrong lint/shape, duplicate item/block, or an unknown extra row in
+        # an otherwise complete block -> refusal. Parsing grants no approval;
+        # version policy and original tool status remain separate decisions.
+        findings = {
+            ("inherent_method_missing", "method", "Runtime::session"),
+            ("inherent_method_missing", "method", "Runtime::with_max_consecutive_inference_failures"),
+            ("enum_variant_added", "variant", "Error:Admission"),
+        }
+        output = self.report("awaken-runtime", failures=findings)
+        row = evidence.observations(output, ["awaken-runtime"], strict=True)["awaken-runtime"]
+        self.assertEqual(row["failed"], 2)
+        self.assertEqual(set(row["findings"]), findings)
+        variant = "  variant Error:Admission in current.rs:1\n"
+        method = "  Runtime::session, previously in file baseline.rs:1\n"
+        for changed in (
+            output.replace(variant, variant.replace(" in ", " at ")),
+            output.replace(method, "  method Runtime::session, previously in file baseline.rs:1\n"),
+            output.replace(method, method * 2),
+            output.replace(variant, variant + "  variant hidden with unsupported syntax\n"),
+            output.replace("--- failure enum_variant_added:", "--- failure function_missing:"),
+            output.replace("Failed in:\n", "Failed in:\nFailed in:\n", 1),
+        ):
+            with self.subTest(report=changed), self.assertRaises(ValueError):
+                evidence.observations(changed, ["awaken-runtime"], strict=True)
 
     def test_missing_duplicate_unknown_or_empty_audit_refuses(self):
         # A2 complete known set + checked + Finished + declared versions is
@@ -236,6 +270,24 @@ class SdkSemverEvidenceTests(unittest.TestCase):
                 evidence.validate_compiler_case(self.compiler_output(), raw, source, "cases/old_enum.rs", None, "")
         self.assertEqual(evidence.validate_compiler_case(self.compiler_output(), 0, source,
                          "cases/old_enum.rs", None, ""), [])
+
+        # W4: the four actual crate-qualified missing-type diagnostics are
+        # E0425 at the original primary span. Exact raw101+E0425 -> observed
+        # counterexample; the former E0412 expectation -> refuse, never accept
+        # an arbitrary101. Baseline/migration controls remain required above.
+        for case in ("old_runtime_type", "owner_old_message_id",
+                     "owner_old_credential_root", "owner_old_tool_root"):
+            code, marker = evidence.witness_cases(True)[case]
+            text = evidence.WITNESS_SOURCES[case]
+            line = next(i for i, value in enumerate(text.splitlines(), 1) if marker in value)
+            file = "cases/" + case + ".rs"
+            output = self.compiler_output("E0425", file=file, line=line, finished=False)
+            with self.subTest(case=case):
+                self.assertEqual(len(evidence.validate_compiler_case(
+                    output, 101, text, file, code, marker)), 1)
+                with self.assertRaises(ValueError):
+                    evidence.validate_compiler_case(output.replace("E0425", "E0412"),
+                        101, text, file, code, marker)
 
     def test_incomplete_witness_receipt_is_not_nine_fabricated_case_claims(self):
         # Active-major S4 red: correct nine code/span/source-hash case claims do
@@ -471,6 +523,8 @@ def shared_sdk_io_tests(owner):
                 code, marker = original_cases(current)[case]
                 source = evidence.WITNESS_SOURCES[case]
                 line = next(number for number, text in enumerate(source.splitlines(), 1) if marker in text) if code else 2
+                if cause == "code" and name == chosen:
+                    code = "E0412"
                 output = SdkSemverEvidenceTests.compiler_output(code, file="cases/" + case + ".rs", line=line, finished=code is None)
                 if not full and current and not failure_step:
                     status = raw
@@ -634,6 +688,8 @@ def shared_sdk_io_tests(owner):
             # Journal IO belongs inside the original record boundary: a write
             # fault after75 must not escape to a second writer and become1.
             # A missing log must also not update a different/absent step row.
+            # J8 log IO failure+available journal -> retain this last raw row
+            # once; missing output still refuses the action and any successor.
             for raw in (0, 75, 101, -15):
                 for cause in ("source", "log", "journal"):
                     with self.subTest(raw=raw, cause=cause), tempfile.TemporaryDirectory() as temporary:
@@ -644,15 +700,22 @@ def shared_sdk_io_tests(owner):
                         row, = action["state"]["rows"]
                         self.assertEqual(row["exit_code"], 143 if raw == -15 else raw)
                         self.assertIn("subject_error" if cause == "source" else "record_error", row)
-                        self.assertEqual(action["state"]["journal_writes"], 0 if cause == "log" else 1)
+                        self.assertEqual(action["state"]["journal_writes"], 1)
+                        if cause == "log":
+                            retained = json.loads((action["spec"].parent /
+                                "default-major-consumers/commands.json").read_text())
+                            self.assertEqual(retained["steps"][-1]["command"], row["command"])
+                            self.assertEqual(retained["steps"][-1]["exit_code"], row["exit_code"])
 
         def test_expected_compiler_refusal_requires_successful_source_and_evidence_retention(self):
             # J4 exact compiler101+code/span/source+retained raw channels and
             # journal => asserted negative data; the action alone returns0.
             # J5-J7 the same diagnostic + source/log/journal uncertainty =>101,
             # even if compiler_result already set accepted=True. No generic
-            # assessor may absorb101. This minimal private two-step compiler
-            # fixture tests retention only, not real SDK/baseline qualification.
+            # assessor may absorb101. Log failure still records the same raw
+            # step once in the available journal; incomplete channels refuse.
+            # This minimal private two-step compiler fixture tests retention
+            # only, not real SDK/baseline qualification.
             for cause in ("", "source", "log", "journal"):
                 with self.subTest(cause=cause), tempfile.TemporaryDirectory() as temporary:
                     with self.major_action(Path(temporary), 101, cause=cause, compiler=True) as action:
@@ -663,7 +726,12 @@ def shared_sdk_io_tests(owner):
                     if cause:
                         self.assertIn("subject_error" if cause == "source" else "record_error", row)
                         self.assertEqual(action["run"].call_args.args[0][1], "check")
-                        self.assertEqual(action["state"]["journal_writes"], 0 if cause == "log" else 1)
+                        self.assertEqual(action["state"]["journal_writes"], 1)
+                        if cause == "log":
+                            retained = json.loads((action["spec"].parent /
+                                "default-major-consumers/commands.json").read_text())
+                            self.assertEqual(retained["steps"][-1]["command"], row["command"])
+                            self.assertEqual(retained["steps"][-1]["exit_code"], 101)
                     else:
                         path = action["spec"].parent / "default-major-consumers/commands.json"
                         receipt = json.loads(path.read_text())
@@ -986,11 +1054,13 @@ def shared_sdk_io_tests(owner):
             # I1-I8 use the same fault table: new exact-reason101 requires all
             # retained source/log/journal facts; canonical positives cannot
             # absorb ordinary failures. These remain mocked design controls.
+            # R9: wrong diagnostic+available log/journal -> retain the final raw
+            # step and101, with no accepted case; one existing writer owns it.
             for feature in ("default", "all"):
                 for case in ("old_runtime_type", "old_runtime_method", "old_retry_policy_decide",
                              "inference_old_disposition", "inference_old_error", "inference_old_gate",
                              "inference_old_runtime_ceiling"):
-                    for cause in ("", "source", "log", "journal"):
+                    for cause in ("", "source", "log", "journal", "code"):
                         with self.subTest(feature=feature, case=case, cause=cause), tempfile.TemporaryDirectory() as temporary:
                             with self.major_action(Path(temporary), 101, compiler=True, full=True,
                                 feature=feature, failure_step="current-" + case, cause=cause) as action:
@@ -1000,6 +1070,14 @@ def shared_sdk_io_tests(owner):
                                 self.assertEqual(action["state"]["rows"][-1]["exit_code"], 101)
                                 self.assertIn("subject_error" if cause == "source" else "record_error",
                                               action["state"]["rows"][-1])
+                            if cause == "code":
+                                retained = json.loads((action["spec"].parent /
+                                    (feature + "-major-consumers") / "commands.json").read_text())
+                                self.assertEqual(retained["steps"][-1]["command"],
+                                                 action["state"]["rows"][-1]["command"])
+                                self.assertEqual(retained["steps"][-1]["exit_code"], 101)
+                                self.assertFalse(any(row["side"] == "current" and row["case"] == case
+                                                     for row in retained["cases"]))
                 for migration in ("migrated_runtime", "migrated_retry_policy_decide",
                                   "inference_migrated_disposition", "inference_migrated_error",
                                   "inference_migrated_gate", "inference_migrated_runtime_policy"):
