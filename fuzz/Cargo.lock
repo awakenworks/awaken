@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-agent-contract"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -74,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-tool-contract"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",

@@ -384,7 +384,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-agent-contract"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1377,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-background-task"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -1421,7 +1421,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-compact"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -1433,7 +1433,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-goal"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -1447,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -1465,7 +1465,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-memory"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -1482,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-permission"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -1496,7 +1496,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-skills"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -1511,7 +1511,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-state-machine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -1826,7 +1826,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-observability"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "awaken-runtime-contract",
  "axum",
@@ -3478,7 +3478,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-store-inmem"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -3568,7 +3568,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-tool-contract"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",

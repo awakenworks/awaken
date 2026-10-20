@@ -323,6 +323,9 @@ scoped_step "process-assembly-production" "keep fixture-only Coordinator and CLI
 # The fuzz crate is a separate workspace, so `cargo check --workspace` never compiles it.
 # It is why three crates keep reviewed public API snapshots (ADR-0081, 2026-09-28);
 # compiling it is the check that its surface still builds.
+# F1 changed authored contract versions + stale independent lock -> locked
+# refusal. F2 Cargo-updated locked identities -> compile all original fuzz bins.
+# Resolution remains separate from this check; it cannot silently rewrite a lock.
 scoped_step "fuzz-consumer" "update the fuzz targets to the changed contract surface" \
   "$(consumed_packages fuzz/Cargo.toml)" cargo check --manifest-path fuzz/Cargo.toml --bins "${locked[@]}"
 
