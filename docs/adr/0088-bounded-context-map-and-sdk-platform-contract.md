@@ -729,3 +729,37 @@ canonical import/dependency migration when that pin is upgraded; no Flow/Cloud
 source, pin, SDK snapshot, registry or persisted wire changes here. Source-only
 controls and historical caller searches do not replace final-source compilation,
 configured transport execution or real downstream qualification.
+
+
+## Implementation note 2026-10-20: Session-owned File read observation
+
+The existing `SessionQueries` now owns the Session-root File observation used
+by a claimed Worker Run. The Resource HTTP boundary depends on the one-method
+`SessionFileReadAuthorization` in `awaken-session-realization-contract`, rather
+than opening the Session repository or interpreting its root. Queries reuses
+its selected read-only Store; no new state, permission issuer, Runtime lookup,
+cache, mutation boundary or durable grant is introduced.
+
+The HTTP boundary still authenticates the Worker and holds the same exact live
+Run claim guard through the File read. Its trusted request-start Clock sample
+continues to judge Registry, claim and root-lease observations. The original
+owner/read refusal order, frozen nonterminal baseline, exact Worker incarnation,
+live realization lease and desired File membership stay unchanged. Missing or
+unreadable root evidence continues to refuse the read. A frozen inline dispatch
+manifest and an exact Session materialization intent remain distinct existing
+authorities; the latter still uses its own generation/lease/target control.
+
+`WorkerFileContentService::with_session_file_authorization` replaces
+`with_session_repository`; no forwarding constructor remains. Coordinator
+passes its already-constructed `SessionApplication::queries()` instance. The
+real HTTP fixture also uses `SessionQueries` over its original SQLite Store and
+the canonical `NeutralRuntime`, with no copied authorization implementation.
+
+The known Flow router must likewise replace its old repository injection with
+`with_session_file_authorization(self.application_session_control.queries())`
+when moving to the matching Native source. Its observed `27b139c4` checkout still
+pins Native `f6ccb85c`; the source migration is retained separately and does not
+claim that old-pin Flow compiles against this new Platform API. Flow/Cloud Git
+pins, locks, full consumers and deployment qualification remain independent.
+No HTTP route, wire field, persisted representation or SDK22 release surface
+changes in this cut.

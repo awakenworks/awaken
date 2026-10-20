@@ -56,7 +56,8 @@ pub struct WorkerFileContentService {
     dispatch: Arc<dyn DispatchCommitAuthority>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
-    session_repository: Option<Arc<dyn awaken_session_repository_contract::SessionRepositoryReads>>,
+    session_file_authorization:
+        Option<Arc<dyn awaken_session_realization_contract::SessionFileReadAuthorization>>,
     recovery: Option<Arc<dyn RunRecoverySource>>,
     materialization_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionResourceMaterializationControl>>,
@@ -77,7 +78,7 @@ impl WorkerFileContentService {
             dispatch,
             authenticator,
             directory: None,
-            session_repository: None,
+            session_file_authorization: None,
             recovery: None,
             materialization_control: None,
             clock,
@@ -90,30 +91,37 @@ impl WorkerFileContentService {
         self
     }
 
-    /// Install the durable Session authority used to validate a claimed frozen
-    /// Resource generation. The live claim and exact realization lease still
-    /// fence every read.
+    /// Install the Session application's read-only File observation. The
+    /// transport keeps its own verified Worker and exact live Run claim guard.
     ///
-    /// Capability rule R1: a caller supplies only the original Store's read
-    /// view; configuring this transport needs no root-write or reconciliation
-    /// capability. The reader contract owns the create/commit/maintenance
-    /// compile refusals; the File HTTP tests own claim and Resource admission.
+    /// Capability rules: A1 the application observation configures this route;
+    /// A2 the old repository entrance is absent. SQL and HTTP decision tables
+    /// own runtime behavior; these examples prove only the public dependency.
     ///
     /// ```
     /// use std::sync::Arc;
     /// use awaken_resource_worker_http::WorkerFileContentService;
-    /// use awaken_session_repository_contract::SessionRepositoryReads;
-    /// fn configure(service: WorkerFileContentService, reads: Arc<dyn SessionRepositoryReads>)
+    /// use awaken_session_realization_contract::SessionFileReadAuthorization;
+    /// fn configure(service: WorkerFileContentService, authorization: Arc<dyn SessionFileReadAuthorization>)
     ///     -> WorkerFileContentService {
-    ///     service.with_session_repository(reads)
+    ///     service.with_session_file_authorization(authorization)
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0599
+    /// use std::sync::Arc;
+    /// use awaken_resource_worker_http::WorkerFileContentService;
+    /// use awaken_session_realization_contract::SessionFileReadAuthorization;
+    /// fn old(service: WorkerFileContentService, authorization: Arc<dyn SessionFileReadAuthorization>) {
+    ///     service.with_session_repository(authorization);
     /// }
     /// ```
     #[must_use]
-    pub fn with_session_repository(
+    pub fn with_session_file_authorization(
         mut self,
-        sessions: Arc<dyn awaken_session_repository_contract::SessionRepositoryReads>,
+        authorization: Arc<dyn awaken_session_realization_contract::SessionFileReadAuthorization>,
     ) -> Self {
-        self.session_repository = Some(sessions);
+        self.session_file_authorization = Some(authorization);
         self
     }
 
@@ -300,8 +308,7 @@ async fn read_file_content(
             let file_is_authorized = match &request.purpose {
                 FileReadPurpose::SessionResource => {
                     file_is_frozen
-                        || application_session_file_is_frozen(&service, dispatch, &request, now_ms)
-                            .await
+                        || observe_session_file(&service, dispatch, &request, now_ms).await
                 }
                 FileReadPurpose::ModelContent { thread_id } => {
                     model_content_file_is_authorized(
@@ -462,52 +469,30 @@ fn blocks_reference_file(blocks: &[ContentBlock], file_id: &str) -> bool {
     })
 }
 
-async fn application_session_file_is_frozen(
+// Adapt optional transport coordinates to the Session observation port. The
+// Session query owns the root predicate; the caller retains its Run guard.
+async fn observe_session_file(
     service: &WorkerFileContentService,
     dispatch: &awaken_dispatch_contract::RunDispatch,
     request: &FileContentRequest,
     now_ms: u64,
 ) -> bool {
-    let (Some(sessions), Some(session_id), Some(identity)) = (
-        service.session_repository.as_ref(),
+    let (Some(authorization), Some(session_id), Some(identity)) = (
+        service.session_file_authorization.as_ref(),
         dispatch.session_thread_id.as_ref(),
         request.identity.as_ref(),
     ) else {
         return false;
     };
-    let Ok(owner_scope) = sessions
-        .owner(&awaken_session_types::SessionId::from(&session_id.0))
+    authorization
+        .session_file_is_frozen_for_worker(
+            &awaken_session_types::SessionId::from(&session_id.0),
+            &request.workspace_id,
+            identity,
+            &request.file_id,
+            now_ms,
+        )
         .await
-    else {
-        return false;
-    };
-    if owner_scope != request.workspace_id {
-        return false;
-    }
-    let Ok(session) = sessions
-        .get(&awaken_session_types::SessionId::from(&session_id.0))
-        .await
-    else {
-        return false;
-    };
-    let lease_matches = session.realization.as_ref().is_some_and(|lease| {
-        lease.owner == identity.worker_id
-            && lease.runtime_incarnation == identity.lease_owner()
-            && awaken_session_realization_contract::realization_lease_is_live_at(
-                lease.expires_at_unix_ms,
-                now_ms,
-            )
-    });
-    session.frozen_baseline().is_some()
-        && !session.is_terminal()
-        && lease_matches
-        && session.resources.desired().inputs().iter().any(|input| {
-            matches!(
-                &input.source,
-                awaken_session_configuration_contract::resource::ResolvedInputSource::File { file_id }
-                    if file_id.as_str() == request.file_id
-            )
-        })
 }
 
 #[cfg(test)]

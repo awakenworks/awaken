@@ -21,6 +21,7 @@ mod creation_inputs;
 mod credential_ingress;
 use credential_ingress::FaultInjectingCredentialMaterialIngress;
 mod activity_settlement_owner;
+mod file_authorization;
 mod first_materialization;
 mod input_mounts;
 mod interval_admission;

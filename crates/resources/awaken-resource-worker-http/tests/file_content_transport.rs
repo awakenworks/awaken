@@ -23,7 +23,10 @@ use awaken_resource_worker_http::HttpFileContentSource;
 use awaken_resource_worker_http::{WorkerFileContentService, worker_file_content_router};
 use awaken_dispatch::{MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity};
 use awaken_session_realization_contract::ResourceOperationFence;
-use awaken_session_repository_contract::SessionRepository as _;
+use awaken_session_realization_contract::SessionFileReadAuthorization as _;
+use awaken_session_repository_contract::{
+    LifecycleOutbox as _, SessionRepository as _, SessionRepositoryReads as _,
+};
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 fn resources(
@@ -559,10 +562,13 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
 /// durable Session aggregate, while preserving
 /// the same claim, Workspace, Worker-incarnation, realization-lease, and File
 /// fences used by an inline dispatch envelope.
-/// Capability rule R1: seed the original SQLite Store, then erase its write
-/// capability before supplying it to the HTTP service. Exact and unfrozen File
-/// results must stay unchanged; the canonical reader's compile-fail examples
-/// cover unavailable create/commit/maintenance methods, without a second Store.
+/// Cause/effect table for the moved Session observation:
+/// A1 matching owner, frozen nonterminal root, exact live Worker incarnation and
+/// File membership -> allow. A2 wrong owner/File/Worker/incarnation or exact
+/// lease expiry -> deny. A3 no owner -> deny before root lookup. A4 all reads
+/// preserve the real SQLite root/outbox. Canonical NeutralRuntime executes no
+/// Runtime effect: the already-selected SessionQueries is the actual authority.
+/// The existing HTTP assertions retain claim fencing and immutable bytes.
 #[tokio::test]
 async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
     let store = Arc::new(awaken_file_store::InMemoryFileStore::new());
@@ -624,6 +630,14 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
         lifecycle,
         awaken_time::system_clock(),
     ));
+    let selected = awaken_session_execution_contract::SessionExecutor::from(Arc::new(
+        awaken_session_execution_contract::NeutralRuntime,
+    ));
+    let queries = Arc::new(awaken_session_application::SessionQueries::new(
+        sessions.clone(),
+        &selected,
+        None,
+    ));
     let service = Arc::new(
         WorkerFileContentService::new(
             Arc::new(ApplicationFileContentSource::new(application)),
@@ -632,15 +646,11 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
             awaken_time::system_clock(),
         )
         .with_worker_directory(directory)
-        .with_session_repository({
-            let reads: Arc<dyn awaken_session_repository_contract::SessionRepositoryReads> =
-                sessions;
-            reads
-        }),
+        .with_session_file_authorization(queries.clone()),
     );
     let address = support::serve(worker_file_content_router(service)).await;
     let source = HttpFileContentSource::new(
-        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity),
+        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone()),
     );
 
     let exact = source
@@ -674,6 +684,98 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
         .await
         .expect_err("a File outside the frozen generation must be denied");
     assert!(unfrozen.to_string().contains("403"), "{unfrozen}");
+    let id = awaken_session_types::SessionId::from("session-application-file");
+    let before = sessions.get(&id).await.unwrap();
+    let before_facts = serde_json::to_value(sessions.pending_lifecycle().await.unwrap()).unwrap();
+    let expires_at = before.realization.as_ref().unwrap().expires_at_unix_ms;
+    for (rule, workspace, worker, file, observed_at, expected) in [
+        (
+            "A1",
+            "workspace-file",
+            identity.clone(),
+            "file-application",
+            expires_at - 1,
+            true,
+        ),
+        (
+            "A2-owner",
+            "another-workspace",
+            identity.clone(),
+            "file-application",
+            expires_at - 1,
+            false,
+        ),
+        (
+            "A2-file",
+            "workspace-file",
+            identity.clone(),
+            "another-file",
+            expires_at - 1,
+            false,
+        ),
+        (
+            "A2-worker",
+            "workspace-file",
+            WorkerIdentity::new(
+                "another-worker",
+                &identity.incarnation_id,
+                identity.generation,
+            ),
+            "file-application",
+            expires_at - 1,
+            false,
+        ),
+        (
+            "A2-incarnation",
+            "workspace-file",
+            WorkerIdentity::new(
+                &identity.worker_id,
+                "another-incarnation",
+                identity.generation,
+            ),
+            "file-application",
+            expires_at - 1,
+            false,
+        ),
+        (
+            "A2-expiry",
+            "workspace-file",
+            identity.clone(),
+            "file-application",
+            expires_at,
+            false,
+        ),
+    ] {
+        assert_eq!(
+            queries
+                .session_file_is_frozen_for_worker(&id, workspace, &worker, file, observed_at)
+                .await,
+            expected,
+            "{rule}"
+        );
+    }
+    assert!(
+        !queries
+            .session_file_is_frozen_for_worker(
+                &awaken_session_types::SessionId::from("missing-session"),
+                "workspace-file",
+                &identity,
+                "file-application",
+                expires_at - 1
+            )
+            .await,
+        "A3"
+    );
+    assert_eq!(
+        sessions.get(&id).await.unwrap(),
+        before,
+        "A4 unchanged root"
+    );
+    assert_eq!(
+        serde_json::to_value(sessions.pending_lifecycle().await.unwrap()).unwrap(),
+        before_facts,
+        "A4 unchanged outbox"
+    );
 }
 
 /// Model-content authorization cause graph and FMECA:

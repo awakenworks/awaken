@@ -22,6 +22,7 @@ use awaken_session_types::RunError;
 use awaken_session_types::SessionId;
 use std::sync::Arc;
 
+mod file_authorization;
 mod frozen_projection;
 #[path = "projection_evidence.rs"]
 mod projection_evidence;
