@@ -27,13 +27,18 @@ def k8s_container_gate_errors(gate: str) -> list[str]:
         errors.append(
             "Kubernetes container gate duplicates the distributed-control Worker stop test"
         )
-    pvc_command = r'cargo test --locked -p awaken-session-realization --features k8s-tests --lib\s*\\?\s*\n\s*"\$PVC_TEST" -- '
+    pvc_command = (
+        r'^AWAKEN_K8S_E2E=1 run_required_rust_tests -p awaken-session-realization\s*\\?\s*\n'
+        r'\s*--features k8s-tests --lib --locked\s*\\?\s*\n'
+        r'\s*cache_volume::tests::k8s_live_pvc_initialization_is_readable_and_reused\s*\\?\s*\n'
+        r'\s*--require-case=cache_volume::tests::k8s_live_pvc_initialization_is_readable_and_reused\s*\\?\s*\n'
+        r'\s*-- --exact$'
+    )
     if (
-        'PVC_TEST=cache_volume::tests::k8s_live_pvc_initialization_is_readable_and_reused' not in gate
-        or not re.search(r'PVC_TESTS=\$\(' + pvc_command + r'--list --exact\)', gate)
-        or 'grep -Fqx "$PVC_TEST: test" <<<"$PVC_TESTS"' not in gate
-        or '|| { echo "exact live PVC qualification test was not selected" >&2; exit 1; }' not in gate
-        or not re.search(r'^AWAKEN_K8S_E2E=1 ' + pvc_command + r'--exact --nocapture$', gate, re.MULTILINE)
+        not re.search(r'^source scripts/ci/_rust_test_execution\.sh$', gate, re.MULTILINE)
+        or len(re.findall(pvc_command, gate, re.MULTILINE)) != 1
+        or re.search(r'^\s*PVC_TESTS?=', gate, re.MULTILINE)
+        or re.search(r'\bcargo test\b[^\n]*-p awaken-session-realization\b', gate)
     ):
         errors.append("Kubernetes gate must select and execute the exact live PVC test in its current owner")
     return errors
@@ -66,15 +71,27 @@ def self_test(gate: str) -> None:
         "real_pod_identity_survives_reopen_and_independent_stop_without_false_retirement\n"
     ), "K3 stale CLI Worker-stop filter must not qualify the container gate"
 
-    # K4: a moved owner, stale filter, omitted feature, disabled substrate or
-    # absent list assertion must reject zero-selected/soft-skipped evidence.
+    # K4 decision table: current owner + full case/filter + required floor +
+    # k8s-tests + live switch + exact libtest argv + the sourced canonical
+    # executor => qualify this composition. Changing any one rejects it.
+    # The old list-exact cause is now the same wrapper argv's --exact; the
+    # old grep-floor cause is --require-case. The unchanged executor owns
+    # SAME-argv listing/running, named success, summary and skip refusal.
+    # A second manual selector or duplicate invocation must not survive this
+    # consolidation. K1-K3 still own the independent control/Worker rules.
     for mutation in (
         gate.replace('-p awaken-session-realization', '-p awaken-session-executor'),
-        gate.replace('PVC_TEST=cache_volume::tests::', 'PVC_TEST=old::tests::', 1),
+        gate.replace('  cache_volume::tests::', '  old::tests::', 1),
         gate.replace('--features k8s-tests --lib', '--lib'),
-        gate.replace('--list --exact)', '--list)'),
-        gate.replace('grep -Fqx "$PVC_TEST: test"', 'true # omitted selection'),
-        gate.replace('AWAKEN_K8S_E2E=1 cargo test --locked -p awaken-session-realization',
-                     'AWAKEN_K8S_E2E=0 cargo test --locked -p awaken-session-realization'),
+        gate.replace('-- --exact', '--'),
+        gate.replace('  --require-case=cache_volume::tests::k8s_live_pvc_initialization_is_readable_and_reused \\\n', ''),
+        gate.replace('AWAKEN_K8S_E2E=1 run_required_rust_tests -p awaken-session-realization',
+                     'AWAKEN_K8S_E2E=0 run_required_rust_tests -p awaken-session-realization'),
+        gate.replace('source scripts/ci/_rust_test_execution.sh\n', ''),
+        gate.replace('run_required_rust_tests -p awaken-session-realization',
+                     'unqualified_run_required_rust_tests -p awaken-session-realization'),
+        gate + '\nPVC_TEST=cache_volume::tests::k8s_live_pvc_initialization_is_readable_and_reused\n',
+        gate + '\ncargo test --locked -p awaken-session-realization --features k8s-tests --lib stale\n',
+        gate + '\n' + gate[gate.index('AWAKEN_K8S_E2E=1 run_required_rust_tests'):gate.index('# Pod-bound')],
     ):
         assert k8s_container_gate_errors(mutation), "K4 live PVC proof cannot silently disappear"
