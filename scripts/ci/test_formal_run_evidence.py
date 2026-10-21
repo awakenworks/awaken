@@ -990,8 +990,9 @@ class EvidenceTests(unittest.TestCase):
 
     def test_unmerged_diagnostics_and_invalid_roots_keep_their_distinct_boundaries(self):
         # S8: conflict stages still bind formal dirty diagnostics, while working
-        # read-only tree admission refuses. No-repo preserves Git128; parent-repo subdirectory
-        # must refuse source/blob/manifest instead of borrowing a clean parent.
+        # read-only tree admission refuses. Git128 and a discovered parent's
+        # unadmitted subdirectory are distinct failures for every consumer.
+        # The temp directory itself may be inside a caller's Git work tree.
         import rust_test_plan as planner
         with mock.patch.object(sys, "path", [str(ROOT / "scripts/release"), *sys.path]):
             import verification_manifest
@@ -1009,21 +1010,43 @@ class EvidenceTests(unittest.TestCase):
         self.assertNotEqual(before["working_diff_digest"], after["working_diff_digest"])
         with mock.patch.object(planner, "ROOT", self.root), self.assertRaisesRegex(formal_sources.SourceError, "unmerged index"):
             planner.source_snapshot()
-        for relative, error in (("outside", subprocess.CalledProcessError), ("repo/subdirectory", ValueError)):
+        outside = self.root.parent / "outside"
+        outside.mkdir()
+        discovered = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], cwd=outside,
+            env=detached_git_environment(), capture_output=True, text=True,
+        )
+        # Discover the fixture's real topology independently of the source
+        # adapter. Accept neither an arbitrary exception nor an arbitrary Git
+        # status: this location is a parent-owned subdirectory or has no repo.
+        self.assertIn(discovered.returncode, (0, 128))
+        outside_error = subprocess.CalledProcessError
+        if discovered.returncode == 0:
+            self.assertNotEqual(Path(discovered.stdout.strip()).resolve(), outside.resolve())
+            outside_error = formal_sources.SourceError
+        # A bare repository deterministically has no working-tree top, even
+        # under a caller's checkout. Keep real Git128 coverage on every host.
+        bare = self.root.parent / "bare"
+        subprocess.run(["git", "init", "--quiet", "--bare", str(bare)],
+                       env=detached_git_environment(), check=True, capture_output=True)
+        for relative, error in (("outside", outside_error), ("bare", subprocess.CalledProcessError),
+                                ("repo/subdirectory", formal_sources.SourceError)):
             directory = self.root.parent / relative
             directory.mkdir(exist_ok=True)
-            with self.subTest(root=relative), self.assertRaises(error) as refused:
-                source_snapshot(directory)
-            if error is subprocess.CalledProcessError:
-                self.assertEqual(refused.exception.returncode, 128)
-            else:
-                self.assertIn("repository top", str(refused.exception))
-            with self.assertRaises(error):
-                committed_file_digest(directory, "transitive.rs")
-            with mock.patch.object(planner, "ROOT", directory), self.assertRaises(error):
-                planner.source_snapshot()
-            with self.assertRaises(error):
-                verification_manifest.source_commit(directory)
+            with mock.patch.object(planner, "ROOT", directory):
+                for consumer, invoke in (
+                    ("formal", lambda: source_snapshot(directory)),
+                    ("blob", lambda: committed_file_digest(directory, "transitive.rs")),
+                    ("working", planner.source_snapshot),
+                    ("release", lambda: verification_manifest.source_commit(directory)),
+                ):
+                    with self.subTest(root=relative, consumer=consumer):
+                        with self.assertRaises(error) as refused:
+                            invoke()
+                        if error is subprocess.CalledProcessError:
+                            self.assertEqual(refused.exception.returncode, 128)
+                        else:
+                            self.assertIn("repository top", str(refused.exception))
         with mock.patch.dict(os.environ, PATH=str(self.root.parent / "outside")), self.assertRaises(OSError):
             source_snapshot(self.root)
 
