@@ -206,7 +206,9 @@ EXIT = re.compile(r"\breturn\b|\bNone\s*;|\bOk\(\(\)\)\s*;|\bprocess\.exit\(0\)|
 PG_MARK = re.compile(r"AWAKEN_TEST_DATABASE_URL|no Postgres|PgPool::connect")
 # `-q`, `--features`, a package filter: the package is what matters, wherever it
 # sits on the line.
-GATE_ENTRY = re.compile(r"(?:cargo (?:test|nextest run)|pg_required_test)\b[^\n]*?\s-p\s+([a-z0-9-]+)")
+GATE_ENTRY = re.compile(
+    r"\b(?:cargo (?:test|nextest run)|pg_required_test|run_required_rust_tests)\b[^\n]*?\s-p\s+([a-z0-9-]+)"
+)
 # The gate does not only supply Postgres, and it does not only `export`: a
 # `VAR=1 cargo test ...` prefix supplies the variable for exactly that command.
 # Whatever a gate sets, it supplies.
@@ -492,6 +494,10 @@ def selftest() -> None:
       C12 the file is outside crates/** (e2e/**, scripts/**) => still scanned
       C17 an exemption names an explicitly ignored test with no successful skip => rejected
       C18 the same ignored test without an exemption => admitted; missing credentials fail when selected
+      C19 the canonical required executor selects the current crate and supplies its switch => admitted
+      C20 the same command selects the old crate instead => rejected
+      C21 the current crate has no supplied dependency switch => rejected
+      C22 an unrecognized wrapper cannot claim to run the current crate => rejected
 
     R3, over the variable a skip names:
       C13 something in the repository sets it    => admitted
@@ -546,6 +552,28 @@ def selftest() -> None:
             {"crates/a/awaken-thing/src/x.rs": 'no NATS reachable; skipping\n    return;'},
             supplying,
         ), "C8/E2 a gated crate still owes an entry for a dependency it does not supply"
+
+        # Migration decision table C19-C22 crosses the selected owner, the
+        # supplied live dependency and the executor identity. Only the existing
+        # canonical executor plus the current owner/switch covers this skip.
+        # Its own execution tests separately refuse zero selection, a skipped
+        # outcome and failed assertions; this reader does not reimplement them.
+        pvc = {"crates/server/awaken-session-realization/src/cache_volume.rs":
+               'AWAKEN_K8S_E2E\neprintln!("skipping: no live PVC");\nreturn;'}
+        pvc_gate = (
+            'AWAKEN_K8S_E2E=1 run_required_rust_tests -p awaken-session-realization '
+            '--features k8s-tests --lib --locked\n'
+        )
+        k8s_gate = "scripts/e2e/k8s_container_e2e.sh"
+        assert not silent_skip_violations(pvc, {k8s_gate: pvc_gate}), "C19/E1"
+        assert silent_skip_violations(pvc, {k8s_gate: pvc_gate.replace(
+            "-p awaken-session-realization", "-p awaken-session-executor")}), "C20/E2 stale owner"
+        assert silent_skip_violations(pvc, {k8s_gate: pvc_gate.replace(
+            "AWAKEN_K8S_E2E=1 ", "")}), "C21/E2 missing live dependency"
+        for other in ("unqualified_test_wrapper", "unqualified_run_required_rust_tests",
+                      "run_required_rust_tests_unqualified"):
+            assert silent_skip_violations(pvc, {k8s_gate: pvc_gate.replace(
+                "run_required_rust_tests", other)}), f"C22/E2 unknown executor {other}"
 
         refusing = {
             "scripts/e2e/sandbox_capability_suite.sh":

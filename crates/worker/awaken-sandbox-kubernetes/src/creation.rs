@@ -21,7 +21,6 @@ use awaken_sandbox_container::{
     ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
 };
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::PostParams;
 
 pub(super) async fn prepare(
     runtime: &K8sRuntime,
@@ -73,38 +72,20 @@ pub(super) async fn prepare(
     runtime.stamp_effect_evidence(&mut pod, context, realization_fingerprint);
     participants::declare(&mut pod, &runtime_id, plan)?;
     stamp_pod_realization(&mut pod)?;
-    let mut created = create_or_verify(&pods, &pod).await?;
+    let created = create_or_verify(&pods, &pod).await?;
     projection_verification::verify_pod_projection(&pod, &created, None)?;
     let name = created
         .metadata
         .name
         .clone()
         .ok_or_else(|| backend("created pod has no name"))?;
-    if created
-        .metadata
-        .labels
-        .as_ref()
-        .and_then(|labels| labels.get(awaken_sandbox_container::engine::RUNTIME_OWNER_LABEL))
-        != Some(&runtime.owner_id)
-    {
-        created
-            .metadata
-            .labels
-            .get_or_insert_with(Default::default)
-            .insert(
-                awaken_sandbox_container::engine::RUNTIME_OWNER_LABEL.to_string(),
-                runtime.owner_id.clone(),
-            );
-        created = pods
-            .replace(&name, &PostParams::default(), &created)
-            .await
-            .map_err(backend)?;
-    }
-    let _pod_uid = created
+    let pod_uid = created
         .metadata
         .uid
-        .as_deref()
+        .clone()
         .ok_or_else(|| backend("created pod has no UID"))?;
+    participants::metadata::transfer_runtime_owner(&pods, created, &pod_uid, &runtime.owner_id)
+        .await?;
     Ok(name)
 }
 
@@ -417,8 +398,13 @@ pub(super) async fn restore_or_adopt(
             "restore projected-object CAS changed its original operation",
         ));
     }
-    realization::transfer_runtime_owner(&runtime.pods(), published, &pod_uid, &runtime.owner_id)
-        .await?;
+    participants::metadata::transfer_runtime_owner(
+        &runtime.pods(),
+        published,
+        &pod_uid,
+        &runtime.owner_id,
+    )
+    .await?;
     let wait = runtime.unschedulable_wait;
     realization::await_pod_ready(&runtime.pods(), &name, wait, runtime.clock.as_ref()).await?;
     live_inputs::project_manifest(runtime, &name, plan).await?;
@@ -451,32 +437,92 @@ mod tests {
         use kube::client::Body;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        for changed in [false, true] {
+        // Owner-transfer decision table, using this SAME real kube serializer.
+        // U1 exact projection + current owner -> one POST and zero PUT/GET.
+        // U2 exact projection + old owner -> one PUT of original UID/RV, keeping
+        // unrelated annotation/finalizer. U3 U2 + PUT reply with a different
+        // nonempty UID -> reject; presence alone is not incarnation evidence.
+        // The original changed-image row still rejects before any owner PUT.
+        // No retry/status-only CAS row belongs to this bounded owner dedup.
+        for (changed, old_owner, changed_uid) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (false, true, true),
+        ] {
+            let mut runtime = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
+            let expected_owner = runtime.owner_id.clone();
             let posts = std::sync::Arc::new(AtomicUsize::new(0));
+            let puts = std::sync::Arc::new(AtomicUsize::new(0));
             let service = tower::service_fn({
                 let posts = posts.clone();
+                let puts = puts.clone();
                 move |request: Request<Body>| {
                     let posts = posts.clone();
+                    let puts = puts.clone();
+                    let expected_owner = expected_owner.clone();
                     async move {
-                        assert_eq!(request.method(), http::Method::POST);
-                        posts.fetch_add(1, Ordering::SeqCst);
+                        let method = request.method().clone();
+                        assert!(
+                            method == http::Method::POST || method == http::Method::PUT,
+                            "U1-U3 owner transfer does not issue GET or another request"
+                        );
                         let bytes = request.into_body().collect_bytes().await.unwrap();
                         let mut object: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-                        if changed {
-                            object["spec"]["containers"][0]["image"] = "foreign-image".into();
-                        }
-                        object["metadata"]["uid"] = "pod-uid".into();
-                        object["metadata"]["resourceVersion"] = "7".into();
+                        let status = if method == http::Method::POST {
+                            posts.fetch_add(1, Ordering::SeqCst);
+                            if changed {
+                                object["spec"]["containers"][0]["image"] = "foreign-image".into();
+                            }
+                            object["metadata"]["uid"] = "pod-uid".into();
+                            object["metadata"]["resourceVersion"] = "7".into();
+                            object["metadata"]["annotations"]["fixture.awaken.dev/unchanged"] =
+                                "kept".into();
+                            object["metadata"]["finalizers"] =
+                                serde_json::json!(["fixture.awaken.dev/unrelated"]);
+                            if old_owner {
+                                object["metadata"]["labels"]
+                                    [awaken_sandbox_container::engine::RUNTIME_OWNER_LABEL] =
+                                    "previous-owner".into();
+                            }
+                            201
+                        } else {
+                            puts.fetch_add(1, Ordering::SeqCst);
+                            assert_eq!(object["metadata"]["uid"], "pod-uid", "U2 original UID");
+                            assert_eq!(
+                                object["metadata"]["resourceVersion"], "7",
+                                "U2 original RV"
+                            );
+                            assert_eq!(
+                                object["metadata"]["labels"]
+                                    [awaken_sandbox_container::engine::RUNTIME_OWNER_LABEL],
+                                expected_owner,
+                                "U2 selected owner"
+                            );
+                            assert_eq!(
+                                object["metadata"]["annotations"]["fixture.awaken.dev/unchanged"],
+                                "kept",
+                                "U2 unrelated metadata"
+                            );
+                            assert_eq!(
+                                object["metadata"]["finalizers"],
+                                serde_json::json!(["fixture.awaken.dev/unrelated"]),
+                                "U2 unrelated finalizer"
+                            );
+                            if changed_uid {
+                                object["metadata"]["uid"] = "replacement-pod-uid".into();
+                            }
+                            200
+                        };
                         Ok::<_, std::io::Error>(
                             Response::builder()
-                                .status(201)
+                                .status(status)
                                 .body(Body::from(serde_json::to_vec(&object).unwrap()))
                                 .unwrap(),
                         )
                     }
                 }
             });
-            let mut runtime = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
             runtime.clients.control = kube::Client::new(service, "default");
             let plan = super::super::ephemeral_plan();
             let fingerprint = serde_json::from_value(serde_json::json!("frozen-spec")).unwrap();
@@ -493,13 +539,28 @@ mod tests {
                 &attempt,
             );
             let result = prepare(&runtime, &context, &plan, &fingerprint).await;
-            assert_eq!(result.is_ok(), !changed, "E1/E2 changed={changed}");
-            if changed {
-                let message = result.unwrap_err().to_string();
-                assert!(message.contains("spec fields: containers"));
-                assert!(!message.contains("foreign-image"), "values remain private");
+            if changed_uid {
+                let message = result
+                    .expect_err("U3 different nonempty response UID rejects")
+                    .to_string();
+                assert!(
+                    message.contains("changed during runtime-owner transfer"),
+                    "U3: {message}"
+                );
+            } else {
+                assert_eq!(result.is_ok(), !changed, "E1/E2 changed={changed}");
+                if changed {
+                    let message = result.unwrap_err().to_string();
+                    assert!(message.contains("spec fields: containers"));
+                    assert!(!message.contains("foreign-image"), "values remain private");
+                }
             }
             assert_eq!(posts.load(Ordering::SeqCst), 1, "E3 changed={changed}");
+            assert_eq!(
+                puts.load(Ordering::SeqCst),
+                usize::from(old_owner && !changed),
+                "U1-U3 owner={old_owner}/uid={changed_uid}"
+            );
         }
     }
 

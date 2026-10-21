@@ -6,146 +6,24 @@
 // @formal reason: establishment.
 //! Exact Kubernetes projection and incarnation fence for Sandbox control.
 
-use super::{
-    K8sRuntime, backend, build_pod_with_continuation, channel, hardened_security_context,
-    realization,
+#[cfg(test)]
+use super::pod_projection::{
+    DEFAULT_REPOSITORY_GIT_CONTROL_PORT, SANDBOX_CONTROL_VOLUME,
+    pod_for_plan_with_control_forwarder,
 };
+use super::pod_projection::{
+    K8sSandboxControlForwarder, SANDBOX_CONTROL_CONTAINER, control_projection,
+};
+use super::{K8sRuntime, backend, channel, participants, realization};
 use awaken_agent_channel::AgentChannel;
 use awaken_container_contract::RuntimeError;
-use awaken_sandbox_container::{ContainerPlan, SandboxControlBindingRequest};
+#[cfg(test)]
+use awaken_sandbox_container::ContainerPlan;
+use awaken_sandbox_container::SandboxControlBindingRequest;
 use awaken_sandbox_control::SandboxControlServiceKind;
-use awaken_sandbox_control::{
-    REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH, SANDBOX_CONTROL_DIRECTORY_PATH,
-};
+#[cfg(test)]
 use awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH;
-use k8s_openapi::api::core::v1::{Container, Pod, Volume, VolumeMount};
-use k8s_openapi::api::core::v1::{ContainerPort, EmptyDirVolumeSource, ExecAction, Probe};
-
-pub const DEFAULT_REPOSITORY_GIT_CONTROL_PORT: u16 = 7778;
-const SANDBOX_CONTROL_CONTAINER: &str = "sandbox-control";
-const SANDBOX_CONTROL_VOLUME: &str = "sandbox-control";
-
-/// Concrete no-secret bridge installed in one hosted Kubernetes Pod.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct K8sSandboxControlForwarder {
-    image: String,
-    executable: String,
-    port: u16,
-}
-
-impl K8sSandboxControlForwarder {
-    pub fn new(
-        image: impl Into<String>,
-        executable: impl Into<String>,
-        port: u16,
-    ) -> Result<Self, RuntimeError> {
-        let image = image.into();
-        let executable = executable.into();
-        let image_is_pinned = image
-            .rsplit_once("@sha256:")
-            .is_some_and(|(repository, digest)| {
-                !repository.is_empty()
-                    && digest.len() == 64
-                    && digest
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            });
-        if image.trim() != image
-            || !image_is_pinned
-            || image
-                .chars()
-                .any(|character| character.is_whitespace() || character == '\0')
-            // This executable runs inside the Linux Pod, independent of the
-            // Coordinator/Worker host's native path syntax.
-            || !executable.starts_with('/')
-            || executable
-                .chars()
-                .any(|character| matches!(character, '\r' | '\n' | '\0'))
-            || port == 0
-        {
-            return Err(RuntimeError::Backend(
-                "Kubernetes Sandbox control forwarder requires a digest-pinned operator image, absolute executable, and non-zero port".into(),
-            ));
-        }
-        Ok(Self {
-            image,
-            executable,
-            port,
-        })
-    }
-
-    pub(super) const fn port(&self) -> u16 {
-        self.port
-    }
-}
-
-pub(super) fn projection(
-    forwarder: &K8sSandboxControlForwarder,
-) -> (Volume, VolumeMount, Container) {
-    let volume = Volume {
-        name: SANDBOX_CONTROL_VOLUME.into(),
-        empty_dir: Some(EmptyDirVolumeSource::default()),
-        ..Default::default()
-    };
-    let agent_mount = VolumeMount {
-        name: SANDBOX_CONTROL_VOLUME.into(),
-        mount_path: SANDBOX_CONTROL_DIRECTORY_PATH.into(),
-        read_only: Some(true),
-        ..Default::default()
-    };
-    let forwarder_container = Container {
-        name: SANDBOX_CONTROL_CONTAINER.into(),
-        image: Some(forwarder.image.clone()),
-        image_pull_policy: Some("IfNotPresent".into()),
-        command: Some(vec![
-            forwarder.executable.clone(),
-            "control-forwarder".into(),
-            "--unix".into(),
-            REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH.into(),
-            "--listen".into(),
-            format!("127.0.0.1:{}", forwarder.port),
-            "--ready".into(),
-            REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH.into(),
-        ]),
-        ports: Some(vec![ContainerPort {
-            container_port: i32::from(forwarder.port),
-            name: Some(SANDBOX_CONTROL_CONTAINER.into()),
-            protocol: Some("TCP".into()),
-            ..Default::default()
-        }]),
-        volume_mounts: Some(vec![VolumeMount {
-            name: SANDBOX_CONTROL_VOLUME.into(),
-            mount_path: SANDBOX_CONTROL_DIRECTORY_PATH.into(),
-            read_only: Some(false),
-            ..Default::default()
-        }]),
-        // The trusted forwarder writes this generation marker only after both
-        // Unix and loopback listeners bind. The same digest-pinned binary checks
-        // PID+starttime through exec; no probe connects to or consumes the
-        // one-exchange business port.
-        readiness_probe: Some(Probe {
-            exec: Some(ExecAction {
-                command: Some(vec![
-                    forwarder.executable.clone(),
-                    "control-forwarder-ready".into(),
-                    "--marker".into(),
-                    REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH.into(),
-                ]),
-            }),
-            failure_threshold: Some(3),
-            initial_delay_seconds: Some(0),
-            period_seconds: Some(1),
-            success_threshold: Some(1),
-            timeout_seconds: Some(1),
-            ..Default::default()
-        }),
-        security_context: Some(hardened_security_context()),
-        termination_message_path: Some("/dev/termination-log".into()),
-        termination_message_policy: Some("File".into()),
-        ..Default::default()
-    };
-    (volume, agent_mount, forwarder_container)
-}
+use k8s_openapi::api::core::v1::{Container, Pod};
 
 fn normalized_forwarder_security_projection(container: &Container) -> Container {
     let mut projected = container.clone();
@@ -155,27 +33,6 @@ fn normalized_forwarder_security_projection(container: &Container) -> Container 
     projected.resources = None;
     super::api_defaults::normalize_container(&mut projected);
     projected
-}
-
-/// Render the canonical demanded-control Pod shape using one validated,
-/// digest-pinned operator forwarder artifact.
-#[must_use]
-pub fn pod_for_plan_with_control_forwarder(
-    id: &str,
-    plan: &ContainerPlan,
-    forwarder: &K8sSandboxControlForwarder,
-) -> Pod {
-    build_pod_with_continuation(
-        id,
-        plan,
-        &None,
-        None,
-        &[],
-        None,
-        None,
-        Some(forwarder),
-        None,
-    )
 }
 
 pub(super) fn pod_incarnation(
@@ -224,7 +81,7 @@ pub(super) fn pod_incarnation(
             "Kubernetes Sandbox control Pod has a forbidden token or namespace shape",
         ));
     }
-    let (expected_volume, expected_agent_mount, expected_forwarder) = projection(forwarder);
+    let (expected_volume, expected_agent_mount, expected_forwarder) = control_projection(forwarder);
     let control_volumes = spec
         .volumes
         .as_deref()
@@ -326,8 +183,13 @@ impl K8sRuntime {
         let expected_uid = expected
             .kubernetes_pod_uid()
             .ok_or_else(|| backend("Sandbox control incarnation is not a Kubernetes Pod"))?;
-        let transferred =
-            realization::transfer_runtime_owner(&pods, pod, expected_uid, &self.owner_id).await?;
+        let transferred = participants::metadata::transfer_runtime_owner(
+            &pods,
+            pod,
+            expected_uid,
+            &self.owner_id,
+        )
+        .await?;
         let transferred =
             ready_pod_incarnation(&transferred, container_id, Some(&self.owner_id), forwarder)?;
         if &transferred != expected {
@@ -561,7 +423,7 @@ mod tests {
          * K2 C1+C2+C3=>E1+E2; K3 C4=>E3; K4 !C2 or C5=>E4.
          */
         let forwarder = forwarder();
-        let (_, _, sidecar) = projection(&forwarder);
+        let (_, _, sidecar) = control_projection(&forwarder);
         let probe = sidecar.readiness_probe.as_ref().expect("K2 marker probe");
         assert!(
             probe.tcp_socket.is_none() && probe.http_get.is_none(),

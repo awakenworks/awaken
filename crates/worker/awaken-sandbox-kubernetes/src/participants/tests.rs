@@ -367,95 +367,18 @@ async fn complete_original_inline_handoff_recovers_only_its_ticket_bound_set() {
     let writes = Arc::new(AtomicUsize::new(0));
     let read_paths = Arc::new(Mutex::new(Vec::new()));
     let malformed_404_path = Arc::new(Mutex::new(None::<String>));
-    let service = tower::service_fn({
-        let objects = objects.clone();
-        let tickets = tickets.clone();
-        let writes = writes.clone();
-        let read_paths = read_paths.clone();
-        let malformed_404_path = malformed_404_path.clone();
-        move |request: Request<Body>| {
-            let objects = objects.clone();
-            let tickets = tickets.clone();
-            let writes = writes.clone();
-            let read_paths = read_paths.clone();
-            let malformed_404_path = malformed_404_path.clone();
-            async move {
-                let method = request.method().clone();
-                let path = request.uri().path().to_owned();
-                let (code, body) = if method == http::Method::POST {
-                    writes.fetch_add(1, Ordering::SeqCst);
-                    let mut body: serde_json::Value =
-                        serde_json::from_slice(&request.into_body().collect_bytes().await.unwrap())
-                            .unwrap();
-                    let name = body["metadata"]["name"].as_str().unwrap().to_owned();
-                    let uid = format!("original-{name}-uid");
-                    body["metadata"]["uid"] = uid.clone().into();
-                    body["metadata"]["namespace"] = "default".into();
-                    body["metadata"]["annotations"]
-                        [awaken_container_contract::ISOLATION_ID_ANNOTATION] = nonce.into();
-                    body["metadata"]["annotations"]
-                        [awaken_container_contract::REQUEST_DIGEST_ANNOTATION] =
-                        "b".repeat(64).into();
-                    let resource = path.rsplit('/').next().unwrap();
-                    tickets.lock().unwrap().push(CreateTicket {
-                        request: CreateTicketRequest::new(
-                            "original-worker-group",
-                            resource,
-                            "default",
-                            &name,
-                            "b".repeat(64),
-                        )
-                        .unwrap(),
-                        status: TicketStatus::Finished(TicketResult::Created { uid }),
-                        origin: Default::default(),
-                        isolation_id: nonce.into(),
-                        isolation_pending: false,
-                    });
-                    objects
-                        .lock()
-                        .unwrap()
-                        .insert(format!("{path}/{name}"), body.clone());
-                    (201, body)
-                } else if method == http::Method::PUT {
-                    writes.fetch_add(1, Ordering::SeqCst);
-                    let body: serde_json::Value =
-                        serde_json::from_slice(&request.into_body().collect_bytes().await.unwrap())
-                            .unwrap();
-                    objects.lock().unwrap().insert(path, body.clone());
-                    (200, body)
-                } else {
-                    assert_eq!(
-                        method,
-                        http::Method::GET,
-                        "no cleanup mutation during reconstruction"
-                    );
-                    read_paths.lock().unwrap().push(path.clone());
-                    if malformed_404_path.lock().unwrap().as_deref() == Some(path.as_str()) {
-                        (
-                            404,
-                            json!({"apiVersion":"v1","kind":"Status","code":404,"reason":"NotFound"}),
-                        )
-                    } else {
-                        match objects.lock().unwrap().get(&path).cloned() {
-                            Some(body) => (200, body),
-                            None => (
-                                404,
-                                json!({"apiVersion":"v1","kind":"Status","status":"Failure","code":404,"reason":"NotFound","message":"original object gone"}),
-                            ),
-                        }
-                    }
-                };
-                Ok::<_, std::io::Error>(
-                    Response::builder()
-                        .status(code)
-                        .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                        .unwrap(),
-                )
-            }
-        }
-    });
-    let client = awaken_outbound_http::kubernetes_client_with_verified_absence(kube::Client::new(
-        service, "default",
+    let faults = Arc::new(Mutex::new(std::collections::VecDeque::from([
+        PublicationFault::Status,
+    ])));
+    let put_bodies = Arc::new(Mutex::new(Vec::new()));
+    let client = awaken_outbound_http::kubernetes_client_with_verified_absence(projected_client(
+        objects.clone(),
+        tickets.clone(),
+        writes.clone(),
+        read_paths.clone(),
+        malformed_404_path.clone(),
+        faults.clone(),
+        put_bodies.clone(),
     ));
     source.clients.control = client.clone();
     let original_set = realize(
@@ -467,7 +390,7 @@ async fn complete_original_inline_handoff_recovers_only_its_ticket_bound_set() {
         None,
     )
     .await
-    .unwrap();
+    .expect("C1 same-UID status/RV-only409 must publish the original projected result set");
     let stored = objects.lock().unwrap().clone();
     let original_tickets = tickets.lock().unwrap().clone();
     let complete = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -728,5 +651,531 @@ async fn complete_original_inline_handoff_recovers_only_its_ticket_bound_set() {
                 .any(|p| p.contains("another-session-job")),
             "R3 no foreign participant I/O/{row}"
         );
+    }
+    // C1-C9 exercise the same producer results and HTTP fixture, not a second
+    // broker or a GET-derived UID oracle. Reset only test fault state.
+    *objects.lock().unwrap() = stored.clone();
+    *tickets.lock().unwrap() = original_tickets.clone();
+    *malformed_404_path.lock().unwrap() = None;
+    let original_pod = serde_json::from_value(stored[&pod_path].clone()).unwrap();
+    let original_ticket_count = tickets.lock().unwrap().len();
+    metadata_publication_cas_matrix(
+        &source,
+        &original_pod,
+        &original_set,
+        &objects,
+        (&writes, &read_paths),
+        &faults,
+        &put_bodies,
+    )
+    .await;
+    metadata_owner_cas_matrix(
+        &source,
+        &original_pod,
+        &objects,
+        (&writes, &read_paths),
+        &faults,
+        &put_bodies,
+    )
+    .await;
+    assert_eq!(
+        tickets.lock().unwrap().len(),
+        original_ticket_count,
+        "C1-C9 no repeated member POST"
+    );
+}
+
+type ProjectionObjects =
+    Arc<std::sync::Mutex<std::collections::BTreeMap<String, serde_json::Value>>>;
+type PublicationFaults = Arc<std::sync::Mutex<std::collections::VecDeque<PublicationFault>>>;
+type PublicationPuts = Arc<std::sync::Mutex<Vec<serde_json::Value>>>;
+
+#[derive(Clone)]
+enum PublicationFault {
+    Status,
+    Uid,
+    Gone,
+    Attempt,
+    Fence,
+    Declaration,
+    Members,
+    Reject(u16),
+    Transport,
+    ResponseLost,
+    ReplyUid,
+    ReplyAttempt,
+    ReplyResults,
+    Revoke(Arc<std::sync::atomic::AtomicBool>),
+}
+
+fn projected_client(
+    objects: ProjectionObjects,
+    tickets: Arc<std::sync::Mutex<Vec<CreateTicket>>>,
+    writes: Arc<AtomicUsize>,
+    read_paths: Arc<std::sync::Mutex<Vec<String>>>,
+    malformed_404_path: Arc<std::sync::Mutex<Option<String>>>,
+    faults: PublicationFaults,
+    put_bodies: PublicationPuts,
+) -> kube::Client {
+    let service = tower::service_fn(move |request: Request<Body>| {
+        let objects = objects.clone();
+        let tickets = tickets.clone();
+        let writes = writes.clone();
+        let read_paths = read_paths.clone();
+        let malformed_404_path = malformed_404_path.clone();
+        let faults = faults.clone();
+        let put_bodies = put_bodies.clone();
+        async move {
+            let method = request.method().clone();
+            let path = request.uri().path().to_owned();
+            let (code, body) = if method == http::Method::POST {
+                writes.fetch_add(1, Ordering::SeqCst);
+                let mut body: serde_json::Value =
+                    serde_json::from_slice(&request.into_body().collect_bytes().await.unwrap())
+                        .unwrap();
+                let name = body["metadata"]["name"].as_str().unwrap().to_owned();
+                let uid = format!("original-{name}-uid");
+                body["metadata"]["uid"] = uid.clone().into();
+                body["metadata"]["namespace"] = "default".into();
+                body["metadata"]["annotations"]
+                    [awaken_container_contract::ISOLATION_ID_ANNOTATION] =
+                    "0123456789abcdef0123456789abcdef".into();
+                body["metadata"]["annotations"]
+                    [awaken_container_contract::REQUEST_DIGEST_ANNOTATION] = "b".repeat(64).into();
+                let resource = path.rsplit('/').next().unwrap();
+                tickets.lock().unwrap().push(CreateTicket {
+                    request: CreateTicketRequest::new(
+                        "original-worker-group",
+                        resource,
+                        "default",
+                        &name,
+                        "b".repeat(64),
+                    )
+                    .unwrap(),
+                    status: TicketStatus::Finished(TicketResult::Created { uid }),
+                    origin: Default::default(),
+                    isolation_id: "0123456789abcdef0123456789abcdef".into(),
+                    isolation_pending: false,
+                });
+                objects
+                    .lock()
+                    .unwrap()
+                    .insert(format!("{path}/{name}"), body.clone());
+                (201, body)
+            } else if method == http::Method::PUT {
+                writes.fetch_add(1, Ordering::SeqCst);
+                let body: serde_json::Value =
+                    serde_json::from_slice(&request.into_body().collect_bytes().await.unwrap())
+                        .unwrap();
+                put_bodies.lock().unwrap().push(body.clone());
+                let fault = faults.lock().unwrap().pop_front();
+                projected_replace(&objects, &path, body, fault)?
+            } else {
+                assert_eq!(
+                    method,
+                    http::Method::GET,
+                    "no cleanup mutation during reconstruction"
+                );
+                read_paths.lock().unwrap().push(path.clone());
+                if malformed_404_path.lock().unwrap().as_deref() == Some(path.as_str()) {
+                    (
+                        404,
+                        json!({"apiVersion":"v1","kind":"Status","code":404,"reason":"NotFound"}),
+                    )
+                } else {
+                    match objects.lock().unwrap().get(&path).cloned() {
+                        Some(body) => (200, body),
+                        None => (
+                            404,
+                            json!({"apiVersion":"v1","kind":"Status","status":"Failure","code":404,"reason":"NotFound","message":"original object gone"}),
+                        ),
+                    }
+                }
+            };
+            Ok::<_, std::io::Error>(
+                Response::builder()
+                    .status(code)
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+        }
+    });
+    kube::Client::new(service, "default")
+}
+
+fn projected_replace(
+    objects: &ProjectionObjects,
+    path: &str,
+    mut body: serde_json::Value,
+    fault: Option<PublicationFault>,
+) -> Result<(u16, serde_json::Value), std::io::Error> {
+    let status = |code| {
+        (
+            code,
+            json!({"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Conflict","message":"injected API refusal","code":code}),
+        )
+    };
+    let mut objects = objects.lock().unwrap();
+    if matches!(&fault, Some(PublicationFault::Transport)) {
+        return Err(std::io::Error::other(
+            "injected transport failure before reply",
+        ));
+    }
+    if let Some(PublicationFault::Reject(code)) = &fault {
+        return Ok(status(*code));
+    }
+    if matches!(&fault, Some(PublicationFault::Gone)) {
+        objects.remove(path);
+        return Ok(status(409));
+    }
+    let current = objects
+        .get_mut(path)
+        .expect("the fixed original Pod exists");
+    let changed = matches!(
+        &fault,
+        Some(
+            PublicationFault::Status
+                | PublicationFault::Uid
+                | PublicationFault::Attempt
+                | PublicationFault::Fence
+                | PublicationFault::Declaration
+                | PublicationFault::Members
+                | PublicationFault::Revoke(_)
+        )
+    );
+    if changed {
+        let version = current["metadata"]["resourceVersion"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            + 1;
+        current["metadata"]["resourceVersion"] = version.to_string().into();
+        current["status"] = json!({"phase":"Pending"});
+        current["metadata"]["annotations"]["fixture.awaken.dev/controller"] = "kept".into();
+        current["metadata"]["finalizers"] = json!(["fixture.awaken.dev/controller"]);
+        match &fault {
+            Some(PublicationFault::Uid) => current["metadata"]["uid"] = "replacement-pod".into(),
+            Some(PublicationFault::Attempt) => {
+                current["metadata"]["annotations"][SANDBOX_ATTEMPT_ANNOTATION] =
+                    "other-attempt".into()
+            }
+            Some(PublicationFault::Fence) => {
+                current["metadata"]["annotations"][super::super::SANDBOX_EFFECT_EPOCH_ANNOTATION] =
+                    "2".into()
+            }
+            Some(PublicationFault::Declaration) => {
+                current["metadata"]["annotations"][DECLARATION] = "[]".into()
+            }
+            Some(PublicationFault::Members) => {
+                let mut members: serde_json::Value = serde_json::from_str(
+                    body["metadata"]["annotations"][RESULTS].as_str().unwrap(),
+                )
+                .unwrap();
+                members["objects"][0]["uid"] = "other-member".into();
+                current["metadata"]["annotations"][RESULTS] =
+                    serde_json::to_string(&members).unwrap().into();
+            }
+            Some(PublicationFault::Revoke(active)) => active.store(false, Ordering::SeqCst),
+            _ => {}
+        }
+    }
+    // Actual UID/RV conditional replacement. A status write alone invalidates
+    // the first request; the product must GET the same UID before another PUT.
+    if body["metadata"]["uid"] != current["metadata"]["uid"]
+        || body["metadata"]["resourceVersion"] != current["metadata"]["resourceVersion"]
+    {
+        return Ok(status(409));
+    }
+    let version = current["metadata"]["resourceVersion"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap()
+        + 1;
+    body["metadata"]["resourceVersion"] = version.to_string().into();
+    objects.insert(path.to_owned(), body.clone());
+    match fault {
+        Some(PublicationFault::ReplyUid) => body["metadata"]["uid"] = "replacement-reply".into(),
+        Some(PublicationFault::ReplyAttempt) => {
+            body["metadata"]["annotations"][SANDBOX_ATTEMPT_ANNOTATION] = "other-attempt".into()
+        }
+        Some(PublicationFault::ReplyResults) => {
+            body["metadata"]["annotations"]
+                .as_object_mut()
+                .unwrap()
+                .remove(RESULTS);
+        }
+        Some(PublicationFault::ResponseLost) => {
+            return Err(std::io::Error::other("injected lost accepted response"));
+        }
+        _ => {}
+    }
+    Ok((200, body))
+}
+
+async fn metadata_publication_cas_matrix(
+    runtime: &K8sRuntime,
+    original_pod: &Pod,
+    participants: &KubernetesProjectedParticipants,
+    objects: &ProjectionObjects,
+    io: (&Arc<AtomicUsize>, &Arc<std::sync::Mutex<Vec<String>>>),
+    faults: &PublicationFaults,
+    put_bodies: &PublicationPuts,
+) {
+    // C1 original UID + status/RV-only409 -> original results converge, preserving
+    // unrelated status/metadata. C2 replaced/gone UID -> no second PUT. C3 original
+    // attempt/fence/declaration/members drift -> reject, no overwrite/UID sampling.
+    // C4 exact retained replay -> zero IO. C5 multiple409s keep the original
+    // identity, not a new numeric budget. C6 non409/transport/response loss -> Err,
+    // never success or blind POST. C7 existing callback revoked -> no next request.
+    // C8 bad successful response -> reject. C9 owner-transfer oracles stay in the
+    // original creation case; this matrix does not synthesize owner/permission.
+    let (writes, read_paths) = io;
+    let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let scenarios = [
+        ("status", vec![PublicationFault::Status], true, 2, 1),
+        (
+            "three-status",
+            vec![PublicationFault::Status; 3],
+            true,
+            4,
+            3,
+        ),
+        ("uid", vec![PublicationFault::Uid], false, 1, 1),
+        ("gone", vec![PublicationFault::Gone], false, 1, 1),
+        ("attempt", vec![PublicationFault::Attempt], false, 1, 1),
+        ("fence", vec![PublicationFault::Fence], false, 1, 1),
+        (
+            "declaration",
+            vec![PublicationFault::Declaration],
+            false,
+            1,
+            1,
+        ),
+        ("members", vec![PublicationFault::Members], false, 1, 1),
+        (
+            "forbidden",
+            vec![PublicationFault::Reject(403)],
+            false,
+            1,
+            0,
+        ),
+        ("server", vec![PublicationFault::Reject(500)], false, 1, 0),
+        ("transport", vec![PublicationFault::Transport], false, 1, 0),
+        (
+            "response-lost",
+            vec![PublicationFault::ResponseLost],
+            false,
+            1,
+            0,
+        ),
+        ("reply-uid", vec![PublicationFault::ReplyUid], false, 1, 0),
+        (
+            "reply-attempt",
+            vec![PublicationFault::ReplyAttempt],
+            false,
+            1,
+            0,
+        ),
+        (
+            "reply-results",
+            vec![PublicationFault::ReplyResults],
+            false,
+            1,
+            0,
+        ),
+        ("already", vec![], true, 0, 0),
+        (
+            "revoke-after-two",
+            vec![
+                PublicationFault::Status,
+                PublicationFault::Status,
+                PublicationFault::Revoke(active.clone()),
+            ],
+            false,
+            3,
+            2,
+        ),
+        ("denied", vec![], false, 0, 0),
+    ];
+    let name = original_pod.metadata.name.as_ref().unwrap();
+    let path = format!("/api/v1/namespaces/default/pods/{name}");
+    for (row, script, accepted, puts, gets) in scenarios {
+        let mut pod = original_pod.clone();
+        if row != "already" {
+            pod.metadata.annotations.as_mut().unwrap().remove(RESULTS);
+        }
+        objects
+            .lock()
+            .unwrap()
+            .insert(path.clone(), serde_json::to_value(&pod).unwrap());
+        *faults.lock().unwrap() = script.into();
+        put_bodies.lock().unwrap().clear();
+        read_paths.lock().unwrap().clear();
+        active.store(row != "denied", Ordering::SeqCst);
+        let before_writes = writes.load(Ordering::SeqCst);
+        let admit = || {
+            if active.load(Ordering::SeqCst) {
+                Ok(())
+            } else {
+                Err(RuntimeError::EffectFenceExpired)
+            }
+        };
+        let result = publish(runtime, pod, participants.pod_uid(), participants, &admit).await;
+        assert_eq!(result.is_ok(), accepted, "C1-C8/{row}: {result:?}");
+        assert_eq!(
+            writes.load(Ordering::SeqCst) - before_writes,
+            puts,
+            "C1-C8 no repeated POST/{row}"
+        );
+        assert_eq!(
+            read_paths.lock().unwrap().len(),
+            gets,
+            "C2/C7 exact GET boundary/{row}"
+        );
+        let bodies = put_bodies.lock().unwrap();
+        assert_eq!(bodies.len(), puts, "C1-C8 metadata PUTs only/{row}");
+        if row == "status" || row == "three-status" {
+            assert_publication_preserved_original(
+                row,
+                &bodies,
+                participants,
+                &objects.lock().unwrap()[&path],
+            );
+        }
+        if row == "forbidden" {
+            assert!(
+                matches!(result, Err(RuntimeError::Unauthorized(_))),
+                "C6 original403"
+            );
+        }
+        if row == "gone" {
+            assert!(
+                matches!(result, Err(RuntimeError::NotFound(_))),
+                "C2 required Pod404"
+            );
+        }
+    }
+}
+
+fn assert_publication_preserved_original(
+    row: &str,
+    bodies: &[serde_json::Value],
+    participants: &KubernetesProjectedParticipants,
+    stored: &serde_json::Value,
+) {
+    let last = bodies.last().unwrap();
+    assert_eq!(last["status"]["phase"], "Pending", "C1 fresh status/{row}");
+    assert_eq!(
+        last["metadata"]["annotations"]["fixture.awaken.dev/controller"], "kept",
+        "C1 unrelated annotation/{row}"
+    );
+    assert_eq!(
+        last["metadata"]["finalizers"],
+        json!(["fixture.awaken.dev/controller"]),
+        "C1 unrelated finalizer/{row}"
+    );
+    assert_eq!(
+        last["metadata"]["uid"],
+        participants.pod_uid(),
+        "C1 exact original UID/{row}"
+    );
+    let written: Pod = serde_json::from_value(stored.clone()).unwrap();
+    assert_eq!(
+        retained(&written).unwrap().as_ref(),
+        Some(participants),
+        "C1 original member UID set/{row}"
+    );
+}
+
+async fn metadata_owner_cas_matrix(
+    runtime: &K8sRuntime,
+    original_pod: &Pod,
+    objects: &ProjectionObjects,
+    io: (&Arc<AtomicUsize>, &Arc<std::sync::Mutex<Vec<String>>>),
+    faults: &PublicationFaults,
+    put_bodies: &PublicationPuts,
+) {
+    // C9 retains the old four-argument owner interface: no effect/expiry
+    // callback is invented. Same UID + status409 converges; a new UID, effect,
+    // or original member rejects before a second PUT. Same owner costs zero IO.
+    // Cancellation is the caller's boundary; the real admitted publisher rows
+    // above independently prove revocation, not this originally unfenced API.
+    let (writes, read_paths) = io;
+    let path = format!(
+        "/api/v1/namespaces/default/pods/{}",
+        original_pod.metadata.name.as_ref().unwrap()
+    );
+    for (row, script, accepted, puts, gets) in [
+        ("owner-status", vec![PublicationFault::Status], true, 2, 1),
+        ("owner-uid", vec![PublicationFault::Uid], false, 1, 1),
+        (
+            "owner-attempt",
+            vec![PublicationFault::Attempt],
+            false,
+            1,
+            1,
+        ),
+        ("owner-fence", vec![PublicationFault::Fence], false, 1, 1),
+        (
+            "owner-members",
+            vec![PublicationFault::Members],
+            false,
+            1,
+            1,
+        ),
+        ("owner-already", vec![], true, 0, 0),
+    ] {
+        let mut pod = original_pod.clone();
+        pod.metadata.labels.as_mut().unwrap().insert(
+            awaken_sandbox_container::engine::RUNTIME_OWNER_LABEL.into(),
+            if row == "owner-already" {
+                "new-owner"
+            } else {
+                "old-owner"
+            }
+            .into(),
+        );
+        objects
+            .lock()
+            .unwrap()
+            .insert(path.clone(), serde_json::to_value(&pod).unwrap());
+        *faults.lock().unwrap() = script.into();
+        put_bodies.lock().unwrap().clear();
+        read_paths.lock().unwrap().clear();
+        let before = writes.load(Ordering::SeqCst);
+        let result = super::super::participants::metadata::transfer_runtime_owner(
+            &runtime.pods(),
+            pod,
+            original_pod.metadata.uid.as_ref().unwrap(),
+            "new-owner",
+        )
+        .await;
+        assert_eq!(result.is_ok(), accepted, "C9/{row}: {result:?}");
+        assert_eq!(
+            writes.load(Ordering::SeqCst) - before,
+            puts,
+            "C9 no POST/{row}"
+        );
+        assert_eq!(put_bodies.lock().unwrap().len(), puts, "C9 PUT/{row}");
+        assert_eq!(read_paths.lock().unwrap().len(), gets, "C9 GET/{row}");
+        if let Ok(written) = result {
+            assert_eq!(
+                written.metadata.uid, original_pod.metadata.uid,
+                "C9 fixed UID/{row}"
+            );
+            assert_eq!(
+                written.metadata.labels.as_ref().unwrap()
+                    [awaken_sandbox_container::engine::RUNTIME_OWNER_LABEL],
+                "new-owner",
+                "C9 owner/{row}"
+            );
+            assert_eq!(
+                retained(&written).unwrap(),
+                retained(original_pod).unwrap(),
+                "C9 unchanged original members/{row}"
+            );
+        }
     }
 }
