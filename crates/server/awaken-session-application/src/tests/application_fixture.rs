@@ -13,23 +13,34 @@ pub(super) fn application_with_runtime(
     repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
     environments: impl Into<SessionEnvironments>,
 ) -> SessionApplication {
-    configured_application(runtime, repo, environments, Default::default())
+    configured_application(
+        runtime,
+        SessionPersistence::new(repo, system_clock()),
+        environments,
+        Default::default(),
+        None,
+    )
 }
 
 pub(super) fn configured_application(
     runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
-    repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    persistence: SessionPersistence,
     environments: impl Into<SessionEnvironments>,
     configuration: SessionApplicationConfiguration,
+    resources: Option<SessionResources>,
 ) -> SessionApplication {
-    SessionApplicationBuilder::fixture(
+    let builder = SessionApplicationBuilder::fixture(
         runtime,
         Arc::new(NoopMcpRealizer),
-        crate::SessionPersistence::new(repo, system_clock()),
+        persistence,
         environments,
-        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
-    .configuration(configuration)
+    .configuration(configuration);
+    match resources {
+        Some(resources) => builder.resources(resources),
+        None => builder,
+    }
     .build()
     .expect("valid fixture Session application")
 }
@@ -39,31 +50,26 @@ pub(super) fn application_with_configuration(
     environments: impl Into<SessionEnvironments>,
     configuration: SessionApplicationConfiguration,
 ) -> SessionApplication {
-    SessionApplicationBuilder::fixture(
+    configured_application(
         Arc::new(NoopRuntime),
-        Arc::new(NoopMcpRealizer),
-        crate::SessionPersistence::new(repo, system_clock()),
+        SessionPersistence::new(repo, system_clock()),
         environments,
-        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        configuration,
+        None,
     )
-    .configuration(configuration)
-    .build()
-    .expect("valid fixture Session application")
 }
 
 pub(super) fn application_with_persistence(
     runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
     persistence: SessionPersistence,
 ) -> SessionApplication {
-    SessionApplicationBuilder::fixture(
+    configured_application(
         runtime,
-        Arc::new(NoopMcpRealizer),
         persistence,
         Arc::new(RecordingEnvironmentSource::default()),
-        Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        Default::default(),
+        None,
     )
-    .build()
-    .expect("valid fixture Store/Clock composition")
 }
 
 pub(super) fn configured_admission_application(

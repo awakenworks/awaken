@@ -12,7 +12,6 @@
 //! binding an input replaces, Repository participants) is decided here, so no
 //! two protocols can freeze different layouts for the same request.
 
-use super::SessionApplication;
 use awaken_session_types::RunError;
 
 /// Most File inputs one Session carries.
@@ -280,7 +279,7 @@ pub fn input_binding(
     }
 }
 
-fn plan_session_input_attachments(
+pub(super) fn plan_session_input_attachments(
     session_id: &str,
     requests: &[SessionInputRequest],
     agent_defaults: &[awaken_resource_contract::InputBinding],
@@ -332,21 +331,6 @@ fn plan_session_input_attachments(
             Ok(crate::session_resource::SessionInputAttachment { binding, replaces })
         })
         .collect()
-}
-
-/// A validated input plan: every derived path resolved and the effective
-/// binding set checked, before any Repository or Vault participant.
-pub struct PreparedSessionInputs {
-    requests: Vec<SessionInputRequest>,
-    attachments: Vec<crate::session_resource::SessionInputAttachment>,
-    effective_bindings: Vec<awaken_resource_contract::InputBinding>,
-}
-
-impl PreparedSessionInputs {
-    #[must_use]
-    pub fn effective_bindings(&self) -> &[awaken_resource_contract::InputBinding] {
-        &self.effective_bindings
-    }
 }
 
 async fn memory_store_definition(
@@ -409,119 +393,6 @@ pub(super) async fn normalize_session_input_mounts(
         normalized.push(request);
     }
     Ok(normalized)
-}
-
-impl SessionApplication {
-    /// Derive every definition-owned mount path and compile the one effective
-    /// typed binding plan before entering Skill/File/Vault/Repository effects.
-    /// The result is consumed unchanged by [`Self::lower_prepared_session_inputs`],
-    /// so replacement semantics and layout validation cannot drift between
-    /// two preflights.
-    pub async fn prepare_session_inputs(
-        &self,
-        session_id: &str,
-        owner_scope: &str,
-        requests: &[SessionInputRequest],
-        agent_defaults: &[awaken_resource_contract::InputBinding],
-    ) -> Result<PreparedSessionInputs, RunError> {
-        let normalized = normalize_session_input_mounts(
-            self.resource_registry
-                .as_deref()
-                .map(|registry| registry as &dyn awaken_resource_contract::ResourceInventory),
-            owner_scope,
-            requests,
-            agent_defaults,
-        )
-        .await?;
-        // Build the complete logical binding set with a non-durable placeholder
-        // Repository id. The shared resolver owns replacement/collision/tree
-        // semantics, and this call remains pure; only after it succeeds may the
-        // caller enter Registry/Vault participants.
-        let attachments = plan_session_input_attachments(session_id, &normalized, agent_defaults)
-            .map_err(RunError::bad_request)?;
-        let effective_bindings = crate::session_resource::SessionInputResolver::effective_bindings(
-            agent_defaults,
-            &attachments,
-        )
-        .map_err(|error| RunError::bad_request(error.to_string()))?;
-        Ok(PreparedSessionInputs {
-            requests: normalized,
-            attachments,
-            effective_bindings,
-        })
-    }
-
-    /// Configure the Repository/Vault participants for one already-validated
-    /// input plan. No path or replacement decision is recomputed here; a
-    /// failure compensates every participant configured before it.
-    pub async fn lower_prepared_session_inputs(
-        &self,
-        session_id: &str,
-        owner_scope: &str,
-        prepared: &PreparedSessionInputs,
-    ) -> Result<
-        (
-            Vec<crate::session_resource::SessionInputAttachment>,
-            Vec<super::ConfiguredSessionRepository>,
-        ),
-        RunError,
-    > {
-        let mut attachments = Vec::with_capacity(prepared.requests.len());
-        let mut repository_configurations = Vec::new();
-        for (index, request) in prepared.requests.iter().enumerate() {
-            let repository_id = if let SessionInputTarget::Repository {
-                remote_url,
-                access_token,
-                initial_branch,
-                initial_commit,
-            } = &request.target
-            {
-                let configured = match self
-                    .configure_session_repository(super::SessionRepositoryResourceInput {
-                        id: format!("managed:{session_id}:repository:{index}"),
-                        workspace_id: owner_scope.to_string(),
-                        name: format!("Session repository {index}"),
-                        description: "Managed compatibility Session input".into(),
-                        remote_url: remote_url.clone(),
-                        credential_material: access_token
-                            .clone()
-                            .map(RepositoryAccessToken::into_credential_material),
-                        credential: None,
-                        mount_path: request.mount_path.clone(),
-                        initial_branch: initial_branch.clone(),
-                        initial_commit: initial_commit.clone(),
-                    })
-                    .await
-                {
-                    Ok(configured) => configured,
-                    Err(first) => {
-                        self.compensate_request_repositories(
-                            session_id,
-                            &repository_configurations,
-                            "Managed Session Repository compensation remains pending after lowering failure",
-                        )
-                        .await;
-                        return Err(first);
-                    }
-                };
-                let repository_id = configured.repository_id.clone();
-                repository_configurations.push(configured);
-                Some(repository_id)
-            } else {
-                None
-            };
-            let mut attachment = prepared.attachments[index].clone();
-            if let Some(repository_id) = repository_id {
-                attachment.binding.target =
-                    awaken_resource_contract::InputResourceId::Repository(repository_id);
-            }
-            // A replacement changes the resource occupying one logical Agent
-            // slot; it does not invent a new slot identity. This keeps published
-            // extension configuration (such as memory.binding_id) stable.
-            attachments.push(attachment);
-        }
-        Ok((attachments, repository_configurations))
-    }
 }
 
 #[cfg(test)]

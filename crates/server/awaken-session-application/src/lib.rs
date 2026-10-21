@@ -181,13 +181,13 @@ pub use event_batch_cutover_validation::{
 };
 include!("application.rs");
 mod activity;
+mod inputs;
 mod lifecycle_outbox_relay;
-mod live_inbox;
 pub use activity::SessionActivityError;
+pub use inputs::{PreparedSessionInputs, SessionInputs};
 pub use lifecycle_outbox_relay::{
     LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL, LifecycleOutboxRelay, LifecycleOutboxReplay,
 };
-pub use live_inbox::SessionInputs;
 mod continuation;
 mod coordination;
 mod creation;
@@ -201,9 +201,9 @@ pub use creation_request::{
 };
 pub use session_input::{
     InputProjectionClass, MAX_MEMORY_INSTRUCTIONS_CHARS, MAX_SESSION_FILE_RESOURCES,
-    MAX_SESSION_MEMORY_STORES, PreparedSessionInputs, RepositoryAccessToken, SessionInputRequest,
-    SessionInputTarget, admit_file_count, admit_memory_inputs, input_binding,
-    memory_mount_component, preflight_repository_mount_paths, unique_memory_mount_path,
+    MAX_SESSION_MEMORY_STORES, RepositoryAccessToken, SessionInputRequest, SessionInputTarget,
+    admit_file_count, admit_memory_inputs, input_binding, memory_mount_component,
+    preflight_repository_mount_paths, unique_memory_mount_path,
 };
 mod credentials;
 mod event_batches;

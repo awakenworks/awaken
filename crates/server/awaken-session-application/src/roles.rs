@@ -3,9 +3,12 @@
 // @formal owner crates/server/awaken-session-application/src/terminal.rs
 // @formal owner crates/server/awaken-session-application/src/resource_reconciliation.rs
 // @formal owner crates/server/awaken-session-application/src/credentials.rs
-// @formal reason: Declares the consumer roles of SessionApplication and implements each by
-// @formal reason: forwarding to the owning command or shared archive kernel; the root CAS, cleanup,
-// @formal reason: Resource and credential decisions stay with the owners named above.
+// @formal owner crates/server/awaken-session-application/src/application.rs
+// @formal owner crates/server/awaken-session-application/src/runtime_commands.rs
+// @formal owner crates/contract/awaken-session-configuration-contract/src/resource/inputs.rs
+// @formal reason: Consumer roles adapt the selected commands and original resolver/layout kernels;
+// @formal reason: Resource resolution and layout validation have no duplicate inherent entrances.
+// @formal reason: Root CAS, cleanup, intrinsic errors and credential decisions retain their owners.
 //! The Session application's roles, each cut to the adapter code that calls it.
 //!
 //! A protocol adapter holds the roles it calls instead of the whole
@@ -15,8 +18,9 @@
 //! and errors these roles speak are owned by this crate, so the traits live
 //! beside them rather than in a contract crate.
 //!
-//! Each role is bound to its owning application service. Commands forward to
-//! its owning command. Termination-only role lowering selects the existing
+//! Each role is bound to its owning application service. Resource resolution
+//! and layout validation directly adapt their existing kernels. Other commands
+//! use their owning command. Termination-only role lowering selects the existing
 //! archive kernel without extending the broad inherent application surface.
 
 use awaken_credential_contract::CredentialMaterialInput;
@@ -377,6 +381,13 @@ pub trait SessionResourceCommands: Send + Sync {
     ) -> Result<Option<SessionResourceManifestOutcome>, SessionResourceManifestError>;
 
     /// Resolve Agent defaults and Session attachments into Resource bindings.
+    /// R1 the existing Resource command role is the sole entrance; its original
+    /// resolver and intrinsic error mapping are unchanged.
+    ///
+    /// ```compile_fail,E0599
+    /// use awaken_session_application::SessionApplication;
+    /// let _ = SessionApplication::resolve_session_inputs;
+    /// ```
     async fn resolve_session_inputs(
         &self,
         workspace_id: &str,
@@ -411,7 +422,13 @@ pub trait SessionResourceCommands: Send + Sync {
         agent_defaults: &[awaken_resource_contract::InputBinding],
     ) -> Result<Vec<crate::SessionInputRequest>, RunError>;
 
-    /// See [`SessionApplication::validate_persisted_session_resource_layout`].
+    /// Revalidate the original frozen Session layout through its selected effects.
+    /// R2 absence of this old entrance is independent of R1.
+    ///
+    /// ```compile_fail,E0599
+    /// use awaken_session_application::SessionApplication;
+    /// let _ = SessionApplication::validate_persisted_session_resource_layout;
+    /// ```
     fn validate_persisted_session_resource_layout(
         &self,
         workspace_id: &str,
@@ -784,13 +801,16 @@ impl SessionResourceCommands for SessionApplication {
         agent_defaults: &[awaken_resource_contract::InputBinding],
         session_inputs: &[crate::session_resource::SessionInputAttachment],
     ) -> Result<crate::session_resource::ResolvedSessionResources, RunError> {
-        SessionApplication::resolve_session_inputs(
-            self,
+        crate::session_resource::SessionInputResolver::resolve_inputs(
             workspace_id,
+            self.resource_registry
+                .as_deref()
+                .map(|catalog| catalog as &dyn awaken_resource_contract::ExecutionResourceResolver),
             agent_defaults,
             session_inputs,
         )
         .await
+        .map_err(crate::runtime_commands::session_input_error)
     }
 
     async fn normalize_session_input_mounts(
@@ -810,17 +830,33 @@ impl SessionResourceCommands for SessionApplication {
         .await
     }
 
+    /// Revalidate a proposed complete Resource manifest against the immutable
+    /// baseline already owned by a Session. The caller may pass provisional
+    /// typed bindings before Repository/Vault configuration because layout does
+    /// not depend on catalog versions or credential pins.
     fn validate_persisted_session_resource_layout(
         &self,
         workspace_id: &str,
         session: &PersistedSession,
         resources: Vec<awaken_resource_contract::InputBinding>,
     ) -> Result<(), RunError> {
-        SessionApplication::validate_persisted_session_resource_layout(
-            self,
-            workspace_id,
-            session,
-            resources,
+        let baseline = session
+            .frozen_baseline()
+            .ok_or_else(|| RunError::unavailable("Session creation intent was not consumed"))?;
+        self.validate_session_sandbox_layout(
+            session.session_id.as_str(),
+            &awaken_session_configuration_contract::SessionSandboxLayout {
+                workspace_id: workspace_id.to_string(),
+                agent_id: baseline.agent_id.clone(),
+                agent_revision: baseline.agent_revision,
+                runtime_placement: baseline.runtime_placement,
+                model_override: baseline.model_override.clone(),
+                runtime: baseline.runtime.clone(),
+                mounts: baseline.mounts.clone(),
+                env: baseline.env.clone(),
+                environment: baseline.environment.clone(),
+                resources,
+            },
         )
     }
 }

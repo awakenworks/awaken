@@ -260,6 +260,9 @@ impl SessionApplicationBuilder {
         let inputs = Arc::new(crate::SessionInputs::new(
             store.clone(),
             self.runtime.live_inbox.clone(),
+            resource_registry.as_ref().map(|registry| {
+                registry.clone() as Arc<dyn awaken_resource_contract::ResourceInventory>
+            }),
         ));
         Ok(SessionApplication {
             clock,
