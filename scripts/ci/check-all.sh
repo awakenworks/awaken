@@ -70,8 +70,10 @@ if [ "$full_gate" -eq 1 ]; then
     # admission; no second queue, executor or manually forged nested marker.
     python3 scripts/ci/gate_tools.py resources --profile qualification --require-host --observe || exit $?
     source scripts/ci/_deadline.sh
+    host_cargo_directory=$(awaken_host_cargo_directory) || exit "$?"
     full_budget="${AWAKEN_FULL_GATE_TIMEOUT_SECONDS:-86400}"
     [[ "$full_budget" =~ ^[1-9][0-9]*$ ]] || { echo "invalid full-gate deadline" >&2; exit 2; }
+    PATH="$host_cargo_directory:$PATH" \
     AWAKEN_FULL_GATE_CANDIDATE="$gate_candidate_revision" \
       run_with_deadline --admit "$full_budget" "$0" "${original_arguments[@]}"
     exit $?
@@ -250,6 +252,7 @@ run static "provider-environment self-test" scripts/ci/_provider_environment.sh 
 run static "node dependencies" python3 scripts/ci/check_node_dependencies.py
 run static "e2e runner unit" npm --prefix e2e run test:runner
 run static "command deadline tests" python3 scripts/ci/test_deadline.py
+run static "full-gate host admission tests" python3 scripts/ci/test_full_gate_admission.py
 run static "postgres harness self-test" scripts/ci/pg_tests.sh --self-test
 run static "k3d harness self-test" e2e/k3d/harness.sh --self-test
 run static "distributed role rollout self-test" e2e/k3d/distributed_control_e2e.sh --self-test
