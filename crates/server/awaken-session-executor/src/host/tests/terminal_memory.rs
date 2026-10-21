@@ -53,6 +53,51 @@ fn terminal_memory_projection_with_idle_retention(
     projection
 }
 
+#[tokio::test]
+async fn worker_retirement_refuses_unprepared_memory_in_current_or_retained_resources() {
+    // LR4 decision table: current Memory only / retained previous Memory only,
+    // with a Resident binding and source_prepared=false => refuse retirement
+    // before provider access. Neither presence in just one projection nor Actor
+    // drain proves its private buffers durable. This exercises the real
+    // RunAssembly -> EnvironmentHolding read, using the existing projection
+    // and Memory fixtures; no preparation or installed Session is needed.
+    let host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .build()
+        .expect("validated Host dependencies");
+    for current_memory in [false, true] {
+        let mut projection = terminal_memory_projection();
+        if current_memory {
+            projection.previous_resource_manifest = None;
+        } else {
+            projection.resources = Default::default();
+        }
+        projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+            binding: serde_json::to_string(&pc::SandboxHandle::new(
+                "retention-fixture",
+                "live-memory",
+            ))
+            .unwrap(),
+            effect_id: None,
+            generation: None,
+            idle_since_unix_ms: None,
+        };
+        let before = serde_json::to_value(&projection).unwrap();
+        assert!(
+            !awaken_session_execution_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
+                &*host.run_assembly,
+                &awaken_session_types::SessionId::from("live-memory"),
+                &projection,
+                false,
+            )
+            .await
+            .unwrap(),
+            "unprepared Memory is not independent source retention: current={current_memory}",
+        );
+        assert_eq!(serde_json::to_value(&projection).unwrap(), before);
+    }
+}
+
 fn terminal_memory_evidence() -> pc::MemoryMaterializationEvidence {
     pc::MemoryMaterializationEvidence::new(
         "terminal-memory-store",

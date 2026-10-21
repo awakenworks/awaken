@@ -7,10 +7,11 @@ EXTENDS FiniteSets
    bytes are independent OR preparation is durable. Actual exit, Create closure
    and lease succession remain separate before the SAME roots move to a new
    Actor. This bounded model does not prove APIs, clocks or Rust refinement. *)
-CONSTANTS Sources, IndependentSources, KnownSources, InitiallyPrepared, NeedsNewCode
+CONSTANTS Sources, IndependentSources, KnownSources, InitiallyPrepared, NeedsNewCode, SessionTerminal
 ASSUME /\ Sources # {} /\ IndependentSources \subseteq Sources
        /\ KnownSources \subseteq Sources /\ InitiallyPrepared \subseteq Sources
        /\ NeedsNewCode \subseteq Sources
+ASSUME /\ SessionTerminal \in BOOLEAN /\ (~SessionTerminal => InitiallyPrepared = {})
 VARIABLES leaseLive, permit, oldStopped, oldExited, createClosed, rootOwner,
           prepared, present, cleanupAck
 actorVars == <<leaseLive, permit, oldStopped, oldExited, createClosed, rootOwner>>
@@ -49,16 +50,16 @@ SealCreate == /\ oldExited /\ ~createClosed /\ createClosed' = TRUE
 ClaimNew == /\ oldExited /\ createClosed /\ ~leaseLive /\ rootOwner = "original"
             /\ rootOwner' = "successor"
             /\ UNCHANGED <<leaseLive, permit, oldStopped, oldExited, createClosed, sourceVars>>
-Prepare(s) == /\ s \in Sources /\ ~prepared[s] /\ present[s]
+Prepare(s) == /\ SessionTerminal /\ s \in Sources /\ ~prepared[s] /\ present[s]
               /\ \/ rootOwner = "successor"
                  \/ (~oldStopped /\ leaseLive /\ s \notin NeedsNewCode)
               /\ prepared' = [prepared EXCEPT ![s] = TRUE]
               /\ UNCHANGED <<actorVars, present, cleanupAck>>
-Dispose(s) == /\ rootOwner = "successor" /\ s \in Sources /\ present[s]
+Dispose(s) == /\ SessionTerminal /\ rootOwner = "successor" /\ s \in Sources /\ present[s]
               /\ \A source \in Sources : prepared[source]
               /\ present' = [present EXCEPT ![s] = FALSE]
               /\ UNCHANGED <<actorVars, prepared, cleanupAck>>
-Acknowledge == /\ rootOwner = "successor" /\ ~cleanupAck
+Acknowledge == /\ SessionTerminal /\ rootOwner = "successor" /\ ~cleanupAck
                /\ \A s \in Sources : prepared[s] /\ ~present[s]
                /\ cleanupAck' = TRUE
                /\ UNCHANGED <<actorVars, prepared, present>>
@@ -81,9 +82,15 @@ SuccessorRequiresExitAndCreateClosure == rootOwner = "successor"
 RetirementIsNotCleanupAck == cleanupAck => rootOwner = "successor" /\
     (\A s \in Sources : prepared[s] /\ ~present[s])
 QualifiedRetirementEventuallyCompletes ==
-    (KnownSources = Sources /\
+    (SessionTerminal /\ KnownSources = Sources /\
        (\A s \in Sources : s \in IndependentSources \/ s \in InitiallyPrepared))
        => <>cleanupAck
+QualifiedRetirementEventuallyTransfers ==
+    (KnownSources = Sources /\
+       (\A s \in Sources : s \in IndependentSources \/ s \in InitiallyPrepared))
+       => <>(rootOwner = "successor")
+LiveSourcesNeverCleaned == ~SessionTerminal =>
+    /\ ~cleanupAck /\ (\A s \in Sources : present[s] /\ ~prepared[s])
 NoRetirementReached == ~oldExited
 NoCleanupReached == ~cleanupAck
 =============================================================================

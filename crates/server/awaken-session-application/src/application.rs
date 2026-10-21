@@ -523,7 +523,7 @@ impl SessionApplication {
 
     /// One complete Worker-owned Session read. Normal occupancy never depends
     /// on provider availability. Explicit retirement preserves occupancy and
-    /// additionally qualifies every retained terminal source without effects,
+    /// additionally qualifies each original source (terminal or live Resident) without effects,
     /// lease changes, installed projections or cleanup receipts.
     pub async fn observe_worker_realizations(
         &self,
@@ -571,45 +571,66 @@ impl SessionApplication {
                 .as_ref()
                 .ok_or_else(|| RunError::unavailable("Worker realization owner missing"))?;
             if lease.runtime_incarnation != identity.lease_owner()
-                || !session.is_terminal()
                 || session.has_incomplete_event_batches()
             {
                 return Ok(blocked);
             }
-            let Some(action) = session
-                .terminal_cleanup_work_action()
-                .map_err(|error| RunError::unavailable(error.to_string()))?
-            else {
-                return Ok(blocked);
+            let prepared = if session.is_terminal() {
+                let Some(action) = session
+                    .terminal_cleanup_work_action()
+                    .map_err(|error| RunError::unavailable(error.to_string()))?
+                else {
+                    return Ok(blocked);
+                };
+                if matches!(action, SessionTerminalCleanupAction::Waiting) {
+                    return Ok(blocked);
+                }
+                if awaken_session_state_contract::session_has_terminal_no_create_evidence(&session)
+                    || crate::archive_intent::unattempted_profiled_archive_witness(
+                        self.session_repository(),
+                        &scoped.workspace_id,
+                        &session,
+                    )
+                    .await
+                    .map_err(session_repository_error)?
+                {
+                    continue;
+                }
+                if !matches!(
+                    self.runtime()
+                        .coordination_reads()
+                        .source_dispatch_observation(&session)
+                        .await,
+                    awaken_session_execution_contract::SessionSourceDispatchObservation::Settled
+                ) {
+                    return Ok(blocked);
+                }
+                matches!(action, SessionTerminalCleanupAction::Dispose { .. })
+            } else {
+                // Data retention permits Actor replacement, never completion
+                // of this live Session or its original Run. Registry/physical/
+                // Work admission remains the Worker-domain owner's prerequisite.
+                // is_terminal already covers every disposition denying activity.
+                if session.frozen_baseline().is_none()
+                    || !matches!(
+                        session.execution,
+                        SessionExecutionState::Idle
+                            | SessionExecutionState::Running
+                            | SessionExecutionState::Rescheduling
+                    )
+                    || !matches!(
+                        session.environment,
+                        SessionEnvironmentState::Resident { .. }
+                    )
+                {
+                    return Ok(blocked);
+                }
+                false
             };
-            if matches!(action, SessionTerminalCleanupAction::Waiting) {
-                return Ok(blocked);
-            }
-            if awaken_session_state_contract::session_has_terminal_no_create_evidence(&session)
-                || crate::archive_intent::unattempted_profiled_archive_witness(
-                    self.session_repository(),
-                    &scoped.workspace_id,
-                    &session,
-                )
-                .await
-                .map_err(session_repository_error)?
-            {
-                continue;
-            }
-            if !matches!(
-                self.runtime()
-                    .coordination_reads()
-                    .source_dispatch_observation(&session)
-                    .await,
-                awaken_session_execution_contract::SessionSourceDispatchObservation::Settled
-            ) {
-                return Ok(blocked);
-            }
             let projection = self
                 .queries
                 .frozen_session_projection(scoped.workspace_id, &session, false)
                 .await?;
-            let prepared = matches!(action, SessionTerminalCleanupAction::Dispose { .. });
             if !self
                 .runtime()
                 .terminal_cleanup()
