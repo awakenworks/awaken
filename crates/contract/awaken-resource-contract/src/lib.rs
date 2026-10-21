@@ -617,6 +617,15 @@ pub struct SkillDefinition {
 }
 
 impl SkillDefinition {
+    /// The next immutable ordinal follows the highest version ever assigned,
+    /// even when authoring visibility has retired a later version. Exhaustion
+    /// is a conflict; it never wraps or reuses that version's immutable bytes.
+    pub fn checked_next_version(&self) -> Result<u64, SkillStoreError> {
+        self.last_version
+            .checked_add(1)
+            .ok_or_else(|| SkillStoreError::VersionConflict(self.last_version.to_string()))
+    }
+
     /// Validate the complete initial frame before any reference-index or
     /// repository write. Adapters and the application reuse this one law;
     /// direct backend callers cannot bypass it by omitting the decorator.

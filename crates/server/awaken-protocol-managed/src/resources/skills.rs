@@ -627,10 +627,14 @@ async fn create_version(
         Ok(content) => awaken_ext_skills::parse_skill_md("skill", content),
         Err(error) => return err(StatusCode::BAD_REQUEST, error),
     };
+    let next = match definition.checked_next_version() {
+        Ok(next) => next,
+        Err(error) => return store_error(error),
+    };
     let version = build_version(
         &id,
         &parsed,
-        definition.last_version + 1,
+        next,
         bundle,
         state.clock.now().as_unix_nanos_u64(),
     );
