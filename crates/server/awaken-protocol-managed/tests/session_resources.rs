@@ -1674,10 +1674,12 @@ async fn publication_backend_is_the_only_session_backend_authority() {
 
 #[tokio::test]
 async fn agent_default_environment_requires_the_exact_revision() {
-    let (environment_authoring, environment_execution) =
-        awaken_protocol_managed_testkit::environment_components(awaken_time::system_clock());
+    let awaken_protocol_managed_testkit::EnvironmentFixture {
+        application: environment_authoring,
+        execution: environment_execution,
+        ..
+    } = awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock());
     let environment_id = environment_authoring
-        .application()
         .create(awaken_environment_contract::CreateEnvironmentCommand {
             command_id: "test:agent-default".into(),
             name: "agent default".into(),

@@ -258,21 +258,14 @@ pub(super) async fn prepare_control_routers(
         workspace: execution_workspace.clone(),
         clock: stores.clock.clone(),
     });
-    let environment_authoring = {
-        let control = stores
-            .control
-            .as_ref()
-            .expect("Control process requires Control stores");
-        let application = Arc::new(control.environments.application(
-            executable_environment_registrar,
-            control.sandbox_policies.clone(),
-        ));
-        Arc::new(awaken_protocol_managed::EnvironmentAuthoringState::new(
-            application,
-            control.sandbox_policies.clone(),
-        ))
-    };
-    let environment_application = environment_authoring.application();
+    let control = stores
+        .control
+        .as_ref()
+        .expect("Control process requires Control stores");
+    let environment_application = Arc::new(control.environments.application(
+        executable_environment_registrar,
+        control.sandbox_policies.clone(),
+    ));
     let managed_rate_limiter = process
         .managed_services
         .request_limiter
@@ -302,13 +295,12 @@ pub(super) async fn prepare_control_routers(
         runtimes,
         None,
         environment_application.clone(),
-        environment_application,
-        awaken_protocol_managed::environment_authoring_router(environment_authoring.clone()).merge(
-            awaken_protocol_awaken::environment_extensions_router(
-                environment_authoring.application(),
-                environment_authoring.sandbox_policy_store(),
-            ),
-        ),
+        environment_application.clone(),
+        awaken_protocol_managed::environment_authoring_router(environment_application.clone())
+            .merge(awaken_protocol_awaken::environment_extensions_router(
+                environment_application,
+                Some(control.sandbox_policies.clone()),
+            )),
         process.managed_services.tunnel_application.clone(),
         process.managed_services.inference_geo_policy.clone(),
         Some(managed_rate_limiter),

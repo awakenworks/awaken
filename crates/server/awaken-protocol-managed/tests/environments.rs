@@ -13,8 +13,11 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 fn app() -> Router {
-    let (authoring, execution) =
-        awaken_protocol_managed_testkit::environment_components(awaken_time::system_clock());
+    let awaken_protocol_managed_testkit::EnvironmentFixture {
+        application: authoring,
+        execution,
+        ..
+    } = awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock());
     environment_authoring_router(authoring).merge(environment_work_router(
         execution,
         awaken_time::system_clock(),
@@ -847,8 +850,11 @@ async fn work_poll_honors_documented_blocking_partitions_and_boundaries() {
 /// spelling that would demand an unsupported allowlist provider.
 #[tokio::test]
 async fn snapshot_normalizes_the_networking_policy() {
-    let (authoring, execution) =
-        awaken_protocol_managed_testkit::environment_components(awaken_time::system_clock());
+    let awaken_protocol_managed_testkit::EnvironmentFixture {
+        application: authoring,
+        execution,
+        ..
+    } = awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock());
     let app = environment_authoring_router(authoring).merge(environment_work_router(
         execution.clone(),
         awaken_time::system_clock(),
@@ -920,19 +926,71 @@ async fn snapshot_normalizes_the_networking_policy() {
 
 #[tokio::test]
 async fn environment_application_replay_converges_one_environment_and_healthcheck() {
-    // Causal graph: C1 one startup -> E1 every protocol accessor returns the
-    // same application allocation; C2 first stable command -> E2 Environment plus
-    // healthcheck; C3 exact replay -> E3 same Environment and one healthcheck; C4
-    // conflicting payload -> E4 registry rejection before another side effect.
-    // Decision table: R1=C1=>E1; R2=C2=>E2; R3=C2+C3=>E3; R4=C2+C4=>E4.
-    let (authoring, execution) =
-        awaken_protocol_managed_testkit::environment_components(awaken_time::system_clock());
-    assert!(
-        std::sync::Arc::ptr_eq(&authoring.application(), &authoring.application()),
-        "R1: HTTP and assistant adapters must share one application instance"
-    );
+    // Whole path C/E table: C1 one real fixture supplies App + execution; C2
+    // HTTP key call-1 compiles managed:call-1; C3 exact HTTP/App replay; C4
+    // conflicting same-key payload. E1 HTTP must already be visible through
+    // App.get BEFORE direct create; E2 replay preserves one id/healthcheck;
+    // E3 conflict is409 and leaves that original definition/work untouched.
+    // | Rule | Entry | Key/payload | Effect |
+    // | R1 | HTTP then App.get | first stable | E1, no pointer tautology |
+    // | R2 | HTTP replay then direct App replay | same exact command | E2 |
+    // | R3 | HTTP | same key, changed name | E3 |
+    // The removed ptr_eq only proved a getter returned its own Arc. The old
+    // C4 prose had no conflict assertion; R3 now observes that real HTTP path.
+    let awaken_protocol_managed_testkit::EnvironmentFixture {
+        application: authoring,
+        execution,
+        ..
+    } = awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock());
+    let app = environment_authoring_router(authoring.clone()).merge(environment_work_router(
+        execution,
+        awaken_time::system_clock(),
+    ));
+    let mut http_id = None;
+    for (name, expected) in [
+        ("stable", StatusCode::OK),
+        ("stable", StatusCode::OK),
+        ("conflicting", StatusCode::CONFLICT),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/environments")
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", "call-1")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({
+                            "name": name, "config": {"type": "self_hosted"}
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        let value = support::Call::new(status, value).expect(expected);
+        if expected == StatusCode::OK {
+            let id = value["id"].as_str().unwrap().to_string();
+            match &http_id {
+                Some(first) => assert_eq!(&id, first, "R2 exact HTTP replay"),
+                None => http_id = Some(id),
+            }
+        }
+    }
+    let http_id = http_id.unwrap();
+    let observed = authoring
+        .get(&http_id)
+        .await
+        .unwrap()
+        .expect("R1 actual HTTP create must reach the retained application's store");
+    assert_eq!(observed.name, "stable", "R1/R3 definition unchanged");
     let command = awaken_environment_contract::CreateEnvironmentCommand {
-        command_id: "control:call-1".into(),
+        command_id: "managed:call-1".into(),
         name: "stable".into(),
         description: None,
         metadata: Default::default(),
@@ -940,17 +998,10 @@ async fn environment_application_replay_converges_one_environment_and_healthchec
         config: awaken_environment_contract::EnvironmentConfig::SelfHosted,
         sandbox_policy: None,
     };
-    let first = authoring
-        .application()
-        .create(command.clone())
-        .await
-        .unwrap();
-    let replay = authoring.application().create(command).await.unwrap();
+    let first = authoring.create(command.clone()).await.unwrap();
+    let replay = authoring.create(command).await.unwrap();
     assert_eq!(first.id, replay.id, "R1/R2");
-    let app = environment_authoring_router(authoring).merge(environment_work_router(
-        execution,
-        awaken_time::system_clock(),
-    ));
+    assert_eq!(first.id, http_id, "R1 same public command/owner");
     let work = call(
         &app,
         "GET",

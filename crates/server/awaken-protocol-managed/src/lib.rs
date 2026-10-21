@@ -79,9 +79,7 @@ pub use routes::agents_registry::{
 };
 pub use routes::deployments::{ManagedDeploymentSessionLauncher, deployments_router};
 pub use routes::dreams_router;
-pub use routes::environments::{
-    EnvironmentAuthoringState, environment_authoring_router, environment_work_router,
-};
+pub use routes::environments::{environment_authoring_router, environment_work_router};
 pub use routes::user_profiles::user_profiles_router;
 pub use routes::vaults::{McpCredentialChoice, McpInspectionView, VaultState, vault_router};
 pub use routes::{

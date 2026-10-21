@@ -188,8 +188,11 @@ pub(super) async fn mount_with_environments_and_agent_source(
     let (host, resources) = platform.into_dependencies();
     let local_workspace = host.local_workspace().to_owned();
     let catalog = resources.authorities().resource_registry();
-    let (environment_authoring, environment_execution) =
-        awaken_protocol_managed_testkit::environment_components(host.clock());
+    let awaken_protocol_managed_testkit::EnvironmentFixture {
+        application: environment_authoring,
+        sandbox_policies,
+        execution: environment_execution,
+    } = awaken_protocol_managed_testkit::environment_fixture(host.clock());
     let managed = match agent_source {
         Some(source) => {
             awaken_coordinator::local_managed_state_with_environments_and_agent_source(
@@ -227,8 +230,8 @@ pub(super) async fn mount_with_environments_and_agent_source(
         local_workspace,
     )))
     .merge(awaken_protocol_awaken::environment_extensions_router(
-        environment_authoring.application(),
-        environment_authoring.sandbox_policy_store(),
+        environment_authoring.clone(),
+        Some(sandbox_policies),
     ));
     awaken_coordinator::mount_with_managed_and_resource_registry(host, managed, resources.clone())
         .await
