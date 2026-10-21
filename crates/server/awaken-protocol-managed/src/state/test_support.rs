@@ -13,22 +13,6 @@ pub(crate) use awaken_protocol_managed_testkit::{
 };
 pub(crate) use session_repository::ConflictInjectingRepo;
 
-/// The Managed Environment surfaces over the testkit's volatile stores
-/// (integration tests use the testkit's function directly).
-pub(crate) fn environment_components() -> (
-    std::sync::Arc<crate::EnvironmentAuthoringState>,
-    std::sync::Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
-) {
-    let fixture = awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock());
-    (
-        std::sync::Arc::new(crate::EnvironmentAuthoringState::new(
-            fixture.application,
-            fixture.sandbox_policies,
-        )),
-        fixture.execution,
-    )
-}
-
 pub(crate) fn managed_state_from_parts(
     runtime: std::sync::Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
     mcp: Option<std::sync::Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,

@@ -285,15 +285,10 @@ async fn assemble_control_component(
                 .control
                 .as_ref()
                 .expect("AllInOne owns Control Environment stores");
-            let application = Arc::new(control.environments.application(
+            Some(Arc::new(control.environments.application(
                 base.environments.registrar.clone(),
                 control.sandbox_policies.clone(),
-            ));
-            let state = Arc::new(awaken_protocol_managed::EnvironmentAuthoringState::new(
-                application,
-                control.sandbox_policies.clone(),
-            ));
-            Some(state)
+            )))
         }
         config::Role::Coordinator => None,
         config::Role::Control | config::Role::Worker => unreachable!(),
@@ -337,12 +332,19 @@ async fn assemble_control_component(
                         resources.resource_authorities.resource_registry(),
                         resources.resource_authorities.skill_store(),
                     ))),
-                    authoring.application(),
-                    authoring.application(),
+                    authoring.clone(),
+                    authoring.clone(),
                     awaken_protocol_managed::environment_authoring_router(authoring.clone()).merge(
                         awaken_protocol_awaken::environment_extensions_router(
-                            authoring.application(),
-                            authoring.sandbox_policy_store(),
+                            authoring.clone(),
+                            Some(
+                                base.stores
+                                    .control
+                                    .as_ref()
+                                    .expect("AllInOne owns Control Environment stores")
+                                    .sandbox_policies
+                                    .clone(),
+                            ),
                         ),
                     ),
                     base.process.managed_services.tunnel_application.clone(),

@@ -271,8 +271,11 @@ async fn realize_accepted_sessions(managed: &ManagedState) {
 
 #[tokio::test]
 async fn session_carries_the_exact_frozen_environment_network() {
-    let (environment_authoring, environment_execution) =
-        awaken_protocol_managed_testkit::environment_components(awaken_time::system_clock());
+    let awaken_protocol_managed_testkit::EnvironmentFixture {
+        application: environment_authoring,
+        execution: environment_execution,
+        ..
+    } = awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock());
     let egress = Arc::new(Mutex::new(Vec::new()));
     let managed = Arc::new(
         support::state_with_mcp(CapturingFake {
@@ -380,8 +383,11 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
     // exception still cannot grant a direct Sandbox route. C5=true Workload
     // behavior is owned by the Environment compiler's S6 decision row in
     // `snapshot_compilation_follows_the_network_and_runtime_decision_table`.
-    let (environment_authoring, environment_execution) =
-        awaken_protocol_managed_testkit::environment_components(awaken_time::system_clock());
+    let awaken_protocol_managed_testkit::EnvironmentFixture {
+        application: environment_authoring,
+        execution: environment_execution,
+        ..
+    } = awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock());
     let egress = Arc::new(Mutex::new(Vec::new()));
     let managed = Arc::new(
         support::state_with_mcp(CapturingFake {

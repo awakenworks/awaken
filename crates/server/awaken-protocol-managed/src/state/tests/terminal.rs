@@ -45,10 +45,12 @@ async fn cloud_create_returns_durable_root_before_sandbox_realization() {
     // per initial-event partition, R3 for GET and R4 for replay. The
     // application owner tests cold recovery separately.
     for initial_message in [false, true] {
-        let (environment_authoring, environment_execution) =
-            crate::state::test_support::environment_components();
+        let awaken_protocol_managed_testkit::EnvironmentFixture {
+            application: environment_authoring,
+            execution: environment_execution,
+            ..
+        } = awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock());
         let environment_id = environment_authoring
-            .application()
             .create(awaken_environment_contract::CreateEnvironmentCommand {
                 command_id: format!("test:cloud-accept:{initial_message}"),
                 name: "cloud accept".into(),
@@ -180,7 +182,8 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
     let prepared = runtime.prepared.clone();
     let runtime = Arc::new(runtime);
     let repo = Arc::new(ephemeral_session_repo().await);
-    let environments = crate::state::test_support::environment_components().1;
+    let environments =
+        awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock()).execution;
     let application = awaken_session_application::SessionApplicationBuilder::fixture(
         runtime.clone(),
         Arc::new(awaken_protocol_managed_testkit::UnsupportedMcpAttachmentRealizer),
