@@ -23,6 +23,9 @@ invocation and one CBMC resource boundary. Every harness is selected with
 ``--exact`` by its fully qualified name, derived from the module tree of its
 Cargo target, so no filter can match a second harness.
 
+Profiled selections run first so incompatible toolchain options fail before
+unrelated long proofs; every selected name and batch boundary stays the same.
+
 ``kani --tier pr|full`` prints one batch per line (``package argv...``) for the
 formal gate's loop. Nothing is listed by hand, so a new harness is planned by
 existing and a moved one follows its file.
@@ -434,7 +437,9 @@ def batches(root: Path, tier: str, affected: set[str] | None = None) -> list[Bat
             continue
         grouped.setdefault(item.selection, Batch(item.selection)).names.extend(item.qualified)
     result = []
-    for key in sorted(grouped):
+    # Exercise toolchain-sensitive profiles before the long ordinary proof tail.
+    # Their exact symbol catalog is validated by the real backend, not argv hashes.
+    for key in sorted(grouped, key=lambda selection: (not bool(selection.profile), selection)):
         names = sorted(grouped[key].names)
         result.extend(
             Batch(key, names[start:start + MAX_HARNESSES_PER_BATCH])
@@ -633,6 +638,12 @@ def self_test() -> None:
             ("a", "--lib", "--no-default-features", "--features", "x,y", "--exact", "--harness", "root_features"),
         }
         assert plan == expected, ("T1-T4 N1-N4", plan)
+        # A stale backend profile must fail before unrelated long proofs. Ordering
+        # changes neither exact selection nor its batch partition and tier.
+        for tier in ("pr", "full"):
+            ordered = batches(root, tier)
+            assert ordered[0].selection.profile == "solver-kissat-v1", ("profile first", tier)
+            assert all(not batch.selection.profile for batch in ordered[1:]), ("ordinary tail", tier)
         pr = {tuple(batch.argv()) for batch in batches(root, "pr")}
         assert all("root_slow" not in argv for argv in pr) and len(pr) == 3, ("T5", pr)
         # T6 -> E7: seven full/six PR default proofs plus two reach the
@@ -672,6 +683,32 @@ def self_test() -> None:
         (crate / "src/file.rs").write_text(harness("file_default"))
         (crate / "src/orphan.rs").write_text(harness("orphan_default"))
         refused(root, "crates/a/src/orphan.rs:4: Kani harness orphan_default is not reachable")
+
+    # Ordering crosses package boundaries and keeps both chunks of a profile
+    # before an ordinary package that sorts earlier. Tier filtering still owns
+    # membership: only the ordinary nightly witness disappears in PR.
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        fixtures = {
+            "a": harness("ordinary") + harness("nightly", "tier=nightly"),
+            "m": harness("solver", "profile=solver-cadical-v1"),
+            "z": "".join(harness(f"loop_{index}", "profile=unwind-memcmp-2-v1") for index in range(9)),
+        }
+        for package, source in fixtures.items():
+            directory = root / "crates" / package
+            (directory / "src").mkdir(parents=True)
+            (directory / "Cargo.toml").write_text(f'[package]\nname = "{package}"\nversion = "0.0.0"\n')
+            (directory / "src/lib.rs").write_text(source)
+        for tier, ordinary_count in (("pr", 1), ("full", 2)):
+            plan = batches(root, tier)
+            assert [(batch.selection.package, len(batch.names)) for batch in plan] == [
+                ("m", 1), ("z", 8), ("z", 1), ("a", ordinary_count)
+            ], ("cross-package profile priority and chunk retention", tier)
+            names = [name for batch in plan for name in batch.names]
+            required = ["solver", "ordinary", *(f"loop_{index}" for index in range(9))]
+            if tier == "full":
+                required.append("nightly")
+            assert sorted(names) == sorted(required), ("exact membership", tier)
 
     # D1/D2 literal and braced script_dir references follow the entry's own
     # directory; D3 unknown variables, D4 unbound script_dir, D5 parent escapes

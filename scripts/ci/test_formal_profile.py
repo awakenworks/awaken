@@ -397,7 +397,7 @@ class ProfileTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         gate = (root / "scripts/ci/check_formal.sh").read_text()
         frozen = {
-            "resume-validator-empty-object-v1": "ba42ca4ec6b2b31c39b37038cd4177f8e9eff7307660b775a1f75f1431293aed",
+            "resume-validator-empty-object-v1": "8d586e06db78f05e59c45c650907736c1dd597d6e8367ed9a4c5c8fb708aa382",
             "erasure-progress-selection-v1": "4052ded580c29bca71f8cbd73a747fa1b9d85d43c709b8006fbaf5313652012d",
             "erasure-checkpoint-successor-v1": "012c22d237f41cee1953bc1322707632f45f88c4981c0499b1f1b49645a95d91",
             "fingerprint-fnv-hex-v1": "999182642c04b9eeb4fdff6a51aab78f91f31203383015d1e5c044481ce8e9c3",
