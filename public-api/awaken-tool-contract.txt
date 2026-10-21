@@ -281,10 +281,11 @@ pub awaken_tool_contract::tool_batch::ToolWaitKind::ScheduledAction
 pub awaken_tool_contract::tool_batch::ToolWaitKind::ToolPermission
 pub struct awaken_tool_contract::tool_batch::ActiveToolBatch
 impl awaken_tool_contract::tool_batch::ActiveToolBatch
+pub fn awaken_tool_contract::tool_batch::ActiveToolBatch::execution_domain_footprint(&[awaken_agent_contract::agent::state::Command], &awaken_agent_contract::agent::run::Id) -> core::result::Result<awaken_tool_contract::tool_batch::ToolExecutionDomainFootprint, awaken_tool_contract::tool_batch::ToolBatchError>
+pub fn awaken_tool_contract::tool_batch::ActiveToolBatch::recorded_execution_domains(&[awaken_agent_contract::agent::state::Command], &awaken_agent_contract::agent::run::Id) -> core::result::Result<alloc::vec::Vec<awaken_tool_contract::tool_batch::ToolExecutionDomain>, awaken_tool_contract::tool_batch::ToolBatchError>
+impl awaken_tool_contract::tool_batch::ActiveToolBatch
 pub fn awaken_tool_contract::tool_batch::ActiveToolBatch::operation_for_message(&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, &awaken_agent_contract::agent::message::Message, &str) -> core::result::Result<core::option::Option<alloc::string::String>, awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ActiveToolBatch::recorded_batches<'a>(&'a [awaken_agent_contract::agent::state::Command], &'a awaken_agent_contract::agent::run::Id) -> impl core::iter::traits::iterator::Iterator<Item = core::result::Result<(usize, core::option::Option<awaken_tool_contract::tool_batch::ToolBatch>), awaken_tool_contract::tool_batch::ToolBatchError>> + 'a
-impl awaken_tool_contract::tool_batch::ActiveToolBatch
-pub fn awaken_tool_contract::tool_batch::ActiveToolBatch::recorded_execution_domains(&[awaken_agent_contract::agent::state::Command], &awaken_agent_contract::agent::run::Id) -> core::result::Result<alloc::vec::Vec<awaken_tool_contract::tool_batch::ToolExecutionDomain>, awaken_tool_contract::tool_batch::ToolBatchError>
 impl awaken_agent_contract::agent::state::StateKey for awaken_tool_contract::tool_batch::ActiveToolBatch
 pub type awaken_tool_contract::tool_batch::ActiveToolBatch::Value = core::option::Option<awaken_tool_contract::tool_batch::ToolBatch>
 pub const awaken_tool_contract::tool_batch::ActiveToolBatch::KEY: &'static str
@@ -352,6 +353,9 @@ impl awaken_tool_contract::tool_batch::ToolExecutionAdmission<'_>
 pub const fn awaken_tool_contract::tool_batch::ToolExecutionAdmission<'_>::attempt(&self) -> u16
 pub fn awaken_tool_contract::tool_batch::ToolExecutionAdmission<'_>::call_id(&self) -> &str
 pub fn awaken_tool_contract::tool_batch::ToolExecutionAdmission<'_>::operation_id(&self) -> alloc::string::String
+pub struct awaken_tool_contract::tool_batch::ToolExecutionDomainFootprint
+pub awaken_tool_contract::tool_batch::ToolExecutionDomainFootprint::outstanding: alloc::vec::Vec<awaken_tool_contract::tool_batch::ToolExecutionDomain>
+pub awaken_tool_contract::tool_batch::ToolExecutionDomainFootprint::recorded: alloc::vec::Vec<awaken_tool_contract::tool_batch::ToolExecutionDomain>
 pub struct awaken_tool_contract::tool_batch::ToolWait
 pub awaken_tool_contract::tool_batch::ToolWait::correlation_id: alloc::string::String
 pub awaken_tool_contract::tool_batch::ToolWait::kind: awaken_tool_contract::tool_batch::ToolWaitKind
@@ -463,10 +467,11 @@ pub awaken_tool_contract::ToolWaitKind::ScheduledAction
 pub awaken_tool_contract::ToolWaitKind::ToolPermission
 pub struct awaken_tool_contract::ActiveToolBatch
 impl awaken_tool_contract::tool_batch::ActiveToolBatch
+pub fn awaken_tool_contract::tool_batch::ActiveToolBatch::execution_domain_footprint(&[awaken_agent_contract::agent::state::Command], &awaken_agent_contract::agent::run::Id) -> core::result::Result<awaken_tool_contract::tool_batch::ToolExecutionDomainFootprint, awaken_tool_contract::tool_batch::ToolBatchError>
+pub fn awaken_tool_contract::tool_batch::ActiveToolBatch::recorded_execution_domains(&[awaken_agent_contract::agent::state::Command], &awaken_agent_contract::agent::run::Id) -> core::result::Result<alloc::vec::Vec<awaken_tool_contract::tool_batch::ToolExecutionDomain>, awaken_tool_contract::tool_batch::ToolBatchError>
+impl awaken_tool_contract::tool_batch::ActiveToolBatch
 pub fn awaken_tool_contract::tool_batch::ActiveToolBatch::operation_for_message(&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, &awaken_agent_contract::agent::message::Message, &str) -> core::result::Result<core::option::Option<alloc::string::String>, awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ActiveToolBatch::recorded_batches<'a>(&'a [awaken_agent_contract::agent::state::Command], &'a awaken_agent_contract::agent::run::Id) -> impl core::iter::traits::iterator::Iterator<Item = core::result::Result<(usize, core::option::Option<awaken_tool_contract::tool_batch::ToolBatch>), awaken_tool_contract::tool_batch::ToolBatchError>> + 'a
-impl awaken_tool_contract::tool_batch::ActiveToolBatch
-pub fn awaken_tool_contract::tool_batch::ActiveToolBatch::recorded_execution_domains(&[awaken_agent_contract::agent::state::Command], &awaken_agent_contract::agent::run::Id) -> core::result::Result<alloc::vec::Vec<awaken_tool_contract::tool_batch::ToolExecutionDomain>, awaken_tool_contract::tool_batch::ToolBatchError>
 impl awaken_agent_contract::agent::state::StateKey for awaken_tool_contract::tool_batch::ActiveToolBatch
 pub type awaken_tool_contract::tool_batch::ActiveToolBatch::Value = core::option::Option<awaken_tool_contract::tool_batch::ToolBatch>
 pub const awaken_tool_contract::tool_batch::ActiveToolBatch::KEY: &'static str

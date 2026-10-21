@@ -79,6 +79,23 @@ wire text and retries the original request; it does not continue or checkpoint
 that text as an accepted assistant response. Ordinary text and authoritative
 SDK-typed tool calls retain their existing handling.
 
+## Returned tool invocations and retained execution domains
+
+ToolBatch owns one validated history fold. Its recorded-domain projection
+retains every original entry and resource origin; a distinct outstanding-call
+projection may omit an entry only after its exact call is Completed, the batch
+is Finalized, and the matching prepared tool-result message is retained.
+Clearing a cell, an Indeterminate result, a missing Requested prefix or an
+uncompleted earlier retry never supplies that positive observation.
+
+Native attempt recovery uses outstanding invocations for current occupancy and
+the complete history for external-process uncertainty. A returned invocation
+does not prove that its external process or borrowed Resource stopped. Such
+history therefore limits the result to ControlledExecutionClosed unless the
+existing provider supplies exact process closure. Model computation and billing
+uncertainty remain recorded. This observation neither replays completed tools
+nor acknowledges Session cleanup or Resource disposal.
+
 ## First Vertical Slice
 
 1. Define one neutral error from each owner: activation, capability, permission,

@@ -24,7 +24,9 @@ use std::num::NonZeroU16;
 mod execution_domain;
 mod result_identity;
 mod source;
-pub use execution_domain::{PendingToolExecutionEntry, ResourceOriginRef, ToolExecutionDomain};
+pub use execution_domain::{
+    PendingToolExecutionEntry, ResourceOriginRef, ToolExecutionDomain, ToolExecutionDomainFootprint,
+};
 pub use source::store_from_run_commands;
 
 use crate::tool::{
