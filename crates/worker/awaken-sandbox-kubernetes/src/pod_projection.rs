@@ -1,10 +1,4 @@
 // @formal entrypoint sandbox_continuation.distinct_mutable_roots_share_one_retained_claim_without_aliasing
-// @formal surface obligation=sandbox.admission_never_weakens_isolation
-// @formal surface obligation=sandbox.admission_requires_requested_capabilities
-// @formal surface obligation=external.container_and_kernel_isolation
-// @formal reason: The original typed operator-artifact validation and demanded-control Pod renderer
-// @formal reason: live with this pure producer; the unchanged control consumer still verifies the
-// @formal reason: exact incarnation before I/O. This relocation adds no proof or admission rule.
 //! Pure projection of neutral bind material into Kubernetes objects.
 
 use std::collections::BTreeMap;
