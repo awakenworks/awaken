@@ -6,7 +6,7 @@ use awaken_session_execution_contract::{
 use awaken_session_types::SessionId;
 #[macro_use]
 mod no_committed_threads;
-mod application_fixture;
+pub(crate) mod application_fixture;
 use application_fixture::{
     application, application_with_configuration, application_with_persistence,
     application_with_runtime, configured_admission_application, configured_application,
@@ -619,9 +619,10 @@ struct RecordingCleanupRuntime {
 }
 
 #[derive(Default)]
-struct RecordingReferenceIndex {
-    fail_replace: AtomicBool,
-    records: Mutex<BTreeSet<awaken_resource_contract::ResourceReferenceRecord>>,
+pub(crate) struct RecordingReferenceIndex {
+    pub(crate) replace_calls: AtomicUsize,
+    pub(crate) fail_replace: AtomicBool,
+    pub(crate) records: Mutex<BTreeSet<awaken_resource_contract::ResourceReferenceRecord>>,
 }
 
 #[async_trait::async_trait]
@@ -646,6 +647,7 @@ impl awaken_resource_contract::ResourceReferenceIndex for RecordingReferenceInde
         reference_id: &str,
         records: Vec<awaken_resource_contract::ResourceReferenceRecord>,
     ) -> Result<(), awaken_resource_contract::ResourcePurgeError> {
+        self.replace_calls.fetch_add(1, Ordering::SeqCst);
         if self.fail_replace.load(Ordering::SeqCst) {
             return Err(
                 awaken_resource_contract::ResourcePurgeError::Indeterminate {
@@ -697,7 +699,7 @@ impl awaken_resource_contract::ResourceReferenceIndex for RecordingReferenceInde
     }
 }
 
-struct UnusedFileCatalog;
+pub(crate) struct UnusedFileCatalog;
 
 #[async_trait::async_trait]
 impl awaken_resource_contract::FileCatalog for UnusedFileCatalog {
@@ -3818,19 +3820,20 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingCleanupRunti
 }
 
 #[derive(Default)]
-struct PausedSessionMutation {
-    entered: tokio::sync::Notify,
-    release: tokio::sync::Notify,
-    candidate: Mutex<Option<awaken_session_state_contract::SessionMutation>>,
-    result: Mutex<Option<awaken_session_state_contract::SessionMutationResult>>,
+pub(crate) struct PausedSessionMutation {
+    pub(crate) entered: tokio::sync::Notify,
+    pub(crate) release: tokio::sync::Notify,
+    pub(crate) candidate: Mutex<Option<awaken_session_state_contract::SessionMutation>>,
+    pub(crate) result: Mutex<Option<awaken_session_state_contract::SessionMutationResult>>,
 }
 
-struct FaultingSessionRepository {
+pub(crate) struct FaultingSessionRepository {
     pause_mutation_once: Mutex<Option<(String, Arc<PausedSessionMutation>)>>,
     create_crash_boundary: Mutex<Option<(bool, std::path::PathBuf)>>,
     inner: Arc<dyn awaken_session_repository_contract::SessionStore>,
     applied_create_roots: Mutex<Vec<PersistedSession>>,
     get_override_once: Mutex<Option<PersistedSession>>,
+    pub(crate) fail_get_on_call_once: AtomicUsize,
     paused_gets: Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
     failed_gets: Mutex<BTreeSet<String>>,
     observed_gets: Mutex<Vec<String>>,
@@ -3882,13 +3885,14 @@ impl FaultingSessionRepository {
         }
     }
 
-    fn new(inner: Arc<dyn awaken_session_repository_contract::SessionStore>) -> Self {
+    pub(crate) fn new(inner: Arc<dyn awaken_session_repository_contract::SessionStore>) -> Self {
         Self {
             inner,
             pause_mutation_once: Mutex::new(None),
             create_crash_boundary: Mutex::new(None),
             applied_create_roots: Mutex::new(Vec::new()),
             get_override_once: Mutex::new(None),
+            fail_get_on_call_once: AtomicUsize::new(0),
             paused_gets: Mutex::new(HashMap::new()),
             failed_gets: Mutex::new(BTreeSet::new()),
             observed_gets: Mutex::new(Vec::new()),
@@ -3914,10 +3918,25 @@ impl FaultingSessionRepository {
         }
     }
 
-    fn pause_next_mutation(&self, operation: &str) -> Arc<PausedSessionMutation> {
+    pub(crate) fn pause_next_mutation(&self, operation: &str) -> Arc<PausedSessionMutation> {
         let pause = Arc::new(PausedSessionMutation::default());
         *self.pause_mutation_once.lock().unwrap() = Some((operation.into(), pause.clone()));
         pause
+    }
+
+    /// R12 arms only the fresh repair read, AFTER the actual CAS pause.
+    /// The next get is the canonical replay reload and must succeed; the second
+    /// is the existing best-effort repair's fresh-root observation. Reuse the
+    /// original observed_gets sequence, never a second repository/read counter.
+    pub(crate) fn fail_get_after_next_reload_once(&self) {
+        let selected = self
+            .observed_gets
+            .lock()
+            .unwrap()
+            .len()
+            .checked_add(2)
+            .expect("test read sequence remains bounded");
+        self.fail_get_on_call_once.store(selected, Ordering::SeqCst);
     }
 
     fn fail_once(&self, operation: &str) {
@@ -4018,10 +4037,11 @@ impl awaken_session_repository_contract::SessionRepositoryReads for FaultingSess
         &self,
         session_id: &SessionId,
     ) -> Result<PersistedSession, awaken_session_state_contract::SessionRepositoryError> {
-        self.observed_gets
-            .lock()
-            .unwrap()
-            .push(session_id.to_string());
+        let get_call = {
+            let mut observed = self.observed_gets.lock().unwrap();
+            observed.push(session_id.to_string());
+            observed.len()
+        };
         self.get_entered.notify_one();
         let gate = self
             .paused_gets
@@ -4040,6 +4060,10 @@ impl awaken_session_repository_contract::SessionRepositoryReads for FaultingSess
             .lock()
             .unwrap()
             .contains(session_id.as_str())
+            || self
+                .fail_get_on_call_once
+                .compare_exchange(get_call, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
         {
             return Err(
                 awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
@@ -4456,7 +4480,7 @@ impl McpAttachmentRealizer for NoopMcpRealizer {
 }
 
 #[derive(Default)]
-struct RecordingEnvironmentSource {
+pub(crate) struct RecordingEnvironmentSource {
     dispatched: Mutex<BTreeSet<String>>,
     dispatch_calls: AtomicUsize,
     awakened: Mutex<BTreeSet<String>>,
@@ -4720,7 +4744,7 @@ impl awaken_session_application_contract::SessionWorkerLeases for RecordingEnvir
     }
 }
 
-fn persisted(id: &str, self_hosted: bool, status: &str) -> PersistedSession {
+pub(crate) fn persisted(id: &str, self_hosted: bool, status: &str) -> PersistedSession {
     let environment = awaken_session_configuration_contract::EnvironmentSnapshot {
         environment_id: "env-worker".into(),
         revision: awaken_environment_contract::EnvironmentRevision(7),
@@ -4778,7 +4802,7 @@ fn persisted(id: &str, self_hosted: bool, status: &str) -> PersistedSession {
     serde_json::from_value(wire).unwrap()
 }
 
-async fn create(
+pub(crate) async fn create(
     repo: &dyn awaken_session_repository_contract::SessionStore,
     session: PersistedSession,
 ) {
@@ -4832,7 +4856,7 @@ async fn complete_runtime_composition_does_not_require_optional_role_discovery()
     assert!(Arc::ptr_eq(&selected_clock, &app.clock()), "R1");
 }
 
-fn skill_resources(id: &str) -> crate::session_resource::ResolvedSessionResources {
+pub(crate) fn skill_resources(id: &str) -> crate::session_resource::ResolvedSessionResources {
     crate::session_resource::ResolvedSessionResources::try_new(
         Vec::new(),
         vec![crate::session_resource::ResolvedSkillBinding {
@@ -4946,7 +4970,7 @@ mod creation;
 mod event_batch_cutover_validation;
 mod event_batches;
 mod execution_observation;
-mod realization;
+pub(crate) mod realization;
 mod recovery_scan;
 mod recovery_sweep;
 mod resource_resume;

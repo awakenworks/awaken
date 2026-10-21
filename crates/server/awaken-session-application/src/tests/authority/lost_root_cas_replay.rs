@@ -361,3 +361,138 @@ async fn every_disposition_command_reports_a_lost_root_cas_as_a_replay() {
         );
     }
 }
+
+#[tokio::test]
+async fn resource_manifest_replay_uses_the_committed_receipt_without_a_late_query() {
+    // R9 causes: the public command's early receipt probe is absent; its actual
+    // compiled CAS pauses; the same mutation wins, then a legal title-only
+    // update advances the root. Arm the EXISTING receipt-read outage only now.
+    // Effects: a real Replayed CAS returns its original receipt revision and
+    // newer root, without a second fallible receipt lookup after acceptance.
+    // R10 then uses that still-armed fault at the ORIGINAL early replay probe:
+    // it must remain unavailable, not silently skip admission/read authority.
+    // Resource targets stay empty and unchanged throughout; this is not a
+    // positive oracle for replay against a different Resource generation.
+    // | Rule | First probe | CAS | Later receipt IO | Required result |
+    // | R9 | absent | actual Replayed + newer title | outage armed | Ok, original revision |
+    // | R10 | outage armed | not entered | none | original Unavailable |
+    let durable = authority_repository("manifest receipt repository").await;
+    let repo = Arc::new(FaultingSessionRepository::new(durable.clone()));
+    let id = SessionId::from("manifest-receipt-replay");
+    create(repo.as_ref(), persisted(id.as_str(), false, "idle")).await;
+    let app = Arc::new(application(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    let before = durable.get(&id).await.unwrap();
+    assert!(
+        before.resources.active.inputs().is_empty(),
+        "R9 unchanged empty targets"
+    );
+    let command = crate::ReplaceSessionResourceManifest {
+        resources: before.resources.desired().clone(),
+        expected_resource_revision: Some(before.resources.revision),
+        idempotency_key: Some("receipt-source".into()),
+        request_fingerprint: "same-original-manifest".into(),
+    };
+    let pause = repo.pause_next_mutation("managed:resource-manifest-command:");
+    let delayed = app.clone();
+    let delayed_id = id.clone();
+    let task = tokio::spawn(async move {
+        Box::pin(delayed.replace_session_resource_manifest(&delayed_id, command)).await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), pause.entered.notified())
+        .await
+        .expect("R9 public command passed the early probe and reached canonical CAS");
+    let candidate = pause.candidate.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        candidate.expected_revision, before.revision,
+        "R9 original candidate"
+    );
+    let original_revision = match durable
+        .commit("workspace", candidate.clone())
+        .await
+        .unwrap()
+    {
+        awaken_session_state_contract::SessionMutationResult::Applied { new_revision } => {
+            new_revision
+        }
+        other => panic!("R9 exact compiled command must apply first: {other:?}"),
+    };
+    let applied = durable.get(&id).await.unwrap();
+    assert_eq!(
+        applied.resources, before.resources,
+        "R9 no Resource target change"
+    );
+    let mut newer = applied.clone();
+    newer.title = Some("later legal metadata".into());
+    let newer = app
+        .mutations
+        .commit_session_snapshot_with_outcome(
+            "workspace",
+            awaken_store_conformance::session_store::record_update(&applied, newer, 0),
+            "manifest-receipt-title",
+            Vec::new(),
+        )
+        .await
+        .unwrap()
+        .into_session();
+    assert!(
+        newer.revision > original_revision,
+        "R9 receipt differs from newer reload"
+    );
+    repo.fail_idempotency_receipt_once
+        .store(true, Ordering::SeqCst);
+    pause.release.notify_one();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .expect("R9 inline command completes")
+        .expect("R9 command does not panic");
+    assert!(
+        matches!(
+            pause.result.lock().unwrap().clone().unwrap(),
+            awaken_session_state_contract::SessionMutationResult::Replayed { new_revision }
+                if new_revision == original_revision
+        ),
+        "R9 actual canonical CAS replay, not a selector or mock shortcut"
+    );
+    let outcome =
+        result.expect("R9 accepted manifest must use SnapshotCommit receipt, not late fallible IO");
+    assert!(
+        !outcome.command_applied,
+        "R9 replay is not another application"
+    );
+    assert_eq!(
+        outcome.command_revision, original_revision,
+        "R9 original receipt"
+    );
+    assert_eq!(outcome.session, newer, "R9 exact newer root");
+    assert!(
+        repo.fail_idempotency_receipt_once.load(Ordering::SeqCst),
+        "R9 no late receipt query"
+    );
+    assert_eq!(
+        durable.get(&id).await.unwrap(),
+        newer,
+        "R9 no extra mutation"
+    );
+    let probe = app
+        .replay_session_resource_manifest(&id, "receipt-source", "same-original-manifest")
+        .await;
+    assert!(
+        matches!(
+            probe,
+            Err(crate::SessionResourceManifestError::Unavailable(_))
+        ),
+        "R10 original early probe still reports receipt outage: {probe:?}"
+    );
+    assert!(
+        !repo.fail_idempotency_receipt_once.load(Ordering::SeqCst),
+        "R10 actual fault consumed"
+    );
+    assert_eq!(
+        durable.get(&id).await.unwrap(),
+        newer,
+        "R10 no extra mutation"
+    );
+}
