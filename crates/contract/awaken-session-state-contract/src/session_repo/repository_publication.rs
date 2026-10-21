@@ -80,8 +80,10 @@ impl PersistedSession {
         Ok(self.is_terminal() && !cleanup.is_not_requested() && !cleanup.is_completed())
     }
 
-    /// A physical realization keeps its exact Worker until this root proves
-    /// terminal cleanup. Lease expiry and a settled Run do not release it.
+    /// A realization remains an obligation until this root proves terminal
+    /// cleanup. Actor-retirement source retention does not clear it; actual
+    /// exit and lease succession may transfer the same root to its next owner.
+    /// Lease expiry and a settled Run do not release the obligation.
     pub fn has_unfinished_worker_realization(&self) -> Result<bool, crate::SessionCleanupError> {
         let cleanup = self.verified_terminal_cleanup()?;
         Ok(self.realization.is_some() && !cleanup.is_completed())

@@ -87,7 +87,7 @@ fn coordinated_session(id: &str) -> PersistedSession {
     fresh
 }
 
-fn session_with_unsettled_event(id: &str) -> PersistedSession {
+pub(super) fn session_with_unsettled_event(id: &str) -> PersistedSession {
     let mut session = persisted(id, false, "idle");
     let mut batch = awaken_session_event_contract::SessionEventBatch::compile(
         &awaken_session_types::SessionId::from(id),

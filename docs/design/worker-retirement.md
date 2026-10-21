@@ -5,6 +5,34 @@ It delegates the existing role catalog to the
 [remote Worker component catalog](remote-worker-protocol.md#10-remote-worker-component-catalog);
 it adds no service, queue, durable cleanup state or permission authority.
 
+## Amendment 2026-10-21: retain an active Resident Session across Actor replacement
+
+Worker retirement observes Actor lifetime separately from Session and Run
+completion. The existing exact Registry incarnation, closed claim admission,
+zero physical/Work domains and complete Session-owner scan remain mandatory.
+An active Idle, Running or Rescheduling Session may retain its same root when
+its baseline is frozen, its Environment is Resident, its Event batches are
+complete and the existing provider positively observes independent original
+source retention. The read uses unprepared-source semantics; private Memory
+buffers, unknown or missing original participants and unavailable providers do
+not qualify. Preparing, Activating and nonresident roots keep their refusal.
+
+Reuse the existing source-retention port, frozen projection, provider selection
+and Worker-domain response. The terminal path keeps its own frozen action,
+settled-source and preparation requirements. No new durable state, queue,
+cleanup driver, scope owner or receipt issuer is introduced. Occupancy remains
+true and the read leaves the Session, Run, activity epochs, lease, bindings and
+all prior uncertain effects unchanged.
+
+The existing release owner then stops the qualified Actor and independently
+observes its exact exit and original Create closure. Only the existing root CAS
+and lease-succession protocol may assign the same root to its successor.
+Retirement supplies no Run result, process-domain closure or cleanup receipt.
+The bounded retirement model includes a live-Session case in which source data
+survives and the root transfers while every terminal preparation/disposal/ACK
+transition remains disabled. Provider/API witnesses and deployed E2E remain
+separate qualification requirements.
+
 ## Amendment 2026-10-16: separate source preparation, physical cleanup and Actor retirement
 
 **Implementation status: Actor retirement remains a target.** Source partitions
@@ -99,7 +127,7 @@ Retirement with retained sources requires exact draining Registry identity,
 closed new business-work admission, no physical Run or Work claim, and a
 positive provider observation that the
 original source survives this Actor's stop. An unavailable retention observation
-or a nonterminal/unsealed Session blocks that path. The real exit and original
+or an unqualified/unsealed Session blocks that path. The real exit and original
 Create closure are still required before another Actor acquires the root;
 retirement never acknowledges the old Source, Runtime slot, Session cleanup or
 Flow inbox.
