@@ -40,6 +40,8 @@ mod manifest_command;
 mod materialization_authorization;
 mod ordinary_reconciliation_gate;
 mod purge_guard;
+#[cfg(test)]
+mod reference_tests;
 mod repository_reference;
 mod terminal_cleanup;
 
@@ -782,28 +784,19 @@ impl SessionApplication {
         operation: &str,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<SessionAggregate, SessionMutationError> {
-        let session_id = candidate.session_id.clone();
-        self.synchronize_resource_references(owner_scope, &candidate)
-            .await
-            .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
-        match self
-            .mutations
-            .commit_session_snapshot_with_outcome(
-                owner_scope,
-                candidate,
-                operation,
-                lifecycle_facts,
-            )
-            .await
-        {
-            Ok(commit) => crate::mutation::aggregate_from_snapshot(commit.into_session())
-                .map_err(repository_failure),
-            Err(error) => {
-                self.repair_resource_references(owner_scope, &session_id)
-                    .await;
-                Err(error)
-            }
-        }
+        let idempotency =
+            crate::mutation::compile_session_snapshot_idempotency(&candidate, operation);
+        // Keep the complete aggregate-owning Resource bracket on the heap.
+        // Its references and root CAS are polled inline by this same caller;
+        // no task or cancellation owner is detached.
+        let commit = Box::pin(self.commit_resource_snapshot_with_record(
+            owner_scope,
+            candidate,
+            idempotency,
+            lifecycle_facts,
+        ))
+        .await?;
+        crate::mutation::aggregate_from_snapshot(commit.into_session()).map_err(repository_failure)
     }
 
     async fn commit_resource_snapshot_with_record(
@@ -811,6 +804,7 @@ impl SessionApplication {
         owner_scope: &str,
         candidate: SessionAggregate,
         idempotency: IdempotencyRecord,
+        lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<crate::SnapshotCommit, SessionMutationError> {
         let session_id = candidate.session_id.clone();
         self.synchronize_resource_references(owner_scope, &candidate)
@@ -818,10 +812,24 @@ impl SessionApplication {
             .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
         match self
             .mutations
-            .commit_session_snapshot_with_record(owner_scope, candidate, idempotency, Vec::new())
+            .commit_session_snapshot_with_record(
+                owner_scope,
+                candidate,
+                idempotency,
+                lifecycle_facts,
+            )
             .await
         {
-            Ok(commit) => Ok(commit),
+            Ok(commit) => {
+                if !commit.transitioned() {
+                    // The exact receipt may reload a newer Resource manifest.
+                    // Restore its projection after publishing our stale candidate,
+                    // without turning an accepted replay into another failure.
+                    self.repair_resource_references(owner_scope, &session_id)
+                        .await;
+                }
+                Ok(commit)
+            }
             Err(error) => {
                 self.repair_resource_references(owner_scope, &session_id)
                     .await;

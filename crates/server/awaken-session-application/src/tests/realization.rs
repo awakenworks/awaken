@@ -27,7 +27,7 @@ use awaken_session_repository_contract::LifecycleOutbox as _;
 
 /// A fresh ephemeral durable Session repository; `expect` names it in the
 /// failure message when the in-memory database cannot be opened.
-async fn sqlite_session_repository(
+pub(crate) async fn sqlite_session_repository(
     expect: &str,
 ) -> Arc<awaken_session_store::SqliteManagedSessionRepository> {
     Arc::new(
@@ -1754,133 +1754,6 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
         );
         predecessor = successor.authority.lease;
     }
-}
-
-/// Reference-projection FMECA and cause/effect decision table. C1 the
-/// Resource index accepts or rejects a replacement; C2 the Session root CAS
-/// wins or conflicts after projection. Effects are E1 no durable intent is
-/// exposed without its safety edge, E2 a losing candidate is repaired back
-/// to repository truth, and E3 a winning pending replacement retains both
-/// installed and desired targets until settlement.
-///
-/// | Rule | C1 index | C2 root CAS | Effect |
-/// |---|---|---|---|
-/// | R1 | rejects | not attempted | E1 unchanged Session |
-/// | R2 | accepts | conflicts | E2 installed target only |
-/// | R3 | accepts | wins | E3 installed + desired targets |
-#[tokio::test]
-async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
-    let repo = sqlite_session_repository("session repository").await;
-    let environments = Arc::new(RecordingEnvironmentSource::default());
-    let mut application = application(repo.clone(), environments);
-    let references = Arc::new(RecordingReferenceIndex::default());
-    application.set_resource_reference_authority(references.clone(), Arc::new(UnusedFileCatalog));
-
-    let mut original = persisted("reference-fence", false, "idle");
-    original.resources =
-        awaken_session_state_contract::SessionResourceState::from_active(skill_resources("old"));
-    create(repo.as_ref(), original).await;
-
-    let mut rejected = repo.get(&SessionId::from("reference-fence")).await.unwrap();
-    let original_revision = rejected.revision;
-    rejected
-        .resources
-        .prepare(
-            &awaken_session_types::SessionId::from("reference-fence"),
-            skill_resources("new"),
-        )
-        .unwrap();
-    references.fail_replace.store(true, Ordering::SeqCst);
-    assert!(
-        application
-            .commit_resource_snapshot(
-                "workspace",
-                awaken_session_state_contract::SessionAggregate::try_from(rejected)
-                    .expect("valid test snapshot"),
-                "R1",
-                Vec::new()
-            )
-            .await
-            .is_err(),
-        "R1"
-    );
-    assert_eq!(
-        repo.get(&SessionId::from("reference-fence"))
-            .await
-            .unwrap()
-            .revision,
-        original_revision,
-        "R1/E1"
-    );
-
-    references.fail_replace.store(false, Ordering::SeqCst);
-    let mut stale = repo.get(&SessionId::from("reference-fence")).await.unwrap();
-    let mut winner = stale.clone();
-    winner.title = Some("concurrent winner".into());
-    let _fixture = application
-        .mutations
-        .commit_session_snapshot_with_outcome(
-            "workspace",
-            // R2 needs a legal authoring winner before the stale Resource CAS.
-            awaken_store_conformance::session_store::record_update(&stale, winner, 0),
-            "concurrent",
-            Vec::new(),
-        )
-        .await
-        .unwrap();
-    stale
-        .resources
-        .prepare(
-            &awaken_session_types::SessionId::from("reference-fence"),
-            skill_resources("new"),
-        )
-        .unwrap();
-    assert!(matches!(
-        application
-            .commit_resource_snapshot(
-                "workspace",
-                awaken_session_state_contract::SessionAggregate::try_from(stale)
-                    .expect("valid test snapshot"),
-                "R2",
-                Vec::new()
-            )
-            .await,
-        Err(SessionMutationError::Conflict)
-    ));
-    let ids = || {
-        references
-            .records
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|record| record.target.resource_id.clone())
-            .collect::<BTreeSet<_>>()
-    };
-    assert_eq!(ids(), BTreeSet::from(["old".to_string()]), "R2/E2");
-
-    let mut accepted = repo.get(&SessionId::from("reference-fence")).await.unwrap();
-    accepted
-        .resources
-        .prepare(
-            &awaken_session_types::SessionId::from("reference-fence"),
-            skill_resources("new"),
-        )
-        .unwrap();
-    application
-        .commit_resource_snapshot(
-            "workspace",
-            awaken_session_state_contract::SessionAggregate::try_from(accepted)
-                .expect("valid test snapshot"),
-            "R3",
-            Vec::new(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        ids(),
-        BTreeSet::from(["new".to_string(), "old".to_string()]),
-        "R3/E3"
-    );
 }
 
 /// Legacy Resource adoption FMECA and cause/effect decision table. C1 the

@@ -1,7 +1,7 @@
 //! Shared Session application assembly with the required real Web compiler.
 use super::*;
 
-pub(super) fn application(
+pub(crate) fn application(
     repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
     environments: impl Into<SessionEnvironments>,
 ) -> SessionApplication {
