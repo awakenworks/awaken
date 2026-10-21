@@ -132,8 +132,16 @@ pub(crate) fn append_to(
             aggregate.definition.id.to_string(),
         ));
     }
+    let next = aggregate.definition.checked_next_version();
+    // Keep structural admission ahead of the exhausted-ordinal conflict. At
+    // MAX only a candidate at that exact high-water mark can be shape-valid;
+    // identity, ordinal and bundle defects keep their original classification.
+    let expected = next
+        .as_ref()
+        .copied()
+        .unwrap_or(aggregate.definition.last_version);
     if version.skill_id != aggregate.definition.id
-        || version.version != aggregate.definition.last_version.saturating_add(1)
+        || version.version != expected
         || version.bundle_sha256 != bundle_sha256(&version.files)
         || version.skill_md().is_none()
     {
@@ -141,6 +149,7 @@ pub(crate) fn append_to(
             detail: "Skill version must be the next valid immutable bundle".into(),
         });
     }
+    next?;
     if aggregate.versions.contains_key(&version.version) {
         return Err(SkillStoreError::VersionConflict(
             version.version.to_string(),

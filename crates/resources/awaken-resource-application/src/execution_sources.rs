@@ -292,9 +292,6 @@ impl SkillCatalogApplication for StoreSkillCatalogApplication {
     ) -> Result<(), awaken_resource_contract::SkillStoreError> {
         let id = awaken_resource_contract::skill_stem(raw_id);
         let existing = self.store.definition(workspace_id, &id).await?;
-        let next = existing
-            .as_ref()
-            .map_or(1, |definition| definition.latest_version + 1);
         if let Some(definition) = &existing
             && self
                 .store
@@ -308,6 +305,10 @@ impl SkillCatalogApplication for StoreSkillCatalogApplication {
         {
             return Ok(());
         }
+        let next = match &existing {
+            Some(definition) => definition.checked_next_version()?,
+            None => 1,
+        };
         let files = vec![awaken_resource_contract::SkillBundleFile {
             path: "SKILL.md".into(),
             content: content.as_bytes().to_vec(),
@@ -458,6 +459,199 @@ mod tests {
         assert_eq!(definition.latest_version, 2, "R3");
         assert_eq!(definition.timestamps.created_unix_nanos, first_stamp, "R3");
         assert_eq!(definition.timestamps.updated_unix_nanos, second_stamp, "R3");
+
+        // R4: retiring v2 changes only visibility (latest=1, last=2). Replaying
+        // the visible v1 content must keep the complete definition/timestamps,
+        // create no v3, and retain v2's original immutable record for pins.
+        // R5: different content after that retirement must append ordinal3,
+        // never reuse hidden ordinal2. R6: replaying v3 later is again a no-op.
+        // These are real application/store calls, not a copied successor oracle;
+        // the store's existing append_to law rejects a reused ordinal.
+        assert!(
+            store.delete_version("workspace", "guide", 2).await.unwrap(),
+            "R4 retire v2"
+        );
+        let retired = store
+            .definition("workspace", "guide")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (retired.latest_version, retired.last_version),
+            (1, 2),
+            "R4 visibility/high-water split"
+        );
+        assert_eq!(
+            store.version("workspace", "guide", 2).await.unwrap(),
+            Some(second.clone()),
+            "R4 pinned v2"
+        );
+        let visible = store.list_versions("workspace", "guide").await.unwrap();
+        clock.advance(5);
+        application
+            .publish_authored("workspace", "guide", "Guide", "first", "content A")
+            .await
+            .expect("R4 same visible content remains an exact no-op after retirement");
+        assert_eq!(
+            store.definition("workspace", "guide").await.unwrap(),
+            Some(retired),
+            "R4 no root/timestamp mutation"
+        );
+        assert_eq!(
+            store.list_versions("workspace", "guide").await.unwrap(),
+            visible,
+            "R4 no visible append"
+        );
+        assert!(
+            store
+                .version("workspace", "guide", 3)
+                .await
+                .unwrap()
+                .is_none(),
+            "R4 no ordinal3 yet"
+        );
+        application
+            .publish_authored("workspace", "guide", "Guide", "third", "content C")
+            .await
+            .expect("R5 changed content must append v3 beyond the retired v2 high-water mark");
+        let third = store
+            .version("workspace", "guide", 3)
+            .await
+            .unwrap()
+            .expect("R5 v3 exists");
+        assert_eq!(
+            third.skill_md(),
+            Some(b"content C".as_slice()),
+            "R5 original authored bytes"
+        );
+        assert_eq!(
+            third.created_unix_nanos, 1_700_000_000_133_000_000,
+            "R5 same injected clock"
+        );
+        assert_eq!(
+            store.version("workspace", "guide", 2).await.unwrap(),
+            Some(second),
+            "R5 unchanged pinned v2 record"
+        );
+        let advanced = store
+            .definition("workspace", "guide")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (advanced.latest_version, advanced.last_version),
+            (3, 3),
+            "R5 monotonic high-water"
+        );
+        assert_eq!(
+            advanced.timestamps.created_unix_nanos, first_stamp,
+            "R5 original creation time"
+        );
+        assert_eq!(
+            advanced.timestamps.updated_unix_nanos, third.created_unix_nanos,
+            "R5 append time"
+        );
+        clock.advance(5);
+        application
+            .publish_authored("workspace", "guide", "Guide", "third", "content C")
+            .await
+            .expect("R6 same newest content does not append");
+        assert_eq!(
+            store.definition("workspace", "guide").await.unwrap(),
+            Some(advanced),
+            "R6 no timestamp update"
+        );
+        assert!(
+            store
+                .version("workspace", "guide", 4)
+                .await
+                .unwrap()
+                .is_none(),
+            "R6 zero new ordinal"
+        );
+    }
+
+    #[tokio::test]
+    async fn authored_skill_maximum_version_replays_and_refuses_changes_without_mutation() {
+        use awaken_resource_contract::{
+            ResourceTimestamps, SkillBundleFile, SkillDefinition, SkillStore as _, SkillStoreError,
+            SkillVersion, skill_bundle_sha256,
+        };
+        use awaken_session_configuration_contract::SkillCatalogApplication as _;
+        use awaken_time::WallClock as _;
+
+        // M1 legal initial MAX frame uses Store.create's existing nonzero
+        // initial-version law, not a corrupt row or 2^64 appends. Identical
+        // content needs no successor: replay must remain Ok with the whole
+        // definition and immutable bytes unchanged at a later clock sample.
+        // M2 changed content has no successor: typed VersionConflict, never
+        // arithmetic panic/wrap, timestamp write or replacement of MAX.
+        // This is a public application command test; it does not assert that
+        // production Runs self-promote run-scoped Skills into the catalog.
+        let store = Arc::new(awaken_skill_store::InMemorySkillStore::new());
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_700_000_000_123));
+        let stamp = clock.now().as_unix_nanos_u64();
+        let files = vec![SkillBundleFile {
+            path: "SKILL.md".into(),
+            content: b"content A".to_vec(),
+            executable: false,
+        }];
+        let original = SkillVersion {
+            id: format!("skver_guide_{}", u64::MAX).into(),
+            skill_id: "guide".into(),
+            version: u64::MAX,
+            name: "Guide".into(),
+            description: "first".into(),
+            directory: "/skills/guide".into(),
+            bundle_sha256: skill_bundle_sha256(&files),
+            files,
+            created_unix_nanos: stamp,
+        };
+        let definition = SkillDefinition {
+            id: "guide".into(),
+            workspace_id: "workspace".into(),
+            display_title: None,
+            latest_version: u64::MAX,
+            last_version: u64::MAX,
+            timestamps: ResourceTimestamps::created(stamp),
+        };
+        store
+            .create(definition.clone(), original.clone())
+            .await
+            .expect("M0 lawful initial MAX");
+        let application = super::StoreSkillCatalogApplication::new(store.clone(), clock.clone());
+        clock.advance(5);
+        application
+            .publish_authored("workspace", "guide", "Guide", "first", "content A")
+            .await
+            .expect("M1 same MAX content must replay before requesting a successor");
+        assert_eq!(
+            store.definition("workspace", "guide").await.unwrap(),
+            Some(definition.clone()),
+            "M1 no root or timestamp change"
+        );
+        assert_eq!(
+            store.version("workspace", "guide", u64::MAX).await.unwrap(),
+            Some(original.clone()),
+            "M1 exact MAX record"
+        );
+        let changed = application
+            .publish_authored("workspace", "guide", "Guide", "changed", "content B")
+            .await;
+        assert!(
+            matches!(&changed, Err(SkillStoreError::VersionConflict(_))),
+            "M2 exhausted successor is a typed conflict: {changed:?}"
+        );
+        assert_eq!(
+            store.definition("workspace", "guide").await.unwrap(),
+            Some(definition),
+            "M2 no root or timestamp change"
+        );
+        assert_eq!(
+            store.list_versions("workspace", "guide").await.unwrap(),
+            vec![original],
+            "M1/M2 no accepted append or overwrite"
+        );
     }
 
     struct FixedBindingFailure(awaken_resource_contract::ResourceRegistryError);

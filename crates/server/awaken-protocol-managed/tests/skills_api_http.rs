@@ -807,6 +807,103 @@ async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
 }
 
 #[tokio::test]
+async fn maximum_skill_version_http_preserves_admission_order_and_refuses_append() {
+    use awaken_resource_contract::{
+        ResourceTimestamps, SkillBundleFile, SkillDefinition, SkillVersion, skill_bundle_sha256,
+    };
+    // H0 lawful Store.create MAX frame is the real FS store behind this router.
+    // H1 absent definition + malformed body -> 404; H2 stale IF-MATCH + the
+    // same malformed body -> 409; H3 matching IF-MATCH + malformed body -> 400.
+    // A valid content-type/boundary defers field parsing until read_multipart,
+    // so these rows exercise the handler order rather than extractor failure.
+    // H4 matching IF-MATCH + valid changed bundle at MAX -> desired typed409,
+    // no panic/wrap/write. This is a new fail-closed expectation, not a claim
+    // that the old unchecked-add HTTP route already returns409 at MAX.
+    let (router, store, dir) = router_with_store().await;
+    let id = awaken_resource_contract::skill_catalog_id("Greeter");
+    let files = vec![SkillBundleFile {
+        path: "SKILL.md".into(),
+        content: SKILL_V1.as_bytes().to_vec(),
+        executable: false,
+    }];
+    let original = SkillVersion {
+        id: format!("skver_{id}_{}", u64::MAX).into(),
+        skill_id: id.clone().into(),
+        version: u64::MAX,
+        name: "Greeter".into(),
+        description: "says hi".into(),
+        directory: "Greeter".into(),
+        bundle_sha256: skill_bundle_sha256(&files),
+        files,
+        created_unix_nanos: 1,
+    };
+    let definition = SkillDefinition {
+        id: id.clone().into(),
+        workspace_id: "test".into(),
+        display_title: None,
+        latest_version: u64::MAX,
+        last_version: u64::MAX,
+        timestamps: ResourceTimestamps::created(1),
+    };
+    store
+        .create(definition.clone(), original.clone())
+        .await
+        .unwrap();
+    let path = format!("/v1/skills/{id}/versions");
+    let maximum = u64::MAX.to_string();
+    for (rule, target, body, if_match, expected) in [
+        (
+            "H1",
+            "/v1/skills/absent/versions".to_owned(),
+            b"not a multipart field".to_vec(),
+            None,
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "H2",
+            path.clone(),
+            b"not a multipart field".to_vec(),
+            Some("1"),
+            StatusCode::CONFLICT,
+        ),
+        (
+            "H3",
+            path.clone(),
+            b"not a multipart field".to_vec(),
+            Some(maximum.as_str()),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "H4",
+            path,
+            multipart_skill(SKILL_V2),
+            Some(maximum.as_str()),
+            StatusCode::CONFLICT,
+        ),
+    ] {
+        post_multipart_body(&router, &target, body, if_match)
+            .await
+            .expect_for(expected, rule);
+        assert_eq!(
+            store.definition("test", &id).await.unwrap(),
+            Some(definition.clone()),
+            "{rule} no head/timestamp write"
+        );
+        assert_eq!(
+            store.version("test", &id, u64::MAX).await.unwrap(),
+            Some(original.clone()),
+            "{rule} exact MAX bytes"
+        );
+        assert_eq!(
+            store.list_versions("test", &id).await.unwrap(),
+            vec![original.clone()],
+            "{rule} no accepted append"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn non_sdk_json_create_is_rejected_before_store_selection() {
     // Cause/effect rule: JSON content type is not the SDK multipart contract, so
     // admission returns 400 whether or not a durable store is configured. Store
