@@ -1016,6 +1016,11 @@ fn a_closed_bus_stops_the_listener_without_the_stop_flag() {
 /// Raw membership (not TTL-aware `get`) proves deletion in either case.
 #[test]
 fn managed_api_writes_invalidate_the_same_mounter_without_waiting_for_cache_ttl() {
+    // Composition decision table: M1 the router and mounter consume the same
+    // Resources application => one catalog, content backend and invalidator;
+    // M2 an HTTP mutation commits => one notification removes raw cache entries;
+    // M3 its CAS conflicts => no notification and the cached entry survives.
+    // Rename and purge retain their existing whole-store invalidation rows.
     use awaken_protocol_managed::types::memory::AuthenticatedMemoryActor;
     use awaken_resource_application::{
         RegistryApplication, ResourceAuthorities, ResourcesApplication,
@@ -1093,11 +1098,7 @@ fn managed_api_writes_invalidate_the_same_mounter_without_waiting_for_cache_ttl(
         Arc::as_ptr(&ports.memory_content_purge()) as *const ()
     );
 
-    let router = awaken_protocol_managed::memory_stores_router(
-        ports.memory_management_content(),
-        resources.memory_stores(),
-        clock.clone(),
-    );
+    let router = awaken_protocol_managed::memory_stores_router(&resources);
     let mounter =
         crate::MemoryStoreMounter::fuse_preferred(ports.memory_mount_source(), bus.clone(), clock)
             .expect("selected Memory source and root bus match");
@@ -1317,6 +1318,10 @@ fn managed_api_writes_invalidate_the_same_mounter_without_waiting_for_cache_ttl(
 /// intervening VFS/cache get: expiry cannot stand in for the mounted listener.
 #[test]
 fn managed_api_writes_invalidate_actual_kernel_mount_without_cache_ttl() {
+    // M4 same application + a real FUSE mount + a committed HTTP update => the
+    // mounted listener evicts the actual raw cache entry after TTL elapsed.
+    // No intermediate cache read, write or fallback mount may satisfy M4.
+    // The original unavailable-substrate skip is not kernel qualification.
     use awaken_protocol_managed::types::memory::AuthenticatedMemoryActor;
     use awaken_provisioning_contract::{
         MemoryMountOutcome, MemoryMounter, MountAccess, Realization,
@@ -1364,11 +1369,7 @@ fn managed_api_writes_invalidate_actual_kernel_mount_without_cache_ttl() {
         ))
     });
     let ports = resources.authorities();
-    let router = awaken_protocol_managed::memory_stores_router(
-        ports.memory_management_content(),
-        resources.memory_stores(),
-        clock.clone(),
-    );
+    let router = awaken_protocol_managed::memory_stores_router(&resources);
     let request = |method: &str, path: &str, body: Value| {
         let router = router.clone();
         let mut req = Request::builder()
