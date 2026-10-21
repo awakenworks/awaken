@@ -151,8 +151,14 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
                     MODULE.main()
                 self.assertEqual(error.exception.code, 1, "L4")
                 self.assertIn("classifications duplicate an exclusion or source-ledger link", message.getvalue(), "L4")
+                message = io.StringIO()
+                with contextlib.redirect_stderr(message), self.assertRaises(SystemExit) as error:
+                    MODULE.check_staged([policy])
+                self.assertEqual(error.exception.code, 1, "L4 selected source")
+                self.assertIn("classifications duplicate an exclusion or source-ledger link", message.getvalue())
                 (root / policy).write_text(source)
                 MODULE.main()
+                MODULE.check_staged([policy])
                 (crate / "src/lib.rs").write_text("")
                 with self.assertRaises(SystemExit) as error:
                     MODULE.main()
@@ -505,6 +511,53 @@ class FormalSurfaceStagedSubjectTests(unittest.TestCase):
                 self.assertEqual(status, 1)
                 self.assertIn(self.POLICY, error)
                 self.assertIn("unclassified", error)
+
+    def test_selected_index_requires_exactly_one_source_authority(self) -> None:
+        # R18-R21: direct ledger link x staged classification. Exactly one
+        # authority accepts; neither rejects unclassified code; both reject
+        # redundancy. Bare/explicit entrypoints must read the same index even
+        # when the working copy changes to the opposite classification.
+        for paths in [[], [self.POLICY]]:
+            for linked in [False, True]:
+                for classified in [False, True]:
+                    with self.subTest(paths=paths, linked=linked, classified=classified), self.fixture() as root:
+                        policy = root / self.POLICY
+                        policy.write_text(self.CLASSIFIED if classified else "fn authorize_request() {}\n")
+                        self.git(root, "add", self.POLICY)
+                        policy.write_text("fn harmless_working_copy() {}\n" if classified else self.CLASSIFIED)
+                        sources = {self.POLICY: [{"id": "original.proof"}]} if linked else {}
+                        with mock.patch.object(MODULE, "ledger_sources", return_value=sources):
+                            status, output, error = self.invoke(paths, cli=not paths)
+                        expected = 0 if linked != classified else 1
+                        self.assertEqual(status, expected, error)
+                        if linked and classified:
+                            self.assertIn("classifications duplicate an exclusion or source-ledger link", error)
+                            self.assertIn(self.POLICY, error)
+                        elif not linked and not classified:
+                            self.assertIn("unclassified", error)
+                        else:
+                            self.assertEqual(error, "")
+                            self.assertIn("1 production Rust candidate(s)", output)
+                            self.assertIn("source=index", output)
+
+    def test_redundant_authority_refusal_retains_selected_scope(self) -> None:
+        # R22: a duplicate on another indexed source cannot change an explicit
+        # clean selection. Selecting that duplicate, including bare --staged,
+        # refuses it. The whole-tree checker separately owns global refusal.
+        other = "crates/runtime/example/src/other.rs"
+        with self.fixture() as root:
+            for relative in [self.POLICY, other]:
+                (root / relative).write_text(self.CLASSIFIED)
+                self.git(root, "add", relative)
+            with mock.patch.object(MODULE, "ledger_sources", return_value={other: [{"id": "original.proof"}]}):
+                status, _, error = self.invoke([self.POLICY])
+                self.assertEqual((status, error), (0, ""))
+                for paths in [[other], []]:
+                    with self.subTest(paths=paths):
+                        status, _, error = self.invoke(paths, cli=not paths)
+                        self.assertEqual(status, 1)
+                        self.assertIn("classifications duplicate an exclusion or source-ledger link", error)
+                        self.assertIn(other, error)
 
     def test_classification_requirements_and_source_share_the_same_index(self) -> None:
         # R3 staged classified source + staged requirement, but both working

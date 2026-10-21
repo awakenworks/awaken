@@ -406,6 +406,18 @@ def ledger_sources() -> dict[str, list[dict[str, object]]]:
     return by_source
 
 
+def duplicate_authority_paths(
+    by_source: dict[str, list[dict[str, object]]],
+    exclusions: dict[str, dict[str, object]],
+    classifications: dict[str, dict[str, object]],
+) -> list[str]:
+    """The same single-authority rule for whole-tree and selected-source gates."""
+    return sorted(
+        path for path in classifications
+        if path in exclusions or bool(by_source.get(path))
+    )
+
+
 def under_production_root(path: pathlib.Path) -> bool:
     """Is this path inside one of the roots the whole-tree inventory walks?"""
 
@@ -433,13 +445,15 @@ def check_staged(paths: list[str]) -> None:
         deleted = set(formal_sources.git_paths(
             ROOT, "diff", "--cached", "--no-renames", "--name-only", "--diff-filter=D", "-z", "--",
         )) if staged else set()
-        registered = (
-            set(ledger_sources())
-            | set(load_exclusions())
-            | set(load_classifications(
-                {item["id"] for item in ledger_obligations()}, load_requirement_ids(),
-            ))
+        by_source = ledger_sources()
+        exclusions = load_exclusions()
+        classifications = load_classifications(
+            {item["id"] for item in ledger_obligations()}, load_requirement_ids(),
         )
+        registered = set(by_source) | set(exclusions) | set(classifications)
+        duplicate_authorities = set(duplicate_authority_paths(
+            by_source, exclusions, classifications,
+        ))
         unclassified: list[tuple[str, list[str]]] = []
         checked = 0
         for argument in paths:
@@ -462,6 +476,8 @@ def check_staged(paths: list[str]) -> None:
             if source is None:
                 continue
             checked += 1
+            if relative in duplicate_authorities:
+                fail("classifications duplicate an exclusion or source-ledger link: " + relative)
             if relative in registered:
                 continue
             signals = detect_signals(source)
@@ -585,10 +601,8 @@ def main() -> None:
     # with it, and a regex drifting under a reviewed decision is not a defect
     # of the commit that edited the file.
     stale = sorted((set(exclusions) | set(classifications)) - paths)
-    redundant_classifications = sorted(
-        path
-        for path in classifications
-        if path in exclusions or bool(by_source.get(path))
+    redundant_classifications = duplicate_authority_paths(
+        by_source, exclusions, classifications,
     )
     if redundant_classifications:
         fail(

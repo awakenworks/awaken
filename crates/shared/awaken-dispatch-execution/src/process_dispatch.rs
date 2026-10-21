@@ -1,6 +1,3 @@
-// @formal surface requirement=session.lifecycle.session_state
-// @formal reason: The existing Session preparation placement read role delegates only to the canonical
-// @formal reason: placement compiler; it opens no store, acquires no claim and performs no effect.
 // @formal entrypoint worker_drain.bounded_cleanup_eventually_exits_without_fabricating_quiescence
 // @formal entrypoint worker_drain.grace_expiry_retains_cancellation_observer
 //! [`ProcessDispatch`] — this process's part in dispatch.
