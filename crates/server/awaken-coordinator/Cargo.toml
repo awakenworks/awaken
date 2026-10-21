@@ -25,7 +25,8 @@ awaken-session-executor.workspace = true
 awaken-dispatch-http.workspace = true
 awaken-resource-worker-http.workspace = true
 awaken-config-service.workspace = true
-awaken-credential-materializer.workspace = true
+# Concrete materialization is selected only by the existing scenario assembly.
+awaken-credential-materializer = { workspace = true, optional = true }
 awaken-ext-skills.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-dispatch = { workspace = true, features = ["durable"] }
@@ -135,6 +136,7 @@ test-support = [
     "dep:awaken-store-inmem",
     "dep:awaken-resource-persistence",
     "dep:awaken-credential-vault",
+    "dep:awaken-credential-materializer",
     "awaken-credential-materializer/authority",
     "awaken-resource-persistence/test-support",
     "awaken-deployment-application/test-support",
