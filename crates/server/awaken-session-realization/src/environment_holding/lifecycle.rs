@@ -241,15 +241,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 awaken_provisioning_contract::SandboxObservationPurpose::Recovery,
             )
             .await
-            .map_err(|error| {
-                RealizationError::pending(
-                    PendingState::ObservationIndeterminate,
-                    format!(
-                        "could not inspect Session sandbox {}: {error}",
-                        handle.sandbox_id
-                    ),
-                )
-            })?;
+            .map_err(|error| RealizationError::observation_pending(&handle.sandbox_id, error))?;
         match observation {
             awaken_provisioning_contract::SandboxObservation::Ready => {
                 self.dispose_and_confirm_retirement(thread, &retiring)
@@ -299,9 +291,10 @@ impl crate::environment_holding::EnvironmentHolding {
                     ),
                 ))
             }
-            awaken_provisioning_contract::SandboxObservation::Incompatible { reason } => Err(
-                RealizationError::conflict(ProjectionConflict::ObservationIncompatible, reason),
-            ),
+            observation => Err(RealizationError::physical_observation_conflict(
+                ProjectionConflict::ObservationIncompatible,
+                &observation,
+            )),
         }
     }
 
@@ -964,15 +957,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 awaken_provisioning_contract::SandboxObservationPurpose::Recovery,
             )
             .await
-            .map_err(|error| {
-                RealizationError::pending(
-                    PendingState::ObservationIndeterminate,
-                    format!(
-                        "could not inspect Session sandbox {}: {error}",
-                        handle.sandbox_id
-                    ),
-                )
-            })?;
+            .map_err(|error| RealizationError::observation_pending(&handle.sandbox_id, error))?;
         admit_original()?;
         // Ready-adoption cause/effect table: C1 the validated exact handle is
         // already Resident or ordinarily Retiring; C2 an exact hidden Candidate
@@ -1097,9 +1082,10 @@ impl crate::environment_holding::EnvironmentHolding {
                 )
                 .await
             }
-            awaken_provisioning_contract::SandboxObservation::Incompatible { reason } => Err(
-                RealizationError::conflict(ProjectionConflict::ObservationIncompatible, reason),
-            ),
+            observation => Err(RealizationError::physical_observation_conflict(
+                ProjectionConflict::ObservationIncompatible,
+                &observation,
+            )),
         }
     }
 

@@ -50,7 +50,7 @@ mod delegate;
 mod deployment_config;
 mod durable_operations;
 mod session_execution_error;
-pub use session_execution_error::{SessionExecutionError, SessionExecutionErrorKind};
+pub use session_execution_error::{SessionExecutionError, SessionExecutionErrorKind, to_run_error};
 mod session_effects;
 
 #[cfg(test)]

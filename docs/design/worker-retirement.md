@@ -33,6 +33,35 @@ survives and the root transfers while every terminal preparation/disposal/ACK
 transition remains disabled. Provider/API witnesses and deployed E2E remain
 separate qualification requirements.
 
+For Kubernetes, an unprepared `WorkerRetirement` observation accepts an exact
+Running original Pod as well as a terminal original Pod when the original guard
+is held, isolation and cleanup authorization are absent, and the exact live PVC
+and Pod are independent of Worker garbage collection. The Running Pod remains
+a retained data source; this observation grants neither execution nor disposal.
+Pending, unknown or missing phases remain unqualified. Terminal cleanup keeps
+its terminal-only guard predicate and its own authorization requirements.
+
+The provider reports this fact as `SandboxObservation::RetainedOriginal`, never
+by changing an observed Running phase to Terminal. The existing observation
+entry point and immutable-incarnation classifier remain authoritative. Its
+identity validation is shared with the ordinary physical-phase projection;
+retention adds only the provider-owned guard, exact claim and GC-independence
+premises. The result is transient, names the original physical incarnation and
+grants no adoption, process closure, source preparation or disposal authority.
+Ordinary adoption and terminal recovery reject it. An unprepared retirement
+read requires this explicit retention fact; Ready or Terminal alone is
+insufficient. An already-prepared root keeps its existing disposal replay.
+
+Known retention-premise failures produce a non-destructive Incompatible
+observation and therefore `retirement_permitted=false`. Provider I/O failures
+remain errors. The Coordinator preserves the existing RunError kind/code at
+its authenticated boundary with a bounded, secret-free stage/identity
+diagnostic; an unavailable dependency must not become absence or permission.
+`WorkerDomainReadFailure` is the transport owner's exported error DTO. Release
+composition tests consume that pinned type; consumers may surface its safe
+fields without inventing an error schema or interpreting operator messages.
+No new durable state, recovery service, provider port or release bypass is added.
+
 ## Amendment 2026-10-16: separate source preparation, physical cleanup and Actor retirement
 
 **Implementation status: Actor retirement remains a target.** Source partitions

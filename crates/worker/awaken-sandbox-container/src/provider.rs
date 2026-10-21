@@ -11,6 +11,30 @@ use awaken_provisioning_contract::{
     SandboxAdoption, SandboxEffectFence, SandboxObservationPurpose, SessionSandbox,
 };
 
+// All three ordinary adoption seams consume this one observation admission.
+// A retention fact is deliberately insufficient for execution or cleanup.
+fn admit_ready_observation(observed: pc::SandboxObservation) -> Result<(), pc::SandboxError> {
+    match observed {
+        pc::SandboxObservation::Ready => Ok(()),
+        pc::SandboxObservation::Provisioning { .. } => Err(pc::SandboxError::not_ready(
+            "container realization is still provisioning",
+        )),
+        pc::SandboxObservation::DefinitivelyUnavailable { .. } => Err(pc::SandboxError::gone(
+            "container realization is definitively unavailable",
+        )),
+        pc::SandboxObservation::Terminal { .. } => Err(pc::SandboxError::conflict(
+            "container realization is terminal and requires fenced authorization",
+        )),
+        pc::SandboxObservation::RetainedOriginal { .. } => Err(pc::SandboxError::conflict(
+            "original source retention is not container adoption authority",
+        )),
+        pc::SandboxObservation::Disposing { .. } => Err(pc::SandboxError::gone(
+            "container realization is already disposing and cannot be adopted",
+        )),
+        pc::SandboxObservation::Incompatible { reason } => Err(pc::SandboxError::conflict(reason)),
+    }
+}
+
 fn rebase_staged_paths(
     plan: &mut ContainerPlan,
     staging: &mut StagedMounts,
@@ -846,32 +870,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 "current container adoption requires the frozen SandboxSpec and effect-aware provider seam",
             ));
         }
-        match self.observe_container_handle(handle).await? {
-            pc::SandboxObservation::Ready => {}
-            pc::SandboxObservation::Provisioning { .. } => {
-                return Err(pc::SandboxError::not_ready(
-                    "container realization is still provisioning",
-                ));
-            }
-            pc::SandboxObservation::DefinitivelyUnavailable { .. } => {
-                return Err(pc::SandboxError::gone(
-                    "container realization is definitively unavailable",
-                ));
-            }
-            pc::SandboxObservation::Terminal { .. } => {
-                return Err(pc::SandboxError::conflict(
-                    "container realization is terminal and requires fenced authorization",
-                ));
-            }
-            pc::SandboxObservation::Disposing { .. } => {
-                return Err(pc::SandboxError::gone(
-                    "container realization is already disposing and cannot be adopted",
-                ));
-            }
-            pc::SandboxObservation::Incompatible { reason } => {
-                return Err(pc::SandboxError::conflict(reason));
-            }
-        }
+        admit_ready_observation(self.observe_container_handle(handle).await?)?;
         self.adopt_observed_container(handle).await
     }
 
@@ -884,35 +883,17 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .adopt_restored_container_with_spec(adoption.spec, adoption.handle, &|| Ok(()))
                 .await;
         }
-        match self
-            .observe_container_adoption(adoption, None, SandboxObservationPurpose::Recovery)
-            .await?
-        {
-            pc::SandboxObservation::Ready => {
-                self.adopt_observed_container_with_spec(
-                    adoption.handle,
-                    adoption.spec,
-                    SandboxObservationPurpose::Recovery,
-                    &|| Ok(()),
-                )
-                .await
-            }
-            pc::SandboxObservation::Provisioning { .. } => Err(pc::SandboxError::not_ready(
-                "container realization is still provisioning",
-            )),
-            pc::SandboxObservation::DefinitivelyUnavailable { .. } => Err(pc::SandboxError::gone(
-                "container realization is definitively unavailable",
-            )),
-            pc::SandboxObservation::Terminal { .. } => Err(pc::SandboxError::conflict(
-                "container realization is terminal and requires fenced authorization",
-            )),
-            pc::SandboxObservation::Disposing { .. } => Err(pc::SandboxError::gone(
-                "container realization is already disposing and cannot be adopted",
-            )),
-            pc::SandboxObservation::Incompatible { reason } => {
-                Err(pc::SandboxError::conflict(reason))
-            }
-        }
+        admit_ready_observation(
+            self.observe_container_adoption(adoption, None, SandboxObservationPurpose::Recovery)
+                .await?,
+        )?;
+        self.adopt_observed_container_with_spec(
+            adoption.handle,
+            adoption.spec,
+            SandboxObservationPurpose::Recovery,
+            &|| Ok(()),
+        )
+        .await
     }
 
     pub(super) async fn adopt_observed_container_with_spec(
@@ -1145,39 +1126,21 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .adopt_restored_container_with_spec(adoption.spec, adoption.handle, &admit)
                 .await;
         }
-        match self
-            .observe_container_adoption(
+        admit_ready_observation(
+            self.observe_container_adoption(
                 adoption,
                 Some(effect_fence),
                 SandboxObservationPurpose::Recovery,
             )
-            .await?
-        {
-            pc::SandboxObservation::Ready => {
-                self.adopt_observed_container_with_spec(
-                    adoption.handle,
-                    adoption.spec,
-                    SandboxObservationPurpose::Recovery,
-                    &admit,
-                )
-                .await
-            }
-            pc::SandboxObservation::Provisioning { .. } => Err(pc::SandboxError::not_ready(
-                "container realization is still provisioning",
-            )),
-            pc::SandboxObservation::DefinitivelyUnavailable { .. } => Err(pc::SandboxError::gone(
-                "container realization is definitively unavailable",
-            )),
-            pc::SandboxObservation::Terminal { .. } => Err(pc::SandboxError::conflict(
-                "container realization is terminal and requires fenced authorization",
-            )),
-            pc::SandboxObservation::Disposing { .. } => Err(pc::SandboxError::gone(
-                "container realization is already disposing and cannot be adopted",
-            )),
-            pc::SandboxObservation::Incompatible { reason } => {
-                Err(pc::SandboxError::conflict(reason))
-            }
-        }
+            .await?,
+        )?;
+        self.adopt_observed_container_with_spec(
+            adoption.handle,
+            adoption.spec,
+            SandboxObservationPurpose::Recovery,
+            &admit,
+        )
+        .await
     }
 }
 

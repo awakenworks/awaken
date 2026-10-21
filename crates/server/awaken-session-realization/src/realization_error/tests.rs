@@ -1,6 +1,57 @@
 use super::*;
 use awaken_session_realization_contract::FailSessionRealization;
 
+#[test]
+fn physical_observation_refusal_preserves_existing_codes_and_operator_text() {
+    // PC1 decision table: two existing caller-owned conflict codes crossed
+    // with Incompatible and retention-only facts. Both reject physical effects;
+    // Incompatible preserves its exact previous text, while retention names the
+    // unexpected fact. PC2 lifecycle observation I/O retains its original
+    // pending classification and diagnostic text after duplicate consolidation.
+    for conflict in [
+        ProjectionConflict::EffectIncompatible,
+        ProjectionConflict::ObservationIncompatible,
+    ] {
+        for observation in [
+            awaken_provisioning_contract::SandboxObservation::Incompatible {
+                reason: "original incompatibility".into(),
+            },
+            awaken_provisioning_contract::SandboxObservation::RetainedOriginal {
+                physical_incarnation: "original-pod".into(),
+            },
+        ] {
+            let error = RealizationError::physical_observation_conflict(conflict, &observation);
+            match error {
+                RealizationError::ProjectionConflict {
+                    conflict: actual,
+                    message,
+                } => {
+                    assert_eq!(actual, conflict);
+                    if matches!(
+                        observation,
+                        awaken_provisioning_contract::SandboxObservation::Incompatible { .. }
+                    ) {
+                        assert_eq!(message, "original incompatibility");
+                    } else {
+                        assert!(message.contains("RetainedOriginal"));
+                    }
+                }
+                other => panic!("PC1 physical conflict lost: {other:?}"),
+            }
+        }
+    }
+    match RealizationError::observation_pending("source", SandboxError::timeout("deadline")) {
+        RealizationError::Pending { state, message } => {
+            assert_eq!(state, PendingState::ObservationIndeterminate);
+            assert_eq!(
+                message,
+                "could not inspect Session sandbox source: sandbox error: deadline"
+            );
+        }
+        other => panic!("PC2 observation failure lost: {other:?}"),
+    }
+}
+
 fn lease() -> awaken_session_configuration_contract::resource::SessionRealizationLease {
     awaken_session_configuration_contract::resource::SessionRealizationLease {
         owner: "worker".into(),

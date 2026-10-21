@@ -1513,19 +1513,42 @@ fn original_guard_gate_admission_preserves_exact_uid_and_retention() {
 }
 
 #[test]
-fn original_guard_retention_requires_a_terminal_unisolated_original() {
-    // Mapping causes: guard absent/present; Failed/Succeeded/Running/Pending;
-    // isolation label absent/true/false. Only terminal, retained, non-isolated
-    // original sources produce eligibility. This gives the finite gate input
-    // its actual Pod meaning; it is still not aggregate disposal authority.
+fn original_guard_retention_is_qualified_by_observation_purpose() {
+    use awaken_provisioning_contract::SandboxObservationPurpose as Purpose;
+    // Cause/effect decision table: C1 original guard; C2 no isolation label;
+    // C3 Pod phase; C4 observation purpose. R1 C1+C2+Running grants only an
+    // unprepared Worker-retirement source read. R2 C1+C2+terminal preserves
+    // eligibility for every purpose. R3 Pending/Unknown/missing phase and R4
+    // !C1 or !C2 deny every purpose, including a false-valued isolation label.
+    // This is a prerequisite, never execution, disposal or full retirement
+    // authority. The API table separately qualifies identities and no writes.
+    let purposes = [
+        Purpose::Recovery,
+        Purpose::TerminalCleanup,
+        Purpose::WorkerRetirement {
+            source_prepared: false,
+        },
+        Purpose::WorkerRetirement {
+            source_prepared: true,
+        },
+    ];
     for guard in [false, true] {
-        for phase in ["Failed", "Succeeded", "Running", "Pending"] {
+        for (phase, expected) in [
+            (Some("Running"), [false, false, true, false]),
+            (Some("Failed"), [true; 4]),
+            (Some("Succeeded"), [true; 4]),
+            (Some("Pending"), [false; 4]),
+            (Some("Unknown"), [false; 4]),
+            (None, [false; 4]),
+        ] {
             for label in [None, Some("true"), Some("false")] {
                 let mut pod = Pod::default();
                 pod.metadata.finalizers =
                     guard.then(|| vec![awaken_container_contract::ORIGINAL_GUARD_FINALIZER.into()]);
-                pod.status =
-                    Some(serde_json::from_value(serde_json::json!({"phase":phase})).unwrap());
+                pod.status = phase.map(|phase| k8s_openapi::api::core::v1::PodStatus {
+                    phase: Some(phase.into()),
+                    ..Default::default()
+                });
                 if let Some(value) = label {
                     pod.metadata.labels = Some(
                         [(
@@ -1536,10 +1559,13 @@ fn original_guard_retention_requires_a_terminal_unisolated_original() {
                         .collect(),
                     );
                 }
-                assert_eq!(
-                    terminal_original_guard_retained(&pod),
-                    guard && matches!(phase, "Failed" | "Succeeded") && label.is_none()
-                );
+                for (purpose, phase_allowed) in purposes.into_iter().zip(expected) {
+                    assert_eq!(
+                        original_guard_retained(&pod, purpose),
+                        guard && label.is_none() && phase_allowed,
+                        "{phase:?} {purpose:?} guard={guard} isolation={label:?}"
+                    );
+                }
             }
         }
     }

@@ -73,6 +73,77 @@ async fn continuation_handle_kind_is_rejected_before_kubernetes_io() {
 }
 
 #[test]
+fn worker_retirement_retention_exhausts_independent_source_premises() {
+    // WR1 graph/table: exact Pod + original guard + GC independence + exact
+    // live claim + no cleanup gate => RetainedOriginal. Removing any premise
+    // => Incompatible, never Disposing/absence. Exhaust 64 metadata bitsets x
+    // four claim identities x fence present/absent (512 cases). Pod deletion
+    // and an effect fence alone confer no extra retention or cleanup authority.
+    // Total-absence input is derived only for fenced Pod/claim absence; the
+    // phase-to-guard mapper and HTTP table bind these inputs to real API data.
+    // Decision-table positive rows: Pod, guard, independent, terminating
+    // claim, cleanup gate, deleting Pod, expected claim, observed claim.
+    // A deleting original is still retained by its guard; both rows keep the
+    // claim live. Everything outside this explicit whitelist must refuse.
+    let permitted_rows = [
+        (true, true, true, false, false, false, Some("p"), Some("p")),
+        (true, true, true, false, false, true, Some("p"), Some("p")),
+    ];
+    for bits in 0u8..64 {
+        let pod = bits & 1 != 0;
+        let guard = bits & 2 != 0;
+        let independent = bits & 4 != 0;
+        let terminating = bits & 8 != 0;
+        let cleanup = bits & 16 != 0;
+        let deleting = bits & 32 != 0;
+        for (expected_uid, observed_uid) in [
+            (None, None),
+            (Some("p"), None),
+            (Some("p"), Some("foreign")),
+            (Some("p"), Some("p")),
+        ] {
+            for fenced in [false, true] {
+                let expected = if permitted_rows.contains(&(
+                    pod,
+                    guard,
+                    independent,
+                    terminating,
+                    cleanup,
+                    deleting,
+                    expected_uid,
+                    observed_uid,
+                )) {
+                    ContinuationObservationDisposition::RetainedOriginal
+                } else {
+                    ContinuationObservationDisposition::Incompatible
+                };
+                let actual =
+                    continuation_observation_disposition(ContinuationObservationEvidence {
+                        purpose: SandboxObservationPurpose::WorkerRetirement {
+                            source_prepared: false,
+                        },
+                        pod_present: pod,
+                        pod_deleting: deleting,
+                        cleanup_gate_held: cleanup,
+                        original_guard_retained: guard,
+                        gc_independent: independent,
+                        expected_uid,
+                        observed_uid,
+                        observed_terminating: terminating,
+                        effect_fenced: fenced,
+                        effect_fenced_total_absence: fenced && !pod && observed_uid.is_none(),
+                    })
+                    .unwrap();
+                assert_eq!(
+                    actual, expected,
+                    "WR1 {bits}/{expected_uid:?}/{observed_uid:?}/{fenced}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn continuation_observation_has_one_disposing_authority() {
     /* Terminal-purpose Pod/PVC observation table KCO1. Causes: C1 exact source Pod A is
      * present/absent; C2 A is live/deleting; C3 Awaken's cleanup finalizer is
@@ -114,7 +185,7 @@ fn continuation_observation_has_one_disposing_authority() {
             pod_present,
             pod_deleting,
             cleanup_gate_held: cleanup_gate,
-            original_terminal_guard: false,
+            original_guard_retained: false,
             gc_independent: false,
             expected_uid: Some("p"),
             observed_uid: observed_claim_uid,
@@ -220,7 +291,7 @@ fn absent_pod_observation_separates_recovery_from_terminal_absence() {
                                 pod_present: false,
                                 pod_deleting: false,
                                 cleanup_gate_held: false,
-                                original_terminal_guard: false,
+                                original_guard_retained: false,
                                 gc_independent: false,
                                 expected_uid: Some("p"),
                                 observed_uid,
@@ -2185,7 +2256,7 @@ fn retained_original_source_observation_never_grants_absence_or_execution() {
                                 pod_present: true,
                                 pod_deleting: true,
                                 cleanup_gate_held: false,
-                                original_terminal_guard: guard,
+                                original_guard_retained: guard,
                                 gc_independent: false,
                                 expected_uid: Some("claim"),
                                 observed_uid: observed,

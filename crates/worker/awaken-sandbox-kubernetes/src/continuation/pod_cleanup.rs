@@ -254,7 +254,10 @@ impl PendingPodCleanup {
     }
 }
 
-pub(crate) fn terminal_original_guard_retained(pod: &Pod) -> bool {
+pub(crate) fn original_guard_retained(
+    pod: &Pod,
+    purpose: awaken_provisioning_contract::SandboxObservationPurpose,
+) -> bool {
     pod.metadata.finalizers.as_ref().is_some_and(|values| {
         values
             .iter()
@@ -265,12 +268,20 @@ pub(crate) fn terminal_original_guard_retained(pod: &Pod) -> bool {
         .as_ref()
         .and_then(|labels| labels.get(awaken_container_contract::ISOLATION_LABEL))
         .is_none()
-        && matches!(
-            pod.status
-                .as_ref()
-                .and_then(|status| status.phase.as_deref()),
-            Some("Failed" | "Succeeded")
-        )
+        && match pod
+            .status
+            .as_ref()
+            .and_then(|status| status.phase.as_deref())
+        {
+            Some("Failed" | "Succeeded") => true,
+            Some("Running") => matches!(
+                purpose,
+                awaken_provisioning_contract::SandboxObservationPurpose::WorkerRetirement {
+                    source_prepared: false
+                }
+            ),
+            _ => false,
+        }
 }
 
 pub(crate) fn pod_cleanup_gate_held(pod: &Pod) -> bool {
@@ -344,7 +355,11 @@ pub(crate) async fn acquire_pod_cleanup_gate_with_authorization(
         observed.metadata.resource_version.is_some(),
         observed.metadata.deletion_timestamp.is_some(),
         has_gate,
-        authorization.aggregate().is_some() && terminal_original_guard_retained(observed),
+        authorization.aggregate().is_some()
+            && original_guard_retained(
+                observed,
+                awaken_provisioning_contract::SandboxObservationPurpose::TerminalCleanup,
+            ),
     );
     match admission {
         PodCleanupGateAdmission::Acquire

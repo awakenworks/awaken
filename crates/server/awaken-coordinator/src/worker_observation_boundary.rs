@@ -353,6 +353,49 @@ fn authenticate_observer(
     }
 }
 
+/// The authenticated observation boundary exposes classification and exact
+/// context, never operator details (which may contain provider credentials).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WorkerDomainReadFailure {
+    pub identity: awaken_worker_registry::WorkerIdentity,
+    pub stage: String,
+    pub kind: String,
+    pub code: String,
+}
+
+fn domain_read_failure(
+    identity: &awaken_worker_registry::WorkerIdentity,
+    stage: &'static str,
+    error: awaken_session_types::RunError,
+) -> axum::response::Response {
+    use awaken_session_types::RunErrorKind;
+    let (status, kind) = match error.kind {
+        RunErrorKind::BadRequest => (StatusCode::BAD_REQUEST, "bad_request"),
+        RunErrorKind::Conflict => (StatusCode::CONFLICT, "conflict"),
+        RunErrorKind::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+        RunErrorKind::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+    };
+    tracing::warn!(
+        worker_id = %identity.worker_id,
+        incarnation_id = %identity.incarnation_id,
+        generation = identity.generation,
+        stage,
+        kind,
+        code = %error.code,
+        "Worker domain observation failed"
+    );
+    (
+        status,
+        Json(WorkerDomainReadFailure {
+            identity: identity.clone(),
+            stage: stage.into(),
+            kind: kind.into(),
+            code: error.code,
+        }),
+    )
+        .into_response()
+}
+
 async fn handle_domain(
     State(state): State<DomainState>,
     headers: HeaderMap,
@@ -381,13 +424,46 @@ async fn handle_domain(
     }
     let registered = match state.directory.incarnation(&identity).await {
         Ok(Some(record)) if record.snapshot.identity == identity => record,
-        Ok(Some(_)) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
-        Ok(None) => return StatusCode::CONFLICT.into_response(),
-        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Ok(Some(_)) => {
+            return domain_read_failure(
+                &identity,
+                "registry",
+                awaken_session_types::RunError::unavailable_classified(
+                    "worker_identity_changed",
+                    "Registry identity changed",
+                ),
+            );
+        }
+        Ok(None) => {
+            return domain_read_failure(
+                &identity,
+                "registry",
+                awaken_session_types::RunError::conflict_classified(
+                    "worker_not_registered",
+                    "Worker is not registered",
+                ),
+            );
+        }
+        Err(error) => {
+            return domain_read_failure(
+                &identity,
+                "registry",
+                awaken_session_types::RunError::unavailable_classified(
+                    "worker_registry_unavailable",
+                    error.to_string(),
+                ),
+            );
+        }
     };
     let dispatch = match state.host.session_runs().coordinator_dispatch() {
         Ok(store) => store,
-        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(error) => {
+            return domain_read_failure(
+                &identity,
+                "dispatch_owner",
+                awaken_session_executor::to_run_error(error),
+            );
+        }
     };
     let owner = identity.lease_owner();
     let physical_attempt_active =
@@ -395,11 +471,29 @@ async fn handle_domain(
             .await
         {
             Ok(active) => active,
-            Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            Err(error) => {
+                return domain_read_failure(
+                    &identity,
+                    "physical_attempts",
+                    awaken_session_types::RunError::unavailable_classified(
+                        "worker_physical_read_unavailable",
+                        error.to_string(),
+                    ),
+                );
+            }
         };
     let work_claims_active = match state.environments.has_worker_owner_claims(&owner).await {
         Ok(active) => active,
-        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(error) => {
+            return domain_read_failure(
+                &identity,
+                "work_claims",
+                awaken_session_types::RunError::unavailable_classified(
+                    "worker_work_read_unavailable",
+                    error.to_string(),
+                ),
+            );
+        }
     };
     let mut observation = WorkerDomainObservation {
         registered,
@@ -418,7 +512,7 @@ async fn handle_domain(
         };
     let sessions = match state.sessions.observe_worker_realizations(read).await {
         Ok(observed) => observed,
-        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(error) => return domain_read_failure(&identity, "session_realizations", error),
     };
     observation.session_realizations_active = sessions.occupied;
     if retirement {
@@ -653,6 +747,108 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+
+    #[tokio::test]
+    async fn domain_read_errors_preserve_fault_class_and_scope_without_operator_details() {
+        // DR3 decision table: all four neutral fault kinds x misleading/ordinary
+        // codes x the five actual read stages. HTTP follows kind, never code
+        // prose; the original code and exact Worker identity survive. DR4 a
+        // large sensitive operator message is absent from the bounded JSON and
+        // no failure can expose a successful retirement permission field.
+        let identity = awaken_worker_registry::WorkerIdentity::new("worker-a", "boot-a", 7);
+        for stage in [
+            "registry",
+            "dispatch_owner",
+            "physical_attempts",
+            "work_claims",
+            "session_realizations",
+        ] {
+            for (error, status, kind, code) in [
+                (
+                    awaken_session_types::RunError::bad_request("private-detail".repeat(8192)),
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    "invalid_request",
+                ),
+                (
+                    awaken_session_types::RunError::bad_request_classified(
+                        "unavailable",
+                        "private-detail",
+                    ),
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    "unavailable",
+                ),
+                (
+                    awaken_session_types::RunError::conflict("private-detail"),
+                    StatusCode::CONFLICT,
+                    "conflict",
+                    "conflict",
+                ),
+                (
+                    awaken_session_types::RunError::conflict_classified(
+                        "internal",
+                        "private-detail",
+                    ),
+                    StatusCode::CONFLICT,
+                    "conflict",
+                    "internal",
+                ),
+                (
+                    awaken_session_types::RunError::internal("private-detail"),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal",
+                ),
+                (
+                    awaken_session_types::RunError::classified(
+                        "environment_unavailable",
+                        "private-detail",
+                    ),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "environment_unavailable",
+                ),
+                (
+                    awaken_session_types::RunError::unavailable("private-detail"),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "unavailable",
+                ),
+                (
+                    awaken_session_types::RunError::unavailable_classified(
+                        "environment_rejected",
+                        "private-detail",
+                    ),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "environment_rejected",
+                ),
+            ] {
+                let response = domain_read_failure(&identity, stage, error);
+                assert_eq!(response.status(), status, "DR3 {stage}/{kind}/{code}");
+                let body = axum::body::to_bytes(response.into_body(), 4096)
+                    .await
+                    .unwrap();
+                assert!(
+                    !String::from_utf8_lossy(&body).contains("private-detail"),
+                    "DR4"
+                );
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(
+                    body,
+                    serde_json::json!({"identity":identity,"stage":stage,"kind":kind,"code":code})
+                );
+                let exported: WorkerDomainReadFailure =
+                    serde_json::from_value(body.clone()).unwrap();
+                assert_eq!(
+                    serde_json::to_value(exported).unwrap(),
+                    body,
+                    "DR3 exported wire contract"
+                );
+            }
+        }
+    }
 
     pub(super) struct BootstrapBinding {
         pub(super) calls: std::sync::atomic::AtomicUsize,

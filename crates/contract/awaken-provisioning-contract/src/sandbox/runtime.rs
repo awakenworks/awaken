@@ -71,6 +71,11 @@ pub enum SandboxObservation {
     /// Keeping this distinct from absence prevents a terminal Pod/container
     /// from being acknowledged without deletion.
     Terminal { physical_incarnation: String },
+    /// The provider positively observed the exact original data source retained
+    /// independently of its retiring Worker. This read-only result is for
+    /// WorkerRetirement only: it says nothing about physical termination and
+    /// grants no adoption, source preparation, disposal or completion authority.
+    RetainedOriginal { physical_incarnation: String },
     /// The exact physical realization has crossed its provider-owned durable
     /// cleanup gate. Live output, credential, checkpoint, and Memory reads are
     /// no longer permitted; only replay of already-durable receipts and exact

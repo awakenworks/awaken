@@ -243,6 +243,44 @@ async fn destination_boundary_requires_exact_auth_root_registry_and_pod() {
     };
     let query = format!("session_id=relay-session&attachment_id={attachment}&version=1");
     let app = domain_router_with_authenticator(state.clone());
+    // DR1 through the production private Router: authenticated unknown exact
+    // Registry identity => Conflict with its secret-free stage/code/identity,
+    // never an empty diagnostic or permission. DR2 unauthenticated callers
+    // stop before any internal diagnostic. Reuse the actual composed Router.
+    let absent = awaken_worker_contract::WorkerIdentity::new("unknown-worker", "unknown-boot", 1);
+    let domain_path = format!(
+        "{WORKER_DOMAIN_PATH}?worker_id={}&incarnation_id={}&generation={}&qualify_retirement=true",
+        absent.worker_id, absent.incarnation_id, absent.generation,
+    );
+    for (token, expected) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some("broad-token"), StatusCode::CONFLICT),
+    ] {
+        let mut request = Request::get(&domain_path);
+        if let Some(token) = token {
+            request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "DR1/DR2 {token:?}");
+        if token.is_some() {
+            let body = axum::body::to_bytes(response.into_body(), 16_384)
+                .await
+                .unwrap();
+            assert!(
+                !body.is_empty(),
+                "DR1 exact refusal must retain its diagnostic"
+            );
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["stage"], "registry");
+            assert_eq!(body["code"], "worker_not_registered");
+            assert_eq!(body["identity"], serde_json::to_value(&absent).unwrap());
+            assert!(body.get("retirement_permitted").is_none());
+        }
+    }
     // B1 missing/wrong/relay credential -> 401 before provider calls; B2 exact
     // control credential + unregistered id + original provider seal -> 200;
     // B3 return the original anchor, never a synthetic incarnation.
