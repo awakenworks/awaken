@@ -46,14 +46,16 @@ def workflow_errors(text: str) -> list[str]:
         if guard not in job:
             errors.append("cold dependency tier must enforce the conditional trust-root policy")
     # tomllib is part of the checker runtime. Ubuntu 22.04's default Python
-    # predates it; bootstrap the selected interpreter before either native tier.
+    # predates it; bootstrap the selected interpreter before every quality job consumes repository checkers.
     setup = "uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6"
-    for name in ("dependency_fetch", "trusted_host_portability"):
+    for name in ("dependency_fetch", "trusted_host_portability", "full_quality", "performance_summary"):
         native = re.search(r"(?ms)^  " + name + r":\n(.*?)(?=^  \S|\Z)", text)
         body = native.group(1) if native else ""
         bootstrap = setup + '\n        with:\n          python-version: "3.12"'
         first_python = re.search(r"(?m)^.*(?:run: |^ +)python3? scripts/ci/", body)
-        if (body.count(bootstrap) != 1 or first_python is None
+        step = re.search(r"(?m)^      - " + re.escape(bootstrap) + r"\n(?:(?!^      - ).|\n)*", body)
+        if (body.count(bootstrap) != 1 or first_python is None or step is None
+                or re.search(r"(?m)^        (?:if|continue-on-error):", step.group(0))
                 or body.index(bootstrap) > first_python.start()):
             errors.append(f"{name} must bootstrap the pinned Python before its first checker")
     for name in ("trusted_host_portability", "full_quality"):
