@@ -21,6 +21,7 @@ if [ "$#" -ne 0 ]; then
 fi
 source scripts/ci/_cargo_target.sh
 awaken_configure_cargo_target "$PWD"
+source scripts/ci/_rust_test_execution.sh
 . e2e/k3d/harness.sh
 
 CLUSTER="${AWAKEN_K8S_CLUSTER:-awaken-k8s-e2e}"
@@ -271,16 +272,16 @@ AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-kubernetes \
 # CapacityUnavailable, leave no Pod behind, and succeed once there is room.
 AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-kubernetes \
   --test k8s_capacity_e2e -- --nocapture --test-threads=1
-# The PVC initializer now belongs to Session realization. A stale package or
-# filter can report success with zero tests, so verify the exact current target
-# before asking the existing disposable cluster to run it.
-PVC_TEST=cache_volume::tests::k8s_live_pvc_initialization_is_readable_and_reused
-PVC_TESTS=$(cargo test --locked -p awaken-session-realization --features k8s-tests --lib \
-  "$PVC_TEST" -- --list --exact)
-grep -Fqx "$PVC_TEST: test" <<<"$PVC_TESTS" \
-  || { echo "exact live PVC qualification test was not selected" >&2; exit 1; }
-AWAKEN_K8S_E2E=1 cargo test --locked -p awaken-session-realization --features k8s-tests --lib \
-  "$PVC_TEST" -- --exact --nocapture
+# KQ3 the PVC case belongs to realization after extraction. Use the existing
+# required executor: the same exact case must be listed and then pass with the
+# live dependency enabled. KQ4 a stale owner/filter selects zero; KQ5 a missing
+# live switch skips; KQ6 an assertion/substrate failure returns nonzero. All
+# three refuse qualification rather than reporting a successful empty run.
+AWAKEN_K8S_E2E=1 run_required_rust_tests -p awaken-session-realization \
+  --features k8s-tests --lib --locked \
+  cache_volume::tests::k8s_live_pvc_initialization_is_readable_and_reused \
+  --require-case=cache_volume::tests::k8s_live_pvc_initialization_is_readable_and_reused \
+  -- --exact
 # Pod-bound Worker identity and independent stop are qualified by the existing
 # distributed-control k3d gate, which first verifies exact test selection.
 

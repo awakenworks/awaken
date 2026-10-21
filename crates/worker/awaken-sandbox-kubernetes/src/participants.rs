@@ -14,7 +14,7 @@ use super::{
     K8sRuntime, SANDBOX_ATTEMPT_ANNOTATION, pod_effect_fence, pod_owner_reference,
     projected_content_delete_preconditions, verify_projected_content,
 };
-use super::{lifecycle, projection_verification, realization};
+use super::{lifecycle, realization};
 use awaken_container_contract::RuntimeError;
 use awaken_container_contract::{
     ISOLATION_ID_ANNOTATION, REQUEST_DIGEST_ANNOTATION, original_request_metadata_matches,
@@ -26,10 +26,12 @@ use awaken_sandbox_container::{
 };
 use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
-use kube::api::{DeleteParams, PostParams};
+use kube::api::DeleteParams;
 use kube::{Api, Resource};
 
 pub(super) const DECLARATION: &str = "awaken.dev/projected-object-declaration";
+pub(super) mod metadata;
+
 const RESULTS: &str = "awaken.dev/projected-object-results";
 
 enum DesiredObject {
@@ -598,14 +600,64 @@ pub(super) async fn create_objects(
 
 pub(super) async fn publish(
     runtime: &K8sRuntime,
-    mut pod: Pod,
+    pod: Pod,
     pod_uid: &str,
     participants: &KubernetesProjectedParticipants,
     admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<(), RuntimeError> {
-    if let Some(previous) = retained(&pod)? {
+    // Preflight stays before the original admit callback, preserving the
+    // original malformed-input error order. The same pure law is reused after
+    // every 409; only GET/replace mechanics belong to the shared Pod loop.
+    if publication_replacement(runtime, &pod, pod_uid, participants)?.is_none() {
+        return admit();
+    }
+    let name = pod
+        .metadata
+        .name
+        .as_deref()
+        .ok_or_else(|| backend("projected-object handoff has no Pod name"))?;
+    let replacement = |observed: &Pod| {
+        metadata::verify_pod_metadata_identity(&pod, observed)?;
+        if observed.metadata.uid.as_deref() != Some(pod_uid) {
+            return Err(backend(
+                "projected-object handoff CAS changed its exact evidence",
+            ));
+        }
+        publication_replacement(runtime, observed, pod_uid, participants)
+    };
+    let verify = |written: &Pod| {
+        metadata::verify_pod_metadata_identity(&pod, written)?;
+        if written.metadata.uid.as_deref() != Some(pod_uid)
+            || retained(written)?.as_ref() != Some(participants)
+        {
+            return Err(backend(
+                "projected-object handoff CAS changed its exact evidence",
+            ));
+        }
+        Ok(())
+    };
+    super::finalizer::update_pod_metadata(
+        &runtime.pods(),
+        name,
+        Some(pod.clone()),
+        true,
+        Some(admit),
+        &replacement,
+        &verify,
+    )
+    .await
+    .map(|_| ())
+}
+
+fn publication_replacement(
+    runtime: &K8sRuntime,
+    pod: &Pod,
+    pod_uid: &str,
+    participants: &KubernetesProjectedParticipants,
+) -> Result<Option<Pod>, RuntimeError> {
+    if let Some(previous) = retained(pod)? {
         return if &previous == participants {
-            admit()
+            Ok(None)
         } else {
             Err(backend(
                 "original projected-object results cannot be overwritten",
@@ -617,7 +669,7 @@ pub(super) async fn publish(
         .iter()
         .map(|object| (object.kind, object.name.clone()))
         .collect::<Vec<_>>();
-    if declaration(&pod)? != actual
+    if declaration(pod)? != actual
         || participants.namespace() != runtime.namespace
         || pod.metadata.uid.as_deref() != Some(pod_uid)
     {
@@ -635,57 +687,25 @@ pub(super) async fn publish(
             "projected-object handoff has no exact Pod resourceVersion",
         ));
     }
-    let name = pod
-        .metadata
+    pod.metadata
         .name
         .as_deref()
-        .ok_or_else(|| backend("projected-object handoff has no Pod name"))?
-        .to_owned();
-    pod.metadata
+        .ok_or_else(|| backend("projected-object handoff has no Pod name"))?;
+    let mut replacement = pod.clone();
+    replacement
+        .metadata
         .annotations
         .get_or_insert_with(Default::default)
         .insert(
             RESULTS.into(),
             serde_json::to_string(&participants).map_err(backend)?,
         );
-    if retained(&pod)?.as_ref() != Some(participants) {
+    if retained(&replacement)?.as_ref() != Some(participants) {
         return Err(backend(
             "original projected-object handoff lacks its original origin",
         ));
     }
-    admit()?;
-    let written = runtime
-        .pods()
-        .replace(&name, &PostParams::default(), &pod)
-        .await;
-    admit()?;
-    let written = written.map_err(backend)?;
-    projection_verification::verify_pod_projection(&pod, &written, None)?;
-    if pod
-        .metadata
-        .annotations
-        .as_ref()
-        .and_then(|values| values.get(SANDBOX_ATTEMPT_ANNOTATION))
-        != written
-            .metadata
-            .annotations
-            .as_ref()
-            .and_then(|values| values.get(SANDBOX_ATTEMPT_ANNOTATION))
-        || pod_effect_fence(pod.metadata.annotations.as_ref())?
-            != pod_effect_fence(written.metadata.annotations.as_ref())?
-    {
-        return Err(backend(
-            "original projected-object CAS changed its effect or attempt",
-        ));
-    }
-    if written.metadata.uid.as_deref() != Some(pod_uid)
-        || retained(&written)?.as_ref() != Some(participants)
-    {
-        return Err(backend(
-            "projected-object handoff CAS changed its exact evidence",
-        ));
-    }
-    Ok(())
+    Ok(Some(replacement))
 }
 
 async fn observe_kind<K>(

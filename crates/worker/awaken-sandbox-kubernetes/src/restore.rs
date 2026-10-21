@@ -171,7 +171,8 @@ pub(super) async fn recover(
             ));
         }
     }
-    realization::transfer_runtime_owner(&runtime.pods(), pod, &uid, &runtime.owner_id).await?;
+    participants::metadata::transfer_runtime_owner(&runtime.pods(), pod, &uid, &runtime.owner_id)
+        .await?;
     let wait = runtime.unschedulable_wait;
     realization::await_pod_ready(&runtime.pods(), &name, wait, runtime.clock.as_ref()).await?;
     Ok(Some(awaken_sandbox_container::RuntimeRestoreTarget {

@@ -1,28 +1,184 @@
 // @formal entrypoint sandbox_continuation.distinct_mutable_roots_share_one_retained_claim_without_aliasing
+// @formal surface obligation=sandbox.admission_never_weakens_isolation
+// @formal surface obligation=sandbox.admission_requires_requested_capabilities
+// @formal surface obligation=external.container_and_kernel_isolation
+// @formal reason: The original typed operator-artifact validation and demanded-control Pod renderer
+// @formal reason: live with this pure producer; the unchanged control consumer still verifies the
+// @formal reason: exact incarnation before I/O. This relocation adds no proof or admission rule.
 //! Pure projection of neutral bind material into Kubernetes objects.
 
 use std::collections::BTreeMap;
 
+use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_control::SandboxControlServiceKind;
+use awaken_sandbox_control::{
+    REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH, SANDBOX_CONTROL_DIRECTORY_PATH,
+};
+use awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH;
 use k8s_openapi::api::core::v1::{
     ConfigMap, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar,
     LocalObjectReference, PersistentVolumeClaimVolumeSource, Pod, PodSecurityContext, PodSpec,
     Secret, SecretVolumeSource, Volume, VolumeMount,
 };
+use k8s_openapi::api::core::v1::{ContainerPort, ExecAction, Probe};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 
 use super::names::{cfg_owner_label, configmap_name, credential_secret_name, pod_name};
 use super::pod_security::{
     egress_label, hardened_security_context, pod_resources, sandbox_network_labels,
 };
-use super::{
-    K8sRepositoryGatewayTrust, K8sSandboxControlForwarder, lifecycle, live_inputs, memory,
-    projection, sandbox_control,
-};
+use super::{K8sRepositoryGatewayTrust, lifecycle, live_inputs, memory, projection};
 use awaken_provisioning_contract::SandboxEffectFence;
 use awaken_sandbox_container::engine::{WritableRootTopology, writable_root_topology};
 use awaken_sandbox_container::{BindPlan, ContainerPlan};
+
+pub const DEFAULT_REPOSITORY_GIT_CONTROL_PORT: u16 = 7778;
+pub(super) const SANDBOX_CONTROL_CONTAINER: &str = "sandbox-control";
+pub(super) const SANDBOX_CONTROL_VOLUME: &str = "sandbox-control";
+
+/// Concrete no-secret bridge installed in one hosted Kubernetes Pod.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct K8sSandboxControlForwarder {
+    image: String,
+    executable: String,
+    port: u16,
+}
+
+impl K8sSandboxControlForwarder {
+    pub fn new(
+        image: impl Into<String>,
+        executable: impl Into<String>,
+        port: u16,
+    ) -> Result<Self, RuntimeError> {
+        let image = image.into();
+        let executable = executable.into();
+        let image_is_pinned = image
+            .rsplit_once("@sha256:")
+            .is_some_and(|(repository, digest)| {
+                !repository.is_empty()
+                    && digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            });
+        if image.trim() != image
+            || !image_is_pinned
+            || image
+                .chars()
+                .any(|character| character.is_whitespace() || character == '\0')
+            // This executable runs inside the Linux Pod, independent of the
+            // Coordinator/Worker host's native path syntax.
+            || !executable.starts_with('/')
+            || executable
+                .chars()
+                .any(|character| matches!(character, '\r' | '\n' | '\0'))
+            || port == 0
+        {
+            return Err(RuntimeError::Backend(
+                "Kubernetes Sandbox control forwarder requires a digest-pinned operator image, absolute executable, and non-zero port".into(),
+            ));
+        }
+        Ok(Self {
+            image,
+            executable,
+            port,
+        })
+    }
+
+    pub(super) const fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+pub(super) fn control_projection(
+    forwarder: &K8sSandboxControlForwarder,
+) -> (Volume, VolumeMount, Container) {
+    let volume = Volume {
+        name: SANDBOX_CONTROL_VOLUME.into(),
+        empty_dir: Some(EmptyDirVolumeSource::default()),
+        ..Default::default()
+    };
+    let agent_mount = VolumeMount {
+        name: SANDBOX_CONTROL_VOLUME.into(),
+        mount_path: SANDBOX_CONTROL_DIRECTORY_PATH.into(),
+        read_only: Some(true),
+        ..Default::default()
+    };
+    let forwarder_container = Container {
+        name: SANDBOX_CONTROL_CONTAINER.into(),
+        image: Some(forwarder.image.clone()),
+        image_pull_policy: Some("IfNotPresent".into()),
+        command: Some(vec![
+            forwarder.executable.clone(),
+            "control-forwarder".into(),
+            "--unix".into(),
+            REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH.into(),
+            "--listen".into(),
+            format!("127.0.0.1:{}", forwarder.port),
+            "--ready".into(),
+            REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH.into(),
+        ]),
+        ports: Some(vec![ContainerPort {
+            container_port: i32::from(forwarder.port),
+            name: Some(SANDBOX_CONTROL_CONTAINER.into()),
+            protocol: Some("TCP".into()),
+            ..Default::default()
+        }]),
+        volume_mounts: Some(vec![VolumeMount {
+            name: SANDBOX_CONTROL_VOLUME.into(),
+            mount_path: SANDBOX_CONTROL_DIRECTORY_PATH.into(),
+            read_only: Some(false),
+            ..Default::default()
+        }]),
+        // The trusted forwarder writes this generation marker only after both
+        // Unix and loopback listeners bind. The same digest-pinned binary checks
+        // PID+starttime through exec; no probe connects to or consumes the
+        // one-exchange business port.
+        readiness_probe: Some(Probe {
+            exec: Some(ExecAction {
+                command: Some(vec![
+                    forwarder.executable.clone(),
+                    "control-forwarder-ready".into(),
+                    "--marker".into(),
+                    REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH.into(),
+                ]),
+            }),
+            failure_threshold: Some(3),
+            initial_delay_seconds: Some(0),
+            period_seconds: Some(1),
+            success_threshold: Some(1),
+            timeout_seconds: Some(1),
+            ..Default::default()
+        }),
+        security_context: Some(hardened_security_context()),
+        termination_message_path: Some("/dev/termination-log".into()),
+        termination_message_policy: Some("File".into()),
+        ..Default::default()
+    };
+    (volume, agent_mount, forwarder_container)
+}
+
+/// Render the canonical demanded-control Pod shape using one validated,
+/// digest-pinned operator forwarder artifact.
+#[must_use]
+pub fn pod_for_plan_with_control_forwarder(
+    id: &str,
+    plan: &ContainerPlan,
+    forwarder: &K8sSandboxControlForwarder,
+) -> Pod {
+    build_pod_with_continuation(
+        id,
+        plan,
+        &None,
+        None,
+        &[],
+        None,
+        None,
+        Some(forwarder),
+        None,
+    )
+}
 
 pub(super) fn build_pod(
     id: &str,
@@ -361,7 +517,7 @@ pub(crate) fn build_pod_with_continuation(
             .contains(&SandboxControlServiceKind::RepositoryGitCredential)
             && let Some(forwarder) = sandbox_control_forwarder
         {
-            let (volume, agent_mount, forwarder_container) = sandbox_control::projection(forwarder);
+            let (volume, agent_mount, forwarder_container) = control_projection(forwarder);
             volumes.push(volume);
             agent_mounts.push(agent_mount);
             sidecars.push(forwarder_container);

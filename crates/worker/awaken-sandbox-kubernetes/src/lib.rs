@@ -125,9 +125,12 @@ use pod_evidence::{
 };
 #[cfg(test)]
 use pod_projection::build_pod;
-pub use pod_projection::pod_for_plan;
 #[cfg(test)]
 use pod_projection::{CONFIGMAP_KEY, build_configmap, build_credential_secret};
+pub use pod_projection::{
+    DEFAULT_REPOSITORY_GIT_CONTROL_PORT, K8sSandboxControlForwarder, pod_for_plan,
+    pod_for_plan_with_control_forwarder,
+};
 use pod_projection::{build_pod_with_continuation, content_binds};
 #[cfg(test)]
 use pod_security::pod_resources;
@@ -145,10 +148,6 @@ pub use process_termination::{
 };
 use realization::{PodReadiness, create_or_verify, pod_readiness, stamp_pod_realization};
 pub(crate) use realization::{create_or_verify_exact, stamp_realization};
-pub use sandbox_control::{
-    DEFAULT_REPOSITORY_GIT_CONTROL_PORT, K8sSandboxControlForwarder,
-    pod_for_plan_with_control_forwarder,
-};
 
 pub use create_ledger::{K8sWorkerCreateLedger, WorkerCreateLedgerState};
 pub use create_transport::K8sCreateTransport;
