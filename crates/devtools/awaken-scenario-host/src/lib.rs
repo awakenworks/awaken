@@ -1474,9 +1474,8 @@ pub async fn build_config_router() -> Router {
         )),
         // A fresh in-memory environment registry satisfies the author port for the
         // scenario host (no durable env state in scope).
-        awaken_protocol_managed_testkit::environment_components(awaken_time::system_clock())
-            .0
-            .application(),
+        awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock())
+            .application,
         Arc::new(awaken_admin_assistant::TracingAuditSink),
     );
     let host = resource_host_with_deployment(model, model_ref, deployment)

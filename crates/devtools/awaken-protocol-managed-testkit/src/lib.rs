@@ -47,7 +47,6 @@ use awaken_environment_application::execution::{
     CoordinatorEnvironmentRegistrar, EnvironmentExecutionApplication,
 };
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrar;
-use awaken_protocol_managed::EnvironmentAuthoringState;
 /// Re-exported so fixture users import the state together with the
 /// [`ManagedStateFixture`] constructors that build it.
 pub use awaken_protocol_managed::ManagedState;
@@ -107,24 +106,6 @@ pub fn environment_fixture(clock: Arc<dyn awaken_time::WallClock>) -> Environmen
         sandbox_policies,
         execution: Arc::new(EnvironmentExecutionApplication::new(work, catalog)),
     }
-}
-
-/// The Managed Environment authoring surface and execution projection.
-#[must_use]
-pub fn environment_components(
-    clock: Arc<dyn awaken_time::WallClock>,
-) -> (
-    Arc<EnvironmentAuthoringState>,
-    Arc<EnvironmentExecutionApplication>,
-) {
-    let fixture = environment_fixture(clock);
-    (
-        Arc::new(EnvironmentAuthoringState::new(
-            fixture.application,
-            fixture.sandbox_policies,
-        )),
-        fixture.execution,
-    )
 }
 
 /// Volatile `ManagedState` constructors for tests outside the adapter crate.

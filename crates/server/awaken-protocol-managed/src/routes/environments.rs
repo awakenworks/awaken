@@ -37,40 +37,8 @@ use awaken_environment_contract::{
 };
 pub(crate) mod work_routes;
 
-/// Control-owned Environment definitions, immutable revision history, policy
-/// versions, and publication application.
-pub struct EnvironmentAuthoringState {
-    application: Arc<EnvironmentApplication>,
-    sandbox_policies: Option<Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>>,
-}
-
-impl EnvironmentAuthoringState {
-    #[must_use]
-    pub fn new(
-        application: Arc<EnvironmentApplication>,
-        sandbox_policies: Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>,
-    ) -> Self {
-        Self {
-            application,
-            sandbox_policies: Some(sandbox_policies),
-        }
-    }
-
-    #[must_use]
-    pub fn application(&self) -> Arc<EnvironmentApplication> {
-        self.application.clone()
-    }
-
-    #[must_use]
-    pub fn sandbox_policy_store(
-        &self,
-    ) -> Option<Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>> {
-        self.sandbox_policies.clone()
-    }
-}
-
-/// Mount Control-owned definition and sandbox-policy authoring routes.
-pub fn environment_authoring_router(state: Arc<EnvironmentAuthoringState>) -> Router {
+/// Mount definition authoring over the canonical Control application.
+pub fn environment_authoring_router(state: Arc<EnvironmentApplication>) -> Router {
     Router::new()
         .route("/v1/environments", post(create_env).get(list_envs))
         .route(
@@ -191,14 +159,13 @@ fn bad_request(message: impl Into<String>) -> WireError {
 // ---- Environment routes ----------------------------------------------------
 
 async fn create_env(
-    State(state): State<Arc<EnvironmentAuthoringState>>,
+    State(state): State<Arc<EnvironmentApplication>>,
     headers: HeaderMap,
     ManagedJson(params): ManagedJson<EnvironmentCreateParams>,
 ) -> Result<Json<Environment>, WireError> {
     let config = canonical_environment_config(params.config.unwrap_or_default());
     let command_id = environment_command_id(&headers)?;
     let item = state
-        .application
         .create(awaken_environment_contract::CreateEnvironmentCommand {
             command_id,
             name: params.name,
@@ -289,14 +256,13 @@ mod command_identity_tests {
 }
 
 async fn retrieve_env(
-    State(state): State<Arc<EnvironmentAuthoringState>>,
+    State(state): State<Arc<EnvironmentApplication>>,
     Path(id): Path<String>,
 ) -> Result<Json<Environment>, WireError> {
     if id == awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID {
         return Err(not_found("environment"));
     }
     let item = state
-        .application
         .get(&id)
         .await
         .map_err(map_environment_application_error)?
@@ -321,13 +287,13 @@ pub(crate) struct EnvironmentListParams {
 }
 
 async fn list_envs(
-    State(state): State<Arc<EnvironmentAuthoringState>>,
+    State(state): State<Arc<EnvironmentApplication>>,
     ManagedQuery(query): ManagedQuery<EnvironmentListParams>,
 ) -> Result<Json<PageCursor<Environment>>, WireError> {
     let definitions = if query.include_archived.unwrap_or(false) {
-        state.application.list_all().await
+        state.list_all().await
     } else {
-        state.application.list_active().await
+        state.list_active().await
     }
     .map_err(map_environment_application_error)?;
     let data: Vec<Environment> = definitions
@@ -340,7 +306,7 @@ async fn list_envs(
 }
 
 async fn update_env(
-    State(state): State<Arc<EnvironmentAuthoringState>>,
+    State(state): State<Arc<EnvironmentApplication>>,
     Path(id): Path<String>,
     ManagedJson(params): ManagedJson<EnvironmentUpdateParams>,
 ) -> Result<Json<Environment>, WireError> {
@@ -362,7 +328,6 @@ async fn update_env(
         ..Default::default()
     };
     let item = state
-        .application
         .update(&id, patch)
         .await
         .map_err(map_environment_application_error)?;
@@ -503,11 +468,10 @@ fn canonical_environment_config(
 }
 
 async fn delete_env(
-    State(state): State<Arc<EnvironmentAuthoringState>>,
+    State(state): State<Arc<EnvironmentApplication>>,
     Path(id): Path<String>,
 ) -> Result<Json<DeletedEnvironment>, WireError> {
     state
-        .application
         .delete(&id)
         .await
         .map_err(map_environment_application_error)?;
@@ -518,11 +482,10 @@ async fn delete_env(
 }
 
 async fn archive_env(
-    State(state): State<Arc<EnvironmentAuthoringState>>,
+    State(state): State<Arc<EnvironmentApplication>>,
     Path(id): Path<String>,
 ) -> Result<Json<Environment>, WireError> {
     let item = state
-        .application
         .archive(&id)
         .await
         .map_err(map_environment_application_error)?;

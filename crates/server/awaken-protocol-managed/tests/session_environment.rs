@@ -330,10 +330,12 @@ async fn call(
 }
 
 async fn app() -> (Router, String) {
-    let (environment_authoring, environment_execution) =
-        awaken_protocol_managed_testkit::environment_components(awaken_time::system_clock());
+    let awaken_protocol_managed_testkit::EnvironmentFixture {
+        application: environment_authoring,
+        execution: environment_execution,
+        ..
+    } = awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock());
     let environment = environment_authoring
-        .application()
         .create(awaken_environment_contract::CreateEnvironmentCommand {
             command_id: "session-environment-test".into(),
             name: "Custom".into(),
