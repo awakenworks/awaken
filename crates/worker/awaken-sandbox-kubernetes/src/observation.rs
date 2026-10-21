@@ -15,9 +15,7 @@ use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxObservationPurpose;
 use awaken_sandbox_container::ContainerObservationExpectation;
-use awaken_sandbox_container::engine::{
-    ExistingRealization, sandbox_observation, sandbox_observation_identity,
-};
+use awaken_sandbox_container::engine::{sandbox_observation, sandbox_observation_identity};
 
 pub(super) async fn observe(
     runtime: &K8sRuntime,
@@ -79,17 +77,11 @@ pub(super) async fn observe(
     } else {
         ContinuationObservationDisposition::Live
     };
-    let observations = pod
-        .as_ref()
-        .map(observed_pod)
-        .transpose()?
-        .into_iter()
-        .collect::<Vec<_>>();
     let observation = project_continuation_observation(
         continuation,
         expectation,
         expected_pod_uid,
-        &observations,
+        pod.as_ref(),
     )?;
     if !current_handle
         && matches!(
@@ -161,20 +153,27 @@ fn project_continuation_observation(
     continuation: ContinuationObservationDisposition,
     expectation: ContainerObservationExpectation<'_>,
     expected_pod_uid: Option<&str>,
-    observations: &[ExistingRealization],
+    pod: Option<&k8s_openapi::api::core::v1::Pod>,
 ) -> Result<pc::SandboxObservation, RuntimeError> {
     if continuation == ContinuationObservationDisposition::Incompatible {
         return Ok(pc::SandboxObservation::Incompatible {
             reason: "Kubernetes Sandbox continuation state differs from its durable handle".into(),
         });
     }
+    // A known continuation mismatch already decides incompatibility; malformed
+    // Pod evidence must not replace that fact with a retryable backend error.
+    let observations = pod
+        .map(observed_pod)
+        .transpose()?
+        .into_iter()
+        .collect::<Vec<_>>();
     if continuation == ContinuationObservationDisposition::Live {
         return sandbox_observation(
             expected_pod_uid,
             expectation.adoption_fingerprint,
             expectation.realization_fingerprint,
             expectation.effect_fence,
-            observations,
+            &observations,
             expectation.retained_attempt,
         );
     }
@@ -188,7 +187,7 @@ fn project_continuation_observation(
         expectation.adoption_fingerprint,
         expectation.realization_fingerprint,
         expectation.effect_fence,
-        observations,
+        &observations,
         expectation.retained_attempt,
     ) {
         Ok(original) => original,

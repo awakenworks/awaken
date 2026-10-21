@@ -33,6 +33,15 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
     // preparation. Cross these through the same HTTP observer and assert the
     // complete before/after Pod/PVC snapshot and empty write log for every read.
     // observing this read never mutates or prepares/disposes the source.
+    // P1 cause/effect graph: C1 claim UID exact/mismatched; C2 Pod effect epoch
+    // valid/malformed. All other original-source/guard/GC facts remain fixed.
+    // | Rule | claim C1 | epoch C2 | observation | effect |
+    // | P1a | exact | valid | RetainedOriginal | unchanged snapshots/no writes |
+    // | P1b | mismatch | valid | Incompatible | same zero effects |
+    // | P1c | mismatch | bad | Incompatible before Pod decoding | same |
+    // | P1d | exact | bad | original Backend codec error | same |
+    // P1c preserves the established known-negative precedence; P1d prevents
+    // masking genuine evidence errors. Existing 403/503 rows own API failures.
     for row in [
         "empty",
         "control",
@@ -53,6 +62,8 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
         "retirement-running",
         "retirement-running-foreign-pod",
         "retirement-running-foreign-claim",
+        "retirement-running-foreign-claim-bad-epoch",
+        "retirement-running-bad-epoch",
         "retirement-running-missing-pod",
         "retirement-running-missing-claim",
         "retirement-running-no-guard",
@@ -224,7 +235,9 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
                 "foreign-pod" | "retirement-running-foreign-pod" => {
                     state.pod.as_mut().unwrap().metadata.uid = Some("replacement-pod".into())
                 }
-                "foreign-claim" | "retirement-running-foreign-claim" => {
+                "foreign-claim"
+                | "retirement-running-foreign-claim"
+                | "retirement-running-foreign-claim-bad-epoch" => {
                     state.claim.as_mut().unwrap().metadata.uid = Some("replacement-claim".into())
                 }
                 "already-absent" => {
@@ -297,6 +310,23 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
                 }
                 _ => {}
             }
+            if matches!(
+                row,
+                "retirement-running-foreign-claim-bad-epoch" | "retirement-running-bad-epoch"
+            ) {
+                state
+                    .pod
+                    .as_mut()
+                    .unwrap()
+                    .metadata
+                    .annotations
+                    .as_mut()
+                    .unwrap()
+                    .insert(
+                        crate::pod_evidence::SANDBOX_EFFECT_EPOCH_ANNOTATION.into(),
+                        "bad".into(),
+                    );
+            }
         }
         let before = {
             let state = state.lock().unwrap();
@@ -329,6 +359,14 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
                 }
                 "retirement-running-api-503" => {
                     assert!(matches!(&observed, Err(pc::SandboxError::Backend { .. })))
+                }
+                "retirement-running-bad-epoch" => {
+                    assert!(
+                        matches!(&observed,
+                            Err(pc::SandboxError::Backend { detail, .. })
+                                if detail == "invalid Sandbox effect epoch"),
+                        "P1d genuine codec failure remains an error: {observed:?}"
+                    );
                 }
                 _ if !source_prepared
                     && !matches!(
