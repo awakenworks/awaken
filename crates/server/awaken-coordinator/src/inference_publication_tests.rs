@@ -544,6 +544,9 @@ mod tests {
             .await
     }
 
+    // Fixture-selection table F1: test support selects the concrete materializer;
+    // a configured Provider with an active matching credential still materializes.
+    // Ordinary product compilation is checked separately in check-rust.sh (P1).
     #[tokio::test]
     async fn resolves_a_configured_model_to_an_executor() {
         let p = provider("claude-x", Some(("anthropic", true))).await;
@@ -570,6 +573,8 @@ mod tests {
         assert!(error.to_string().contains("missing-fallback"));
     }
 
+    // Fixture-selection table F2: selecting that same fixture materializer does
+    // not grant it Host execution; a Host candidate must still return no adapter.
     #[tokio::test]
     async fn credential_materializer_rejects_host_executor_candidates() {
         let p = provider("configured", None).await;
