@@ -23,7 +23,6 @@ use awaken_session_configuration_contract::{
 use awaken_session_repository_contract::SessionRepository;
 use awaken_session_execution_contract::{McpAttachmentRealizer, SessionEnvironmentBindingSink};
 use awaken_session_state_contract::SessionEnvironmentFacts;
-#[cfg(test)]
 use awaken_session_state_contract::SessionExecutionState;
 use awaken_session_types::RunError;
 use {
