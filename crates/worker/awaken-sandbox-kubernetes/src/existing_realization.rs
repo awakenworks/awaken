@@ -319,7 +319,8 @@ pub(super) async fn observed_continuation_disposition_for_claim(
         pod_present: pod.is_some(),
         pod_deleting: pod.is_some_and(|pod| pod.metadata.deletion_timestamp.is_some()),
         cleanup_gate_held,
-        original_terminal_guard: pod.is_some_and(continuation::terminal_original_guard_retained),
+        original_guard_retained: pod
+            .is_some_and(|pod| continuation::original_guard_retained(pod, purpose)),
         gc_independent: pod.is_some_and(|pod| {
             pod.metadata
                 .owner_references

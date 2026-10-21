@@ -1528,8 +1528,9 @@ impl LlmExecutor for ClientLookupModel {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum TerminalRecoveryScenario {
+    Observation(Result<pc::SandboxObservation, pc::SandboxError>),
     OrphanClaim,
     TotalAbsence,
     UnavailableAuxiliaryMemory,
@@ -1662,7 +1663,9 @@ impl awaken_provisioning_contract::SandboxProvider for TerminalRecoveryProvider 
         adoption: awaken_provisioning_contract::SandboxAdoption<'_>,
         basis: pc::SandboxObservationBasis<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        if matches!(basis, pc::SandboxObservationBasis::Unattached) {
+        if matches!(basis, pc::SandboxObservationBasis::Unattached)
+            && !matches!(self.scenario, TerminalRecoveryScenario::Observation(_))
+        {
             return Err(pc::SandboxError::unsupported(
                 "terminal recovery fixture observes only under an effect fence",
             ));
@@ -1671,7 +1674,15 @@ impl awaken_provisioning_contract::SandboxProvider for TerminalRecoveryProvider 
             .handle
             .container_physical_incarnation()?
             .to_string();
-        match self.scenario {
+        match &self.scenario {
+            TerminalRecoveryScenario::Observation(outcome) => {
+                assert!(matches!(
+                    adoption.observation_purpose,
+                    pc::SandboxObservationPurpose::WorkerRetirement { .. }
+                ));
+                self.events.lock().unwrap().push("observe-source-retention");
+                outcome.clone()
+            }
             TerminalRecoveryScenario::OrphanClaim => {
                 self.events.lock().unwrap().push("observe-orphan-claim");
                 Ok(pc::SandboxObservation::Incompatible {
@@ -1767,7 +1778,10 @@ impl awaken_provisioning_contract::SandboxProvider for TerminalRecoveryProvider 
         }
         pc::with_current_sandbox_effect::<
             Option<Arc<dyn awaken_provisioning_contract::SessionSandbox>>,
-        >(terminal_effect_fence, authority, |_| match self.scenario {
+        >(terminal_effect_fence, authority, |_| match &self.scenario {
+            TerminalRecoveryScenario::Observation(_) => Err(pc::SandboxError::unsupported(
+                "retention read fixture grants no terminal preparation",
+            )),
             TerminalRecoveryScenario::OrphanClaim => Err(pc::SandboxError::unsupported(
                 "orphan-claim observation must fail before terminal preparation",
             )),

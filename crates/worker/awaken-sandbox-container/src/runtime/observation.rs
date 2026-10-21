@@ -26,99 +26,17 @@ pub fn sandbox_observation(
     observed: &[ExistingRealization],
     retained_attempt: Option<&awaken_provisioning_contract::SandboxCreateAttempt>,
 ) -> Result<pc::SandboxObservation, RuntimeError> {
-    if expected_incarnation.is_some() != expected_fingerprint.is_some()
-        || expected_incarnation.is_some() != expected_adoption.is_some()
-    {
-        return Ok(pc::SandboxObservation::Incompatible {
-            reason:
-                "current Sandbox observation requires incarnation, adoption, and realization fingerprints"
-                    .into(),
-        });
-    }
-    if expected_incarnation.is_some_and(|value| value.trim().is_empty()) {
-        return Ok(pc::SandboxObservation::Incompatible {
-            reason: "Sandbox observation requires immutable incarnation evidence".into(),
-        });
-    }
-    let [observed] = observed else {
-        return if observed.is_empty() && expected_incarnation.is_some() {
-            Ok(pc::SandboxObservation::DefinitivelyUnavailable {
-                physical_incarnation: expected_incarnation.map(str::to_owned),
-            })
-        } else {
-            Ok(pc::SandboxObservation::Incompatible {
-                reason: format!(
-                    "durable Sandbox observation resolved to {} physical realizations without exact current evidence",
-                    observed.len()
-                ),
-            })
-        };
+    let observed = match sandbox_observation_identity(
+        expected_incarnation,
+        expected_adoption,
+        expected_fingerprint,
+        expected_fence,
+        observed,
+        retained_attempt,
+    ) {
+        Ok(observed) => observed,
+        Err(observation) => return Ok(observation),
     };
-    if expected_incarnation.is_some()
-        && let Some(expected_fence) = expected_fence
-    {
-        let Some(observed_fence) = observed.fence.as_ref() else {
-            return Ok(pc::SandboxObservation::Incompatible {
-                reason: format!(
-                    "durable Sandbox incarnation `{}` has no effect-fence evidence",
-                    observed.incarnation.identity
-                ),
-            });
-        };
-        if !observed_fence.authorizes_successor(expected_fence) {
-            return Ok(pc::SandboxObservation::Incompatible {
-                reason: format!(
-                    "durable Sandbox incarnation `{}` is fenced by a newer or foreign realization lease",
-                    observed.incarnation.identity
-                ),
-            });
-        }
-    }
-    if let Some(expected_adoption) = expected_adoption
-        && observed.adoption_fingerprint.as_deref() != Some(expected_adoption.as_str())
-    {
-        return Ok(pc::SandboxObservation::Incompatible {
-            reason: format!(
-                "durable Sandbox incarnation `{}` has missing or different adoption fingerprint",
-                observed.incarnation.identity
-            ),
-        });
-    }
-    if let Some(expected_fingerprint) = expected_fingerprint
-        && observed.fingerprint.as_deref() != Some(expected_fingerprint.as_str())
-    {
-        return Ok(pc::SandboxObservation::Incompatible {
-            reason: format!(
-                "durable Sandbox incarnation `{}` has missing or different realization fingerprint",
-                observed.incarnation.identity
-            ),
-        });
-    }
-    if expected_incarnation.is_some_and(|expected| observed.incarnation.identity != expected) {
-        return Ok(pc::SandboxObservation::Incompatible {
-            reason: format!(
-                "durable Sandbox incarnation `{}` resolved to foreign physical incarnation `{}`",
-                expected_incarnation.unwrap_or_default(),
-                observed.incarnation.identity
-            ),
-        });
-    }
-    if expected_incarnation.is_some()
-        && observed.recovery == ExistingRealizationRecovery::CurrentAttemptOnly
-        && retained_attempt
-            .is_none_or(|attempt| observed.attempt_id.as_deref() != Some(attempt.as_str()))
-        && matches!(
-            observed.phase,
-            ExistingRealizationPhase::Creating | ExistingRealizationPhase::Ready
-        )
-    {
-        return Ok(pc::SandboxObservation::Incompatible {
-            reason: format!(
-                "durable Sandbox incarnation `{}` depends on a prior process-local realization attempt",
-                observed.incarnation.identity
-            ),
-        });
-    }
     match observed.phase {
         ExistingRealizationPhase::Creating => {
             Ok(pc::SandboxObservation::Provisioning { deadline: None })
@@ -137,4 +55,111 @@ pub fn sandbox_observation(
             expected_incarnation.unwrap_or("legacy-handle")
         ))),
     }
+}
+
+/// Validate immutable identity once, before an adapter projects its own
+/// lifecycle or independent-retention fact. A rejection is a non-destructive
+/// observation; backend I/O is outside this pure classifier.
+pub fn sandbox_observation_identity<'a>(
+    expected_incarnation: Option<&str>,
+    expected_adoption: Option<&pc::SandboxRealizationFingerprint>,
+    expected_fingerprint: Option<&pc::SandboxRealizationFingerprint>,
+    expected_fence: Option<&pc::SandboxEffectFence>,
+    observed: &'a [ExistingRealization],
+    retained_attempt: Option<&awaken_provisioning_contract::SandboxCreateAttempt>,
+) -> Result<&'a ExistingRealization, pc::SandboxObservation> {
+    if expected_incarnation.is_some() != expected_fingerprint.is_some()
+        || expected_incarnation.is_some() != expected_adoption.is_some()
+    {
+        return Err(pc::SandboxObservation::Incompatible {
+            reason:
+                "current Sandbox observation requires incarnation, adoption, and realization fingerprints"
+                    .into(),
+        });
+    }
+    if expected_incarnation.is_some_and(|value| value.trim().is_empty()) {
+        return Err(pc::SandboxObservation::Incompatible {
+            reason: "Sandbox observation requires immutable incarnation evidence".into(),
+        });
+    }
+    let [observed] = observed else {
+        return if observed.is_empty() && expected_incarnation.is_some() {
+            Err(pc::SandboxObservation::DefinitivelyUnavailable {
+                physical_incarnation: expected_incarnation.map(str::to_owned),
+            })
+        } else {
+            Err(pc::SandboxObservation::Incompatible {
+                reason: format!(
+                    "durable Sandbox observation resolved to {} physical realizations without exact current evidence",
+                    observed.len()
+                ),
+            })
+        };
+    };
+    if expected_incarnation.is_some()
+        && let Some(expected_fence) = expected_fence
+    {
+        let Some(observed_fence) = observed.fence.as_ref() else {
+            return Err(pc::SandboxObservation::Incompatible {
+                reason: format!(
+                    "durable Sandbox incarnation `{}` has no effect-fence evidence",
+                    observed.incarnation.identity
+                ),
+            });
+        };
+        if !observed_fence.authorizes_successor(expected_fence) {
+            return Err(pc::SandboxObservation::Incompatible {
+                reason: format!(
+                    "durable Sandbox incarnation `{}` is fenced by a newer or foreign realization lease",
+                    observed.incarnation.identity
+                ),
+            });
+        }
+    }
+    if let Some(expected_adoption) = expected_adoption
+        && observed.adoption_fingerprint.as_deref() != Some(expected_adoption.as_str())
+    {
+        return Err(pc::SandboxObservation::Incompatible {
+            reason: format!(
+                "durable Sandbox incarnation `{}` has missing or different adoption fingerprint",
+                observed.incarnation.identity
+            ),
+        });
+    }
+    if let Some(expected_fingerprint) = expected_fingerprint
+        && observed.fingerprint.as_deref() != Some(expected_fingerprint.as_str())
+    {
+        return Err(pc::SandboxObservation::Incompatible {
+            reason: format!(
+                "durable Sandbox incarnation `{}` has missing or different realization fingerprint",
+                observed.incarnation.identity
+            ),
+        });
+    }
+    if expected_incarnation.is_some_and(|expected| observed.incarnation.identity != expected) {
+        return Err(pc::SandboxObservation::Incompatible {
+            reason: format!(
+                "durable Sandbox incarnation `{}` resolved to foreign physical incarnation `{}`",
+                expected_incarnation.unwrap_or_default(),
+                observed.incarnation.identity
+            ),
+        });
+    }
+    if expected_incarnation.is_some()
+        && observed.recovery == ExistingRealizationRecovery::CurrentAttemptOnly
+        && retained_attempt
+            .is_none_or(|attempt| observed.attempt_id.as_deref() != Some(attempt.as_str()))
+        && matches!(
+            observed.phase,
+            ExistingRealizationPhase::Creating | ExistingRealizationPhase::Ready
+        )
+    {
+        return Err(pc::SandboxObservation::Incompatible {
+            reason: format!(
+                "durable Sandbox incarnation `{}` depends on a prior process-local realization attempt",
+                observed.incarnation.identity
+            ),
+        });
+    }
+    Ok(observed)
 }

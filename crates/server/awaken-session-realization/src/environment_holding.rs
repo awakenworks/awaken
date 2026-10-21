@@ -198,7 +198,7 @@ impl EnvironmentHolding {
             .map_err(RealizationError::from)?;
         Ok(match observed {
             pc::SandboxObservation::Incompatible { .. } => false,
-            pc::SandboxObservation::Terminal { .. } => true,
+            pc::SandboxObservation::RetainedOriginal { .. } => true,
             _ => source_prepared,
         })
     }

@@ -210,6 +210,9 @@ pub(crate) fn verify_adoption(
         pc::SandboxObservation::Provisioning { .. } => Err(pc::SandboxError::not_ready(
             "sandbox realization did not reach Ready",
         )),
+        pc::SandboxObservation::RetainedOriginal { .. } => Err(pc::SandboxError::conflict(
+            "original source retention is not filesystem adoption authority",
+        )),
         pc::SandboxObservation::DefinitivelyUnavailable { .. }
         | pc::SandboxObservation::Terminal { .. }
         | pc::SandboxObservation::Disposing { .. } => Err(pc::SandboxError::gone(

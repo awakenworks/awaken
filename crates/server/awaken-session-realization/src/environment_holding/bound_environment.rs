@@ -462,10 +462,10 @@ impl EnvironmentHolding {
                         "Session Environment live source is already closed",
                     ));
                 }
-                awaken_provisioning_contract::SandboxObservation::Incompatible { reason } => {
-                    return Err(RealizationError::conflict(
+                observation => {
+                    return Err(RealizationError::physical_observation_conflict(
                         ProjectionConflict::EffectIncompatible,
-                        reason.clone(),
+                        observation,
                     ));
                 }
             }
@@ -550,10 +550,10 @@ impl EnvironmentHolding {
                     committed_candidate,
                 )
             }
-            awaken_provisioning_contract::SandboxObservation::Incompatible { reason } => {
-                return Err(RealizationError::conflict(
+            observation => {
+                return Err(RealizationError::physical_observation_conflict(
                     ProjectionConflict::EffectIncompatible,
-                    reason,
+                    &observation,
                 ));
             }
         };

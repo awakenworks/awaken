@@ -439,6 +439,31 @@ impl RealizationError {
         }
     }
 
+    /// Reject a non-physical observation at an existing lifecycle boundary.
+    /// Preserve the original incompatibility text and the caller-owned code;
+    /// future read-only facts also fail closed without becoming effect authority.
+    pub(crate) fn physical_observation_conflict(
+        conflict: ProjectionConflict,
+        observation: &awaken_provisioning_contract::SandboxObservation,
+    ) -> Self {
+        let message = match observation {
+            awaken_provisioning_contract::SandboxObservation::Incompatible { reason } => {
+                reason.clone()
+            }
+            other => format!("unexpected physical lifecycle observation: {other:?}"),
+        };
+        Self::conflict(conflict, message)
+    }
+
+    /// One provider-observation error message shared by lifecycle readers.
+    /// Keep the original lifecycle-observation classification in one owner.
+    pub(crate) fn observation_pending(sandbox: &str, error: impl std::fmt::Display) -> Self {
+        Self::pending(
+            PendingState::ObservationIndeterminate,
+            format!("could not inspect Session sandbox {sandbox}: {error}"),
+        )
+    }
+
     pub fn invalid_request(message: impl Into<Cow<'static, str>>) -> Self {
         Self::InvalidRequest(InvalidRequest::Stated(message.into()))
     }

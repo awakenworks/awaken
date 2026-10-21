@@ -54,6 +54,139 @@ fn terminal_memory_projection_with_idle_retention(
 }
 
 #[tokio::test]
+async fn worker_retirement_consumes_only_explicit_retention_and_preserves_provider_failures() {
+    // SR1 cause/effect table through real RunAssembly -> EnvironmentHolding:
+    // C1 provider observation; C2 root preparation already durable; C3 provider
+    // failure class. Unprepared requires RetainedOriginal; physical Ready,
+    // Terminal, Disposing or absence alone never proves independent retention.
+    // Prepared keeps the existing replay for every compatible physical fact;
+    // Incompatible always refuses. Errors never become permission: transport,
+    // timeout/backend keep Unavailable; authority/unsupported keep classified
+    // Internal. Every row preserves the projection and performs just one read.
+    // These synthetic provider facts qualify the consumer, not real storage;
+    // Kubernetes HTTP tests own the concrete identity/guard/PVC evidence.
+    async fn read(
+        outcome: Result<pc::SandboxObservation, pc::SandboxError>,
+        prepared: bool,
+    ) -> Result<bool, awaken_session_types::RunError> {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(TerminalRecoveryProvider {
+            restored_disposals: Mutex::new(Vec::new()),
+            events: events.clone(),
+            scenario: TerminalRecoveryScenario::Observation(outcome),
+            fence_refresh_probe: None,
+        });
+        let host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+            .await
+            .with_session_container_provider(
+                provider,
+                Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
+            )
+            .build()
+            .unwrap();
+        let id = "source-retention-read";
+        let handle =
+            terminal_fixture_container_handle(id, &host.realization_executor.sandbox_spec(id));
+        let mut projection = remote_terminal_cleanup_projection();
+        projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+            binding: serde_json::to_string(&handle).unwrap(),
+            effect_id: None,
+            generation: None,
+            idle_since_unix_ms: None,
+        };
+        let before = serde_json::to_value(&projection).unwrap();
+        let result = awaken_session_execution_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
+            &*host.run_assembly,
+            &awaken_session_types::SessionId::from(id),
+            &projection,
+            prepared,
+        ).await;
+        assert_eq!(serde_json::to_value(&projection).unwrap(), before);
+        assert_eq!(*events.lock().unwrap(), ["observe-source-retention"]);
+        result
+    }
+    for (observed, unprepared, prepared) in [
+        (
+            pc::SandboxObservation::RetainedOriginal {
+                physical_incarnation: "pod-a".into(),
+            },
+            true,
+            true,
+        ),
+        (pc::SandboxObservation::Ready, false, true),
+        (
+            pc::SandboxObservation::Terminal {
+                physical_incarnation: "pod-a".into(),
+            },
+            false,
+            true,
+        ),
+        (
+            pc::SandboxObservation::Disposing {
+                physical_incarnation: "pod-a".into(),
+            },
+            false,
+            true,
+        ),
+        (
+            pc::SandboxObservation::DefinitivelyUnavailable {
+                physical_incarnation: Some("pod-a".into()),
+            },
+            false,
+            true,
+        ),
+        (
+            pc::SandboxObservation::Incompatible {
+                reason: "foreign".into(),
+            },
+            false,
+            false,
+        ),
+    ] {
+        for (is_prepared, expected) in [(false, unprepared), (true, prepared)] {
+            assert_eq!(
+                read(Ok(observed.clone()), is_prepared).await.unwrap(),
+                expected,
+                "SR1 {observed:?} prepared={is_prepared}"
+            );
+        }
+    }
+    use awaken_session_types::RunErrorKind::{Internal, Unavailable};
+    for (failure, kind, code) in [
+        (
+            pc::SandboxError::transport("lost response"),
+            Unavailable,
+            "environment_unavailable",
+        ),
+        (
+            pc::SandboxError::timeout("read deadline"),
+            Unavailable,
+            "environment_unavailable",
+        ),
+        (
+            pc::SandboxError::backend("read", "offline"),
+            Unavailable,
+            "environment_unavailable",
+        ),
+        (
+            pc::SandboxError::unauthorized("denied"),
+            Internal,
+            "environment_rejected",
+        ),
+        (
+            pc::SandboxError::unsupported("provider"),
+            Internal,
+            "environment_rejected",
+        ),
+    ] {
+        for prepared in [false, true] {
+            let error = read(Err(failure.clone()), prepared).await.unwrap_err();
+            assert_eq!((error.kind, error.code.as_str()), (kind, code));
+        }
+    }
+}
+
+#[tokio::test]
 async fn worker_retirement_refuses_unprepared_memory_in_current_or_retained_resources() {
     // LR4 decision table: current Memory only / retained previous Memory only,
     // with a Resident binding and source_prepared=false => refuse retirement

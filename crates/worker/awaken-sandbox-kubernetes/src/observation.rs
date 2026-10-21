@@ -15,8 +15,7 @@ use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxObservationPurpose;
 use awaken_sandbox_container::ContainerObservationExpectation;
-use awaken_sandbox_container::engine::ExistingRealizationPhase;
-use awaken_sandbox_container::engine::sandbox_observation;
+use awaken_sandbox_container::engine::{sandbox_observation, sandbox_observation_identity};
 
 pub(super) async fn observe(
     runtime: &K8sRuntime,
@@ -78,57 +77,12 @@ pub(super) async fn observe(
     } else {
         ContinuationObservationDisposition::Live
     };
-    if continuation == ContinuationObservationDisposition::Incompatible {
-        return Ok(pc::SandboxObservation::Incompatible {
-            reason: "Kubernetes Sandbox continuation state differs from its durable handle".into(),
-        });
-    }
-    let mut observations = pod
-        .as_ref()
-        .map(observed_pod)
-        .transpose()?
-        .into_iter()
-        .collect::<Vec<_>>();
-    if matches!(
+    let observation = project_continuation_observation(
         continuation,
-        ContinuationObservationDisposition::Disposing
-            | ContinuationObservationDisposition::RetainedOriginal
-    ) && !observations.is_empty()
-    {
-        observations[0].phase = ExistingRealizationPhase::Terminal;
-    }
-    let observation = sandbox_observation(
+        expectation,
         expected_pod_uid,
-        expectation.adoption_fingerprint,
-        expectation.realization_fingerprint,
-        expectation.effect_fence,
-        &observations,
-        expectation.retained_attempt,
+        pod.as_ref(),
     )?;
-    let observation = if continuation == ContinuationObservationDisposition::Disposing {
-        match observation {
-            pc::SandboxObservation::Terminal {
-                physical_incarnation,
-            } => pc::SandboxObservation::Disposing {
-                physical_incarnation,
-            },
-            pc::SandboxObservation::DefinitivelyUnavailable {
-                physical_incarnation: Some(physical_incarnation),
-            } => pc::SandboxObservation::Disposing {
-                physical_incarnation,
-            },
-            pc::SandboxObservation::Incompatible { reason } => {
-                pc::SandboxObservation::Incompatible { reason }
-            }
-            other => {
-                return Err(backend(format!(
-                    "Kubernetes disposing continuation projected an invalid observation: {other:?}"
-                )));
-            }
-        }
-    } else {
-        observation
-    };
     if !current_handle
         && matches!(
             observation,
@@ -190,5 +144,89 @@ fn with_provisioning_deadline(
             }
         }
         observation => observation,
+    }
+}
+
+/// Apply the one immutable-identity classifier before interpreting the exact
+/// provider-owned continuation fact. Neither branch rewrites physical phase.
+fn project_continuation_observation(
+    continuation: ContinuationObservationDisposition,
+    expectation: ContainerObservationExpectation<'_>,
+    expected_pod_uid: Option<&str>,
+    pod: Option<&k8s_openapi::api::core::v1::Pod>,
+) -> Result<pc::SandboxObservation, RuntimeError> {
+    if continuation == ContinuationObservationDisposition::Incompatible {
+        return Ok(pc::SandboxObservation::Incompatible {
+            reason: "Kubernetes Sandbox continuation state differs from its durable handle".into(),
+        });
+    }
+    // A known continuation mismatch already decides incompatibility; malformed
+    // Pod evidence must not replace that fact with a retryable backend error.
+    let observations = pod
+        .map(observed_pod)
+        .transpose()?
+        .into_iter()
+        .collect::<Vec<_>>();
+    if continuation == ContinuationObservationDisposition::Live {
+        return sandbox_observation(
+            expected_pod_uid,
+            expectation.adoption_fingerprint,
+            expectation.realization_fingerprint,
+            expectation.effect_fence,
+            &observations,
+            expectation.retained_attempt,
+        );
+    }
+    if expected_pod_uid.is_none() {
+        return Ok(pc::SandboxObservation::Incompatible {
+            reason: "retained Kubernetes observation requires the original Pod UID".into(),
+        });
+    }
+    let original = match sandbox_observation_identity(
+        expected_pod_uid,
+        expectation.adoption_fingerprint,
+        expectation.realization_fingerprint,
+        expectation.effect_fence,
+        &observations,
+        expectation.retained_attempt,
+    ) {
+        Ok(original) => original,
+        Err(pc::SandboxObservation::DefinitivelyUnavailable {
+            physical_incarnation: Some(physical_incarnation),
+        }) if continuation == ContinuationObservationDisposition::Disposing => {
+            return Ok(pc::SandboxObservation::Disposing {
+                physical_incarnation,
+            });
+        }
+        Err(observation) => return Ok(observation),
+    };
+    let physical_incarnation = original.incarnation.identity.clone();
+    match (continuation, expectation.purpose) {
+        (ContinuationObservationDisposition::Disposing, _) => {
+            Ok(pc::SandboxObservation::Disposing {
+                physical_incarnation,
+            })
+        }
+        (
+            ContinuationObservationDisposition::RetainedOriginal,
+            SandboxObservationPurpose::WorkerRetirement {
+                source_prepared: false,
+            },
+        ) => Ok(pc::SandboxObservation::RetainedOriginal {
+            physical_incarnation,
+        }),
+        (
+            ContinuationObservationDisposition::RetainedOriginal,
+            SandboxObservationPurpose::TerminalCleanup,
+        ) => {
+            // Terminal admission requires an actual Failed/Succeeded original,
+            // including one whose deletion is held by its original guard.
+            Ok(pc::SandboxObservation::Terminal {
+                physical_incarnation,
+            })
+        }
+        _ => Err(RuntimeError::Conflict(
+            "original source retention was returned for an incompatible observation purpose".into(),
+        )),
     }
 }
