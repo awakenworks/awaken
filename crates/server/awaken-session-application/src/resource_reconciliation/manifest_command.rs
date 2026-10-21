@@ -182,15 +182,15 @@ impl SessionApplication {
             })?;
         }
 
-        let command_receipt_key = command_record.as_ref().map(|record| record.key.clone());
-        let (session, command_applied) = match command_record {
+        let (session, command_applied, command_revision) = match command_record {
             Some(record) => {
                 let commit = self
-                    .commit_resource_snapshot_with_record(&owner_scope, session, record)
+                    .commit_resource_snapshot_with_record(&owner_scope, session, record, Vec::new())
                     .await
                     .map_err(SessionResourceManifestError::mutation)?;
                 let applied = commit.transitioned();
-                (commit.into_session(), applied)
+                let committed_revision = commit.committed_revision();
+                (commit.into_session(), applied, committed_revision)
             }
             None if unchanged => {
                 let revision = session.revision;
@@ -200,38 +200,20 @@ impl SessionApplication {
                     command_applied: false,
                 });
             }
-            None => (
-                self.commit_resource_snapshot(
-                    &owner_scope,
-                    session,
-                    "resource-manifest-intent",
-                    Vec::new(),
-                )
-                .await
-                .map_err(SessionResourceManifestError::mutation)?
-                .into_snapshot(),
-                true,
-            ),
-        };
-        let command_revision = if command_applied {
-            session.revision
-        } else {
-            let key = command_receipt_key.ok_or_else(|| {
-                SessionResourceManifestError::Unavailable(
-                    "replayed Resource manifest has no idempotency key".into(),
-                )
-            })?;
-            self.session_repository()
-                .idempotency_receipt(session_id, &key)
-                .await
-                .map_err(repository_failure)
-                .map_err(SessionResourceManifestError::mutation)?
-                .ok_or_else(|| {
-                    SessionResourceManifestError::Unavailable(
-                        "replayed Resource manifest has no idempotency receipt".into(),
+            None => {
+                let session = self
+                    .commit_resource_snapshot(
+                        &owner_scope,
+                        session,
+                        "resource-manifest-intent",
+                        Vec::new(),
                     )
-                })?
-                .committed_revision
+                    .await
+                    .map_err(SessionResourceManifestError::mutation)?
+                    .into_snapshot();
+                let committed_revision = session.revision;
+                (session, true, committed_revision)
+            }
         };
         Ok(SessionResourceManifestOutcome {
             session,
