@@ -286,9 +286,12 @@ async fn completed_bash_call_keeps_background_jobs_until_restart() {
     // The child cannot finish until the foreground call has returned and
     // this test releases it. Waiting for pipe EOF therefore fails without
     // depending on a race between two wall-clock delays.
+    // Redirection creates a file before printf writes its bytes. Publish the
+    // completed write by renaming within this directory, so observing `leaked`
+    // cannot race a writer descheduled between open and write.
     let command = concat!(
         "sh -c 'while [ ! -e released ]; do sleep 0.01; done; ",
-        "printf survived > leaked' & printf done",
+        "printf survived > pending && mv pending leaked' & printf done",
     )
     .to_owned();
     let output = tokio::time::timeout(
