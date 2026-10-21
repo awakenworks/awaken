@@ -822,6 +822,105 @@ mod retry_hint_tests {
                 Some(true),
                 "{rule} failed adoption never installs context"
             );
+            // M1-M3 adapter routing uses this SAME actual persisted Root and
+            // original Host/ProcessDispatch, not another policy/Root fixture.
+            // The canonical physical decision table remains in Dispatch's
+            // preparation_tests. Here M1 actual trait -> canonical output;
+            // M2 selected Arc -> accepted; M3 another real ProcessDispatch with
+            // equal values/output -> original identity refusal, no added
+            // provider effect or durable Root mutation. Existing App construction
+            // probes separately own zero-call first-refusal for every slot.
+            let effects = (
+                fake.observations.lock().unwrap().len(),
+                fake.creates.load(Ordering::SeqCst),
+                fake.adopts.load(Ordering::SeqCst),
+                fake.disposals.load(Ordering::SeqCst),
+            );
+            assert_process_dispatch_placement_uses_the_selected_instance(&host, &root);
+            assert_eq!(
+                (
+                    fake.observations.lock().unwrap().len(),
+                    fake.creates.load(Ordering::SeqCst),
+                    fake.adopts.load(Ordering::SeqCst),
+                    fake.disposals.load(Ordering::SeqCst),
+                ),
+                effects,
+                "M3 selection checks add no provider effect"
+            );
+            assert_eq!(
+                roots
+                    .repository
+                    .get(&SessionId::from(thread))
+                    .await
+                    .unwrap(),
+                root,
+                "M3 pure placement and identity checks cannot write the Root"
+            );
         }
+    }
+
+    fn assert_process_dispatch_placement_uses_the_selected_instance(
+        host: &Arc<crate::ExecutorComponents>,
+        root: &awaken_session_state_contract::PersistedSession,
+    ) {
+        use awaken_session_realization_contract::SessionPreparationPlacement;
+        let selected: Arc<dyn SessionPreparationPlacement> = host.dispatch().clone();
+        let canonical =
+            awaken_dispatch_execution::placement::session_preparation_requirements(root)
+                .expect("M1 this real committed Root has a frozen baseline");
+        assert_eq!(
+            selected.requirements(root).unwrap(),
+            canonical,
+            "M1 real trait route"
+        );
+        let workers: Arc<dyn awaken_worker_contract::WorkerIncarnationSource> =
+            Arc::new(awaken_worker_registry::MemoryWorkerDirectory::default());
+        let feed = host
+            .coordination()
+            .dispatch_observation_source()
+            .expect("M2 existing process dispatch feed");
+        let admission = awaken_session_application::SessionExecutionAdmission::new(
+            feed,
+            workers.clone(),
+            selected.clone(),
+        );
+        assert!(
+            admission
+                .verify_worker_admission(&workers, &selected)
+                .is_ok(),
+            "M2 selected Arc"
+        );
+        // Construct a real equal-value process using the original constructor,
+        // Clock and CompletionSink. No pool/task/provider is started here.
+        let foreign = Arc::new(awaken_dispatch_execution::ProcessDispatch::new(
+            host.dispatch().topology().clone(),
+            host.clock(),
+            host.completion.clone(),
+            awaken_dispatch_execution::DispatchHint::new(Arc::new(
+                awaken_dispatch_execution::LocalWakeSignal::new(),
+            )),
+        ));
+        assert_eq!(
+            foreign.topology(),
+            host.dispatch().topology(),
+            "M3 same topology values"
+        );
+        let foreign: Arc<dyn SessionPreparationPlacement> = foreign;
+        assert_eq!(
+            foreign.requirements(root).unwrap(),
+            canonical,
+            "M3 same canonical output"
+        );
+        assert_eq!(
+            admission.verify_worker_admission(&workers, &foreign),
+            Err("Session preparation compiler differs from the canonical Host"),
+            "M3 equal values cannot replace the frozen process instance"
+        );
+        assert!(
+            admission
+                .verify_worker_admission(&workers, &selected)
+                .is_ok(),
+            "M3 original retained"
+        );
     }
 }
