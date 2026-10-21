@@ -208,6 +208,134 @@ async fn aggregate_lifecycle(store: &dyn SkillStore) {
     assert!(store.delete_skill("ws-a", "skill-a").await.unwrap());
     assert!(!store.delete_skill("ws-a", "skill-a").await.unwrap());
     assert!(store.definition("ws-b", "skill-a").await.unwrap().is_some());
+    maximum_version_admission_preserves_error_precedence(store).await;
+}
+
+async fn maximum_version_admission_preserves_error_precedence(store: &dyn SkillStore) {
+    // MX0 Store.create accepts a consistent, nonzero initial MAX frame. For
+    // active MAX, identity/ordinal/bundle defects -> InvalidVersion before
+    // the existing-key collision; a valid MAX candidate -> VersionConflict.
+    // MX1 deleting the aggregate takes precedence over every same fault ->
+    // NotFound. Every failed command retains the exact MAX immutable record.
+    // This table uses the original backend and fixture constructors; no
+    // private aggregate mutation or copied successor predicate is involved.
+    let id = "maximum-version";
+    let workspace = "ws-maximum-version";
+    let original = version(id, u64::MAX, b"pinned MAX bytes");
+    let mut initial = definition(workspace, id);
+    initial.latest_version = u64::MAX;
+    initial.last_version = u64::MAX;
+    store
+        .create(initial.clone(), original.clone())
+        .await
+        .unwrap();
+    // MX2 the last available successor is still legal: an initial MAX-1
+    // followed by append MAX must succeed on this same real backend, while
+    // retaining MAX-1 byte-for-byte. This boundary positive prevents an
+    // exhaustion guard from rejecting the predecessor one ordinal too early.
+    let boundary_id = "maximum-predecessor";
+    let predecessor = version(boundary_id, u64::MAX - 1, b"pinned predecessor bytes");
+    let mut boundary_definition = definition(workspace, boundary_id);
+    boundary_definition.latest_version = u64::MAX - 1;
+    boundary_definition.last_version = u64::MAX - 1;
+    store
+        .create(boundary_definition, predecessor.clone())
+        .await
+        .unwrap();
+    let last = version(boundary_id, u64::MAX, b"last available successor bytes");
+    store
+        .append_version(workspace, boundary_id, last.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .version(workspace, boundary_id, u64::MAX - 1)
+            .await
+            .unwrap(),
+        Some(predecessor),
+        "MX2 predecessor immutable"
+    );
+    assert_eq!(
+        store
+            .version(workspace, boundary_id, u64::MAX)
+            .await
+            .unwrap(),
+        Some(last),
+        "MX2 final successor admitted"
+    );
+    let boundary = store
+        .definition(workspace, boundary_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (boundary.latest_version, boundary.last_version),
+        (u64::MAX, u64::MAX),
+        "MX2 high-water advanced to MAX"
+    );
+    assert!(
+        store.delete_skill(workspace, boundary_id).await.unwrap(),
+        "MX2 test-owned retirement"
+    );
+    assert_eq!(
+        store.purge_skill(workspace, boundary_id).await.unwrap(),
+        2,
+        "MX2 test-owned cleanup"
+    );
+    for deleted in [false, true] {
+        if deleted {
+            assert!(
+                store.delete_skill(workspace, id).await.unwrap(),
+                "MX1 tombstone"
+            );
+        }
+        for fault in ["valid", "identity", "ordinal", "bundle", "skill-md"] {
+            let mut candidate = original.clone();
+            match fault {
+                "identity" => candidate.skill_id = "foreign-skill".into(),
+                "ordinal" => candidate.version = u64::MAX - 1,
+                "bundle" => candidate.bundle_sha256 = "wrong hash".into(),
+                "skill-md" => {
+                    candidate.files[0].path = "OTHER.md".into();
+                    candidate.bundle_sha256 = bundle_sha256(&candidate.files);
+                }
+                _ => {}
+            }
+            let result = store.append_version(workspace, id, candidate).await;
+            // MX0/MX1 classify each row exactly: tombstones are NotFound;
+            // a valid live MAX candidate is VersionConflict; only the four
+            // structural faults are InvalidVersion. The valid row must not
+            // accidentally accept that last classification.
+            assert!(
+                matches!(
+                    (deleted, fault, &result),
+                    (true, _, Err(SkillStoreError::NotFound(_)))
+                        | (false, "valid", Err(SkillStoreError::VersionConflict(_)))
+                        | (
+                            false,
+                            "identity" | "ordinal" | "bundle" | "skill-md",
+                            Err(SkillStoreError::InvalidVersion { .. })
+                        )
+                ),
+                "MX0/MX1/{deleted}/{fault}: {result:?}"
+            );
+            assert_eq!(
+                store.version(workspace, id, u64::MAX).await.unwrap(),
+                Some(original.clone()),
+                "MX immutable MAX/{deleted}/{fault}"
+            );
+            assert_eq!(
+                store.definition(workspace, id).await.unwrap(),
+                if deleted { None } else { Some(initial.clone()) },
+                "MX no failed-write mutation/{deleted}/{fault}"
+            );
+        }
+    }
+    assert_eq!(
+        store.purge_skill(workspace, id).await.unwrap(),
+        1,
+        "MX test-owned cleanup"
+    );
 }
 
 async fn corrupt_frame_is_not_absent_or_overwritten(store: &dyn SkillStore) {
