@@ -515,18 +515,6 @@ impl SessionProjectionExecution for crate::RunAssembly {
     }
 }
 
-impl awaken_session_realization_contract::SessionPreparationPlacement for crate::RunAssembly {
-    fn requirements(
-        &self,
-        session: &awaken_session_state_contract::PersistedSession,
-    ) -> Result<
-        awaken_dispatch_contract::PlacementRequirements,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
-    > {
-        awaken_dispatch_execution::placement::session_preparation_requirements(session)
-    }
-}
-
 /// Dispatch admission reads the installed Session through the realization's
 /// named operations on the same slots.
 pub(crate) struct InstalledSessionReads(

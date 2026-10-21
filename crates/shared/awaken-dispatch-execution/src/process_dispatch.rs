@@ -1,3 +1,6 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: The existing Session preparation placement read role delegates only to the canonical
+// @formal reason: placement compiler; it opens no store, acquires no claim and performs no effect.
 // @formal entrypoint worker_drain.bounded_cleanup_eventually_exits_without_fabricating_quiescence
 // @formal entrypoint worker_drain.grace_expiry_retains_cancellation_observer
 //! [`ProcessDispatch`] — this process's part in dispatch.
@@ -283,6 +286,18 @@ impl ProcessDispatch {
     #[must_use]
     pub fn in_flight(&self) -> u32 {
         self.pool.get().map_or(0, |pool| pool.in_flight())
+    }
+}
+
+impl awaken_session_realization_contract::SessionPreparationPlacement for ProcessDispatch {
+    fn requirements(
+        &self,
+        session: &awaken_session_state_contract::PersistedSession,
+    ) -> Result<
+        awaken_dispatch_contract::PlacementRequirements,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
+    > {
+        crate::placement::session_preparation_requirements(session)
     }
 }
 

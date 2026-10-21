@@ -1174,7 +1174,7 @@ async fn mount_with_managed_over_and_models(
     let worker_observations: Arc<dyn awaken_worker_contract::WorkerIncarnationSource> =
         worker_directory.clone();
     let preparation: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
-        host.run_assembly().clone();
+        host.dispatch().clone();
     #[cfg(feature = "test-support")]
     session_application
         .execution_admission()
