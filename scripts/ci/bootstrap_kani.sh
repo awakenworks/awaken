@@ -7,7 +7,7 @@ set -euo pipefail
 readonly kani_revision="e43ae2c255f11dd6b0f91468c40e0b3403b810c5"
 readonly kani_nightly="nightly-2026-05-01"
 readonly kani_backend_version="0.67.0"
-readonly kani_patch_sha256="556129cbcc5e1d4d8f7f191131b5a3afe8010538d87eaf72cbd5bebe4474c0ba"
+readonly kani_patch_sha256="3238739bb566d4ec122ccc1224f01a45576a4b86b187ba95dc690104ac30e1fd"
 # The compiler still uses the release-matched GOTO tools. Only CBMC's reviewed
 # SMT encoder/model reader is replaced; this script owns both source identities.
 readonly cbmc_revision="cdee49cb1a32c6d6703cebf6ae67161977264ad4"
@@ -24,7 +24,11 @@ source "$script_dir/_provider_environment.sh"
 awaken_append_repo_tools
 # Keep the unmodified source cache intact, including any in-flight proof runs.
 source_dir="$cache_root/$kani_revision-${kani_patch_sha256:0:12}"
-qualification_sha256="$(sha256sum "$0" "$script_dir/fixtures/cbmc_recursive_alias.c" "$script_dir/fixtures/kani_wide_niche.rs" |
+qualification_sha256="$(sha256sum "$0" "$script_dir/fixtures/cbmc_recursive_alias.c" "$script_dir/fixtures/kani_wide_niche.rs" \
+  "$script_dir/_cargo_target.sh" \
+  "$script_dir/fixtures/kani_constructor/Cargo.toml" "$script_dir/fixtures/kani_constructor/Cargo.lock" \
+  "$script_dir/fixtures/kani_constructor/model/Cargo.toml" "$script_dir/fixtures/kani_constructor/model/src/lib.rs" \
+  "$script_dir/fixtures/kani_constructor/src/lib.rs" |
   cut -d ' ' -f 1 | sha256sum | cut -d ' ' -f 1)"
 # One receipt per qualification procedure. Worktrees at different revisions of
 # this script share one built package; a single receipt made each of them
@@ -337,8 +341,8 @@ if [ ! -d "$source_dir/.git" ]; then
   git -C "$source_dir" checkout --detach "$kani_revision"
   git -C "$source_dir" submodule update --init --depth 1 charon
 fi
-# The only local compiler change keeps rustc's full u128 niche offset. Refuse
-# unrelated cached source edits rather than silently blessing another compiler.
+# The reviewed compiler patch preserves full u128 niches and accepts imported
+# constructor shims in diagnostic statistics. Refuse unrelated cached edits.
 verify_kani_source allow-clean
 if git -C "$source_dir" diff --quiet; then
   git -C "$source_dir" apply --check "$compiler_patch"
@@ -354,13 +358,43 @@ else
   rustup toolchain install "$kani_nightly" --profile minimal \
     --component llvm-tools,rustc-dev,rust-src,rustfmt
   pushd "$source_dir" >/dev/null
-  cargo build-dev
+  # Cargo's admitted external-command parent may carry the workspace toolchain
+  # in RUSTUP_TOOLCHAIN. It outranks Kani's rust-toolchain.toml after pushd.
+  # Bind this build and its nested Cargo calls to Kani's reviewed nightly only.
+  RUSTUP_TOOLCHAIN="$kani_nightly" cargo build-dev
   popd >/dev/null
 fi
 # Qualify the formerly crashing layout before making this cache discoverable.
 PATH="$backend_dir:$PATH" "$source_dir/scripts/kani" \
   "$script_dir/fixtures/kani_wide_niche.rs" \
   --target-dir "$source_dir/target/wide-niche-regression" --output-format terse
+# This second fixture crosses a real crate boundary. A same-crate constructor
+# or foreign function cannot reproduce the missing original-MIR condition.
+constructor_log="$(mktemp "$source_dir/target/constructor-regression.XXXXXX.log")"
+constructor_lock_sha256="$(sha256sum "$script_dir/fixtures/kani_constructor/Cargo.lock" | cut -d ' ' -f 1)"
+(
+  # Cargo's global build-dir may point elsewhere; use the same driver-layout
+  # authority as check_formal.sh and kani.sh, scoped to this fixture only.
+  source "$script_dir/_cargo_target.sh"
+  export CARGO_TARGET_DIR="$source_dir/target/constructor-regression"
+  awaken_configure_kani_driver_target
+  # This Kani revision has no --locked option. Native Cargo admits the exact
+  # local-only dependency graph first; the lock bytes must also survive proof.
+  cargo metadata --locked --no-deps --format-version 1 \
+    --manifest-path "$script_dir/fixtures/kani_constructor/Cargo.toml" \
+    > "$source_dir/target/constructor-metadata.json"
+  PATH="$source_dir/scripts:$backend_dir:$PATH" cargo kani \
+    --manifest-path "$script_dir/fixtures/kani_constructor/Cargo.toml" \
+    --exact --harness imported_constructor_preserves_its_value \
+    --target-dir "$CARGO_TARGET_DIR" --output-format terse --verbose
+) 2>&1 | tee "$constructor_log"
+# A zero process status is insufficient when a filter selects no harness.
+grep -Fxq 'Checking harness imported_constructor_preserves_its_value...' "$constructor_log"
+grep -Fxq 'Complete - 1 successfully verified harnesses, 0 failures, 1 total.' "$constructor_log"
+if [ "$(sha256sum "$script_dir/fixtures/kani_constructor/Cargo.lock" | cut -d ' ' -f 1)" != "$constructor_lock_sha256" ]; then
+  echo "constructor fixture lock changed during qualification" >&2
+  exit 1
+fi
 if [ ! -f "$source_dir/target/awaken-kani-build.sha256" ]; then
   receipt_tmp="$(mktemp "$source_dir/target/awaken-kani-build.XXXXXX")"
   kani_build_digest > "$receipt_tmp"

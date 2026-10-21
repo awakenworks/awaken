@@ -68,6 +68,47 @@ elif name == "cbmc":
     print("[main.assertion.1] force typed pointer discovery: FAILURE" if negative else "VERIFICATION SUCCESSFUL")
     sys.exit(int(os.environ.get("NEGATIVE_EXIT" if negative else "POSITIVE_EXIT", "10" if negative else "0")))
 elif name == "cargo":
+    if args[:1] in (["metadata"], ["kani"]):
+        expected = os.environ.get("EXPECT_POST_BUILD_TOOLCHAIN")
+        if expected is not None and os.environ.get("RUSTUP_TOOLCHAIN") != expected:
+            print("Kani build changed the caller's proof toolchain", file=sys.stderr)
+            sys.exit(31)
+    if args[:1] == ["metadata"]:
+        if "--locked" not in args or "--no-deps" not in args:
+            print("constructor lock admission differs", file=sys.stderr)
+            sys.exit(29)
+        sys.exit(int(os.environ.get("CONSTRUCTOR_METADATA_EXIT", "0")))
+    if args[:1] == ["kani"]:
+        if "--verbose" not in args:
+            print("verbose constructor statistics fixture was not selected", file=sys.stderr)
+            sys.exit(25)
+        if ("--exact" not in args or "--locked" in args
+                or args[args.index("--harness") + 1] != "imported_constructor_preserves_its_value"
+                or not args[args.index("--manifest-path") + 1].endswith("/fixtures/kani_constructor/Cargo.toml")):
+            print("constructor fixture selection differs", file=sys.stderr)
+            sys.exit(27)
+        target = args[args.index("--target-dir") + 1]
+        if (os.environ.get("CARGO_TARGET_DIR") != target
+                or os.environ.get("CARGO_BUILD_BUILD_DIR") != target + "/kani"):
+            print("constructor driver target differs", file=sys.stderr)
+            sys.exit(28)
+        transcript = os.environ.get("CONSTRUCTOR_OUTPUT", "exact")
+        if transcript != "empty":
+            case = "renamed_constructor" if transcript == "renamed" else "imported_constructor_preserves_its_value"
+            print("Checking harness " + case + "...")
+            if transcript == "zero":
+                print("Complete - 0 successfully verified harnesses, 0 failures, 0 total.")
+            elif transcript == "failed":
+                print("Complete - 0 successfully verified harnesses, 1 failures, 1 total.")
+            else:
+                print("Complete - 1 successfully verified harnesses, 0 failures, 1 total.")
+        if os.environ.get("CONSTRUCTOR_LOCK_DRIFT"):
+            lock = pathlib.Path(args[args.index("--manifest-path") + 1]).with_name("Cargo.lock")
+            lock.write_bytes(lock.read_bytes() + b"\n# drift\n")
+        sys.exit(int(os.environ.get("CONSTRUCTOR_EXIT", "0")))
+    if args != ["build-dev"] or os.environ.get("RUSTUP_TOOLCHAIN") != os.environ["PINNED_TOOLCHAIN"]:
+        print("Kani build did not select its pinned toolchain", file=sys.stderr)
+        sys.exit(30)
     build = pathlib.Path.cwd() / "target/kani"
     build.mkdir(parents=True, exist_ok=True)
     (build / "compiler").write_text("compiled bytes")
@@ -84,10 +125,13 @@ class BootstrapTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.scripts = self.root / "scripts/ci"
-        for relative in ("bootstrap_kani.sh", "_provider_environment.sh",
+        for relative in ("bootstrap_kani.sh", "_provider_environment.sh", "_cargo_target.sh",
                          "patches/kani-wide-niche.patch",
                          "fixtures/kani_wide_niche.rs", "patches/cbmc-smt-type-dependencies.patch",
-                         "fixtures/cbmc_recursive_alias.c"):
+                         "fixtures/cbmc_recursive_alias.c",
+                         "fixtures/kani_constructor/Cargo.toml", "fixtures/kani_constructor/Cargo.lock",
+                         "fixtures/kani_constructor/model/Cargo.toml",
+                         "fixtures/kani_constructor/model/src/lib.rs", "fixtures/kani_constructor/src/lib.rs"):
             target = self.scripts / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / "scripts/ci" / relative, target)
@@ -122,7 +166,9 @@ class BootstrapTests(unittest.TestCase):
                         CALLS=str(self.calls),
                         CBMC_PINNED_REVISION=re.search(r'readonly cbmc_revision="([^"]+)"', source)[1],
                         CBMC_PATCH=str(self.scripts / "patches/cbmc-smt-type-dependencies.patch"),
-                        PINNED_REVISION=revision, PATCH=str(self.scripts / "patches/kani-wide-niche.patch"),
+                        PINNED_REVISION=revision,
+                        PINNED_TOOLCHAIN=re.search(r'readonly kani_nightly="([^"]+)"', source)[1],
+                        PATCH=str(self.scripts / "patches/kani-wide-niche.patch"),
                         KANI_WITNESS=str(bindir / "kani"))
         # The fixture owns tool selection; callers may explicitly override it
         # through run_bootstrap/verify, but ambient production selections cannot.
@@ -132,6 +178,20 @@ class BootstrapTests(unittest.TestCase):
     def run_bootstrap(self, **changes):
         return subprocess.run(["bash", str(self.scripts / "bootstrap_kani.sh")],
                               env=dict(self.env, **changes), capture_output=True, text=True)
+
+    def test_foreign_parent_toolchain_cannot_override_the_pinned_compiler_build(self):
+        # A1: the admitted main-workspace parent carries 1.96.0; A2: Kani's
+        # source requires its own nightly. E1: build-dev and nested Cargo see
+        # exactly the reviewed pin; E2: later fixture commands keep the caller's
+        # choice; E3: only successful semantic qualification publishes current.
+        # The instrumented Cargo rejects the wrong build/proof selection with
+        # distinct statuses 30/31, while the real bootstrap owns the boundary.
+        result = self.run_bootstrap(RUSTUP_TOOLCHAIN="1.96.0",
+                                    EXPECT_POST_BUILD_TOOLCHAIN="1.96.0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("cargo build-dev\n", self.calls.read_text())
+        self.assertEqual((self.cache / "current").resolve(), self.patched)
+        self.assertTrue((self.patched / "target/awaken-kani-build.sha256").is_file())
 
     def test_ambient_selectors_cannot_escape_the_owned_fixture(self):
         # I1 neither ambient selector, I2 source only, I3 backend only, I4 both:
@@ -188,6 +248,81 @@ class BootstrapTests(unittest.TestCase):
         self.assertTrue(all(builds[0] < check for check in checks))
         self.assertTrue(all("--target-dir" in calls[i] and "kani_wide_niche.rs" in calls[i] for i in checks))
 
+    def test_verbose_constructor_statistics_qualify_before_compiler_publication(self):
+        # V1 complete constructor qualification => publish. V2 dropping verbose
+        # refuses before publication. V3 its own failure preserves the previous
+        # selection; successful wide-niche qualification alone is insufficient.
+        script = self.scripts / "bootstrap_kani.sh"
+        source = script.read_text()
+        marker = '--output-format terse --verbose'
+        self.assertIn(marker, source)
+        script.write_text(source.replace(marker, '--output-format terse'))
+        result = self.run_bootstrap()
+        self.assertEqual(result.returncode, 25, result.stderr)
+        self.assertIn("verbose constructor statistics fixture was not selected", result.stdout + result.stderr)
+        self.assertEqual((self.cache / "current").resolve(), self.previous)
+        self.assertFalse((self.patched / "target/awaken-kani-build.sha256").exists())
+        self.assertFalse(any(self.cache.glob("cbmc-*/qualified-*.txt")))
+
+    def test_constructor_requires_exact_executed_success_before_publication(self):
+        # C1 exact single success publishes (covered above). C2 no evidence,
+        # C3 renamed selection, C4 zero harnesses, C5 failed harness with a
+        # falsely successful tool status all refuse and preserve current.
+        for output in ("empty", "renamed", "zero", "failed"):
+            with self.subTest(output=output):
+                result = self.run_bootstrap(CONSTRUCTOR_OUTPUT=output)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((self.cache / "current").resolve(), self.previous)
+                self.assertFalse((self.patched / "target/awaken-kani-build.sha256").exists())
+                self.assertFalse(any(self.cache.glob("cbmc-*/qualified-*.txt")))
+
+    def test_constructor_owns_its_driver_layout_under_ambient_target_selectors(self):
+        # T1 absent selectors and T2 caller-owned target/build-dir must both
+        # execute in the constructor's own driver layout (the tool port checks
+        # exact environment/argv equality). Caller-owned bytes remain intact.
+        external = self.root / "caller-target"
+        external.mkdir()
+        sentinel = external / "keep"
+        sentinel.write_bytes(b"caller-owned build cache")
+        result = self.run_bootstrap(CARGO_TARGET_DIR=str(external),
+                                    CARGO_BUILD_BUILD_DIR=str(external / "elsewhere"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.cache / "current").resolve(), self.patched)
+        self.assertEqual(list(external.iterdir()), [sentinel])
+        self.assertEqual(sentinel.read_bytes(), b"caller-owned build cache")
+
+    def test_constructor_refuses_missing_driver_layout_authority(self):
+        script = self.scripts / "bootstrap_kani.sh"
+        source = script.read_text()
+        call = "  awaken_configure_kani_driver_target\n"
+        self.assertIn(call, source)
+        script.write_text(source.replace(call, ""))
+        result = self.run_bootstrap(CARGO_BUILD_BUILD_DIR=str(self.root / "wrong"))
+        self.assertEqual(result.returncode, 28, result.stdout + result.stderr)
+        self.assertIn("constructor driver target differs", result.stdout + result.stderr)
+        self.assertEqual((self.cache / "current").resolve(), self.previous)
+        self.assertFalse((self.patched / "target/awaken-kani-build.sha256").exists())
+
+    def test_constructor_lock_admission_is_native_and_required(self):
+        script = self.scripts / "bootstrap_kani.sh"
+        source = script.read_text()
+        call = "cargo metadata --locked --no-deps"
+        self.assertIn(call, source)
+        script.write_text(source.replace(call, "cargo metadata --no-deps"))
+        result = self.run_bootstrap()
+        self.assertEqual(result.returncode, 29, result.stdout + result.stderr)
+        self.assertIn("constructor lock admission differs", result.stdout + result.stderr)
+        self.assertEqual((self.cache / "current").resolve(), self.previous)
+        self.assertFalse((self.patched / "target/awaken-kani-build.sha256").exists())
+
+    def test_constructor_lock_drift_refuses_even_after_successful_proof(self):
+        result = self.run_bootstrap(CONSTRUCTOR_LOCK_DRIFT="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("constructor fixture lock changed during qualification", result.stderr)
+        self.assertEqual((self.cache / "current").resolve(), self.previous)
+        self.assertFalse((self.patched / "target/awaken-kani-build.sha256").exists())
+        self.assertFalse(any(self.cache.glob("cbmc-*/qualified-*.txt")))
+
     def test_every_unqualified_cache_preserves_the_previously_selected_compiler(self):
         # R2 bad revision/staged/untracked/tracked drift -> reject before build.
         # R3 build failure -> no regression/publication. R4 regression failure
@@ -199,6 +334,8 @@ class BootstrapTests(unittest.TestCase):
             ({"DRIFT": "1"}, False, False),
             ({"BUILD_EXIT": "23"}, True, False),
             ({"REGRESSION_EXIT": "24"}, True, True),
+            ({"CONSTRUCTOR_EXIT": "26"}, True, True),
+            ({"CONSTRUCTOR_METADATA_EXIT": "29"}, True, True),
         ):
             with self.subTest(changes=changes):
                 self.calls.write_text("")
@@ -261,7 +398,13 @@ class BootstrapTests(unittest.TestCase):
         """The fixture script's own qualification digest, derived as the script derives it."""
         files = [self.scripts / "bootstrap_kani.sh",
                  self.scripts / "fixtures/cbmc_recursive_alias.c",
-                 self.scripts / "fixtures/kani_wide_niche.rs"]
+                 self.scripts / "fixtures/kani_wide_niche.rs",
+                 self.scripts / "_cargo_target.sh",
+                 self.scripts / "fixtures/kani_constructor/Cargo.toml",
+                 self.scripts / "fixtures/kani_constructor/Cargo.lock",
+                 self.scripts / "fixtures/kani_constructor/model/Cargo.toml",
+                 self.scripts / "fixtures/kani_constructor/model/src/lib.rs",
+                 self.scripts / "fixtures/kani_constructor/src/lib.rs"]
         lines = "".join(hashlib.sha256(path.read_bytes()).hexdigest() + "\n" for path in files)
         return hashlib.sha256(lines.encode()).hexdigest()[:12]
 
@@ -388,6 +531,12 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(self.run_bootstrap().returncode, 0)
         selected = {"AWAKEN_KANI_BACKEND_DIR": str(self.backend() / "bin")}
         for path in (self.scripts / "bootstrap_kani.sh", self.scripts / "fixtures/cbmc_recursive_alias.c",
+                     self.scripts / "_cargo_target.sh",
+                     self.scripts / "fixtures/kani_constructor/Cargo.toml",
+                     self.scripts / "fixtures/kani_constructor/Cargo.lock",
+                     self.scripts / "fixtures/kani_constructor/model/Cargo.toml",
+                     self.scripts / "fixtures/kani_constructor/model/src/lib.rs",
+                     self.scripts / "fixtures/kani_constructor/src/lib.rs",
                      self.root / "bin/z3"):
             original = path.read_bytes()
             path.write_bytes(original + b"\n# drift\n")

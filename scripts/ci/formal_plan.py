@@ -446,6 +446,12 @@ def batches(root: Path, tier: str, affected: set[str] | None = None) -> list[Bat
 # A script this file names, or a Python module it imports from beside itself.
 SCRIPT_REFERENCE = re.compile(r"scripts/ci/[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_.\-]+)*")
 PYTHON_IMPORT = re.compile(r"^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
+# Resolve only the conventional binding to this shell entry's own directory.
+# Other runtime directories are caller state and cannot name repository inputs.
+SHELL_DIRECTORY_BINDING = 'script_dir="$(cd "$(dirname "$0")" && pwd)"'
+SHELL_DIRECTORY_REFERENCE = re.compile(
+    r"\$(?:script_dir|\{script_dir\})/([A-Za-z0-9_][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.\-]*)*)"
+)
 FORMAL_RUNNER = "scripts/ci/check_formal.sh"
 
 
@@ -468,6 +474,12 @@ def script_closure(root: Path, roots: tuple[str, ...]) -> set[str]:
             continue
         text = (root / relative).read_text(encoding="utf-8", errors="ignore")
         references = SCRIPT_REFERENCE.findall(text)
+        if relative.endswith(".sh") and SHELL_DIRECTORY_BINDING in text:
+            parent = PurePosixPath(relative).parent
+            references += [
+                (parent / path).as_posix()
+                for path in SHELL_DIRECTORY_REFERENCE.findall(text)
+            ]
         if relative.endswith(".py"):
             parent = PurePosixPath(relative).parent
             references += [
@@ -660,6 +672,38 @@ def self_test() -> None:
         (crate / "src/file.rs").write_text(harness("file_default"))
         (crate / "src/orphan.rs").write_text(harness("orphan_default"))
         refused(root, "crates/a/src/orphan.rs:4: Kani harness orphan_default is not reachable")
+
+    # D1/D2 literal and braced script_dir references follow the entry's own
+    # directory; D3 unknown variables, D4 unbound script_dir, D5 parent escapes
+    # and D6 missing files add no inputs. D7 a newly referenced nested input
+    # enters the closure without editing a second dependency list.
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scripts = root / "scripts/ci"
+        (scripts / "fixtures/nested").mkdir(parents=True)
+        entry = scripts / "probe.sh"
+        first = scripts / "fixtures/first.toml"
+        second = scripts / "fixtures/nested/second.rs"
+        third = scripts / "fixtures/nested/third.lock"
+        external = root / "escape.rs"
+        for path in (first, second, third, external):
+            path.write_text("fixture\n")
+        references = (
+            'sha256sum "$script_dir/fixtures/first.toml" '
+            '"${script_dir}/fixtures/nested/second.rs" '
+            '"$unknown/fixtures/nested/third.lock" '
+            '"$script_dir/../../escape.rs" "$script_dir/fixtures/missing.rs"\n'
+        )
+        entry.write_text(SHELL_DIRECTORY_BINDING + "\n" + references)
+        expected = {"scripts/ci/probe.sh", "scripts/ci/fixtures/first.toml",
+                    "scripts/ci/fixtures/nested/second.rs"}
+        assert script_closure(root, ("scripts/ci/probe.sh",)) == expected, "D1-D3 D5-D6"
+        entry.write_text(references)
+        assert script_closure(root, ("scripts/ci/probe.sh",)) == {"scripts/ci/probe.sh"}, "D4"
+        entry.write_text(SHELL_DIRECTORY_BINDING + "\n" + references +
+                         'sha256sum "$script_dir/fixtures/nested/third.lock"\n')
+        assert script_closure(root, ("scripts/ci/probe.sh",)) == expected | {
+            "scripts/ci/fixtures/nested/third.lock"}, "D7"
 
     # Affected packages. A1 a change in b affects b and its dependent a, not
     # c; A2 a documentation change affects no package; A3 a root file (the
