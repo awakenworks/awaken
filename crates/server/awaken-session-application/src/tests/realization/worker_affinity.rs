@@ -283,12 +283,13 @@ async fn independently_exited_predecessor_allows_terminal_assignment_without_cle
         let runtime = Arc::new(RecordingCleanupRuntime::default());
         let app = configured_application(
             runtime.clone(),
-            repo.clone(),
+            crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
             Arc::new(RecordingEnvironmentSource::default()),
             SessionApplicationConfiguration {
                 execution_placement: SessionExecutionPlacement::RegisteredWorker,
                 ..Default::default()
             },
+            None,
         );
         app.execution_admission()
             .set_worker_observation_source(workers)
@@ -587,12 +588,13 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     let observation_runtime = Arc::new(RecordingCleanupRuntime::default());
     let application = configured_application(
         observation_runtime.clone(),
-        repo.clone(),
+        crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
+        None,
     );
     assert!(
         matches!(

@@ -15,7 +15,7 @@
 //! participants and their compensation, budget pricing, and whether the root
 //! is accepted or awaited — is decided here once for every protocol.
 
-use crate::SessionRootReads as _;
+use crate::{SessionResourceCommands as _, SessionRootReads as _};
 use awaken_time::WallClockExt as _;
 use std::collections::BTreeMap;
 
@@ -286,7 +286,7 @@ impl SessionApplication {
         request: SessionCreateRequest,
         protocol: &P,
     ) -> Result<PersistedSession, SessionCreateRequestError> {
-        let queries = &self.queries;
+        let (queries, input_service) = (&self.queries, &self.inputs);
         let SessionCreateRequest {
             owner_scope,
             explicit_id,
@@ -393,7 +393,7 @@ impl SessionApplication {
             .as_ref()
             .map(|profile| profile.resources.as_slice())
             .unwrap_or_default();
-        let prepared_inputs = self
+        let prepared_inputs = input_service
             .prepare_session_inputs(&session_id, &owner_scope, &inputs, agent_defaults)
             .await?;
         // Cause/effect decision table for Session model authority: R1 absent ->

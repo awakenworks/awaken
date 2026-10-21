@@ -467,36 +467,6 @@ impl SessionApplication {
         effects.validate_session_sandbox_layout(session_id, layout)
     }
 
-    /// Revalidate a proposed complete Resource manifest against the immutable
-    /// baseline already owned by a Session. The caller may pass provisional
-    /// typed bindings before Repository/Vault configuration because layout does
-    /// not depend on catalog versions or credential pins.
-    pub fn validate_persisted_session_resource_layout(
-        &self,
-        workspace_id: &str,
-        session: &PersistedSession,
-        resources: Vec<awaken_resource_contract::InputBinding>,
-    ) -> Result<(), RunError> {
-        let baseline = session
-            .frozen_baseline()
-            .ok_or_else(|| RunError::unavailable("Session creation intent was not consumed"))?;
-        self.validate_session_sandbox_layout(
-            session.session_id.as_str(),
-            &awaken_session_configuration_contract::SessionSandboxLayout {
-                workspace_id: workspace_id.to_string(),
-                agent_id: baseline.agent_id.clone(),
-                agent_revision: baseline.agent_revision,
-                runtime_placement: baseline.runtime_placement,
-                model_override: baseline.model_override.clone(),
-                runtime: baseline.runtime.clone(),
-                mounts: baseline.mounts.clone(),
-                env: baseline.env.clone(),
-                environment: baseline.environment.clone(),
-                resources,
-            },
-        )
-    }
-
     #[must_use]
     pub(crate) fn mcp_realizer(&self) -> &dyn McpAttachmentRealizer {
         self.mcp_realizer.as_ref()
@@ -1069,6 +1039,11 @@ impl SessionApplication {
         &mut self,
         catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     ) {
+        // As with Queries, fixture ports must be configured before sharing;
+        // an already selected Inputs cannot diverge from Resource authority.
+        Arc::get_mut(&mut self.inputs)
+            .expect("fixture input ports must be configured before the service is shared")
+            .set_resource_inventory(catalog.clone());
         self.resource_registry = Some(catalog);
     }
 }

@@ -2037,12 +2037,13 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
         };
     let application = configured_application(
         runtime.clone(),
-        repo.clone(),
+        crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
+        None,
     );
 
     let pending_force = application
@@ -2246,12 +2247,13 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
         };
     let application = configured_application(
         coordinator_runtime,
-        repo.clone(),
+        crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
+        None,
     );
     application
         .release_terminal_resources("workspace", session_id)
@@ -2459,12 +2461,13 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     let observation_runtime = Arc::new(RecordingCleanupRuntime::default());
     let application = configured_application(
         observation_runtime.clone(),
-        repo.clone(),
+        crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
+        None,
     );
     assert!(
         matches!(
