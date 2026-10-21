@@ -53,6 +53,28 @@ class DependencyFetchTests(unittest.TestCase):
                             "      - name: Retain cold dependency evidence", 1)):
             self.assertTrue(fetch.workflow_errors(changed))
 
+    def test_every_quality_job_bootstraps_python_before_running_checkers(self):
+        # P1 all jobs bootstrap => admit. P2 missing/old/floating/conditional or
+        # late setup in any one job => reject, even if every other job is valid.
+        import re
+        workflow = (fetch.ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
+        setup = ('      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6\n'
+                 '        with:\n          python-version: "3.12"\n')
+        self.assertEqual(fetch.workflow_errors(workflow), [])
+        for job in ("dependency_fetch", "trusted_host_portability", "full_quality", "performance_summary"):
+            match = re.search(r"(?ms)^  " + job + r":\n(.*?)(?=^  \S|\Z)", workflow)
+            body = match.group(0)
+            self.assertEqual(body.count(setup), 1)
+            for bad in (body.replace(setup, ""),
+                        body.replace('python-version: "3.12"', 'python-version: "3.10"'),
+                        body.replace('setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1', 'setup-python@v6'),
+                        body.replace('        with:\n          python-version:', '        if: false\n        with:\n          python-version:'),
+                        body.replace('        with:\n          python-version:', '        continue-on-error: true\n        with:\n          python-version:'),
+                        body.replace(setup, "").rstrip() + "\n" + setup):
+                with self.subTest(job=job, mutation=bad):
+                    errors = fetch.workflow_errors(workflow[:match.start()] + bad + workflow[match.end():])
+                    self.assertIn(job + " must bootstrap the pinned Python before its first checker", errors)
+
     def test_inventory_deduplicates_and_rejects_invalid_sources(self):
         revision = "1" * 40
         manifest = self.root / "Cargo.toml"
