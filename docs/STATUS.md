@@ -39,7 +39,7 @@ consistent vocabulary. This affects the documentation layers differently:
 
 ## Architecture Execution
 
-Reviewed 2026-10-21 against runtime source `11a0e41421` and the separately
+Reviewed 2026-10-21 against runtime source `c38b32f3e7` and the separately
 committed review-record guard `f867ba8673`. This table tracks design properties
 and remaining acceptance work. A landed implementation or an earlier slice's
 passing tests does not qualify the final combined revision. Line, dependency,
@@ -51,16 +51,16 @@ method and package counts are diagnostic observations, not completion quotas.
 | P1–P3 Realization and Dispatch | Typed Realization errors and disposition, Dispatch/Execution separation, private peer components and lifecycle-held access ([ADR-0089](adr/0089-session-realization-single-owner.md), [ADR-0091](adr/0091-architecture-rules.md)) | Final combination must pass the original boundary, error-path and concurrency checks; historical slice results do not qualify this revision |
 | P4 Executor | The former shared Host implementations have been replaced by caller-facing components and typed role sets ([runtime interface owner](design/runtime-interface-boundaries.md)) | Independent Coordinator product target/features dependency closure, deployment configuration and remaining assembly responsibilities still need closure. Retained readers must preserve exact commit selection and release Session state; replacing non-owning references with ownership is not an acceptance shortcut |
 | P5 Session state and recovery | Session aggregate owns execution and Environment decisions; the realization driver owns terminal recovery ([ADR-0090](adr/0090-session-state-model.md), [transition owner](design/session-environment-transition.md)) | Final-source proof/test execution and original-resource physical cleanup evidence remain distinct acceptance work |
-| P6 Sandbox | One SandboxProvider and an independent Kubernetes adapter ([provider boundary](design/sandbox-provider-contract.md)) | Metadata-CAS and live-test-owner corrections remain an unaccepted candidate. A diagnostic-source whole live gate passed, including the required PVC case; the earlier intermittent terminal-status failure remains recorded. Observer-free qualification and normal integration are pending |
-| P7 application and protocol | Credentials, Lifecycle, Queries and Inputs are real use-case components over the sole Mutations CAS kernel; protocol coordination decisions use the existing shared owner ([Session capabilities](design/session-aggregate-and-dispatch-capabilities.md)) | Create, Resources and remaining update/continuation orchestration are unfinished. Resource and Skill fixes have actual counterexamples; the Resource candidate also exposed two default-stack failures in its full related suite. Environment relay deletion and matching downstream migration are source preparation, not accepted delivery |
+| P6 Sandbox | One SandboxProvider and an independent Kubernetes adapter ([provider boundary](design/sandbox-provider-contract.md)). `4f6a5983d6` consolidates Pod metadata GET/replace/409 handling with exact identity checks; its package suite and original whole live gate, including required PVC execution and cleanup, passed before normal local integration | The final combined revision still needs its original full gate. The historical diagnostic run and intermittent terminal-status failure remain separate evidence; the accepted correction is qualified on its own source |
+| P7 application and protocol | Credentials, Lifecycle, Queries and Inputs are real use-case components over the sole Mutations CAS kernel ([Session capabilities](design/session-aggregate-and-dispatch-capabilities.md)). Skill succession (`e45451bd98`), shared Resource CAS/replay repair (`9c4333d4e2`) and direct Environment application routing (`c38b32f3e7`) passed their original affected checks and normal local integration; the original Resource default-stack cases now pass | Create, Resources and remaining update/continuation orchestration are unfinished. Flow consumers have been migrated from current main in an isolated candidate; exact Native pin/lock/source-closure update and actual consumer qualification are pending. Local source results do not qualify publication or deployment |
 | Contract convergence | [ADR-0091](adr/0091-architecture-rules.md) retains distinct Dream, provider SPI and Container transport owners | Package the four Core Session state/event/budget/repository sources after their application callers stabilize; do not revive withdrawn merges or pursue a package-count quota |
 | SDK and downstream delivery | Local SDK API, SemVer, package and artifact-consumer qualification exists at `ceb2a66686` ([SDK release boundary](adr/0086-runtime-sdk-public-surface.md)) | Bind final-source qualification to the completed code; registry publication and actual paired Flow/Cloud consumption remain separate from local artifact tests |
 | D10 process and final qualification | The sole baseline writer now requires a complete new review record; historical review text is retained ([ADR-0091](adr/0091-architecture-rules.md)). This page retains document-readiness and catalog navigation | Finish owned worktree lifecycle reconciliation, measure non-regressing coverage and obtain one complete same-revision full gate under [ADR-0080](adr/0080-full-gate-freshness-and-declared-tool-environment.md). No such final combined record is claimed here |
 
-Continue by closing the existing Resource/Skill counterexamples and the
-observer-free Kubernetes qualification, using the original owners, tests and
-normal commit path. Then narrow the remaining application and composition
-responsibilities and migrate their actual consumers together. The final clean
+Continue by qualifying the matching Flow consumers of direct Environment and
+Memory application composition, using the original source-closure and full-gate
+owners. Then narrow the remaining application and composition responsibilities
+and migrate their actual consumers together. The final clean
 revision must run the original full gate and coverage comparison. Native OS,
 real Provider, original-session cleanup and published/downstream acceptance each
 retain their own evidence boundary; a local fixture cannot substitute for them.
