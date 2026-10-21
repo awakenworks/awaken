@@ -1,6 +1,7 @@
 //! One test-only PostgreSQL configuration contract for the HTTP gate.
+mod child_output;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const CONNECT_DEADLINE: Duration = Duration::from_secs(30);
 const CONFIG_CHILD_EXIT_SLACK: Duration = Duration::from_secs(10);
@@ -63,20 +64,17 @@ pub fn assert_configuration_contract(tests: &[&str]) {
             if let Some(url) = url {
                 command.env("AWAKEN_TEST_DATABASE_URL", url);
             }
-            let mut child = command.spawn().unwrap();
-            let deadline = Instant::now() + CONNECT_DEADLINE + CONFIG_CHILD_EXIT_SLACK;
-            while child.try_wait().unwrap().is_none() {
-                if Instant::now() >= deadline {
-                    child.kill().unwrap();
-                    let output = child.wait_with_output().unwrap();
-                    panic!(
-                        "{test}: configuration contract exceeded deadline: {}",
-                        String::from_utf8_lossy(&output.stderr)
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            let output = child.wait_with_output().unwrap();
+            let captured = child_output::capture(
+                command.spawn().unwrap(),
+                CONNECT_DEADLINE + CONFIG_CHILD_EXIT_SLACK,
+            )
+            .unwrap();
+            let output = captured.output;
+            assert!(
+                !captured.timed_out,
+                "{test}: configuration contract exceeded deadline: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
             let text = format!(
                 "{}{}",
                 String::from_utf8_lossy(&output.stdout),
