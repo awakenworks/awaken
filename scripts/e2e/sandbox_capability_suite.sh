@@ -34,6 +34,9 @@
 # bwrap capability probe succeeds, turning any internal Namespace skip into failure.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
+source scripts/ci/_cargo_target.sh
+awaken_configure_cargo_target "$PWD"
+source scripts/ci/_rust_test_execution.sh
 
 require_all=0
 substrates_only=0
@@ -211,10 +214,10 @@ if command -v systemctl >/dev/null 2>&1 \
    && command -v systemd-run >/dev/null 2>&1 \
    && command -v env >/dev/null 2>&1 \
    && systemctl --user --no-pager show-environment >/dev/null 2>&1; then
-  run "systemd:exact-worker-exit-after-reopen" \
-    env AWAKEN_SYSTEMD_WORKER_E2E=1 \
-    cargo test -q -p awaken-coordinator --lib \
-      live_systemd_unit_stop_survives_adapter_reopen
+  systemd_test=worker_transport::systemd::tests::live_systemd_unit_stop_survives_adapter_reopen
+  AWAKEN_SYSTEMD_WORKER_E2E=1 run "systemd:exact-worker-exit-after-reopen" \
+    run_required_rust_tests -p awaken-cli --lib "$systemd_test" \
+      --require-case="$systemd_test" -- --exact
 else
   skip "systemd user manager or trusted launcher unavailable"
 fi
