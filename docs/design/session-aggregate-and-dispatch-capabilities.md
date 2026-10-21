@@ -248,6 +248,14 @@ composition propagates construction errors before starting downstream services.
 Cause/effect matrices cover foreign resolver queues, empty owners, ordinary and
 retry-exhausted claims, foreign dynamic Workers and accepted same-queue execution.
 
+The selected `SessionInputs` holds the original Inventory read capability and
+compiles the complete validated input plan before Repository or Vault effects.
+It reuses the same definition/mount normalizer as Resource manifest operations;
+the existing lowering path consumes that plan without recomputing replacements.
+The application has no preparation forwarding method. Independently retained
+Inputs do not retain the application. Fixture port configuration must finish
+before sharing that component, as it already must for Queries.
+
 Session process configuration and optional application features are installed by
 the consuming `SessionApplicationBuilder`. Production exposes no setters for
 credentials, models, Resources, Environment source or projection refresh.
@@ -255,7 +263,7 @@ Invalid realization owners and zero retry budgets return a typed build error
 before reading the clock or creating the runtime incarnation. Fixture-only
 constructors and setters remain behind `test-support`.
 
-`SessionCredentials::read_write` accepts one authority implementing both the
+`SessionCredentialAuthorities::read_write` accepts one authority implementing both the
 read source and material ingress, preserving the exact instance for both roles. `SessionResources::with_retention` requires the reference index, File
 catalog and purge scheduler together; a catalog-only process can explicitly
 leave retention disabled. CLI and scenario assembly use these capability

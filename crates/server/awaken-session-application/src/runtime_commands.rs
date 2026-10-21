@@ -74,7 +74,7 @@ pub(super) fn validate_session_skill_total(
     Ok(())
 }
 
-fn session_input_error(error: crate::session_resource::SessionInputError) -> RunError {
+pub(super) fn session_input_error(error: crate::session_resource::SessionInputError) -> RunError {
     use awaken_resource_contract::ResourceRegistryError;
     use awaken_session_configuration_contract::resource::SessionInputError;
     match &error {
@@ -435,24 +435,6 @@ impl SessionApplication {
             root_skills,
             &[],
         )
-    }
-
-    pub async fn resolve_session_inputs(
-        &self,
-        workspace_id: &str,
-        agent_defaults: &[awaken_resource_contract::InputBinding],
-        session_inputs: &[crate::session_resource::SessionInputAttachment],
-    ) -> Result<crate::session_resource::ResolvedSessionResources, RunError> {
-        crate::session_resource::SessionInputResolver::resolve_inputs(
-            workspace_id,
-            self.resource_registry
-                .as_deref()
-                .map(|catalog| catalog as &dyn awaken_resource_contract::ExecutionResourceResolver),
-            agent_defaults,
-            session_inputs,
-        )
-        .await
-        .map_err(session_input_error)
     }
 
     pub async fn configure_session_repository(

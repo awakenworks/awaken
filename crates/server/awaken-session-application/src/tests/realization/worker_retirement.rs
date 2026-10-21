@@ -15,9 +15,10 @@ async fn ordinary_worker_occupancy_does_not_depend_on_source_provider_availabili
     runtime.retention_unavailable.store(true, Ordering::SeqCst);
     let app = configured_application(
         runtime.clone(),
-        repo,
+        crate::SessionPersistence::new(repo, awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         Default::default(),
+        None,
     );
     let read = app
         .observe_worker_realizations(crate::WorkerRealizationRead::Occupancy(&identity.worker_id))
@@ -87,9 +88,10 @@ async fn worker_retirement_observes_the_existing_disposal_action_without_acknowl
         awaken_session_execution_contract::SessionSourceDispatchObservation::Settled;
     let app = configured_application(
         runtime.clone(),
-        repo.clone(),
+        crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         Default::default(),
+        None,
     );
     let observed = app
         .observe_worker_realizations(crate::WorkerRealizationRead::Retirement(&identity))
@@ -146,12 +148,13 @@ async fn active_resident_source_retirement_preserves_the_original_session() {
         awaken_session_execution_contract::SessionSourceDispatchObservation::Pending;
     let app = configured_application(
         runtime.clone(),
-        repo.clone(),
+        crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
+        None,
     );
     let observed = app
         .observe_worker_realizations(crate::WorkerRealizationRead::Retirement(&identity))
@@ -308,12 +311,13 @@ async fn worker_retirement_requires_each_terminal_source_without_mutating_roots(
         };
         let app = configured_application(
             runtime.clone(),
-            repo.clone(),
+            crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
             Arc::new(RecordingEnvironmentSource::default()),
             SessionApplicationConfiguration {
                 execution_placement: SessionExecutionPlacement::RegisteredWorker,
                 ..Default::default()
             },
+            None,
         );
         let result = app
             .observe_worker_realizations(crate::WorkerRealizationRead::Retirement(&identity))
@@ -437,12 +441,13 @@ async fn worker_retirement_never_publishes_a_successful_source_prefix() {
             awaken_session_execution_contract::SessionSourceDispatchObservation::Settled;
         let app = configured_application(
             runtime.clone(),
-            repo.clone(),
+            crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
             Arc::new(RecordingEnvironmentSource::default()),
             SessionApplicationConfiguration {
                 execution_placement: SessionExecutionPlacement::RegisteredWorker,
                 ..Default::default()
             },
+            None,
         );
         assert_eq!(
             app.observe_worker_realizations(crate::WorkerRealizationRead::Retirement(&identity))

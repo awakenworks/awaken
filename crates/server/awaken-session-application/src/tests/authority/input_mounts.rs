@@ -182,16 +182,25 @@ async fn input_mount_normalization_preserves_absent_catalogue_and_lookup_failure
 
 #[tokio::test]
 async fn input_mount_normalization_is_shared_by_creation_and_manifest_roles() {
+    // N3 builds the selected Inventory through the existing consuming Builder;
+    // no late fixture setter supplies the compilation capability.
     // N3/N5: explicit paths (including a LATER request) and Agent defaults
     // reserve every slot before definition reads. The same slug then selects
     // stable id and numeric suffixes in request order. Actual App preparation
     // and the existing manifest role must observe the SAME normalized paths;
-    // neither configures a participant. A typed duplicate is deliberately
+    // neither configures a participant. N6 retained Inputs still compiles from
+    // the original Inventory after App drop; it holds no App back-reference.
+    // A typed duplicate is deliberately
     // rejected only by the original effective-bindings check AFTER lookup.
     let registry = memory_registry().await;
     let sessions = authority_repository("input mount Session store").await;
-    let mut app = application(sessions, Arc::new(RecordingEnvironmentSource::default()));
-    app.set_resource_registry(registry.clone());
+    let app = crate::tests::application_fixture::configured_application(
+        Arc::new(NoopRuntime),
+        crate::SessionPersistence::new(sessions, system_clock()),
+        Arc::new(RecordingEnvironmentSource::default()),
+        Default::default(),
+        Some(crate::SessionResources::catalog(registry.clone())),
+    );
     let mut first = derived("mem-a");
     first.instructions = Some("retain exact instructions".into());
     let requests = [
@@ -224,7 +233,12 @@ async fn input_mount_normalization_is_shared_by_creation_and_manifest_roles() {
     );
     assert_eq!(normalized[0].access, requests[0].access);
     assert_eq!(normalized[0].instructions, requests[0].instructions);
-    let prepared = app
+    let app = Arc::new(app);
+    let application = Arc::downgrade(&app);
+    let inputs = app.inputs();
+    drop(app);
+    assert!(application.upgrade().is_none(), "N6 App was released");
+    let prepared = inputs
         .prepare_session_inputs("mount-session", "workspace", &requests, &defaults)
         .await
         .unwrap();
@@ -246,7 +260,7 @@ async fn input_mount_normalization_is_shared_by_creation_and_manifest_roles() {
         explicit_file("/duplicate"),
         explicit_file("/duplicate"),
     ];
-    let error = app
+    let error = inputs
         .prepare_session_inputs("duplicates", "workspace", &duplicates, &[])
         .await
         .err()
@@ -261,6 +275,39 @@ async fn input_mount_normalization_is_shared_by_creation_and_manifest_roles() {
         vec![("workspace".into(), "mem-a".into())],
         "N5 lookup still precedes complete logical collision validation"
     );
+    assert_eq!(registry.registration_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(registry.activation_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn fixture_inventory_replacement_refuses_after_inputs_are_shared() {
+    // Fixture decision table: N7 shared selected Inputs + Registry replacement
+    // -> refuse BEFORE either the App's Registry or Inputs' Inventory changes.
+    // N3 covers configuration before sharing. Both paths after refusal retain
+    // the original absent-Inventory error and never enter the rejected Registry.
+    let registry = memory_registry().await;
+    let sessions = authority_repository("shared Inputs fixture store").await;
+    let mut app = application(sessions, Arc::new(RecordingEnvironmentSource::default()));
+    let inputs = app.inputs();
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        app.set_resource_registry(registry.clone());
+    }));
+    assert!(refused.is_err(), "N7 shared fixture refuses replacement");
+    let requests = [derived("mem-a")];
+    let selected = inputs
+        .prepare_session_inputs("refused", "workspace", &requests, &[])
+        .await
+        .err()
+        .expect("N7 selected Inventory remains absent");
+    let manifest = app
+        .normalize_session_input_mounts("workspace", &requests, &[])
+        .await
+        .expect_err("N7 Resource authority remains absent");
+    let expected =
+        || RunError::bad_request("memory resources require a configured Resource Registry");
+    assert_run_error(selected, expected(), "N7 selected Inputs");
+    assert_run_error(manifest, expected(), "N7 Resource boundary");
+    assert!(registry.memory_reads.lock().unwrap().is_empty());
     assert_eq!(registry.registration_calls.load(Ordering::SeqCst), 0);
     assert_eq!(registry.activation_calls.load(Ordering::SeqCst), 0);
 }

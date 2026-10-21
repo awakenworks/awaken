@@ -1,23 +1,31 @@
 // @formal surface exclude=application_adapter
 // @formal owner crates/contract/awaken-session-repository-contract/src/repository_port.rs
 // @formal owner crates/contract/awaken-session-execution-contract/src/session/live_inbox.rs
+// @formal owner crates/server/awaken-session-application/src/session_input.rs
 // @formal reason: The existing application owner check precedes every operation on the selected Inbox.
-// @formal reason: No new queue, authorization policy, persistence or terminal decision is introduced.
-//! Workspace-fenced application boundary for attempt-local live steering.
+// @formal reason: The existing compiler and its private validated value live with the selected Inputs.
+// @formal reason: No new queue, compiler policy, persistence or terminal decision is introduced.
+//! Selected Session input planning and workspace-fenced live steering.
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_session_execution_contract::{
     LiveInboxApplication, LiveInboxApplicationError, LiveInboxSnapshot,
 };
 
+use crate::SessionInputRequest;
 use crate::mutation::session_owner;
+use crate::session_input::{normalize_session_input_mounts, plan_session_input_attachments};
 use awaken_session_repository_contract::SessionRepositoryReads;
 use awaken_session_execution_contract::LiveInboxRuntime;
+use awaken_session_types::RunError;
 use std::sync::Arc;
 
+mod lowering;
+
 /// Session input operations over the selected store and attempt-local inbox.
-/// The service holds the existing ports directly, with no application or peer
-/// service back-reference. Other input compilation use cases remain to migrate.
+/// The service holds the existing read and Inbox ports directly, with no
+/// application or peer service back-reference. Its validated plan is consumed
+/// unchanged by the existing Repository/Vault lowering path.
 ///
 /// I1: the selected service directly implements the existing consumer port:
 ///
@@ -44,14 +52,99 @@ use std::sync::Arc;
 pub struct SessionInputs {
     repository: Arc<dyn SessionRepositoryReads>,
     inbox: Arc<dyn LiveInboxRuntime>,
+    inventory: Option<Arc<dyn awaken_resource_contract::ResourceInventory>>,
+}
+
+/// A validated input plan: every derived path resolved and the effective
+/// binding set checked, before any Repository or Vault participant.
+pub struct PreparedSessionInputs {
+    requests: Vec<SessionInputRequest>,
+    attachments: Vec<crate::session_resource::SessionInputAttachment>,
+    effective_bindings: Vec<awaken_resource_contract::InputBinding>,
+}
+
+impl PreparedSessionInputs {
+    #[must_use]
+    pub fn effective_bindings(&self) -> &[awaken_resource_contract::InputBinding] {
+        &self.effective_bindings
+    }
 }
 
 impl SessionInputs {
     pub(crate) fn new(
         repository: Arc<dyn SessionRepositoryReads>,
         inbox: Arc<dyn LiveInboxRuntime>,
+        inventory: Option<Arc<dyn awaken_resource_contract::ResourceInventory>>,
     ) -> Self {
-        Self { repository, inbox }
+        Self {
+            repository,
+            inbox,
+            inventory,
+        }
+    }
+
+    /// Compile one complete binding plan before Skill/File/Vault/Repository
+    /// effects. Construction supplies the selected Inventory; callers cannot
+    /// replace it for one request.
+    ///
+    /// C1 the independently held Inputs compiles the existing value:
+    ///
+    /// ```
+    /// use awaken_session_application::{SessionInputs, SessionInputRequest};
+    /// async fn prepare(inputs: &SessionInputs, requests: &[SessionInputRequest]) {
+    ///     let _ = inputs.prepare_session_inputs("session", "workspace", requests, &[]).await;
+    /// }
+    /// ```
+    ///
+    /// C2 the application cannot retain a second preparation entrance:
+    ///
+    /// ```compile_fail,E0599
+    /// use awaken_session_application::{SessionApplication, SessionInputRequest};
+    /// async fn old(app: &SessionApplication, requests: &[SessionInputRequest]) {
+    ///     let _ = app.prepare_session_inputs("session", "workspace", requests, &[]).await;
+    /// }
+    /// ```
+    ///
+    /// The plan is consumed unchanged by
+    /// [`crate::SessionApplication::lower_prepared_session_inputs`].
+    pub async fn prepare_session_inputs(
+        &self,
+        session_id: &str,
+        owner_scope: &str,
+        requests: &[SessionInputRequest],
+        agent_defaults: &[awaken_resource_contract::InputBinding],
+    ) -> Result<PreparedSessionInputs, RunError> {
+        let normalized = normalize_session_input_mounts(
+            self.inventory.as_deref(),
+            owner_scope,
+            requests,
+            agent_defaults,
+        )
+        .await?;
+        // Build the complete logical binding set with a non-durable placeholder
+        // Repository id. The shared resolver owns replacement/collision/tree
+        // semantics, and this call remains pure; only after it succeeds may the
+        // caller enter Registry/Vault participants.
+        let attachments = plan_session_input_attachments(session_id, &normalized, agent_defaults)
+            .map_err(RunError::bad_request)?;
+        let effective_bindings = crate::session_resource::SessionInputResolver::effective_bindings(
+            agent_defaults,
+            &attachments,
+        )
+        .map_err(|error| RunError::bad_request(error.to_string()))?;
+        Ok(PreparedSessionInputs {
+            requests: normalized,
+            attachments,
+            effective_bindings,
+        })
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn set_resource_inventory(
+        &mut self,
+        inventory: Arc<dyn awaken_resource_contract::ResourceInventory>,
+    ) {
+        self.inventory = Some(inventory);
     }
 
     async fn require_live_inbox_owner(
