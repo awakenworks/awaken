@@ -1,0 +1,13 @@
+[package]
+name = "awaken-kani-constructor-regression"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+constructor-model = { path = "model" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

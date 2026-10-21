@@ -21,3 +21,20 @@ index f863af1fe..dfdc531f5 100644
      let unsigned_expr = if expr.typ().is_pointer() {
          expr.clone()
      } else {
+diff --git a/kani-compiler/src/kani_middle/analysis.rs b/kani-compiler/src/kani_middle/analysis.rs
+index 4b2c0b93d..b758b6583 100644
+--- a/kani-compiler/src/kani_middle/analysis.rs
++++ b/kani-compiler/src/kani_middle/analysis.rs
+@@ -26,7 +26,11 @@ pub fn print_stats(items: &[MonoItem]) {
+         .iter()
+         .filter_map(|mono| if let MonoItem::Fn(instance) = mono { Some(instance) } else { None })
+         .fold(StatsVisitor::default(), |mut visitor, body| {
+-            visitor.visit_body(&body.body().unwrap());
++            // Imported constructors may have no original optimized MIR. Their
++            // synthesized codegen body is not part of these source statistics.
++            if let Some(body) = body.body() {
++                visitor.visit_body(&body);
++            }
+             visitor
+         });
+     eprintln!("====== Reachability Analysis Result =======");
