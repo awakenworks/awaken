@@ -24,9 +24,24 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
     // an absent Pod + live claim remains denied. Neither
     // empty membership nor source preparation is a physical cleanup receipt.
     // R5 before preparations are durable, Actor retirement must observe the
-    // same retained original terminal source and independent exact live claim.
-    // Removing its guard, terminal phase or GC independence denies retirement;
+    // same retained original source and independent exact live claim. R5-L is
+    // a Running original: Actor exit preserves this independent live data source.
+    // R5-T is terminal. Removing the guard, a known phase or GC independence
+    // denies retirement; terminal cleanup still requires its terminal guard.
+    // R5-I running sources also require the same original Pod/PVC identities
+    // and both participants present. R2-L Running never authorizes terminal
+    // preparation. Cross these through the same HTTP observer and assert the
+    // complete before/after Pod/PVC snapshot and empty write log for every read.
     // observing this read never mutates or prepares/disposes the source.
+    // P1 cause/effect graph: C1 claim UID exact/mismatched; C2 Pod effect epoch
+    // valid/malformed. All other original-source/guard/GC facts remain fixed.
+    // | Rule | claim C1 | epoch C2 | observation | effect |
+    // | P1a | exact | valid | RetainedOriginal | unchanged snapshots/no writes |
+    // | P1b | mismatch | valid | Incompatible | same zero effects |
+    // | P1c | mismatch | bad | Incompatible before Pod decoding | same |
+    // | P1d | exact | bad | original Backend codec error | same |
+    // P1c preserves the established known-negative precedence; P1d prevents
+    // masking genuine evidence errors. Existing 403/503 rows own API failures.
     for row in [
         "empty",
         "control",
@@ -40,10 +55,27 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
         "revoked",
         "already-absent",
         "deleting-pod",
+        "running",
         "absent-pod-live-claim",
         "retirement-held",
         "retirement-no-guard",
         "retirement-running",
+        "retirement-running-foreign-pod",
+        "retirement-running-foreign-claim",
+        "retirement-running-foreign-claim-bad-epoch",
+        "retirement-running-bad-epoch",
+        "retirement-running-missing-pod",
+        "retirement-running-missing-claim",
+        "retirement-running-no-guard",
+        "retirement-running-isolated",
+        "retirement-running-pod-owner",
+        "retirement-running-claim-owner",
+        "retirement-running-claim-deleting",
+        "retirement-running-api-403",
+        "retirement-running-api-503",
+        "retirement-pending",
+        "retirement-unknown",
+        "retirement-missing-phase",
         "retirement-deleting",
         "retirement-pod-owner",
         "retirement-claim-owner",
@@ -166,6 +198,14 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
                 Some(continuation_claim_for_pod(&original.container_id).unwrap());
             state.pod = Some(pod);
             state.projected.clear();
+            // R5-L negative controls each remove one live-source premise;
+            // the same real HTTP observer must refuse without any writes.
+            if row.starts_with("retirement-running")
+                || matches!(row, "running" | "retirement-prepared-running")
+            {
+                state.pod.as_mut().unwrap().status =
+                    Some(serde_json::from_value(json!({"phase":"Running"})).unwrap());
+            }
             match row {
                 "declaration" => {
                     state
@@ -192,35 +232,67 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
                         .unwrap()
                         .insert("awaken.dev/projected-object-results".into(), "{".into());
                 }
-                "foreign-pod" => {
+                "foreign-pod" | "retirement-running-foreign-pod" => {
                     state.pod.as_mut().unwrap().metadata.uid = Some("replacement-pod".into())
                 }
-                "foreign-claim" => {
+                "foreign-claim"
+                | "retirement-running-foreign-claim"
+                | "retirement-running-foreign-claim-bad-epoch" => {
                     state.claim.as_mut().unwrap().metadata.uid = Some("replacement-claim".into())
                 }
                 "already-absent" => {
                     state.pod = None;
                     state.claim = None;
                 }
-                "absent-pod-live-claim" => state.pod = None,
+                "absent-pod-live-claim" | "retirement-running-missing-pod" => state.pod = None,
+                "retirement-running-missing-claim" => state.claim = None,
                 "deleting-pod" => {
                     state.pod.as_mut().unwrap().metadata.deletion_timestamp =
                         Some(serde_json::from_value(json!("2026-10-14T06:37:35Z")).unwrap())
                 }
-                "retirement-no-guard" => state.pod.as_mut().unwrap().metadata.finalizers = None,
-                "retirement-running" | "retirement-prepared-running" => {
-                    state.pod.as_mut().unwrap().status =
-                        Some(serde_json::from_value(json!({"phase":"Running"})).unwrap())
+                "retirement-no-guard" | "retirement-running-no-guard" => {
+                    state.pod.as_mut().unwrap().metadata.finalizers = None
                 }
+                "retirement-running-isolated" => {
+                    state
+                        .pod
+                        .as_mut()
+                        .unwrap()
+                        .metadata
+                        .labels
+                        .get_or_insert_with(Default::default)
+                        .insert(
+                            awaken_container_contract::ISOLATION_LABEL.into(),
+                            "true".into(),
+                        );
+                }
+                "retirement-running-claim-deleting" => {
+                    state.claim.as_mut().unwrap().metadata.deletion_timestamp =
+                        Some(serde_json::from_value(json!("2026-10-14T06:37:35Z")).unwrap())
+                }
+                "retirement-running-api-403" => state.read_failure = Some(403),
+                "retirement-running-api-503" => state.read_failure = Some(503),
+                "retirement-pending" => {
+                    state.pod.as_mut().unwrap().status =
+                        Some(serde_json::from_value(json!({"phase":"Pending"})).unwrap())
+                }
+                "retirement-unknown" => {
+                    state.pod.as_mut().unwrap().status =
+                        Some(serde_json::from_value(json!({"phase":"Unknown"})).unwrap())
+                }
+                "retirement-missing-phase" => state.pod.as_mut().unwrap().status = None,
                 "retirement-deleting" => {
                     state.pod.as_mut().unwrap().metadata.deletion_timestamp =
                         Some(serde_json::from_value(json!("2026-10-14T06:37:35Z")).unwrap())
                 }
-                "retirement-pod-owner" | "retirement-claim-owner" => {
+                "retirement-pod-owner"
+                | "retirement-claim-owner"
+                | "retirement-running-pod-owner"
+                | "retirement-running-claim-owner" => {
                     let owner = serde_json::from_value(json!({"apiVersion":"v1","kind":"Pod",
                         "name":"retiring-worker","uid":"worker-pod-uid"}))
                     .unwrap();
-                    if row == "retirement-pod-owner" {
+                    if row.ends_with("pod-owner") {
                         state.pod.as_mut().unwrap().metadata.owner_references = Some(vec![owner]);
                     } else {
                         state.claim.as_mut().unwrap().metadata.owner_references = Some(vec![owner]);
@@ -237,6 +309,23 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
                         Some(serde_json::from_value(json!("2026-10-14T06:37:35Z")).unwrap());
                 }
                 _ => {}
+            }
+            if matches!(
+                row,
+                "retirement-running-foreign-claim-bad-epoch" | "retirement-running-bad-epoch"
+            ) {
+                state
+                    .pod
+                    .as_mut()
+                    .unwrap()
+                    .metadata
+                    .annotations
+                    .as_mut()
+                    .unwrap()
+                    .insert(
+                        crate::pod_evidence::SANDBOX_EFFECT_EPOCH_ANNOTATION.into(),
+                        "bad".into(),
+                    );
             }
         }
         let before = {
@@ -262,21 +351,99 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
             let observed = provider
                 .observe(adoption, adoption.effect_basis(&create))
                 .await;
+            // R5-E real API authority/mechanism failures remain typed errors;
+            // known failed retention premises are ordinary negative facts.
+            match row {
+                "retirement-running-api-403" => {
+                    assert!(matches!(&observed, Err(pc::SandboxError::Unauthorized(_))))
+                }
+                "retirement-running-api-503" => {
+                    assert!(matches!(&observed, Err(pc::SandboxError::Backend { .. })))
+                }
+                "retirement-running-bad-epoch" => {
+                    assert!(
+                        matches!(&observed,
+                            Err(pc::SandboxError::Backend { detail, .. })
+                                if detail == "invalid Sandbox effect epoch"),
+                        "P1d genuine codec failure remains an error: {observed:?}"
+                    );
+                }
+                _ if !source_prepared
+                    && !matches!(
+                        row,
+                        "retirement-held" | "retirement-running" | "retirement-deleting"
+                    ) =>
+                {
+                    assert!(
+                        matches!(&observed, Ok(pc::SandboxObservation::Incompatible { .. })),
+                        "R5 negative fact {row}: {observed:?}"
+                    );
+                }
+                _ => {}
+            }
+            if row == "retirement-running" {
+                // LR2: exact guarded Running source + independent live claim
+                // may qualify retention, but its physical lifecycle has not
+                // ended. Never replace that fact with Terminal, Disposing or
+                // absence; the positive-retention assertion below is separate.
+                assert!(
+                    !matches!(
+                        &observed,
+                        Ok(pc::SandboxObservation::Terminal { .. }
+                            | pc::SandboxObservation::Disposing { .. }
+                            | pc::SandboxObservation::DefinitivelyUnavailable { .. })
+                    ),
+                    "LR2 Running source retention cannot claim physical completion: {observed:?}"
+                );
+                // LR3 Recovery retains the physical Ready/Provisioning fact.
+                // Direct TerminalCleanup of this legacy V2 carrier lacks the
+                // original projected-member witness: keep that exact uncertainty
+                // until canonical terminal preparation derives its empty plan.
+                // Neither read may manufacture retention or physical completion.
+                let physical = SandboxAdoption::new(&spec, &handle);
+                let recovered = provider
+                    .observe(physical, physical.effect_basis(&create))
+                    .await
+                    .unwrap();
+                assert!(
+                    matches!(
+                        recovered,
+                        pc::SandboxObservation::Ready | pc::SandboxObservation::Provisioning { .. }
+                    ),
+                    "LR3 Recovery: {recovered:?}"
+                );
+                let mut physical = SandboxAdoption::new(&spec, &handle);
+                physical.observation_purpose = pc::SandboxObservationPurpose::TerminalCleanup;
+                let terminal = provider
+                    .observe(physical, physical.effect_basis(&create))
+                    .await;
+                assert!(
+                    matches!(&terminal, Err(pc::SandboxError::Backend { operation: "container runtime", detail }) if detail == "terminal Kubernetes projected-object membership is unknown"),
+                    "LR3 legacy terminal membership: {terminal:?}"
+                );
+            }
             // R6 durable preparation belongs to the aggregate. Once supplied,
             // a running substrate, disposing pair or exact absence retains
             // the canonical physical replay path without new source I/O.
-            let recoverable = matches!(observed, Ok(pc::SandboxObservation::Terminal { .. }))
-                || (source_prepared
-                    && matches!(
-                        observed,
-                        Ok(pc::SandboxObservation::Ready
-                            | pc::SandboxObservation::Provisioning { .. }
-                            | pc::SandboxObservation::Disposing { .. }
-                            | pc::SandboxObservation::DefinitivelyUnavailable { .. })
-                    ));
+            let recoverable = matches!(
+                observed,
+                Ok(pc::SandboxObservation::RetainedOriginal { .. })
+            ) || (source_prepared
+                && matches!(
+                    observed,
+                    Ok(pc::SandboxObservation::Ready
+                        | pc::SandboxObservation::Terminal { .. }
+                        | pc::SandboxObservation::Provisioning { .. }
+                        | pc::SandboxObservation::Disposing { .. }
+                        | pc::SandboxObservation::DefinitivelyUnavailable { .. })
+                ));
             assert_eq!(
                 recoverable,
-                source_prepared || matches!(row, "retirement-held" | "retirement-deleting"),
+                source_prepared
+                    || matches!(
+                        row,
+                        "retirement-held" | "retirement-running" | "retirement-deleting"
+                    ),
                 "R5/R6 {row}: {observed:?}"
             );
             {

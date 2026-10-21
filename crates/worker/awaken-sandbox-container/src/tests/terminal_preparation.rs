@@ -5,6 +5,87 @@ use awaken_provisioning_contract::SandboxAdoption;
 use awaken_provisioning_contract::SandboxProvider;
 
 #[tokio::test]
+async fn retained_original_observation_never_grants_adoption_or_terminal_preparation() {
+    // Cause/effect table RA1: exact RetainedOriginal observation crosses the
+    // legacy, current-unattached, current-fenced adoption and terminal-prepare
+    // seams. Every row must actually observe, return Conflict, preserve the
+    // original container and perform no staging, Control binding or deletion.
+    // The observation's serialized round trip preserves its independent fact;
+    // it is never reinterpreted as Ready, Terminal, Disposing or absence.
+    for seam in ["legacy", "unattached", "fenced", "terminal"] {
+        let runtime = Arc::new(
+            FakeRuntime::default()
+                .with_live_input_projection()
+                .with_native_memory_archive(Vec::new()),
+        );
+        let provider = provider(runtime.clone());
+        let mut desired = spec("retained-observation-admission");
+        desired.mounts.clear();
+        let original = provider.create_container(&desired).await.unwrap();
+        let handle = pc::Sandbox::handle(&original);
+        let id = original.container_id.clone();
+        let observed = pc::SandboxObservation::RetainedOriginal {
+            physical_incarnation: id.clone(),
+        };
+        let wire = serde_json::to_value(&observed).unwrap();
+        assert_eq!(wire["retained_original"]["physical_incarnation"], id);
+        assert_eq!(
+            serde_json::from_value::<pc::SandboxObservation>(wire).unwrap(),
+            observed
+        );
+        runtime.set_observation(observed);
+        let fence = pc::SandboxEffectFence::new("retention", "owner", "boot", 2, u64::MAX).unwrap();
+        let authority = pc::test_support::EffectAuthority::new(&fence);
+        let observations = runtime.st.lock().unwrap().observations;
+        let result = match seam {
+            "legacy" => provider
+                .adopt_container(&pc::SandboxHandle::container(
+                    &desired.scope,
+                    handle.container_payload().unwrap(),
+                ))
+                .await
+                .map(drop),
+            "unattached" => provider
+                .adopt_for_effect(
+                    SandboxAdoption::new(&desired, &handle),
+                    pc::SandboxEffect::Unattached,
+                )
+                .await
+                .map(drop),
+            "fenced" => provider
+                .adopt_for_effect(
+                    SandboxAdoption::new(&desired, &handle),
+                    pc::SandboxEffect::Fenced {
+                        fence: &fence,
+                        authority: &authority,
+                    },
+                )
+                .await
+                .map(drop),
+            _ => provider
+                .prepare_terminal_for_effect(&desired, Some(&handle), None, &fence, &authority)
+                .await
+                .map(drop),
+        };
+        assert!(
+            matches!(result, Err(pc::SandboxError::Conflict(_))),
+            "RA1 {seam}: {result:?}"
+        );
+        let state = runtime.st.lock().unwrap();
+        assert_eq!(
+            state.observations,
+            observations + 1,
+            "RA1 {seam} consumes the fact"
+        );
+        assert!(state.alive[&id]);
+        assert!(state.removals.is_empty());
+        assert!(state.control_binding_calls.is_empty());
+        assert_eq!(state.recovered_staging_calls, 0);
+        assert_eq!(state.created_command.len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn terminal_control_reconstruction_does_not_require_a_live_binding() {
     // Control reconstruction table TC1: exact frozen spec/handle/fence plus a
     // Terminal or Disposing observation -> preserve the recorded control

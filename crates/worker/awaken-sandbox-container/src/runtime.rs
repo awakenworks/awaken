@@ -482,13 +482,16 @@ fn exact_removal_decision(
         pc::SandboxObservation::DefinitivelyUnavailable { .. } => {
             Ok(ExactRemovalDecision::AlreadyAbsent)
         }
+        pc::SandboxObservation::RetainedOriginal { .. } => Err(RuntimeError::Conflict(
+            "original source retention is not physical removal authority".into(),
+        )),
         pc::SandboxObservation::Incompatible { reason } => Err(RuntimeError::Backend(reason)),
     }
 }
 
 mod observation;
 mod realization;
-pub use observation::sandbox_observation;
+pub use observation::{sandbox_observation, sandbox_observation_identity};
 pub use realization::existing_realization_decision;
 
 /// The scan a container creation claim names: the decision that reads the
@@ -1358,6 +1361,13 @@ mod realization_tests {
         // never reaches this pure kernel). R1 live phases request one immutable
         // remove; R2 exact absence requests auxiliary-only convergence; R3 a
         // deterministic incompatibility rejects with no destructive effect.
+        // R4 retention is not removal authority even for the exact identity.
+        assert!(matches!(
+            exact_removal_decision(pc::SandboxObservation::RetainedOriginal {
+                physical_incarnation: "incarnation-1".into(),
+            }),
+            Err(RuntimeError::Conflict(_))
+        ));
         for observation in [
             pc::SandboxObservation::Provisioning { deadline: None },
             pc::SandboxObservation::Ready,

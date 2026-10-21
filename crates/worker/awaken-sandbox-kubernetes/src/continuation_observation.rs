@@ -22,7 +22,7 @@ pub(crate) struct ContinuationObservationEvidence<'a> {
     pub(crate) pod_present: bool,
     pub(crate) pod_deleting: bool,
     pub(crate) cleanup_gate_held: bool,
-    pub(crate) original_terminal_guard: bool,
+    pub(crate) original_guard_retained: bool,
     pub(crate) gc_independent: bool,
     pub(crate) expected_uid: Option<&'a str>,
     pub(crate) observed_uid: Option<&'a str>,
@@ -46,7 +46,7 @@ pub(crate) fn continuation_observation_disposition(
         pod_present,
         pod_deleting,
         cleanup_gate_held,
-        original_terminal_guard,
+        original_guard_retained,
         gc_independent,
         expected_uid,
         observed_uid,
@@ -61,7 +61,7 @@ pub(crate) fn continuation_observation_disposition(
         }
     ) {
         return if pod_present
-            && original_terminal_guard
+            && original_guard_retained
             && gc_independent
             && expected_uid.is_some()
             && expected_uid == observed_uid
@@ -70,9 +70,7 @@ pub(crate) fn continuation_observation_disposition(
         {
             Ok(ContinuationObservationDisposition::RetainedOriginal)
         } else {
-            Err(backend(
-                "original Kubernetes source is not retained independently of its Worker",
-            ))
+            Ok(ContinuationObservationDisposition::Incompatible)
         };
     }
     if expected_uid != observed_uid {
@@ -116,7 +114,7 @@ pub(crate) fn continuation_observation_disposition(
 
     if pod_present && pod_deleting {
         if purpose == SandboxObservationPurpose::TerminalCleanup
-            && original_terminal_guard
+            && original_guard_retained
             && !observed_terminating
             && effect_fenced
             && expected_uid.is_some()
@@ -168,7 +166,7 @@ fn absent_pod_observation_never_confuses_recovery_with_completed_cleanup() {
         pod_present: false,
         pod_deleting: false,
         cleanup_gate_held: false,
-        original_terminal_guard: false,
+        original_guard_retained: false,
         gc_independent: false,
         expected_uid: Some("p"),
         observed_uid,

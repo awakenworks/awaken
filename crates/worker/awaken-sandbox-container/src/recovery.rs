@@ -287,6 +287,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             ));
         }
         match observed {
+            pc::SandboxObservation::RetainedOriginal { .. } => Err(pc::SandboxError::conflict(
+                "original source retention is not terminal preparation authority",
+            )),
             pc::SandboxObservation::Ready => self
                 .adopt_observed_container_with_spec(
                     adoption.handle,

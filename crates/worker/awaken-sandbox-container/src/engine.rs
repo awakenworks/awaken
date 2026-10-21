@@ -25,6 +25,7 @@ pub use crate::runtime::{
     PhysicalIncarnation, RUNTIME_OWNER_LABEL, RebuildContinuityEvidence, SANDBOX_ATTEMPT_LABEL,
     SANDBOX_EXECUTION_ID, container_adoption_fingerprint, container_effect_fence_from_values,
     container_realization_fingerprint, existing_realization_decision, legacy_unfenced_fingerprint,
-    runtime_owner_id, sandbox_observation, sandbox_scope_identity, validate_runtime_effect_fence,
+    runtime_owner_id, sandbox_observation, sandbox_observation_identity, sandbox_scope_identity,
+    validate_runtime_effect_fence,
 };
 pub use crate::writable::{WritableRootTopology, writable_dirs, writable_root_topology};

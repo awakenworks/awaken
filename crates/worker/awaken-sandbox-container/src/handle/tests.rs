@@ -769,6 +769,8 @@ fn closed_container_observation_requires_the_original_physical_incarnation() {
     // R1 current+closed+exact -> accept; R2 current+closed+(foreign|missing)
     // -> Conflict; R3 non-closed -> Invalid; R4 no handle incarnation -> refuse.
     // The table has no provider I/O and cannot grant disposal authority.
+    // R5 independent retention remains non-closed with both exact and foreign
+    // identities; neither one supplies physical completion evidence.
     let handle = pc::SandboxHandle::container_v2(
         "scope",
         container_v2(
@@ -788,6 +790,12 @@ fn closed_container_observation_requires_the_original_physical_incarnation() {
         },
     );
     for observation in [
+        pc::SandboxObservation::RetainedOriginal {
+            physical_incarnation: "pod-uid-a".into(),
+        },
+        pc::SandboxObservation::RetainedOriginal {
+            physical_incarnation: "foreign".into(),
+        },
         pc::SandboxObservation::Ready,
         pc::SandboxObservation::Provisioning { deadline: None },
         pc::SandboxObservation::Incompatible {
