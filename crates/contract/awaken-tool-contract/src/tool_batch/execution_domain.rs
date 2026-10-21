@@ -285,6 +285,14 @@ fn history_entry_anchor(
     if allowed { Ok(anchor) } else { Err(invalid()) }
 }
 
+/// Read-only projections of the same validated invocation history. Neither
+/// view grants execution, process termination, Resource release or cleanup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolExecutionDomainFootprint {
+    pub recorded: Vec<ToolExecutionDomain>,
+    pub outstanding: Vec<ToolExecutionDomain>,
+}
+
 impl ActiveToolBatch {
     /// Transient history fold over the canonical cell. Each (batch, call,
     /// attempt) keeps its original containment even when a later batch replaces
@@ -293,7 +301,19 @@ impl ActiveToolBatch {
         state: &[StateCommand],
         run_id: &RunId,
     ) -> Result<Vec<ToolExecutionDomain>, ToolBatchError> {
+        Self::execution_domain_footprint(state, run_id).map(|view| view.recorded)
+    }
+
+    /// Two projections of the same validated history: all original domains and
+    /// entries without a complete canonical result publication. A returned
+    /// invocation is not proof that its external process or Resource stopped.
+    pub fn execution_domain_footprint(
+        state: &[StateCommand],
+        run_id: &RunId,
+    ) -> Result<ToolExecutionDomainFootprint, ToolBatchError> {
         let mut domains = std::collections::BTreeMap::new();
+        let mut returned = std::collections::BTreeSet::new();
+        let mut entered_calls = std::collections::BTreeMap::new();
         // The original log position identifies an entry, not a fabricated epoch.
         // Resume legally returns to attempt 1, so attempt alone cannot key it.
         let mut entries = std::collections::BTreeMap::new();
@@ -310,6 +330,21 @@ impl ActiveToolBatch {
                     position,
                     call.recovery_policy.max_attempts(),
                 )?;
+                let entry_key = (key.0.clone(), key.1.clone(), anchor);
+                if let Some((original, policy)) = entered_calls.get(&entry_key)
+                    && (original != &call.call || policy != &call.recovery_policy)
+                {
+                    return Err(ToolBatchError::InvalidPersistedState(
+                        "entered tool changed its original call or recovery policy".into(),
+                    ));
+                }
+                if matches!(phase, CallPhaseView::Executing(_))
+                    || call.materialization_domain.is_some()
+                {
+                    entered_calls
+                        .entry(entry_key)
+                        .or_insert_with(|| (call.call.clone(), call.recovery_policy.clone()));
+                }
                 if previous.is_none() && phase != CallPhaseView::Requested {
                     // An isolated tail cannot establish all earlier entries.
                     // Preserve missing-prefix uncertainty; never fill it from
@@ -351,16 +386,238 @@ impl ActiveToolBatch {
                     }
                     domains.insert(domain_key, domain.clone());
                 }
+                if batch.phase == ToolBatchPhase::Finalized
+                    && let ToolCallPhase::Completed(output) = &call.phase
+                    && let Ok(expected) = batch.result_message_id(&call.call.call_id)
+                {
+                    let published = call.result_messages.first().is_some_and(|message| {
+                        use awaken_agent_contract::agent::{content::ContentBlock, message::Role};
+                        message.id == expected
+                            && message.role == Role::Tool
+                            && matches!(message.content.as_slice(), [ContentBlock::ToolResult {
+                                    tool_use_id, content, is_error, ..
+                                }] if tool_use_id == &call.call.call_id
+                                    && content == &output.content && *is_error == output.is_error)
+                    });
+                    if published {
+                        // Only this exact entry is returned. Earlier retries,
+                        // waits and missing-prefix sentinels remain retained.
+                        for materialization in [false, true] {
+                            returned.insert((
+                                key.0.clone(),
+                                key.1.clone(),
+                                Some(anchor),
+                                materialization,
+                            ));
+                        }
+                    }
+                }
                 entries.insert(key, (phase, anchor));
             }
         }
-        Ok(domains.into_values().collect())
+        let mut recorded = Vec::with_capacity(domains.len());
+        let mut outstanding = Vec::new();
+        for (key, domain) in domains {
+            if !returned.contains(&key) {
+                outstanding.push(domain.clone());
+            }
+            recorded.push(domain);
+        }
+        Ok(ToolExecutionDomainFootprint {
+            recorded,
+            outstanding,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::tests::batch;
+
+    #[test]
+    fn published_returns_remove_only_the_exact_invocation_from_current_occupancy() {
+        use awaken_agent_contract::agent::{
+            content::ContentBlock,
+            message::{Message, Role},
+        };
+        // Cause graph: original Requested prefix P, fixed entered call/domain D,
+        // Completed result C, Finalized publication F and exact prepared message M.
+        // R1=P+D+C+F+M => retain provenance, remove current invocation occupancy.
+        // R2=!C|!F|!M => retain both execution and materialization. Indeterminate
+        // is not C. R3=!P => retain the opaque missing-prefix sentinel even when
+        // the later returned entry is complete. No history or input is changed.
+        let run = RunId("r".into());
+        let bind = |batch: &ToolBatch| {
+            let mut command = ActiveToolBatch::write(&Some(batch.clone()));
+            command.run_id = Some(run.clone());
+            command
+        };
+        for row in [
+            "published",
+            "executing",
+            "indeterminate",
+            "raw-completed",
+            "unfinalized",
+            "foreign-message",
+            "foreign-content",
+        ] {
+            let mut candidate = batch();
+            let requested = bind(&candidate);
+            candidate
+                .mark_executing_in_domain("c", Some(ToolExecutionDomain::default()))
+                .unwrap();
+            candidate
+                .bind_materialization_domain("c", ToolExecutionDomain::worker())
+                .unwrap();
+            let entered = bind(&candidate);
+            if row == "indeterminate" {
+                candidate
+                    .mark_indeterminate("c", "remote outcome unresolved")
+                    .unwrap();
+                candidate.finalize().unwrap();
+            } else if row != "executing" {
+                let output = ToolOutput::ok("c", "done");
+                candidate.complete(output.clone()).unwrap();
+                if row != "raw-completed" {
+                    let id = if row == "foreign-message" {
+                        awaken_agent_contract::agent::message::Id::tool_result("foreign")
+                    } else {
+                        candidate.result_message_id("c").unwrap()
+                    };
+                    candidate
+                        .set_result_messages(
+                            "c",
+                            vec![Message::new(
+                                id,
+                                Role::Tool,
+                                vec![ContentBlock::tool_result_with_error(
+                                    "c".to_string(),
+                                    if row == "foreign-content" {
+                                        vec![ContentBlock::text("another return")]
+                                    } else {
+                                        output.content
+                                    },
+                                    output.is_error,
+                                )],
+                            )],
+                        )
+                        .unwrap();
+                }
+                if row != "unfinalized" {
+                    candidate.finalize().unwrap();
+                }
+            }
+            let state = vec![requested, entered, bind(&candidate)];
+            let before = state.clone();
+            let ToolExecutionDomainFootprint {
+                recorded: all,
+                outstanding: pending,
+            } = ActiveToolBatch::execution_domain_footprint(&state, &run).unwrap();
+            assert_eq!(
+                all,
+                ActiveToolBatch::recorded_execution_domains(&state, &run).unwrap(),
+                "provenance/{row}"
+            );
+            assert_eq!(all.len(), 2, "both original domains/{row}");
+            assert_eq!(pending.is_empty(), row == "published", "R1/R2/{row}");
+            let missing = ActiveToolBatch::execution_domain_footprint(&state[1..], &run)
+                .unwrap()
+                .outstanding;
+            assert!(
+                missing
+                    .iter()
+                    .any(|d| matches!(d, ToolExecutionDomain::Opaque { .. })),
+                "R3/{row}"
+            );
+            assert_eq!(state, before, "read-only/{row}");
+        }
+    }
+
+    #[test]
+    fn a_later_return_cannot_close_an_earlier_entry_or_hide_input_drift() {
+        use awaken_agent_contract::agent::{
+            content::ContentBlock,
+            message::{Message, Role},
+        };
+        // R4: entry A -> Awaiting -> a new entry B -> published return closes B
+        // only; A remains unresolved. Entry anchors, not reused attempt numbers,
+        // select completion. R5: changing entered arguments or recovery policy
+        // is corruption in BOTH projections, even behind a later positive return.
+        let run = RunId("r".into());
+        let bind = |batch: &ToolBatch| {
+            let mut command = ActiveToolBatch::write(&Some(batch.clone()));
+            command.run_id = Some(run.clone());
+            command
+        };
+        let mut candidate = batch();
+        let requested = bind(&candidate);
+        candidate
+            .mark_executing_in_domain("c", Some(ToolExecutionDomain::default()))
+            .unwrap();
+        let first = bind(&candidate);
+        let mut drift = serde_json::to_value(&candidate).unwrap();
+        drift["calls"][0]["call"]["arguments"] = serde_json::json!({"another": true});
+        let changed: ToolBatch = serde_json::from_value(drift).unwrap();
+        let drift = [requested.clone(), first.clone(), bind(&changed)];
+        assert!(
+            ActiveToolBatch::execution_domain_footprint(&drift, &run).is_err(),
+            "R5 input"
+        );
+        assert!(
+            ActiveToolBatch::recorded_execution_domains(&drift, &run).is_err(),
+            "one history validator"
+        );
+        let mut drift = serde_json::to_value(&candidate).unwrap();
+        drift["calls"][0]["recovery_policy"]["max_attempts"] =
+            (candidate.calls()[0].recovery_policy.max_attempts().get() + 1).into();
+        let changed: ToolBatch = serde_json::from_value(drift).unwrap();
+        assert!(
+            ActiveToolBatch::execution_domain_footprint(
+                &[requested.clone(), first.clone(), bind(&changed)],
+                &run
+            )
+            .is_err(),
+            "R5 policy"
+        );
+        candidate
+            .mark_awaiting("c", ToolWaitKind::ToolPermission, "approval")
+            .unwrap();
+        let waiting = bind(&candidate);
+        candidate
+            .resume_executing("c", ToolWaitKind::ToolPermission, "approval")
+            .unwrap()
+            .enter(Some(ToolExecutionDomain::worker()))
+            .unwrap();
+        let second = bind(&candidate);
+        let output = ToolOutput::ok("c", "done");
+        candidate.complete(output.clone()).unwrap();
+        candidate
+            .set_result_messages(
+                "c",
+                vec![Message::new(
+                    candidate.result_message_id("c").unwrap(),
+                    Role::Tool,
+                    vec![ContentBlock::tool_result_with_error(
+                        "c".to_string(),
+                        output.content,
+                        false,
+                    )],
+                )],
+            )
+            .unwrap();
+        candidate.finalize().unwrap();
+        let view = ActiveToolBatch::execution_domain_footprint(
+            &[requested, first, waiting, second, bind(&candidate)],
+            &run,
+        )
+        .unwrap();
+        assert_eq!(view.recorded.len(), 2);
+        assert_eq!(
+            view.outstanding,
+            vec![ToolExecutionDomain::default()],
+            "R4 earlier entry retained"
+        );
+    }
 
     #[test]
     fn resource_origin_is_orthogonal_and_the_old_closed_codec_rejects_it() {
