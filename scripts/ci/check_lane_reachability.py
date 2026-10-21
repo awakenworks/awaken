@@ -223,9 +223,10 @@ def executables(root: Path, indexed: set[str] | None = None) -> list[str]:
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*")):
-            if SKIPPED_PARTS.intersection(path.parts):
+            relative_path = path.relative_to(root)
+            if SKIPPED_PARTS.intersection(relative_path.parts):
                 continue
-            relative = path.relative_to(root).as_posix()
+            relative = relative_path.as_posix()
             executable = relative in indexed if indexed is not None else os.access(path, os.X_OK)
             if path.is_file() and executable:
                 found.append(relative)
@@ -345,7 +346,9 @@ def self_test() -> None:
         "100644 def 0\tscripts/source.py\0" + "120000 ghi 0\tscripts/link\0") == {"scripts/run.sh"}
 
     with tempfile.TemporaryDirectory() as temporary:
-        root = Path(temporary)
+        # The root may itself live below a target/cache directory. Only paths
+        # inside this root, never its ancestors, belong to the exclusion rule.
+        root = Path(temporary) / "target" / "fixture"
         (root / "scripts/ci").mkdir(parents=True)
         (root / "e2e/k3d").mkdir(parents=True)
         fixture_index: set[str] = set()
@@ -363,6 +366,10 @@ def self_test() -> None:
         write("scripts/ci/mentions.py", '"""Prose that names e2e/orphan.sh."""\nprint(1)\n')
         write("e2e/orphan.sh", "true\n")
         write("e2e/registered.sh", "true\n")
+        for ignored in ("target", "node_modules", "__pycache__", ".git"):
+            relative = f"e2e/{ignored}/nested.sh"
+            (root / relative).parent.mkdir(parents=True)
+            write(relative, "true\n")
 
         lane_roots = ("scripts/ci/check-all.sh",)
         reached = selected(root, lane_roots)
@@ -373,6 +380,8 @@ def self_test() -> None:
         # The published mode is the authority on Windows too; X_OK can be true
         # for every file in a temporary fixture without a real Git index.
         present = executables(root, fixture_index)
+        assert "e2e/orphan.sh" in present, "C12 ancestor target is not an exclusion"
+        assert not any("nested.sh" in name for name in present), "C12 descendants remain excluded"
         errors = unselected_errors(reached, present)
         assert not [e for e in errors if "e2e/direct.sh" in e], "C1/E1"
         assert not [e for e in errors if "transitive.sh" in e], "C2/E1"

@@ -46,6 +46,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import formal_sources
+
 from _native_shell import bash_executable, self_test as native_shell_self_test
 
 # Every file this checker reads: the entry points it probes and the lanes whose
@@ -242,21 +244,20 @@ def working_tree_footprint(root: Path) -> Footprint:
     them is not a trace a commit can pick up.
     """
 
-    listed = subprocess.run(
-        ["git", "ls-files", "-z", "--others", "--modified", "--exclude-standard"],
-        cwd=root,
-        capture_output=True,
-        check=False,
-    )
-    if listed.returncode != 0:
-        # Not a repository (the self-test fixture root): fall back to a walk.
+    # A temporary tree inside target/ is not the parent checkout. Git would
+    # succeed there while hiding the fixture through the parent's ignore rules.
+    # Match the other source guards: only an exact repository top owns an index;
+    # malformed repositories fail, and ordinary fixtures are walked on disk.
+    if (root / ".git").exists():
+        names = formal_sources.git_paths(
+            root, "ls-files", "-z", "--others", "--modified", "--exclude-standard",
+        )
+    else:
         names = [
             path.relative_to(root).as_posix()
             for path in root.rglob("*")
-            if path.is_file() and "__pycache__" not in path.parts
+            if path.is_file() and "__pycache__" not in path.relative_to(root).parts
         ]
-    else:
-        names = [name for name in listed.stdout.decode("utf-8", "replace").split("\0") if name]
     footprint: Footprint = {}
     for name in names:
         try:
@@ -562,7 +563,13 @@ def self_test() -> None:
     usage_then_hangs = "#!/usr/bin/env bash\necho 'usage: usage_then_hangs.sh [--self-test]'\nsleep 600 &\nwait\n"
 
     with tempfile.TemporaryDirectory() as temporary:
-        root = Path(temporary)
+        # C18: exercise the actual process/trace table inside an ignored child
+        # of another repository, as native Windows CI's short TMP does.
+        parent = Path(temporary)
+        subprocess.run(["git", "init", "--quiet", "--template=", str(parent)],
+                       check=True, env=formal_sources.detached_git_environment())
+        (parent / ".gitignore").write_text("target/\n", encoding="utf-8")
+        root = parent / "target" / "fixture"
         directory = root / "scripts/ci"
         directory.mkdir(parents=True)
         for name, body in (
