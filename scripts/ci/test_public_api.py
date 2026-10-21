@@ -4,12 +4,15 @@
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
 import unittest
 import _strict_unittest as strict_unittest
 from public_api_selection import selected_crates
+from _native_shell import bash_executable
+from _native_test_launcher import python_script_header
 
 
 SOURCE = Path(__file__).resolve().parent
@@ -30,15 +33,12 @@ class PublicApiTests(unittest.TestCase):
         binary = self.root / "bin"
         binary.mkdir()
         tool = binary / "tool"
-        tool.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
+        tool.write_text(python_script_header(sys.executable) + '''import json, os, sys
 from pathlib import Path
+sys.stdout.reconfigure(newline="\\n")
 name, args = Path(sys.argv[0]).name, sys.argv[1:]
 if name == "rustc":
     sys.exit(1 if os.environ.get("API_TEST_NO_NIGHTLY") else 0)
-if name == "diff":
-    if os.environ.get("API_TEST_DIFF_ERROR"):
-        sys.exit(2)
-    os.execv(os.environ["API_TEST_REAL_DIFF"], ["diff", *args])
 if args == ["public-api", "--version"]:
     if os.environ.get("API_TEST_VERSION_QUERY_ERROR"):
         print("error: could not execute cargo-public-api", file=sys.stderr)
@@ -74,19 +74,66 @@ else:
     if os.environ.get("API_TEST_COMPUTE_ERROR"):
         sys.exit(74)
     print("pub mod fixture")
-''')
+''', encoding="utf-8", newline="\n")
         tool.chmod(0o755)
-        for name in ("cargo", "cargo-public-api", "rustc", "diff"):
-            (binary / name).symlink_to(tool)
+        for name in ("cargo", "cargo-public-api", "rustc"):
+            alias = binary / name
+            shutil.copyfile(tool, alias)
+            alias.chmod(0o755)
+        real_diff = shutil.which("diff")
+        if real_diff is None and os.name == "nt":
+            real_diff = next((str(parent / "usr/bin/diff.exe")
+                for parent in Path(bash_executable()).parents
+                if (parent / "usr/bin/diff.exe").is_file()), None)
+        self.assertIsNotNone(real_diff, "the fixture requires the native diff program")
+        # Keep process-substitution descriptors inside the shell runtime. A
+        # native Python execv adapter loses MSYS descriptors and child status.
+        diff = binary / "diff"
+        diff.write_text('#!/bin/sh\n'
+                        'if [ -n "${API_TEST_DIFF_ERROR:-}" ]; then exit 2; fi\n'
+                        'exec "$API_TEST_REAL_DIFF" "$@"\n', encoding="utf-8", newline="\n")
+        diff.chmod(0o755)
+        # Git Bash initializes its own utility PATH on Windows. Reassert the
+        # owned tools after that boundary so R5 cannot accidentally use real diff.
+        setup = self.root / "fixture-environment.sh"
+        setup.write_text('fixture_bin=$(cd -- "$API_TEST_BIN" && pwd -P)\n'
+                         'export PATH="$fixture_bin:$PATH"\n', encoding="utf-8", newline="\n")
         self.environment = dict(
             os.environ, PATH=f"{binary}{os.pathsep}{os.environ['PATH']}",
-            API_TEST_REAL_DIFF=shutil.which("diff"),
+            API_TEST_REAL_DIFF=real_diff,
             API_TEST_COMPUTED=str(self.root / "computed"),
+            API_TEST_BIN=binary.as_posix(), BASH_ENV=setup.as_posix(),
         )
+
+    def test_python_interpreter_path_preserves_spaces_quotes_and_arguments(self):
+        # H1 real interpreter in a spaced/quoted path; H2 empty, quoted, trailing
+        # backslash and UTF-8 argv; H3 child0/31 retain both bytes and status.
+        import json
+        interpreter = self.root / "Python interpreter's folder" / "python proxy.exe"
+        interpreter.parent.mkdir()
+        environment = dict(os.environ)
+        if os.name == "nt":
+            from _native_test_launcher import native_fixture_launcher
+            shutil.copyfile(native_fixture_launcher(), interpreter)
+            forward = self.root / "forward.py"
+            forward.write_text("import subprocess,sys\nraise SystemExit(subprocess.call([sys.executable,*sys.argv[1:]]))\n", encoding="utf-8", newline="\n")
+            environment.update(AWAKEN_FIXTURE_PROGRAM=sys.executable, AWAKEN_FIXTURE_SCRIPT=str(forward))
+        else:
+            interpreter.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + ' "$@"\n', encoding="utf-8", newline="\n")
+            interpreter.chmod(0o755)
+        script = self.root / "header-probe"
+        script.write_text(python_script_header(interpreter) + 'import json,sys\nsys.stdout.buffer.write(json.dumps(sys.argv[1:-1],ensure_ascii=False).encode("utf-8"))\nraise SystemExit(int(sys.argv[-1]))\n', encoding="utf-8", newline="\n")
+        script.chmod(0o755)
+        arguments = ["", "quoted ' \" argument", "C:\\path with spaces\\", "literal /bin/sh;$(value) 中文"]
+        for status in (0, 31):
+            with self.subTest(status=status):
+                result = subprocess.run([bash_executable(), "-c", 'exec "$@"', "header-probe", script.as_posix(), *arguments, str(status)], env=environment, capture_output=True, timeout=30)
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertEqual(json.loads(result.stdout), arguments)
 
     def invoke(self, *arguments, **conditions):
         return subprocess.run(
-            ["bash", str(self.script), *arguments], cwd=self.root,
+            [bash_executable(), str(self.script), *arguments], cwd=self.root,
             env=dict(self.environment, **conditions), capture_output=True,
             text=True, timeout=10,
         )

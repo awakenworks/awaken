@@ -77,6 +77,7 @@ elif name == "kani":
 '''
 
 
+@unittest.skipIf(os.name == "nt", "POSIX Kani publication and symlink laws run in the Linux gate")
 class BootstrapTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="awaken-kani-bootstrap-")

@@ -131,7 +131,15 @@ def main(argv: list[str]) -> int:
         from _windows_job import attach_current_process
 
         attach_current_process(argv[2])
-        return subprocess.call(argv[4:])
+        command = argv[4:]
+        if command[0].casefold() in {"bash", "bash.exe"}:
+            # CreateProcess searches the current/system directories before PATH.
+            # Resolve native Bash only after joining the owned Job; explicit
+            # command paths retain the caller's authority.
+            from _native_shell import bash_executable
+
+            command = [bash_executable(), *command[1:]]
+        return subprocess.call(command)
     # Cargo's external-command protocol inserts the subcommand name. The entry
     # is a temporary symlink to this owner, so admission completes before run()
     # starts its clock. Direct invocation retains exactly the same parser.

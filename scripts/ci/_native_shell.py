@@ -7,8 +7,9 @@ import sys
 import tempfile
 
 
-INPUT_GLOBS = ("scripts/ci/_native_shell.py", "scripts/ci/_native_shell_tests.py",
-               "scripts/ci/_windows_job.py")
+# This module transports commands. The hook bootstrap invokes its self-tests
+# and declares their inputs in _lefthook_fitness.py; transport calls must not
+# replace the input declarations of the commands they launch.
 
 
 def bash_executable(*, windows=None, environment=None, find=shutil.which):

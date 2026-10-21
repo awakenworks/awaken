@@ -398,6 +398,26 @@ class WindowsDeadlineTests(unittest.TestCase):
     def native_bash():
         return bash_executable()
 
+    def test_bare_bash_selects_native_shell_before_windows_search(self):
+        # W4 unqualified/case-varied Bash + poisoned current directory must
+        # still use the configured native shell, retaining literal data and
+        # both successful and refused command statuses inside the owned Job.
+        with tempfile.TemporaryDirectory(prefix="native bash selection ") as tmp:
+            root = Path(tmp)
+            (root / "bash.exe").write_bytes(b"not an executable")
+            literal = "literal /bin/sh;$(value) 中文"
+            environment = dict(os.environ, AWAKEN_NATIVE_BASH=self.native_bash())
+            for program in ("bash", "BASH.exe"):
+                for status in (0, 31):
+                    with self.subTest(program=program, status=status):
+                        result = subprocess.run(
+                            [sys.executable, str(DEADLINE), "30", "--", program, "-c",
+                             'printf "%s" "$1"; exit "$2"', "native-selection", literal, str(status)],
+                            cwd=root, env=environment, capture_output=True, timeout=40,
+                        )
+                        self.assertEqual(result.returncode, status, result.stderr)
+                        self.assertEqual(result.stdout, literal.encode("utf-8"))
+
     def test_native_status_and_literal_arguments(self):
         # Docker's container paths and bind/tmpfs arguments must cross the
         # native Python boundary verbatim, just like shell-shaped data.

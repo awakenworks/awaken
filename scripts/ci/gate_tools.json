@@ -254,6 +254,14 @@
       "install": "your distribution's ninja-build"
     },
     {
+      "name": "jq",
+      "locate": "path",
+      "gates": ["static", "e2e", "kubernetes", "k3d"],
+      "requirement": "required",
+      "note": "The k3d harness self-test and live orchestration parse actual JSON with jq.",
+      "install": "https://jqlang.org/download/"
+    },
+    {
       "name": "python3",
       "locate": "path",
       "gates": ["static", "docs", "formal", "contracts"],

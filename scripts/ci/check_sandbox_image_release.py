@@ -8,6 +8,7 @@ import functools
 import os
 import re
 import subprocess
+from _native_shell import bash_executable
 import sys
 import tempfile
 from pathlib import Path
@@ -597,15 +598,17 @@ printf '{{"org.awaken.environment-packages":"3","org.awaken.managed-agents-base-
         fake_bin = tmp / "bin"
         fake_bin.mkdir()
         docker = fake_bin / "docker"
-        docker.write_text(fake_docker, encoding="utf-8")
+        docker.write_text(fake_docker, encoding="utf-8", newline="\n")
         docker.chmod(0o755)
         for scenario, expected_kind, expected_zero in cases:
             env = os.environ.copy()
             env["FAKE_DOCKER_SCENARIO"] = scenario
-            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
             result = subprocess.run(
                 [
-                    str(resolver),
+                    bash_executable(), "-c",
+                    'export PATH="$(cd -- "$1" && pwd -P):$PATH"; shift; exec bash "$@"',
+                    "resolver-fixture", fake_bin.as_posix(), resolver.as_posix(),
                     f"{IMAGE_REPOSITORY}:v1.2.3",
                     revision,
                     "refs/tags/v1.2.3",

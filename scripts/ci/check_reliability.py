@@ -8,11 +8,13 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from _native_shell import bash_executable
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -218,6 +220,35 @@ esac
 
 class ReliabilityCheckerTests(unittest.TestCase):
     @staticmethod
+    def run_fixture(scripts: Path, environment: dict) -> subprocess.CompletedProcess:
+        # Windows executes the real native admission/deadline and list/run
+        # subprocesses. Bound the complete fixture with the existing process
+        # owner so a test timeout cannot leave Bash descendants holding pipes.
+        budget = 180 if os.name == "nt" else 20
+        return subprocess.run(
+            [sys.executable, str(scripts / "deadline.py"), str(budget), "--",
+             bash_executable(), str(scripts / "check-reliability.sh"), "--require-tools"],
+            env=environment, capture_output=True, text=True, timeout=budget + 15,
+        )
+
+    @staticmethod
+    def fixture_environment(binary: Path, **values) -> dict:
+        # Git Bash initializes utility PATH before running the actual runner.
+        # Keep the owned adapters first for every nested shell as well.
+        setup = binary.parent / "fixture-environment.sh"
+        setup.write_text('fixture_bin=$(cd -- "$RELIABILITY_FIXTURE_BIN" && pwd -P)\n'
+                         'export PATH="$fixture_bin:$PATH"\n', encoding="utf-8", newline="\n")
+        environment = dict(os.environ, PATH=f"{binary}{os.pathsep}{os.environ['PATH']}",
+                           RELIABILITY_FIXTURE_BIN=binary.as_posix(), BASH_ENV=setup.as_posix(), **values)
+        if os.name == "nt":
+            from _native_test_launcher import native_fixture_launcher
+
+            shutil.copyfile(native_fixture_launcher(), binary / "cargo.exe")
+            environment.update(AWAKEN_FIXTURE_PROGRAM=bash_executable(),
+                               AWAKEN_FIXTURE_SCRIPT=str(binary / "cargo"))
+        return environment
+
+    @staticmethod
     def runner_fixture(root: Path) -> Path:
         # D0/Q0: actual required execution imports its transitive closure and
         # reads a real private index, before reaching the tool decision. Reuse
@@ -232,7 +263,7 @@ class ReliabilityCheckerTests(unittest.TestCase):
         # tests. Source capture, required list/run and deadline must execute.
         return f'''#!/usr/bin/env bash
 case "$1" in
-  *deadline.py|*cargo-awaken-ci-deadline|*check_rust_test_execution.py) exec {shlex.quote(sys.executable)} "$@" ;;
+  *deadline.py|*cargo-awaken-ci-deadline|*check_rust_test_execution.py) exec {shlex.quote(Path(sys.executable).as_posix())} "$@" ;;
   *) exit 0 ;;
 esac
 '''
@@ -309,7 +340,7 @@ esac
                 (root / "fuzz").mkdir()
                 if case == "missing-init":
                     runner = scripts / "check-reliability.sh"
-                    runner.write_text(runner.read_text().replace('mkdir -p "$mutation_evidence"\n', ""))
+                    runner.write_text(runner.read_text().replace('mkdir -p "$mutation_evidence"\n', ""), encoding="utf-8", newline="\n")
                 binary = root / "bin"
                 binary.mkdir()
                 cargo = '''#!/usr/bin/env bash
@@ -333,15 +364,15 @@ esac
 '''
                 for name, body in {"cargo": cargo, "python3": self.python_adapter(), "rustup": "#!/bin/sh\necho nightly-test\n", "rustc": "#!/bin/sh\necho 'host: x86_64-unknown-linux-gnu'\n"}.items():
                     tool = binary / name
-                    tool.write_text(body)
+                    tool.write_text(body, encoding="utf-8", newline="\n")
                     tool.chmod(0o755)
                 output = root / ("nested/output/evidence" if case == "nested" else "evidence")
                 if case == "existing":
                     output.mkdir()
                 if case == "blocked":
                     output.write_text("owned file must remain unchanged")
-                env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", CARGO_TARGET_DIR=str(root / "target"), CARGO_BUILD_BUILD_DIR=str(root / "normal-build"), AWAKEN_RELIABILITY_EVIDENCE_DIR=str(output), CALL_LOG=str(root / "target/calls"), CALL_TARGET_LOG=str(root / "target/targets"), FAIL_MUTANT=str(int(case == "tool-failure")), FAIL_FUZZ_LOCK=str(int(case == "fuzz-lock-stale")))
-                result = subprocess.run(["bash", str(scripts / "check-reliability.sh"), "--require-tools"], env=env, capture_output=True, text=True, timeout=20)
+                env = self.fixture_environment(binary, CARGO_TARGET_DIR=(root / "target").as_posix(), CARGO_BUILD_BUILD_DIR=(root / "normal-build").as_posix(), AWAKEN_RELIABILITY_EVIDENCE_DIR=output.as_posix(), CALL_LOG=(root / "target/calls").as_posix(), CALL_TARGET_LOG=(root / "target/targets").as_posix(), FAIL_MUTANT=str(int(case == "tool-failure")), FAIL_FUZZ_LOCK=str(int(case == "fuzz-lock-stale")))
+                result = self.run_fixture(scripts, env)
                 calls = [line.rstrip() for line in (root / "target/calls").read_text().splitlines()]
                 mutations = [line for line in calls if line.startswith("mutants ")]
                 targets = [line.split("|") for line in (root / "target/targets").read_text().splitlines()]
@@ -433,19 +464,15 @@ esac
                     "rustc": "#!/bin/sh\necho 'host: x86_64-unknown-linux-gnu'\n",
                 }.items():
                     tool = binary / name
-                    tool.write_text(body)
+                    tool.write_text(body, encoding="utf-8", newline="\n")
                     tool.chmod(0o755)
-                env = dict(
-                    os.environ,
-                    PATH=f"{binary}:{os.environ['PATH']}",
-                    CARGO_TARGET_DIR=str(root / "target"),
-                    AWAKEN_RELIABILITY_EVIDENCE_DIR=str(root / "evidence"),
-                    CALL_LOG=str(root / "calls"),
+                env = self.fixture_environment(
+                    binary,
+                    CARGO_TARGET_DIR=(root / "target").as_posix(),
+                    AWAKEN_RELIABILITY_EVIDENCE_DIR=(root / "evidence").as_posix(),
+                    CALL_LOG=(root / "calls").as_posix(),
                 )
-                result = subprocess.run(
-                    ["bash", str(scripts / "check-reliability.sh"), "--require-tools"],
-                    env=env, capture_output=True, text=True, timeout=60,
-                )
+                result = self.run_fixture(scripts, env)
                 self.assertNotEqual(result.returncode, 0, case)
                 self.assertIn(expected, result.stderr, case)
                 if case == "query-fails":
