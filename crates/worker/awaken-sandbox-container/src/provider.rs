@@ -1063,7 +1063,8 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         effect_fence: Option<&pc::SandboxEffectFence>,
         purpose: SandboxObservationPurpose,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        let normalized = if matches!(purpose, SandboxObservationPurpose::WorkerRetirement { .. }) {
+        let retirement = matches!(purpose, SandboxObservationPurpose::WorkerRetirement { .. });
+        let normalized = if retirement {
             self.normalized_terminal_handle(adoption.spec, Some(adoption.handle))?
         } else {
             None
@@ -1072,9 +1073,24 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             handle: normalized.as_ref().unwrap_or(adoption.handle),
             ..adoption
         };
-        if let Some(stored) = adoption.handle.container_adoption_fingerprint()? {
+        let decoded = crate::DecodedContainerHandle::decode(adoption.handle)?;
+        if retirement
+            && (effect_fence.is_none()
+                || decoded.adoption_fingerprint.is_none()
+                || decoded.realization_fingerprint.is_none()
+                || adoption.handle.sandbox_id != adoption.spec.scope)
+        {
+            return Ok(pc::SandboxObservation::Incompatible {
+                reason: "Worker retirement requires the original effect fence and complete same-Session durable identity".into(),
+            });
+        }
+        // Retirement observes the original source, not a new execution under
+        // this process's installation/Hand/volume configuration. The runtime
+        // still verifies the durable fingerprints, fence and physical UIDs.
+        // Execution recovery and terminal preparation retain their strict plan.
+        if !retirement && let Some(stored) = decoded.adoption_fingerprint.as_ref() {
             let (plan, expected) = self.adoption_plan(adoption.spec)?;
-            let historical_match = if stored != expected
+            let historical_match = if *stored != expected
                 && purpose == SandboxObservationPurpose::TerminalCleanup
                 && effect_fence.is_some()
             {
@@ -1089,12 +1105,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                             &plan,
                             self.resident_hand.as_ref(),
                             &configuration,
-                        ) == stored
+                        ) == *stored
                     })
             } else {
                 false
             };
-            if stored != expected && !historical_match {
+            if *stored != expected && !historical_match {
                 return Ok(pc::SandboxObservation::Incompatible {
                     reason: format!(
                         "container provider-effective adoption configuration differs from its durable handle (expected={expected}, stored={stored})"
@@ -1102,7 +1118,6 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 });
             }
         }
-        let decoded = crate::DecodedContainerHandle::decode(adoption.handle)?;
         let mut expectation = ContainerObservationExpectation::from_decoded(&decoded);
         expectation.effect_fence = effect_fence;
         expectation.retained_attempt = adoption.retained_attempt;

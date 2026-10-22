@@ -5,6 +5,112 @@ use awaken_provisioning_contract::SandboxAdoption;
 use awaken_provisioning_contract::SandboxProvider;
 
 #[tokio::test]
+async fn retirement_observes_original_identity_across_execution_configuration_changes() {
+    // Cause/effect table RO: C1 purpose=Retirement(unprepared/prepared), Recovery
+    // or TerminalCleanup; C2 current runtime/resident configuration exact/drifted;
+    // C3 original effect fence present/absent; C4 full durable handle/legacy;
+    // C5 Session scope exact/foreign; C6 runtime reports retained/incompatible.
+    // R1 Retirement+C3+full+C5 reaches the ONE runtime observer irrespective of
+    // C2, and preserves its C6 result. R2 missing C3/C4/C5 rejects before I/O.
+    // R3 Recovery/TerminalCleanup keep strict current-configuration admission.
+    // Every row is read-only: no create, exec, staging, control bind or removal.
+    for purpose in [
+        pc::SandboxObservationPurpose::WorkerRetirement {
+            source_prepared: false,
+        },
+        pc::SandboxObservationPurpose::WorkerRetirement {
+            source_prepared: true,
+        },
+        pc::SandboxObservationPurpose::Recovery,
+        pc::SandboxObservationPurpose::TerminalCleanup,
+    ] {
+        for drift in [true, false] {
+            let runtime = Arc::new(FakeRuntime::default());
+            let provider = provider(runtime.clone());
+            let mut requested = spec("retirement-configuration");
+            requested.mounts.clear();
+            let original = provider.create_container(&requested).await.unwrap();
+            let handle = pc::Sandbox::handle(&original);
+            let legacy =
+                pc::SandboxHandle::container(&requested.scope, handle.container_payload().unwrap());
+            let foreign = pc::SandboxHandle::container_v2(
+                "foreign-session",
+                crate::ContainerSandboxHandleV2 {
+                    previous: handle.container_payload().unwrap(),
+                    adoption_fingerprint: handle.container_adoption_fingerprint().unwrap().unwrap(),
+                    realization_fingerprint: handle.realization_fingerprint().unwrap().clone(),
+                    owned_paths: handle.owned_paths().unwrap().to_vec(),
+                },
+            );
+            if drift {
+                runtime.st.lock().unwrap().configuration = Some(std::collections::BTreeMap::from(
+                    [("current-installation".into(), "new".into())],
+                ));
+            }
+            let fence =
+                pc::SandboxEffectFence::new("original-create", "owner", "boot", 1, u64::MAX)
+                    .unwrap();
+            let retirement = matches!(
+                purpose,
+                pc::SandboxObservationPurpose::WorkerRetirement { .. }
+            );
+            for (source, fenced, exact_identity) in [
+                (&handle, true, true),
+                (&handle, false, false),
+                (&legacy, true, false),
+                (&foreign, true, false),
+            ] {
+                // Non-retirement compatibility is already owned by the existing
+                // adoption matrix; this table adds only its exact-handle rows.
+                if !retirement && !std::ptr::eq(source, &handle) {
+                    continue;
+                }
+                for retained in [true, false] {
+                    let observed = if retained {
+                        pc::SandboxObservation::RetainedOriginal {
+                            physical_incarnation: "original-uid".into(),
+                        }
+                    } else {
+                        pc::SandboxObservation::Incompatible {
+                            reason: "original source is foreign".into(),
+                        }
+                    };
+                    runtime.set_observation(observed.clone());
+                    let before = runtime.st.lock().unwrap().observations;
+                    let mut adoption = SandboxAdoption::new(&requested, source);
+                    adoption.observation_purpose = purpose;
+                    let basis = if fenced {
+                        adoption.effect_basis(&fence)
+                    } else {
+                        pc::SandboxObservationBasis::Unattached
+                    };
+                    let actual = provider.observe(adoption, basis).await.unwrap();
+                    let reaches_runtime = if retirement { exact_identity } else { !drift };
+                    assert_eq!(
+                        runtime.st.lock().unwrap().observations,
+                        before + u32::from(reaches_runtime),
+                        "RO {purpose:?} drift={drift} fenced={fenced} exact={exact_identity}"
+                    );
+                    if reaches_runtime {
+                        assert_eq!(actual, observed, "RO R1 exact backend fact");
+                    } else {
+                        assert!(
+                            matches!(actual, pc::SandboxObservation::Incompatible { .. }),
+                            "RO R2/R3"
+                        );
+                    }
+                }
+            }
+            let state = runtime.st.lock().unwrap();
+            assert_eq!(state.created_command.len(), 1, "RO no second Create");
+            assert!(state.spawned.is_empty() && state.removals.is_empty());
+            assert!(state.control_binding_calls.is_empty());
+            assert_eq!(state.recovered_staging_calls, 0);
+        }
+    }
+}
+
+#[tokio::test]
 async fn retained_original_observation_never_grants_adoption_or_terminal_preparation() {
     // Cause/effect table RA1: exact RetainedOriginal observation crosses the
     // legacy, current-unattached, current-fenced adoption and terminal-prepare

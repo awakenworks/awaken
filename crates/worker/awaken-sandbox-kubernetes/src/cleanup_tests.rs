@@ -247,6 +247,11 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
     // live control publication. Ordinary adoption must still reject the old
     // control image. This crosses the production ContainerProvider/K8s HTTP
     // boundary; CC3's missing-handle refusal remains unchanged.
+    // CC6 published original Ready Pod/PVC + changed observer installation and
+    // continuation configuration => RetainedOriginal through the same observer,
+    // with zero writes. Each independent missing/foreign UID, fingerprint,
+    // fence, guard or GC-independence premise => Incompatible; HTTP 403/503
+    // remains an error. Recovery still rejects configuration drift before I/O.
     use awaken_provisioning_contract::SandboxProvider as _;
     use awaken_sandbox_container::ContainerHandleCodec as _;
     for row in [
@@ -259,6 +264,7 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
         "control-terminal",
         "control-deleting-bound",
         "control-ready-bound-upgrade",
+        "control-retirement-configuration",
         "control-empty",
         "control-missing-results",
         "control-empty-no-results",
@@ -272,7 +278,9 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
         let control = row.starts_with("control-");
         let retained_bound = matches!(
             row,
-            "control-deleting-bound" | "control-ready-bound-upgrade"
+            "control-deleting-bound"
+                | "control-ready-bound-upgrade"
+                | "control-retirement-configuration"
         );
         source.continuation_volume =
             retained_bound.then(|| awaken_container_contract::K8sContinuationVolume {
@@ -514,7 +522,10 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
             "control-no-original-ticket" => {
                 original_tickets.lock().unwrap().clear();
             }
-            "control-ready" | "control-ready-bound-upgrade" | "control-provisioning" => {
+            "control-ready"
+            | "control-ready-bound-upgrade"
+            | "control-retirement-configuration"
+            | "control-provisioning" => {
                 let mut state = state.lock().unwrap();
                 let pod = state.pod.as_mut().unwrap();
                 pod.status = Some(serde_json::from_value(if row != "control-provisioning" {
@@ -567,8 +578,108 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
                 .unwrap(),
             );
         }
+        if row == "control-retirement-configuration" {
+            recovery.continuation_volume = None;
+            recovery.realization_namespace =
+                awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
+                    "observer-installation",
+                ])
+                .unwrap();
+        }
         let provider = awaken_sandbox_container::ContainerProvider::new(Arc::new(recovery), image)
             .with_clock(clock);
+        if row == "control-retirement-configuration" {
+            let handle = bound_handle.as_ref().unwrap();
+            let original_pod = state.lock().unwrap().pod.clone();
+            let original_claim = state.lock().unwrap().claim.clone();
+            for failure in [
+                "exact",
+                "pod-uid",
+                "claim-uid",
+                "adoption",
+                "realization",
+                "fence",
+                "guard",
+                "gc",
+                "403",
+                "503",
+            ] {
+                {
+                    let mut state = state.lock().unwrap();
+                    state.pod = original_pod.clone();
+                    state.claim = original_claim.clone();
+                    state.read_failure = None;
+                    match failure {
+                        "pod-uid" => state.pod.as_mut().unwrap().metadata.uid = Some("foreign-pod".into()),
+                        "claim-uid" => state.claim.as_mut().unwrap().metadata.uid = Some("foreign-claim".into()),
+                        "adoption" | "realization" | "fence" => {
+                            let key = match failure {
+                                "adoption" => SANDBOX_ADOPTION_ANNOTATION,
+                                "realization" => SANDBOX_REALIZATION_ANNOTATION,
+                                _ => SANDBOX_EFFECT_OWNER_ANNOTATION,
+                            };
+                            state.pod.as_mut().unwrap().metadata.annotations.as_mut().unwrap().insert(key.into(), "foreign".into());
+                        }
+                        "guard" => state.pod.as_mut().unwrap().metadata.finalizers = None,
+                        "gc" => state.claim.as_mut().unwrap().metadata.owner_references = Some(vec![serde_json::from_value(json!({"apiVersion":"v1","kind":"Pod","name":"old-worker","uid":"old-worker-uid"})).unwrap()]),
+                        "403" => state.read_failure = Some(403),
+                        "503" => state.read_failure = Some(503),
+                        _ => {}
+                    }
+                }
+                let mut adoption = pc::SandboxAdoption::new(&spec, handle);
+                adoption.observation_purpose = SandboxObservationPurpose::WorkerRetirement {
+                    source_prepared: false,
+                };
+                let observed = provider
+                    .observe(adoption, adoption.effect_basis(&create))
+                    .await;
+                if matches!(failure, "403" | "503") {
+                    assert!(observed.is_err(), "CC6 {failure}: {observed:?}");
+                } else if failure == "exact" {
+                    assert_eq!(
+                        observed.unwrap(),
+                        pc::SandboxObservation::RetainedOriginal {
+                            physical_incarnation: "pod-uid".into()
+                        },
+                        "CC6 original source independent of today's configuration"
+                    );
+                } else {
+                    assert!(
+                        matches!(
+                            observed.unwrap(),
+                            pc::SandboxObservation::Incompatible { .. }
+                        ),
+                        "CC6 {failure}"
+                    );
+                }
+                assert_eq!(
+                    state.lock().unwrap().writes.len(),
+                    source_writes,
+                    "CC6 zero writes/{failure}"
+                );
+            }
+            let before = state.lock().unwrap().calls.len();
+            let adoption = pc::SandboxAdoption::new(&spec, handle);
+            assert!(
+                matches!(
+                    provider
+                        .observe(adoption, adoption.effect_basis(&create))
+                        .await
+                        .unwrap(),
+                    pc::SandboxObservation::Incompatible { .. }
+                ),
+                "CC6 ordinary Recovery remains strict"
+            );
+            assert_eq!(
+                state.lock().unwrap().calls.len(),
+                before,
+                "CC6 no ordinary recovery backend I/O"
+            );
+            server.abort();
+            assert!(server.await.unwrap_err().is_cancelled());
+            continue;
+        }
         let terminal_authority = EffectAuthority::new(&terminal);
         let result = provider
             .prepare_terminal_for_effect(
