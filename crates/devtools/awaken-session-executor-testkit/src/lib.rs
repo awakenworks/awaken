@@ -123,8 +123,27 @@ pub async fn volatile_dependencies_with_deployment(
     model_ref: impl Into<String>,
     deployment: DeploymentConfig,
 ) -> SessionExecutorBuilder {
+    let base = awaken_session_executor::session_sandbox_base(&deployment);
+    with_workdir_fallback(
+        unconfigured_dependencies_with_deployment(llm, model_ref, deployment).await,
+        base,
+    )
+}
+
+/// The same volatile ports without an installed Session environment. Process
+/// composition tests start here so a Workdir fixture cannot hide a missing
+/// production provider. The selected process composition must install its roles.
+///
+/// # Panics
+/// When an ephemeral database cannot be opened.
+#[must_use]
+pub async fn unconfigured_dependencies_with_deployment(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    deployment: DeploymentConfig,
+) -> SessionExecutorBuilder {
     // Preserve the original fixture opening order while the process owns its
-    // sole clock: Files, clock, Memory SQLite, authority, sandbox base,
+    // sole clock: Files, clock, Memory SQLite, authority,
     // extraction SQLite, Workspace, model conversion, then process projection.
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
     let clock = awaken_time::system_clock();
@@ -141,23 +160,19 @@ pub async fn volatile_dependencies_with_deployment(
         reclamation: None,
     };
     let authority = volatile_runtime_authority(clock.clone());
-    let base = awaken_session_executor::session_sandbox_base(&deployment);
     let extraction_repository = memory_extraction_repository(None).await;
     let local_workspace = ExecutorComponents::mint_local_workspace();
     let model_ref: String = model_ref.into();
     let process = deployment
         .session_execution_process(local_workspace, clock)
         .expect("a local fixture selects a valid process");
-    with_workdir_fallback(
-        SessionExecutorBuilder::for_local_resources(
-            llm,
-            model_ref,
-            resources,
-            extraction_repository,
-            process,
-            authority,
-        ),
-        base,
+    SessionExecutorBuilder::for_local_resources(
+        llm,
+        model_ref,
+        resources,
+        extraction_repository,
+        process,
+        authority,
     )
 }
 
