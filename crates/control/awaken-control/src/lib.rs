@@ -34,6 +34,7 @@ mod component;
 pub mod control_stores;
 mod credential_refresh;
 pub use credential_refresh::{VaultRefreshFactory, VaultRefresher};
+mod agent_revision_visibility;
 mod credential_reference;
 mod data_subject;
 mod managed_agents;
