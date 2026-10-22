@@ -254,6 +254,10 @@ run static "e2e runner unit" npm --prefix e2e run test:runner
 run static "command deadline tests" python3 scripts/ci/test_deadline.py
 run static "full-gate host admission tests" python3 scripts/ci/test_full_gate_admission.py
 run static "native service runner self-test" python3 scripts/ci/test_native_services.py
+run static "native physical recovery decision tables" python3 scripts/ci/test_native_recovery.py
+run static "native PostgreSQL storage selection" python3 scripts/ci/test_postgres_storage.py
+run static "native PostgreSQL resource selection" python3 scripts/ci/test_postgres_resources.py
+run static "native service evidence first-cause tests" python3 scripts/ci/test_native_recording.py
 run static "postgres harness self-test" scripts/ci/pg_tests.sh --self-test
 run static "k3d harness self-test" e2e/k3d/harness.sh --self-test
 run static "distributed role rollout self-test" e2e/k3d/distributed_control_e2e.sh --self-test

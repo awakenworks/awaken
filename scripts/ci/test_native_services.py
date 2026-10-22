@@ -192,7 +192,7 @@ class WorkerResultTests(unittest.TestCase):
     def run_worker(self,base,child_code=0,changed=False,cleanup_failure=False):
         import rust_test_plan
         facts={"revision":b"revision","index_tree":b"tree","patch":b"patch"}
-        args=argparse.Namespace(output=base/"out",nats_bin=base/"nats.exe",service="nats")
+        args=argparse.Namespace(output=base/"out",nats_bin=base/"nats.exe",service="nats",recovery=False)
         fixture=base/"fixture";fixture.mkdir()
         service=mock.Mock()
         service.start.return_value={"url":"nats://127.0.0.1:1234"}

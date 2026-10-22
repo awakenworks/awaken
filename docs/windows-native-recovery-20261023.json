@@ -1,0 +1,699 @@
+{
+  "schema_version": 1,
+  "platform": "Windows/MSVC",
+  "linux_verification_allowed": false,
+  "public_publication_allowed": false,
+  "hosted_ci_executed": false,
+  "full_gate": false,
+  "scope": "Native PostgreSQL target-LSN restore through S3 after the canonical domain matrix on that same primary.",
+  "qualification": {
+    "receipt": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-recovery-working-20261023-v1\\result.json",
+    "receipt_sha256": "2098e9809330bf732776a375f4a8852c191d9e5fd9d76a230bec9d55a8f847c0",
+    "source_digest": "9e1bdf8750411a0b3ea0f8bfc204b1057ae3f603d03617dba8aab00379733d4a",
+    "source_unchanged": true
+  },
+  "qualified_working_code_sha256": {
+    ".github/workflows/windows-native-services.yml": "5f40b52ad7adada74915fbb24b2967e118f717946d475f331201bc65aa450b47",
+    "scripts/ci/_native_recovery_bundle.py": "60e4601704c3e64f09c13969a5ca5cafba14d1bc925eb29fa10863d92671b17c",
+    "scripts/ci/_native_recovery_drill.py": "2b20f2e326930cc2c2c825e7d101addc0df406a6fde7e596fc7fb4c3b1d5cd9d",
+    "scripts/ci/_native_recovery_postgres.py": "c4ecd6f51dccae21c56bfb26058f8f739a85ecef961a0a7b0ae753801f5f3586",
+    "scripts/ci/_native_recovery_wal.py": "edc74e827e4cf3b417270a45786220d5f972ef30378f55d9b86298cf066338cc",
+    "scripts/ci/check-all.sh": "75d085beff15601d779535a8a2f8bc8af4fdf2742db9ecada9c855178f64dc7e",
+    "scripts/ci/check_native_services.py": "059ac35e51584e948700492eb69bfaa3ace24833ed3c5252abec936765f100a9",
+    "scripts/ci/test_native_recovery.py": "f701db64ea47ab3f8612a0d9f9b0cf89b7af08e1f713b9211416f4768e3b89e6",
+    "scripts/ci/test_native_services.py": "018d5983e9b494d257ed63a0191074f54db605687e82a53c490413ba295b8b5f"
+  },
+  "postgres_qualification": {
+    "schema_version": 1,
+    "status": "passed",
+    "platform": "Windows/MSVC",
+    "service": "postgres",
+    "linux_verification_allowed": false,
+    "full_gate": false,
+    "source": {
+      "revision": "92c5f3ff285acd046b4ed9a2dc08f785d81cef4f",
+      "index_tree": "bf95eaa9888a678aa8449f8b61f75e26d440742f",
+      "digest": "9e1bdf8750411a0b3ea0f8bfc204b1057ae3f603d03617dba8aab00379733d4a",
+      "patch_sha256": "e3ece15bbdb8c8dce6e69a7b328d0aaf225c836720a3c18c8510f5ee2dc838e5"
+    },
+    "process_ownership": "native Windows deadline Job with kill-on-close",
+    "stages": [
+      {
+        "stage": "postgres-backend-parity",
+        "command": [
+          "C:\\Python313\\python.EXE",
+          "-X",
+          "utf8",
+          "scripts/ci/_native_shell.py",
+          "scripts/ci/pg_tests.sh",
+          "--backend-parity"
+        ],
+        "exit_code": 0,
+        "seconds": 369.9167845000047,
+        "log_sha256": "f0141519a23850c039563f0a6b2a9e9e5daf3f6d55dff9fbd27ed4dc863edb61"
+      },
+      {
+        "stage": "postgres-work-store",
+        "command": [
+          "C:\\Python313\\python.EXE",
+          "-X",
+          "utf8",
+          "scripts/ci/_native_shell.py",
+          "scripts/ci/pg_tests.sh",
+          "--work-store"
+        ],
+        "exit_code": 0,
+        "seconds": 61.10720799997216,
+        "log_sha256": "226e2afd5d295e798980b0a4b09b0c5a0cb007401ec3475260bc3a35b178be5e"
+      },
+      {
+        "stage": "postgres-http",
+        "command": [
+          "C:\\Python313\\python.EXE",
+          "-X",
+          "utf8",
+          "scripts/ci/_native_shell.py",
+          "scripts/ci/pg_tests.sh",
+          "--http"
+        ],
+        "exit_code": 0,
+        "seconds": 240.70763319998514,
+        "log_sha256": "45e77b8ad3f51dae46dab0a18c64a975b8dc1b47f2c2ef35545ebf9babbd7b9d"
+      },
+      {
+        "stage": "postgres-critical",
+        "command": [
+          "C:\\Python313\\python.EXE",
+          "-X",
+          "utf8",
+          "scripts/ci/_native_shell.py",
+          "scripts/ci/pg_tests.sh",
+          "--critical"
+        ],
+        "exit_code": 0,
+        "seconds": 168.25955869996687,
+        "log_sha256": "942d8cf0d5ecb43de3c253d851c851a00331a13a0afd0d4046f99eb066615e97"
+      }
+    ],
+    "fixture_root": "F:\\Codes\\awaken-1.0.0-dev\\target\\w9\\awaken-services.8lq1xx2g",
+    "fixture_data_retained": true,
+    "fixture": {
+      "kind": "native-windows-process",
+      "binaries": {
+        "postgres": {
+          "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-pg-install-20261022-v1\\postgres\\pgsql\\bin\\postgres.exe",
+          "sha256": "19e73deb1152b3b505f2e1fd579191427f9eb3b3f800754968e7214b24edf31d",
+          "abi": "windows-amd64"
+        },
+        "initdb": {
+          "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-pg-install-20261022-v1\\postgres\\pgsql\\bin\\initdb.exe",
+          "sha256": "cc6373e9d2070f51d7373e49d6b17c95216f3de9797138f1ec70775b3e308aff",
+          "abi": "windows-amd64"
+        },
+        "psql": {
+          "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-pg-install-20261022-v1\\postgres\\pgsql\\bin\\psql.exe",
+          "sha256": "baf1e8234f5d6a09fed47a5eb6dfee8919a0be7be5eac2600edf98fe69f2d694",
+          "abi": "windows-amd64"
+        },
+        "pg_ctl": {
+          "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-pg-install-20261022-v1\\postgres\\pgsql\\bin\\pg_ctl.exe",
+          "sha256": "bed9ec9686fdf66b407f55d15be2466365827feb6b343fdb452c2dbcfbcfe0a1",
+          "abi": "windows-amd64"
+        },
+        "pg_basebackup": {
+          "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-pg-install-20261022-v1\\postgres\\pgsql\\bin\\pg_basebackup.exe",
+          "sha256": "4e6534fc47afd0248d47eaec8d493244e824a5cf3b712aa1cfacbc724d3898e7",
+          "abi": "windows-amd64"
+        },
+        "pg_verifybackup": {
+          "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-pg-install-20261022-v1\\postgres\\pgsql\\bin\\pg_verifybackup.exe",
+          "sha256": "622ebfedf605ef792645434829d7abd604ee8d97447891991964eafd8462d0a7",
+          "abi": "windows-amd64"
+        }
+      },
+      "pid": 103232,
+      "owner": "awaken-ci-4d567923e6be49c3a866e65ed2762a78",
+      "identity": {
+        "cluster_name": "awaken-ci-4d567923e6be49c3a866e65ed2762a78",
+        "port": 56124,
+        "data_directory": "F:/Codes/awaken-1.0.0-dev/target/w9/awaken-services.8lq1xx2g/postgres/data",
+        "started": "2026-10-23 03:00:14.465561+08",
+        "version": "PostgreSQL 16.15, compiled by Visual C++ build 1944, 64-bit",
+        "version_num": 160015
+      },
+      "loopback_port": 56124,
+      "database": "awaken_ci",
+      "authentication": "fresh per-run SCRAM credential; not recorded"
+    },
+    "recovery_required": true,
+    "recovery_object_fixture": {
+      "kind": "native-windows-process",
+      "binaries": {
+        "minio": {
+          "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-minio-bootstrap-20261022-v1\\minio.exe",
+          "sha256": "5dd4fdc24e3f583f158bdf51671efdd11b4cc7a33d2bf47aa178403d9e5c03a8",
+          "abi": "windows-amd64"
+        },
+        "mc": {
+          "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-minio-bootstrap-20261022-v1\\mc.exe",
+          "sha256": "e77b5d926f18412c69ed994f2e064ef5d228df75a7b2dc754d4a5de6b009e9ca",
+          "abi": "windows-amd64"
+        }
+      },
+      "pid": 125764,
+      "owner": "awaken-ci-4d567923e6be49c3a866e65ed2762a78",
+      "identity": {
+        "deployment_id": "14d5505d-1633-43e8-83aa-1aabdb71c909",
+        "endpoint": "127.0.0.1:56125",
+        "data_directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\w9\\awaken-services.8lq1xx2g\\recovery-objects\\data",
+        "drive_uuid": "a6cc8f1f-8f6c-4fa0-81f1-576753c8a522",
+        "version": "2024-12-18T13:15:44Z",
+        "commit_id": "16f8cf1c52f0a77eeb8f7565aaf7f7df12454583"
+      },
+      "endpoint": "http://127.0.0.1:56125",
+      "authentication": "per-run root and least-privilege application credentials; not recorded",
+      "rotation_applied": false
+    },
+    "execution": [
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.wYUl3B",
+        "receipt_sha256": "5d26bf646322934c15664d9978ce99a09349348e3dc237ed9dcfce54fb4be8d2",
+        "selected_cases": [
+          "fixture::tests::fixture_admission_distinguishes_absent_configured_and_invalid",
+          "fixture::tests::postgres_fixture_pool_admission_respects_configuration",
+          "fixture::tests::postgres_fixture_pool_connects_when_configured",
+          "fixture::tests::required_postgres_fixture_rejects_absence_without_disclosing_values",
+          "fixture::tests::required_switch_distinguishes_absence_one_and_invalid",
+          "nats_fixture::tests::fixture_admission_decision_table_preserves_exact_urls_and_rejects_missing_premises"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.qBRE0i",
+        "receipt_sha256": "c3c01dda750c99744ec9620a81a62590f63e42775d88c6afff7941a4bb7fd695",
+        "selected_cases": [
+          "in_memory_repo_conforms",
+          "postgres::configured_database_failure_is_not_a_successful_skip",
+          "postgres::postgres_repo_conforms",
+          "postgres::postgres_snapshot_rejects_a_dangling_offering_row",
+          "postgres::postgres_snapshot_surfaces_a_corrupt_row_as_a_storage_error",
+          "sqlite::first_match_agrees_between_in_memory_and_durable_backend",
+          "sqlite::snapshot_rejects_a_dangling_offering_row_reloaded_from_disk",
+          "sqlite::snapshot_surfaces_a_corrupt_row_as_a_storage_error",
+          "sqlite::sqlite_repo_conforms",
+          "sqlite::sqlite_rows_survive_a_reopen_from_file",
+          "valid_catalog_parse_rejects_a_dangling_endpoint_provider"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.rJKQcr",
+        "receipt_sha256": "1ad1484a546e5cdc5328cdb92c1390565cabeb2f40b2e1c0fc0c715dd013f47b",
+        "selected_cases": [
+          "in_memory_repo_conforms",
+          "postgres::fixture_absence_and_configured_failure_are_distinct",
+          "postgres::postgres_concurrent_begin_has_one_physical_attempt_owner",
+          "postgres::postgres_concurrent_managed_begin_has_one_physical_attempt_owner",
+          "postgres::postgres_legacy_mutation_recovery_conforms",
+          "postgres::postgres_managed_abort_retains_exact_cleanup_authority_until_completion",
+          "postgres::postgres_managed_absent_child_cas_has_one_atomic_winner",
+          "postgres::postgres_managed_absent_child_cas_never_cross_workspace_overwrites",
+          "postgres::postgres_managed_rollout_exact_lookup_conforms",
+          "postgres::postgres_plain_absent_source_cas_does_not_overwrite_concurrent_winner",
+          "postgres::postgres_recovery_scans_reject_mismatched_durable_keys_before_secret_io",
+          "postgres::postgres_repo_conforms",
+          "postgres::postgres_sealed_secret_round_trips_and_never_stores_plaintext",
+          "postgres::postgres_undecodable_recovery_row_blocks_each_batch_before_secret_io",
+          "sqlite_legacy_mutation_recovery_conforms",
+          "sqlite_recovery_scans_reject_mismatched_durable_keys_before_secret_io",
+          "sqlite_repo_conforms"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.J64Nia",
+        "receipt_sha256": "9865a1de62181aa918bed52dda6c0b24a55c8597fee232feefd3b248645d6b86",
+        "selected_cases": [
+          "in_memory_repo_conforms",
+          "postgres::fixture_absence_and_configured_failure_are_distinct",
+          "postgres::fixture_cleanup_preserves_another_live_schema",
+          "postgres::postgres_erasure_independent_connections_preserve_winner_after_reopen",
+          "postgres::postgres_repo_conforms",
+          "sqlite_erasure_independent_connections_preserve_winner_after_reopen",
+          "sqlite_repo_conforms",
+          "sqlite_survives_reopen"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.a6bzXp",
+        "receipt_sha256": "c324f314d20421a64b4dd9d84e051855ee193ee466b1b74c27054df80946a083",
+        "selected_cases": [
+          "in_memory_captured_content_conforms",
+          "postgres::postgres_captured_content_conforms",
+          "postgres::postgres_fixture_absence_and_configured_failure_have_distinct_outcomes",
+          "sqlite_captured_content_conforms"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.OU4SPH",
+        "receipt_sha256": "2bf48f15e024e577a435f70827b9b2fa0934fee62c6246b608ec92e3f46e8a92",
+        "selected_cases": [
+          "fixture_absence_and_configured_failure_are_distinct",
+          "in_memory_backend_conforms",
+          "postgres_backend_conforms",
+          "sqlite_backend_conforms",
+          "work_fixture_cleanup_preserves_another_live_schema"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.2Ki5Wc",
+        "receipt_sha256": "e20ceee5c93c2d9286fd65a348db7d02e81915336d265deafb040ca42df24595",
+        "selected_cases": [
+          "postgres_backend_conforms",
+          "postgres_fixture_absence_and_configured_failure_are_distinct",
+          "postgres_root_cas_conforms_to_the_same_decision_table",
+          "postgres_unbound_preparation_demand_uses_one_shared_capacity_slot",
+          "root_cas_postgres_fixture_absence_and_configured_failure_are_distinct",
+          "sqlite_backend_conforms",
+          "sqlite_backend_conforms_with_bounded_polling_stack",
+          "sqlite_lifecycle_outbox_insert_failure_rolls_back_every_root_path",
+          "sqlite_restores_and_canonically_rewrites_the_pre_typed_deployment_record",
+          "sqlite_unbound_preparation_demand_uses_one_shared_capacity_slot"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.0WK1KJ",
+        "receipt_sha256": "9ae08f107b755829f125ed1beadcffb0b80e85ee3fa786b14ce17fd9e3f6c700",
+        "selected_cases": [
+          "in_memory_conditional_delete_is_atomic",
+          "postgres::fixture_absence_and_configured_failure_are_distinct",
+          "postgres::postgres_concurrent_create_and_cas_have_one_winner",
+          "postgres::postgres_memory_repository_conforms",
+          "postgres::postgres_memory_roles_share_the_same_atomic_memory",
+          "postgres::postgres_memory_timestamps_use_the_injected_clock_and_checked_sql_range",
+          "postgres::postgres_negative_memory_version_fails_closed",
+          "postgres::postgres_never_reuses_a_deleted_top_ordinal",
+          "postgres::postgres_snapshot_heads_follow_one_committed_cross_file_prefix",
+          "sqlite_concurrent_cas_has_exactly_one_winner",
+          "sqlite_concurrent_create_has_exactly_one_winner",
+          "sqlite_conditional_delete_is_atomic",
+          "sqlite_materialized_path_cas",
+          "sqlite_memory_roles_share_the_same_atomic_memory",
+          "sqlite_memory_timestamps_use_the_injected_clock_and_checked_sql_range",
+          "sqlite_snapshot_heads_follow_one_committed_cross_file_prefix",
+          "volatile_materialized_path_cas",
+          "volatile_memory_roles_share_the_same_atomic_memory",
+          "volatile_memory_timestamps_use_the_injected_clock",
+          "volatile_snapshot_heads_follow_one_committed_cross_file_prefix"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.F0j1uv",
+        "receipt_sha256": "bdf451ab65fa428dedb9c32a3d063ae1458603e6dd2bcb431eaf252f79e9c371",
+        "selected_cases": [
+          "executable_metadata_is_bound_into_new_bundle_hashes",
+          "filesystem_conforms_and_survives_reopen",
+          "filesystem_corruption_retains_the_original_frame",
+          "filesystem_process_append_helper",
+          "filesystem_processes_do_not_lose_a_concurrent_version",
+          "in_memory_conforms",
+          "in_memory_serializes_concurrent_append",
+          "postgres::fixture_absence_and_configured_failure_are_distinct",
+          "postgres::postgres_conforms",
+          "sqlite_conforms",
+          "sqlite_corruption_retains_the_original_frame",
+          "sqlite_retired_pin_survives_reopen"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.ZC0J7h",
+        "receipt_sha256": "8843475a93b7e1bd6eb306bb0d7ac6db542107c03cb798362a01e3e24c446cb3",
+        "selected_cases": [
+          "a_lease_is_live_exactly_until_its_expiry",
+          "a_released_lease_is_never_live",
+          "a_worker_counts_as_polling_only_within_the_window",
+          "an_expired_lease_is_reclaimable",
+          "an_unknown_item_is_never_leased",
+          "at_most_one_lease_is_handed_out_while_one_is_live",
+          "distinct_workers_within_the_window_all_count",
+          "durable::postgres_allocator_work_and_watermark_roll_back_as_one_transaction",
+          "durable::postgres_independent_pools_allocate_concurrently_without_reset",
+          "durable::postgres_missing_malformed_and_exhausted_allocators_fail_closed",
+          "durable::sqlite_allocator_work_and_watermark_roll_back_as_one_transaction",
+          "durable::sqlite_independent_handles_allocate_concurrently_and_reopen_without_reset",
+          "durable::sqlite_missing_malformed_and_exhausted_allocators_fail_closed",
+          "environments_lease_independently",
+          "fixture_absence_and_configured_failure_are_distinct",
+          "in_memory_backend_conforms",
+          "inmem::registration_thread_races::independent_threads_cannot_publish_an_older_registration_after_withdrawal",
+          "inmem::tests::ack_is_fenced_to_the_worker_that_claimed_the_item",
+          "inmem::tests::an_expired_lease_is_reclaimed_on_the_next_poll",
+          "inmem::tests::claim_leases_oldest_queued_and_caps_at_one_active",
+          "inmem::tests::concurrent_healthcheck_convergence_has_one_canonical_work_item",
+          "inmem::tests::healthcheck_seed_carries_its_own_id_and_is_queued",
+          "inmem::tests::heartbeat_extends_and_reports_ttl",
+          "inmem::tests::lease_reclaim_is_exact_at_the_ttl_boundary",
+          "inmem::tests::membership_is_enforced_across_environments",
+          "inmem::tests::oldest_queued_at_persists_while_processing_and_clears_when_drained",
+          "inmem::tests::reclaimed_item_rejects_the_preceding_owner_mutations",
+          "inmem::tests::session_token_tracks_the_current_in_memory_lease_only",
+          "inmem::tests::stats_split_queued_depth_from_pending_and_count_pollers",
+          "inmem::tests::update_metadata_upserts_and_remove_env_purges",
+          "inmem::tests::work_state_as_str_pins_the_wire_vocabulary",
+          "inmem::tests::workers_polling_counts_distinct_workers_within_the_window",
+          "inmemory_archive_keeps_existing_session_authority",
+          "inmemory_work_identity_is_not_reused_after_lifecycle_removal",
+          "lease_book::tests::exhausted_epoch_cannot_install_an_owner",
+          "lease_book::tests::lease_observation_and_reclaim_age_share_the_expiry_boundary",
+          "lease_book::tests::reference_snapshot_follows_the_reference_backend_gate",
+          "mutation::tests::a_renewal_fence_names_its_generation_or_says_it_has_none",
+          "mutation::tests::authority_transition_covers_claim_renew_reclaim_and_release",
+          "mutation::tests::lease_epoch_conversion_fails_closed_at_corrupt_and_exhausted_boundaries",
+          "poll_window_is_exact_and_overflow_safe",
+          "postgres_archive_keeps_existing_session_authority_after_reconnect",
+          "postgres_backend_conforms",
+          "postgres_registration_watermark_and_queue_rollback_together",
+          "postgres_separate_queue_instances_share_the_registration_commit_boundary",
+          "postgres_withdrawal_watermark_survives_a_process_restart",
+          "postgres_work_identity_is_not_reused_after_lifecycle_removal",
+          "product_readiness_tests::volatile_queue_is_opt_in_and_its_export_is_feature_gated",
+          "re_leasing_extends_to_the_new_expiry",
+          "remove_env_purges_everything",
+          "restart::postgres_identity_high_watermark_survives_a_native_process_restart",
+          "restart::sqlite_identity_high_watermark_survives_a_native_process_restart",
+          "schema::clock_proofs::lease_deadline_boundary_table",
+          "schema::clock_proofs::reclaim_cutoff_boundary_table",
+          "schema::identity_upgrade_tests::postgres_both_published_histories_preserve_live_leases_and_fence_deleted_ids",
+          "schema::identity_upgrade_tests::sqlite_both_published_histories_preserve_live_leases_and_fence_deleted_ids",
+          "schema::tests::postgres_both_published_histories_append_empty_registration_watermarks",
+          "schema::tests::postgres_published_v3_converges_with_the_same_domain_effects",
+          "schema::tests::published_work_histories_select_exactly_and_converge_once",
+          "schema::tests::sqlite_both_published_histories_append_empty_registration_watermarks",
+          "schema::tests::sqlite_invalid_legacy_row_keeps_the_v6_cutover_uncommitted",
+          "schema::tests::sqlite_published_v3_converges_rows_and_constraints_atomically",
+          "session_access::epoch_tests::postgres_session_claim_fences_epoch_exhaustion",
+          "session_access::epoch_tests::sqlite_session_claim_fences_epoch_exhaustion",
+          "sqlite_archive_keeps_existing_session_authority_after_reopen",
+          "sqlite_backend_conforms",
+          "sqlite_registration_watermark_and_queue_rollback_together",
+          "sqlite_separate_queue_instances_share_the_registration_commit_boundary",
+          "sqlite_withdrawal_watermark_survives_a_process_restart",
+          "sqlite_work_identity_is_not_reused_after_lifecycle_removal",
+          "stopping_the_active_item_frees_the_next",
+          "tests::accepted_instant_survives_reopening_the_durable_file",
+          "tests::ack_heartbeat_and_membership_match_the_in_memory_contract",
+          "tests::claim_leases_oldest_and_caps_at_one_active",
+          "tests::concurrent_session_dispatch_replay_has_one_sqlite_row",
+          "tests::durable_reclaims_an_expired_lease_on_the_next_poll",
+          "tests::file_open_and_pg_connect_entry_points",
+          "tests::healthcheck_seed_self_references_and_survives_reload",
+          "tests::list_is_enqueue_ordered",
+          "tests::postgres_concurrent_claim_yields_a_single_active_lease",
+          "tests::sqlite_file_fixtures_isolate_live_work_and_remove_only_their_owned_directory",
+          "tests::sqlite_lease_survives_process_store_reopen",
+          "tests::sqlite_session_token_is_single_delivery_epoch_bound_and_reopen_safe",
+          "tests::sqlite_storage_outage_is_typed_for_every_queue_operation",
+          "tests::sqlite_work_authority_waiters_never_block_runtime_timers",
+          "tests::stats_and_metadata_and_remove_env",
+          "work_fixture_cleanup_preserves_another_live_schema"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.f7hwnI",
+        "receipt_sha256": "7eaa92117b829249aeb80fad4c79b56f88e5e96cc7db9333ed2885c3d7fbc548",
+        "selected_cases": [
+          "active_active_child_diagnostics_are_isolated_and_bounded",
+          "blocked_http_closes_exact_expired_worker_but_local_exit_never_clears_remote_obligations",
+          "cached_complete_receipt_for_another_attempt_is_rejected",
+          "cancelled_terminal_observation_retries_the_same_original_closing_slot",
+          "closed_worker_exit_is_observed_before_occupied_retention_policy",
+          "closed_worker_exit_survives_an_unavailable_physical_scan",
+          "closed_worker_releases_idle_evidence_only_after_the_original_physical_ack",
+          "closing_entry_still_records_local_exit_while_the_complete_scope_is_unknown",
+          "committed_terminal_closure_needs_no_current_successor_and_retains_unknown_domains",
+          "committed_terminal_stop_rejects_unproven_or_changed_originals",
+          "complete_stop_timeout_retains_occupancy_and_retries_the_same_subject",
+          "complete_stop_uses_exact_retirement_and_requires_fresh_successor_admission",
+          "concurrent_complete_receipts_cannot_clear_a_successor_slot",
+          "create_admission_and_worker_exit_observation_fail_independently",
+          "durable_process_exit_survives_release_failure_and_worker_replacement",
+          "immutable_pod_registration_memory",
+          "immutable_pod_registration_postgres_when_configured",
+          "immutable_pod_registration_sqlite",
+          "local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidence",
+          "memory_signed_registration_rejects_historical_incarnation",
+          "postgres_configuration_contract",
+          "postgres_configuration_contract",
+          "postgres_configuration_contract",
+          "postgres_configuration_contract",
+          "postgres_guarded_admission_uses_one_process_connection_and_rejects_foreign_pools",
+          "postgres_signed_registration_rejects_historical_incarnation",
+          "postgres_support::child_output::tests::configuration_child_capture_drains_both_streams_past_pipe_capacity",
+          "postgres_support::child_output::tests::configuration_child_capture_drains_both_streams_past_pipe_capacity",
+          "postgres_support::child_output::tests::configuration_child_capture_drains_both_streams_past_pipe_capacity",
+          "postgres_support::child_output::tests::configuration_child_capture_drains_both_streams_past_pipe_capacity",
+          "postgres_support::child_output::tests::configuration_child_capture_keeps_its_deadline_and_partial_output",
+          "postgres_support::child_output::tests::configuration_child_capture_keeps_its_deadline_and_partial_output",
+          "postgres_support::child_output::tests::configuration_child_capture_keeps_its_deadline_and_partial_output",
+          "postgres_support::child_output::tests::configuration_child_capture_keeps_its_deadline_and_partial_output",
+          "reported_local_entry_closure_recovers_without_stopping_a_healthy_worker",
+          "sqlite_signed_registration_rejects_historical_incarnation",
+          "stop_admission_rejects_live_replaced_historical_and_noncurrent_subjects",
+          "terminal_recovery_settlement_progresses_the_same_exact_predecessor_stop",
+          "timed_out_stop_remains_retryable_without_releasing_physical_occupancy",
+          "two_control_processes_retry_recover_and_settle_without_sticky_routing",
+          "worker_json_cannot_supply_independent_termination_evidence"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.liJLHz",
+        "receipt_sha256": "3ccac4e3cbfc19ee3aad6291adde4eb65ed7daa5b084d04118bb74f91a81725c",
+        "selected_cases": [
+          "durable_audit_survives_process_kill_before_business_commit"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.yWDz0a",
+        "receipt_sha256": "467676bc89afebc588708a074c1c9a37e49baa06182c7e00142a6a0f2dabb459",
+        "selected_cases": [
+          "session_commit_survives_process_kill_before_notification"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.mTprib",
+        "receipt_sha256": "8bb64025e47ac37ec33ba97eec64218661218db779487941e3f028b3a8be391c",
+        "selected_cases": [
+          "published_material_retirement_survives_process_crash",
+          "published_material_retirement_survives_process_crash",
+          "secret_write_survives_kill_and_is_compensated_from_the_intent",
+          "sqlite_writing_lease_fences_live_and_stale_owners",
+          "writing_material_survives_kill_but_expired_owner_is_aborted"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.Sc1ufC",
+        "receipt_sha256": "dc113765653e36c53660dcb807283ad7d91a6d1e74cb264427ff62adcfd94e22",
+        "selected_cases": [
+          "installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.8saLyu",
+        "receipt_sha256": "6fcadc034cb53a180ada809feeedefccc78ebd322c4ee5b549b7ab5036de4420",
+        "selected_cases": [
+          "postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.d009zd",
+        "receipt_sha256": "8b8dffbf2a14e5ed45623d104db5dbf45a64cf0c918dd5b1f8768156d1ad9a72",
+        "selected_cases": [
+          "application_access_store::tests::provisioned_postgres_application_access_durability_release_gate"
+        ]
+      }
+    ],
+    "recovery": {
+      "status": "passed",
+      "platform": "Windows/MSVC",
+      "linux_verification_allowed": false,
+      "full_gate": false,
+      "scope": "Physical recovery to a committed target LSN through real S3; same primary as the preceding domain tests.",
+      "primary_owner": "awaken-ci-4d567923e6be49c3a866e65ed2762a78",
+      "object_owner": "awaken-ci-4d567923e6be49c3a866e65ed2762a78",
+      "stages": [
+        "immutable-object-copy-and-base-operation",
+        "verified-base-backup-and-two-committed-wal-segments",
+        "s3-bundle-transfer-safe-extraction-and-offline-backup-verification",
+        "native-target-lsn-promotion",
+        "exact-target-rows-object-digest-and-independent-write"
+      ],
+      "restored": {
+        "kind": "native-windows-process",
+        "binaries": {
+          "postgres": {
+            "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-pg-install-20261022-v1\\postgres\\pgsql\\bin\\postgres.exe",
+            "sha256": "19e73deb1152b3b505f2e1fd579191427f9eb3b3f800754968e7214b24edf31d",
+            "abi": "windows-amd64"
+          },
+          "initdb": {
+            "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-pg-install-20261022-v1\\postgres\\pgsql\\bin\\initdb.exe",
+            "sha256": "cc6373e9d2070f51d7373e49d6b17c95216f3de9797138f1ec70775b3e308aff",
+            "abi": "windows-amd64"
+          },
+          "psql": {
+            "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-pg-install-20261022-v1\\postgres\\pgsql\\bin\\psql.exe",
+            "sha256": "baf1e8234f5d6a09fed47a5eb6dfee8919a0be7be5eac2600edf98fe69f2d694",
+            "abi": "windows-amd64"
+          },
+          "pg_ctl": {
+            "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-pg-install-20261022-v1\\postgres\\pgsql\\bin\\pg_ctl.exe",
+            "sha256": "bed9ec9686fdf66b407f55d15be2466365827feb6b343fdb452c2dbcfbcfe0a1",
+            "abi": "windows-amd64"
+          }
+        },
+        "pid": 86668,
+        "owner": "awaken-ci-4d567923e6be49c3a866e65ed2762a78-restore",
+        "identity": {
+          "cluster_name": "awaken-ci-4d567923e6be49c3a866e65ed2762a78-restore",
+          "port": 64123,
+          "data_directory": "F:/Codes/awaken-1.0.0-dev/target/w9/awaken-services.8lq1xx2g/physical-recovery/restore/base",
+          "started": "2026-10-23 03:15:23.78806+08",
+          "version": "PostgreSQL 16.15, compiled by Visual C++ build 1944, 64-bit",
+          "version_num": 160015
+        },
+        "loopback_port": 64123,
+        "database": "awaken_ci",
+        "authentication": "fresh per-run SCRAM credential; not recorded"
+      },
+      "target_lsn": "0/70002B8",
+      "target_segment": "000000010000000000000007",
+      "after_segment": "000000010000000000000008",
+      "rows": "at-target,base",
+      "bundle_sha256": "77fee01a6b475ab4ca5de31ce0115da9c239ce3bb1711c625eb1da9c9d62f7c8",
+      "content_sha256": "06873115e4ae547e582a9b097b0c63be43709fd0b4baa0a005d2c29d0c75f4fe",
+      "restored_write_isolated": true,
+      "wal_members": [
+        "000000010000000000000006",
+        "000000010000000000000007",
+        "000000010000000000000008"
+      ],
+      "bundle_bytes": 118026240,
+      "offline_backup_verified": true,
+      "cleanup": {
+        "stopped": true,
+        "pid": 86668,
+        "exit_code": 0,
+        "method": "owned-pid-and-data-directory-fast-stop"
+      },
+      "exit_code": 0
+    },
+    "source_unchanged": true,
+    "recovery_object_cleanup": {
+      "stopped": true,
+      "pid": 125764,
+      "exit_code": 1,
+      "method": "retained-owned-process-handle"
+    },
+    "cleanup": {
+      "stopped": true,
+      "pid": 103232,
+      "exit_code": 0,
+      "method": "owned-pid-and-data-directory-fast-stop"
+    },
+    "exit_code": 0
+  },
+  "other_services": [
+    {
+      "service": "nats",
+      "exit_code": 0,
+      "seconds": 56.25201269995887,
+      "log_sha256": "266a1ecf5efd40d505be10d7c6db78ba05225ef76edac745acdc723c5b1f391c",
+      "named_executions": 4,
+      "qualification": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-recovery-working-20261023-v1-0-nats\\result.json",
+      "qualification_sha256": "f741283c06d65c67d864cf0e7c7f25e3784991d570153befc505eb92192492be"
+    },
+    {
+      "service": "s3",
+      "exit_code": 0,
+      "seconds": 104.06388740002876,
+      "log_sha256": "c9b2e86c70d08c3823f1ba4d27eddc1b5f880405107aede508a56470153f802b",
+      "named_executions": 6,
+      "qualification": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-recovery-working-20261023-v1-2-s3\\result.json",
+      "qualification_sha256": "957f92e7af6eeffc8cceffcadc7fdc22e932897a43f6331cb2fd85cfdacf77ec"
+    }
+  ],
+  "execution_counts": {
+    "native_service_unit_tests": 24,
+    "recovery_unit_tests": 16,
+    "nats": 4,
+    "postgres": 231,
+    "s3": 6,
+    "total_named_rust_executions": 241,
+    "physical_recovery_scenarios": 1
+  },
+  "selection_and_static_checks": {
+    "recovery-source-unit-v1": {
+      "log": "native-services-recovery-source-unit-v1.log",
+      "sha256": "51f22d4f6032159873d792adde6db6bbccbbbefce235cb36cd10979f3472d4c3",
+      "status": "passed",
+      "exit_code": 0
+    },
+    "recovery-native-unit-v1": {
+      "log": "native-services-recovery-native-unit-v1.log",
+      "sha256": "416bdf83a251d72bc203877c3a847a09cc02cbbadd2e1ae46568b87bf1d501c7",
+      "status": "passed",
+      "exit_code": 0
+    },
+    "recovery-pg-self-v1": {
+      "log": "native-services-recovery-pg-self-v1.log",
+      "sha256": "0448b8835459510d4658f7f106677944df426aaf95c5f79c4255b0a778766e08",
+      "status": "passed",
+      "exit_code": 0
+    },
+    "recovery-gate-arguments-v1": {
+      "log": "native-services-recovery-gate-arguments-v1.log",
+      "sha256": "82ab632f6934844e46e96629fba1ce6a94777dc3af157bb69cb163aa1ef3664a",
+      "status": "passed",
+      "exit_code": 0
+    },
+    "recovery-test-waits-v1": {
+      "log": "native-services-recovery-test-waits-v1.log",
+      "sha256": "62d7009739d85d5c40ec3daa884dfb67e299feafeecddeefba7c0ec105589d90",
+      "status": "passed",
+      "exit_code": 0
+    },
+    "recovery-generated-hooks-v1": {
+      "log": "native-services-recovery-generated-hooks-v1.log",
+      "sha256": "cdba789695d8da7a215399039ce00a09ba1876203ace60a53a5f68098b3362e8",
+      "status": "passed",
+      "exit_code": 0
+    }
+  },
+  "archive_scope": {
+    "complete_archive_segments": 9,
+    "complete_archive_bytes": 150994944,
+    "selected_segments": 3,
+    "selected_bytes": 50331648,
+    "historical_bytes_excluded_from_bundle": 100663296,
+    "bundle_bytes": 118026240,
+    "original_archive_retained": true
+  },
+  "design": [
+    "ArchivePrimary enables basic_archive through a verified owned restart before any domain tests.",
+    "The same primary completes all four canonical PostgreSQL groups before pg_basebackup runs.",
+    "Native pg_verifybackup checks the original backup and checks it again after S3 transfer and safe extraction.",
+    "Backup label LSN, timeline and WAL name must agree; only one bounded contiguous interval is packed.",
+    "The interval deliberately includes the complete after-target segment: exclusion must come from target-LSN recovery, not missing later WAL.",
+    "Missing/incomplete segments, reversed or cross-timeline ranges, malformed metadata and unsafe bundle members fail closed.",
+    "RestoredCluster adopts backup data, inherited SCRAM credential, port and URL together before exposing an endpoint.",
+    "Restored rows are exactly base and at-target; primary retains after-target; immutable content matches its digest in a distinct restore bucket.",
+    "A new restored-cluster write is absent from the primary; PID/data/SQL identities stay owned and every cleanup participates in the verdict.",
+    "Fault tables independently reject failed primary/object startup, domain tests, restore and either cleanup; the first domain exit status is preserved."
+  ],
+  "attribution": "Working-source qualification before these evidence documents and the normal commit. Final committed-head executions are retained separately; no old receipt or cache owner is relabelled.",
+  "not_qualified": [
+    "Remaining twenty PostgreSQL release commands outside the four canonical groups.",
+    "Full workspace Nextest/doctests and browser E2E on this recovery extension commit.",
+    "Object-service process or device loss: this scenario copies objects while the native S3 service remains live.",
+    "Application-wide restore playbooks and arbitrary existing PostgreSQL timeline histories.",
+    "Hosted Windows CI: the user authorizes internal origin only.",
+    "Platform-exclusive Linux and live Kubernetes validation."
+  ]
+}

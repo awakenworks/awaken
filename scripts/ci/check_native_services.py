@@ -16,7 +16,10 @@ import uuid
 
 from native_services import NatsService, sha256
 from _native_postgres import PostgresService
+from _native_postgres_scopes import POSTGRES_PACKAGES, postgres_plan
 from _native_s3 import MinioService
+from _native_recovery_postgres import ArchivePrimary
+from _native_recovery_drill import run_recovery
 
 ROOT=Path(__file__).resolve().parents[2]
 
@@ -25,26 +28,29 @@ def parser() -> argparse.ArgumentParser:
     p=argparse.ArgumentParser(allow_abbrev=False)
     p.add_argument("--service",choices=["nats", "postgres", "s3"],required=True)
     p.add_argument("--nats-bin",type=Path,help="native Windows NATS server executable")
+    p.add_argument("--postgres-scope",choices=sorted(POSTGRES_PACKAGES),default="core",
+                   help="required domain group on the owned PostgreSQL fixture")
     p.add_argument("--postgres-bin",type=Path,help="directory of native Windows PostgreSQL 16 bin tools")
     p.add_argument("--minio-bin",type=Path,help="native Windows MinIO executable")
     p.add_argument("--mc-bin",type=Path,help="native Windows MinIO admin client executable")
     p.add_argument("--output",type=Path,required=True)
+    p.add_argument("--recovery",action="store_true",help="require physical target-LSN recovery through native S3 on this same PostgreSQL fixture")
     p.add_argument("--timeout",type=int,default=7200)
     p.add_argument("--owned-worker",action="store_true",help=argparse.SUPPRESS)
     return p
 
 
-def reconcile_receipts(log: str, source_digest: str, *, service: str) -> list[dict]:
+def reconcile_receipts(log: str, source_digest: str, *, service: str, postgres_scope: str = "core") -> list[dict]:
     import check_rust_test_execution as q
     from collections import Counter
     references=re.findall(r"^execution evidence: (.+)$",log,re.M)
     if service not in ("nats", "postgres", "s3"): raise ValueError("unsupported native service receipt kind")
     postgres = service == "postgres"
     s3 = service == "s3"
-    expected_count={"postgres":17,"nats":2,"s3":4}[service]
+    expected_count=len(POSTGRES_PACKAGES[postgres_scope]) if postgres else {"nats":2,"s3":4}[service]
     if len(references)!=expected_count:
         if s3: raise ValueError("S3 gate must return all four phase receipts")
-        raise ValueError("PostgreSQL gate must return all 17 required domain receipts" if postgres
+        raise ValueError(f"PostgreSQL {postgres_scope} gate must return all {expected_count} required domain receipts" if postgres
                          else "NATS gate must return both complete domain receipts")
     receipts=[]
     observed=set()
@@ -82,10 +88,7 @@ def reconcile_receipts(log: str, source_digest: str, *, service: str) -> list[di
         receipts.append({"directory":str(directory),"receipt_sha256":sha256(directory/"results.json"),
             "selected_cases":document["selected_cases"]})
     if postgres:
-        expected=Counter({"awaken-reliability-testkit":1,"awaken-model-catalog-store":1,
-            "awaken-credential-store":2,"awaken-data-subject-store":1,"awaken-captured-content-store":1,
-            "awaken-work-store":2,"awaken-session-store":2,"awaken-memory-store":1,"awaken-skill-store":1,
-            "awaken-dispatch-http":1,"awaken-config-store":1,"awaken-cli":2,"awaken-coordinator":1})
+        expected=Counter(POSTGRES_PACKAGES[postgres_scope])
         if Counter(packages)!=expected:
             raise ValueError("PostgreSQL gate omitted or duplicated a canonical backend domain")
     elif s3:
@@ -106,12 +109,18 @@ def reconcile_nats(log: str, source_digest: str) -> list[dict]:
     return reconcile_receipts(log,source_digest,service="nats")
 
 
-def reconcile_postgres(log: str, source_digest: str) -> list[dict]:
-    return reconcile_receipts(log,source_digest,service="postgres")
+def reconcile_postgres(log: str, source_digest: str, scope: str = "core") -> list[dict]:
+    return reconcile_receipts(log,source_digest,service="postgres",postgres_scope=scope)
 
 
 def reconcile_s3(log: str, source_digest: str) -> list[dict]:
     return reconcile_receipts(log,source_digest,service="s3")
+
+
+def _save_record(output: Path, record: dict) -> None:
+    pending=output/"result.pending"
+    pending.write_text(json.dumps(record,indent=2),encoding="utf-8")
+    pending.replace(output/"result.json")
 
 
 def worker(args: argparse.Namespace) -> int:
@@ -126,26 +135,29 @@ def worker(args: argparse.Namespace) -> int:
         "process_ownership":"native Windows deadline Job with kill-on-close","stages":[]}
     (out/"source.patch").write_bytes(facts["patch"])
     def save():
-        pending=out/"result.pending"
-        pending.write_text(json.dumps(record,indent=2),encoding="utf-8")
-        pending.replace(out/"result.json")
+        _save_record(out,record)
     save()
     root=Path(tempfile.mkdtemp(prefix="awaken-services."))
     owner="awaken-ci-"+uuid.uuid4().hex
     (root/"owner.json").write_text(json.dumps({"owner":owner,"evidence":str(out)}),encoding="utf-8")
     record.update(fixture_root=str(root),fixture_data_retained=True)
     service=None
+    recovery_objects=None
     code=0
     try:
         if args.service=="nats":
             service=NatsService(args.nats_bin,root/"nats",out,owner)
             plan=[("nats-domain-tests","tests.log",["scripts/ci/nats_tests.sh"])]
         elif args.service=="postgres":
-            service=PostgresService(args.postgres_bin,root/"postgres",out,owner)
-            plan=[("postgres-backend-parity","backend-parity.log",["scripts/ci/pg_tests.sh","--backend-parity"]),
-                  ("postgres-work-store","work-store.log",["scripts/ci/pg_tests.sh","--work-store"]),
-                  ("postgres-http","http.log",["scripts/ci/pg_tests.sh","--http"]),
-                  ("postgres-critical","critical.log",["scripts/ci/pg_tests.sh","--critical"])]
+            if args.recovery:
+                archive=root/"wal";archive.mkdir()
+                service=ArchivePrimary(args.postgres_bin,root/"postgres",out,owner,archive)
+                recovery_objects=MinioService(args.minio_bin,args.mc_bin,root/"recovery-objects",out,owner,
+                    ROOT/"scripts/ci/fixtures/minio-file-store-policy.json")
+            else:
+                service=PostgresService(args.postgres_bin,root/"postgres",out,owner)
+            plan=postgres_plan(args.postgres_scope)
+            record["postgres_scope"]=args.postgres_scope
         elif args.service=="s3":
             service=MinioService(args.minio_bin,args.mc_bin,root/"minio",out,owner,
                 ROOT/"scripts/ci/fixtures/minio-file-store-policy.json")
@@ -154,7 +166,11 @@ def worker(args: argparse.Namespace) -> int:
         else:
             raise ValueError("unsupported native service")
         record["fixture"]=service.start()
+        record["recovery_required"]=args.recovery
         save()
+        if recovery_objects is not None:
+            record["recovery_object_fixture"]=recovery_objects.start()
+            save()
         environment=dict(os.environ)
         for name in list(environment):
             if name.upper().startswith(("AWAKEN_TEST_", "AWS_", "MINIO_", "MC_HOST_")):
@@ -174,11 +190,13 @@ def worker(args: argparse.Namespace) -> int:
             start=time.monotonic()
             with (out/filename).open("wb") as log:
                 child=subprocess.run(command,cwd=ROOT,env=environment,stdout=log,stderr=subprocess.STDOUT,stdin=subprocess.DEVNULL)
+                # Retain the process cause before log close/hash or record IO.
+                if child.returncode:
+                    code=child.returncode
             record["stages"].append({"stage":stage,"command":command,"exit_code":child.returncode,
                 "seconds":time.monotonic()-start,"log_sha256":sha256(out/filename)})
             save()
             if child.returncode:
-                code=child.returncode
                 raise RuntimeError("native service domain tests failed; inspect "+filename)
             logs.append((out/filename).read_text(encoding="utf-8",errors="replace"))
         service.verify()
@@ -186,7 +204,10 @@ def worker(args: argparse.Namespace) -> int:
             record["final_fixture"]=service.receipt()
             record["credential_rotation_applied"]=service.rotated
         reconcile={"nats":reconcile_nats,"postgres":reconcile_postgres,"s3":reconcile_s3}[args.service]
-        record["execution"]=reconcile("\n".join(logs),digest)
+        record["execution"]=(reconcile_postgres("\n".join(logs),digest,args.postgres_scope)
+                             if args.service=="postgres" else reconcile("\n".join(logs),digest))
+        if recovery_objects is not None:
+            record["recovery"]=run_recovery(service,recovery_objects,root/"physical-recovery",out)
         if working_subject()[0]!=digest:
             raise RuntimeError("source changed during native service verification")
         record["source_unchanged"]=True
@@ -195,12 +216,28 @@ def worker(args: argparse.Namespace) -> int:
         record["error"]=str(error)
     finally:
         try:
+            if recovery_objects is not None: record["recovery_object_cleanup"]=recovery_objects.close()
+        except Exception as error:
+            code=code or 1
+            record["recovery_object_cleanup_error"]=str(error)
+        try:
             if service is not None: record["cleanup"]=service.close()
         except Exception as error:
             code=code or 1
             record["cleanup_error"]=str(error)
         record.update(status="passed" if code==0 else "failed",exit_code=code)
-        save()
+        try:
+            save()
+        except Exception as error:
+            code=code or 1
+            record.update(status="failed",exit_code=code,recording_error=str(error))
+            # A bounded best-effort FAILED record may preserve diagnostics after
+            # a transient write fault. It never converts that fault into pass.
+            try:
+                save()
+            except Exception:
+                pass
+            print("native service terminal evidence could not be written",file=sys.stderr)
     print(json.dumps({k:record[k] for k in ("status","service","platform","exit_code")}))
     return code
 
@@ -208,9 +245,12 @@ def worker(args: argparse.Namespace) -> int:
 def main(argv: list[str]) -> int:
     p=parser()
     args=p.parse_args(argv)
+    if args.postgres_scope!="core" and args.service!="postgres": p.error("--postgres-scope requires postgres")
     if args.service=="nats" and args.nats_bin is None: p.error("nats requires --nats-bin")
     if args.service=="postgres" and args.postgres_bin is None: p.error("postgres requires --postgres-bin")
     if args.service=="s3" and (args.minio_bin is None or args.mc_bin is None): p.error("s3 requires --minio-bin and --mc-bin")
+    if args.recovery and (args.service!="postgres" or args.minio_bin is None or args.mc_bin is None):
+        p.error("--recovery requires postgres and both --minio-bin and --mc-bin")
     if os.name!="nt":
         raise SystemExit("native service validation requires Windows; no container fallback")
     if args.timeout<=0:
@@ -225,7 +265,12 @@ def main(argv: list[str]) -> int:
         str(Path(__file__).resolve()),*argv,"--owned-worker"])
     if result==0:
         report=json.loads((args.output/"result.json").read_text(encoding="utf-8"))
-        if report.get("status")!="passed" or not report.get("cleanup",{}).get("stopped"):
+        if report.get("status")!="passed" or report.get("cleanup",{}).get("stopped") is not True:
+            return 1
+        if args.recovery and (report.get("recovery_required") is not True
+                or report.get("recovery",{}).get("status")!="passed"
+                or report.get("recovery",{}).get("cleanup",{}).get("stopped") is not True
+                or report.get("recovery_object_cleanup",{}).get("stopped") is not True):
             return 1
     return result
 

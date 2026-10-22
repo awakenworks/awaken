@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "status": "passed-for-explicit-working-scope",
+  "platform": "Windows/MSVC",
+  "linux_verification_allowed": false,
+  "public_publication_allowed": false,
+  "full_gate": false,
+  "base_commit": "a227e99b81ec43be490654f75d739a7c4ddfed0c",
+  "problem": "A failed native child17 became1 if hashing/recording failed before its return code was retained; a terminal writer exception could also replace an existing process cause.",
+  "source_files": {
+    "scripts/ci/check_native_services.py": "6bf15ccd33d423543e50964104cb3cbf25606d0bf7e5e7cf2eb2b6b275d40f7d",
+    "scripts/ci/test_native_recovery.py": "cc30702319f882ecabe5cc021af59c1f1afdc5e4db829887d598d182252d9f57",
+    "scripts/ci/test_native_recording.py": "0bcc4756fe61d06daa1295fd599d1173daaff47b0179a7ed97ae671bba162359",
+    "scripts/ci/check-all.sh": "c5fce48c8e1cf24a1129050c802899f3a9c2208adbb85c858f7571037a28c128"
+  },
+  "controlled_before": {
+    "path": "native-record-first-cause-probe-v1.json",
+    "sha256": "fd61a43a432c75f6cd00ea8a23d68f488e9b31ade9a42a1efc0d07083ee479b3",
+    "expected": 17,
+    "actual": 1
+  },
+  "controlled_after": {
+    "path": "native-record-first-cause-fixed-v1.json",
+    "sha256": "9315a9d2731ed8da8c58fb0adf15dc735b4068aa52aadbd126f4e3e985a6397e",
+    "expected": 17,
+    "actual": 17
+  },
+  "controller_observation": {
+    "original": "One recovery controller subcase did not reach its intended injected cleanup fault; temporary output had already been removed.",
+    "diagnostic": "Ten bounded repetitions (80 controller rows) did not reproduce that original cause.",
+    "root_cause_of_original_flake_confirmed": false,
+    "decision": "Use an isolated record sink for the lifecycle decision table; real atomic writer tests and live native qualification retain IO coverage."
+  },
+  "regression_design": {
+    "phases": [
+      "log-hash",
+      "stage-record",
+      "terminal-record"
+    ],
+    "child_statuses": [
+      0,
+      17
+    ],
+    "writer_errors": [
+      "OSError",
+      "TypeError"
+    ],
+    "cleanup_outcomes": [
+      "success",
+      "failure"
+    ],
+    "combination_rows": 24,
+    "additional": [
+      "Atomic replacement/encoding refusal preserves prior JSON.",
+      "Persistent terminal failure remains nonzero and is limited to two terminal attempts.",
+      "Initial record refusal starts no service."
+    ]
+  },
+  "working_units": [
+    {
+      "log": "native-services-native-recording-unit-working-v1.log",
+      "sha256": "8fa9717b88efdbb0fb9018a3437f9be86754faea45401cc05903cd6443350a86",
+      "tests": 4
+    },
+    {
+      "log": "native-services-native-recovery-controller-isolated-working-v1.log",
+      "sha256": "1c2883b0092cc8e2a4bce260fddfd6267995da81ffe5277623a8fc6b5b5ce238",
+      "tests": 16
+    },
+    {
+      "log": "native-services-native-recording-compatibility-working-v1.log",
+      "sha256": "a48c61bd8eef8881f36117c755249ec311b43c37253aaa76cbb819ebc846909f",
+      "tests": 24
+    }
+  ],
+  "control_qualification": {
+    "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.q9rEFy\\results.json",
+    "sha256": "8543e7bc2b3b392373cfbe031369193d295445e7555b660d73d535f8551afa0b",
+    "executions": 20,
+    "required_cases": [
+      "managed_agents::read_tests::managed_archive_projection_refusal_has_no_lifecycle_effect",
+      "managed_agents::tests::managed_agent_archive_retains_immutable_publication"
+    ]
+  },
+  "execution_rule": "Normal commit and fetch/rebase precede actual-head native units, Control regressions and all241live service executions plus same-primary physical recovery. Earlier service/cold records retain their actual original head.",
+  "remaining": [
+    "Actual committed-head qualification and hooks-enabled internal push.",
+    "Twenty legacy PostgreSQL commands plus native served E2E and current full Windows-applicable CI.",
+    "Recorded universal full gate requires a missing host admission capability; Linux-only and hosted public CI remain unexecuted."
+  ]
+}

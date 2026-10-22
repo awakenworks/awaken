@@ -1,0 +1,335 @@
+{
+  "schema_version": 1,
+  "status": "passed-with-explicit-scope",
+  "platform": "Windows/MSVC",
+  "linux_verification_allowed": false,
+  "public_publication_allowed": false,
+  "full_gate": false,
+  "scope": "Nine canonical PostgreSQL resource/application commands with strict actual-outcome reconciliation; not a full workspace or hosted-CI claim.",
+  "base_commit": "d729ed76849826c82e3dd63a7bc849a204393f83",
+  "working_source_digest": "3418bc4dcebf1018fe575c85f6e2d987933cd00c169579651746ce126632f396",
+  "source_files": {
+    ".github/workflows/windows-native-services.yml": "48ae2e6331f6db21d5228f412d2f547eb1012bd3dfbd014004158822867ecc55",
+    "Cargo.lock": "8826fb72bc366005162d616098c19034dfce180d6b3e455ef99052382222dd7e",
+    "crates/resources/awaken-resource-persistence/Cargo.toml": "06d6aac2b5f72978bacb680247573c91ee3fd39016ad9b6c5836b2a883d42a6d",
+    "crates/resources/awaken-resource-persistence/src/lib.rs": "b4bd9171507b490e3aea8f7a3468bc72f3e3934c28944503b3d66d0813a121d2",
+    "crates/resources/awaken-resource-persistence/tests/registry_contract.rs": "594b97611f93bddd6172205469c183a310edb01a173d6529a5968bebf9fb3374",
+    "crates/server/awaken-executable-environment-catalog/src/postgres.rs": "797493bc6492463bc1710fbe86a7edd057762c577fdd6a2390e8fd95425b54d7",
+    "crates/server/awaken-protocol-managed/src/state/events/tests/hitl_frontier.rs": "ec03e77a4d2d4adccdf96e9521d193bfd63c79dbd02efb3c19d4d99eaaaa92b4",
+    "crates/server/awaken-session-application/src/tests/construction.rs": "ff30f18d6a0e3dbd644163b2968e5048a23e5ca341ab390bf12b55bc1a0a8d2b",
+    "crates/server/awaken-session-application/src/tests/creation/time_assurance.rs": "7e91875db6b12a2d24c1a388606b75ba4ba165e03e2d0b2d778503bd097cf90b",
+    "crates/server/awaken-session-application/src/tests/event_batches.rs": "3d9634737b94a5356a4ced8a8cc006bd8a21ce24d464c1060335f6656946a6a1",
+    "crates/stores/awaken-resource-store/src/postgres.rs": "939fe0617af8174968f5eb4036b5660a160da2263296e8ed0dba745696cb6d61",
+    "scripts/ci/_native_postgres_scopes.py": "1b1e5f6ce4d05493bd418144657d49370315410d48d15c53f02e86a0a32b1103",
+    "scripts/ci/check-all.sh": "81c35978abdd6806e617e9d29e3c2ceca19b95ddc6d8d373ea8dba58bfbef2f6",
+    "scripts/ci/pg_tests.sh": "34798622b72a7ec8118793f53996f9b8f595110108e9c375496d1c17eea91708",
+    "scripts/ci/test_postgres_resources.py": "3411ff4cc453eaadc93c587be0bf8b56faec02f50574723cf71633a165a68451"
+  },
+  "fixes": [
+    "Twelve remaining resource/application test entries use the shared required/optional PostgreSQL fixture owner.",
+    "Configured invalid URLs fail through the actual child test rather than reporting a passing skip.",
+    "Every existing business assertion and public API is preserved.",
+    "Offline Cargo resolution adds only the existing testkit development dependency."
+  ],
+  "selection_design": [
+    "Native and legacy fixtures call one resources_evidence selection.",
+    "Nine exact domain receipts are reconciled against list/run/preparation/source/required-fixture facts.",
+    "All twelve new child-admission regressions are required alongside the existing live business laws.",
+    "Storage correctness and its opt-in performance scope remain unchanged."
+  ],
+  "units": [
+    {
+      "stage": "working-test_postgres_resources",
+      "exit_code": 0,
+      "failure_kind": "none",
+      "seconds": 2.0314500000094995,
+      "log": "postgres-resources-v2-working-test_postgres_resources.log",
+      "sha256": "d92a364165bf10ea450ca69c32e5d5419e7a435a3ebcd2535fc6c49eeb3a1832",
+      "tests": 7
+    },
+    {
+      "stage": "working-test_postgres_storage",
+      "exit_code": 0,
+      "failure_kind": "none",
+      "seconds": 2.9295144000207074,
+      "log": "postgres-resources-v2-working-test_postgres_storage.log",
+      "sha256": "63655784462601fc0e9f6e77a8454cacdaae3931d7e4fe3a1b073297f7d5b2ba",
+      "tests": 9
+    },
+    {
+      "stage": "working-test_native_services",
+      "exit_code": 0,
+      "failure_kind": "none",
+      "seconds": 1.3846896999748424,
+      "log": "postgres-resources-v2-working-test_native_services.log",
+      "sha256": "8cdf20220243101be17d7e2d9d6d27a10c6128102048c6ca9912d4272d182753",
+      "tests": 24
+    },
+    {
+      "stage": "working-test_native_recovery",
+      "exit_code": 0,
+      "failure_kind": "none",
+      "seconds": 1.613399500027299,
+      "log": "postgres-resources-v2-working-test_native_recovery.log",
+      "sha256": "52ffea18a11298b6ba46d8d5b60ee7877fbbf553078a797d6656fef9da2b41fd",
+      "tests": 16
+    },
+    {
+      "stage": "working-test_native_recording",
+      "exit_code": 0,
+      "failure_kind": "none",
+      "seconds": 0.49877599999308586,
+      "log": "postgres-resources-v2-working-test_native_recording.log",
+      "sha256": "c68c1757353b88fe72b65febd810684c0d58a1974f024f27d128a51c661abccf",
+      "tests": 4
+    }
+  ],
+  "working_qualification": {
+    "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-postgres-resources-working-20261023-v2\\result.json",
+    "sha256": "21aa52fa0d2e484439181264a7fa171d7b63caa66893e9508e18e73f8f223e52",
+    "domains": [
+      {
+        "package": "awaken-admin-config-api",
+        "named_executions": 7,
+        "selected_cases": [
+          "postgres_admin_rows_survive_a_reconnect",
+          "postgres_admin_store_serves_every_port",
+          "postgres_agent_input_ambiguous_keys_fail_closed",
+          "postgres_agent_input_first_writers_have_one_authoritative_winner",
+          "postgres_agent_input_rollback_replay_and_corrupt_key_readback",
+          "postgres_mcp_configuration_cas_and_restart",
+          "postgres_telemetry_configuration_cas_restart_and_scope"
+        ],
+        "required_cases": [
+          "postgres_admin_rows_survive_a_reconnect",
+          "postgres_admin_store_serves_every_port",
+          "postgres_agent_input_ambiguous_keys_fail_closed",
+          "postgres_agent_input_first_writers_have_one_authoritative_winner",
+          "postgres_agent_input_rollback_replay_and_corrupt_key_readback",
+          "postgres_mcp_configuration_cas_and_restart",
+          "postgres_telemetry_configuration_cas_restart_and_scope"
+        ],
+        "qualification": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.oWnvQ5\\results.json",
+        "sha256": "9235bb6570cd7c211ec93bee62738344251787b1f4cfdbf1adfee1a10f189abc"
+      },
+      {
+        "package": "awaken-resource-store",
+        "named_executions": 28,
+        "selected_cases": [
+          "postgres::tests::live_postgres_identical_reference_replacement_is_a_storage_noop",
+          "postgres::tests::live_postgres_identical_reference_replacement_is_a_storage_noop_fixture_admission",
+          "postgres::tests::live_postgres_rehydrates_references_for_every_resource_kind",
+          "postgres::tests::live_postgres_rehydrates_references_for_every_resource_kind_fixture_admission",
+          "postgres::tests::live_postgres_serializes_references_with_reclamation_fences",
+          "postgres::tests::live_postgres_serializes_references_with_reclamation_fences_fixture_admission",
+          "postgres::tests::live_postgres_verify_is_fail_closed_and_read_only",
+          "postgres::tests::live_postgres_verify_is_fail_closed_and_read_only_fixture_admission",
+          "resource_lifecycle_repository_conforms_and_survives_restart",
+          "resource_registry_repository_conforms_and_survives_restart",
+          "schema::tests::resource_reclamation_bundle_lints",
+          "schema::tests::resource_registry_bundle_preserves_published_v2_identity",
+          "sqlite_file_backend_conforms_and_survives_reopen",
+          "sqlite_in_memory_backend_conforms",
+          "sqlite_registry::tests::concurrent_replacements_have_one_linearizable_winner",
+          "sqlite_registry::tests::published_v1_rows_upgrade_in_place_with_the_initial_revision",
+          "sqlite_registry::tests::row_identity_mismatch_fails_closed",
+          "tests::legacy_workspace_grant_rows_remain_ownership_edges",
+          "tests::malformed_persisted_purge_frames_are_corruption_not_bad_commands",
+          "tests::reclamation_acquisition_has_one_fail_closed_decision_table",
+          "tests::sqlite_acquire_rechecks_references_added_by_the_fence_transaction",
+          "tests::sqlite_concurrent_duplicate_put_is_idempotent",
+          "tests::sqlite_identical_reference_replacement_is_a_storage_noop",
+          "tests::sqlite_in_memory_conforms",
+          "tests::sqlite_in_memory_reference_and_fence_protocol_matches_the_small_model",
+          "tests::sqlite_is_durable_and_conforms",
+          "tests::sqlite_lifecycle_contention_does_not_starve_authority_timers",
+          "tests::sqlite_records_the_scoped_resource_reclamation_migration"
+        ],
+        "required_cases": [
+          "postgres::tests::live_postgres_identical_reference_replacement_is_a_storage_noop",
+          "postgres::tests::live_postgres_rehydrates_references_for_every_resource_kind",
+          "postgres::tests::live_postgres_serializes_references_with_reclamation_fences",
+          "postgres::tests::live_postgres_verify_is_fail_closed_and_read_only",
+          "postgres::tests::live_postgres_verify_is_fail_closed_and_read_only_fixture_admission",
+          "postgres::tests::live_postgres_serializes_references_with_reclamation_fences_fixture_admission",
+          "postgres::tests::live_postgres_identical_reference_replacement_is_a_storage_noop_fixture_admission",
+          "postgres::tests::live_postgres_rehydrates_references_for_every_resource_kind_fixture_admission"
+        ],
+        "qualification": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.2fJ6kU\\results.json",
+        "sha256": "1c37a4109a122b17167b92e881d93d86ea95790916109ff293029807ebe15d0a"
+      },
+      {
+        "package": "awaken-resource-persistence",
+        "named_executions": 12,
+        "selected_cases": [
+          "embedded_memory_creation_receipt_is_atomic_and_survives_edits_and_reopen",
+          "embedded_registry_satisfies_the_shared_contract_and_survives_reopen",
+          "postgres_registry_fixture_admission",
+          "postgres_registry_satisfies_the_same_contract_and_survives_reconnect",
+          "repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy_rows",
+          "tests::embedded_memory_content_uses_the_resource_authorities_clock",
+          "tests::embedded_resource_authorities_survive_application_restart",
+          "tests::embedded_selection_returns_one_complete_application",
+          "tests::postgres_injected_blob_store_fixture_admission",
+          "tests::postgres_metadata_and_injected_blob_store_form_one_application",
+          "tests::postgres_resource_authorities_fixture_admission",
+          "tests::postgres_resource_authorities_survive_verify_mode_restart"
+        ],
+        "required_cases": [
+          "postgres_registry_satisfies_the_same_contract_and_survives_reconnect",
+          "tests::postgres_metadata_and_injected_blob_store_form_one_application",
+          "tests::postgres_resource_authorities_survive_verify_mode_restart",
+          "tests::postgres_resource_authorities_fixture_admission",
+          "tests::postgres_injected_blob_store_fixture_admission",
+          "postgres_registry_fixture_admission"
+        ],
+        "qualification": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.nZFF8h\\results.json",
+        "sha256": "b2ea7397a894ad67b41eafb1593791ab1b44c993ae88e634ee75dc0977497811"
+      },
+      {
+        "package": "awaken-session-application",
+        "named_executions": 6,
+        "selected_cases": [
+          "tests::construction::required_tool_compiler_postgres_preserves_the_frozen_configuration",
+          "tests::construction::required_tool_compiler_postgres_preserves_the_frozen_configuration_fixture_admission",
+          "tests::creation::time_assurance::postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack",
+          "tests::creation::time_assurance::postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack_fixture_admission",
+          "tests::event_batches::postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict",
+          "tests::event_batches::postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict_fixture_admission"
+        ],
+        "required_cases": [
+          "tests::construction::required_tool_compiler_postgres_preserves_the_frozen_configuration",
+          "tests::creation::time_assurance::postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack",
+          "tests::event_batches::postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict",
+          "tests::construction::required_tool_compiler_postgres_preserves_the_frozen_configuration_fixture_admission",
+          "tests::event_batches::postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict_fixture_admission",
+          "tests::creation::time_assurance::postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack_fixture_admission"
+        ],
+        "qualification": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.95m23u\\results.json",
+        "sha256": "048910aed2928b1add5fed81115348f03f580f441d38636a505a8d586fba6884"
+      },
+      {
+        "package": "awaken-protocol-managed",
+        "named_executions": 2,
+        "selected_cases": [
+          "state::events::tests::hitl_frontier::postgres_two_connection_late_hitl_frontier_preserves_old_cursors",
+          "state::events::tests::hitl_frontier::postgres_two_connection_late_hitl_frontier_preserves_old_cursors_fixture_admission"
+        ],
+        "required_cases": [
+          "state::events::tests::hitl_frontier::postgres_two_connection_late_hitl_frontier_preserves_old_cursors",
+          "state::events::tests::hitl_frontier::postgres_two_connection_late_hitl_frontier_preserves_old_cursors_fixture_admission"
+        ],
+        "qualification": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.E0uobv\\results.json",
+        "sha256": "b065358d03b193bc4c2a84fd2b3bc46796569cd337f7addbe306521cd60b113c"
+      },
+      {
+        "package": "awaken-sandbox-policy-store",
+        "named_executions": 5,
+        "selected_cases": [
+          "tests::in_memory_exact_version_rules",
+          "tests::postgres_verify_is_fail_closed_and_read_only",
+          "tests::published_schema_histories_select_exact_v1_and_converge",
+          "tests::sqlite_exact_version_rules_and_restart",
+          "tests::sqlite_schema_has_one_scoped_migration_authority"
+        ],
+        "required_cases": [
+          "tests::postgres_verify_is_fail_closed_and_read_only"
+        ],
+        "qualification": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.w2R7I8\\results.json",
+        "sha256": "b0f5dbd34e26c2e6792ea4c510d518eb1fc365b81741fc6f9d97f3af2ddcad7b"
+      },
+      {
+        "package": "awaken-executable-agent-catalog",
+        "named_executions": 21,
+        "selected_cases": [
+          "http::tests::authenticated_network_adapter_preserves_registration_semantics",
+          "http::tests::network_adapter_retries_only_transient_idempotent_failures",
+          "http::tests::network_boundary_requires_complete_private_endpoint_configuration",
+          "http::tests::typed_authorization_fences_catalog_commands_before_mutation",
+          "postgres::tests::active_active_peer_refreshes_the_durable_command_projection",
+          "postgres::tests::agent_command_above_captured_high_water_waits_for_next_refresh",
+          "postgres::tests::concurrent_agent_refreshes_are_serialized_by_the_domain_registrar",
+          "postgres::tests::install_error_precedes_agent_target_publication",
+          "postgres::tests::legacy_registration_time_is_appended_without_rewriting_its_command",
+          "postgres::tests::persisted_registration_replays_the_previous_tool_identity_wire",
+          "postgres::tests::persistence_precedes_projection_and_failure_leaves_catalog_unchanged",
+          "postgres::tests::postgres_adapter_migrates_persists_verifies_and_rehydrates",
+          "postgres::tests::restart_replays_registration_and_withdrawal_through_canonical_state_machine",
+          "schema::tests::catalog_bundle_is_portable_and_linted",
+          "tests::agent_reference_projection_is_fenced_monotonic_and_conservative",
+          "tests::current_lifecycle_disposition_decision_table",
+          "tests::exact_session_profile_does_not_follow_mutable_current_selection",
+          "tests::historical_postgres_order_is_unknown_after_two_unfenced_rows",
+          "tests::model_first_publication_survives_withdrawal_and_legacy_enrichment",
+          "tests::registration_is_idempotent_monotonic_and_conflict_checked",
+          "tests::withdrawal_is_monotonic_and_preserves_exact_history"
+        ],
+        "required_cases": [
+          "postgres::tests::active_active_peer_refreshes_the_durable_command_projection",
+          "postgres::tests::agent_command_above_captured_high_water_waits_for_next_refresh",
+          "postgres::tests::concurrent_agent_refreshes_are_serialized_by_the_domain_registrar",
+          "postgres::tests::install_error_precedes_agent_target_publication",
+          "postgres::tests::legacy_registration_time_is_appended_without_rewriting_its_command",
+          "postgres::tests::persisted_registration_replays_the_previous_tool_identity_wire",
+          "postgres::tests::persistence_precedes_projection_and_failure_leaves_catalog_unchanged",
+          "postgres::tests::postgres_adapter_migrates_persists_verifies_and_rehydrates",
+          "postgres::tests::restart_replays_registration_and_withdrawal_through_canonical_state_machine",
+          "tests::historical_postgres_order_is_unknown_after_two_unfenced_rows"
+        ],
+        "qualification": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.1Yxf2U\\results.json",
+        "sha256": "cc6783c38804c229534a176c339efe50c6cb0f9e50c407ded04c707a2667b66b"
+      },
+      {
+        "package": "awaken-executable-environment-catalog",
+        "named_executions": 14,
+        "selected_cases": [
+          "http::tests::private_history_route_retains_exact_facts_without_admission_and_rejects_wrong_credentials",
+          "postgres::tests::active_active_peer_refreshes_the_durable_environment_projection",
+          "postgres::tests::concurrent_environment_refreshes_are_serialized_by_the_domain_registrar",
+          "postgres::tests::durable_history_replay_is_distinct_from_admission_and_allows_later_promotion",
+          "postgres::tests::environment_command_above_captured_high_water_waits_for_next_refresh",
+          "postgres::tests::install_error_precedes_environment_target_publication",
+          "postgres::tests::postgres_history_command_reopens_without_admission_and_fences_cross_mode_conflicts",
+          "postgres::tests::postgres_history_command_reopens_without_admission_and_fences_cross_mode_conflicts_fixture_admission",
+          "postgres::tests::postgres_migration_persists_high_water_and_rehydrates_environment",
+          "schema::tests::migration_is_deterministic_versioned_and_portable",
+          "tests::decision_table_preserves_exact_history_and_monotonic_current",
+          "tests::history_restore_never_grants_current_but_exact_registration_can_promote",
+          "tests::lifecycle_uses_only_the_same_current_catalog_fact",
+          "tests::out_of_order_and_concurrent_delivery_converge_monotonically"
+        ],
+        "required_cases": [
+          "postgres::tests::active_active_peer_refreshes_the_durable_environment_projection",
+          "postgres::tests::concurrent_environment_refreshes_are_serialized_by_the_domain_registrar",
+          "postgres::tests::durable_history_replay_is_distinct_from_admission_and_allows_later_promotion",
+          "postgres::tests::environment_command_above_captured_high_water_waits_for_next_refresh",
+          "postgres::tests::install_error_precedes_environment_target_publication",
+          "postgres::tests::postgres_history_command_reopens_without_admission_and_fences_cross_mode_conflicts",
+          "postgres::tests::postgres_migration_persists_high_water_and_rehydrates_environment",
+          "postgres::tests::postgres_history_command_reopens_without_admission_and_fences_cross_mode_conflicts_fixture_admission"
+        ],
+        "qualification": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.jA6SJS\\results.json",
+        "sha256": "276a457420684950e67a2452db761d505325e8c8f417437af6e33f3d7ab33ac9"
+      },
+      {
+        "package": "awaken-environment-image-build",
+        "named_executions": 1,
+        "selected_cases": [
+          "postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority"
+        ],
+        "required_cases": [
+          "postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority"
+        ],
+        "qualification": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.ccY9Q1\\results.json",
+        "sha256": "790ab5a84450125fa462ee12a2506a20a1d3f54adc8e08fbf93a0b5c1aaf71b8"
+      }
+    ],
+    "named_executions": 96
+  },
+  "publication_rule": "Normal commit, actual committed-head storage execution, fetch/rebase, normal hooks-enabled push and exact internal-origin verification.",
+  "remaining": [
+    "Two distributed commands and one scale command.",
+    "Served PostgreSQL Node/TypeScript E2E and current full Windows CI.",
+    "Platform-exclusive Linux checks and hosted public CI remain unexecuted."
+  ]
+}

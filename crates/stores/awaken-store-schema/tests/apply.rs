@@ -39,7 +39,7 @@ async fn isolated_postgres_pool(
 ) -> Result<(sqlx::PgPool, sqlx::PgPool, String), Box<dyn std::error::Error>> {
     use sqlx::Executor;
 
-    let admin = sqlx::PgPool::connect(url).await?;
+    let admin = awaken_reliability_testkit::postgres_fixture_pool(url).await;
     let suffix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_nanos();
@@ -518,7 +518,7 @@ async fn concurrent_postgres_startup_has_one_migration_applier()
     // one replica applies every version, the other waits then applies none;
     // R2=the ledger contains each version exactly once. This is the live product
     // proof for the transaction-scoped PostgreSQL advisory lock.
-    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
         return Ok(());
     };
     let (admin, pool, schema) = isolated_postgres_pool(&url, "concurrent_migration").await?;
@@ -548,7 +548,7 @@ async fn postgres_failed_migration_rolls_back_schema_and_ledger_rows()
     // SQLite. PostgreSQL may retain its empty migration-ledger bootstrap, but
     // the backend-neutral contract is identical: no user DDL and no applied
     // version survives, and a corrected retry starts at version one.
-    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
         return Ok(());
     };
     let (admin, pool, schema) = isolated_postgres_pool(&url, "failed_migration").await?;
@@ -591,7 +591,7 @@ async fn postgres_v10_canonicalizes_historical_kinds_and_rolls_back_as_one_unit(
     // first UPDATE, the second UPDATE, and v10's ledger row; E2 C3 publishes both
     // canonical values; E3 a repeat is a no-op. Decision table:
     // R1=C1+C2->E1; R2=C1+C3->E2; R3=R2+repeat->E3.
-    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
         return Ok(());
     };
     let (admin, pool, schema) = isolated_postgres_pool(&url, "audit_kind_v10").await?;
@@ -862,7 +862,7 @@ async fn postgres_v11_indexes_run_predecessors_without_rewriting_history()
     // The PostgreSQL row of SQLite's C1-C4/R1-R3 table above. A real migrated
     // database and its actual query planner cover dialect expansion and restart;
     // the existing peer lifecycle tests cover Running/Awaiting/Resumed meaning.
-    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
         return Ok(());
     };
     let (admin, pool, schema) = isolated_postgres_pool(&url, "event_predecessor_v11").await?;
@@ -1096,7 +1096,7 @@ async fn postgres_v12_indexes_recovery_ranges_atomically_without_changing_rows()
     // PostgreSQL executes the same C1-C5/R1-R4 table as SQLite above. All rows
     // are retained, a second-DDL failure rolls back the first index, and real
     // EXPLAIN must select each access path with normal planner settings.
-    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
         return Ok(());
     };
     let (admin, pool, schema) = isolated_postgres_pool(&url, "recovery_ranges_v12").await?;
@@ -1201,3 +1201,6 @@ async fn postgres_v12_indexes_recovery_ranges_atomically_without_changing_rows()
     drop_postgres_pool(admin, pool, &schema).await?;
     Ok(())
 }
+
+#[path = "support/postgres_admission.rs"]
+mod fixture_admission;

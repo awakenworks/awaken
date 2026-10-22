@@ -1,0 +1,294 @@
+{
+  "schema_version": 1,
+  "status": "passed-with-explicit-scope",
+  "platform": "Windows/MSVC",
+  "linux_verification_allowed": false,
+  "public_publication_allowed": false,
+  "full_gate": false,
+  "base_commit": "411cc24509df8dcace4fc298e00ff146f4b2a8ea",
+  "problem": "Incoming 3b603d715c reintroduced IAM db9cd845, unavailable to a fresh GitHub object fetch despite warm caches.",
+  "negative_probe": {
+    "status": "failed",
+    "platform": "Windows",
+    "rows": [
+      {
+        "repository": "https://github.com/awakenworks/awaken-foundation.git",
+        "commit": "2643d3f1caa114d0c651d4c867e4deed1374801c",
+        "exit_code": 0,
+        "seconds": 3.8195559000014327,
+        "log": "awaken-foundation.log",
+        "fresh_object_database": true,
+        "user_and_system_rewrites_disabled": true
+      },
+      {
+        "repository": "https://github.com/awakenworks/awaken-iam.git",
+        "commit": "db9cd845df6137d5111b9c721da7709fc0ad566f",
+        "exit_code": 128,
+        "seconds": 1.8069666000083089,
+        "log": "awaken-iam.log",
+        "fresh_object_database": true,
+        "user_and_system_rewrites_disabled": true
+      }
+    ]
+  },
+  "decision": "Restore the last Windows-qualified IAM cbfe337b/Foundation 247ee33a pair, preserving one Foundation source across the transitive IAM graph. No dependency code is published.",
+  "canonical_inputs": {
+    "Cargo.toml": "b5ab8f42c983997fe769a5a3074d5237ec0f7f1aafb489a3ab0233e7eae0dca3",
+    "Cargo.lock": "e7111c250ad538bfc4485d2f42936b4ba23cdf4263e1fd0d263f17508bbb22c1",
+    ".github/workflows/windows-native-services.yml": "7fba0079b1f504e56196f012a7d6e30b6e64e21b9374f528f98868588c03dae4",
+    "scripts/ci/check_dependency_fetch.py": "edce5ea8bdd658643a65218169f4a001a10c00c5f8bb7bbe549e834c48a7cfe4",
+    "scripts/ci/_dependency_fetch_tests.py": "d218b1d3f16a596b3fcfdd01853442e4c6ea9c02a51c2219ff36d3624b742889"
+  },
+  "cold_working": {
+    "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\dependency-repair-cold-working-v1\\result.json",
+    "sha256": "56380979366f79de1a8f089da0f144a3bcb3fc2d38e192bc3deb87773b50dd8e",
+    "receipt": {
+      "passed": true,
+      "mode": "cold-workspace-fetch",
+      "source": {
+        "revision": "411cc24509df8dcace4fc298e00ff146f4b2a8ea",
+        "tracked_patch_sha256": "e0ed44b1b7a74bcb29fd36f57acfa9eff975fb071198bcba921e76aa64aa76c6"
+      },
+      "platform": "Windows-11-10.0.26200-SP0",
+      "git_dependencies": [
+        {
+          "repository": "https://github.com/awakenworks/awaken-foundation",
+          "requested_revision": "247ee33a1d8f56f362217176886c346c87d207d9",
+          "resolved_revision": "247ee33a1d8f56f362217176886c346c87d207d9",
+          "stages": [
+            {
+              "command": [
+                "git",
+                "init",
+                "--bare",
+                "F:\\Codes\\awaken-1.0.0-dev\\target\\w9\\cold-dependency-piew9ol9\\git-0"
+              ],
+              "exit_code": 0,
+              "seconds": 0.09,
+              "log": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\dependency-repair-cold-working-v1\\git-0\\init.log"
+            },
+            {
+              "command": [
+                "git",
+                "-c",
+                "credential.helper=",
+                "-c",
+                "http.extraHeader=",
+                "--git-dir",
+                "F:\\Codes\\awaken-1.0.0-dev\\target\\w9\\cold-dependency-piew9ol9\\git-0",
+                "fetch",
+                "--no-tags",
+                "--depth=1",
+                "https://github.com/awakenworks/awaken-foundation",
+                "247ee33a1d8f56f362217176886c346c87d207d9"
+              ],
+              "exit_code": 0,
+              "seconds": 3.463,
+              "log": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\dependency-repair-cold-working-v1\\git-0\\fetch.log"
+            },
+            {
+              "command": [
+                "git",
+                "--git-dir",
+                "F:\\Codes\\awaken-1.0.0-dev\\target\\w9\\cold-dependency-piew9ol9\\git-0",
+                "rev-parse",
+                "--verify",
+                "FETCH_HEAD^{commit}"
+              ],
+              "exit_code": 0,
+              "seconds": 0.062,
+              "log": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\dependency-repair-cold-working-v1\\git-0\\resolved.log"
+            }
+          ],
+          "passed": true
+        },
+        {
+          "repository": "https://github.com/awakenworks/awaken-iam",
+          "requested_revision": "cbfe337b305721391641c35aaa51308b51eb5075",
+          "resolved_revision": "cbfe337b305721391641c35aaa51308b51eb5075",
+          "stages": [
+            {
+              "command": [
+                "git",
+                "init",
+                "--bare",
+                "F:\\Codes\\awaken-1.0.0-dev\\target\\w9\\cold-dependency-piew9ol9\\git-1"
+              ],
+              "exit_code": 0,
+              "seconds": 0.078,
+              "log": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\dependency-repair-cold-working-v1\\git-1\\init.log"
+            },
+            {
+              "command": [
+                "git",
+                "-c",
+                "credential.helper=",
+                "-c",
+                "http.extraHeader=",
+                "--git-dir",
+                "F:\\Codes\\awaken-1.0.0-dev\\target\\w9\\cold-dependency-piew9ol9\\git-1",
+                "fetch",
+                "--no-tags",
+                "--depth=1",
+                "https://github.com/awakenworks/awaken-iam",
+                "cbfe337b305721391641c35aaa51308b51eb5075"
+              ],
+              "exit_code": 0,
+              "seconds": 3.75,
+              "log": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\dependency-repair-cold-working-v1\\git-1\\fetch.log"
+            },
+            {
+              "command": [
+                "git",
+                "--git-dir",
+                "F:\\Codes\\awaken-1.0.0-dev\\target\\w9\\cold-dependency-piew9ol9\\git-1",
+                "rev-parse",
+                "--verify",
+                "FETCH_HEAD^{commit}"
+              ],
+              "exit_code": 0,
+              "seconds": 0.046,
+              "log": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\dependency-repair-cold-working-v1\\git-1\\resolved.log"
+            }
+          ],
+          "passed": true
+        },
+        {
+          "repository": "https://github.com/awakenworks/awaken-ui",
+          "requested_revision": "15ab31ef4943042ac4795c27f0e82c78586a214e",
+          "resolved_revision": "15ab31ef4943042ac4795c27f0e82c78586a214e",
+          "stages": [
+            {
+              "command": [
+                "git",
+                "init",
+                "--bare",
+                "F:\\Codes\\awaken-1.0.0-dev\\target\\w9\\cold-dependency-piew9ol9\\git-2"
+              ],
+              "exit_code": 0,
+              "seconds": 0.074,
+              "log": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\dependency-repair-cold-working-v1\\git-2\\init.log"
+            },
+            {
+              "command": [
+                "git",
+                "-c",
+                "credential.helper=",
+                "-c",
+                "http.extraHeader=",
+                "--git-dir",
+                "F:\\Codes\\awaken-1.0.0-dev\\target\\w9\\cold-dependency-piew9ol9\\git-2",
+                "fetch",
+                "--no-tags",
+                "--depth=1",
+                "https://github.com/awakenworks/awaken-ui",
+                "15ab31ef4943042ac4795c27f0e82c78586a214e"
+              ],
+              "exit_code": 0,
+              "seconds": 8.665,
+              "log": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\dependency-repair-cold-working-v1\\git-2\\fetch.log"
+            },
+            {
+              "command": [
+                "git",
+                "--git-dir",
+                "F:\\Codes\\awaken-1.0.0-dev\\target\\w9\\cold-dependency-piew9ol9\\git-2",
+                "rev-parse",
+                "--verify",
+                "FETCH_HEAD^{commit}"
+              ],
+              "exit_code": 0,
+              "seconds": 0.054,
+              "log": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\dependency-repair-cold-working-v1\\git-2\\resolved.log"
+            }
+          ],
+          "passed": true
+        }
+      ],
+      "cargo_fetch": {
+        "command": [
+          "cargo",
+          "fetch",
+          "--locked"
+        ],
+        "exit_code": 0,
+        "seconds": 102.479,
+        "log": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\dependency-repair-cold-working-v1\\cargo-fetch.log"
+      },
+      "isolation": {
+        "empty_git_object_stores": true,
+        "empty_cargo_home": true,
+        "global_and_system_git_config": "disabled",
+        "inherited_git_and_cargo_overrides": "removed"
+      },
+      "snapshot_sha256": "9e9c8d0b3f6caf1eb0eb15184a8db2798da43bd18b14968157de24e44aa6b607",
+      "cargo_home_initial_entries": [],
+      "cargo_version": {
+        "command": [
+          "cargo",
+          "--version",
+          "--verbose"
+        ],
+        "exit_code": 0,
+        "seconds": 0.148,
+        "log": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\dependency-repair-cold-working-v1\\cargo-version.log"
+      }
+    }
+  },
+  "cold_scope": "Fresh Git object stores, no user/system URL rewrites, empty CARGO_HOME and locked complete workspace dependency fetch; no cold compilation.",
+  "regression_design": [
+    "Unreachable exact revision blocks Cargo even after a valid probe.",
+    "Missing, duplicated, conditional, tolerated, cached, late, git-only or non-Windows native dependency admission is rejected.",
+    "The existing warm/unpublished fixture proves a locally cached object cannot qualify the public source."
+  ],
+  "working_unit_results": [
+    {
+      "stage": "working-check_dependency_fetch",
+      "exit_code": 0,
+      "seconds": 2.817577400011942,
+      "log": "rebased-recovery-dependency-working-check_dependency_fetch.log",
+      "sha256": "1c6036c4bf5126781b62a7f8efcd89832c4e1f2d10365935b8964f67653a2498",
+      "tests": 10,
+      "explicit_platform_skips": 0
+    },
+    {
+      "stage": "working-test_native_services",
+      "exit_code": 0,
+      "seconds": 1.844187399954535,
+      "log": "rebased-recovery-dependency-working-test_native_services.log",
+      "sha256": "eff5c74fb4bb0af845975901de2fec681c1f9defa7d3fbea1e2b8a82eea1ee5a",
+      "tests": 24,
+      "explicit_platform_skips": 0
+    },
+    {
+      "stage": "working-test_native_recovery",
+      "exit_code": 0,
+      "seconds": 1.3670367999584414,
+      "log": "rebased-recovery-dependency-working-test_native_recovery.log",
+      "sha256": "675f85786088ea359189c532b93a13d45c8d6936cd8e43c0217d499e8dce9260",
+      "tests": 16,
+      "explicit_platform_skips": 0
+    },
+    {
+      "stage": "working-check_rust_test_execution",
+      "exit_code": 0,
+      "seconds": 608.6060865999898,
+      "log": "rebased-recovery-dependency-working-check_rust_test_execution.log",
+      "sha256": "26b5b76d668d2afd8dc53794f32ec3ed914813206225638562d490c8bf1d0696",
+      "tests": 33,
+      "explicit_platform_skips": 8
+    }
+  ],
+  "recovery_evidence": {
+    "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-recovery-committed-20261023-v1\\result.json",
+    "sha256": "d8d4b06a0aae3e2000b86172c4b377a19b89fa553fd5b66af9c0794f2c305e69",
+    "revision": "4be42fd0da3154432c71dcb8171d718e4a961887",
+    "scope": "Pre-rebase exact-head evidence, not relabelled as the repaired commit."
+  },
+  "remaining": [
+    "Re-execute the actual repaired commit before normal push.",
+    "Twenty legacy PostgreSQL command entries still need named native profiles.",
+    "Complete current Windows workspace/E2E qualification remains pending.",
+    "Hosted CI was not dispatched because public publication is disallowed."
+  ]
+}

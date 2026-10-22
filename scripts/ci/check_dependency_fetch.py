@@ -64,6 +64,30 @@ def workflow_errors(text: str) -> list[str]:
     return errors
 
 
+
+def native_workflow_errors(text: str) -> list[str]:
+    """Cold dependency admission must precede every native service build/test."""
+    command = "run: python scripts/ci/check_dependency_fetch.py --output target/test-timings/native-dependency-fetch"
+    match = re.search(r"(?ms)^  native_services:\n(.*?)(?=^  \S|\Z)", text)
+    body = match.group(1) if match else ""
+    # A single step owns admission. Its failure must block all following work;
+    # the always-upload step only retains evidence and never grants admission.
+    steps = re.split(r"(?m)^      - ", body)
+    selected = [step for step in steps if "check_dependency_fetch.py" in step]
+    if len(selected) != 1 or selected[0].count(command) != 1:
+        return ["native services must require one complete cold dependency fetch"]
+    step = selected[0]
+    first_native = re.search(r"(?m)^.*run: python scripts/ci/(?:test_native|check_native_services|install_windows_services)", body)
+    if (re.search(r"(?m)^    (?:if|continue-on-error):", body)
+            or re.search(r"(?m)^        (?:if|continue-on-error):", step)
+            or "continue-on-error:" in body or "--git-only" in step
+            or any(value in body for value in ("rust-cache", "actions/cache"))
+            or body.count("runs-on: windows-2025") != 1
+            or first_native is None or body.index(command) > first_native.start()):
+        return ["native cold dependency admission must be unconditional and precede uncached Windows verification"]
+    return []
+
+
 def clean_environment() -> dict[str, str]:
     return {**{key: value for key, value in os.environ.items()
                if not key.startswith(("GIT_", "CARGO_"))},
