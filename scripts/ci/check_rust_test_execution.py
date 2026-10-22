@@ -421,8 +421,9 @@ esac
 
     @unittest.skipUnless(os.name == "nt", "native Windows Job and Cargo boundary")
     def test_windows_cold_build_execution_budget_and_owned_tree_cleanup(self) -> None:
-        # W-build8s > execution6s. Build timeout starts no list/run; a slow
-        # execution still expires124 and terminates both retained OS handles.
+        # Windows process startup and receipt finalization need headroom under
+        # parallel CI load. Keep build > execution so a shared budget fails;
+        # timed-out rows still require 124 and both owned processes terminated.
         import ctypes
         from ctypes import wintypes
         from _native_shell import bash_executable
@@ -432,6 +433,10 @@ esac
         kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
         kernel.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
         kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        execution_seconds = 20
+        preparation_seconds = execution_seconds + 2
+        build_seconds = preparation_seconds + 30
+        outer_seconds = build_seconds + execution_seconds + 45
         for row, expected in (("fast", 0), ("build-timeout", 124), ("execution-timeout", 124)):
             with self.subTest(row=row), tempfile.TemporaryDirectory() as temporary:
                 fixture = Path(temporary); self.runner_fixture(fixture)
@@ -445,24 +450,24 @@ esac
                     body += "exec " + shlex.quote(Path(sys.executable).as_posix()) + " " + shlex.quote(tree.as_posix()) + ' "$CARGO_TARGET_DIR/ready"\n'
                 else: body += "echo 'test critical ... ok'\necho 'test result: ok. 1 passed; 0 failed; 0 ignored;'\n"
                 values = self.cargo_fixture(fixture, body)
-                values.update(PREPARATION_DELAY="8", AWAKEN_REQUIRED_TEST_BUILD_TIMEOUT_SECONDS="3" if row == "build-timeout" else "25",
-                              AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="6", AWAKEN_NATIVE_BASH=bash_executable())
+                values.update(PREPARATION_DELAY=str(preparation_seconds), AWAKEN_REQUIRED_TEST_BUILD_TIMEOUT_SECONDS="3" if row == "build-timeout" else str(build_seconds),
+                              AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS=str(execution_seconds), AWAKEN_NATIVE_BASH=bash_executable())
                 entry = fixture/"invoke.sh"
                 entry.write_text("source scripts/ci/_rust_test_execution.sh\nrun_required_rust_tests -p critical --lib critical --require-case=critical\n", newline="\n")
-                process = subprocess.Popen([sys.executable, str(fixture/"scripts/ci/deadline.py"), "55", "--",
+                process = subprocess.Popen([sys.executable, str(fixture/"scripts/ci/deadline.py"), str(outer_seconds), "--",
                                             bash_executable(), entry.as_posix()], cwd=fixture, env=values,
                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 handles = []
                 try:
                     if row == "execution-timeout":
-                        ready = fixture/"target/ready"; until = time.monotonic()+35
+                        ready = fixture/"target/ready"; until = time.monotonic()+build_seconds+execution_seconds
                         # awaken-allow(wait): retain actual child process handles before the execution deadline kills the owned Job.
                         while not ready.exists() and process.poll() is None and time.monotonic() < until: time.sleep(.01)
                         self.assertTrue(ready.exists(), "owned execution did not start")
                         for pid in json.loads(ready.read_text()):
                             handle = kernel.OpenProcess(0x00100001, False, pid)
                             self.assertTrue(handle, "cannot retain owned process handle"); handles.append(handle)
-                    output = process.communicate(timeout=60)
+                    output = process.communicate(timeout=outer_seconds+5)
                     self.assertEqual(process.returncode, expected, output)
                     directory = next((fixture/"target/test-timings").glob("rust-execution.*"))
                     if row == "build-timeout":
@@ -470,7 +475,13 @@ esac
                         self.assertNotEqual(json.loads((directory/"build.json").read_text())["status"], "built")
                     else:
                         self.assertEqual(json.loads((directory/"build.json").read_text())["status"], "built")
-                        self.assertEqual(json.loads((directory/"results.json").read_text())["exit_code"], expected)
+                        result = json.loads((directory/"results.json").read_text())
+                        self.assertEqual(result["exit_code"], expected)
+                        if row == "fast":
+                            self.assertEqual(result["status"], "passed")
+                            self.assertEqual(result["selected_cases"], ["critical"])
+                            self.assertEqual(result["executed_cases"], [["critical", "ok"]])
+                            self.assertEqual(result["errors"], [])
                     for handle in handles: self.assertEqual(kernel.WaitForSingleObject(handle, 5000), 0)
                 finally:
                     if process.poll() is None: process.kill(); process.communicate(timeout=10)
