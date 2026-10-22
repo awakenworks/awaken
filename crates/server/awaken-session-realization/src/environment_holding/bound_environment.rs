@@ -389,7 +389,7 @@ impl EnvironmentHolding {
             ));
         }
         let provider = self.projected_session_environment_provider(thread, None)?;
-        let (handle, spec, resident, candidate) = exec.validated_session_environment_adoption(
+        let validated = exec.validated_session_environment_adoption(
             peers,
             thread,
             binding,
@@ -397,13 +397,12 @@ impl EnvironmentHolding {
             resolved_resources,
             None,
         )?;
-        let (resident, committed_candidate) = match candidate {
-            Some(candidate) => (
-                Some(candidate.environment.clone()),
-                candidate.durable_identity().is_some().then_some(candidate),
-            ),
-            None => (resident, None),
-        };
+        let (handle, spec, retained) = validated.into_parts();
+        let resident = retained
+            .as_ref()
+            .map(|retained| retained.environment().clone());
+        let committed_candidate = retained
+            .and_then(super::lifecycle::RetainedAdoptionEnvironment::into_committed_candidate);
         let observation = provider
             .adoption()
             .observe_effective(

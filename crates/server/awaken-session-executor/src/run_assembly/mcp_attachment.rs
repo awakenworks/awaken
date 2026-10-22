@@ -25,8 +25,8 @@ impl RunAssembly {
         self.mcp
             .stage_attachment(
                 &self.installed_sessions,
-                self,
-                self.mcp_credential_materialization(),
+                Arc::new(self.clone()),
+                Self::mcp_credential_materialization,
                 request,
             )
             .await
@@ -141,11 +141,11 @@ impl awaken_session_mcp::McpStagingSession for RunAssembly {
             .flatten())
     }
 
-    async fn realize_environment(&self, session: &str, agent: &str) -> Result<(), String> {
+    async fn realize_environment(&self, session: &str, agent: &str) -> Result<(), RunError> {
         self.ctx_for(session, Some(agent))
             .await
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(to_run_error)
     }
 }
 
@@ -159,8 +159,8 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RunAssembly {
         self.mcp
             .stage_assigned_attachment(
                 &self.installed_sessions,
-                self,
-                self.mcp_credential_materialization(),
+                Arc::new(self.clone()),
+                Self::mcp_credential_materialization,
                 request,
             )
             .await

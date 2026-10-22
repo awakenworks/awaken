@@ -101,6 +101,9 @@ fn map_environment_application_error(error: EnvironmentApplicationError) -> Wire
             not_found("sandbox execution policy")
         }
         EnvironmentApplicationError::Create(CreateEnvironmentError::IdempotencyConflict)
+        | EnvironmentApplicationError::Create(
+            CreateEnvironmentError::OriginalResultUnavailable { .. },
+        )
         | EnvironmentApplicationError::BuiltinImmutable
         | EnvironmentApplicationError::Archived
         | EnvironmentApplicationError::Store(
@@ -123,7 +126,8 @@ fn map_environment_application_error(error: EnvironmentApplicationError) -> Wire
         | EnvironmentApplicationError::Create(CreateEnvironmentError::Store(_))
         | EnvironmentApplicationError::Registration(_)
         | EnvironmentApplicationError::Store(EnvironmentStoreError::Backend(_))
-        | EnvironmentApplicationError::RegistrationInvariant(_) => (
+        | EnvironmentApplicationError::RegistrationInvariant(_)
+        | EnvironmentApplicationError::CommittedRegistrationPending { .. } => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse::new("api_error", message)),
         ),
@@ -131,6 +135,39 @@ fn map_environment_application_error(error: EnvironmentApplicationError) -> Wire
 }
 
 type WireError = (StatusCode, Json<ErrorResponse>);
+
+/// Preserve the Managed body/status while preventing SDK automatic retries of
+/// an authoring command whose definition transaction already committed.
+fn map_environment_command_error(error: EnvironmentApplicationError) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    let committed = error.committed_environment_id().map(str::to_owned);
+    let revision = error
+        .committed_environment()
+        .map(|environment| environment.revision.0);
+    let mut response = map_environment_application_error(error).into_response();
+    if let Some(environment_id) = committed {
+        response.headers_mut().insert(
+            "x-awaken-command-status",
+            axum::http::HeaderValue::from_static("committed"),
+        );
+        if let Ok(value) = axum::http::HeaderValue::from_str(&environment_id) {
+            response
+                .headers_mut()
+                .insert("x-awaken-environment-id", value);
+        }
+        if let Some(revision) = revision {
+            response.headers_mut().insert(
+                "x-awaken-environment-revision",
+                axum::http::HeaderValue::from(revision),
+            );
+        }
+        response.headers_mut().insert(
+            "x-should-retry",
+            axum::http::HeaderValue::from_static("false"),
+        );
+    }
+    response
+}
 
 fn map_environment_projection_error(message: &'static str) -> WireError {
     (
@@ -162,9 +199,10 @@ async fn create_env(
     State(state): State<Arc<EnvironmentApplication>>,
     headers: HeaderMap,
     ManagedJson(params): ManagedJson<EnvironmentCreateParams>,
-) -> Result<Json<Environment>, WireError> {
+) -> Result<Json<Environment>, axum::response::Response> {
     let config = canonical_environment_config(params.config.unwrap_or_default());
-    let command_id = environment_command_id(&headers)?;
+    let command_id =
+        environment_command_id(&headers).map_err(axum::response::IntoResponse::into_response)?;
     let item = state
         .create(awaken_environment_contract::CreateEnvironmentCommand {
             command_id,
@@ -176,10 +214,12 @@ async fn create_env(
             sandbox_policy: None,
         })
         .await
-        .map_err(map_environment_application_error)?;
-    Ok(Json(
-        crate::env_registry::project_env(&item).map_err(map_environment_projection_error)?,
-    ))
+        .map_err(map_environment_command_error)?;
+    Ok(Json(crate::env_registry::project_env(&item).map_err(
+        |error| {
+            axum::response::IntoResponse::into_response(map_environment_projection_error(error))
+        },
+    )?))
 }
 
 fn environment_command_id(headers: &HeaderMap) -> Result<String, WireError> {
@@ -309,7 +349,7 @@ async fn update_env(
     State(state): State<Arc<EnvironmentApplication>>,
     Path(id): Path<String>,
     ManagedJson(params): ManagedJson<EnvironmentUpdateParams>,
-) -> Result<Json<Environment>, WireError> {
+) -> Result<Json<Environment>, axum::response::Response> {
     let config = params.config.map(|config| match config {
         None => EnvironmentConfigMutation::Replace(Default::default()),
         Some(config) => environment_config_mutation(config),
@@ -330,10 +370,12 @@ async fn update_env(
     let item = state
         .update(&id, patch)
         .await
-        .map_err(map_environment_application_error)?;
-    Ok(Json(
-        crate::env_registry::project_env(&item).map_err(map_environment_projection_error)?,
-    ))
+        .map_err(map_environment_command_error)?;
+    Ok(Json(crate::env_registry::project_env(&item).map_err(
+        |error| {
+            axum::response::IntoResponse::into_response(map_environment_projection_error(error))
+        },
+    )?))
 }
 
 fn environment_config_mutation(config: EnvironmentConfigUpdateParams) -> EnvironmentConfigMutation {
@@ -470,11 +512,11 @@ fn canonical_environment_config(
 async fn delete_env(
     State(state): State<Arc<EnvironmentApplication>>,
     Path(id): Path<String>,
-) -> Result<Json<DeletedEnvironment>, WireError> {
+) -> Result<Json<DeletedEnvironment>, axum::response::Response> {
     state
         .delete(&id)
         .await
-        .map_err(map_environment_application_error)?;
+        .map_err(map_environment_command_error)?;
     Ok(Json(DeletedEnvironment {
         id,
         object_type: "environment_deleted",
@@ -484,19 +526,83 @@ async fn delete_env(
 async fn archive_env(
     State(state): State<Arc<EnvironmentApplication>>,
     Path(id): Path<String>,
-) -> Result<Json<Environment>, WireError> {
+) -> Result<Json<Environment>, axum::response::Response> {
     let item = state
         .archive(&id)
         .await
-        .map_err(map_environment_application_error)?;
-    Ok(Json(
-        crate::env_registry::project_env(&item).map_err(map_environment_projection_error)?,
-    ))
+        .map_err(map_environment_command_error)?;
+    Ok(Json(crate::env_registry::project_env(&item).map_err(
+        |error| {
+            axum::response::IntoResponse::into_response(map_environment_projection_error(error))
+        },
+    )?))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn committed_pending_is_wire_compatible_and_prevents_automatic_command_retry() {
+        let mut environment = awaken_environment_application::builtin_local_environment();
+        environment.id = "env_committed".into();
+        environment.revision = awaken_environment_contract::EnvironmentRevision(7);
+        let response = map_environment_command_error(EnvironmentApplicationError::CommittedRegistrationPending {
+            environment: Box::new(environment),
+            cause: Box::new(EnvironmentApplicationError::Registration(
+                awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError::Unavailable("private-upstream-diagnostic".into()),
+            )),
+        });
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()["x-should-retry"], "false");
+        assert_eq!(response.headers()["x-awaken-command-status"], "committed");
+        assert_eq!(
+            response.headers()["x-awaken-environment-id"],
+            "env_committed"
+        );
+        assert_eq!(response.headers()["x-awaken-environment-revision"], "7");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["type"], "api_error");
+        let message = value["error"]["message"].as_str().unwrap();
+        assert!(message.contains("env_committed") && message.contains("revision 7"));
+        assert!(!message.contains("private-upstream-diagnostic"));
+        let rejected = map_environment_command_error(EnvironmentApplicationError::Store(
+            awaken_environment_contract::EnvironmentStoreError::Backend("before commit".into()),
+        ));
+        assert_eq!(rejected.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(rejected.headers().get("x-should-retry").is_none());
+        assert!(rejected.headers().get("x-awaken-command-status").is_none());
+        let legacy = map_environment_command_error(EnvironmentApplicationError::Create(
+            awaken_environment_contract::CreateEnvironmentError::OriginalResultUnavailable {
+                environment_id: "env_legacy".into(),
+            },
+        ));
+        assert_eq!(legacy.status(), StatusCode::CONFLICT);
+        assert_eq!(legacy.headers()["x-should-retry"], "false");
+        assert_eq!(legacy.headers()["x-awaken-command-status"], "committed");
+        assert_eq!(legacy.headers()["x-awaken-environment-id"], "env_legacy");
+        assert!(
+            legacy
+                .headers()
+                .get("x-awaken-environment-revision")
+                .is_none(),
+            "no fabricated original revision"
+        );
+        let bytes = axum::body::to_bytes(legacy.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["type"], "conflict_error");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("retrieve the current definition")
+        );
+    }
 
     #[test]
     fn sandbox_policy_application_errors_keep_their_wire_taxonomy() {

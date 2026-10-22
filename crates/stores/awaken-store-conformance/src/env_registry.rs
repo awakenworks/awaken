@@ -695,7 +695,40 @@ pub async fn idempotent_create_decision_table<
         panic!("R1 must create")
     };
     let replayed = r.create_once(command.clone()).await.unwrap();
-    assert_eq!(replayed.item().id, created.id, "R2 exact replay");
+    assert_eq!(replayed.item(), &created, "R2 exact replay");
+    let updated = r
+        .update(
+            &created.id,
+            created.revision,
+            EnvUpdate {
+                name: Some("later".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let intents = r
+        .registration_intents(EnvironmentRegistrationIntentFilter::All)
+        .await
+        .unwrap();
+    assert_eq!(
+        r.create_once(command.clone()).await.unwrap().item(),
+        &created,
+        "R4 retry returns its own original facts after an update"
+    );
+    assert_eq!(
+        r.get(&created.id).await.unwrap().unwrap(),
+        updated,
+        "R4 retry cannot rewind the authoritative head"
+    );
+    assert_eq!(
+        r.registration_intents(EnvironmentRegistrationIntentFilter::All)
+            .await
+            .unwrap(),
+        intents,
+        "R4 retry cannot create an intent"
+    );
     let mut conflicting = command;
     conflicting.name = "different".into();
     assert_eq!(
@@ -710,6 +743,28 @@ pub async fn idempotent_create_decision_table<
             .len(),
         1,
         "R1-R3 one effect"
+    );
+    let archived = r.archive(&created.id).await.unwrap().unwrap();
+    assert_eq!(
+        r.create_once(CreateEnvironmentCommand {
+            command_id: "command-1".into(),
+            name: "stable".into(),
+            description: None,
+            metadata: Default::default(),
+            scope: None,
+            config: EnvironmentConfig::SelfHosted,
+            sandbox_policy: None,
+        })
+        .await
+        .unwrap()
+        .item(),
+        &created,
+        "R5 archive does not rewrite a command receipt"
+    );
+    assert_eq!(
+        r.get(&created.id).await.unwrap().unwrap(),
+        archived,
+        "R5 retry cannot resurrect an archived definition"
     );
 }
 

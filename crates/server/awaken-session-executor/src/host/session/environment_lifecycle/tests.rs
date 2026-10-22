@@ -4,6 +4,8 @@ use crate::environment_holding::lifecycle::owner_decisions::ProjectedEnvironment
 use crate::environment_owner::UnboundSessionEnvironmentOrigin;
 use awaken_session_environment::test_support::SandboxEnvironmentAccess;
 
+#[path = "tests/adoption_validation_tests.rs"]
+mod adoption_validation_tests;
 #[path = "tests/candidate_adoption.rs"]
 mod candidate_adoption;
 #[path = "tests/checkpoint_admission.rs"]

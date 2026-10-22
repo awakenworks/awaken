@@ -49,6 +49,36 @@ pub enum EnvironmentApplicationError {
     PolicyStoreUnavailable,
     #[error("Environment registration outbox invariant failed: {0}")]
     RegistrationInvariant(String),
+    /// The definition transaction committed. Recovery must deliver its exact
+    /// outbox intent rather than repeat an unkeyed authoring command.
+    #[error("Environment {} revision {} was committed; executable registration is pending", .environment.id, .environment.revision.0)]
+    CommittedRegistrationPending {
+        environment: Box<EnvItem>,
+        #[source]
+        cause: Box<EnvironmentApplicationError>,
+    },
+}
+
+impl EnvironmentApplicationError {
+    /// Identity known to have committed. A legacy command can retain this
+    /// identity even when its original creation snapshot is unavailable.
+    pub fn committed_environment_id(&self) -> Option<&str> {
+        match self {
+            Self::CommittedRegistrationPending { environment, .. } => Some(&environment.id),
+            Self::Create(CreateEnvironmentError::OriginalResultUnavailable { environment_id }) => {
+                Some(environment_id)
+            }
+            _ => None,
+        }
+    }
+
+    /// Original committed facts, even if a later command advanced the head.
+    pub fn committed_environment(&self) -> Option<&EnvItem> {
+        match self {
+            Self::CommittedRegistrationPending { environment, .. } => Some(environment),
+            _ => None,
+        }
+    }
 }
 
 pub struct EnvironmentApplication {
@@ -117,6 +147,19 @@ impl EnvironmentApplication {
         )
     }
 
+    async fn deliver_committed_revision(
+        &self,
+        item: EnvItem,
+    ) -> Result<EnvItem, EnvironmentApplicationError> {
+        match self.delivery.deliver_revision(&item, false).await {
+            Ok(()) => Ok(item),
+            Err(cause) => Err(EnvironmentApplicationError::CommittedRegistrationPending {
+                environment: Box::new(item),
+                cause: Box::new(cause),
+            }),
+        }
+    }
+
     pub async fn get(
         &self,
         environment_id: &str,
@@ -155,8 +198,7 @@ impl EnvironmentApplication {
         )
         .await?;
         let item = self.definitions.create_once(command).await?.into_item();
-        self.delivery.deliver_revision(&item, false).await?;
-        Ok(item)
+        self.deliver_committed_revision(item).await
     }
 
     pub async fn update(
@@ -183,8 +225,7 @@ impl EnvironmentApplication {
         let item = self
             .update_active(environment_id, expected_revision, patch)
             .await?;
-        self.delivery.deliver_revision(&item, false).await?;
-        Ok(item)
+        self.deliver_committed_revision(item).await
     }
 
     pub async fn archive(
@@ -197,8 +238,7 @@ impl EnvironmentApplication {
             .archive(environment_id)
             .await?
             .ok_or(EnvironmentApplicationError::NotFound)?;
-        self.delivery.deliver_revision(&item, false).await?;
-        Ok(item)
+        self.deliver_committed_revision(item).await
     }
 
     pub async fn delete(&self, environment_id: &str) -> Result<(), EnvironmentApplicationError> {
@@ -241,8 +281,7 @@ impl EnvironmentApplication {
                 },
             )
             .await?;
-        self.delivery.deliver_revision(&item, false).await?;
-        Ok(item)
+        self.deliver_committed_revision(item).await
     }
 
     async fn update_active(
@@ -743,7 +782,10 @@ mod tests {
             })
             .await;
         assert!(
-            matches!(result, Err(EnvironmentApplicationError::Registration(_))),
+            matches!(
+                result,
+                Err(EnvironmentApplicationError::CommittedRegistrationPending { .. })
+            ),
             "R1"
         );
         assert_eq!(
@@ -820,7 +862,7 @@ mod tests {
         assert!(
             matches!(
                 application.create(create_command("ambiguous", "v1")).await,
-                Err(EnvironmentApplicationError::Store(_))
+                Err(EnvironmentApplicationError::CommittedRegistrationPending { .. })
             ),
             "A1"
         );
@@ -866,7 +908,7 @@ mod tests {
         assert!(
             matches!(
                 application.archive(&created.id).await,
-                Err(EnvironmentApplicationError::Store(_))
+                Err(EnvironmentApplicationError::CommittedRegistrationPending { .. })
             ),
             "A4 first terminal delivery succeeded but ack failed"
         );
@@ -1015,7 +1057,7 @@ mod tests {
         assert!(
             matches!(
                 application.archive(&created.id).await,
-                Err(EnvironmentApplicationError::Registration(_))
+                Err(EnvironmentApplicationError::CommittedRegistrationPending { .. })
             ),
             "A2"
         );
@@ -1506,5 +1548,128 @@ mod tests {
             );
             assert!(work.list(&item.id).await.unwrap().is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn post_commit_failure_retains_original_facts_after_a_later_command_advances_the_head() {
+        let envs = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+            awaken_time::system_clock(),
+        ));
+        let registrar = Arc::new(RecordingRegistrar::default());
+        let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
+        registrar.fail_registration.store(true, Ordering::SeqCst);
+        let command = create_command("committed-command", "original");
+        let error = application.create(command.clone()).await.unwrap_err();
+        let original = error
+            .committed_environment()
+            .expect("authoritative commit receipt")
+            .clone();
+        assert_eq!(original.revision, EnvironmentRevision(1));
+        assert_eq!(original.name, "original");
+        assert_eq!(envs.get(&original.id).await.unwrap().unwrap(), original);
+        registrar.fail_registration.store(false, Ordering::SeqCst);
+        let later = application
+            .update(
+                &original.id,
+                EnvUpdate {
+                    name: Some("later".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(later.revision, EnvironmentRevision(2));
+        assert_eq!(error.committed_environment(), Some(&original));
+        let replay = application.create(command).await.unwrap();
+        assert_eq!(
+            replay, original,
+            "the original command retains its own committed result"
+        );
+        assert_eq!(application.get(&original.id).await.unwrap().unwrap(), later);
+        if let EnvironmentApplicationError::CommittedRegistrationPending { cause, .. } = error {
+            assert!(matches!(
+                *cause,
+                EnvironmentApplicationError::Registration(_)
+            ));
+        } else {
+            panic!("a post-commit delivery failure must retain the exact committed outcome");
+        }
+    }
+
+    #[tokio::test]
+    async fn update_and_archive_expose_committed_pending_outcomes_and_recover_the_same_intents() {
+        let envs = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+            awaken_time::system_clock(),
+        ));
+        let registrar = Arc::new(RecordingRegistrar::default());
+        let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
+        let original = application
+            .create(create_command("mutations", "original"))
+            .await
+            .unwrap();
+        registrar.fail_registration.store(true, Ordering::SeqCst);
+        let update = application
+            .update(
+                &original.id,
+                EnvUpdate {
+                    name: Some("updated".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        let updated = update.committed_environment().unwrap();
+        assert_eq!(updated.revision, EnvironmentRevision(2));
+        assert_eq!(updated.name, "updated");
+        assert_eq!(
+            envs.get(&original.id).await.unwrap().as_ref(),
+            Some(updated)
+        );
+        registrar.fail_withdrawal.store(true, Ordering::SeqCst);
+        let archive = application.archive(&original.id).await.unwrap_err();
+        let archived = archive.committed_environment().unwrap();
+        assert_eq!(archived.revision, EnvironmentRevision(3));
+        assert!(archived.archived_at.is_some());
+        let repeated = application.archive(&original.id).await.unwrap_err();
+        assert_eq!(repeated.committed_environment(), Some(archived));
+        registrar.fail_registration.store(false, Ordering::SeqCst);
+        registrar.fail_withdrawal.store(false, Ordering::SeqCst);
+        application
+            .registration_delivery()
+            .drain_registration_intents()
+            .await
+            .unwrap();
+        assert!(
+            envs.registration_intents(EnvironmentRegistrationIntentFilter::Pending)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            envs.get(&original.id).await.unwrap().as_ref(),
+            Some(archived)
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_commit_rejection_never_reports_a_committed_environment() {
+        let envs = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+            awaken_time::system_clock(),
+        ));
+        let application = EnvironmentApplication::new(
+            envs.clone(),
+            Arc::new(RecordingRegistrar::default()),
+            None,
+        );
+        let error = application
+            .update(BUILTIN_LOCAL_ENVIRONMENT_ID, EnvUpdate::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            EnvironmentApplicationError::BuiltinImmutable
+        ));
+        assert!(error.committed_environment().is_none());
+        assert!(envs.list_all().await.unwrap().is_empty());
     }
 }
