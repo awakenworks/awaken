@@ -381,6 +381,32 @@ esac
             values.update(AWAKEN_FIXTURE_PROGRAM=bash_executable(), AWAKEN_FIXTURE_SCRIPT=str(cargo))
         return values
 
+    def test_subprocess_bytecode_is_not_source_drift_but_source_edits_are(self) -> None:
+        # A fresh child imports the copied runner after its source snapshot.
+        # Interpreter caches must not change that snapshot; authored bytes must.
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary)
+            self.runner_fixture(fixture)
+            values = self.cargo_fixture(fixture, "exit 99\n")
+            values.pop("PYTHONDONTWRITEBYTECODE", None)
+            values.pop("PYTHONPYCACHEPREFIX", None)
+            for mutate, expected in ((False, 0), (True, 1)):
+                with self.subTest(mutate=mutate):
+                    values["MUTATE_PREPARATION"] = str(int(mutate))
+                    directory = fixture / "target" / ("edited" if mutate else "original")
+                    directory.mkdir()
+                    receipt = directory / "build.json"
+                    result = subprocess.run(
+                        [sys.executable, str(fixture / "scripts/ci/check_rust_test_execution.py"),
+                         "--prepare", "--build-log", str(directory / "build.log"),
+                         "--receipt", str(receipt), "--", "-p", "critical", "--lib"],
+                        cwd=fixture, env=values, capture_output=True, timeout=90,
+                    )
+                    self.assertEqual(result.returncode, expected, (result.stdout, result.stderr))
+                    self.assertEqual(json.loads(receipt.read_text())["status"],
+                                     "failed" if mutate else "built")
+                    self.assertTrue(list((fixture / "scripts/ci/__pycache__").glob("*.pyc")))
+
     def test_prepared_graph_refuses_compile_environment_config_and_tool_drift(self) -> None:
         import rust_test_plan
         from _required_build_context import build_context

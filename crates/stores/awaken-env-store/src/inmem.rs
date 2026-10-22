@@ -130,9 +130,12 @@ impl EnvironmentDefinitionStore for InMemoryEnvRegistry {
             if existing_fingerprint != &fingerprint {
                 return Err(CreateEnvironmentError::IdempotencyConflict);
             }
-            let item =
-                state.envs.get(environment_id).cloned().ok_or_else(|| {
-                    CreateEnvironmentError::Store("command target is missing".into())
+            let item = state
+                .revisions
+                .get(&(environment_id.clone(), EnvironmentRevision(1)))
+                .cloned()
+                .ok_or_else(|| CreateEnvironmentError::OriginalResultUnavailable {
+                    environment_id: environment_id.clone(),
                 })?;
             return Ok(CreateEnvironmentOutcome::Replayed(item));
         }

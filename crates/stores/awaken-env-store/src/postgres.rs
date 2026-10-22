@@ -157,13 +157,13 @@ impl EnvironmentDefinitionStore for PostgresEnvRegistry {
             }
             let environment_id: String = row.get("env_id");
             let item = sqlx::query(&format!(
-                "SELECT {COLS} FROM env_registry_env WHERE env_id = $1"
+                "SELECT {COLS} FROM env_registry_revision WHERE env_id = $1 AND revision = 1"
             ))
-            .bind(environment_id)
+            .bind(&environment_id)
             .fetch_optional(&mut *tx)
             .await
             .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?
-            .ok_or_else(|| CreateEnvironmentError::Store("command target is missing".into()))?;
+            .ok_or(CreateEnvironmentError::OriginalResultUnavailable { environment_id })?;
             let item =
                 pg_row(&item).map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
             return Ok(CreateEnvironmentOutcome::Replayed(item));

@@ -150,7 +150,7 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
                     owned: RetiringEnvironmentOwner::Bound(initial.clone()),
                 });
         });
-    let (_, _, resident, candidate) = host
+    let validated = host
         .realization_executor
         .environments()
         .validated_session_environment_adoption(
@@ -163,7 +163,7 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
         )
         .expect("R1 trusted later Resource receipt");
     assert!(
-        resident.is_none() && candidate.is_none(),
+        validated.retained_environment().is_none(),
         "R1 old Arc is not B2"
     );
     assert!(

@@ -20,6 +20,9 @@ use crate::schema::{BUNDLE_ID, converged_memory_store_bundle, selected_memory_st
 
 const NS: &str = "memory_store";
 
+#[cfg(test)]
+mod transaction_crash_tests;
+
 /// Errors from opening or migrating the store.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {

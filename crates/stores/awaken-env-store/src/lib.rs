@@ -484,10 +484,20 @@ impl EnvironmentDefinitionStore for SqliteEnvRegistry {
             if existing_fingerprint != fingerprint {
                 return Err(CreateEnvironmentError::IdempotencyConflict);
             }
-            let item = Self::read(&mut tx, &environment_id)
-                .await
+            let row = sqlx::query(&format!(
+                "SELECT {COLS} FROM env_registry_revision WHERE env_id = ?1 AND revision = 1"
+            ))
+            .bind(&environment_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|error| store(&error))?
+            .ok_or_else(|| CreateEnvironmentError::OriginalResultUnavailable {
+                environment_id: environment_id.clone(),
+            })?;
+            let item = sqlite_row(&row)
                 .map_err(|error| store(&error))?
-                .ok_or_else(|| CreateEnvironmentError::Store("command target is missing".into()))?;
+                .try_into_item()
+                .map_err(|error| store(&error))?;
             return Ok(CreateEnvironmentOutcome::Replayed(item));
         }
         let next: i64 =
@@ -786,6 +796,69 @@ mod tests {
                 InvalidEnvironmentConfig::InvalidPackageRequirement { manager: "npm" }
             )
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_create_without_original_history_reports_identity_without_replaying_the_head() {
+        // V4 retained command fingerprints before V5/V6 introduced history.
+        // Upgrade a real V4 database whose head advanced: the original v1
+        // cannot be reconstructed from v2, and retry must leave every fact intact.
+        let pool = EmbeddedSqlite::memory().open().await.unwrap();
+        let full = env_bundle().unwrap();
+        let legacy =
+            MigrationBundle::new(full.bundle_id(), full.migrations()[..4].to_vec()).unwrap();
+        SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
+            .unwrap()
+            .run_bundle(&legacy)
+            .await
+            .unwrap();
+        let command = CreateEnvironmentCommand {
+            command_id: "legacy-create".into(),
+            name: "original".into(),
+            description: None,
+            metadata: Default::default(),
+            scope: None,
+            config: config(),
+            sandbox_policy: None,
+        };
+        sqlx::query("INSERT INTO env_registry_env (env_id, seq, name, description, metadata_json, config_json, revision) VALUES ('env_legacy', 0, 'later', '', '{}', ?1, 2)")
+            .bind(config_str(&command.config).unwrap()).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO env_registry_create_command (command_id, fingerprint, env_id) VALUES (?1, ?2, 'env_legacy')")
+            .bind(&command.command_id).bind(command.fingerprint()).execute(&pool).await.unwrap();
+        let registry = SqliteEnvRegistry::from_pool(pool, awaken_time::system_clock())
+            .await
+            .unwrap();
+        let head = registry.get("env_legacy").await.unwrap().unwrap();
+        let intents = registry
+            .registration_intents(EnvironmentRegistrationIntentFilter::All)
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                registry.create_once(command.clone()).await.unwrap_err(),
+                CreateEnvironmentError::OriginalResultUnavailable {
+                    environment_id: head.id.clone()
+                }
+            );
+            assert_eq!(
+                registry.get("env_legacy").await.unwrap(),
+                Some(head.clone())
+            );
+            assert!(
+                registry
+                    .get_revision("env_legacy", EnvironmentRevision(1))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                registry
+                    .registration_intents(EnvironmentRegistrationIntentFilter::All)
+                    .await
+                    .unwrap(),
+                intents
+            );
+        }
     }
 
     #[tokio::test]

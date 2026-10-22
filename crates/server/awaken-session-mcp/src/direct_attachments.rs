@@ -44,8 +44,8 @@ impl<S: SessionMcpStates + 'static, C: McpStagingSession + 'static> McpAttachmen
         self.mcp
             .stage_attachment(
                 &self.states,
-                self.context.as_ref(),
-                (self.credentials)(self.context.as_ref()),
+                self.context.clone(),
+                self.credentials,
                 request,
             )
             .await
