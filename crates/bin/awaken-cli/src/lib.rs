@@ -1158,13 +1158,19 @@ mod process_role_surface_tests {
         let mut coordinator_deployment =
             config::local_test_deployment(coordinator_data.path().to_owned());
         // Session execution ownership decision table:
-        // C1=split Coordinator, C2=local pool disabled, C3=the configured sandbox
-        // cannot be realized (K8s without an image). R1(C1+C2+C3)->startup serves
-        // Coordinator APIs without probing/constructing a local sandbox; registered
-        // Workers remain the only Session physical-effect owners.
+        // C1=split Coordinator, C2=local pool disabled, C3=the namespace Hand
+        // is explicitly absent. R1(C1+C2+C3)->startup serves Coordinator APIs
+        // without probing/constructing local execution. Registered Workers keep
+        // the Session physical-effect roles. Container source observation has
+        // separate protocol-backed coverage in local_execution::tests.
         coordinator_deployment.runtime.disable_local_pool = true;
-        coordinator_deployment.runtime.sandbox_tier = awaken_session_executor::SandboxTier::K8s;
-        coordinator_deployment.runtime.container_image = None;
+        coordinator_deployment.runtime.sandbox_tier =
+            awaken_session_executor::SandboxTier::Namespace;
+        let absent_hand = coordinator_data.path().join("uninstalled-namespace-hand");
+        assert!(
+            !absent_hand.exists(),
+            "role fixture must have no installed Hand"
+        );
         let executable_environment_wiring =
             executable_environment_registration::ExecutableEnvironmentWiring::local(
                 coordinator_stores
@@ -1223,6 +1229,7 @@ mod process_role_surface_tests {
             PublicationModelSupply::PublishedProviders,
             ProcessStartup {
                 role: config::Role::Coordinator,
+                namespace_hand_path: Some(absent_hand),
                 executable_agent_wiring: Some(
                     executable_agent_registration::ExecutableAgentWiring::local_server_with_observer(
                         "registration-token",
