@@ -5,6 +5,7 @@
 //! ConfigPlane remains the single authoring source of truth; IAM policy stays in
 //! the HTTP edge and never enters either repository.
 
+use crate::agent_revision_visibility::revision_is_visible;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -114,9 +115,9 @@ impl ConfigPlaneManagedAgentRepository {
             .await
             .map_err(ManagedAgentError::Storage)?;
         if let Some(current) = current {
-            if current.config.lifecycle() != AgentLifecycle::Published
-                || publications.get(id, current.revision).await?.is_some()
-            {
+            let published = current.config.lifecycle() == AgentLifecycle::Published
+                && publications.get(id, current.revision).await?.is_some();
+            if revision_is_visible(current.config.lifecycle(), published, true) {
                 return Ok(Some(current));
             }
 
@@ -131,9 +132,9 @@ impl ConfigPlaneManagedAgentRepository {
                 .map_err(ManagedAgentError::Storage)?;
             revisions.sort_by_key(|revision| revision.revision);
             for revision in revisions.into_iter().rev() {
-                if revision.config.lifecycle() == AgentLifecycle::Published
-                    && publications.get(id, revision.revision).await?.is_some()
-                {
+                let published = revision.config.lifecycle() == AgentLifecycle::Published
+                    && publications.get(id, revision.revision).await?.is_some();
+                if revision_is_visible(revision.config.lifecycle(), published, false) {
                     return Ok(Some(revision));
                 }
             }
@@ -211,11 +212,13 @@ impl ConfigPlaneManagedAgentRepository {
         for revision in revisions.into_iter().filter(|revision| {
             requested_version.is_none_or(|expected| revision.revision == expected)
         }) {
-            let terminal_current = Some(revision.revision) == latest_revision
-                && revision.config.lifecycle() != AgentLifecycle::Published;
             let published = revision.config.lifecycle() == AgentLifecycle::Published
                 && publications.get(id, revision.revision).await?.is_some();
-            if terminal_current || published {
+            if revision_is_visible(
+                revision.config.lifecycle(),
+                published,
+                Some(revision.revision) == latest_revision,
+            ) {
                 visible.push(self.project_current(&publications, revision).await?);
             }
         }
