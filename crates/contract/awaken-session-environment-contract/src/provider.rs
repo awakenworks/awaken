@@ -203,9 +203,10 @@ pub trait EnvironmentProviderInstallation: Send + Sync {
     fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>);
 }
 
-/// The provider of a Session's environment, carried as one handle per
-/// consuming role over the same adapter. Consumers: every Host module listed
-/// on the roles above.
+/// The process's Session environment roles. Execution construction uses one
+/// adapter; observation-only composition may replace its read roles while
+/// retaining the uninstalled effect roles and execution origin. Consumers:
+/// every Host module listed on the roles above.
 #[derive(Clone)]
 pub struct SessionEnvironmentProvider {
     realizer: Arc<dyn EnvironmentRealizer>,
@@ -238,6 +239,20 @@ impl SessionEnvironmentProvider {
             installation: provider.clone(),
             origin: provider,
         }
+    }
+
+    /// Replace only the metadata/observation roles. The process composition
+    /// supplies an adapter whose effect methods refuse before backend access;
+    /// terminal, capacity, installation and execution-origin handles stay put.
+    /// Consumer: a Coordinator that observes retained remote Session sources.
+    #[must_use]
+    pub fn with_observation_roles<P>(mut self, observer: Arc<P>) -> Self
+    where
+        P: EnvironmentRealizer + EnvironmentAdoption + 'static,
+    {
+        self.realizer = observer.clone();
+        self.adoption = observer;
+        self
     }
 
     #[must_use]
@@ -296,8 +311,9 @@ impl SessionEnvironmentProvider {
             .await
     }
 
-    /// The adapter behind the handles, for the composition that built it to
-    /// reconfigure a copy. The Host never reads it.
+    /// The execution-installation adapter, for the composition that built it
+    /// to reconfigure a copy. Read-only role replacement leaves this unchanged.
+    /// The Host never reads it.
     #[must_use]
     pub fn origin(&self) -> &(dyn Any + Send + Sync) {
         self.origin.as_ref()
