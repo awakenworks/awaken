@@ -9,12 +9,12 @@
     "allowed": "Local native Windows/MSVC; normal remote Git synchronization remains permitted"
   },
   "qualified_source": {
-    "commit": "20f23728f7abc96de4908970aff29a81debc0802",
-    "tree": "c99dc2dd72493c0c5a66669b48c79a206ef8e5c3",
+    "commit": "b1f6b6a10fef31b20af2ace5bb30c5405d6db4ad",
+    "tree": "1bd7b1fe412c4898a4203226e14046b7918b4d12",
     "worktree_clean": true
   },
   "rust": {
-    "nextest_executed": 9300,
+    "nextest_executed": 9301,
     "ordinary_profile_exclusions": 94,
     "excluded_binaries": 0,
     "doctests_passed": 223,
@@ -34,12 +34,126 @@
       ],
       "awaken-sandbox-container": [
         "tests::terminal_preparation::disposing_terminal_preparation_reconstructs_only_physical_cleanup",
+        "tests::terminal_preparation::retirement_observes_original_identity_across_execution_configuration_changes",
         "tests::terminal_preparation::terminal_control_reconstruction_does_not_require_a_live_binding"
       ],
       "awaken-sandbox-kubernetes": [
+        "cleanup_tests::complete_original_inline_handoff_uses_the_provider_disposal_protocol",
         "cleanup_tests::original_joined_empty_runs_the_provider_terminal_protocol_but_never_adopts_for_execution"
       ]
-    }
+    },
+    "gate_stages": [
+      {
+        "stage": "dependency-sources",
+        "seconds": 1,
+        "exit_code": 0
+      },
+      {
+        "stage": "trust-roots",
+        "seconds": 0,
+        "exit_code": 0
+      },
+      {
+        "stage": "authority-arithmetic",
+        "seconds": 1,
+        "exit_code": 0
+      },
+      {
+        "stage": "feature-matrix",
+        "seconds": 6,
+        "exit_code": 0
+      },
+      {
+        "stage": "fmt-batch-self-test",
+        "seconds": 0,
+        "exit_code": 0
+      },
+      {
+        "stage": "fmt",
+        "seconds": 32,
+        "exit_code": 0
+      },
+      {
+        "stage": "runtime-host-neutral",
+        "seconds": 2,
+        "exit_code": 0
+      },
+      {
+        "stage": "managed-protocol-production",
+        "seconds": 1,
+        "exit_code": 0
+      },
+      {
+        "stage": "coordinator-production",
+        "seconds": 3,
+        "exit_code": 0
+      },
+      {
+        "stage": "cli-production",
+        "seconds": 20,
+        "exit_code": 0
+      },
+      {
+        "stage": "fuzz-consumer",
+        "seconds": 1,
+        "exit_code": 0
+      },
+      {
+        "stage": "sdk-consumer",
+        "seconds": 7,
+        "exit_code": 0
+      },
+      {
+        "stage": "run-ingress-neutral",
+        "seconds": 2,
+        "exit_code": 0
+      },
+      {
+        "stage": "run-ingress-neutral-unit",
+        "seconds": 2,
+        "exit_code": 0
+      },
+      {
+        "stage": "credential-materializer-bare-neutral",
+        "seconds": 2,
+        "exit_code": 0
+      },
+      {
+        "stage": "credential-materializer-bare-neutral-unit",
+        "seconds": 3,
+        "exit_code": 0
+      },
+      {
+        "stage": "credential-materializer-brokered-neutral",
+        "seconds": 3,
+        "exit_code": 0
+      },
+      {
+        "stage": "credential-materializer-brokered-neutral-unit",
+        "seconds": 3,
+        "exit_code": 0
+      },
+      {
+        "stage": "lint-all-features",
+        "seconds": 147,
+        "exit_code": 0
+      },
+      {
+        "stage": "test-build",
+        "seconds": 1230,
+        "exit_code": 0
+      },
+      {
+        "stage": "test",
+        "seconds": 557,
+        "exit_code": 0
+      },
+      {
+        "stage": "doctest",
+        "seconds": 115,
+        "exit_code": 0
+      }
+    ]
   },
   "native": {
     "startup_required_cases_verified": true,
@@ -76,6 +190,10 @@
         }
       ],
       "systemd_shutdowns": []
+    },
+    "stage_seconds": {
+      "native-portability": 1590.8896914999932,
+      "sdk-consumer": 7.541629899991676
     }
   },
   "browser": {
@@ -215,185 +333,185 @@
     "checks_passed": 88,
     "checks_failed": 0,
     "parallel_workers": 2,
-    "source_commit": "20f23728f7abc96de4908970aff29a81debc0802",
-    "source_tree": "c99dc2dd72493c0c5a66669b48c79a206ef8e5c3",
+    "source_commit": "b1f6b6a10fef31b20af2ace5bb30c5405d6db4ad",
+    "source_tree": "1bd7b1fe412c4898a4203226e14046b7918b4d12",
     "all_check_commands_exit_zero": true,
     "checks": [
       {
         "check": "repository-hygiene self-test",
-        "seconds": 0.279
+        "seconds": 0.256
       },
       {
         "check": "dependency-sources self-test",
-        "seconds": 0.478
+        "seconds": 0.454
       },
       {
         "check": "trust-roots self-test",
-        "seconds": 0.406
+        "seconds": 0.364
       },
       {
         "check": "trust-root compatibility",
-        "seconds": 0.405
+        "seconds": 0.424
       },
       {
         "check": "cold dependency fetch self-test",
-        "seconds": 2.446
+        "seconds": 2.289
       },
       {
         "check": "repository-hygiene",
-        "seconds": 20.051
+        "seconds": 19.273
       },
       {
         "check": "authority-arithmetic self-test",
-        "seconds": 0.646
+        "seconds": 0.737
       },
       {
         "check": "receive hook integration",
-        "seconds": 23.314
+        "seconds": 22.652
       },
       {
         "check": "hook-glob generator self-test",
-        "seconds": 1.455
+        "seconds": 2.048
       },
       {
         "check": "hook-glob generation",
-        "seconds": 1.329
+        "seconds": 1.297
       },
       {
         "check": "test-orchestration self-test",
-        "seconds": 8.379
+        "seconds": 8.358
       },
       {
         "check": "test-orchestration",
-        "seconds": 6.903
+        "seconds": 6.547
       },
       {
         "check": "required Rust execution self-test",
-        "seconds": 247.839
+        "seconds": 249.196
       },
       {
         "check": "crate-boundaries",
-        "seconds": 406.406
+        "seconds": 403.265
       },
       {
         "check": "CI performance report self-test",
-        "seconds": 0.509
+        "seconds": 0.411
       },
       {
         "check": "CI performance artifact policy",
-        "seconds": 0.323
+        "seconds": 0.333
       },
       {
         "check": "Nextest selection evidence self-test",
-        "seconds": 0.237
+        "seconds": 0.223
       },
       {
         "check": "ordinary Rust benchmark evidence self-test",
-        "seconds": 0.36
+        "seconds": 0.355
       },
       {
         "check": "parallel static check tests",
-        "seconds": 0.277
+        "seconds": 0.267
       },
       {
         "check": "combined coverage gate tests",
-        "seconds": 0.251
+        "seconds": 0.245
       },
       {
         "check": "unit-test CLI decision table",
-        "seconds": 1.066
+        "seconds": 0.876
       },
       {
         "check": "formal-product-ledger",
-        "seconds": 4.092
+        "seconds": 4.254
       },
       {
         "check": "managed-wire-naming self-test",
-        "seconds": 0.912
+        "seconds": 1.006
       },
       {
         "check": "managed-wire-naming",
-        "seconds": 0.413
+        "seconds": 0.439
       },
       {
         "check": "gate-argument hygiene self-test",
-        "seconds": 3.991
+        "seconds": 4.053
       },
       {
         "check": "lane-reachability self-test",
-        "seconds": 0.288
+        "seconds": 0.377
       },
       {
         "check": "lane reachability",
-        "seconds": 5.561
+        "seconds": 6.27
       },
       {
         "check": "gate-argument hygiene",
-        "seconds": 22.163
+        "seconds": 21.665
       },
       {
         "check": "guard navigation self-test",
-        "seconds": 0.78
+        "seconds": 0.746
       },
       {
         "check": "gate path references self-test",
-        "seconds": 0.418
+        "seconds": 0.379
       },
       {
         "check": "gate path references",
-        "seconds": 0.863
+        "seconds": 0.773
       },
       {
         "check": "dependency-gates self-test",
-        "seconds": 0.229
-      },
-      {
-        "check": "dependency-gates",
-        "seconds": 19.042
-      },
-      {
-        "check": "degrading-defaults self-test",
-        "seconds": 0.541
-      },
-      {
-        "check": "affected Rust plan self-test",
-        "seconds": 210.179
-      },
-      {
-        "check": "fabricated-facts self-test",
         "seconds": 0.255
       },
       {
+        "check": "dependency-gates",
+        "seconds": 19.969
+      },
+      {
+        "check": "degrading-defaults self-test",
+        "seconds": 0.558
+      },
+      {
         "check": "degrading-defaults",
-        "seconds": 10.279
+        "seconds": 9.83
+      },
+      {
+        "check": "fabricated-facts self-test",
+        "seconds": 0.31
+      },
+      {
+        "check": "affected Rust plan self-test",
+        "seconds": 215.672
       },
       {
         "check": "proof-input-derivation self-test",
-        "seconds": 0.348
+        "seconds": 0.381
       },
       {
         "check": "contract-shape self-test",
-        "seconds": 0.481
+        "seconds": 0.472
       },
       {
         "check": "contract-shape",
-        "seconds": 7.447
+        "seconds": 7.492
       },
       {
         "check": "coverage checker tests",
-        "seconds": 1.82
+        "seconds": 1.359
       },
       {
         "check": "LCOV export tests",
-        "seconds": 0.279
+        "seconds": 0.265
       },
       {
         "check": "per-crate coverage tests",
-        "seconds": 0.371
+        "seconds": 0.263
       },
       {
         "check": "fabricated-facts",
-        "seconds": 25.299
+        "seconds": 25.758
       },
       {
         "check": "provider-environment self-test",
@@ -401,31 +519,31 @@
       },
       {
         "check": "node dependencies",
-        "seconds": 0.228
+        "seconds": 0.286
       },
       {
         "check": "e2e runner unit",
-        "seconds": 203.0
+        "seconds": 211.0
       },
       {
         "check": "full-gate host admission tests",
-        "seconds": 0.416
+        "seconds": 0.342
       },
       {
         "check": "command deadline tests",
-        "seconds": 15.79
+        "seconds": 15.283
       },
       {
         "check": "postgres harness self-test",
-        "seconds": 104.0
+        "seconds": 111.0
       },
       {
         "check": "k3d harness self-test",
-        "seconds": 41.0
+        "seconds": 42.0
       },
       {
         "check": "distributed role rollout self-test",
-        "seconds": 11.0
+        "seconds": 10.0
       },
       {
         "check": "NATS wake runner self-test",
@@ -433,51 +551,51 @@
       },
       {
         "check": "k3d-product-image-contract",
-        "seconds": 0.212
+        "seconds": 0.231
       },
       {
         "check": "k3d product topology contract",
         "seconds": 4.0
       },
       {
-        "check": "secrets self-test",
-        "seconds": 7.505
+        "check": "standard local storage deployment contract",
+        "seconds": 6.599
       },
       {
-        "check": "standard local storage deployment contract",
-        "seconds": 8.273
+        "check": "secrets self-test",
+        "seconds": 7.168
       },
       {
         "check": "file-limits self-test",
-        "seconds": 4.435
+        "seconds": 4.352
       },
       {
         "check": "secrets",
-        "seconds": 18.764
+        "seconds": 18.14
       },
       {
         "check": "test-wait self-test",
-        "seconds": 6.736
-      },
-      {
-        "check": "file-limits",
-        "seconds": 27.701
+        "seconds": 7.899
       },
       {
         "check": "test waits name a durable fact",
-        "seconds": 7.317
+        "seconds": 7.852
+      },
+      {
+        "check": "file-limits",
+        "seconds": 30.708
       },
       {
         "check": "a guard's scope is derived, not hand-written",
-        "seconds": 1.906
-      },
-      {
-        "check": "commit-message self-test",
-        "seconds": 0.192
+        "seconds": 1.674
       },
       {
         "check": "scan-scope self-test",
-        "seconds": 3.405
+        "seconds": 3.551
+      },
+      {
+        "check": "commit-message self-test",
+        "seconds": 0.202
       },
       {
         "check": "commit wrapper self-test",
@@ -485,91 +603,91 @@
       },
       {
         "check": "release-package self-test",
-        "seconds": 8.934
+        "seconds": 8.901
       },
       {
         "check": "product release contract",
-        "seconds": 0.252
+        "seconds": 0.259
       },
       {
         "check": "observation-collapse self-test",
-        "seconds": 9.981
+        "seconds": 9.858
       },
       {
         "check": "observation-collapse",
-        "seconds": 8.708
+        "seconds": 7.453
       },
       {
         "check": "product release checker self-test",
-        "seconds": 31.225
+        "seconds": 30.389
       },
       {
         "check": "reliability output directories self-test",
-        "seconds": 334.444
+        "seconds": 329.613
       },
       {
         "check": "reliability checker preflight self-test",
-        "seconds": 352.95
+        "seconds": 345.798
       },
       {
         "check": "reliability evidence contract",
-        "seconds": 25.475
+        "seconds": 23.998
       },
       {
         "check": "reliability tool failures self-test",
-        "seconds": 285.347
+        "seconds": 298.727
       },
       {
         "check": "Cargo target isolation self-test",
-        "seconds": 0.0
-      },
-      {
-        "check": "public API gate tests",
-        "seconds": 49.971
-      },
-      {
-        "check": "Rust gate control-flow self-test",
         "seconds": 1.0
       },
       {
+        "check": "public API gate tests",
+        "seconds": 56.669
+      },
+      {
+        "check": "Rust gate control-flow self-test",
+        "seconds": 2.0
+      },
+      {
         "check": "Kani bootstrap publication rules",
-        "seconds": 0.338
+        "seconds": 0.374
       },
       {
         "check": "build-space reclamation self-test",
-        "seconds": 0.793
+        "seconds": 0.695
       },
       {
         "check": "full-gate freshness self-test",
-        "seconds": 2.599
+        "seconds": 3.179
       },
       {
         "check": "full-gate freshness",
-        "seconds": 0.253
+        "seconds": 0.257
       },
       {
         "check": "gate tool manifest self-test",
-        "seconds": 12.648
+        "seconds": 15.652
       },
       {
         "check": "prerequisite doctor self-test",
-        "seconds": 12.0
+        "seconds": 15.0
       },
       {
         "check": "sandbox image build deadline self-test",
-        "seconds": 4.0
+        "seconds": 5.0
       },
       {
         "check": "sandbox image provenance self-test",
-        "seconds": 0.226
+        "seconds": 0.311
       },
       {
         "check": "sandbox image release contract",
-        "seconds": 6.278
+        "seconds": 8.207
       },
       {
         "check": "sandbox image release checker self-test",
-        "seconds": 11.108
+        "seconds": 13.664
       }
     ],
     "required_execution_self_test": {
@@ -598,85 +716,85 @@
         "case": "test_actual_required_runner_rejects_empty_ignored_skipped_and_failed_runs",
         "identity": "__main__.ExecutionTests.test_actual_required_runner_rejects_empty_ignored_skipped_and_failed_runs",
         "reason": "'the Bash orchestration runs in the Linux gate'",
-        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+        "log": "windows-static-v6/static-checks.MlTJ6y/13.log"
       },
       {
         "case": "test_cold_build_does_not_consume_or_extend_shared_execution_deadline",
         "identity": "__main__.ExecutionTests.test_cold_build_does_not_consume_or_extend_shared_execution_deadline",
         "reason": "'POSIX real deadline fixture; Windows runs build/source/receipt rows'",
-        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+        "log": "windows-static-v6/static-checks.MlTJ6y/13.log"
       },
       {
         "case": "test_floor_failure_stops_before_run",
         "identity": "__main__.ExecutionTests.test_floor_failure_stops_before_run",
         "reason": "'actual POSIX libtest boundary fixture'",
-        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+        "log": "windows-static-v6/static-checks.MlTJ6y/13.log"
       },
       {
         "case": "test_hidden_index_and_untracked_bytes_are_working_source_causes",
         "identity": "__main__.ExecutionTests.test_hidden_index_and_untracked_bytes_are_working_source_causes",
         "reason": "'private Git/POSIX command fixture'",
-        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+        "log": "windows-static-v6/static-checks.MlTJ6y/13.log"
       },
       {
         "case": "test_mutations_at_each_sequence_fence_stop_or_reject_execution",
         "identity": "__main__.ExecutionTests.test_mutations_at_each_sequence_fence_stop_or_reject_execution",
         "reason": "'real private source boundaries'",
-        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+        "log": "windows-static-v6/static-checks.MlTJ6y/13.log"
       },
       {
         "case": "test_portability_entrypoint_requires_the_current_launch_adapter_selection",
         "identity": "__main__.ExecutionTests.test_portability_entrypoint_requires_the_current_launch_adapter_selection",
         "reason": "'the Bash orchestration runs in the Linux gate'",
-        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+        "log": "windows-static-v6/static-checks.MlTJ6y/13.log"
       },
       {
         "case": "test_required_shell_keeps_execution_status",
         "identity": "__main__.ExecutionTests.test_required_shell_keeps_execution_status",
         "reason": "'POSIX shell status/admission fixture'",
-        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+        "log": "windows-static-v6/static-checks.MlTJ6y/13.log"
       },
       {
         "case": "test_required_source_uses_same_hook_index_and_detaches_foreign_hook",
         "identity": "__main__.ExecutionTests.test_required_source_uses_same_hook_index_and_detaches_foreign_hook",
         "reason": "'private hook/index admission fixture'",
-        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+        "log": "windows-static-v6/static-checks.MlTJ6y/13.log"
       },
       {
         "case": "test_sandbox_entrypoint_requires_the_current_systemd_case",
         "identity": "__main__.ExecutionTests.test_sandbox_entrypoint_requires_the_current_systemd_case",
         "reason": "'systemd substrate qualification belongs to Linux'",
-        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+        "log": "windows-static-v6/static-checks.MlTJ6y/13.log"
       },
       {
         "case": "test_shared_budget_starts_after_queued_admission",
         "identity": "__main__.ExecutionTests.test_shared_budget_starts_after_queued_admission",
         "reason": "'POSIX admitted shell composition'",
-        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+        "log": "windows-static-v6/static-checks.MlTJ6y/13.log"
       },
       {
         "case": "test_source_and_record_faults_preserve_the_actual_child_status",
         "identity": "__main__.ExecutionTests.test_source_and_record_faults_preserve_the_actual_child_status",
         "reason": "'private POSIX process/source fixture'",
-        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+        "log": "windows-static-v6/static-checks.MlTJ6y/13.log"
       },
       {
         "case": "test_terminal_source_and_writer_failures_preserve_outer_status",
         "identity": "__main__.ExecutionTests.test_terminal_source_and_writer_failures_preserve_outer_status",
         "reason": "'actual private libtest terminal fixture'",
-        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+        "log": "windows-static-v6/static-checks.MlTJ6y/13.log"
       },
       {
         "case": "test_unreadable_index_refuses_before_any_cargo",
         "identity": "__main__.ExecutionTests.test_unreadable_index_refuses_before_any_cargo",
         "reason": "'private Git index refusal'",
-        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+        "log": "windows-static-v6/static-checks.MlTJ6y/13.log"
       },
       {
         "case": "test_whole_deadline_finalizes_but_dead_parent_leaves_partial_record",
         "identity": "__main__.ExecutionTests.test_whole_deadline_finalizes_but_dead_parent_leaves_partial_record",
         "reason": "'Linux owned parent/PID observation'",
-        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+        "log": "windows-static-v6/static-checks.MlTJ6y/13.log"
       }
     ],
     "scope": "Passing Windows checker commands; platform-limited unit-test skips below are not counted as executed passes"
@@ -684,35 +802,43 @@
   "supporting_gates": [
     {
       "stage": "documentation",
-      "exit_code": 0
+      "exit_code": 0,
+      "seconds": 4.380133999977261
     },
     {
       "stage": "formal-profile-python-tests",
-      "exit_code": 0
+      "exit_code": 0,
+      "seconds": 43.633891400008
     },
     {
       "stage": "frontend-full",
-      "exit_code": 0
+      "exit_code": 0,
+      "seconds": 104.06927169999108
     },
     {
       "stage": "dependency-policy",
-      "exit_code": 0
+      "exit_code": 0,
+      "seconds": 5.107378999993671
     },
     {
       "stage": "managed-sdk-oracle",
-      "exit_code": 0
+      "exit_code": 0,
+      "seconds": 24.769738500006497
     },
     {
       "stage": "generated-contracts",
-      "exit_code": 0
+      "exit_code": 0,
+      "seconds": 34.34746509999968
     },
     {
       "stage": "public-api",
-      "exit_code": 0
+      "exit_code": 0,
+      "seconds": 116.33212460001232
     },
     {
       "stage": "browser-e2e",
-      "exit_code": 0
+      "exit_code": 0,
+      "seconds": 319.8099037000211
     }
   ],
   "observation_test_fix": {
@@ -768,10 +894,10 @@
     ]
   },
   "git_synchronization": {
-    "rebased_origin": "f24407baf11eeb510abf24a938e40f509324deaf",
+    "rebased_origin": "558677e2068773ed36b212fe4df8fd864223b347",
     "local_patches_retained_unchanged": true,
-    "source_review": "Two upstream commits reviewed: closed terminal cleanup control and scoped complete config revision reads; seven local patches unchanged by range-diff; no dependency manifest/lock/toolchain changes.",
-    "range_diff": "1:  a46f3c6293 = 1:  86e874923f 🧪 test(ci): validate proof profiles before long batches\n2:  09d74d4194 = 2:  351ee8d269 🧪 test(http): drain PostgreSQL fixture output concurrently\n3:  0a0aa754d2 = 3:  2bac7117c0 🐛 fix(ci): separate cold build and test deadlines\n4:  104bc8b715 = 4:  9f6821aad8 🧪 test(ci): bound Windows orchestration self-tests\n5:  37f6a59a10 = 5:  5f1e7225c6 📝 docs(ci): require native Windows validation\n6:  3de24f7f12 = 6:  0cca27672b 🧪 test(runtime): make observation fixture native Windows compatible\n7:  01e3be29a9 = 7:  20f23728f7 🧪 test(cli): isolate process role fixture from cluster observation"
+    "source_review": "Reviewed original-source retirement observation across execution configuration drift. Exact original fence, complete same-Session durable identity and runtime physical identity remain required; ordinary Recovery and TerminalCleanup remain strict. The new Container matrix and extended Kubernetes HTTP matrix cover missing/foreign premises, 403/503 errors and zero writes. Eight local patches unchanged; no manifest, lock or toolchain changes.",
+    "range_diff": "1:  86e874923f = 1:  68bfc61746 🧪 test(ci): validate proof profiles before long batches\n2:  351ee8d269 = 2:  0458a9acb9 🧪 test(http): drain PostgreSQL fixture output concurrently\n3:  2bac7117c0 = 3:  ce02d08b51 🐛 fix(ci): separate cold build and test deadlines\n4:  9f6821aad8 = 4:  7473d234ef 🧪 test(ci): bound Windows orchestration self-tests\n5:  5f1e7225c6 = 5:  1d538248c2 📝 docs(ci): require native Windows validation\n6:  0cca27672b = 6:  9bbdd8a97f 🧪 test(runtime): make observation fixture native Windows compatible\n7:  20f23728f7 = 7:  b1ee8a8911 🧪 test(cli): isolate process role fixture from cluster observation\n8:  7467580f05 = 8:  b1f6b6a10f 📝 docs(ci): record native Windows qualification evidence"
   },
   "cold_build": {
     "source_commit": "02ccc425a7ef600fa59a8ea30b87ed7afbed5f3e",
@@ -808,7 +934,8 @@
     "Complete Kani/formal toolchain execution",
     "Live Linux-container Docker/Podman/PostgreSQL/Kubernetes/k3d gates",
     "Optional browser cases explicitly listed above",
-    "A fresh hosted GitHub Actions run"
+    "A fresh hosted GitHub Actions run",
+    "Conditional live-service paths that return when their service is unavailable; this receipt does not establish live PostgreSQL or NATS coverage"
   ],
   "qualification_history": {
     "original_failures_retained": true,
@@ -818,13 +945,13 @@
     "prior_windows_role_surface": "The earlier full run passed 9294 of 9295 cases and failed the API-ownership fixture because it attempted live Kubernetes observation; the fixture now explicitly selects an absent namespace Hand and both repaired cases execute in the current full graph"
   },
   "proof_sha256": {
-    "windows-role-rebase-reviewed-v1.json": "d1f3b593a03edef1bc43e6bf516b45ac79350a5371a0c7f5d507e3886670d79e",
-    "windows-role-rebase-v1.json": "d5cb5af7e51590e95d2ae2516d9d09ef8d5e23d33e8aaf7f51c856e46a397996",
+    "windows-role-rebase-reviewed-v2.json": "678213532cd25ebbde729b32643f23a996ea056fac7ddd4ae7cfc3578a550c8c",
+    "windows-sync-receipt-v3.json": "8a8896e6182279bcb48016b07e6b647372f92494284b2c3f85fc102afca12b8c",
     "windows-role-fixture-commit-v2.json": "d7ad798281aa1ee0cb6c0878c44f00e8695ecbb05ed60feb56446a89b88a7297",
     "windows-observation-lint-commit-v4.json": "cd6d6c2a4cef869471be8c8700f63807aca999e149393f4d840d34e676530a04",
-    "current-windows-root-v12-independent-audit.json": "8e823477cfacf3cbaa46e588b52adf914285808baa3d310e4f159318102e5074",
-    "windows-supplement-v7-independent-audit.json": "c531098774cc74571b3d4b0e896b143b7d0b593d7610955d2905b561f183628c",
-    "windows-static-v5/summary.json": "a14a23c991e1a59f6d2b043ff603de5ab3c58c16ff9b2a8ef7fba4b648657bce",
+    "current-windows-root-v13-independent-audit.json": "1f6c3c12810731220d1e8608aaf7de5743ea216a3dd8b3b5e52983c68e6a6d37",
+    "windows-supplement-v8-independent-audit.json": "c529738c3553f65f90b0153c5fb4fdc9dcf82bdbda889264595dfba4ada74391",
+    "windows-static-v6/summary.json": "8286c847e9a5678189f7eaae3d4fbc23be5565e04d8c595e68042acf236515f7",
     "windows-default-cold-v2/summary.json": "c40c7e4272cc7b3ed423e3ccea25223c94e4783ed2fc3001a5af8243b9a09b32",
     "current-windows-cold-v5/evidence/result.json": "7c6c589baa8d6371e1be8b44ca1e0b061de3d25cab8d0446d22565c47d0c3abe",
     "confirm-linux-cancellation-v1.json": "826991fa38dd933b4a044d093c91bf6c481a0ab43c94600fd1910808dcb36768"
@@ -832,13 +959,13 @@
   "raw_archives": [
     {
       "scope": "Windows Rust/native/CLI/SDK",
-      "name": "current-windows-root-v12-complete.zip",
-      "sha256": "7dc0bcde6abc7938a9599a335a17110e188fe644537d899272be0c2307413e34"
+      "name": "current-windows-root-v13-complete.zip",
+      "sha256": "f53cdb729d982d55dd75ec03d9064d9239c51d1943c1340153bffece6c5732ff"
     },
     {
       "scope": "Windows contracts/API/browser",
-      "name": "windows-supplement-v7-complete.zip",
-      "sha256": "beb6690cf3837a84dfc534cd3ad9d3d51840ebce2d8cd3f38103a9ce2a5423a5"
+      "name": "windows-supplement-v8-complete.zip",
+      "sha256": "12e8ea46872bb79987d853b88a1aac28d42a8fd2e5483c7fdb22914c1c74cf09"
     },
     {
       "scope": "Historical Windows empty compilation target",
@@ -847,14 +974,25 @@
     },
     {
       "scope": "Current Windows static checks",
-      "name": "windows-static-v5-complete.zip",
-      "sha256": "477c1d03526682bfcd39cf325dbdea31448048c9863e4dbba6016e44d6a1a4e6"
+      "name": "windows-static-v6-complete.zip",
+      "sha256": "6ab3e55e65f50ece13b2ecd0b28112067c8e10e5860c00ddca3752d7cc09dfad"
     },
     {
       "scope": "Historical Windows empty dependency stores",
-      "name": "windows-cold-fetch-complete-v4.zip",
+      "name": "windows-cold-fetch-complete-v5.zip",
       "sha256": "2a92f87756e137a9009f362c4266535a44c0a63ecccd9a0c6186f9104daae2e2"
     }
   ],
-  "receipt_commit_scope": "The next metadata commit adds only this JSON receipt; its publication is verified separately after that commit exists."
+  "receipt_commit_scope": "The next metadata commit updates only this JSON receipt; its publication is verified separately after that commit exists.",
+  "previous_qualification": {
+    "source": {
+      "commit": "20f23728f7abc96de4908970aff29a81debc0802",
+      "tree": "c99dc2dd72493c0c5a66669b48c79a206ef8e5c3",
+      "worktree_clean": true
+    },
+    "receipt_sha256": "f59ab004b72d3a25de17bf69b576cc7b4a42f1d38e494364aa53a6a416491a26",
+    "receipt_commit_on_rebased_line": "b1f6b6a10fef31b20af2ace5bb30c5405d6db4ad",
+    "receipt_retained_in_git_history": true,
+    "reason": "Normal rebase incorporated new sandbox runtime code; all current-source producers ran again"
+  }
 }
