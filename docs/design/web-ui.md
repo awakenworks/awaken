@@ -98,6 +98,32 @@ Session 后必须自动提交一条固定的无工具测试消息，并显示创
 通过正常 Agent Run 验证使用结果，不能从管理 UI 绕过 Hosted admission、配额或
 计费边界直连 Provider。
 
+### 3.1.1 Complete configuration versions
+
+Clients needing complete Agent history can read
+`/v1/config/agents/{id}/versions`, a read-only projection over the existing
+scoped configuration revisions and publication records. It preserves canonical
+ModelSelection, including Catalog endpoint identities, ACP options and
+automatic/profile selection. The official Managed Agent model string remains
+unchanged; an unrepresentable selection uses the config plane rather than
+losing its qualifiers in a public-wire projection.
+
+Both adapters share one revision-visibility predicate: a durable published
+revision is visible, and only the current disabled/archived lifecycle revision
+is additionally visible. A newer unpublished draft never enters published
+history. Visible revisions are newest first, with a positive before-revision
+cursor, default page size 100 and maximum 500. Invalid bounds or unknown query
+fields are rejected. The first page's head is the current visible revision;
+this endpoint adds no version store, publication or execution authority.
+
+Each page contains `data` and `next_page`; each row retains the existing full
+configuration fields, a positive `version`, and optional `created_at`/`updated_at`
+epoch milliseconds. Missing durable evidence is not replaced with an invented
+timestamp or a different revision. The same Workspace read permission and
+scoped repository lookup as the configuration point-read protect history.
+Console adoption remains a separate frontend integration; creating a test still
+uses the existing exact Agent-version/Environment Session command.
+
 ### 3.2 进程组合能力决定页面呈现
 
 同一个前端可以由本地 `AllInOne` 或云端拆分的 `Control` 提供，但不能把当前

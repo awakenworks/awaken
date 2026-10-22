@@ -1142,6 +1142,10 @@ fn af_covers_the_deployment_environment_and_agent_families() {
         Some(WORKSPACE_READ)
     );
     assert_eq!(
+        scoped(get.clone(), "/v1/config/agents/a1/versions"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
         scoped(put.clone(), "/v1/config/agents/a1"),
         Some(WORKSPACE_WRITE)
     );

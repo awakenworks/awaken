@@ -20,6 +20,7 @@ use crate::managed_agent::{agent_config_from_managed, managed_from_agent_config}
 use awaken_config_service::ConfigPlane;
 use awaken_config_service::RESERVED_ADMIN_SCOPE;
 use awaken_config_service::{PublishError, ValidationIssue};
+mod versions;
 
 /// The config data-plane router: `/v1/config/agents/:id` (author) plus
 /// `/validate` and `/publish` (lifecycle).
@@ -36,6 +37,10 @@ pub fn config_router(plane: ConfigPlane) -> Router {
         )
         .route("/v1/config/agents/{id}/validate", post(validate))
         .route("/v1/config/agents/{id}/publish", post(publish))
+        .route(
+            "/v1/config/agents/{id}/versions",
+            get(versions::list_versions),
+        )
         .route("/v1/config/agents/{id}", get(get_config).put(put_config))
         .route(
             "/v1/config/agent-previews/{preview_id}",
