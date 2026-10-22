@@ -8,6 +8,28 @@ use std::time::Duration;
 use super::NatsWakeSignal;
 use awaken_run_ingress_contract::WakeSignal;
 
+// async-nats 0.50 flush() acknowledges a local socket write, not server
+// processing. A self-published probe on the SAME connection is ordered after
+// its SUB commands. Receiving it proves those commands reached the broker.
+async fn confirm_server_subscription(client: &async_nats::Client, context: &str) {
+    use futures_util::StreamExt;
+    let subject = client.new_inbox();
+    let mut probe = client
+        .subscribe(subject.clone())
+        .await
+        .expect("probe subscription");
+    client
+        .publish(subject.clone(), b"subscription-ready".to_vec().into())
+        .await
+        .expect("publish subscription probe");
+    let message = tokio::time::timeout(Duration::from_secs(5), probe.next())
+        .await
+        .unwrap_or_else(|_| panic!("{context}: broker subscription barrier deadline"))
+        .expect("broker subscription probe");
+    assert_eq!(message.subject.as_str(), subject);
+    assert_eq!(message.payload.as_ref(), b"subscription-ready");
+}
+
 #[test]
 fn nats_fixture_absence_and_configured_failure_are_distinct() {
     awaken_reliability_testkit::assert_nats_fixture_child_contract(
@@ -43,23 +65,20 @@ async fn nats_wake_signal_notifies_a_waiter() {
             .subscribe(subject.clone())
             .await
             .expect("observer subscription");
-        client.flush().await.expect("observer subscription is live");
+        confirm_server_subscription(&client, "observer").await;
         (client, subscription)
     })
     .await
     .expect("observer readiness deadline");
-    // Poll the fresh wait once so its SUB command is queued, then use the same
-    // client's protocol flush as the readiness barrier. No private poll owner,
-    // scheduling sleep or test-only production API is needed.
+    // Poll the fresh wait once so its SUB command is queued, then establish
+    // broker processing on that same connection before another client publishes.
+    // The probe has its own subject and cannot satisfy the actual wake wait.
     let mut wait = Box::pin(tokio::task::unconstrained(waiter.wait()));
     assert!(matches!(
         futures_util::poll!(&mut wait),
         std::task::Poll::Pending
     ));
-    tokio::time::timeout(Duration::from_secs(5), waiter.client.flush())
-        .await
-        .expect("waiter subscription flush deadline")
-        .expect("waiter subscription reached the broker");
+    confirm_server_subscription(&waiter.client, "waiter").await;
     publisher.publish().await.expect("publish one wake hint");
     tokio::time::timeout(Duration::from_secs(5), &mut wait)
         .await

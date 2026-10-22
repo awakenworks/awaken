@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import secrets
@@ -16,6 +17,7 @@ from unittest import mock
 import check_native_services as gate
 import native_services as services
 import _native_postgres as pg
+import _native_s3 as s3
 
 INPUT_GLOBS = ("scripts/ci/**", ".github/workflows/windows-native-services.yml")
 
@@ -114,6 +116,9 @@ class NativeInstallTests(unittest.TestCase):
         self.assertIn("python scripts/ci/install_windows_services.py --service postgres",workflow)
         self.assertIn("python scripts/ci/check_native_services.py --service postgres",workflow)
         self.assertIn("target/windows-postgres/installation.json",workflow)
+        self.assertIn("python scripts/ci/install_windows_services.py --service s3",workflow)
+        self.assertIn("python scripts/ci/check_native_services.py --service s3",workflow)
+        self.assertIn("target/windows-s3/installation.json",workflow)
 
 class ExecutionReceiptTests(unittest.TestCase):
     def make_receipts(self,base):
@@ -133,7 +138,8 @@ class ExecutionReceiptTests(unittest.TestCase):
         import check_rust_test_execution as q
         packages=["awaken-reliability-testkit","awaken-model-catalog-store","awaken-credential-store",
             "awaken-data-subject-store","awaken-captured-content-store","awaken-work-store",
-            "awaken-session-store","awaken-memory-store","awaken-skill-store","awaken-work-store","awaken-run-ingress-http"]
+            "awaken-session-store","awaken-memory-store","awaken-skill-store","awaken-work-store","awaken-run-ingress-http",
+            "awaken-config-store","awaken-session-store","awaken-credential-store","awaken-cli","awaken-cli","awaken-coordinator"]
         with tempfile.TemporaryDirectory() as directory,mock.patch.object(q,"verify_preparation"):
             base=Path(directory);receipts=[]
             for index,package in enumerate(packages):
@@ -147,8 +153,8 @@ class ExecutionReceiptTests(unittest.TestCase):
                 receipts.append(path)
             log="".join("execution evidence: "+str(path)+"\n" for path in receipts)
             with mock.patch.dict(os.environ,{"CARGO_TARGET_DIR":str(base)}):
-                self.assertEqual(len(gate.reconcile_postgres(log,"source")),11)
-                with self.assertRaisesRegex(ValueError,"all 11"):gate.reconcile_postgres("","source")
+                self.assertEqual(len(gate.reconcile_postgres(log,"source")),17)
+                with self.assertRaisesRegex(ValueError,"all 17"):gate.reconcile_postgres("","source")
                 path=receipts[0]/"results.json";original=json.loads(path.read_text())
                 for key in ("postgres_fixture_required","postgres_fixture_configured"):
                     for invalid in (False,"1"):
@@ -283,6 +289,156 @@ class PostgresFixtureTests(unittest.TestCase):
         receipt = service.receipt()
         self.assertNotIn(credential, json.dumps(receipt))
         self.assertNotIn('url', receipt)
+
+
+class MinioFixtureTests(unittest.TestCase):
+    def test_authenticated_identity_binds_one_endpoint_and_one_owned_drive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory) / 'owned'
+            value = {'status': 'success', 'info': {'deploymentID': 'one', 'servers': [
+                {'state': 'online', 'endpoint': '127.0.0.1:1234', 'version': 'release', 'commitID': 'commit',
+                 'drives': [{'state': 'ok', 'path': str(data), 'uuid': 'one-drive'}]}]}}
+            self.assertEqual(s3.validate_minio_identity(value, '127.0.0.1:1234', data)['deployment_id'], 'one')
+            cases = []
+            for key, changed in [('status', 'error'), ('deploymentID', ''), ('endpoint', 'foreign:1234'),
+                                 ('state', 'offline'), ('path', str(data.parent)), ('uuid', '')]:
+                candidate = copy.deepcopy(value)
+                if key == 'status': candidate[key] = changed
+                elif key == 'deploymentID': candidate['info'][key] = changed
+                elif key in ('endpoint', 'state'): candidate['info']['servers'][0][key] = changed
+                else: candidate['info']['servers'][0]['drives'][0][key] = changed
+                cases.append(candidate)
+            candidate = copy.deepcopy(value); candidate['info']['servers'] *= 2; cases.append(candidate)
+            for candidate in cases:
+                with self.subTest(candidate=candidate), self.assertRaises(ValueError):
+                    s3.validate_minio_identity(candidate, '127.0.0.1:1234', data)
+
+    def test_credential_generation_advances_only_after_all_admin_operations(self):
+        for failed_step in (None, 0, 1, 2):
+            with self.subTest(failed_step=failed_step):
+                service = object.__new__(s3.MinioService)
+                service.rotated = False; service.verify = mock.Mock()
+                service.user = 'application'; service.new_secret = secrets.token_hex(24)
+                outcomes = [None] * 3
+                if failed_step is not None: outcomes[failed_step] = RuntimeError('admin operation failed')
+                service.command = mock.Mock(side_effect=outcomes)
+                if failed_step is None:
+                    service.rotate(); self.assertTrue(service.rotated)
+                    self.assertEqual(service.verify.call_count, 2)
+                    with self.assertRaisesRegex(RuntimeError, 'already applied'): service.rotate()
+                else:
+                    with self.assertRaisesRegex(RuntimeError, 'admin operation failed'): service.rotate()
+                    self.assertFalse(service.rotated)
+                    self.assertEqual(service.command.call_count, failed_step + 1)
+
+    def test_old_and_new_clients_keep_the_same_endpoint_identity_and_rotation_id(self):
+        service = object.__new__(s3.MinioService)
+        service.endpoint = 'http://127.0.0.1:1234'; service.user = 'application'; service.owner = 'same-coordinate'
+        service.old_secret, service.new_secret = secrets.token_hex(24), secrets.token_hex(24)
+        service.rotated = False; before = service.test_environment()
+        self.assertNotIn('AWAKEN_TEST_S3_OLD_SECRET_KEY', before)
+        service.rotated = True; after = service.test_environment()
+        self.assertEqual(after['AWAKEN_TEST_S3_OLD_SECRET_KEY'], before['AWAKEN_TEST_S3_SECRET_KEY'])
+        self.assertNotEqual(after['AWAKEN_TEST_S3_SECRET_KEY'], before['AWAKEN_TEST_S3_SECRET_KEY'])
+        for key in ('AWAKEN_TEST_S3_ENDPOINT', 'AWAKEN_TEST_S3_ACCESS_KEY', 'AWAKEN_TEST_S3_ROTATION_ID'):
+            self.assertEqual(before[key], after[key])
+
+    def test_public_receipt_omits_root_and_application_credentials(self):
+        service = object.__new__(s3.MinioService)
+        service.binaries = {}; service.process = mock.Mock(pid=987); service.owner = 'owned'
+        service.identity = {}; service.endpoint = 'http://127.0.0.1:1234'; service.rotated = False
+        service.root_secret, service.old_secret, service.new_secret = [secrets.token_hex(24) for _ in range(3)]
+        encoded = json.dumps(service.receipt())
+        for value in (service.root_secret, service.old_secret, service.new_secret):
+            self.assertNotIn(value, encoded)
+
+    def test_cleanup_failure_cannot_report_stopped(self):
+        service = object.__new__(s3.MinioService)
+        service.process = mock.Mock(pid=987); service.process.poll.return_value = None
+        service.process.wait.side_effect = subprocess.TimeoutExpired('owned-native-minio', 10)
+        service.log = mock.Mock()
+        with self.assertRaises(subprocess.TimeoutExpired): service.close()
+        service.process.terminate.assert_called_once()
+        service.log.close.assert_called_once()
+
+
+
+class S3ExecutionReceiptTests(unittest.TestCase):
+    def make_receipts(self, base):
+        phases = [
+            ['object::s3_fixture::tests::required_switch_has_one_canonical_value', 'object::s3_fixture::tests::admission_table_preserves_values_and_rejects_missing_invalid_or_empty_fields'],
+            ['object::tests::minio_conforms', 'object::tests::minio_conforms_fixture_admission'],
+            ['object::tests::minio_rotation_seed'],
+            ['object::tests::minio_rotated_credentials_revoke_old_secret_and_preserve_objects'],
+        ]
+        receipts=[]
+        for index,cases in enumerate(phases):
+            path=base/'test-timings'/str(index);path.mkdir(parents=True)
+            doc={'status':'passed','exit_code':0,'source_unchanged':True,'source_digest':'source',
+                 'selected_cases':sorted(cases),'required_cases':cases,'executed_cases':[[case,'ok'] for case in cases],
+                 'arguments':['-p','awaken-file-store'],'s3_fixture_required':True,'s3_fixture_configured':True}
+            (path/'results.json').write_text(json.dumps(doc),encoding='utf-8')
+            (path/'list.log').write_text(''.join(case+': test\n' for case in cases),encoding='utf-8')
+            (path/'results.log').write_text(''.join('test '+case+' ... ok\n' for case in cases)+'test result: ok. '+str(len(cases))+' passed; 0 failed; 0 ignored;\n'+('VERIFIED live S3 fixture\n' if index else ''),encoding='utf-8')
+            receipts.append(path)
+        return receipts
+
+    def test_s3_requires_every_real_phase_exact_source_and_boolean_fixture_flags(self):
+        import check_rust_test_execution as q
+        with tempfile.TemporaryDirectory() as directory,mock.patch.object(q,'verify_preparation'):
+            base=Path(directory);receipts=self.make_receipts(base)
+            def references(rows):return ''.join('execution evidence: '+str(path)+'\n' for path in rows)
+            log=references(receipts)
+            with mock.patch.dict(os.environ,{'CARGO_TARGET_DIR':str(base)}):
+                self.assertEqual(sum(len(row['selected_cases']) for row in gate.reconcile_s3(log,'source')),6)
+                for rows in (receipts[:-1],[*receipts[:-1],receipts[-2]]):
+                    with self.assertRaises(ValueError):gate.reconcile_s3(references(rows),'source')
+                with self.assertRaises(ValueError):gate.reconcile_s3(log,'other-source')
+                path=receipts[0]/'results.json';original=json.loads(path.read_text())
+                for key in ('s3_fixture_required','s3_fixture_configured'):
+                    for invalid in (False,'1',None):
+                        doc=dict(original);doc[key]=invalid;path.write_text(json.dumps(doc),encoding='utf-8')
+                        with self.subTest(key=key,invalid=invalid),self.assertRaisesRegex(ValueError,'require the owned'):
+                            gate.reconcile_s3(log,'source')
+                path.write_text(json.dumps(original),encoding='utf-8')
+                for index in (1,2,3):
+                    path=receipts[index]/'results.log';original_output=path.read_text()
+                    for changed in (original_output.replace('VERIFIED live S3 fixture',''),
+                                    original_output.replace(' ... ok',' ... ignored',1),
+                                    original_output+'SKIPPED S3 fixture\n'):
+                        path.write_text(changed,encoding='utf-8')
+                        with self.subTest(phase=index),self.assertRaises(ValueError):gate.reconcile_s3(log,'source')
+                    path.write_text(original_output,encoding='utf-8')
+
+class S3InstallTests(unittest.TestCase):
+    @unittest.skipUnless(os.name=='nt','native Windows installer')
+    def test_direct_s3_assets_require_both_checksums_and_windows_pe_before_admission(self):
+        import hashlib
+        import install_windows_services as installer
+        for fault in (None,'minio-checksum','mc-checksum','mc-not-pe'):
+            with self.subTest(fault=fault),tempfile.TemporaryDirectory() as directory:
+                base=Path(directory);archives=base/'archives';archives.mkdir();pins={}
+                image=bytearray(90);image[:2]=b'MZ';image[60:64]=struct.pack('<I',70)
+                image[70:76]=b'PE\0\0'+struct.pack('<H',0x8664)
+                for name in ('minio','mc'):
+                    payload=b'not-windows' if fault==name+'-not-pe' else bytes(image)
+                    pins[name]={'archive':name+'.exe','url':'https://example.invalid/'+name,
+                        'bytes':len(payload),'sha256':hashlib.sha256(payload).hexdigest(),'executable':name+'.exe'}
+                    (archives/(name+'.exe')).write_bytes(payload)
+                    if fault==name+'-checksum':pins[name]['sha256']='0'*64
+                with mock.patch.dict(installer.PINS,pins),mock.patch.object(installer,'extract_runtime') as extract:
+                    if fault is None:
+                        report=installer.install(base/'out',archives,'s3')
+                        self.assertEqual(report['status'],'passed');self.assertEqual(set(report['services']),{'minio','mc'})
+                    else:
+                        with self.assertRaises(ValueError):installer.install(base/'out',archives,'s3')
+                        self.assertEqual(json.loads((base/'out/installation.json').read_text())['status'],'failed')
+                    extract.assert_not_called()
+
+    def test_unknown_zip_kind_cannot_fall_through_to_postgres_extraction(self):
+        import install_windows_services as installer
+        with self.assertRaisesRegex(ValueError,'unsupported'):
+            installer.extract_runtime(Path('not-opened.zip'),Path('not-written'),'s3')
 
 
 if __name__=="__main__":

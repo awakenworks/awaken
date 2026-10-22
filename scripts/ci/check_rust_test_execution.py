@@ -209,6 +209,9 @@ def run_required(arguments: list[str], inventory: Path, results: Path, receipt: 
                 "selected_cases": [], "executed_cases": [],
                 "postgres_fixture_required": os.environ.get("AWAKEN_TEST_REQUIRE_POSTGRES") == "1",
                 "postgres_fixture_configured": "AWAKEN_TEST_DATABASE_URL" in os.environ,
+                "s3_fixture_required": os.environ.get("AWAKEN_TEST_REQUIRE_S3") == "1",
+                "s3_fixture_configured": all(os.environ.get(name) for name in
+                    ("AWAKEN_TEST_S3_ENDPOINT", "AWAKEN_TEST_S3_ACCESS_KEY", "AWAKEN_TEST_S3_SECRET_KEY")),
                 "status": "running", "rows": [], "errors": []}
     if preparation is not None:
         document["preparation"] = preparation
@@ -289,20 +292,36 @@ class ExecutionTests(unittest.TestCase):
         from formal_plan import script_closure
         from formal_sources import detached_git_environment
         root = Path(__file__).resolve().parents[2]
-        inputs = script_closure(root, ("scripts/ci/_rust_test_execution.sh",
+        inputs = script_closure(root, ("scripts/ci/_native_shell.py", "scripts/ci/_rust_test_execution.sh",
                                       "scripts/ci/check_rust_test_execution.py", *entrypoint_inputs))
         for relative in sorted(inputs):
             target = fixture / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(root / relative, target)
         (fixture / ".gitignore").write_text("target/\n", encoding="utf-8")
-        (fixture / "subject.txt").write_text("original source\n", encoding="utf-8")
+        (fixture / "subject.txt").write_bytes(b"original source\n")
         values = detached_git_environment()
         for arguments in (("init", "--quiet"), ("config", "core.autocrlf", "false"), ("add", "."),
                           ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                            "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "fixture")):
             subprocess.run(["git", "-C", str(fixture), *arguments], env=values, check=True)
         return fixture / "scripts/ci"
+
+    @staticmethod
+    def required_shell(body: str, *, cwd: Path, env: dict[str, str], timeout: int):
+        from _native_shell import bash_executable
+        if os.name != "nt":
+            return subprocess.run([bash_executable(environment=env), "-c", body], cwd=cwd, env=env,
+                                  capture_output=True, text=True, timeout=timeout)
+        # The script is ignored fixture evidence. The existing native transport
+        # owns a kill-on-close Job before launching Git Bash, so an outer timeout
+        # cannot strand fixture Cargo children or resolve System32's WSL Bash.
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", dir=cwd / "target",
+                                         encoding="utf-8", newline="\n", delete=False) as script:
+            script.write(body + "\n")
+        return subprocess.run([sys.executable, str(cwd / "scripts/ci/_native_shell.py"), script.name],
+                              cwd=cwd, env=env, capture_output=True, text=True,
+                              timeout=max(timeout, 120))
 
     @staticmethod
     def cargo_fixture(fixture: Path, body: str) -> dict[str, str]:
@@ -726,7 +745,6 @@ exit "$RESULT_STATUS"
         self.assertEqual(execution_evidence(inventory, output, 0)["errors"], [])
         self.assertIn("required selection omits cases: critical", execution_evidence(inventory, output, 0, floor)["errors"])
 
-    @unittest.skipIf(os.name == "nt", "actual POSIX libtest boundary fixture")
     def test_floor_failure_stops_before_run(self) -> None:
         # E3/E4: listing returns0 with a nonempty wrong identity, while a run
         # would report success. Mandatory floor refuses before any run process.
@@ -737,13 +755,11 @@ exit "$RESULT_STATUS"
 printf '%s\\n' "$*" >> "$CARGO_TARGET_DIR/calls"
 echo 'other: test'
 ''')
-            result = subprocess.run(["bash", "-c", "source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical --require-case=critical"],
-                                    cwd=fixture, env=values, capture_output=True, text=True, timeout=15)
+            result = self.required_shell("source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical --require-case=critical", cwd=fixture, env=values, timeout=15)
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertIn("required selection omits cases: critical", result.stderr)
             self.assertEqual(len((fixture / "target/calls").read_text().splitlines()), 1)
 
-    @unittest.skipIf(os.name == "nt", "private Git/POSIX command fixture")
     def test_hidden_index_and_untracked_bytes_are_working_source_causes(self) -> None:
         # E7/E8: index and WT cancel in HEAD->WT, or an existing untracked
         # path changes bytes. Both are real source changes after listing, so
@@ -771,8 +787,7 @@ echo 'test critical ... ok'
 echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 ''')
                 values['MUTATION_CAUSE'] = cause
-                result = subprocess.run(["bash", "-c", "source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical"],
-                                        cwd=fixture, env=values, capture_output=True, text=True, timeout=15)
+                result = self.required_shell("source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical", cwd=fixture, env=values, timeout=15)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn("Source changed", result.stderr)
                 self.assertEqual(len((fixture / "target/calls").read_text().splitlines()), 1)
@@ -783,7 +798,6 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
                 self.assertEqual(data["status"], "failed")
                 self.assertFalse(data["source_unchanged"])
 
-    @unittest.skipIf(os.name == "nt", "private hook/index admission fixture")
     def test_required_source_uses_same_hook_index_and_detaches_foreign_hook(self) -> None:
         # E7: an actual same-root alternate index is the selected subject;
         # foreign DIR/WT/index must not replace it. Both runs use the real
@@ -814,8 +828,7 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
                 else:
                     values.update(GIT_DIR=str(decoy / ".git"), GIT_WORK_TREE=str(decoy), GIT_INDEX_FILE=str(decoy / ".git/index"), GIT_PREFIX="foreign/")
                     expected_index = formal_sources.git_output(own, "write-tree").decode().strip()
-                result = subprocess.run(["bash", "-c", "source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical"],
-                                        cwd=own, env=values, capture_output=True, text=True, timeout=15)
+                result = self.required_shell("source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical", cwd=own, env=values, timeout=15)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 data = json.loads(next((own / "target/test-timings").glob("rust-execution.*/results.json")).read_text())
                 self.assertEqual(data["index_tree"], expected_index)
@@ -824,7 +837,6 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
                 self.assertEqual({path.relative_to(decoy).as_posix(): path.read_bytes()
                                   for path in decoy.rglob("*") if path.is_file()}, protected)
 
-    @unittest.skipIf(os.name == "nt", "private Git index refusal")
     def test_unreadable_index_refuses_before_any_cargo(self) -> None:
         # E6: a real malformed private index -> Git128, unknown source and
         # zero Cargo body, not an empty source or successful stale HEAD plan.
@@ -833,13 +845,11 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
             self.runner_fixture(fixture)
             values = self.cargo_fixture(fixture, 'touch "$CARGO_TARGET_DIR/forbidden-cargo"\n')
             (fixture / ".git/index").write_bytes(b"malformed-index")
-            result = subprocess.run(["bash", "-c", "source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical"],
-                                    cwd=fixture, env=values, capture_output=True, text=True, timeout=15)
+            result = self.required_shell("source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical", cwd=fixture, env=values, timeout=15)
             self.assertEqual(result.returncode, 128, result.stdout + result.stderr)
             self.assertIn("Cannot establish required working source", result.stderr)
             self.assertFalse((fixture / "target/forbidden-cargo").exists())
 
-    @unittest.skipIf(os.name == "nt", "real private source boundaries")
     def test_mutations_at_each_sequence_fence_stop_or_reject_execution(self) -> None:
         # E8: capture1/consistency2, then enter-list3/post-list4/enter-run5/
         # post-run6/terminal7. Mutate a real tracked file at each real shared
@@ -1057,7 +1067,6 @@ if [ "$1" = --input-type=module ]; then echo /owned/hand; else echo E2E >> "$CAL
                     self.assertIn("required selection is empty", result.stderr)
                     self.assertNotIn("E2E", calls)
 
-    @unittest.skipIf(os.name == "nt", "the Bash orchestration runs in the Linux gate")
     def test_actual_required_runner_rejects_empty_ignored_skipped_and_failed_runs(self) -> None:
         # E0 both orchestration fixtures consume the actual complete script
         # closure and private Git; missing dependencies cannot fake a negative.
@@ -1085,7 +1094,7 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 [ "$CASE" != failed ]
 ''')
                 environment.update(CASE=case, CALL_LOG=str(fixture / "target/calls"))
-                result = subprocess.run(["bash", "-c", "source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical -- --exact"], cwd=fixture, env=environment, capture_output=True, text=True, timeout=15)
+                result = self.required_shell("source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical -- --exact", cwd=fixture, env=environment, timeout=15)
                 self.assertEqual(result.returncode == 0, case == "passing", result.stdout + result.stderr)
                 expected = ["test --locked -p critical --lib critical -- --exact --list"]
                 if case == "list-failed":

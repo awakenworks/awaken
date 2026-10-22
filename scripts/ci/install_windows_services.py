@@ -27,10 +27,27 @@ PINS = {
         "bytes": 373254386,
         "executable": "pgsql/bin/postgres.exe",
     },
+    "minio": {
+        "archive": "minio.exe",
+        "url": "https://github.com/minio/minio/releases/download/RELEASE.2024-12-18T13-15-44Z/minio.windows-amd64.RELEASE.2024-12-18T13-15-44Z.exe",
+        "sha256": "5dd4fdc24e3f583f158bdf51671efdd11b4cc7a33d2bf47aa178403d9e5c03a8",
+        "bytes": 118784512,
+        "executable": "minio.exe",
+    },
+    "mc": {
+        "archive": "mc.exe",
+        "url": "https://github.com/minio/mc/releases/download/RELEASE.2024-11-21T17-21-54Z/mc.windows-amd64.RELEASE.2024-11-21T17-21-54Z.exe",
+        "sha256": "e77b5d926f18412c69ed994f2e064ef5d228df75a7b2dc754d4a5de6b009e9ca",
+        "bytes": 28904448,
+        "executable": "mc.exe",
+    },
 }
+
+SERVICE_COMPONENTS = {"nats": ("nats",), "postgres": ("postgres",), "s3": ("minio", "mc")}
 
 
 def extract_runtime(archive: Path, destination: Path, kind: str) -> int:
+    if kind not in ("nats", "postgres"): raise ValueError("unsupported native service ZIP format")
     count, total = 0, 0
     with zipfile.ZipFile(archive) as bundle:
         for member in bundle.infolist():
@@ -67,7 +84,9 @@ def install(output: Path, archives: Path | None = None, service: str | None = No
         receipt.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     save()
     try:
-        for kind, pin in (PINS if service is None else {service: PINS[service]}).items():
+        components = tuple(PINS) if service is None else SERVICE_COMPONENTS[service]
+        for kind in components:
+            pin = PINS[kind]
             archive = output / pin["archive"]
             if archives is not None:
                 with (archives / pin["archive"]).open("rb") as source, archive.open("xb") as target:
@@ -82,7 +101,11 @@ def install(output: Path, archives: Path | None = None, service: str | None = No
                 raise ValueError("native service archive does not match its reviewed checksum")
             destination = output / kind
             destination.mkdir()
-            count = extract_runtime(archive, destination, kind)
+            if kind in ("minio", "mc"):
+                shutil.copyfile(archive, destination / pin["executable"])
+                count = 1
+            else:
+                count = extract_runtime(archive, destination, kind)
             executable = windows_executable(destination / pin["executable"])
             record["services"][kind] = {**pin, "extracted_files": count, "binary": executable}
             save()
@@ -97,7 +120,7 @@ def install(output: Path, archives: Path | None = None, service: str | None = No
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
-    parser.add_argument("--service", choices=sorted(PINS), required=True)
+    parser.add_argument("--service", choices=sorted(SERVICE_COMPONENTS), required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--archives", type=Path, help="optional directory of the same pinned archives")
     arguments = parser.parse_args()

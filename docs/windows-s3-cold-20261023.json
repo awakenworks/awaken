@@ -1,0 +1,179 @@
+{
+  "schema_version": 1,
+  "platform": "Windows/MSVC",
+  "full_gate": false,
+  "linux_verification_allowed": false,
+  "scope": "Real S3 conformance and credential rotation built from an empty Cargo home and empty native MSVC target.",
+  "qualification": {
+    "status": "passed",
+    "platform": "Windows/MSVC",
+    "linux_verification_allowed": false,
+    "full_gate": false,
+    "scope": "Fresh Windows S3 binaries, empty Cargo home and build target; no compiler object wrapper; six required S3 executions",
+    "seed_head": "e970f4ea9b75e2ef720229fb78af8ae2e9eb2ccb",
+    "cache_root": "F:\\Codes\\awaken-1.0.0-dev\\target\\wc22-a117",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-pc-windows-msvc\nrelease: 1.96.0\nLLVM version: 22.1.2\n",
+    "lock_sha256": "e7111c250ad538bfc4485d2f42936b4ba23cdf4263e1fd0d263f17508bbb22c1",
+    "stages": [
+      {
+        "stage": "fresh-s3-install",
+        "exit_code": 0,
+        "seconds": 73.51181210001232,
+        "log_sha256": "de7c4257d4d82d64be39f5e108a59889cc02dd80b68cd5fad5a7f7d03312b31d"
+      },
+      {
+        "stage": "fresh-windows-dependency-fetch",
+        "exit_code": 0,
+        "seconds": 103.0376094999956,
+        "log_sha256": "d7b21826a4336ca574281db6fa52397a5d31cc513d5d261d5c29c923071d4746"
+      },
+      {
+        "stage": "cold-s3-execution",
+        "exit_code": 0,
+        "seconds": 895.1975987000042,
+        "log_sha256": "983458222e5ce9c670329d445b64c6491192447cf361b22520a4fe221ae3b44a"
+      }
+    ],
+    "execution_receipt": "F:\\Codes\\awaken-1.0.0-dev\\target\\wc22-a117\\b\\test-timings\\native-s3-cold\\result.json",
+    "execution_receipt_sha256": "a69c14d18223e3920f5a21e1d6469838b0de09ebf0764a88e4f0aca60d299d25",
+    "exit_code": 0
+  },
+  "source": {
+    "revision": "e970f4ea9b75e2ef720229fb78af8ae2e9eb2ccb",
+    "index_tree": "a7fe79dc08a599f847a951aff6075e2e725a22b0",
+    "digest": "b5bad8e5bc4ec017b032e9dc3e9594d59f4b4e2e92ef094dd5593d865f7f37c4",
+    "patch_sha256": "154d6d1da4641161ad5604efa3cb14b31e8186ded9019a20e16f41f43d907281"
+  },
+  "execution": [
+    {
+      "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\wc22-a117\\b\\test-timings\\rust-execution.cBGDPW",
+      "receipt_sha256": "705e8b8ad61b9d5946672d23c0880d61fcdf0c444914305906e4630728f5b10b",
+      "selected_cases": [
+        "object::s3_fixture::tests::admission_table_preserves_values_and_rejects_missing_invalid_or_empty_fields",
+        "object::s3_fixture::tests::required_switch_has_one_canonical_value"
+      ]
+    },
+    {
+      "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\wc22-a117\\b\\test-timings\\rust-execution.FO3XY7",
+      "receipt_sha256": "8266a282ce671d0199fb43240ba418192db8b8e33bba9627b8f51993511e61cf",
+      "selected_cases": [
+        "object::tests::minio_conforms",
+        "object::tests::minio_conforms_fixture_admission"
+      ]
+    },
+    {
+      "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\wc22-a117\\b\\test-timings\\rust-execution.a4SPEm",
+      "receipt_sha256": "5a330e2ae132d4fb623f5432fd9b6d812a1aea32713a8e06ce8e620dfed77d8f",
+      "selected_cases": [
+        "object::tests::minio_rotation_seed"
+      ]
+    },
+    {
+      "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\wc22-a117\\b\\test-timings\\rust-execution.c8ufh3",
+      "receipt_sha256": "1781192e656f60433a2c6ff86c1c3cf179cab87fec8e43beb008dacdf1fd5ae6",
+      "selected_cases": [
+        "object::tests::minio_rotated_credentials_revoke_old_secret_and_preserve_objects"
+      ]
+    }
+  ],
+  "source_unchanged": true,
+  "credential_rotation_applied": true,
+  "cleanup": {
+    "stopped": true,
+    "pid": 71332,
+    "exit_code": 1,
+    "method": "retained-owned-process-handle"
+  },
+  "attribution": "Historical exact working subject before the subsequent NATS test-only barrier fix and these evidence documents. No cache ownership or source receipt was relabelled.",
+  "warm_final_subject_s3_qualification": {
+    "service": "s3",
+    "source": {
+      "revision": "e970f4ea9b75e2ef720229fb78af8ae2e9eb2ccb",
+      "index_tree": "a7fe79dc08a599f847a951aff6075e2e725a22b0",
+      "digest": "0488209201edb45f64bbca04e6c9c3ef8fdb1b73790117f35e23da14eba95aa5",
+      "patch_sha256": "71868ed11034d77e9e94053a99b647fd5651a5dee161af3c3afa80b2555f5042"
+    },
+    "receipt": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-services-extended-20261023-v3-4-s3\\result.json",
+    "receipt_sha256": "f948a8fc89f4f4534cacd83c4fe5c1d5464ea792250f8328864b6be9c35ef4e3",
+    "stages": [
+      {
+        "stage": "s3-admission",
+        "command": [
+          "C:\\Python313\\python.EXE",
+          "-X",
+          "utf8",
+          "scripts/ci/_native_shell.py",
+          "scripts/ci/object_store_tests.sh",
+          "--admission"
+        ],
+        "exit_code": 0,
+        "seconds": 33.26747319998685,
+        "log_sha256": "916775eb066b841ff47504a275f69139562cc7dd86f7be9712d254508c6e7aeb"
+      },
+      {
+        "stage": "s3-conformance",
+        "command": [
+          "C:\\Python313\\python.EXE",
+          "-X",
+          "utf8",
+          "scripts/ci/_native_shell.py",
+          "scripts/ci/object_store_tests.sh",
+          "--conformance"
+        ],
+        "exit_code": 0,
+        "seconds": 46.371515800012276,
+        "log_sha256": "53c88a324865804e00742f1a104bfe13c40a250c0e4216ca0ce1e61f01af5340"
+      },
+      {
+        "stage": "s3-seed",
+        "command": [
+          "C:\\Python313\\python.EXE",
+          "-X",
+          "utf8",
+          "scripts/ci/_native_shell.py",
+          "scripts/ci/object_store_tests.sh",
+          "--seed"
+        ],
+        "exit_code": 0,
+        "seconds": 30.112062200030778,
+        "log_sha256": "cd3eb71207735cdfbf5270925a3d76aaa5cec2fec3f0034a9d8680e817e4c2be"
+      },
+      {
+        "stage": "s3-verify",
+        "command": [
+          "C:\\Python313\\python.EXE",
+          "-X",
+          "utf8",
+          "scripts/ci/_native_shell.py",
+          "scripts/ci/object_store_tests.sh",
+          "--verify"
+        ],
+        "exit_code": 0,
+        "seconds": 31.359632099978626,
+        "log_sha256": "c0710daef73d754687fcb8e8d4c267f8c907263e9af6a68929705a57a014f528"
+      }
+    ],
+    "receipts": 4,
+    "named_executions": 6,
+    "cleanup": {
+      "stopped": true,
+      "pid": 94772,
+      "exit_code": 1,
+      "method": "retained-owned-process-handle"
+    }
+  },
+  "failures_retained": [
+    {
+      "receipt": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-services-extended-20261023-v1\\result.json",
+      "issue": "HTTP client options replaced allow_http; fixed together with timeouts."
+    },
+    {
+      "receipt": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-s3-after-transport-20261023-v2\\result.json",
+      "issue": "Zero SDK transport retries caused a real request failure; bounded transport recovery added without weakening denial assertions."
+    },
+    {
+      "receipt": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-services-extended-20261023-v2\\result.json",
+      "issue": "NATS child failed on a local-write flush readiness race; replaced by an observed same-connection broker probe."
+    }
+  ]
+}

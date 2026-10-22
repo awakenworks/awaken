@@ -45,8 +45,12 @@ jobs:
         run: python scripts/ci/check_native_services.py --service nats --nats-bin target/windows-services/nats/nats-server-v2.15.0-windows-amd64/nats-server.exe --output target/test-timings/native-nats
       - name: Install the reviewed Windows PostgreSQL runtime without a service cache
         run: python scripts/ci/deadline.py 900 -- python scripts/ci/install_windows_services.py --service postgres --output target/windows-postgres
-      - name: Require live backend parity, Work durability and HTTP process failover
+      - name: Require backend parity, Work, HTTP failover and process-crash durability
         run: python scripts/ci/check_native_services.py --service postgres --postgres-bin target/windows-postgres/postgres/pgsql/bin --output target/test-timings/native-postgres
+      - name: Install reviewed Windows S3 binaries without a service cache
+        run: python scripts/ci/deadline.py 900 -- python scripts/ci/install_windows_services.py --service s3 --output target/windows-s3
+      - name: Require S3 admission, least privilege and real credential rotation
+        run: python scripts/ci/check_native_services.py --service s3 --minio-bin target/windows-s3/minio/minio.exe --mc-bin target/windows-s3/mc/mc.exe --output target/test-timings/native-s3
       - name: Retain exact-source service and execution receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -56,4 +60,5 @@ jobs:
             target/test-timings/
             target/windows-services/installation.json
             target/windows-postgres/installation.json
+            target/windows-s3/installation.json
           if-no-files-found: error
