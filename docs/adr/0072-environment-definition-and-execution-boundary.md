@@ -360,3 +360,37 @@ Wire fields and existing valid configuration serialization remain unchanged.
 Project dependency preparation is distinct from global tool installation;
 changing a development profile requires evidence that its repository bootstrap
 can run using the prepared dependencies without runtime network access.
+
+## Command results and registration delivery
+
+A create command's idempotency key names its original immutable revision, not
+the current Environment head. Replaying it after update or archive returns that
+original result and creates no revision or registration intent. It never rewinds
+the current head or restores execution admission.
+
+Definition commit and registration acknowledgement are separate outcomes.
+`EnvironmentApplicationError::CommittedRegistrationPending` retains the committed
+Environment and revision, together with the internal delivery cause. Callers can
+inspect `committed_environment()` or `committed_environment_id()` and let the
+existing registration outbox recover delivery. They must not repeat an unkeyed
+authoring command to repair registration.
+
+The Managed adapter retains the existing 503 `api_error` body shape and suppresses
+automatic SDK retries with `x-should-retry: false` for a known committed result.
+`x-awaken-command-status: committed` and `x-awaken-environment-id` expose the
+known identity without parsing an error message; `x-awaken-environment-revision`
+names the original revision only when it is available. Internal delivery
+diagnostics are not copied into that response. Pre-commit failures carry none
+of these commitment headers.
+
+Authorities predating immutable history can retain a create-command identity
+without its original revision. Such a retry returns the typed
+`CreateEnvironmentError::OriginalResultUnavailable` with the known Environment
+id. Managed projects this as 409 `conflict_error`, with the commitment identity
+and no invented revision. Retrieve the current definition for recovery; do not
+substitute that mutable definition for the missing original result.
+
+If a connection is lost before any response arrives, the client cannot infer
+whether authoring committed. Clients needing safe create retries supply a stable
+`Idempotency-Key` for the operation and reuse it with the same payload. A new
+unkeyed request intentionally names a new command.

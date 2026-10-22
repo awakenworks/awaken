@@ -37,6 +37,22 @@ struct ProjectionDrain<R> {
     route: Option<crate::mcp_relay::CapturedRelayRoute>,
 }
 
+async fn wait_for_preparation(
+    staging: Option<crate::mcp_material::McpStagingActivity>,
+) -> Result<(), McpError> {
+    if let Some(staging) = staging {
+        tokio::time::timeout(MCP_GENERATION_CALL_QUIESCENCE_TIMEOUT, staging.wait())
+            .await
+            .map_err(|_| {
+                McpError::unavailable_classified(
+                    "mcp_generation_staging_timeout",
+                    "MCP preparation is still active; the original drain owner is retained",
+                )
+            })?;
+    }
+    Ok(())
+}
+
 /// The MCP state of each installed Session, seen only through its
 /// [`SessionMcpState`] and its cached Session Runtime. Every closure runs under
 /// the installed Sessions' own lock, exactly like a direct access.
@@ -751,9 +767,7 @@ impl McpSessions {
         })?;
 
         let had_staging = staging.is_some();
-        if let Some(staging) = staging {
-            staging.wait().await;
-        }
+        wait_for_preparation(staging).await?;
         // A stage that was already registered may finish while drain waits.
         // Read its route only under the original projection allocation check;
         // never select a successor projection by generation alone.

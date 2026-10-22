@@ -276,7 +276,10 @@ fn map_application_error(error: EnvironmentApplicationError) -> StatusCode {
         EnvironmentApplicationError::Policy(error) => map_policy_error(error),
         EnvironmentApplicationError::PolicyStoreUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         EnvironmentApplicationError::Create(
-            awaken_environment_contract::CreateEnvironmentError::IdempotencyConflict,
+            awaken_environment_contract::CreateEnvironmentError::IdempotencyConflict
+            | awaken_environment_contract::CreateEnvironmentError::OriginalResultUnavailable {
+                ..
+            },
         ) => StatusCode::CONFLICT,
         EnvironmentApplicationError::Create(
             awaken_environment_contract::CreateEnvironmentError::InvalidConfig(_),
@@ -295,7 +298,10 @@ fn map_application_error(error: EnvironmentApplicationError) -> StatusCode {
         | EnvironmentApplicationError::Store(
             awaken_environment_contract::EnvironmentStoreError::Backend(_),
         )
-        | EnvironmentApplicationError::RegistrationInvariant(_) => StatusCode::SERVICE_UNAVAILABLE,
+        | EnvironmentApplicationError::RegistrationInvariant(_)
+        | EnvironmentApplicationError::CommittedRegistrationPending { .. } => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
     }
 }
 

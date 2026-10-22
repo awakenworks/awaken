@@ -88,6 +88,12 @@ impl CreateEnvironmentOutcome {
 pub enum CreateEnvironmentError {
     #[error("Environment command id was reused with different input")]
     IdempotencyConflict,
+    /// Legacy authorities can retain a command identity without its original
+    /// revision. Never replace that missing receipt with the mutable head.
+    #[error(
+        "Environment {environment_id} was created, but its original creation result is unavailable; retrieve the current definition"
+    )]
+    OriginalResultUnavailable { environment_id: String },
     #[error(transparent)]
     InvalidConfig(#[from] InvalidEnvironmentConfig),
     #[error("Environment store failed: {0}")]
@@ -806,6 +812,8 @@ pub trait EnvironmentDefinitionQueries: Send + Sync {
 pub trait EnvironmentDefinitionStore: Send + Sync {
     /// Atomically persist or replay one create command. A command id can name
     /// exactly one fingerprint for the lifetime of the authority store.
+    /// Replay returns the original immutable revision, even after updates or
+    /// archive advance the current definition. It creates no new intent.
     async fn create_once(
         &self,
         command: CreateEnvironmentCommand,

@@ -23,6 +23,7 @@ use crate::host::capability;
 /// Session context assembly for one process. Consumers: the Session Run
 /// components (run, resume, coordination, Outcomes), the dispatch resolver's
 /// claimed-Run construction, and the realization roles' executor part.
+#[derive(Clone)]
 pub struct RunAssembly {
     pub(crate) capabilities: Arc<crate::RunCapabilities>,
     pub(crate) child_runs: Arc<crate::ChildRunLauncher>,

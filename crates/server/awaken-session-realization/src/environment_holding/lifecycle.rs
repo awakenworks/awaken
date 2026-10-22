@@ -21,6 +21,10 @@ use awaken_session_configuration_contract::resource as session_resource;
 use awaken_tool_contract::tool_batch::ResourceOriginRef;
 use std::sync::Arc;
 
+mod adoption;
+pub(crate) use adoption::RetainedAdoptionEnvironment;
+pub use adoption::ValidatedSessionEnvironmentAdoption;
+
 mod closed_recovery;
 pub mod owner_decisions;
 mod publication;
@@ -39,15 +43,6 @@ use state::{RetirementSelection, pending_revoked_resource_reservation};
 pub struct LocalRetirementTransition {
     pub owner: RetiringSessionEnvironment,
 }
-
-/// Exact decoded binding, provider-effective spec, and any process-local
-/// owner observations produced by the single adoption validator.
-type ValidatedSessionEnvironmentAdoption = (
-    awaken_provisioning_contract::SandboxHandle,
-    awaken_provisioning_contract::SandboxSpec,
-    Option<Arc<crate::session_environment::SessionEnvironment>>,
-    Option<UnboundSessionEnvironment>,
-);
 
 /// Borrowed inputs for the single unavailable-observation phase under the
 /// Session lifecycle lock. Every authority remains in its existing typed value;
@@ -655,64 +650,57 @@ impl crate::environment_holding::EnvironmentHolding {
         let spec =
             self.session_environment_adoption_spec(peers, thread, provider, resolved_resources)?;
         let spec = self.validate_session_environment_adoption(provider, &spec, &handle)?;
-        let (retained, candidate) = self
+        let retained = self
             .sessions
             .read_realization(thread, |r| match &r.environment().owner {
-                SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
-                    candidate,
-                )) => (None, Some(candidate.clone())),
-                SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
-                    owned: RetiringEnvironmentOwner::Unbound(candidate),
-                    ..
-                }) => (
-                    Some((candidate.binding.clone(), candidate.environment.clone())),
-                    None,
-                ),
-                owner => (
-                    owner
-                        .terminal_bound_environment()
-                        .map(|owned| (owned.binding, owned.environment)),
-                    None,
-                ),
-            })?
-            .unwrap_or_default();
-        let resident = retained
-            .map(|(binding, environment)| {
-                if binding != encoded {
-                    let successor = self
-                        .revoked_owner_for_binding(thread, encoded, source_generation_id)?
-                        .is_some_and(|retiring| {
-                            matches!(retiring.owned, RetiringEnvironmentOwner::Bound(_))
-                        });
-                    if successor {
-                        return Ok(None);
-                    }
-                    return Err(RealizationError::invariant(
-                        "Session Environment retry conflicts with its retained binding",
-                    ));
+                SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(candidate)) => {
+                    Some((candidate.binding.clone(), RetainedAdoptionEnvironment::Candidate(Box::new(candidate.clone()))))
                 }
-                Ok(Some(environment))
+                SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+                    owned: RetiringEnvironmentOwner::Unbound(candidate), ..
+                }) => Some((candidate.binding.clone(), RetainedAdoptionEnvironment::Existing(candidate.environment.clone()))),
+                owner => owner.terminal_bound_environment().map(|owned| {
+                    (owned.binding, RetainedAdoptionEnvironment::Existing(owned.environment))
+                }),
+            })?
+            .flatten()
+            .map(|(binding, retained)| {
+                match &retained {
+                    RetainedAdoptionEnvironment::Candidate(candidate) => {
+                        if binding != encoded || candidate.environment.lifecycle().handle() != handle {
+                            return Err(RealizationError::invariant(
+                                "Session Environment retry conflicts with its hidden Candidate binding",
+                            ));
+                        }
+                    }
+                    RetainedAdoptionEnvironment::Existing(environment) => {
+                        if binding != encoded {
+                            let successor = self
+                                .revoked_owner_for_binding(thread, encoded, source_generation_id)?
+                                .is_some_and(|retiring| matches!(retiring.owned, RetiringEnvironmentOwner::Bound(_)));
+                            if successor { return Ok(None); }
+                            return Err(RealizationError::invariant(
+                                "Session Environment retry conflicts with its retained binding",
+                            ));
+                        }
+                        let resident_handle = environment.lifecycle().handle();
+                        if resident_handle != handle {
+                            return Err(RealizationError::invariant(format!(
+                                "Session {thread} is already bound to sandbox {}, not {}",
+                                resident_handle.sandbox_id, handle.sandbox_id
+                            )));
+                        }
+                    }
+                }
+                Ok(Some(retained))
             })
             .transpose()?
             .flatten();
-        if let Some(candidate) = &candidate
-            && (candidate.binding != encoded
-                || candidate.environment.lifecycle().handle() != handle)
-        {
-            return Err(RealizationError::invariant(
-                "Session Environment retry conflicts with its hidden Candidate binding",
-            ));
-        }
-        if let Some(environment) = resident.as_ref() {
-            let resident_handle = environment.lifecycle().handle();
-            if resident_handle != handle {
-                return Err(RealizationError::invariant(format!(
-                    "Session {thread} is already bound to sandbox {}, not {}",
-                    resident_handle.sandbox_id, handle.sandbox_id
-                )));
-            }
-        }
-        Ok((handle, spec, resident, candidate))
+        Ok(ValidatedSessionEnvironmentAdoption {
+            handle,
+            spec,
+            retained,
+        })
     }
 }
 
@@ -850,7 +838,11 @@ impl crate::environment_holding::EnvironmentHolding {
                 "unpublished terminal or cleanup ownership cannot resume ordinary adoption",
             ));
         }
-        let (handle, spec, mut resident, candidate) = exec.validated_session_environment_adoption(
+        let ValidatedSessionEnvironmentAdoption {
+            handle,
+            spec,
+            mut retained,
+        } = exec.validated_session_environment_adoption(
             peers,
             thread,
             encoded,
@@ -914,13 +906,9 @@ impl crate::environment_holding::EnvironmentHolding {
         let revoked_environment = revoked_owner
             .as_ref()
             .map(|retiring| retiring.owned.environment());
-        let retained = resident
-            .as_deref()
-            .or_else(|| {
-                candidate
-                    .as_ref()
-                    .map(|candidate| candidate.environment.as_ref())
-            })
+        let observed_environment = retained
+            .as_ref()
+            .map(|retained| retained.environment().as_ref())
             .or(revoked_environment.as_deref());
         let authority = effect
             .provider_fence
@@ -952,7 +940,7 @@ impl crate::environment_holding::EnvironmentHolding {
             .observe_effective(
                 &spec,
                 &handle,
-                retained,
+                observed_environment,
                 provider_effect.observation_basis(&spec),
                 awaken_provisioning_contract::SandboxObservationPurpose::Recovery,
             )
@@ -972,15 +960,17 @@ impl crate::environment_holding::EnvironmentHolding {
         // no rule.
         match observation {
             awaken_provisioning_contract::SandboxObservation::Ready => {
-                if revoked_owner.is_some() {
+                if revoked_owner.is_some()
+                    && matches!(retained, Some(RetainedAdoptionEnvironment::Existing(_)))
+                {
                     // Keep the Retiring owner in its installed Session until a fresh wrapper
                     // exists. Failure/cancellation must preserve the only local
                     // create-attempt and cleanup participants for a later retry.
-                    resident = None;
+                    retained = None;
                 }
-                let environment = match (resident, candidate) {
-                    (Some(environment), None) => environment,
-                    (None, Some(candidate)) => {
+                let environment = match retained {
+                    Some(RetainedAdoptionEnvironment::Existing(environment)) => environment,
+                    Some(RetainedAdoptionEnvironment::Candidate(candidate)) => {
                         self.publish_session_environment_under_lifecycle(lifecycle, peers,
                             thread,
                             candidate.environment,
@@ -989,7 +979,7 @@ impl crate::environment_holding::EnvironmentHolding {
                         )
                         .await?
                     }
-                    (None, None) => {
+                    None => {
                         let rebound = match revoked_owner.as_ref() {
                             Some(retiring) => provider
                                 .adoption().rebind_retained(&spec, &handle, &retiring.owned.environment(),
@@ -1020,11 +1010,6 @@ impl crate::environment_holding::EnvironmentHolding {
                         )
                         .await?
                     }
-                    (Some(_), Some(_)) => {
-                        return Err(RealizationError::invariant(
-                            "Session Environment cannot be both retained and unpublished",
-                        ));
-                    }
                 };
                 self.ensure_published_environment_reconciled_under_lifecycle(lifecycle, peers, thread, environment)
                     .await?;
@@ -1048,7 +1033,7 @@ impl crate::environment_holding::EnvironmentHolding {
             }
             | awaken_provisioning_contract::SandboxObservation::Terminal { .. }
             | awaken_provisioning_contract::SandboxObservation::Disposing { .. }) => {
-                if candidate.is_some() {
+                if matches!(retained, Some(RetainedAdoptionEnvironment::Candidate(_))) {
                     return Err(RealizationError::pending(
                         PendingState::CandidateObservationClosed,
                         "retained Session Environment Candidate is no longer Ready",
@@ -1078,7 +1063,7 @@ impl crate::environment_holding::EnvironmentHolding {
                         handle: &handle,
                         observation: &observation,
                     },
-                    resident.as_ref(),
+                    retained.as_ref().map(RetainedAdoptionEnvironment::environment),
                 )
                 .await
             }
