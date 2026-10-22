@@ -298,7 +298,10 @@ class ExecutionTests(unittest.TestCase):
             target = fixture / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(root / relative, target)
-        (fixture / ".gitignore").write_text("target/\n", encoding="utf-8")
+        # Match the repository's generated-output boundary. A lazily imported
+        # build-context module creates bytecode after the first source capture;
+        # that cache is execution output, while every source edit stays bound.
+        (fixture / ".gitignore").write_text("target/\n__pycache__/\n*.py[cod]\n", encoding="utf-8")
         (fixture / "subject.txt").write_bytes(b"original source\n")
         values = detached_git_environment()
         for arguments in (("init", "--quiet"), ("config", "core.autocrlf", "false"), ("add", "."),
@@ -306,6 +309,25 @@ class ExecutionTests(unittest.TestCase):
                            "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "fixture")):
             subprocess.run(["git", "-C", str(fixture), *arguments], env=values, check=True)
         return fixture / "scripts/ci"
+
+    def test_fixture_bytecode_is_output_but_source_edits_remain_bound(self) -> None:
+        # DT-FIXTURE: F1 unchanged source + a later Python import cache -> same
+        # digest; F2 a later source edit -> different digest. The existing real
+        # preparation/deadline cases import the module during actual execution.
+        # Never exempt a script, change the production snapshot, or disable its
+        # drift refusal merely to make the fixture execute.
+        import rust_test_plan
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary)
+            scripts = self.runner_fixture(fixture)
+            with mock.patch.object(rust_test_plan, "ROOT", fixture):
+                before = rust_test_plan.source_snapshot()[0]
+                cache = scripts / "__pycache__"
+                cache.mkdir(exist_ok=True)
+                (cache / "late.cpython.pyc").write_bytes(b"generated cache")
+                self.assertEqual(rust_test_plan.source_snapshot()[0], before, "F1")
+                (fixture / "subject.txt").write_text("changed source\n", encoding="utf-8")
+                self.assertNotEqual(rust_test_plan.source_snapshot()[0], before, "F2")
 
     @staticmethod
     def required_shell(body: str, *, cwd: Path, env: dict[str, str], timeout: int):
