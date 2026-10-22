@@ -192,7 +192,7 @@ mod tests {
         assert!(matches!(
             provider
                 .capacity()
-                .prewarm_images(&[effective.clone()])
+                .prewarm_images(std::slice::from_ref(&effective))
                 .await,
             Err(pc::SandboxError::NotReady(_))
         ));
@@ -255,6 +255,9 @@ mod tests {
                     }
                     Err(error) => panic!("RCO fixture accept: {error}"),
                 };
+                // Keep the accept loop nonblocking; request reads are bounded blocking I/O.
+                // Windows accepted streams can inherit the listener mode.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(2)))
                     .unwrap();
