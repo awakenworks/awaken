@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import re
@@ -14,6 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from _native_shell import bash_executable
 
 
@@ -313,7 +316,18 @@ esac
             (directory / "mutants.json").write_text(json.dumps([{"name": "one"}, {"name": "omitted"}]))
             self.assertFalse(check(receipt), "M3 missing result cannot shrink planned coverage")
 
-    def test_actual_runner_owns_directory_and_propagates_tool_failure(self) -> None:
+    def test_runner_output_directories(self) -> None:
+        for case in ("fresh", "existing", "nested"):
+            self._assert_runner_case(case)
+
+    def test_runner_blocked_output_is_preserved(self) -> None:
+        self._assert_runner_case("blocked")
+
+    def test_runner_tool_failures_stop_and_cleanup(self) -> None:
+        for case in ("tool-failure", "missing-init", "fuzz-lock-stale"):
+            self._assert_runner_case(case)
+
+    def _assert_runner_case(self, case: str) -> None:
         # Directory/tool graph: D1 output parent missing/existing/nested; D2 a
         # regular file blocks creation; D3 a mutation command fails. Effects:
         # D1 => initialize + run all 6 tools; D2 => zero mutation calls + failure;
@@ -333,17 +347,16 @@ esac
         # batch. D8 cleanup/mutations use the isolated target AND build directory;
         # ordinary tests retain their original cache even after tool failure.
         # Removing the mkdir line must kill the fresh-directory positive control.
-        for case in ("fresh", "existing", "nested", "blocked", "tool-failure", "missing-init", "fuzz-lock-stale"):
-            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                scripts = self.runner_fixture(root)
-                (root / "fuzz").mkdir()
-                if case == "missing-init":
-                    runner = scripts / "check-reliability.sh"
-                    runner.write_text(runner.read_text().replace('mkdir -p "$mutation_evidence"\n', ""), encoding="utf-8", newline="\n")
-                binary = root / "bin"
-                binary.mkdir()
-                cargo = '''#!/usr/bin/env bash
+        with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scripts = self.runner_fixture(root)
+            (root / "fuzz").mkdir()
+            if case == "missing-init":
+                runner = scripts / "check-reliability.sh"
+                runner.write_text(runner.read_text().replace('mkdir -p "$mutation_evidence"\n', ""), encoding="utf-8", newline="\n")
+            binary = root / "bin"
+            binary.mkdir()
+            cargo = '''#!/usr/bin/env bash
 if [ "$1" = awaken-ci-deadline ]; then entry=$(command -v "cargo-$1"); exec "$entry" "$@"; fi
 printf '%q ' "$@" >> "$CALL_LOG"
 printf '\\n' >> "$CALL_LOG"
@@ -362,81 +375,81 @@ case "$*" in
     echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
 esac
 '''
-                for name, body in {"cargo": cargo, "python3": self.python_adapter(), "rustup": "#!/bin/sh\necho nightly-test\n", "rustc": "#!/bin/sh\necho 'host: x86_64-unknown-linux-gnu'\n"}.items():
-                    tool = binary / name
-                    tool.write_text(body, encoding="utf-8", newline="\n")
-                    tool.chmod(0o755)
-                output = root / ("nested/output/evidence" if case == "nested" else "evidence")
-                if case == "existing":
-                    output.mkdir()
-                if case == "blocked":
-                    output.write_text("owned file must remain unchanged")
-                env = self.fixture_environment(binary, CARGO_TARGET_DIR=(root / "target").as_posix(), CARGO_BUILD_BUILD_DIR=(root / "normal-build").as_posix(), AWAKEN_RELIABILITY_EVIDENCE_DIR=output.as_posix(), CALL_LOG=(root / "target/calls").as_posix(), CALL_TARGET_LOG=(root / "target/targets").as_posix(), FAIL_MUTANT=str(int(case == "tool-failure")), FAIL_FUZZ_LOCK=str(int(case == "fuzz-lock-stale")))
-                result = self.run_fixture(scripts, env)
-                calls = [line.rstrip() for line in (root / "target/calls").read_text().splitlines()]
-                mutations = [line for line in calls if line.startswith("mutants ")]
-                targets = [line.split("|") for line in (root / "target/targets").read_text().splitlines()]
-                for target, build, command in targets:
-                    isolated = command in ("clean", "mutants")
-                    expected_target = root / "target" / "reliability-mutation-build" if isolated else root / "target"
-                    expected_build = expected_target if isolated else root / "normal-build"
-                    self.assertEqual(Path(target), expected_target, "D8 target isolation")
-                    self.assertEqual(Path(build), expected_build, "D8 build isolation")
-                passed = case in ("fresh", "existing", "nested")
-                self.assertEqual(result.returncode == 0, passed, result.stderr)
-                self.assertEqual(len(mutations), 6 if passed else 0 if case in ("blocked", "fuzz-lock-stale") else 1)
-                if case == "fuzz-lock-stale":
-                    self.assertEqual(result.returncode, 41, "D6 exact preflight refusal")
-                    self.assertEqual(calls[-1], "+nightly metadata --locked --format-version 1")
-                    self.assertFalse(any(" fuzz run " in call for call in calls), "D6 zero fuzz builds")
-                else:
-                    self.assertEqual(calls[-1], "clean -p awaken-session-executor", "D2/D3 cleanup")
-                if passed:
-                    preflight = calls.index("+nightly metadata --locked --format-version 1")
-                    self.assertLess(preflight, next(index for index, call in enumerate(calls) if " fuzz run " in call), "D6 locked preflight precedes fuzz")
-                    owners = set()
-                    for mutation in mutations:
-                        argv = shlex.split(mutation)
-                        owners.add(argv[argv.index("--package") + 1])
-                        selected_source = ROOT / argv[argv.index("--file") + 1]
-                        self.assertTrue(selected_source.is_file(), "D4 source exists")
-                        if "--re" not in argv:
-                            continue
-                        selector = argv[argv.index("--re") + 1]
-                        # Operator filters match generated mutation descriptions,
-                        # not function names; the actual batch owns that check.
-                        if selector.startswith("replace "):
-                            continue
-                        declared_names = re.findall(
-                            r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+|async\s+)?fn\s+(\w+)",
-                            selected_source.read_text(),
+            for name, body in {"cargo": cargo, "python3": self.python_adapter(), "rustup": "#!/bin/sh\necho nightly-test\n", "rustc": "#!/bin/sh\necho 'host: x86_64-unknown-linux-gnu'\n"}.items():
+                tool = binary / name
+                tool.write_text(body, encoding="utf-8", newline="\n")
+                tool.chmod(0o755)
+            output = root / ("nested/output/evidence" if case == "nested" else "evidence")
+            if case == "existing":
+                output.mkdir()
+            if case == "blocked":
+                output.write_text("owned file must remain unchanged")
+            env = self.fixture_environment(binary, CARGO_TARGET_DIR=(root / "target").as_posix(), CARGO_BUILD_BUILD_DIR=(root / "normal-build").as_posix(), AWAKEN_RELIABILITY_EVIDENCE_DIR=output.as_posix(), CALL_LOG=(root / "target/calls").as_posix(), CALL_TARGET_LOG=(root / "target/targets").as_posix(), FAIL_MUTANT=str(int(case == "tool-failure")), FAIL_FUZZ_LOCK=str(int(case == "fuzz-lock-stale")))
+            result = self.run_fixture(scripts, env)
+            calls = [line.rstrip() for line in (root / "target/calls").read_text().splitlines()]
+            mutations = [line for line in calls if line.startswith("mutants ")]
+            targets = [line.split("|") for line in (root / "target/targets").read_text().splitlines()]
+            for target, build, command in targets:
+                isolated = command in ("clean", "mutants")
+                expected_target = root / "target" / "reliability-mutation-build" if isolated else root / "target"
+                expected_build = expected_target if isolated else root / "normal-build"
+                self.assertEqual(Path(target), expected_target, "D8 target isolation")
+                self.assertEqual(Path(build), expected_build, "D8 build isolation")
+            passed = case in ("fresh", "existing", "nested")
+            self.assertEqual(result.returncode == 0, passed, result.stderr)
+            self.assertEqual(len(mutations), 6 if passed else 0 if case in ("blocked", "fuzz-lock-stale") else 1)
+            if case == "fuzz-lock-stale":
+                self.assertEqual(result.returncode, 41, "D6 exact preflight refusal")
+                self.assertEqual(calls[-1], "+nightly metadata --locked --format-version 1")
+                self.assertFalse(any(" fuzz run " in call for call in calls), "D6 zero fuzz builds")
+            else:
+                self.assertEqual(calls[-1], "clean -p awaken-session-executor", "D2/D3 cleanup")
+            if passed:
+                preflight = calls.index("+nightly metadata --locked --format-version 1")
+                self.assertLess(preflight, next(index for index, call in enumerate(calls) if " fuzz run " in call), "D6 locked preflight precedes fuzz")
+                owners = set()
+                for mutation in mutations:
+                    argv = shlex.split(mutation)
+                    owners.add(argv[argv.index("--package") + 1])
+                    selected_source = ROOT / argv[argv.index("--file") + 1]
+                    self.assertTrue(selected_source.is_file(), "D4 source exists")
+                    if "--re" not in argv:
+                        continue
+                    selector = argv[argv.index("--re") + 1]
+                    # Operator filters match generated mutation descriptions,
+                    # not function names; the actual batch owns that check.
+                    if selector.startswith("replace "):
+                        continue
+                    declared_names = re.findall(
+                        r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+|async\s+)?fn\s+(\w+)",
+                        selected_source.read_text(),
+                    )
+                    self.assertTrue(
+                        any(re.search(selector, name) for name in declared_names),
+                        f"D4 named filter must reach its implementation: {selected_source}",
+                    )
+                    if selector == "bounded_rfc3339_nanos":
+                        test_packages = {
+                            argv[index + 1]
+                            for index, argument in enumerate(argv)
+                            if argument == "--test-package"
+                        }
+                        self.assertEqual(
+                            test_packages,
+                            {argv[argv.index("--package") + 1], "awaken-worker-contract"},
+                            "D5 shared UTC owner and original Work consumer both execute",
                         )
-                        self.assertTrue(
-                            any(re.search(selector, name) for name in declared_names),
-                            f"D4 named filter must reach its implementation: {selected_source}",
-                        )
-                        if selector == "bounded_rfc3339_nanos":
-                            test_packages = {
-                                argv[index + 1]
-                                for index, argument in enumerate(argv)
-                                if argument == "--test-package"
-                            }
-                            self.assertEqual(
-                                test_packages,
-                                {argv[argv.index("--package") + 1], "awaken-worker-contract"},
-                                "D5 shared UTC owner and original Work consumer both execute",
-                            )
-                    def cleaned_packages(selected_calls: list[str]) -> set[str]:
-                        packages = set()
-                        for call in selected_calls:
-                            argv = shlex.split(call)
-                            if argv[0] == "clean":
-                                packages.update(argv[index + 1] for index, arg in enumerate(argv) if arg == "-p")
-                        return packages
-                    self.assertLessEqual(owners, cleaned_packages(calls[:calls.index(mutations[0])]), "D7 all mutation owners cleaned before")
-                    self.assertLessEqual(owners, cleaned_packages(calls[calls.index(mutations[-1]) + 1:]), "D7 all mutation owners cleaned after")
-                if case == "blocked":
-                    self.assertEqual(output.read_text(), "owned file must remain unchanged")
+                def cleaned_packages(selected_calls: list[str]) -> set[str]:
+                    packages = set()
+                    for call in selected_calls:
+                        argv = shlex.split(call)
+                        if argv[0] == "clean":
+                            packages.update(argv[index + 1] for index, arg in enumerate(argv) if arg == "-p")
+                    return packages
+                self.assertLessEqual(owners, cleaned_packages(calls[:calls.index(mutations[0])]), "D7 all mutation owners cleaned before")
+                self.assertLessEqual(owners, cleaned_packages(calls[calls.index(mutations[-1]) + 1:]), "D7 all mutation owners cleaned after")
+            if case == "blocked":
+                self.assertEqual(output.read_text(), "owned file must remain unchanged")
 
     def test_a_failed_tool_query_is_not_reported_as_a_missing_tool(self) -> None:
         """Q1 the listing command fails; Q2 it succeeds but omits the tool.
@@ -478,6 +491,33 @@ esac
                 if case == "query-fails":
                     self.assertNotIn("is required by the release reliability gate", result.stderr,
                                      "Q1 a failed query must never accuse a tool")
+
+    def test_self_test_groups_are_complete_disjoint_and_cli_selected(self) -> None:
+        def identities(suite: unittest.TestSuite) -> set[str]:
+            return {test.id() for test in suite}
+
+        groups = {name: identities(self_test_suite(name))
+                  for name in ("preflight", "directories", "faults")}
+        complete = identities(unittest.defaultTestLoader.loadTestsFromTestCase(ReliabilityCheckerTests))
+        self.assertEqual(identities(self_test_suite("all")), complete)
+        self.assertEqual(complete, set.union(*groups.values()))
+        self.assertEqual(len(complete), sum(map(len, groups.values())))
+        prefix = f"{__name__}.ReliabilityCheckerTests."
+        self.assertEqual(groups["directories"], {prefix + "test_runner_output_directories"})
+        self.assertEqual(groups["faults"], {prefix + "test_runner_tool_failures_stop_and_cleanup"})
+        self.assertIn(prefix + "test_runner_blocked_output_is_preserved", groups["preflight"])
+        self.assertIn(prefix + "test_a_failed_tool_query_is_not_reported_as_a_missing_tool", groups["preflight"])
+        # Exercise the real argument parser without recursively running this test.
+        with mock.patch.object(unittest, "TextTestRunner") as runner:
+            runner.return_value.run.return_value.wasSuccessful.return_value = True
+            for group, selected in {"all": complete, **groups}.items():
+                self.assertEqual(main(["--self-test", group]), 0)
+                self.assertEqual(identities(runner.return_value.run.call_args.args[0]), selected)
+            self.assertEqual(main(["--self-test"]), 0)
+            self.assertEqual(identities(runner.return_value.run.call_args.args[0]), complete)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as rejected:
+            main(["--self-test", "unknown"])
+        self.assertEqual(rejected.exception.code, 2)
 
     def test_tsan_requires_one_executed_passing_workload(self) -> None:
         # Cause/effect table: T1 exact target executes and passes => accept;
@@ -540,9 +580,28 @@ esac
             self.assertTrue(validation_errors(inputs[0], inputs[1].replace(old, new), inputs[2], inputs[3]), "R6")
 
 
+def self_test_suite(group: str) -> unittest.TestSuite:
+    names = set(unittest.defaultTestLoader.getTestCaseNames(ReliabilityCheckerTests))
+    selected = {
+        "directories": {"test_runner_output_directories"},
+        "faults": {"test_runner_tool_failures_stop_and_cleanup"},
+    }
+    if not set.union(*selected.values()) <= names:
+        raise ValueError("a declared reliability self-test group lost its test")
+    # Partition the nine native fixtures into three calls per group. Retain
+    # each fixture's 180 seconds and the worker's 600 seconds including setup.
+    # Keep all unclassified checker tests, including future ones, in preflight.
+    selected["preflight"] = names - set.union(*selected.values())
+    selected["all"] = names
+    if group not in selected:
+        raise ValueError("unknown reliability self-test group: " + group)
+    return unittest.TestSuite(ReliabilityCheckerTests(name) for name in sorted(selected[group]))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
-    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--self-test", nargs="?", const="all",
+                        choices=("all", "preflight", "directories", "faults"))
     parser.add_argument("--tsan-log", type=Path)
     parser.add_argument("--mutants", type=Path)
     args = parser.parse_args(argv)
@@ -559,7 +618,7 @@ def main(argv: list[str] | None = None) -> int:
         print("TSan production workload: 1 executed / 1 passed")
         return 0
     if args.self_test:
-        suite = unittest.defaultTestLoader.loadTestsFromTestCase(ReliabilityCheckerTests)
+        suite = self_test_suite(args.self_test)
         return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
     errors = validation_errors(*current_inputs())
     if errors:
