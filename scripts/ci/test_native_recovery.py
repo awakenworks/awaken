@@ -139,6 +139,7 @@ class RecoveryArchiveIntervalTests(unittest.TestCase):
 
 import argparse
 import contextlib
+import copy
 import os
 from unittest import mock
 import check_native_services as gate
@@ -172,7 +173,10 @@ class RecoveryControllerTests(unittest.TestCase):
         for fault in (None,'primary-start','object-start','domain','recovery','object-cleanup','primary-cleanup','domain-and-cleanup'):
             with self.subTest(fault=fault),tempfile.TemporaryDirectory() as directory:
                 base=Path(directory);fixture=base/'fixture';fixture.mkdir()
-                args=argparse.Namespace(service='postgres',recovery=True,output=base/'out',postgres_bin=base/'pg',minio_bin=base/'minio.exe',mc_bin=base/'mc.exe')
+                args=gate.parser().parse_args(['--service','postgres','--recovery','--output',str(base/'out'),
+                    '--postgres-bin',str(base/'pg'),'--minio-bin',str(base/'minio.exe'),'--mc-bin',str(base/'mc.exe')])
+                snapshots=[]
+                def save_record(_output,value):snapshots.append(copy.deepcopy(value))
                 primary,objects=mock.Mock(),mock.Mock()
                 primary.url='postgres://fixture@127.0.0.1/owned'
                 primary.start.return_value={'owner':'one'};objects.start.return_value={'owner':'one'}
@@ -189,16 +193,17 @@ class RecoveryControllerTests(unittest.TestCase):
                      mock.patch.object(gate,'MinioService',return_value=objects),\
                      mock.patch.object(gate.subprocess,'run',return_value=mock.Mock(returncode=code)),\
                      mock.patch.object(gate,'reconcile_postgres',return_value=[{'verified':True}]),\
+                     mock.patch.object(gate,'_save_record',side_effect=save_record),\
                      mock.patch.object(gate,'run_recovery',return_value={'status':'passed','cleanup':{'stopped':True}}) as recovery:
                     if fault=='recovery':recovery.side_effect=RuntimeError('restore failed')
                     status=gate.worker(args)
-                value=json.loads((base/'out/result.json').read_text())
+                value=snapshots[-1]
                 self.assertEqual(status==0,fault is None)
                 self.assertEqual(value['status']=='passed',fault is None)
                 if fault in ('domain','domain-and-cleanup'):self.assertEqual(status,17)
                 primary.close.assert_called_once();objects.close.assert_called_once()
                 if fault in ('primary-start','object-start','domain','domain-and-cleanup'):recovery.assert_not_called()
-                else:recovery.assert_called_once()
+                else:self.assertEqual(recovery.call_count,1,value)
 
     @unittest.skipUnless(os.name=='nt','native Windows service admission')
     def test_outer_success_requires_every_typed_recovery_and_cleanup_witness(self):

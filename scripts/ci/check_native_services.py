@@ -117,6 +117,12 @@ def reconcile_s3(log: str, source_digest: str) -> list[dict]:
     return reconcile_receipts(log,source_digest,service="s3")
 
 
+def _save_record(output: Path, record: dict) -> None:
+    pending=output/"result.pending"
+    pending.write_text(json.dumps(record,indent=2),encoding="utf-8")
+    pending.replace(output/"result.json")
+
+
 def worker(args: argparse.Namespace) -> int:
     from rust_test_plan import working_subject
     digest,facts=working_subject()
@@ -129,9 +135,7 @@ def worker(args: argparse.Namespace) -> int:
         "process_ownership":"native Windows deadline Job with kill-on-close","stages":[]}
     (out/"source.patch").write_bytes(facts["patch"])
     def save():
-        pending=out/"result.pending"
-        pending.write_text(json.dumps(record,indent=2),encoding="utf-8")
-        pending.replace(out/"result.json")
+        _save_record(out,record)
     save()
     root=Path(tempfile.mkdtemp(prefix="awaken-services."))
     owner="awaken-ci-"+uuid.uuid4().hex
@@ -188,11 +192,13 @@ def worker(args: argparse.Namespace) -> int:
             start=time.monotonic()
             with (out/filename).open("wb") as log:
                 child=subprocess.run(command,cwd=ROOT,env=environment,stdout=log,stderr=subprocess.STDOUT,stdin=subprocess.DEVNULL)
+                # Retain the process cause before log close/hash or record IO.
+                if child.returncode:
+                    code=child.returncode
             record["stages"].append({"stage":stage,"command":command,"exit_code":child.returncode,
                 "seconds":time.monotonic()-start,"log_sha256":sha256(out/filename)})
             save()
             if child.returncode:
-                code=child.returncode
                 raise RuntimeError("native service domain tests failed; inspect "+filename)
             logs.append((out/filename).read_text(encoding="utf-8",errors="replace"))
         service.verify()
@@ -221,7 +227,18 @@ def worker(args: argparse.Namespace) -> int:
             code=code or 1
             record["cleanup_error"]=str(error)
         record.update(status="passed" if code==0 else "failed",exit_code=code)
-        save()
+        try:
+            save()
+        except Exception as error:
+            code=code or 1
+            record.update(status="failed",exit_code=code,recording_error=str(error))
+            # A bounded best-effort FAILED record may preserve diagnostics after
+            # a transient write fault. It never converts that fault into pass.
+            try:
+                save()
+            except Exception:
+                pass
+            print("native service terminal evidence could not be written",file=sys.stderr)
     print(json.dumps({k:record[k] for k in ("status","service","platform","exit_code")}))
     return code
 
