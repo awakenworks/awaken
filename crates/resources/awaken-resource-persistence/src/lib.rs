@@ -526,7 +526,7 @@ mod tests {
         // Same decision table as embedded. The second open uses Verify, adding
         // the managed-deployment rule that an application restart performs no
         // opportunistic DDL and still recovers every resource authority.
-        let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
             return Ok(());
         };
         let suffix = std::time::SystemTime::now()
@@ -559,7 +559,7 @@ mod tests {
         // table: C1+C2+C3 -> metadata remains PostgreSQL while blob bytes use
         // the injected port; !C1|!C2 -> startup error/no partial application.
         // The live row runs only with the canonical integration database.
-        let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
             return;
         };
         let object: Arc<dyn awaken_resource_contract::FileStore> =
@@ -581,5 +581,18 @@ mod tests {
             &object
         ));
         let _ = application.authorities().file_catalog();
+    }
+    #[test]
+    fn postgres_resource_authorities_fixture_admission() {
+        awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+            "tests::postgres_resource_authorities_survive_verify_mode_restart",
+        );
+    }
+
+    #[test]
+    fn postgres_injected_blob_store_fixture_admission() {
+        awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+            "tests::postgres_metadata_and_injected_blob_store_form_one_application",
+        );
     }
 }

@@ -2,6 +2,11 @@ name: awaken-windows-native-services
 
 on:
   workflow_dispatch:
+    inputs:
+      include_storage_observations:
+        description: "Run the six heavy storage observations separately"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -37,18 +42,29 @@ jobs:
           "TEMP=$taskTemp" >> $env:GITHUB_ENV
           "TMP=$taskTemp" >> $env:GITHUB_ENV
           "TMPDIR=$taskTemp" >> $env:GITHUB_ENV
+      - name: Require publicly reachable locked dependencies from empty stores
+        run: python scripts/ci/check_dependency_fetch.py --output target/test-timings/native-dependency-fetch
       - name: Verify native service runner decision tables
         run: python scripts/ci/test_native_services.py
+      - name: Verify native physical recovery decision tables
+        run: python scripts/ci/test_native_recovery.py
       - name: Install the reviewed Windows NATS archive without a service cache
         run: python scripts/ci/deadline.py 900 -- python scripts/ci/install_windows_services.py --service nats --output target/windows-services
       - name: Require real broker delivery and a native tool round trip
         run: python scripts/ci/check_native_services.py --service nats --nats-bin target/windows-services/nats/nats-server-v2.15.0-windows-amd64/nats-server.exe --output target/test-timings/native-nats
       - name: Install the reviewed Windows PostgreSQL runtime without a service cache
         run: python scripts/ci/deadline.py 900 -- python scripts/ci/install_windows_services.py --service postgres --output target/windows-postgres
-      - name: Require backend parity, Work, HTTP failover and process-crash durability
-        run: python scripts/ci/check_native_services.py --service postgres --postgres-bin target/windows-postgres/postgres/pgsql/bin --output target/test-timings/native-postgres
       - name: Install reviewed Windows S3 binaries without a service cache
         run: python scripts/ci/deadline.py 900 -- python scripts/ci/install_windows_services.py --service s3 --output target/windows-s3
+      - name: Require backend parity, Work, HTTP failover and process-crash durability
+        run: python scripts/ci/check_native_services.py --service postgres --postgres-bin target/windows-postgres/postgres/pgsql/bin --recovery --minio-bin target/windows-s3/minio/minio.exe --mc-bin target/windows-s3/mc/mc.exe --output target/test-timings/native-postgres
+      - name: Require storage migrations, cancellation and crash atomicity
+        run: python scripts/ci/check_native_services.py --service postgres --postgres-scope storage --postgres-bin target/windows-postgres/postgres/pgsql/bin --output target/test-timings/native-postgres-storage
+      - name: Observe native storage capacity with explicit heavy selectors
+        if: ${{ inputs.include_storage_observations }}
+        run: python scripts/ci/check_native_services.py --service postgres --postgres-scope storage-observations --postgres-bin target/windows-postgres/postgres/pgsql/bin --output target/test-timings/native-postgres-storage-observations
+      - name: Require resource authority, Session and catalog PostgreSQL laws
+        run: python scripts/ci/check_native_services.py --service postgres --postgres-scope resources --postgres-bin target/windows-postgres/postgres/pgsql/bin --output target/test-timings/native-postgres-resources
       - name: Require S3 admission, least privilege and real credential rotation
         run: python scripts/ci/check_native_services.py --service s3 --minio-bin target/windows-s3/minio/minio.exe --mc-bin target/windows-s3/mc/mc.exe --output target/test-timings/native-s3
       - name: Retain exact-source service and execution receipts

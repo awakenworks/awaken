@@ -684,7 +684,7 @@ async fn embedded_registry_satisfies_the_shared_contract_and_survives_reopen() {
 #[tokio::test(flavor = "multi_thread")]
 async fn postgres_registry_satisfies_the_same_contract_and_survives_reconnect() {
     let memory_events = std::sync::Arc::new(RegistryMemoryEvents::default());
-    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
         return;
     };
     let fixture = fixture();
@@ -716,4 +716,11 @@ async fn postgres_registry_satisfies_the_same_contract_and_survives_reconnect() 
         &fixture,
     )
     .await;
+}
+
+#[test]
+fn postgres_registry_fixture_admission() {
+    awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+        "postgres_registry_satisfies_the_same_contract_and_survives_reconnect",
+    );
 }

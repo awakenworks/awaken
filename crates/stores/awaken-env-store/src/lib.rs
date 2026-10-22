@@ -710,6 +710,9 @@ impl EnvironmentRegistrationOutbox for SqliteEnvRegistry {
 }
 
 #[cfg(test)]
+mod fixture_admission_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use awaken_environment_contract::{EnvironmentStoreError, InvalidEnvironmentConfig};
@@ -1221,9 +1224,8 @@ mod tests {
 
     #[tokio::test]
     async fn file_open_and_pg_connect_entry_points() {
-        let dir = std::env::temp_dir().join(format!("env-cov-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("env.db");
+        let dir = tempfile::tempdir().expect("owned Environment SQLite directory");
+        let path = dir.path().join("env.db");
         let r = SqliteEnvRegistry::open(path.to_str().unwrap(), system_clock())
             .await
             .expect("open file db");
@@ -1232,10 +1234,14 @@ mod tests {
             .await
             .expect("create SQLite Environment");
         assert!(r.exists(&e.id).await.expect("read SQLite Environment"));
-        std::fs::remove_dir_all(&dir).ok();
-        if let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL")
-            && let Ok(r) = PostgresEnvRegistry::connect(&url, system_clock()).await
-        {
+        r.pool.close().await;
+        drop(r);
+        dir.close()
+            .expect("remove owned Environment SQLite directory");
+        if let Some(url) = awaken_reliability_testkit::postgres_fixture_url() {
+            let r = PostgresEnvRegistry::connect(&url, system_clock())
+                .await
+                .expect("configured PostgreSQL Environment must connect");
             let e = r
                 .create("c".into(), String::new(), BTreeMap::new(), config())
                 .await
@@ -1247,27 +1253,19 @@ mod tests {
         }
     }
 
-    /// Live Postgres parity over the same portable bundle. Skips when no Postgres is
-    /// reachable (`AWAKEN_TEST_DATABASE_URL`), isolated in its own schema.
+    /// Live PostgreSQL parity over the same bundle in isolated schemas.
+    /// Missing optional configuration is explicit; configured failure is red.
     #[tokio::test]
     async fn postgres_parity_over_a_live_db() {
         use sqlx::Executor;
         use sqlx::postgres::{PgPool, PgPoolOptions};
 
-        let url = std::env::var("AWAKEN_TEST_DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://postgres:pw@127.0.0.1:5455/cov".to_string());
-        let admin = match PgPool::connect(&url).await {
-            Ok(admin) => admin,
-            Err(error) => {
-                assert_ne!(
-                    std::env::var("AWAKEN_TEST_REQUIRE_POSTGRES").as_deref(),
-                    Ok("1"),
-                    "PostgreSQL parity was required but the fixture is unavailable: {error}"
-                );
-                println!("[skip] no Postgres reachable: {error}");
-                return;
-            }
+        let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+            return;
         };
+        let admin = PgPool::connect(&url)
+            .await
+            .expect("configured PostgreSQL parity fixture must connect");
         for schema in ["t_env_registry", "t_env_registry_instants"] {
             let _ = admin
                 .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())

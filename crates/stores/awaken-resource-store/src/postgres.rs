@@ -620,7 +620,7 @@ mod tests {
         use sqlx::Executor;
         use sqlx::postgres::PgPoolOptions;
 
-        let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
             return;
         };
         let admin = PgPool::connect(&url).await.unwrap();
@@ -672,7 +672,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_postgres_serializes_references_with_reclamation_fences() {
-        let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
             return;
         };
         let store = PostgresResourceStore::connect(&url).await.unwrap();
@@ -759,7 +759,7 @@ mod tests {
          * |---|---|---|---|
          * | P1 | exact repeat | absent | E1 + E2 |
          */
-        let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
             return;
         };
         let store = PostgresResourceStore::connect(&url).await.unwrap();
@@ -825,7 +825,7 @@ mod tests {
         // for File, MemoryStore, Repository and Skill, Missing --add--> Referenced
         // --process restart--> Referenced. Identity queries must not alias kinds,
         // and each persisted row must round-trip with its exact target/reference.
-        let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
             return;
         };
         let suffix = format!(
@@ -878,5 +878,32 @@ mod tests {
                 vec![row]
             );
         }
+    }
+    #[test]
+    fn live_postgres_verify_is_fail_closed_and_read_only_fixture_admission() {
+        awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+            "postgres::tests::live_postgres_verify_is_fail_closed_and_read_only",
+        );
+    }
+
+    #[test]
+    fn live_postgres_serializes_references_with_reclamation_fences_fixture_admission() {
+        awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+            "postgres::tests::live_postgres_serializes_references_with_reclamation_fences",
+        );
+    }
+
+    #[test]
+    fn live_postgres_identical_reference_replacement_is_a_storage_noop_fixture_admission() {
+        awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+            "postgres::tests::live_postgres_identical_reference_replacement_is_a_storage_noop",
+        );
+    }
+
+    #[test]
+    fn live_postgres_rehydrates_references_for_every_resource_kind_fixture_admission() {
+        awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+            "postgres::tests::live_postgres_rehydrates_references_for_every_resource_kind",
+        );
     }
 }

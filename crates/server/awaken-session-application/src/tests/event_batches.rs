@@ -2352,7 +2352,7 @@ async fn competing_tool_replies_recheck_occupancy_after_root_cas_conflict() {
 async fn postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict() {
     // Same R1-R4 rules through the production PostgreSQL root CAS. An explicit
     // unavailable database is fatal; an unconfigured run claims no PG coverage.
-    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
         return;
     };
     let repository = awaken_session_store::PostgresManagedSessionRepository::connect(&url)
@@ -6315,3 +6315,10 @@ async fn cold_supervisor_continues_only_the_thread_owned_outcome_truth() {
 mod resumed_dispatch;
 
 mod frozen_projection;
+
+#[test]
+fn postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict_fixture_admission() {
+    awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+        "tests::event_batches::postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict",
+    );
+}
