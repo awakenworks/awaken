@@ -68,6 +68,7 @@ ROUTE_OWNER_FILES = (
     "crates/control/awaken-admin-config-api/src/router/cloud_login.rs",
     "crates/control/awaken-config-service/src/capabilities.rs",
     "crates/control/awaken-control/src/config_routes.rs",
+    "crates/control/awaken-control/src/config_routes/lifecycle.rs",
     "crates/control/awaken-control/src/authz.rs",
     "crates/control/awaken-control/src/admin_assistant.rs",
     "crates/control/awaken-control/src/application_mcp_credentials.rs",

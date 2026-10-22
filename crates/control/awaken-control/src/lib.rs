@@ -111,8 +111,7 @@ use awaken_deployment_contract::AgentArchiveCascade;
 use awaken_executable_agent_contract::capability::PluginCapability;
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_protocol_managed::{
-    AgentRegistryState, ManagedAgentRepository, VaultState, agents_router, user_profiles_router,
-    vault_router,
+    ManagedAgentRepository, VaultState, user_profiles_router, vault_router,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
@@ -533,16 +532,11 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     // `/v1/agents` projects the config plane it hosts: an agent published via
     // `/v1/config/agents` is retrievable as a managed-wire projection of that single
     // truth (no second store), which is how the console probes the assistant.
-    let agent_state = AgentRegistryState::from_repository(agent_repository);
-    let agent_state = match inference_geo_policy {
-        Some(policy) => agent_state.with_inference_geo_policy(policy),
-        None => agent_state,
-    };
-    let agent_state = match agent_archive_cascade {
-        Some(cascade) => agent_state.with_archive_cascade(cascade),
-        None => agent_state,
-    };
-    let agents = agents_router(Arc::new(agent_state));
+    let agents = config_routes::agent_registry_routers(
+        agent_repository,
+        inference_geo_policy,
+        agent_archive_cascade,
+    );
     // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
     // installable plugins (with config schema) so the console authors data-driven.
     let capabilities = crate::capabilities_router_with_source(global_tools, plugins, runtimes);

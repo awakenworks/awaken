@@ -20,7 +20,11 @@ use crate::managed_agent::{agent_config_from_managed, managed_from_agent_config}
 use awaken_config_service::ConfigPlane;
 use awaken_config_service::RESERVED_ADMIN_SCOPE;
 use awaken_config_service::{PublishError, ValidationIssue};
+mod lifecycle;
 mod versions;
+pub(crate) use lifecycle::agent_registry_routers;
+#[cfg(test)]
+pub(crate) use lifecycle::configuration_lifecycle_router;
 
 /// The config data-plane router: `/v1/config/agents/:id` (author) plus
 /// `/validate` and `/publish` (lifecycle).

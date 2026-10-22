@@ -524,6 +524,35 @@ channel sources, the erasure fan-out). A `trait Lifecycle` / stage-marker-trait
 design would trade exhaustive matching and serializability for dynamic dispatch
 that nobody substitutes.
 
+#### 2026-10-23: Archive the same configuration through either public projection
+
+The existing configuration-plane repository owns one revision-fenced archive
+transition: read the exact current configuration, apply the lifecycle-only CAS,
+and withdraw its current executable registration. Both public representations
+share one `AgentRegistryState`, which invokes the existing Deployment archive
+cascade. Agent configuration, publication history, registration, and
+Deployment persistence retain their current owners; no archive store or second
+lifecycle coordinator is introduced.
+
+`POST /v1/config/agents/{id}/archive` accepts only a positive `generation` and
+returns a native receipt (`id`, `generation`, `archived_at`, `already_archived`).
+This representation can archive a catalog Target without discarding its model
+route. The Managed archive API retains its SDK `Agent` response and validates
+that projection before executing the same command. A model its wire cannot
+represent is refused before any lifecycle effect.
+
+An active generation mismatch is a conflict with no write. Repeating the
+reviewed generation against its immediately succeeding Archived revision, or
+using that Archived revision itself, reuses the existing withdrawal/cascade
+repair without creating a revision or changing the archive timestamp. Other
+stale generations remain conflicts. These are state-based receipts, not claims
+that a particular caller caused a prior archive. After an ambiguous response or
+downstream failure, clients retain the Agent and reviewed generation and read
+the configuration before deciding whether to continue the same command.
+
+Lifecycle timestamps remain server-owned. Generic configuration PUT continues
+to ignore echoed `disabled_at` and `archived_at`; it is not a lifecycle command.
+
 ## Conflicts and friction with existing code
 
 This is the load-bearing risk section. Each item names the incumbent constraint,
