@@ -1137,6 +1137,12 @@ fn af_covers_the_deployment_environment_and_agent_families() {
         scoped(post.clone(), "/v1/config/agents/a1/publish"),
         Some(WORKSPACE_WRITE)
     );
+    // Native receipt and Managed archive retain the same trusted Workspace
+    // boundary. A new response vocabulary does not create a permission bypass.
+    assert_eq!(
+        scoped(post.clone(), "/v1/config/agents/a1/archive"),
+        Some(WORKSPACE_WRITE)
+    );
     assert_eq!(
         scoped(get.clone(), "/v1/config/agents/a1"),
         Some(WORKSPACE_READ)
