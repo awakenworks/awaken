@@ -75,6 +75,24 @@ class DependencyFetchTests(unittest.TestCase):
                     errors = fetch.workflow_errors(workflow[:match.start()] + bad + workflow[match.end():])
                     self.assertIn(job + " must bootstrap the pinned Python before its first checker", errors)
 
+    def test_native_ci_refuses_warm_unpublished_dependency_regression(self):
+        workflow = (fetch.ROOT / ".github/workflows/windows-native-services.yml").read_text(encoding="utf-8")
+        self.assertEqual(fetch.native_workflow_errors(workflow), [])
+        admission = (
+            "      - name: Require publicly reachable locked dependencies from empty stores\n"
+            "        run: python scripts/ci/check_dependency_fetch.py --output target/test-timings/native-dependency-fetch\n")
+        self.assertEqual(workflow.count(admission), 1)
+        cases = [workflow.replace("  native_services:\n", "  native_services:\n    if: false\n"), workflow.replace(admission, ""), workflow.replace(admission, admission + admission),
+                 workflow.replace("--output target/test-timings/native-dependency-fetch", "--git-only --output target/test-timings/native-dependency-fetch"),
+                 workflow.replace(admission, admission.replace("        run:", "        if: false\n        run:")),
+                 workflow.replace(admission, admission.replace("        run:", "        continue-on-error: true\n        run:")),
+                 workflow.replace("runs-on: windows-2025", "runs-on: ubuntu-22.04"),
+                 workflow.replace(admission, "      - uses: actions/cache@fixture\n" + admission),
+                 workflow.replace(admission, "").replace("      - name: Retain exact-source", admission + "      - name: Retain exact-source")]
+        for changed in cases:
+            with self.subTest(mutation=changed):
+                self.assertTrue(fetch.native_workflow_errors(changed))
+
     def test_inventory_deduplicates_and_rejects_invalid_sources(self):
         revision = "1" * 40
         manifest = self.root / "Cargo.toml"
@@ -143,6 +161,22 @@ class DependencyFetchTests(unittest.TestCase):
         with patch.object(fetch, "run", side_effect=successful_wrong):
             result = fetch.fetch_revision("public", "1" * 40, self.root / "wrong-store", logs, {})
         self.assertFalse(result["passed"])
+
+    def test_one_unavailable_revision_blocks_snapshot_and_cargo_even_after_a_valid_probe(self):
+        output = self.root / "unavailable-evidence"
+        with patch.object(fetch, "tracked_paths", return_value=[]), \
+             patch.object(fetch, "source_identity", return_value={"revision": "fixture"}), \
+             patch.object(fetch, "git_inputs", return_value=[("one", "1" * 40), ("two", "2" * 40)]), \
+             patch.object(fetch, "fetch_revision", side_effect=[{"passed": True}, {"passed": False}]), \
+             patch.object(fetch, "snapshot") as snapshot, patch.object(fetch, "run") as cargo:
+            result = fetch.verify(self.root, output)
+        self.assertFalse(result["passed"])
+        self.assertIsNone(result["cargo_fetch"])
+        snapshot.assert_not_called()
+        cargo.assert_not_called()
+        saved = json.loads((output / "result.json").read_text())
+        self.assertEqual([row["passed"] for row in saved["git_dependencies"]], [True, False])
+        self.assertFalse(saved["passed"])
 
     def test_cargo_failure_is_retained_and_cannot_turn_green(self):
         output = self.root / "evidence"

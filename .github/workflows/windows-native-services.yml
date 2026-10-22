@@ -37,6 +37,8 @@ jobs:
           "TEMP=$taskTemp" >> $env:GITHUB_ENV
           "TMP=$taskTemp" >> $env:GITHUB_ENV
           "TMPDIR=$taskTemp" >> $env:GITHUB_ENV
+      - name: Require publicly reachable locked dependencies from empty stores
+        run: python scripts/ci/check_dependency_fetch.py --output target/test-timings/native-dependency-fetch
       - name: Verify native service runner decision tables
         run: python scripts/ci/test_native_services.py
       - name: Verify native physical recovery decision tables
