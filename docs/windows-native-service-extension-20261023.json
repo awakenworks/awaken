@@ -1,0 +1,356 @@
+{
+  "schema_version": 1,
+  "platform": "Windows/MSVC",
+  "linux_verification_allowed": false,
+  "full_gate": false,
+  "seed_head": "e970f4ea9b75e2ef720229fb78af8ae2e9eb2ccb",
+  "publication_policy": "Internal origin/main only. Public GitHub publication and hosted CI dispatch declined by the user.",
+  "source_digest": "0488209201edb45f64bbca04e6c9c3ef8fdb1b73790117f35e23da14eba95aa5",
+  "qualified_code_sha256": {
+    ".github/workflows/windows-native-services.yml": "dddae3368cb55f3e63c9eaa9c00dc0355a11d9c430a867fe3186fef9d9520024",
+    "crates/resources/awaken-file-store/src/object.rs": "46e9c2d585a7830c35aea2118a07c294a6718cec9d3ab1ef58e5276a46fd7072",
+    "crates/resources/awaken-file-store/tests/support/s3_fixture.rs": "dc3fa7e6306b70d6feb9c98d02c9d1a4439067a663c6611819c4df25a45d78e8",
+    "crates/server/awaken-dispatch/tests/support/nats.rs": "d98d638f42dfa609a392abeed7d1315e6e550900aaa877d483648562f8866100",
+    "scripts/ci/_native_s3.py": "b5d7d4250ae34619b50261df4d79f457776905c597d6cbf83876a2cfd1ecab53",
+    "scripts/ci/check_native_services.py": "82f0fce6df957d34f06d42150055eec9569ef8fefbda8e44e0253f7e5488a3e4",
+    "scripts/ci/check_rust_test_execution.py": "ec715fbdaaa7435b9dc35c454202ddc83fd82bd34f572189cff054605e3b9c35",
+    "scripts/ci/install_windows_services.py": "fd8d5a810d91b2730e7772a58d6be1a646ae83fcb16576c6a60b0d51194f5576",
+    "scripts/ci/object_store_tests.sh": "8ca9d08fc486e293e87dcffe7a84f16a34a2d9d3424aaade0a5405232dd69bb7",
+    "scripts/ci/pg_tests.sh": "657dacd1cfbfcf5303a102b4d4f6bd935b6053b5855fd4ca276566c7f9ffcf19",
+    "scripts/ci/test_native_services.py": "fa2e0f4bad90313b05f3db860109d36c871a2457acfb3394579189086c419ed1",
+    "scripts/ci/test_postgres_recovery_root.py": "83b2604c67dcacd4fa6530bb75ad9ef3396818d4ec2b0f69169ed2d44adaaf0b"
+  },
+  "qualification": {
+    "receipt": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-services-extended-20261023-v3\\result.json",
+    "receipt_sha256": "94d87863be1aef121e67c5109aa17edfb9d5dd5265beee0dfd3665582c6589fd",
+    "status": "passed",
+    "source_unchanged": true
+  },
+  "service_results": [
+    {
+      "service": "nats",
+      "source": {
+        "revision": "e970f4ea9b75e2ef720229fb78af8ae2e9eb2ccb",
+        "index_tree": "a7fe79dc08a599f847a951aff6075e2e725a22b0",
+        "digest": "0488209201edb45f64bbca04e6c9c3ef8fdb1b73790117f35e23da14eba95aa5",
+        "patch_sha256": "71868ed11034d77e9e94053a99b647fd5651a5dee161af3c3afa80b2555f5042"
+      },
+      "receipt": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-services-extended-20261023-v3-0-nats\\result.json",
+      "receipt_sha256": "22387a67831720f40d51fa2ead0c201bc18722fcd38c0f554ce645549438d01b",
+      "stages": [
+        {
+          "stage": "nats-domain-tests",
+          "command": [
+            "C:\\Python313\\python.EXE",
+            "-X",
+            "utf8",
+            "scripts/ci/_native_shell.py",
+            "scripts/ci/nats_tests.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 73.04854049999267,
+          "log_sha256": "c927d84ef3d5e467fb484fd37dc0931cc72c872f98d97e754604d123cc8518e2"
+        }
+      ],
+      "receipts": 2,
+      "named_executions": 4,
+      "cleanup": {
+        "stopped": true,
+        "pid": 79196,
+        "exit_code": 1,
+        "method": "retained-owned-process-handle"
+      }
+    },
+    {
+      "service": "nats",
+      "source": {
+        "revision": "e970f4ea9b75e2ef720229fb78af8ae2e9eb2ccb",
+        "index_tree": "a7fe79dc08a599f847a951aff6075e2e725a22b0",
+        "digest": "0488209201edb45f64bbca04e6c9c3ef8fdb1b73790117f35e23da14eba95aa5",
+        "patch_sha256": "71868ed11034d77e9e94053a99b647fd5651a5dee161af3c3afa80b2555f5042"
+      },
+      "receipt": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-services-extended-20261023-v3-1-nats\\result.json",
+      "receipt_sha256": "dc2b2dc4638ee1573a57e450164e65b342a6a73bc712700a514c63d22f460ad9",
+      "stages": [
+        {
+          "stage": "nats-domain-tests",
+          "command": [
+            "C:\\Python313\\python.EXE",
+            "-X",
+            "utf8",
+            "scripts/ci/_native_shell.py",
+            "scripts/ci/nats_tests.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 68.40927790000569,
+          "log_sha256": "8e30551083c6851bd8470dc3887270f2b1fc82e751d75656ad3c18f95a759bb2"
+        }
+      ],
+      "receipts": 2,
+      "named_executions": 4,
+      "cleanup": {
+        "stopped": true,
+        "pid": 37756,
+        "exit_code": 1,
+        "method": "retained-owned-process-handle"
+      }
+    },
+    {
+      "service": "nats",
+      "source": {
+        "revision": "e970f4ea9b75e2ef720229fb78af8ae2e9eb2ccb",
+        "index_tree": "a7fe79dc08a599f847a951aff6075e2e725a22b0",
+        "digest": "0488209201edb45f64bbca04e6c9c3ef8fdb1b73790117f35e23da14eba95aa5",
+        "patch_sha256": "71868ed11034d77e9e94053a99b647fd5651a5dee161af3c3afa80b2555f5042"
+      },
+      "receipt": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-services-extended-20261023-v3-2-nats\\result.json",
+      "receipt_sha256": "906839d23cd3f2dbf42e69df2b1c52a14921d7c7d39726070f0e927ce2387826",
+      "stages": [
+        {
+          "stage": "nats-domain-tests",
+          "command": [
+            "C:\\Python313\\python.EXE",
+            "-X",
+            "utf8",
+            "scripts/ci/_native_shell.py",
+            "scripts/ci/nats_tests.sh"
+          ],
+          "exit_code": 0,
+          "seconds": 65.42716359999031,
+          "log_sha256": "026febc25eb39fa841b7099007b476a52aa410489d95de97f91fbac3f680cd22"
+        }
+      ],
+      "receipts": 2,
+      "named_executions": 4,
+      "cleanup": {
+        "stopped": true,
+        "pid": 94312,
+        "exit_code": 1,
+        "method": "retained-owned-process-handle"
+      }
+    },
+    {
+      "service": "postgres",
+      "source": {
+        "revision": "e970f4ea9b75e2ef720229fb78af8ae2e9eb2ccb",
+        "index_tree": "a7fe79dc08a599f847a951aff6075e2e725a22b0",
+        "digest": "0488209201edb45f64bbca04e6c9c3ef8fdb1b73790117f35e23da14eba95aa5",
+        "patch_sha256": "71868ed11034d77e9e94053a99b647fd5651a5dee161af3c3afa80b2555f5042"
+      },
+      "receipt": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-services-extended-20261023-v3-3-postgres\\result.json",
+      "receipt_sha256": "56972facf8a259b964243d6b478073c362fcb604c7152c8fa36da896d54457cd",
+      "stages": [
+        {
+          "stage": "postgres-backend-parity",
+          "command": [
+            "C:\\Python313\\python.EXE",
+            "-X",
+            "utf8",
+            "scripts/ci/_native_shell.py",
+            "scripts/ci/pg_tests.sh",
+            "--backend-parity"
+          ],
+          "exit_code": 0,
+          "seconds": 446.9470649000141,
+          "log_sha256": "91f51e898c0f03fc43f2091e33e1fc8a2ace091beb898032df3cd716a18d4dae"
+        },
+        {
+          "stage": "postgres-work-store",
+          "command": [
+            "C:\\Python313\\python.EXE",
+            "-X",
+            "utf8",
+            "scripts/ci/_native_shell.py",
+            "scripts/ci/pg_tests.sh",
+            "--work-store"
+          ],
+          "exit_code": 0,
+          "seconds": 90.99806339998031,
+          "log_sha256": "377d4421bba480c38f6f8684ec0b0604ed99eacf3f14ccd68ecbeb6f2865782c"
+        },
+        {
+          "stage": "postgres-http",
+          "command": [
+            "C:\\Python313\\python.EXE",
+            "-X",
+            "utf8",
+            "scripts/ci/_native_shell.py",
+            "scripts/ci/pg_tests.sh",
+            "--http"
+          ],
+          "exit_code": 0,
+          "seconds": 261.3860921000014,
+          "log_sha256": "f7fa0b3b9fb958d02d52085916faae6975136d5b58c2853c21186ab6f8b3b031"
+        },
+        {
+          "stage": "postgres-critical",
+          "command": [
+            "C:\\Python313\\python.EXE",
+            "-X",
+            "utf8",
+            "scripts/ci/_native_shell.py",
+            "scripts/ci/pg_tests.sh",
+            "--critical"
+          ],
+          "exit_code": 0,
+          "seconds": 352.95702470000833,
+          "log_sha256": "ce7b4832747533337a73dab13acd7b9e603cc4f788d0320488d2dcf2fc942b5c"
+        }
+      ],
+      "receipts": 17,
+      "named_executions": 231,
+      "cleanup": {
+        "stopped": true,
+        "pid": 87580,
+        "exit_code": 0,
+        "method": "owned-pid-and-data-directory-fast-stop"
+      }
+    },
+    {
+      "service": "s3",
+      "source": {
+        "revision": "e970f4ea9b75e2ef720229fb78af8ae2e9eb2ccb",
+        "index_tree": "a7fe79dc08a599f847a951aff6075e2e725a22b0",
+        "digest": "0488209201edb45f64bbca04e6c9c3ef8fdb1b73790117f35e23da14eba95aa5",
+        "patch_sha256": "71868ed11034d77e9e94053a99b647fd5651a5dee161af3c3afa80b2555f5042"
+      },
+      "receipt": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-services-extended-20261023-v3-4-s3\\result.json",
+      "receipt_sha256": "f948a8fc89f4f4534cacd83c4fe5c1d5464ea792250f8328864b6be9c35ef4e3",
+      "stages": [
+        {
+          "stage": "s3-admission",
+          "command": [
+            "C:\\Python313\\python.EXE",
+            "-X",
+            "utf8",
+            "scripts/ci/_native_shell.py",
+            "scripts/ci/object_store_tests.sh",
+            "--admission"
+          ],
+          "exit_code": 0,
+          "seconds": 33.26747319998685,
+          "log_sha256": "916775eb066b841ff47504a275f69139562cc7dd86f7be9712d254508c6e7aeb"
+        },
+        {
+          "stage": "s3-conformance",
+          "command": [
+            "C:\\Python313\\python.EXE",
+            "-X",
+            "utf8",
+            "scripts/ci/_native_shell.py",
+            "scripts/ci/object_store_tests.sh",
+            "--conformance"
+          ],
+          "exit_code": 0,
+          "seconds": 46.371515800012276,
+          "log_sha256": "53c88a324865804e00742f1a104bfe13c40a250c0e4216ca0ce1e61f01af5340"
+        },
+        {
+          "stage": "s3-seed",
+          "command": [
+            "C:\\Python313\\python.EXE",
+            "-X",
+            "utf8",
+            "scripts/ci/_native_shell.py",
+            "scripts/ci/object_store_tests.sh",
+            "--seed"
+          ],
+          "exit_code": 0,
+          "seconds": 30.112062200030778,
+          "log_sha256": "cd3eb71207735cdfbf5270925a3d76aaa5cec2fec3f0034a9d8680e817e4c2be"
+        },
+        {
+          "stage": "s3-verify",
+          "command": [
+            "C:\\Python313\\python.EXE",
+            "-X",
+            "utf8",
+            "scripts/ci/_native_shell.py",
+            "scripts/ci/object_store_tests.sh",
+            "--verify"
+          ],
+          "exit_code": 0,
+          "seconds": 31.359632099978626,
+          "log_sha256": "c0710daef73d754687fcb8e8d4c267f8c907263e9af6a68929705a57a014f528"
+        }
+      ],
+      "receipts": 4,
+      "named_executions": 6,
+      "cleanup": {
+        "stopped": true,
+        "pid": 94772,
+        "exit_code": 1,
+        "method": "retained-owned-process-handle"
+      }
+    }
+  ],
+  "execution_counts": {
+    "nats_per_round": 4,
+    "nats_rounds": 3,
+    "postgres": 231,
+    "s3": 6,
+    "total_with_repetitions": 249,
+    "canonical_single_pass": 241
+  },
+  "design": [
+    "Shared domain-owned selectors on native fixtures and the existing substrate entry point.",
+    "Prepare, enumerate, require named cases, execute, reconcile outcomes and source; compilation alone does not pass.",
+    "Required and configured fixture flags must be actual booleans true; skip/ignored/empty/mismatched evidence fails.",
+    "Windows PE binaries, random credentials, owned loopback/data identities and retained process handles.",
+    "Native Windows Job kill-on-close bounds descendants; cleanup failure preserves failure.",
+    "S3 authorization failures require exact denial classes, not an arbitrary network error.",
+    "Credential rotation retains endpoint, user and object coordinate and proves the old secret revoked.",
+    "NATS readiness requires observed broker processing on the same ordered connection before another connection publishes."
+  ],
+  "self_check_evidence": {
+    "receipt": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-ci-self-checks-20261023-v2\\result.json",
+    "receipt_sha256": "27eda65facf9c1eaf176ea80fbb9e61cc9b87d887c3b7c17319d8ccffee09203",
+    "qualification": {
+      "status": "passed",
+      "platform": "Windows/MSVC",
+      "linux_verification_allowed": false,
+      "full_gate": false,
+      "source_digest": "bdd48e657e99bbc692d8a0c8aa48403134128e7e720562897eba43439042af97",
+      "scope": "Windows service decision tables, real native selection/source rules and canonical PostgreSQL selector mutations; POSIX-only exclusions retained explicitly",
+      "stages": [
+        {
+          "stage": "native-decisions",
+          "exit_code": 0,
+          "seconds": 2.279931300028693,
+          "log_sha256": "9dc55351d0d04dc38409aa1120e7b75816eb2af3ef89a528583742cda98e938a"
+        },
+        {
+          "stage": "required-execution",
+          "exit_code": 0,
+          "seconds": 957.9198240999831,
+          "log_sha256": "5cfde651f65eb27582a0bc368eb65766254cde36ce0eb7073b03948b83cfe2be"
+        },
+        {
+          "stage": "postgres-selection",
+          "exit_code": 0,
+          "seconds": 245.7439599999925,
+          "log_sha256": "b7cda4919ee5c029794a03347cb8c61cacff595743b66fb74bc3d9618765aef0"
+        },
+        {
+          "stage": "gate-arguments",
+          "exit_code": 0,
+          "seconds": 27.46974460000638,
+          "log_sha256": "15251a33eaceb7f60971a505894b9cd81c475b1b6aa2801acc11bc8b6cc3484f"
+        }
+      ],
+      "source_unchanged": true,
+      "exit_code": 0
+    },
+    "native_decision_tests": 24,
+    "execution_tests": 32,
+    "execution_posix_only_skips": 8,
+    "attribution": "Completed before the NATS-only test fix; CI script bytes are retained in the qualified code hash table. This is not relabelled as a final-head full CI pass."
+  },
+  "not_qualified": [
+    "Remaining full PostgreSQL release selections beyond backend parity, complete Work, HTTP and critical durability.",
+    "Physical PostgreSQL/S3 PITR is a passed pilot, not yet a committed CI lane.",
+    "Complete workspace Nextest, doctests and browser E2E on the final extension commit.",
+    "Hosted Windows CI execution: user declined public publication.",
+    "Live Kubernetes and platform-exclusive checks unsupported on local Windows."
+  ]
+}

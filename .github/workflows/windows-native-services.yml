@@ -1,0 +1,64 @@
+name: awaken-windows-native-services
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-native-services-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native_services:
+    runs-on: windows-2025
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: "1"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      CARGO_BUILD_BUILD_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.96.0
+          targets: x86_64-pc-windows-msvc
+      - name: Use short task-owned Windows temporary paths
+        shell: pwsh
+        run: |
+          $taskTemp = Join-Path $env:RUNNER_TEMP "wn"
+          New-Item -ItemType Directory -Path $taskTemp -Force | Out-Null
+          "TEMP=$taskTemp" >> $env:GITHUB_ENV
+          "TMP=$taskTemp" >> $env:GITHUB_ENV
+          "TMPDIR=$taskTemp" >> $env:GITHUB_ENV
+      - name: Verify native service runner decision tables
+        run: python scripts/ci/test_native_services.py
+      - name: Install the reviewed Windows NATS archive without a service cache
+        run: python scripts/ci/deadline.py 900 -- python scripts/ci/install_windows_services.py --service nats --output target/windows-services
+      - name: Require real broker delivery and a native tool round trip
+        run: python scripts/ci/check_native_services.py --service nats --nats-bin target/windows-services/nats/nats-server-v2.15.0-windows-amd64/nats-server.exe --output target/test-timings/native-nats
+      - name: Install the reviewed Windows PostgreSQL runtime without a service cache
+        run: python scripts/ci/deadline.py 900 -- python scripts/ci/install_windows_services.py --service postgres --output target/windows-postgres
+      - name: Require backend parity, Work, HTTP failover and process-crash durability
+        run: python scripts/ci/check_native_services.py --service postgres --postgres-bin target/windows-postgres/postgres/pgsql/bin --output target/test-timings/native-postgres
+      - name: Install reviewed Windows S3 binaries without a service cache
+        run: python scripts/ci/deadline.py 900 -- python scripts/ci/install_windows_services.py --service s3 --output target/windows-s3
+      - name: Require S3 admission, least privilege and real credential rotation
+        run: python scripts/ci/check_native_services.py --service s3 --minio-bin target/windows-s3/minio/minio.exe --mc-bin target/windows-s3/mc/mc.exe --output target/test-timings/native-s3
+      - name: Retain exact-source service and execution receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-services-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            target/test-timings/
+            target/windows-services/installation.json
+            target/windows-postgres/installation.json
+            target/windows-s3/installation.json
+          if-no-files-found: error

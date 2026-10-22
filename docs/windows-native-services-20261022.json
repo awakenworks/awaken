@@ -1,0 +1,976 @@
+{
+  "schema_version": 3,
+  "status": "passed",
+  "platform": "Windows/MSVC",
+  "linux_verification_allowed": false,
+  "full_gate": false,
+  "scope": [
+    "NATS wake hint and real Sandbox tool request/reply",
+    "PostgreSQL canonical backend parity and complete Work durability suite",
+    "PostgreSQL HTTP transport, native two-process failover and isolated child diagnostics"
+  ],
+  "nats_published_commit": "38966db48db5609af2a6a5c0d176952c996977f8",
+  "nats_original_qualification": {
+    "schema_version": 1,
+    "status": "passed",
+    "platform": "Windows/MSVC",
+    "service": "nats",
+    "linux_verification_allowed": false,
+    "full_gate": false,
+    "source": {
+      "revision": "2025b2734527f1683a2e3e99293829eb63f64a67",
+      "index_tree": "f0b4f10a61b1a160bacf78fb6c78bcbef06f58ef",
+      "digest": "1a5477dddde85657c65dc05d273044315cc9770bd20715ccde7d42cde59331a2",
+      "patch_sha256": "133cda606e69c723dde044b66fad9dae61e89fedaeb906cfad34ece6e0191119"
+    },
+    "process_ownership": "native Windows deadline Job with kill-on-close",
+    "stages": [
+      {
+        "stage": "nats-domain-tests",
+        "command": [
+          "C:\\Python313\\python.EXE",
+          "-X",
+          "utf8",
+          "scripts/ci/_native_shell.py",
+          "scripts/ci/nats_tests.sh"
+        ],
+        "exit_code": 0,
+        "seconds": 104.23534449998988,
+        "log_sha256": "d9c4e5bbecd6697910b10ebfc9f29468a5046eed063f5886ab59b6ef60222698"
+      }
+    ],
+    "fixture_root": "F:\\Codes\\awaken-1.0.0-dev\\target\\w9\\awaken-services.8_phav9b",
+    "fixture_data_retained": true,
+    "fixture": {
+      "kind": "native-windows-process",
+      "binary": {
+        "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-nats-install-20261022-v1\\nats\\nats-server-v2.15.0-windows-amd64\\nats-server.exe",
+        "sha256": "4872e458bd2268abff4c8c2dafadbb1d14af255b3b935d53a1c88ff2d049cbc4",
+        "abi": "windows-amd64"
+      },
+      "pid": 62104,
+      "owner": "awaken-ci-a17efefb2da64b29a553f9e54e0e0b93",
+      "identity": {
+        "server_name": "awaken-ci-a17efefb2da64b29a553f9e54e0e0b93",
+        "server_id": "NB5OHS7MUX773TKOGUIYKUNEFB2O3DPZTJRTBSRRLDBS5KKZYDJ6EMQD",
+        "port": 56455,
+        "version": "2.15.0"
+      },
+      "loopback_port": 56455,
+      "url": "nats://127.0.0.1:56455"
+    },
+    "execution": [
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.Jsd6VB",
+        "receipt_sha256": "08db78b3abcc3a213f5fcdfcfdc9e2f76d575d5d58634bd3b154242368cc1dec",
+        "selected_cases": [
+          "wake::nats_tests::nats_fixture_absence_and_configured_failure_are_distinct",
+          "wake::nats_tests::nats_wake_signal_notifies_a_waiter"
+        ],
+        "results": {
+          "schema_version": 1,
+          "kind": "required-libtest",
+          "full_gate": false,
+          "source_kind": "working-tree",
+          "revision": "2025b2734527f1683a2e3e99293829eb63f64a67",
+          "source_digest": "1a5477dddde85657c65dc05d273044315cc9770bd20715ccde7d42cde59331a2",
+          "index_tree": "f0b4f10a61b1a160bacf78fb6c78bcbef06f58ef",
+          "arguments": [
+            "-p",
+            "awaken-dispatch",
+            "--features",
+            "nats",
+            "--lib",
+            "wake::nats_tests",
+            "--require-case=wake::nats_tests::nats_wake_signal_notifies_a_waiter",
+            "--require-case=wake::nats_tests::nats_fixture_absence_and_configured_failure_are_distinct",
+            "--",
+            "--test-threads=1"
+          ],
+          "required_cases": [
+            "wake::nats_tests::nats_wake_signal_notifies_a_waiter",
+            "wake::nats_tests::nats_fixture_absence_and_configured_failure_are_distinct"
+          ],
+          "commands": [
+            [
+              "cargo",
+              "test",
+              "--locked",
+              "-p",
+              "awaken-dispatch",
+              "--features",
+              "nats",
+              "--lib",
+              "wake::nats_tests",
+              "--",
+              "--test-threads=1",
+              "--list"
+            ],
+            [
+              "cargo",
+              "test",
+              "--locked",
+              "-p",
+              "awaken-dispatch",
+              "--features",
+              "nats",
+              "--lib",
+              "wake::nats_tests",
+              "--",
+              "--test-threads=1",
+              "--show-output"
+            ]
+          ],
+          "list_command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "awaken-dispatch",
+            "--features",
+            "nats",
+            "--lib",
+            "wake::nats_tests",
+            "--",
+            "--test-threads=1",
+            "--list"
+          ],
+          "test_command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "awaken-dispatch",
+            "--features",
+            "nats",
+            "--lib",
+            "wake::nats_tests",
+            "--",
+            "--test-threads=1",
+            "--show-output"
+          ],
+          "selected_cases": [
+            "wake::nats_tests::nats_fixture_absence_and_configured_failure_are_distinct",
+            "wake::nats_tests::nats_wake_signal_notifies_a_waiter"
+          ],
+          "executed_cases": [
+            [
+              "wake::nats_tests::nats_fixture_absence_and_configured_failure_are_distinct",
+              "ok"
+            ],
+            [
+              "wake::nats_tests::nats_wake_signal_notifies_a_waiter",
+              "ok"
+            ]
+          ],
+          "postgres_fixture_required": false,
+          "postgres_fixture_configured": false,
+          "status": "passed",
+          "rows": [
+            {
+              "command": [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "awaken-dispatch",
+                "--features",
+                "nats",
+                "--lib",
+                "wake::nats_tests",
+                "--",
+                "--test-threads=1",
+                "--list"
+              ],
+              "exit_code": 0,
+              "duration_seconds": 2.407919800025411
+            },
+            {
+              "command": [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "awaken-dispatch",
+                "--features",
+                "nats",
+                "--lib",
+                "wake::nats_tests",
+                "--",
+                "--test-threads=1",
+                "--show-output"
+              ],
+              "exit_code": 0,
+              "duration_seconds": 7.200903299963102
+            }
+          ],
+          "errors": [],
+          "preparation": {
+            "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.Jsd6VB\\build.json",
+            "sha256": "516aa506ec4c0f20677815b86a90f7d90d3cd4fc42467893b1421a1069d3aa7e"
+          },
+          "command_exit_code": 0,
+          "duration_seconds": 9.608823099988513,
+          "source_unchanged": true,
+          "exit_code": 0
+        },
+        "results_log_sha256": "c950b401adb0fe7cb0d2bdddc5d526cdbcf3b9fc1f18b23f08b7373c570a43f2"
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.qJ5zNd",
+        "receipt_sha256": "89b934e73169d6030ccb31ea4ee39ca91461db815e71aaf3167a12fdc529cc2a",
+        "selected_cases": [
+          "hand::tests::nats_fixture_absence_and_configured_failure_are_distinct",
+          "hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable"
+        ],
+        "results": {
+          "schema_version": 1,
+          "kind": "required-libtest",
+          "full_gate": false,
+          "source_kind": "working-tree",
+          "revision": "2025b2734527f1683a2e3e99293829eb63f64a67",
+          "source_digest": "1a5477dddde85657c65dc05d273044315cc9770bd20715ccde7d42cde59331a2",
+          "index_tree": "f0b4f10a61b1a160bacf78fb6c78bcbef06f58ef",
+          "arguments": [
+            "-p",
+            "awaken-sandbox",
+            "--features",
+            "hand",
+            "--lib",
+            "nats",
+            "--require-case=hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable",
+            "--require-case=hand::tests::nats_fixture_absence_and_configured_failure_are_distinct",
+            "--",
+            "--test-threads=1"
+          ],
+          "required_cases": [
+            "hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable",
+            "hand::tests::nats_fixture_absence_and_configured_failure_are_distinct"
+          ],
+          "commands": [
+            [
+              "cargo",
+              "test",
+              "--locked",
+              "-p",
+              "awaken-sandbox",
+              "--features",
+              "hand",
+              "--lib",
+              "nats",
+              "--",
+              "--test-threads=1",
+              "--list"
+            ],
+            [
+              "cargo",
+              "test",
+              "--locked",
+              "-p",
+              "awaken-sandbox",
+              "--features",
+              "hand",
+              "--lib",
+              "nats",
+              "--",
+              "--test-threads=1",
+              "--show-output"
+            ]
+          ],
+          "list_command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "awaken-sandbox",
+            "--features",
+            "hand",
+            "--lib",
+            "nats",
+            "--",
+            "--test-threads=1",
+            "--list"
+          ],
+          "test_command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "awaken-sandbox",
+            "--features",
+            "hand",
+            "--lib",
+            "nats",
+            "--",
+            "--test-threads=1",
+            "--show-output"
+          ],
+          "selected_cases": [
+            "hand::tests::nats_fixture_absence_and_configured_failure_are_distinct",
+            "hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable"
+          ],
+          "executed_cases": [
+            [
+              "hand::tests::nats_fixture_absence_and_configured_failure_are_distinct",
+              "ok"
+            ],
+            [
+              "hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable",
+              "ok"
+            ]
+          ],
+          "postgres_fixture_required": false,
+          "postgres_fixture_configured": false,
+          "status": "passed",
+          "rows": [
+            {
+              "command": [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "awaken-sandbox",
+                "--features",
+                "hand",
+                "--lib",
+                "nats",
+                "--",
+                "--test-threads=1",
+                "--list"
+              ],
+              "exit_code": 0,
+              "duration_seconds": 1.2646510999766178
+            },
+            {
+              "command": [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "awaken-sandbox",
+                "--features",
+                "hand",
+                "--lib",
+                "nats",
+                "--",
+                "--test-threads=1",
+                "--show-output"
+              ],
+              "exit_code": 0,
+              "duration_seconds": 6.924339700024575
+            }
+          ],
+          "errors": [],
+          "preparation": {
+            "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.qJ5zNd\\build.json",
+            "sha256": "599c8fc2412527e449c105832bba8216354d5b62124daa546104b1fa5e73d67b"
+          },
+          "command_exit_code": 0,
+          "duration_seconds": 8.188990800001193,
+          "source_unchanged": true,
+          "exit_code": 0
+        },
+        "results_log_sha256": "955d25f13790158dac3e3efcfba5bde8eeee4924dc09b4fed7b01059444d6ad9"
+      }
+    ],
+    "source_unchanged": true,
+    "cleanup": {
+      "stopped": true,
+      "pid": 62104,
+      "exit_code": 1,
+      "method": "retained-owned-process-handle"
+    },
+    "exit_code": 0,
+    "scope": "Native Windows NATS: wake hints and real Sandbox tool round trip",
+    "test_design": {
+      "admission": [
+        "optional absence reports explicit skip",
+        "required absence fails",
+        "configured empty or unreachable endpoint fails even when optional",
+        "live configured endpoint executes domain assertions"
+      ],
+      "wake": [
+        "fresh wait is pending before publication",
+        "same-client SUB/flush protocol barrier confirms broker readiness",
+        "one published hint releases the waiter under its deadline",
+        "independent raw subscriber observes the exact subject and empty hint"
+      ],
+      "runner": [
+        "native AMD64 PE required",
+        "exact owned protocol identity before and after tests",
+        "actual named execution matches inventory and source-bound build",
+        "missing marker, skip, ignored/failed case, source drift or cleanup failure rejects pass",
+        "original test failure survives a later cleanup failure"
+      ]
+    },
+    "not_qualified": [
+      "PostgreSQL live backend matrix",
+      "S3 credential rotation and PostgreSQL/object-store PITR",
+      "Hosted Windows CI execution",
+      "Linux or container-based gates"
+    ],
+    "reproduction": "python scripts/ci/check_native_services.py --service nats --nats-bin <native-Windows-nats-server.exe> --output <fresh-evidence-directory>",
+    "ci": {
+      "workflow": ".github/workflows/windows-native-services.yml",
+      "platform": "windows-2025",
+      "hosted_execution": "not executed",
+      "fresh_official_nats_download": {
+        "platform": "Windows",
+        "status": "passed",
+        "services": {
+          "nats": {
+            "archive": "nats-server-v2.15.0-windows-amd64.zip",
+            "url": "https://github.com/nats-io/nats-server/releases/download/v2.15.0/nats-server-v2.15.0-windows-amd64.zip",
+            "sha256": "2d0861dc2ca3567d17f7d19611d7b346cc2ccbd7086a0a77cc957a2c71663200",
+            "bytes": 7423380,
+            "executable": "nats-server-v2.15.0-windows-amd64/nats-server.exe",
+            "extracted_files": 1,
+            "binary": {
+              "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-nats-install-20261022-v1\\nats\\nats-server-v2.15.0-windows-amd64\\nats-server.exe",
+              "sha256": "4872e458bd2268abff4c8c2dafadbb1d14af255b3b935d53a1c88ff2d049cbc4",
+              "abi": "windows-amd64"
+            }
+          }
+        }
+      },
+      "entry_contract": "138 gate entry points passed",
+      "lane_reachability": "passed",
+      "test_wait_policy": "passed with the obsolete sleep baseline removed",
+      "conditional_dependency_policy": "passed after removing the obsolete uncovered-NATS exemption"
+    },
+    "tested_source_files": {
+      "Cargo.lock": "e7111c250ad538bfc4485d2f42936b4ba23cdf4263e1fd0d263f17508bbb22c1",
+      "crates/bin/awaken-sandbox/Cargo.toml": "dae246b13362df93fe7b225644bd35689726e6a98e12fecce91e97077aec8ada",
+      "crates/bin/awaken-sandbox/src/hand.rs": "0151e551eda4b919fe63bfef943eab7eb19329061dc5cdd9e70dd554afb8e616",
+      "crates/devtools/awaken-reliability-testkit/src/lib.rs": "0fe665cc614dba773fc0d0b299ae21d3879fca6f1290e8d60af16351319de6b9",
+      "crates/devtools/awaken-reliability-testkit/src/nats_fixture.rs": "78c676649d1b49fdaf7f130dd6a4b3b96a7e690b1d058c7635517bca6400882f",
+      "lefthook.yml": "814f57a44e221fa08dbb13ea1393557556caf6343bcd2aef4e8625284f1ee424",
+      "scripts/ci/check-all.sh": "7ded23d1e02ef47562f3f3979f1004920ac682e438827dc224f854114cfadfba",
+      "scripts/ci/check_native_services.py": "8906b2a0f20438c0b1a2e27e98d666acbeac2accdea4c269660e4404675830ce",
+      "scripts/ci/native_services.py": "9c10757797aa292123670012362cd00795b0bae396fd2534536743598737ba31",
+      "scripts/ci/nats_tests.sh": "c643363bbbf85c47dd9fd4a132ac1eb734fee462248cb14ede9c7ae396162e91",
+      "scripts/ci/test_native_services.py": "9614aaf768f5f3a77e438c3e65ee1fc4a78075cfa0abce8acddf9b9d720c9e4f",
+      "scripts/ci/install_windows_services.py": "237d5b08cce2cf8e8a13fd9961d2258a7c14989f0705bee6db1b2ce718541aaf",
+      ".github/workflows/windows-native-services.yml": "16eb16f54a33af0c15e7821b6d02d393f753df98e82e688e4e637a1977d28990",
+      "crates/server/awaken-dispatch/src/wake.rs": "89c027865a385db6b749f8d67a8738fa067a1d3c21203fa839ea6b0ec4d99ada",
+      "crates/server/awaken-dispatch/tests/support/nats.rs": "eb4b2dff4d7dd679d63d54f266d91494f0710461ffac19a04872d17d9e974fcb",
+      "scripts/ci/check_dependency_gates.py": "65de2ea6d5e210fa918e6269573f2cf64410d89056f085063dccdfbca58947de",
+      "scripts/ci/test_waits_baseline.json": "082a3f9226a5cd67329b4af92e77d6d88ad608dbf54ab29b79671f704f9efda1"
+    },
+    "runner_self_tests": {
+      "count": 10,
+      "status": "passed",
+      "log_sha256": "7d309f99c2085e396a0407fcf906cc1f3ff04e70950d14a65d25190c7e2ad8e0"
+    },
+    "evidence_file": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-nats-20261022-v4\\result.json",
+    "evidence_sha256": "9053453f34dd313ac380f1be54411cfc86082e030feaec37703ff4c5c9c1ed12"
+  },
+  "shared_runner_nats_regression": {
+    "schema_version": 1,
+    "status": "passed",
+    "platform": "Windows/MSVC",
+    "service": "nats",
+    "linux_verification_allowed": false,
+    "full_gate": false,
+    "source": {
+      "revision": "38966db48db5609af2a6a5c0d176952c996977f8",
+      "index_tree": "e4162a105eaa45b7579dea24e3a94789a4ddb996",
+      "digest": "8d2cd5bb2091d88ca137dcda9959f34c0836390a3a18e0e4cfa40dc4650ec2cd",
+      "patch_sha256": "31f02fd3659970e239224f66ef21fb06b9a4e50d13a93e62c7234b8f848dcd4c"
+    },
+    "process_ownership": "native Windows deadline Job with kill-on-close",
+    "stages": [
+      {
+        "stage": "nats-domain-tests",
+        "command": [
+          "C:\\Python313\\python.EXE",
+          "-X",
+          "utf8",
+          "scripts/ci/_native_shell.py",
+          "scripts/ci/nats_tests.sh"
+        ],
+        "exit_code": 0,
+        "seconds": 68.89828109997325,
+        "log_sha256": "873532a6825f7107cab6cb81d9baa2cad9b4b58c91cfde462de7f220e467e256"
+      }
+    ],
+    "fixture_root": "F:\\Codes\\awaken-1.0.0-dev\\target\\w9\\awaken-services.j3kew_0b",
+    "fixture_data_retained": true,
+    "fixture": {
+      "kind": "native-windows-process",
+      "binary": {
+        "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-nats-install-20261022-v1\\nats\\nats-server-v2.15.0-windows-amd64\\nats-server.exe",
+        "sha256": "4872e458bd2268abff4c8c2dafadbb1d14af255b3b935d53a1c88ff2d049cbc4",
+        "abi": "windows-amd64"
+      },
+      "pid": 134164,
+      "owner": "awaken-ci-536482e8a4004ec8bcfb41a977191907",
+      "identity": {
+        "server_name": "awaken-ci-536482e8a4004ec8bcfb41a977191907",
+        "server_id": "NAYNNK7TFDR5HBEPL57IWTAQBMZ5ZNZEWDYDFQQAHRID2IG4OGAMAYD4",
+        "port": 57688,
+        "version": "2.15.0"
+      },
+      "loopback_port": 57688,
+      "url": "nats://127.0.0.1:57688"
+    },
+    "execution": [
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.JKyyCC",
+        "receipt_sha256": "e6e2762e0972aa4c3d54731ee1ffb6daa9f3ed3ec21b750b9875dda6358478ed",
+        "selected_cases": [
+          "wake::nats_tests::nats_fixture_absence_and_configured_failure_are_distinct",
+          "wake::nats_tests::nats_wake_signal_notifies_a_waiter"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.jS9Tgl",
+        "receipt_sha256": "da28b87e24d57d98f89e9f4549eb5446afacfc62efda7a2cf1d309ddd87edc73",
+        "selected_cases": [
+          "hand::tests::nats_fixture_absence_and_configured_failure_are_distinct",
+          "hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable"
+        ]
+      }
+    ],
+    "source_unchanged": true,
+    "cleanup": {
+      "stopped": true,
+      "pid": 134164,
+      "exit_code": 1,
+      "method": "retained-owned-process-handle"
+    },
+    "exit_code": 0
+  },
+  "postgres_qualification": {
+    "schema_version": 1,
+    "status": "passed",
+    "platform": "Windows/MSVC",
+    "service": "postgres",
+    "linux_verification_allowed": false,
+    "full_gate": false,
+    "source": {
+      "revision": "38966db48db5609af2a6a5c0d176952c996977f8",
+      "index_tree": "e4162a105eaa45b7579dea24e3a94789a4ddb996",
+      "digest": "8d2cd5bb2091d88ca137dcda9959f34c0836390a3a18e0e4cfa40dc4650ec2cd",
+      "patch_sha256": "31f02fd3659970e239224f66ef21fb06b9a4e50d13a93e62c7234b8f848dcd4c"
+    },
+    "process_ownership": "native Windows deadline Job with kill-on-close",
+    "stages": [
+      {
+        "stage": "postgres-backend-parity",
+        "command": [
+          "C:\\Python313\\python.EXE",
+          "-X",
+          "utf8",
+          "scripts/ci/_native_shell.py",
+          "scripts/ci/pg_tests.sh",
+          "--backend-parity"
+        ],
+        "exit_code": 0,
+        "seconds": 387.1754277999862,
+        "log_sha256": "068d4ef4907768a7e9bbe11ba88d83844be54b2625651a368b81c84b8aec3001"
+      },
+      {
+        "stage": "postgres-work-store",
+        "command": [
+          "C:\\Python313\\python.EXE",
+          "-X",
+          "utf8",
+          "scripts/ci/_native_shell.py",
+          "scripts/ci/pg_tests.sh",
+          "--work-store"
+        ],
+        "exit_code": 0,
+        "seconds": 52.46787560003577,
+        "log_sha256": "ed43c2269f9d996e520a73931b3744f6500849b4c8e05c5cf92ab0e39e2b9c2f"
+      }
+    ],
+    "fixture_root": "F:\\Codes\\awaken-1.0.0-dev\\target\\w9\\awaken-services.jxs_6jcf",
+    "fixture_data_retained": true,
+    "fixture": {
+      "kind": "native-windows-process",
+      "binaries": {
+        "postgres": {
+          "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-pg-install-20261022-v1\\postgres\\pgsql\\bin\\postgres.exe",
+          "sha256": "19e73deb1152b3b505f2e1fd579191427f9eb3b3f800754968e7214b24edf31d",
+          "abi": "windows-amd64"
+        },
+        "initdb": {
+          "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-pg-install-20261022-v1\\postgres\\pgsql\\bin\\initdb.exe",
+          "sha256": "cc6373e9d2070f51d7373e49d6b17c95216f3de9797138f1ec70775b3e308aff",
+          "abi": "windows-amd64"
+        },
+        "psql": {
+          "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-pg-install-20261022-v1\\postgres\\pgsql\\bin\\psql.exe",
+          "sha256": "baf1e8234f5d6a09fed47a5eb6dfee8919a0be7be5eac2600edf98fe69f2d694",
+          "abi": "windows-amd64"
+        },
+        "pg_ctl": {
+          "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-pg-install-20261022-v1\\postgres\\pgsql\\bin\\pg_ctl.exe",
+          "sha256": "bed9ec9686fdf66b407f55d15be2466365827feb6b343fdb452c2dbcfbcfe0a1",
+          "abi": "windows-amd64"
+        }
+      },
+      "pid": 53400,
+      "owner": "awaken-ci-1038f6f14d3a49efbd38f43f7561d38d",
+      "identity": {
+        "cluster_name": "awaken-ci-1038f6f14d3a49efbd38f43f7561d38d",
+        "port": 62034,
+        "data_directory": "F:/Codes/awaken-1.0.0-dev/target/w9/awaken-services.jxs_6jcf/postgres/data",
+        "started": "2026-10-22 21:03:28.636363+08",
+        "version": "PostgreSQL 16.15, compiled by Visual C++ build 1944, 64-bit",
+        "version_num": 160015
+      },
+      "loopback_port": 62034,
+      "database": "awaken_ci",
+      "authentication": "fresh per-run SCRAM credential; not recorded"
+    },
+    "execution": [
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.llQWPp",
+        "receipt_sha256": "8c6ca57aa6e3043d213d033d96a8f40b0902e2219e09edf6870af3877a18df1f",
+        "selected_cases": [
+          "fixture::tests::fixture_admission_distinguishes_absent_configured_and_invalid",
+          "fixture::tests::postgres_fixture_pool_admission_respects_configuration",
+          "fixture::tests::postgres_fixture_pool_connects_when_configured",
+          "fixture::tests::required_postgres_fixture_rejects_absence_without_disclosing_values",
+          "fixture::tests::required_switch_distinguishes_absence_one_and_invalid",
+          "nats_fixture::tests::fixture_admission_decision_table_preserves_exact_urls_and_rejects_missing_premises"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.m6DlRN",
+        "receipt_sha256": "b64b65cbc86d1fe2db33d2d89ee712c3f46aa8dbd79b08d6f13ae161e68e237b",
+        "selected_cases": [
+          "in_memory_repo_conforms",
+          "postgres::configured_database_failure_is_not_a_successful_skip",
+          "postgres::postgres_repo_conforms",
+          "postgres::postgres_snapshot_rejects_a_dangling_offering_row",
+          "postgres::postgres_snapshot_surfaces_a_corrupt_row_as_a_storage_error",
+          "sqlite::first_match_agrees_between_in_memory_and_durable_backend",
+          "sqlite::snapshot_rejects_a_dangling_offering_row_reloaded_from_disk",
+          "sqlite::snapshot_surfaces_a_corrupt_row_as_a_storage_error",
+          "sqlite::sqlite_repo_conforms",
+          "sqlite::sqlite_rows_survive_a_reopen_from_file",
+          "valid_catalog_parse_rejects_a_dangling_endpoint_provider"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.FXs4tm",
+        "receipt_sha256": "fe2f18f20d926bf320f8fce1ec71de4581883419beaa87b1857eca93fdaf1b3a",
+        "selected_cases": [
+          "in_memory_repo_conforms",
+          "postgres::fixture_absence_and_configured_failure_are_distinct",
+          "postgres::postgres_concurrent_begin_has_one_physical_attempt_owner",
+          "postgres::postgres_concurrent_managed_begin_has_one_physical_attempt_owner",
+          "postgres::postgres_legacy_mutation_recovery_conforms",
+          "postgres::postgres_managed_abort_retains_exact_cleanup_authority_until_completion",
+          "postgres::postgres_managed_absent_child_cas_has_one_atomic_winner",
+          "postgres::postgres_managed_absent_child_cas_never_cross_workspace_overwrites",
+          "postgres::postgres_managed_rollout_exact_lookup_conforms",
+          "postgres::postgres_plain_absent_source_cas_does_not_overwrite_concurrent_winner",
+          "postgres::postgres_recovery_scans_reject_mismatched_durable_keys_before_secret_io",
+          "postgres::postgres_repo_conforms",
+          "postgres::postgres_sealed_secret_round_trips_and_never_stores_plaintext",
+          "postgres::postgres_undecodable_recovery_row_blocks_each_batch_before_secret_io",
+          "sqlite_legacy_mutation_recovery_conforms",
+          "sqlite_recovery_scans_reject_mismatched_durable_keys_before_secret_io",
+          "sqlite_repo_conforms"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.vHEuVq",
+        "receipt_sha256": "f182cf36f146384ba20d45b5f02ac3334fb8ec9c274a50f77a0bf4f93f1ffb10",
+        "selected_cases": [
+          "in_memory_repo_conforms",
+          "postgres::fixture_absence_and_configured_failure_are_distinct",
+          "postgres::fixture_cleanup_preserves_another_live_schema",
+          "postgres::postgres_erasure_independent_connections_preserve_winner_after_reopen",
+          "postgres::postgres_repo_conforms",
+          "sqlite_erasure_independent_connections_preserve_winner_after_reopen",
+          "sqlite_repo_conforms",
+          "sqlite_survives_reopen"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.GmqUzZ",
+        "receipt_sha256": "3e0f72f619c79f4b10a0ef47258fb05170ca18af27eeb205cfffe1509ada2484",
+        "selected_cases": [
+          "in_memory_captured_content_conforms",
+          "postgres::postgres_captured_content_conforms",
+          "postgres::postgres_fixture_absence_and_configured_failure_have_distinct_outcomes",
+          "sqlite_captured_content_conforms"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.IqAaON",
+        "receipt_sha256": "0d6e2a9315bab7e27c83a392182097a9d0f52b7b37b34db39bbb93d6f55b4b72",
+        "selected_cases": [
+          "fixture_absence_and_configured_failure_are_distinct",
+          "in_memory_backend_conforms",
+          "postgres_backend_conforms",
+          "sqlite_backend_conforms",
+          "work_fixture_cleanup_preserves_another_live_schema"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.AlX4qX",
+        "receipt_sha256": "a6fc0e8da9c713ff4a77f1f4ccb81844d61d4451dc4eb48ada19a6d07e005cb7",
+        "selected_cases": [
+          "postgres_backend_conforms",
+          "postgres_fixture_absence_and_configured_failure_are_distinct",
+          "postgres_root_cas_conforms_to_the_same_decision_table",
+          "postgres_unbound_preparation_demand_uses_one_shared_capacity_slot",
+          "root_cas_postgres_fixture_absence_and_configured_failure_are_distinct",
+          "sqlite_backend_conforms",
+          "sqlite_backend_conforms_with_bounded_polling_stack",
+          "sqlite_lifecycle_outbox_insert_failure_rolls_back_every_root_path",
+          "sqlite_restores_and_canonically_rewrites_the_pre_typed_deployment_record",
+          "sqlite_unbound_preparation_demand_uses_one_shared_capacity_slot"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.zovvii",
+        "receipt_sha256": "c8eb691254ef9de891746d34d24a4ffb0edd23d678d9c24f459823cb3d12a017",
+        "selected_cases": [
+          "in_memory_conditional_delete_is_atomic",
+          "postgres::fixture_absence_and_configured_failure_are_distinct",
+          "postgres::postgres_concurrent_create_and_cas_have_one_winner",
+          "postgres::postgres_memory_repository_conforms",
+          "postgres::postgres_memory_roles_share_the_same_atomic_memory",
+          "postgres::postgres_memory_timestamps_use_the_injected_clock_and_checked_sql_range",
+          "postgres::postgres_negative_memory_version_fails_closed",
+          "postgres::postgres_never_reuses_a_deleted_top_ordinal",
+          "postgres::postgres_snapshot_heads_follow_one_committed_cross_file_prefix",
+          "sqlite_concurrent_cas_has_exactly_one_winner",
+          "sqlite_concurrent_create_has_exactly_one_winner",
+          "sqlite_conditional_delete_is_atomic",
+          "sqlite_materialized_path_cas",
+          "sqlite_memory_roles_share_the_same_atomic_memory",
+          "sqlite_memory_timestamps_use_the_injected_clock_and_checked_sql_range",
+          "sqlite_snapshot_heads_follow_one_committed_cross_file_prefix",
+          "volatile_materialized_path_cas",
+          "volatile_memory_roles_share_the_same_atomic_memory",
+          "volatile_memory_timestamps_use_the_injected_clock",
+          "volatile_snapshot_heads_follow_one_committed_cross_file_prefix"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.L7ID1d",
+        "receipt_sha256": "093de927f0d2bec50cc8181713e94a2832b43383a06540bfa9743289bbfab952",
+        "selected_cases": [
+          "executable_metadata_is_bound_into_new_bundle_hashes",
+          "filesystem_conforms_and_survives_reopen",
+          "filesystem_corruption_retains_the_original_frame",
+          "filesystem_process_append_helper",
+          "filesystem_processes_do_not_lose_a_concurrent_version",
+          "in_memory_conforms",
+          "in_memory_serializes_concurrent_append",
+          "postgres::fixture_absence_and_configured_failure_are_distinct",
+          "postgres::postgres_conforms",
+          "sqlite_conforms",
+          "sqlite_corruption_retains_the_original_frame",
+          "sqlite_retired_pin_survives_reopen"
+        ]
+      },
+      {
+        "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.b8TMCq",
+        "receipt_sha256": "17f0cefa34449d9169e690946952e2569bd9622ff2493d0d98a4957999f4a5d3",
+        "selected_cases": [
+          "a_lease_is_live_exactly_until_its_expiry",
+          "a_released_lease_is_never_live",
+          "a_worker_counts_as_polling_only_within_the_window",
+          "an_expired_lease_is_reclaimable",
+          "an_unknown_item_is_never_leased",
+          "at_most_one_lease_is_handed_out_while_one_is_live",
+          "distinct_workers_within_the_window_all_count",
+          "durable::postgres_allocator_work_and_watermark_roll_back_as_one_transaction",
+          "durable::postgres_independent_pools_allocate_concurrently_without_reset",
+          "durable::postgres_missing_malformed_and_exhausted_allocators_fail_closed",
+          "durable::sqlite_allocator_work_and_watermark_roll_back_as_one_transaction",
+          "durable::sqlite_independent_handles_allocate_concurrently_and_reopen_without_reset",
+          "durable::sqlite_missing_malformed_and_exhausted_allocators_fail_closed",
+          "environments_lease_independently",
+          "fixture_absence_and_configured_failure_are_distinct",
+          "in_memory_backend_conforms",
+          "inmem::registration_thread_races::independent_threads_cannot_publish_an_older_registration_after_withdrawal",
+          "inmem::tests::ack_is_fenced_to_the_worker_that_claimed_the_item",
+          "inmem::tests::an_expired_lease_is_reclaimed_on_the_next_poll",
+          "inmem::tests::claim_leases_oldest_queued_and_caps_at_one_active",
+          "inmem::tests::concurrent_healthcheck_convergence_has_one_canonical_work_item",
+          "inmem::tests::healthcheck_seed_carries_its_own_id_and_is_queued",
+          "inmem::tests::heartbeat_extends_and_reports_ttl",
+          "inmem::tests::lease_reclaim_is_exact_at_the_ttl_boundary",
+          "inmem::tests::membership_is_enforced_across_environments",
+          "inmem::tests::oldest_queued_at_persists_while_processing_and_clears_when_drained",
+          "inmem::tests::reclaimed_item_rejects_the_preceding_owner_mutations",
+          "inmem::tests::session_token_tracks_the_current_in_memory_lease_only",
+          "inmem::tests::stats_split_queued_depth_from_pending_and_count_pollers",
+          "inmem::tests::update_metadata_upserts_and_remove_env_purges",
+          "inmem::tests::work_state_as_str_pins_the_wire_vocabulary",
+          "inmem::tests::workers_polling_counts_distinct_workers_within_the_window",
+          "inmemory_archive_keeps_existing_session_authority",
+          "inmemory_work_identity_is_not_reused_after_lifecycle_removal",
+          "lease_book::tests::exhausted_epoch_cannot_install_an_owner",
+          "lease_book::tests::lease_observation_and_reclaim_age_share_the_expiry_boundary",
+          "lease_book::tests::reference_snapshot_follows_the_reference_backend_gate",
+          "mutation::tests::a_renewal_fence_names_its_generation_or_says_it_has_none",
+          "mutation::tests::authority_transition_covers_claim_renew_reclaim_and_release",
+          "mutation::tests::lease_epoch_conversion_fails_closed_at_corrupt_and_exhausted_boundaries",
+          "poll_window_is_exact_and_overflow_safe",
+          "postgres_archive_keeps_existing_session_authority_after_reconnect",
+          "postgres_backend_conforms",
+          "postgres_registration_watermark_and_queue_rollback_together",
+          "postgres_separate_queue_instances_share_the_registration_commit_boundary",
+          "postgres_withdrawal_watermark_survives_a_process_restart",
+          "postgres_work_identity_is_not_reused_after_lifecycle_removal",
+          "product_readiness_tests::volatile_queue_is_opt_in_and_its_export_is_feature_gated",
+          "re_leasing_extends_to_the_new_expiry",
+          "remove_env_purges_everything",
+          "restart::postgres_identity_high_watermark_survives_a_native_process_restart",
+          "restart::sqlite_identity_high_watermark_survives_a_native_process_restart",
+          "schema::clock_proofs::lease_deadline_boundary_table",
+          "schema::clock_proofs::reclaim_cutoff_boundary_table",
+          "schema::identity_upgrade_tests::postgres_both_published_histories_preserve_live_leases_and_fence_deleted_ids",
+          "schema::identity_upgrade_tests::sqlite_both_published_histories_preserve_live_leases_and_fence_deleted_ids",
+          "schema::tests::postgres_both_published_histories_append_empty_registration_watermarks",
+          "schema::tests::postgres_published_v3_converges_with_the_same_domain_effects",
+          "schema::tests::published_work_histories_select_exactly_and_converge_once",
+          "schema::tests::sqlite_both_published_histories_append_empty_registration_watermarks",
+          "schema::tests::sqlite_invalid_legacy_row_keeps_the_v6_cutover_uncommitted",
+          "schema::tests::sqlite_published_v3_converges_rows_and_constraints_atomically",
+          "session_access::epoch_tests::postgres_session_claim_fences_epoch_exhaustion",
+          "session_access::epoch_tests::sqlite_session_claim_fences_epoch_exhaustion",
+          "sqlite_archive_keeps_existing_session_authority_after_reopen",
+          "sqlite_backend_conforms",
+          "sqlite_registration_watermark_and_queue_rollback_together",
+          "sqlite_separate_queue_instances_share_the_registration_commit_boundary",
+          "sqlite_withdrawal_watermark_survives_a_process_restart",
+          "sqlite_work_identity_is_not_reused_after_lifecycle_removal",
+          "stopping_the_active_item_frees_the_next",
+          "tests::accepted_instant_survives_reopening_the_durable_file",
+          "tests::ack_heartbeat_and_membership_match_the_in_memory_contract",
+          "tests::claim_leases_oldest_and_caps_at_one_active",
+          "tests::concurrent_session_dispatch_replay_has_one_sqlite_row",
+          "tests::durable_reclaims_an_expired_lease_on_the_next_poll",
+          "tests::file_open_and_pg_connect_entry_points",
+          "tests::healthcheck_seed_self_references_and_survives_reload",
+          "tests::list_is_enqueue_ordered",
+          "tests::postgres_concurrent_claim_yields_a_single_active_lease",
+          "tests::sqlite_file_fixtures_isolate_live_work_and_remove_only_their_owned_directory",
+          "tests::sqlite_lease_survives_process_store_reopen",
+          "tests::sqlite_session_token_is_single_delivery_epoch_bound_and_reopen_safe",
+          "tests::sqlite_storage_outage_is_typed_for_every_queue_operation",
+          "tests::sqlite_work_authority_waiters_never_block_runtime_timers",
+          "tests::stats_and_metadata_and_remove_env",
+          "work_fixture_cleanup_preserves_another_live_schema"
+        ]
+      }
+    ],
+    "source_unchanged": true,
+    "cleanup": {
+      "stopped": true,
+      "pid": 53400,
+      "exit_code": 0,
+      "method": "owned-pid-and-data-directory-fast-stop"
+    },
+    "exit_code": 0
+  },
+  "postgres_execution_counts": {
+    "backend_parity": 93,
+    "complete_work": 87,
+    "total_named_executions": 180,
+    "receipts": 10,
+    "skipped": 0
+  },
+  "qualified_runtime_files_sha256": {
+    "scripts/ci/_native_postgres.py": "a645c2c8adabc673c048d0666ff008ee4799e107141add39e174ff6f1243cf5f",
+    "scripts/ci/check_native_services.py": "3d4addd935388d12a844490f6bc5df1fa077a9e39a07bce478cc97af423a87b2",
+    "scripts/ci/native_services.py": "9c10757797aa292123670012362cd00795b0bae396fd2534536743598737ba31",
+    "scripts/ci/nats_tests.sh": "c643363bbbf85c47dd9fd4a132ac1eb734fee462248cb14ede9c7ae396162e91",
+    "scripts/ci/pg_tests.sh": "41c39474c65f5e9fd1503d9c19754697b8df13948e806b773fc62f418f4c0337",
+    ".github/workflows/windows-native-services.yml": "398f4a405fe5f673b8401cf6dcb0b70128b326f1d2352485c5c55c2d6aaed0fa",
+    "crates/server/awaken-dispatch-http/tests/active_active_postgres.rs": "4887022cc9f89b44bab7b484d8bf7a2f5e49759f2225933009edf990d8b59ccb"
+  },
+  "runner_self_tests": {
+    "count": 16,
+    "status": "passed",
+    "log_sha256": "9981abac353a24a9f1adf2f2a6af9247e6a7d0d41005e57c860e018c2c5c6588",
+    "source_sha256": "5bd7ca2a5c3981dce1bad872ec8b0c6f5123421dea25e5b16034f2a679d87e81"
+  },
+  "postgres_installation": {
+    "platform": "Windows",
+    "status": "passed",
+    "services": {
+      "postgres": {
+        "archive": "postgresql-16.15-5-windows-x64-binaries.zip",
+        "url": "https://get.enterprisedb.com/postgresql/postgresql-16.15-5-windows-x64-binaries.zip",
+        "sha256": "43bb45f173a6f08cf1d29a97a6d8deb119e8e8093a24c00d2d1001a0ccaa8281",
+        "bytes": 373254386,
+        "executable": "pgsql/bin/postgres.exe",
+        "extracted_files": 1635,
+        "binary": {
+          "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-pg-install-20261022-v1\\postgres\\pgsql\\bin\\postgres.exe",
+          "sha256": "19e73deb1152b3b505f2e1fd579191427f9eb3b3f800754968e7214b24edf31d",
+          "abi": "windows-amd64"
+        }
+      }
+    }
+  },
+  "test_design": {
+    "fixture": [
+      "PE Windows AMD64 before launch",
+      "fresh SCRAM credential, isolated data directory, loopback-only port",
+      "SQL cluster name, version, directory and stable postmaster identity",
+      "PID/data mismatch refuses control",
+      "initdb failure removes only its own ephemeral password file",
+      "receipts and command errors do not publish credentials"
+    ],
+    "execution": [
+      "same canonical pg_tests.sh --backend-parity and --work-store selections",
+      "all eleven domain receipts required; omitted or duplicated domains rejected",
+      "required/configured fixture flags must be booleans true",
+      "named execution reconciled with the inventory and source-bound build",
+      "NATS and PostgreSQL fixture environments isolated",
+      "primary failure and cleanup failure cannot become success",
+      "HTTP selection is owned by pg_tests.sh --http and shared by substrate runners",
+      "Real nested libtest writes beyond pipe capacity are isolated into an owned file; every retained line is prefixed and bounded",
+      "Four HTTP inventories reconcile to 41 executed cases; private control helper remains parent-only"
+    ]
+  },
+  "not_qualified": [
+    "PostgreSQL ingress crash/scale and remaining full release selections beyond this matrix",
+    "Physical PostgreSQL/object-store PITR in the committed CI lane",
+    "Hosted Windows CI execution",
+    "Live Kubernetes and platform-exclusive Linux gates"
+  ],
+  "postgres_published_commit": "7cd3267dcea794add457e608f5c0842adffeb787",
+  "postgres_http_execution_counts": {
+    "backend_parity": 93,
+    "complete_work": 87,
+    "http_transport": 41,
+    "total_named_executions": 221,
+    "receipts": 11,
+    "skipped": 0
+  },
+  "hosted_ci_publication_policy": "User authorized internal origin only; do not publish this code to public GitHub or dispatch hosted CI (2026-10-22)",
+  "postgres_http_extension_qualification": {
+    "path": "docs/windows-postgres-http-20261022.json",
+    "sha256": "ab5c7790ed155038f4fb9f8e369dfe972a854aa836ade85db950df04daa7f865",
+    "status": "passed",
+    "named_executions": 221,
+    "receipts": 11
+  },
+  "native_extension_qualification": {
+    "path": "docs/windows-native-service-extension-20261023.json",
+    "sha256": "e99019e1ce0ce0fbfb92595997cc90a22a4755e8a8ef57a7413d0f9a08e94433",
+    "status": "passed",
+    "canonical_single_pass": 241
+  },
+  "s3_cold_qualification": {
+    "path": "docs/windows-s3-cold-20261023.json",
+    "sha256": "9f830ae67ac9976b418d29ffe20b098eea46bb54704d23b0b7b5da70b8e94a7d",
+    "status": "passed",
+    "named_executions": 6
+  }
+}

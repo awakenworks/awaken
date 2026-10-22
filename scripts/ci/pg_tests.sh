@@ -13,9 +13,10 @@
 # gate passes ``--require-docker`` so the same condition fails instead of
 # producing a false green.
 #
-# Usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--self-test]
+# Usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--self-test]
 # --backend-parity uses a caller-owned live URL and runs only the named matrix.
 # --work-store uses a caller-owned live URL and requires the complete Work suite.
+# --http requires the four live transport targets, including native failover.
 set -uo pipefail
 # Keep phase diagnostics visible even when a command suppresses probe output.
 # This descriptor belongs to this runner; never log command arguments/secrets.
@@ -149,6 +150,32 @@ work_store_evidence() {
     --require-case=restart::postgres_identity_high_watermark_survives_a_native_process_restart \
     -- --include-ignored --test-threads=1 \
     --skip environment_revision_restart_child --skip restart::identity_restart_child
+}
+
+http_transport_evidence() {
+  pg_required_test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http \
+    --require-case=two_control_processes_retry_recover_and_settle_without_sticky_routing \
+    --require-case=active_active_child_diagnostics_are_isolated_and_bounded \
+    --require-case=immutable_pod_registration_postgres_when_configured \
+    --require-case=postgres_signed_registration_rejects_historical_incarnation \
+    --require-case=postgres_guarded_admission_uses_one_process_connection_and_rejects_foreign_pools \
+    -- --skip active_active_control_child --test-threads=1
+}
+
+critical_durability_evidence() {
+  AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-config-store --locked --features test-support --test process_crash_audit \
+    --require-case=durable_audit_survives_process_kill_before_business_commit -- --test-threads=1 || record_failure "$?"
+  AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-session-store --locked --features test-support --test process_crash_outbox \
+    --require-case=session_commit_survives_process_kill_before_notification -- --test-threads=1 || record_failure "$?"
+  AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-credential-store --locked --features postgres,sqlite,sealed-aead,test-support --test process_crash_creation --test process_crash_managed_creation \
+    --require-case=secret_write_survives_kill_and_is_compensated_from_the_intent \
+    --require-case=writing_material_survives_kill_but_expired_owner_is_aborted \
+    --require-case=published_material_retirement_survives_process_crash -- --test-threads=1 || record_failure "$?"
+  pg_required_test -p awaken-cli --locked --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy \
+    --require-case=installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy -- --exact --test-threads=1 || record_failure "$?"
+  pg_required_test -p awaken-cli --locked --lib postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling \
+    --require-case=postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling -- --ignored --exact --test-threads=1 || record_failure "$?"
+  pg_required_test -p awaken-coordinator --locked --lib application_access_store::tests::provisioned_postgres_application_access_durability_release_gate --require-case=application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact --test-threads=1 || record_failure "$?"
 }
 
 published_port() {
@@ -476,7 +503,7 @@ self_test() {
   # P9 immutable Pod registration must exercise the real database rather than
   # merely compiling a self-skipping test in the no-database workspace gate.
   # P10 independent predecessor stopping exercises the same exact Registry CAS.
-  grep -Fq "cargo test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http" "$0" || {
+  grep -Fq "pg_required_test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http" "$0" || {
     echo "Postgres gate omits the coordinator-owned active/active transport test" >&2
     return 1
   }
@@ -488,14 +515,14 @@ self_test() {
     echo "Postgres gate omits Session history, read-only open, and repository parity" >&2
     return 1
   }
-  grep -Fqx 'pg_test cargo test -p awaken-cli --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy -- --test-threads=1 --exact || record_failure "$?"' "$0" || {
+  grep -Fq 'pg_required_test -p awaken-cli --locked --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy' "$0" || {
     echo "Postgres gate omits exact CLI installation-binding continuity" >&2
     return 1
   }
   # P15 an ignored process-pool test exists + this runner supplies a live URL
   # => execute that exact test under the existing deadline/first-failure owner.
   # Without --ignored the default CLI suite can pass without measuring cap2.
-  grep -Fqx 'pg_test cargo test -p awaken-cli --lib postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling -- --ignored --test-threads=1 --exact || record_failure "$?"' "$0" || {
+  grep -Fq 'pg_required_test -p awaken-cli --locked --lib postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling' "$0" || {
     echo "Postgres gate omits live process-pool cardinality and closure" >&2
     return 1
   }
@@ -505,7 +532,7 @@ self_test() {
     echo "Postgres gate omits explicit shared checkout correctness" >&2
     return 1
   }
-  grep -Fqx 'pg_required_test -p awaken-coordinator --locked --lib application_access_store::tests::provisioned_postgres_application_access_durability_release_gate --require-case=application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact --test-threads=1 || record_failure "$?"' "$0" || {
+  grep -Fqx '  pg_required_test -p awaken-coordinator --locked --lib application_access_store::tests::provisioned_postgres_application_access_durability_release_gate --require-case=application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact --test-threads=1 || record_failure "$?"' "$0" || {
     echo "Postgres gate omits fail-closed ApplicationAccess durability conformance" >&2
     return 1
   }
@@ -539,7 +566,7 @@ self_test() {
     echo "Durable backend gate omits the production object-store adapter" >&2
     return 1
   }
-  grep -Fq "minio_rotated_credentials_revoke_old_secret_and_preserve_objects" "$0" || {
+  grep -Fq "scripts/ci/object_store_tests.sh --verify" "$0" || {
     echo "Durable backend gate omits object-store credential rotation" >&2
     return 1
   }
@@ -573,15 +600,21 @@ self_test() {
   }
 }
 
+[ "$#" -le 1 ] || { echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--self-test]" >&2; exit 2; }
+
 backend_only=0
 work_store_only=0
+http_only=0
+critical_only=0
 case "${1:-}" in
   "") ;;
   --require-docker) require_docker=1 ;;
   --self-test) self_test; exit $? ;;
   --backend-parity) backend_only=1 ;;
   --work-store) work_store_only=1 ;;
-  *) echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--self-test]" >&2; exit 2 ;;
+  --http) http_only=1 ;;
+  --critical) critical_only=1 ;;
+  *) echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--self-test]" >&2; exit 2 ;;
 esac
 
 for deadline in "$PG_OPERATION_TIMEOUT_SECONDS" "$PG_READY_TIMEOUT_SECONDS" \
@@ -592,12 +625,16 @@ for deadline in "$PG_OPERATION_TIMEOUT_SECONDS" "$PG_READY_TIMEOUT_SECONDS" \
   }
 done
 
-if [ "$backend_only" -eq 1 ] || [ "$work_store_only" -eq 1 ]; then
+if [ "$backend_only" -eq 1 ] || [ "$work_store_only" -eq 1 ] || [ "$http_only" -eq 1 ] || [ "$critical_only" -eq 1 ]; then
   [ "$#" -eq 1 ] && [ -n "${AWAKEN_TEST_DATABASE_URL:-}" ] || {
     echo "focused PostgreSQL tests require an explicit owned fixture URL" >&2; exit 2;
   }
   export AWAKEN_TEST_REQUIRE_POSTGRES=1
-  if [ "$work_store_only" -eq 1 ]; then
+  if [ "$critical_only" -eq 1 ]; then
+    critical_durability_evidence
+  elif [ "$http_only" -eq 1 ]; then
+    http_transport_evidence || record_failure "$?"
+  elif [ "$work_store_only" -eq 1 ]; then
     work_store_evidence || record_failure "$?"
   else
     backend_parity
@@ -828,20 +865,14 @@ pg_test cargo test -p awaken-dispatch --features test-support || record_failure 
 pg_test cargo test -p awaken-dispatch --features test-support \
   --test dispatch_claim_perf -- --ignored --test-threads=1 --nocapture \
   || record_failure "$?"
-pg_test cargo test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http -- --test-threads=1 --show-output \
-  || record_failure "$?"
+http_transport_evidence || record_failure "$?"
 pg_test cargo test -p awaken-session-store --features test-support --lib postgres_ -- --test-threads=1 \
   || record_failure "$?"
-pg_test cargo test -p awaken-cli --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy -- --test-threads=1 --exact || record_failure "$?"
+critical_durability_evidence
 # P15 live fixture + explicit ignored selector => measure the canonical shared
 # cap and closed-pool rejection, never a no-database/default-suite passing skip.
 # The Rust case owns adapter assertions; this runner owns fixture and deadlines.
-pg_test cargo test -p awaken-cli --lib postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling -- --ignored --test-threads=1 --exact || record_failure "$?"
-pg_required_test -p awaken-coordinator --locked --lib application_access_store::tests::provisioned_postgres_application_access_durability_release_gate --require-case=application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact --test-threads=1 || record_failure "$?"
 pg_test cargo test -p awaken-config-store --features test-support --test postgres || record_failure "$?"
-AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-config-store --locked --test process_crash_audit || record_failure "$?"
-AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-session-store --locked --test process_crash_outbox || record_failure "$?"
-AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-credential-store --locked --features postgres,sqlite,sealed-aead,test-support --test process_crash_creation --test process_crash_managed_creation || record_failure "$?"
 pg_test cargo test -p awaken-admin-config-api --features postgres --test postgres_store || record_failure "$?"
 pg_test cargo test -p awaken-store-postgres --test postgres_live || record_failure "$?"
 backend_parity
@@ -851,9 +882,9 @@ pg_test cargo test -p awaken-file-store --features postgres,sqlite,object-store 
 # Credential-lifecycle state machine: seed -> revoke old credential -> issue
 # replacement -> read the same durable object. Both transitions are mandatory.
 export AWAKEN_TEST_S3_ROTATION_ID="rotation-$$"
-pg_test cargo test -p awaken-file-store --features object-store \
-  object::tests::minio_rotation_seed -- --exact \
-  || record_failure "$?"
+pg_run_with_deadline object-admission "$PG_TEST_TIMEOUT_SECONDS" scripts/ci/object_store_tests.sh --admission || record_failure "$?"
+pg_run_with_deadline object-conformance "$PG_TEST_TIMEOUT_SECONDS" scripts/ci/object_store_tests.sh --conformance || record_failure "$?"
+pg_run_with_deadline object-seed "$PG_TEST_TIMEOUT_SECONDS" scripts/ci/object_store_tests.sh --seed || record_failure "$?"
 FILE_STORE_ROTATED_SECRET_KEY="awaken-file-store-rotated" # awaken-allow(secret): (throwaway fixture)
 export FILE_STORE_SECRET_KEY="$FILE_STORE_ROTATED_SECRET_KEY" # awaken-allow(secret):
 # awaken-allow(secret): (replacement passed into the same disposable container)
@@ -874,9 +905,7 @@ if [ "$rotation_status" -ne 0 ]; then
 fi
 export AWAKEN_TEST_S3_OLD_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow(secret):
 export AWAKEN_TEST_S3_SECRET_KEY="$FILE_STORE_ROTATED_SECRET_KEY"
-pg_test cargo test -p awaken-file-store --features object-store \
-  object::tests::minio_rotated_credentials_revoke_old_secret_and_preserve_objects -- --exact \
-  || record_failure "$?"
+pg_run_with_deadline object-verify "$PG_TEST_TIMEOUT_SECONDS" scripts/ci/object_store_tests.sh --verify || record_failure "$?"
 pg_test cargo test -p awaken-resource-store --all-features || record_failure "$?"
 pg_test cargo test -p awaken-resource-persistence || record_failure "$?"
 pg_test cargo test -p awaken-session-application --lib postgres_ -- --test-threads=1 \

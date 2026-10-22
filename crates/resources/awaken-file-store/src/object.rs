@@ -580,6 +580,10 @@ impl FileStore for ObjectFileStore {
 }
 
 #[cfg(test)]
+#[path = "../tests/support/s3_fixture.rs"]
+mod s3_fixture;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use object_store::memory::InMemory;
@@ -675,10 +679,10 @@ mod tests {
     fn minio_backend(
         secret_key: &str,
     ) -> Result<Option<Arc<dyn ObjectStore>>, Box<dyn std::error::Error>> {
-        let Ok(endpoint) = std::env::var("AWAKEN_TEST_S3_ENDPOINT") else {
+        let Some(endpoint) = s3_fixture::endpoint()? else {
             return Ok(None);
         };
-        let access_key = std::env::var("AWAKEN_TEST_S3_ACCESS_KEY")?;
+        let access_key = s3_fixture::required_field("AWAKEN_TEST_S3_ACCESS_KEY")?;
         Ok(Some(Arc::new(
             object_store::aws::AmazonS3Builder::new()
                 .with_endpoint(endpoint)
@@ -686,16 +690,27 @@ mod tests {
                 .with_bucket_name("awaken-blobs")
                 .with_access_key_id(access_key)
                 .with_secret_access_key(secret_key)
-                .with_allow_http(true)
+                // Bound negative probes while retaining transport recovery for
+                // a stale pooled connection on the native Windows substrate.
+                .with_retry(object_store::RetryConfig {
+                    max_retries: 2,
+                    retry_timeout: std::time::Duration::from_secs(5),
+                    ..Default::default()
+                })
+                .with_client_options(
+                    object_store::ClientOptions::new()
+                        // Keep HTTP admission with the timeout options: replacing
+                        // client options resets flags set on the outer builder.
+                        .with_allow_http(true)
+                        .with_connect_timeout(std::time::Duration::from_secs(2))
+                        .with_timeout(std::time::Duration::from_secs(10)),
+                )
                 .build()?,
         )))
     }
 
     fn current_minio_backend() -> Result<Option<Arc<dyn ObjectStore>>, Box<dyn std::error::Error>> {
-        let Ok(secret_key) = std::env::var("AWAKEN_TEST_S3_SECRET_KEY") else {
-            if std::env::var_os("AWAKEN_TEST_S3_ENDPOINT").is_some() {
-                return Err("object-store endpoint requires an explicit test secret".into());
-            }
+        let Some(secret_key) = s3_fixture::current_secret()? else {
             return Ok(None);
         };
         minio_backend(&secret_key)
@@ -1004,7 +1019,6 @@ mod tests {
     #[tokio::test]
     async fn minio_conforms() -> Result<(), Box<dyn std::error::Error>> {
         let Some(s3) = current_minio_backend()? else {
-            println!("[skip] no object store reachable (AWAKEN_TEST_S3_ENDPOINT)");
             return Ok(());
         };
         let forbidden = s3
@@ -1014,16 +1028,23 @@ mod tests {
             )
             .await;
         assert!(
-            forbidden.is_err(),
-            "least-privilege identity must not write outside its prefixes"
+            matches!(forbidden, Err(object_store::Error::PermissionDenied { .. })),
+            "least-privilege identity must receive authorization denial outside its prefixes"
         );
         let prefix = format!("contract/{}", std::process::id());
-        object_store_conformance(s3, &prefix).await
+        object_store_conformance(s3, &prefix).await?;
+        s3_fixture::report_exercised();
+        Ok(())
+    }
+
+    #[test]
+    fn minio_conforms_fixture_admission() {
+        s3_fixture::assert_child_contract("object::tests::minio_conforms");
     }
 
     #[tokio::test]
     async fn minio_rotation_seed() -> Result<(), Box<dyn std::error::Error>> {
-        let Ok(rotation_id) = std::env::var("AWAKEN_TEST_S3_ROTATION_ID") else {
+        let Some(rotation_id) = s3_fixture::rotation_id()? else {
             return Ok(());
         };
         let backend = current_minio_backend()?
@@ -1031,6 +1052,7 @@ mod tests {
         let store = ObjectFileStore::new(backend, format!("rotation/{rotation_id}"));
         let id = store.put(b"credential-rotation-durable-object").await?;
         assert_eq!(id, content_id(b"credential-rotation-durable-object"));
+        s3_fixture::report_exercised();
         Ok(())
     }
 
@@ -1040,18 +1062,24 @@ mod tests {
         // Metamorphic design: only the credential changes. The old client must
         // lose access, while the replacement client observes the same immutable
         // object id and bytes under the unchanged bucket/prefix coordinate.
-        let Ok(rotation_id) = std::env::var("AWAKEN_TEST_S3_ROTATION_ID") else {
+        let Some(rotation_id) = s3_fixture::rotation_id()? else {
             return Ok(());
         };
-        let old_secret = std::env::var("AWAKEN_TEST_S3_OLD_SECRET_KEY")?;
+        let old_secret = s3_fixture::required_field("AWAKEN_TEST_S3_OLD_SECRET_KEY")?;
         let old_backend = minio_backend(&old_secret)?
             .ok_or("credential-rotation verification requires the live endpoint")?;
         let prefix = format!("rotation/{rotation_id}");
         let id = content_id(b"credential-rotation-durable-object");
-        let old_store = ObjectFileStore::new(old_backend, &prefix);
+        let revoked = old_backend
+            .get(&ObjPath::from(format!("{prefix}/{id}")))
+            .await;
         assert!(
-            old_store.get(&id).await.is_err(),
-            "revoked object-store secret must fail closed"
+            matches!(
+                revoked,
+                Err(object_store::Error::PermissionDenied { .. }
+                    | object_store::Error::Unauthenticated { .. })
+            ),
+            "revoked object-store secret must receive authentication/authorization denial"
         );
 
         let new_backend = current_minio_backend()?
@@ -1061,6 +1089,7 @@ mod tests {
             new_store.get(&id).await?.as_deref(),
             Some(b"credential-rotation-durable-object".as_slice())
         );
+        s3_fixture::report_exercised();
         Ok(())
     }
 }

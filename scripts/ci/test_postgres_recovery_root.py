@@ -465,7 +465,7 @@ class CoordinatorDurabilitySelectionTests(unittest.TestCase):
         producer = DRILL.with_name("pg_tests.sh")
         original = producer.read_text(encoding="utf-8")
         commands = [line for line in original.splitlines()
-                    if line.startswith("pg_required_test -p awaken-coordinator ")]
+                    if line.lstrip().startswith("pg_required_test -p awaken-coordinator ")]
         self.assertEqual(len(commands), 1)
         command = commands[0]
         case = "application_access_store::tests::provisioned_postgres_application_access_durability_release_gate"
