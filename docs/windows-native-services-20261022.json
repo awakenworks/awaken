@@ -1,0 +1,455 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "platform": "Windows/MSVC",
+  "service": "nats",
+  "linux_verification_allowed": false,
+  "full_gate": false,
+  "source": {
+    "revision": "2025b2734527f1683a2e3e99293829eb63f64a67",
+    "index_tree": "f0b4f10a61b1a160bacf78fb6c78bcbef06f58ef",
+    "digest": "1a5477dddde85657c65dc05d273044315cc9770bd20715ccde7d42cde59331a2",
+    "patch_sha256": "133cda606e69c723dde044b66fad9dae61e89fedaeb906cfad34ece6e0191119"
+  },
+  "process_ownership": "native Windows deadline Job with kill-on-close",
+  "stages": [
+    {
+      "stage": "nats-domain-tests",
+      "command": [
+        "C:\\Python313\\python.EXE",
+        "-X",
+        "utf8",
+        "scripts/ci/_native_shell.py",
+        "scripts/ci/nats_tests.sh"
+      ],
+      "exit_code": 0,
+      "seconds": 104.23534449998988,
+      "log_sha256": "d9c4e5bbecd6697910b10ebfc9f29468a5046eed063f5886ab59b6ef60222698"
+    }
+  ],
+  "fixture_root": "F:\\Codes\\awaken-1.0.0-dev\\target\\w9\\awaken-services.8_phav9b",
+  "fixture_data_retained": true,
+  "fixture": {
+    "kind": "native-windows-process",
+    "binary": {
+      "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-nats-install-20261022-v1\\nats\\nats-server-v2.15.0-windows-amd64\\nats-server.exe",
+      "sha256": "4872e458bd2268abff4c8c2dafadbb1d14af255b3b935d53a1c88ff2d049cbc4",
+      "abi": "windows-amd64"
+    },
+    "pid": 62104,
+    "owner": "awaken-ci-a17efefb2da64b29a553f9e54e0e0b93",
+    "identity": {
+      "server_name": "awaken-ci-a17efefb2da64b29a553f9e54e0e0b93",
+      "server_id": "NB5OHS7MUX773TKOGUIYKUNEFB2O3DPZTJRTBSRRLDBS5KKZYDJ6EMQD",
+      "port": 56455,
+      "version": "2.15.0"
+    },
+    "loopback_port": 56455,
+    "url": "nats://127.0.0.1:56455"
+  },
+  "execution": [
+    {
+      "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.Jsd6VB",
+      "receipt_sha256": "08db78b3abcc3a213f5fcdfcfdc9e2f76d575d5d58634bd3b154242368cc1dec",
+      "selected_cases": [
+        "wake::nats_tests::nats_fixture_absence_and_configured_failure_are_distinct",
+        "wake::nats_tests::nats_wake_signal_notifies_a_waiter"
+      ],
+      "results": {
+        "schema_version": 1,
+        "kind": "required-libtest",
+        "full_gate": false,
+        "source_kind": "working-tree",
+        "revision": "2025b2734527f1683a2e3e99293829eb63f64a67",
+        "source_digest": "1a5477dddde85657c65dc05d273044315cc9770bd20715ccde7d42cde59331a2",
+        "index_tree": "f0b4f10a61b1a160bacf78fb6c78bcbef06f58ef",
+        "arguments": [
+          "-p",
+          "awaken-run-ingress",
+          "--features",
+          "nats",
+          "--lib",
+          "wake::nats_tests",
+          "--require-case=wake::nats_tests::nats_wake_signal_notifies_a_waiter",
+          "--require-case=wake::nats_tests::nats_fixture_absence_and_configured_failure_are_distinct",
+          "--",
+          "--test-threads=1"
+        ],
+        "required_cases": [
+          "wake::nats_tests::nats_wake_signal_notifies_a_waiter",
+          "wake::nats_tests::nats_fixture_absence_and_configured_failure_are_distinct"
+        ],
+        "commands": [
+          [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "awaken-run-ingress",
+            "--features",
+            "nats",
+            "--lib",
+            "wake::nats_tests",
+            "--",
+            "--test-threads=1",
+            "--list"
+          ],
+          [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "awaken-run-ingress",
+            "--features",
+            "nats",
+            "--lib",
+            "wake::nats_tests",
+            "--",
+            "--test-threads=1",
+            "--show-output"
+          ]
+        ],
+        "list_command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "awaken-run-ingress",
+          "--features",
+          "nats",
+          "--lib",
+          "wake::nats_tests",
+          "--",
+          "--test-threads=1",
+          "--list"
+        ],
+        "test_command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "awaken-run-ingress",
+          "--features",
+          "nats",
+          "--lib",
+          "wake::nats_tests",
+          "--",
+          "--test-threads=1",
+          "--show-output"
+        ],
+        "selected_cases": [
+          "wake::nats_tests::nats_fixture_absence_and_configured_failure_are_distinct",
+          "wake::nats_tests::nats_wake_signal_notifies_a_waiter"
+        ],
+        "executed_cases": [
+          [
+            "wake::nats_tests::nats_fixture_absence_and_configured_failure_are_distinct",
+            "ok"
+          ],
+          [
+            "wake::nats_tests::nats_wake_signal_notifies_a_waiter",
+            "ok"
+          ]
+        ],
+        "postgres_fixture_required": false,
+        "postgres_fixture_configured": false,
+        "status": "passed",
+        "rows": [
+          {
+            "command": [
+              "cargo",
+              "test",
+              "--locked",
+              "-p",
+              "awaken-run-ingress",
+              "--features",
+              "nats",
+              "--lib",
+              "wake::nats_tests",
+              "--",
+              "--test-threads=1",
+              "--list"
+            ],
+            "exit_code": 0,
+            "duration_seconds": 2.407919800025411
+          },
+          {
+            "command": [
+              "cargo",
+              "test",
+              "--locked",
+              "-p",
+              "awaken-run-ingress",
+              "--features",
+              "nats",
+              "--lib",
+              "wake::nats_tests",
+              "--",
+              "--test-threads=1",
+              "--show-output"
+            ],
+            "exit_code": 0,
+            "duration_seconds": 7.200903299963102
+          }
+        ],
+        "errors": [],
+        "preparation": {
+          "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.Jsd6VB\\build.json",
+          "sha256": "516aa506ec4c0f20677815b86a90f7d90d3cd4fc42467893b1421a1069d3aa7e"
+        },
+        "command_exit_code": 0,
+        "duration_seconds": 9.608823099988513,
+        "source_unchanged": true,
+        "exit_code": 0
+      },
+      "results_log_sha256": "c950b401adb0fe7cb0d2bdddc5d526cdbcf3b9fc1f18b23f08b7373c570a43f2"
+    },
+    {
+      "directory": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.qJ5zNd",
+      "receipt_sha256": "89b934e73169d6030ccb31ea4ee39ca91461db815e71aaf3167a12fdc529cc2a",
+      "selected_cases": [
+        "hand::tests::nats_fixture_absence_and_configured_failure_are_distinct",
+        "hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable"
+      ],
+      "results": {
+        "schema_version": 1,
+        "kind": "required-libtest",
+        "full_gate": false,
+        "source_kind": "working-tree",
+        "revision": "2025b2734527f1683a2e3e99293829eb63f64a67",
+        "source_digest": "1a5477dddde85657c65dc05d273044315cc9770bd20715ccde7d42cde59331a2",
+        "index_tree": "f0b4f10a61b1a160bacf78fb6c78bcbef06f58ef",
+        "arguments": [
+          "-p",
+          "awaken-sandbox",
+          "--features",
+          "hand",
+          "--lib",
+          "nats",
+          "--require-case=hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable",
+          "--require-case=hand::tests::nats_fixture_absence_and_configured_failure_are_distinct",
+          "--",
+          "--test-threads=1"
+        ],
+        "required_cases": [
+          "hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable",
+          "hand::tests::nats_fixture_absence_and_configured_failure_are_distinct"
+        ],
+        "commands": [
+          [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "awaken-sandbox",
+            "--features",
+            "hand",
+            "--lib",
+            "nats",
+            "--",
+            "--test-threads=1",
+            "--list"
+          ],
+          [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "awaken-sandbox",
+            "--features",
+            "hand",
+            "--lib",
+            "nats",
+            "--",
+            "--test-threads=1",
+            "--show-output"
+          ]
+        ],
+        "list_command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "awaken-sandbox",
+          "--features",
+          "hand",
+          "--lib",
+          "nats",
+          "--",
+          "--test-threads=1",
+          "--list"
+        ],
+        "test_command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "awaken-sandbox",
+          "--features",
+          "hand",
+          "--lib",
+          "nats",
+          "--",
+          "--test-threads=1",
+          "--show-output"
+        ],
+        "selected_cases": [
+          "hand::tests::nats_fixture_absence_and_configured_failure_are_distinct",
+          "hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable"
+        ],
+        "executed_cases": [
+          [
+            "hand::tests::nats_fixture_absence_and_configured_failure_are_distinct",
+            "ok"
+          ],
+          [
+            "hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable",
+            "ok"
+          ]
+        ],
+        "postgres_fixture_required": false,
+        "postgres_fixture_configured": false,
+        "status": "passed",
+        "rows": [
+          {
+            "command": [
+              "cargo",
+              "test",
+              "--locked",
+              "-p",
+              "awaken-sandbox",
+              "--features",
+              "hand",
+              "--lib",
+              "nats",
+              "--",
+              "--test-threads=1",
+              "--list"
+            ],
+            "exit_code": 0,
+            "duration_seconds": 1.2646510999766178
+          },
+          {
+            "command": [
+              "cargo",
+              "test",
+              "--locked",
+              "-p",
+              "awaken-sandbox",
+              "--features",
+              "hand",
+              "--lib",
+              "nats",
+              "--",
+              "--test-threads=1",
+              "--show-output"
+            ],
+            "exit_code": 0,
+            "duration_seconds": 6.924339700024575
+          }
+        ],
+        "errors": [],
+        "preparation": {
+          "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\rust-execution.qJ5zNd\\build.json",
+          "sha256": "599c8fc2412527e449c105832bba8216354d5b62124daa546104b1fa5e73d67b"
+        },
+        "command_exit_code": 0,
+        "duration_seconds": 8.188990800001193,
+        "source_unchanged": true,
+        "exit_code": 0
+      },
+      "results_log_sha256": "955d25f13790158dac3e3efcfba5bde8eeee4924dc09b4fed7b01059444d6ad9"
+    }
+  ],
+  "source_unchanged": true,
+  "cleanup": {
+    "stopped": true,
+    "pid": 62104,
+    "exit_code": 1,
+    "method": "retained-owned-process-handle"
+  },
+  "exit_code": 0,
+  "scope": "Native Windows NATS: wake hints and real Sandbox tool round trip",
+  "test_design": {
+    "admission": [
+      "optional absence reports explicit skip",
+      "required absence fails",
+      "configured empty or unreachable endpoint fails even when optional",
+      "live configured endpoint executes domain assertions"
+    ],
+    "wake": [
+      "fresh wait is pending before publication",
+      "same-client SUB/flush protocol barrier confirms broker readiness",
+      "one published hint releases the waiter under its deadline",
+      "independent raw subscriber observes the exact subject and empty hint"
+    ],
+    "runner": [
+      "native AMD64 PE required",
+      "exact owned protocol identity before and after tests",
+      "actual named execution matches inventory and source-bound build",
+      "missing marker, skip, ignored/failed case, source drift or cleanup failure rejects pass",
+      "original test failure survives a later cleanup failure"
+    ]
+  },
+  "not_qualified": [
+    "PostgreSQL live backend matrix",
+    "S3 credential rotation and PostgreSQL/object-store PITR",
+    "Hosted Windows CI execution",
+    "Linux or container-based gates"
+  ],
+  "reproduction": "python scripts/ci/check_native_services.py --service nats --nats-bin <native-Windows-nats-server.exe> --output <fresh-evidence-directory>",
+  "ci": {
+    "workflow": ".github/workflows/windows-native-services.yml",
+    "platform": "windows-2025",
+    "hosted_execution": "not executed",
+    "fresh_official_nats_download": {
+      "platform": "Windows",
+      "status": "passed",
+      "services": {
+        "nats": {
+          "archive": "nats-server-v2.15.0-windows-amd64.zip",
+          "url": "https://github.com/nats-io/nats-server/releases/download/v2.15.0/nats-server-v2.15.0-windows-amd64.zip",
+          "sha256": "2d0861dc2ca3567d17f7d19611d7b346cc2ccbd7086a0a77cc957a2c71663200",
+          "bytes": 7423380,
+          "executable": "nats-server-v2.15.0-windows-amd64/nats-server.exe",
+          "extracted_files": 1,
+          "binary": {
+            "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-nats-install-20261022-v1\\nats\\nats-server-v2.15.0-windows-amd64\\nats-server.exe",
+            "sha256": "4872e458bd2268abff4c8c2dafadbb1d14af255b3b935d53a1c88ff2d049cbc4",
+            "abi": "windows-amd64"
+          }
+        }
+      }
+    },
+    "entry_contract": "138 gate entry points passed",
+    "lane_reachability": "passed",
+    "test_wait_policy": "passed with the obsolete sleep baseline removed",
+    "conditional_dependency_policy": "passed after removing the obsolete uncovered-NATS exemption"
+  },
+  "tested_source_files": {
+    "Cargo.lock": "e7111c250ad538bfc4485d2f42936b4ba23cdf4263e1fd0d263f17508bbb22c1",
+    "crates/bin/awaken-sandbox/Cargo.toml": "dae246b13362df93fe7b225644bd35689726e6a98e12fecce91e97077aec8ada",
+    "crates/bin/awaken-sandbox/src/hand.rs": "0151e551eda4b919fe63bfef943eab7eb19329061dc5cdd9e70dd554afb8e616",
+    "crates/devtools/awaken-reliability-testkit/src/lib.rs": "0fe665cc614dba773fc0d0b299ae21d3879fca6f1290e8d60af16351319de6b9",
+    "crates/devtools/awaken-reliability-testkit/src/nats_fixture.rs": "78c676649d1b49fdaf7f130dd6a4b3b96a7e690b1d058c7635517bca6400882f",
+    "lefthook.yml": "814f57a44e221fa08dbb13ea1393557556caf6343bcd2aef4e8625284f1ee424",
+    "scripts/ci/check-all.sh": "7ded23d1e02ef47562f3f3979f1004920ac682e438827dc224f854114cfadfba",
+    "scripts/ci/check_native_services.py": "8906b2a0f20438c0b1a2e27e98d666acbeac2accdea4c269660e4404675830ce",
+    "scripts/ci/native_services.py": "9c10757797aa292123670012362cd00795b0bae396fd2534536743598737ba31",
+    "scripts/ci/nats_tests.sh": "c643363bbbf85c47dd9fd4a132ac1eb734fee462248cb14ede9c7ae396162e91",
+    "scripts/ci/test_native_services.py": "9614aaf768f5f3a77e438c3e65ee1fc4a78075cfa0abce8acddf9b9d720c9e4f",
+    "scripts/ci/install_windows_services.py": "237d5b08cce2cf8e8a13fd9961d2258a7c14989f0705bee6db1b2ce718541aaf",
+    ".github/workflows/windows-native-services.yml": "16eb16f54a33af0c15e7821b6d02d393f753df98e82e688e4e637a1977d28990",
+    "crates/server/awaken-run-ingress/src/wake.rs": "89c027865a385db6b749f8d67a8738fa067a1d3c21203fa839ea6b0ec4d99ada",
+    "crates/server/awaken-run-ingress/tests/support/nats.rs": "eb4b2dff4d7dd679d63d54f266d91494f0710461ffac19a04872d17d9e974fcb",
+    "scripts/ci/check_dependency_gates.py": "65de2ea6d5e210fa918e6269573f2cf64410d89056f085063dccdfbca58947de",
+    "scripts/ci/test_waits_baseline.json": "082a3f9226a5cd67329b4af92e77d6d88ad608dbf54ab29b79671f704f9efda1"
+  },
+  "runner_self_tests": {
+    "count": 10,
+    "status": "passed",
+    "log_sha256": "7d309f99c2085e396a0407fcf906cc1f3ff04e70950d14a65d25190c7e2ad8e0"
+  },
+  "evidence_file": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-nats-20261022-v4\\result.json",
+  "evidence_sha256": "9053453f34dd313ac380f1be54411cfc86082e030feaec37703ff4c5c9c1ed12"
+}

@@ -2589,6 +2589,7 @@ dependencies = [
  "awaken-local-process",
  "awaken-memory-store",
  "awaken-provisioning-contract",
+ "awaken-reliability-testkit",
  "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-sandbox-control",

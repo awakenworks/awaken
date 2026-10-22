@@ -470,13 +470,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn nats_fixture_absence_and_configured_failure_are_distinct() {
+        awaken_reliability_testkit::assert_nats_fixture_child_contract(
+            "hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable",
+        );
+    }
+
     /// Drive the private `run_nats` at the library altitude when a broker is reachable:
     /// serve the executor channel over NATS, then act as the brain — publish a real
     /// `HandRequest` (a `bash` call) to the subject and assert the harvested `HandReply`.
     ///
-    /// A local NATS is unlikely in CI, so this is skip-on-unreachable: it probes the
-    /// broker with a short timeout and returns early (a pass, logging "skipping") when
-    /// none answers. Point `AWAKEN_TEST_NATS_URL` at a broker to exercise the round trip.
+    /// An absent optional URL reports a skip. Explicit or required configuration
+    /// must connect and execute the real round trip; failures cannot become skips.
     /// Readiness is a request-retry loop (not a sleep): retry until the subscription
     /// responds, so it is deterministic whether the broker is fast or slow to subscribe.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -486,19 +492,13 @@ mod tests {
         use awaken_tool_contract::tool::ToolCall;
         use awaken_tool_relay::wire::{HandReply, HandRequest, HandResult};
 
-        let url =
-            std::env::var("AWAKEN_TEST_NATS_URL").unwrap_or_else(|_| "127.0.0.1:4222".to_string());
-
-        // Probe the broker; skip cleanly if unreachable (the CI-default case).
-        let client =
-            match tokio::time::timeout(Duration::from_millis(750), async_nats::connect(&url)).await
-            {
-                Ok(Ok(c)) => c,
-                _ => {
-                    eprintln!("run_nats test: no NATS broker reachable at {url}; skipping");
-                    return;
-                }
-            };
+        let Some(url) = awaken_reliability_testkit::nats_fixture_url() else {
+            return;
+        };
+        let client = tokio::time::timeout(Duration::from_secs(5), async_nats::connect(&url))
+            .await
+            .expect("configured NATS fixture must answer within its deadline")
+            .expect("configured NATS fixture must connect");
 
         // A per-process subject so parallel test runs never cross-talk.
         let subject = format!("awaken.hand.test.{}", std::process::id());
@@ -557,6 +557,7 @@ mod tests {
             }
             other => panic!("expected the NATS hand to run bash, got {other:?}"),
         }
+        awaken_reliability_testkit::report_nats_fixture_exercised();
     }
 
     #[tokio::test]

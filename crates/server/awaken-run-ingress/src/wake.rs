@@ -162,3 +162,7 @@ impl WakeSignal for PgNotifyWake {
         self.local.notified().await;
     }
 }
+
+#[cfg(all(test, feature = "nats"))]
+#[path = "../tests/support/nats.rs"]
+mod nats_tests;
