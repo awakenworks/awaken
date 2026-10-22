@@ -242,6 +242,11 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
     // deleting Failed source with an exact live PVC uses the same preparation
     // and selected-original-guard disposal, without a handle-free fallback.
     // This adds no Memory/Secret source permission or old-execution closure.
+    // CC5 published full V3 + Ready original + upgraded current control image
+    // -> terminal wrapper, same Pod/PVC/control UID, zero owner transfer or
+    // live control publication. Ordinary adoption must still reject the old
+    // control image. This crosses the production ContainerProvider/K8s HTTP
+    // boundary; CC3's missing-handle refusal remains unchanged.
     use awaken_provisioning_contract::SandboxProvider as _;
     use awaken_sandbox_container::ContainerHandleCodec as _;
     for row in [
@@ -253,6 +258,7 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
         "missing-results",
         "control-terminal",
         "control-deleting-bound",
+        "control-ready-bound-upgrade",
         "control-empty",
         "control-missing-results",
         "control-empty-no-results",
@@ -264,7 +270,10 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
     ] {
         let (mut source, state, reached, release, server) = fixture(0, false).await;
         let control = row.starts_with("control-");
-        let retained_bound = row == "control-deleting-bound";
+        let retained_bound = matches!(
+            row,
+            "control-deleting-bound" | "control-ready-bound-upgrade"
+        );
         source.continuation_volume =
             retained_bound.then(|| awaken_container_contract::K8sContinuationVolume {
                 storage_class_name: None,
@@ -345,7 +354,7 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
                 .unwrap(),
             );
         }
-        let recovery = recovery
+        let mut recovery = recovery
             .with_create_transport(Arc::new(ClosedProjectedRequests {
                 tickets: original_tickets.clone(),
                 complete: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -467,7 +476,7 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
         };
         assert_eq!(original_set.objects().len(), spec.mounts.len());
         let bound_handle = if retained_bound {
-            retain_terminal_original(&state, true);
+            retain_terminal_original(&state, row == "control-deleting-bound");
             Some(
                 awaken_sandbox_container::engine::terminal_handle(
                     &spec,
@@ -505,10 +514,10 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
             "control-no-original-ticket" => {
                 original_tickets.lock().unwrap().clear();
             }
-            "control-ready" | "control-provisioning" => {
+            "control-ready" | "control-ready-bound-upgrade" | "control-provisioning" => {
                 let mut state = state.lock().unwrap();
                 let pod = state.pod.as_mut().unwrap();
-                pod.status = Some(serde_json::from_value(if row == "control-ready" {
+                pod.status = Some(serde_json::from_value(if row != "control-provisioning" {
                     json!({"phase":"Running", "containerStatuses":pod.spec.as_ref().unwrap().containers.iter().map(|v| json!({
                         "name":v.name,"ready":true,"image":"image@test","imageID":"image@test",
                         "restartCount":0,"started":true,"state":{"running":{}}
@@ -547,6 +556,16 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
                     .remove("awaken.dev/projected-object-results");
             }
             _ => {}
+        }
+        if row == "control-ready-bound-upgrade" {
+            recovery = recovery.with_sandbox_control_forwarder(
+                K8sSandboxControlForwarder::new(
+                    format!("registry.test/control@sha256:{}", "b".repeat(64)),
+                    "/usr/local/bin/awaken-sandbox",
+                    7778,
+                )
+                .unwrap(),
+            );
         }
         let provider = awaken_sandbox_container::ContainerProvider::new(Arc::new(recovery), image)
             .with_clock(clock);
@@ -606,6 +625,35 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
             continue;
         }
         let environment = Arc::new(result.unwrap().expect("RP1 exact original rich source"));
+        if row == "control-ready-bound-upgrade" {
+            assert_eq!(
+                state.lock().unwrap().writes.len(),
+                source_writes,
+                "CC5 terminal preparation must not transfer the original Pod owner"
+            );
+            // TC5 at the Container provider owns closed-publication/zero-channel
+            // assertions; this adapter witness owns exact old Pod + new config.
+            let live_error = provider
+                .adopt_for_effect(
+                    awaken_provisioning_contract::SandboxAdoption::new(
+                        &spec,
+                        bound_handle.as_ref().unwrap(),
+                    ),
+                    pc::SandboxEffect::Fenced {
+                        fence: &terminal,
+                        authority: &terminal_authority,
+                    },
+                )
+                .await
+                .err()
+                .expect("CC5 ordinary adoption requires the configured live artifact");
+            assert!(
+                live_error
+                    .to_string()
+                    .contains("control Pod forwarder realization is not exact"),
+                "CC5 ordinary adoption retains strict live control validation: {live_error}"
+            );
+        }
         let handle = environment.handle();
         assert!(
             matches!(handle.container_payload().unwrap().runtime_handle.as_ref(),

@@ -294,7 +294,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .adopt_observed_container_with_spec(
                     adoption.handle,
                     adoption.spec,
-                    SandboxObservationPurpose::Recovery,
+                    // Ready is physical source availability, not permission to
+                    // restore live Control during an authorized terminal effect.
+                    // Reuse the terminal role's closed publication slot while
+                    // retaining the same source participants for harvesting.
+                    SandboxObservationPurpose::TerminalCleanup,
                     &admit,
                 )
                 .await
