@@ -15,54 +15,77 @@ import time
 import uuid
 
 from native_services import NatsService, sha256
+from _native_postgres import PostgresService
 
 ROOT=Path(__file__).resolve().parents[2]
 
 
 def parser() -> argparse.ArgumentParser:
     p=argparse.ArgumentParser(allow_abbrev=False)
-    p.add_argument("--service",choices=["nats"],required=True)
-    p.add_argument("--nats-bin",type=Path,required=True)
+    p.add_argument("--service",choices=["nats", "postgres"],required=True)
+    p.add_argument("--nats-bin",type=Path,help="native Windows NATS server executable")
+    p.add_argument("--postgres-bin",type=Path,help="directory of native Windows PostgreSQL 16 bin tools")
     p.add_argument("--output",type=Path,required=True)
     p.add_argument("--timeout",type=int,default=7200)
     p.add_argument("--owned-worker",action="store_true",help=argparse.SUPPRESS)
     return p
 
 
-def reconcile_nats(log: str, source_digest: str) -> list[dict]:
+def reconcile_receipts(log: str, source_digest: str, *, postgres: bool) -> list[dict]:
     import check_rust_test_execution as q
+    from collections import Counter
     references=re.findall(r"^execution evidence: (.+)$",log,re.M)
-    if len(references)!=2:
-        raise ValueError("NATS gate must return both complete domain receipts")
+    expected_count=10 if postgres else 2
+    if len(references)!=expected_count:
+        raise ValueError("PostgreSQL gate must return all 10 required domain receipts" if postgres
+                         else "NATS gate must return both complete domain receipts")
     receipts=[]
-    floor={"wake::nats_tests::nats_wake_signal_notifies_a_waiter",
-        "hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable"}
     observed=set()
+    packages=[]
     for reference in references:
         value=reference.strip()
         if re.match(r"^/[a-zA-Z]/",value): value=value[1]+":"+value[2:]
         directory=Path(value).resolve(strict=True)
         expected_parent=Path(os.environ.get("CARGO_TARGET_DIR",str(ROOT/"target"))).resolve()/"test-timings"
         if directory.parent!=expected_parent or directory.is_symlink():
-            raise ValueError("NATS receipt is outside the current Cargo evidence directory")
+            raise ValueError("native service receipt is outside the current Cargo evidence directory")
         document=json.loads((directory/"results.json").read_text(encoding="utf-8"))
         if (document.get("status")!="passed" or document.get("exit_code")!=0
-                or not document.get("source_unchanged") or document.get("source_digest")!=source_digest):
-            raise ValueError("NATS execution receipt does not qualify this source")
+                or document.get("source_unchanged") is not True or document.get("source_digest")!=source_digest):
+            raise ValueError("native service execution receipt does not qualify this source")
+        if postgres and not (document.get("postgres_fixture_required") is True and document.get("postgres_fixture_configured") is True):
+            raise ValueError("PostgreSQL execution did not require the owned live fixture")
         results=(directory/"results.log").read_text(encoding="utf-8",errors="replace")
         actual=q.execution_evidence((directory/"list.log").read_text(encoding="utf-8"),results,0,document["required_cases"])
         if (actual["errors"] or actual["selected_cases"]!=document["selected_cases"]
                 or [list(row) for row in actual["executed_cases"]]!=document.get("executed_cases")):
-            raise ValueError("NATS execution identities differ from the inventory")
-        if "VERIFIED live NATS fixture" not in results:
+            raise ValueError("native service execution identities differ from the inventory")
+        if not postgres and "VERIFIED live NATS fixture" not in results:
             raise ValueError("NATS domain did not report an actual live protocol assertion")
         q.verify_preparation(directory/"build.json",document["arguments"],source_digest)
         observed.update(document["selected_cases"])
+        arguments=document["arguments"]
+        if postgres: packages.append(arguments[arguments.index("-p")+1])
         receipts.append({"directory":str(directory),"receipt_sha256":sha256(directory/"results.json"),
             "selected_cases":document["selected_cases"]})
-    if not floor<=observed:
+    if postgres:
+        expected=Counter({"awaken-reliability-testkit":1,"awaken-model-catalog-store":1,
+            "awaken-credential-store":1,"awaken-data-subject-store":1,"awaken-captured-content-store":1,
+            "awaken-work-store":2,"awaken-session-store":1,"awaken-memory-store":1,"awaken-skill-store":1})
+        if Counter(packages)!=expected:
+            raise ValueError("PostgreSQL gate omitted or duplicated a canonical backend domain")
+    elif not {"wake::nats_tests::nats_wake_signal_notifies_a_waiter",
+            "hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable"}<=observed:
         raise ValueError("NATS gate omitted a required protocol law")
     return receipts
+
+
+def reconcile_nats(log: str, source_digest: str) -> list[dict]:
+    return reconcile_receipts(log,source_digest,postgres=False)
+
+
+def reconcile_postgres(log: str, source_digest: str) -> list[dict]:
+    return reconcile_receipts(log,source_digest,postgres=True)
 
 
 def worker(args: argparse.Namespace) -> int:
@@ -88,25 +111,40 @@ def worker(args: argparse.Namespace) -> int:
     service=None
     code=0
     try:
-        service=NatsService(args.nats_bin,root/"nats",out,owner)
+        if args.service=="nats":
+            service=NatsService(args.nats_bin,root/"nats",out,owner)
+            plan=[("nats-domain-tests","tests.log",["scripts/ci/nats_tests.sh"])]
+        elif args.service=="postgres":
+            service=PostgresService(args.postgres_bin,root/"postgres",out,owner)
+            plan=[("postgres-backend-parity","backend-parity.log",["scripts/ci/pg_tests.sh","--backend-parity"]),
+                  ("postgres-work-store","work-store.log",["scripts/ci/pg_tests.sh","--work-store"])]
+        else:
+            raise ValueError("unsupported native service")
         record["fixture"]=service.start()
         save()
-        environment=dict(os.environ,AWAKEN_TEST_NATS_URL=record["fixture"]["url"],AWAKEN_TEST_REQUIRE_NATS="1")
-        # Never borrow an unrelated database or another service fixture.
-        for name in ("AWAKEN_TEST_DATABASE_URL","AWAKEN_TEST_REQUIRE_POSTGRES"):
+        environment=dict(os.environ)
+        for name in ("AWAKEN_TEST_DATABASE_URL","AWAKEN_TEST_REQUIRE_POSTGRES","AWAKEN_TEST_NATS_URL","AWAKEN_TEST_REQUIRE_NATS"):
             environment.pop(name,None)
-        command=[sys.executable,"-X","utf8","scripts/ci/_native_shell.py","scripts/ci/nats_tests.sh"]
-        start=time.monotonic()
-        with (out/"tests.log").open("wb") as log:
-            child=subprocess.run(command,cwd=ROOT,env=environment,stdout=log,stderr=subprocess.STDOUT,stdin=subprocess.DEVNULL)
-        record["stages"].append({"stage":"nats-domain-tests","command":command,"exit_code":child.returncode,
-            "seconds":time.monotonic()-start,"log_sha256":sha256(out/"tests.log")})
-        save()
-        if child.returncode:
-            code=child.returncode
-            raise RuntimeError("native NATS domain tests failed; inspect tests.log")
+        if args.service=="nats":
+            environment.update(AWAKEN_TEST_NATS_URL=record["fixture"]["url"],AWAKEN_TEST_REQUIRE_NATS="1")
+        else:
+            environment.update(AWAKEN_TEST_DATABASE_URL=service.url,AWAKEN_TEST_REQUIRE_POSTGRES="1")
+        logs=[]
+        for stage,filename,arguments in plan:
+            command=[sys.executable,"-X","utf8","scripts/ci/_native_shell.py",*arguments]
+            start=time.monotonic()
+            with (out/filename).open("wb") as log:
+                child=subprocess.run(command,cwd=ROOT,env=environment,stdout=log,stderr=subprocess.STDOUT,stdin=subprocess.DEVNULL)
+            record["stages"].append({"stage":stage,"command":command,"exit_code":child.returncode,
+                "seconds":time.monotonic()-start,"log_sha256":sha256(out/filename)})
+            save()
+            if child.returncode:
+                code=child.returncode
+                raise RuntimeError("native service domain tests failed; inspect "+filename)
+            logs.append((out/filename).read_text(encoding="utf-8",errors="replace"))
         service.verify()
-        record["execution"]=reconcile_nats((out/"tests.log").read_text(encoding="utf-8",errors="replace"),digest)
+        reconcile=reconcile_nats if args.service=="nats" else reconcile_postgres
+        record["execution"]=reconcile("\n".join(logs),digest)
         if working_subject()[0]!=digest:
             raise RuntimeError("source changed during native service verification")
         record["source_unchanged"]=True
@@ -126,7 +164,10 @@ def worker(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str]) -> int:
-    args=parser().parse_args(argv)
+    p=parser()
+    args=p.parse_args(argv)
+    if args.service=="nats" and args.nats_bin is None: p.error("nats requires --nats-bin")
+    if args.service=="postgres" and args.postgres_bin is None: p.error("postgres requires --postgres-bin")
     if os.name!="nt":
         raise SystemExit("native service validation requires Windows; no container fallback")
     if args.timeout<=0:

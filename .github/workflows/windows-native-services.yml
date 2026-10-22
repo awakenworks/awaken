@@ -43,6 +43,10 @@ jobs:
         run: python scripts/ci/deadline.py 900 -- python scripts/ci/install_windows_services.py --service nats --output target/windows-services
       - name: Require real broker delivery and a native tool round trip
         run: python scripts/ci/check_native_services.py --service nats --nats-bin target/windows-services/nats/nats-server-v2.15.0-windows-amd64/nats-server.exe --output target/test-timings/native-nats
+      - name: Install the reviewed Windows PostgreSQL runtime without a service cache
+        run: python scripts/ci/deadline.py 900 -- python scripts/ci/install_windows_services.py --service postgres --output target/windows-postgres
+      - name: Require live backend parity and complete Work durability laws
+        run: python scripts/ci/check_native_services.py --service postgres --postgres-bin target/windows-postgres/postgres/pgsql/bin --output target/test-timings/native-postgres
       - name: Retain exact-source service and execution receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -51,4 +55,5 @@ jobs:
           path: |
             target/test-timings/
             target/windows-services/installation.json
+            target/windows-postgres/installation.json
           if-no-files-found: error

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 from pathlib import Path
 import struct
 import subprocess
@@ -14,6 +15,7 @@ from unittest import mock
 
 import check_native_services as gate
 import native_services as services
+import _native_postgres as pg
 
 INPUT_GLOBS = ("scripts/ci/**", ".github/workflows/windows-native-services.yml")
 
@@ -109,6 +111,9 @@ class NativeInstallTests(unittest.TestCase):
         self.assertIn("python scripts/ci/install_windows_services.py --service nats",workflow)
         self.assertIn("python scripts/ci/check_native_services.py --service nats",workflow)
         self.assertIn("target/windows-services/installation.json",workflow)
+        self.assertIn("python scripts/ci/install_windows_services.py --service postgres",workflow)
+        self.assertIn("python scripts/ci/check_native_services.py --service postgres",workflow)
+        self.assertIn("target/windows-postgres/installation.json",workflow)
 
 class ExecutionReceiptTests(unittest.TestCase):
     def make_receipts(self,base):
@@ -123,6 +128,36 @@ class ExecutionReceiptTests(unittest.TestCase):
             (directory/"results.log").write_text("".join("test "+x+" ... ok\n" for x in cases)+"test result: ok. 2 passed; 0 failed; 0 ignored;\nVERIFIED live NATS fixture\n",encoding="utf-8")
             receipts.append(directory)
         return receipts
+
+    def test_postgres_requires_all_domains_and_boolean_live_fixture_flags(self):
+        import check_rust_test_execution as q
+        packages=["awaken-reliability-testkit","awaken-model-catalog-store","awaken-credential-store",
+            "awaken-data-subject-store","awaken-captured-content-store","awaken-work-store",
+            "awaken-session-store","awaken-memory-store","awaken-skill-store","awaken-work-store"]
+        with tempfile.TemporaryDirectory() as directory,mock.patch.object(q,"verify_preparation"):
+            base=Path(directory);receipts=[]
+            for index,package in enumerate(packages):
+                path=base/"test-timings"/str(index);path.mkdir(parents=True);case="law_"+str(index)
+                doc={"status":"passed","exit_code":0,"source_unchanged":True,"source_digest":"source",
+                    "selected_cases":[case],"executed_cases":[[case,"ok"]],"required_cases":[case],
+                    "arguments":["-p",package],"postgres_fixture_required":True,"postgres_fixture_configured":True}
+                (path/"results.json").write_text(json.dumps(doc),encoding="utf-8")
+                (path/"list.log").write_text(case+": test\n",encoding="utf-8")
+                (path/"results.log").write_text("test "+case+" ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n",encoding="utf-8")
+                receipts.append(path)
+            log="".join("execution evidence: "+str(path)+"\n" for path in receipts)
+            with mock.patch.dict(os.environ,{"CARGO_TARGET_DIR":str(base)}):
+                self.assertEqual(len(gate.reconcile_postgres(log,"source")),10)
+                with self.assertRaisesRegex(ValueError,"all 10"):gate.reconcile_postgres("","source")
+                path=receipts[0]/"results.json";original=json.loads(path.read_text())
+                for key in ("postgres_fixture_required","postgres_fixture_configured"):
+                    for invalid in (False,"1"):
+                        doc=dict(original);doc[key]=invalid;path.write_text(json.dumps(doc),encoding="utf-8")
+                        with self.assertRaisesRegex(ValueError,"owned live fixture"):gate.reconcile_postgres(log,"source")
+                path.write_text(json.dumps(original),encoding="utf-8")
+                path=receipts[-2]/"results.json";doc=json.loads(path.read_text());doc["arguments"]=["-p","awaken-memory-store"]
+                path.write_text(json.dumps(doc),encoding="utf-8")
+                with self.assertRaisesRegex(ValueError,"omitted or duplicated"):gate.reconcile_postgres(log,"source")
 
     def test_actual_names_source_and_live_marker_are_all_required(self):
         import check_rust_test_execution as q
@@ -179,6 +214,75 @@ class WorkerResultTests(unittest.TestCase):
                 self.assertEqual(code==0,not changed and not cleanup_failure)
                 self.assertEqual(record["status"]=="passed",code==0)
                 service.verify.assert_called_once()
+
+
+class PostgresFixtureTests(unittest.TestCase):
+    def test_sql_identity_requires_every_ownership_and_platform_premise(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory) / 'data'
+            value = dict(cluster_name='owned', port=1234, data_directory=str(data), started='one',
+                         version='PostgreSQL 16.15, compiled by Visual C++ build 1944', version_num=160015)
+            self.assertEqual(pg.validate_identity(value, 'owned', 1234, data), value)
+            for changed in (dict(value, cluster_name='foreign'), dict(value, port=4321),
+                            dict(value, data_directory=str(data.parent)), dict(value, started=''),
+                            dict(value, version='another platform'), dict(value, version_num=170000),
+                            dict(value, version_num='160015'), {}):
+                with self.subTest(value=changed), self.assertRaises(ValueError):
+                    pg.validate_identity(changed, 'owned', 1234, data)
+
+    def test_control_refuses_foreign_pid_or_data_before_invoking_pg_ctl(self):
+        for pid, folder in [('other', 'owned'), ('987', 'foreign'), ('987', 'owned')]:
+            with self.subTest(pid=pid, folder=folder), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); data = root / 'owned'; data.mkdir()
+                (data / 'postmaster.pid').write_text(pid + '\n' + str(root / folder) + '\n')
+                service = object.__new__(pg.PostgresService)
+                service.data = data
+                service.process = mock.Mock(pid=987, returncode=0)
+                service.process.poll.return_value = None
+                service.command = mock.Mock()
+                service.log = mock.Mock()
+                if pid == '987' and folder == 'owned':
+                    self.assertTrue(service.close()['stopped'])
+                    service.command.assert_called_once_with('pg_ctl', ['stop', '-D', str(data), '-m', 'fast', '-w', '-t', '10'], timeout=15)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, 'ownership changed'):
+                        service.close()
+                    service.command.assert_not_called()
+                service.log.close.assert_called_once()
+
+    def test_initdb_failure_removes_only_its_ephemeral_password_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = object.__new__(pg.PostgresService)
+            service.root = Path(directory) / 'owned'
+            service.data = service.root / 'data'
+            service.password = secrets.token_hex(24)
+            service.command = mock.Mock(side_effect=RuntimeError('initdb failed'))
+            with mock.patch.object(pg.subprocess, 'Popen') as launch:
+                with self.assertRaisesRegex(RuntimeError, 'initdb failed'):
+                    service.start()
+                launch.assert_not_called()
+            self.assertFalse((service.root / 'init-password').exists())
+
+    def test_psql_failure_does_not_publish_connection_credentials(self):
+        service = object.__new__(pg.PostgresService)
+        service.binaries = {'psql': {'path': 'owned-psql.exe'}}
+        credential = secrets.token_hex(24)
+        service.environment = {'PGPASSWORD': credential}
+        with mock.patch.object(pg.subprocess, 'CREATE_NO_WINDOW', 0, create=True), mock.patch.object(pg.subprocess, 'run', return_value=subprocess.CompletedProcess([], 17, b'', credential.encode())):
+            with self.assertRaises(RuntimeError) as error:
+                service.sql('SELECT 1')
+        self.assertIn('17', str(error.exception))
+        self.assertNotIn(credential, str(error.exception))
+
+    def test_public_receipt_contains_no_authentication_secret(self):
+        service = object.__new__(pg.PostgresService)
+        service.binaries = {}; service.process = mock.Mock(pid=987)
+        service.owner = 'owned'; service.identity = {}; service.port = 1234
+        credential = secrets.token_hex(24)
+        service.password = credential; service.url = f'postgres://user:{credential}@host/db'
+        receipt = service.receipt()
+        self.assertNotIn(credential, json.dumps(receipt))
+        self.assertNotIn('url', receipt)
 
 
 if __name__=="__main__":
