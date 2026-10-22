@@ -621,3 +621,5 @@
 /.well-known/awaken-suite-navigation | 404 | 404 | 404 | 404 | 404
 /.well-known/jwks.json | 404 | 404 | 404 | 404 | 404
 /w/{*path} | 404 | 404 | 404 | 404 | 404
+/v1/config/agents/{id}/archive | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/agents/{id}/archive @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404

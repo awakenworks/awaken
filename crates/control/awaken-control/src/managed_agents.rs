@@ -25,7 +25,7 @@ use awaken_protocol_managed::types::agent::{
     AgentMcpServer, AgentSkill, AgentUpdateParams, MultiagentConfig as WireMultiagent,
     MultiagentRosterEntry, managed_advisor_pair_supported,
 };
-use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
+use awaken_protocol_managed::{AgentArchiveReceipt, ManagedAgentError, ManagedAgentRepository};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_session_configuration_contract::preserve_runtime_agent_overrides;
@@ -33,6 +33,8 @@ use awaken_tenancy::ScopeId;
 use awaken_time::WallClock;
 
 mod lifecycle_identity;
+#[cfg(test)]
+mod lifecycle_tests;
 mod projection;
 mod publications;
 #[cfg(test)]
@@ -608,12 +610,61 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         // wire carries; refusing their projection after CAS/withdraw would
         // report 400 even though the Agent was already archived.
         project(current.clone(), self.clock.as_ref())?;
+
+        self.archive_at_revision(workspace_id, id, current.revision)
+            .await?;
+        let archived = self
+            .plane
+            .get_versioned(&scope, id)
+            .await
+            .map_err(ManagedAgentError::Storage)?
+            .ok_or(ManagedAgentError::NotFound)?;
+        project(archived, self.clock.as_ref())
+    }
+
+    async fn archive_at_revision(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<AgentArchiveReceipt, ManagedAgentError> {
+        if workspace_id == RESERVED_ADMIN_SCOPE {
+            return Err(ManagedAgentError::NotFound);
+        }
+        if expected_revision == 0 {
+            return Err(ManagedAgentError::Invalid(
+                "generation must be greater than zero".into(),
+            ));
+        }
+        let scope = Self::scope(workspace_id);
+        let current = self
+            .plane
+            .get_versioned(&scope, id)
+            .await
+            .map_err(ManagedAgentError::Storage)?
+            .ok_or(ManagedAgentError::NotFound)?;
+        let archived = current.config.lifecycle() == AgentLifecycle::Archived;
+        if current.revision != expected_revision
+            && !(archived && expected_revision.checked_add(1) == Some(current.revision))
+        {
+            return Err(ManagedAgentError::Conflict(format!(
+                "Agent generation conflict (reviewed: {expected_revision}, current: {})",
+                current.revision
+            )));
+        }
         if current.config.lifecycle() == AgentLifecycle::Archived {
             self.plane
                 .withdraw(workspace_id, id, current.revision)
                 .await
                 .map_err(ManagedAgentError::Storage)?;
-            return project(current, self.clock.as_ref());
+            return Ok(AgentArchiveReceipt {
+                id: id.into(),
+                revision: current.revision,
+                archived_at: current.config.archived_at.ok_or_else(|| {
+                    ManagedAgentError::Storage("Archived Agent has no archive timestamp".into())
+                })?,
+                already_archived: true,
+            });
         }
         let mut config = current.config;
         config.disabled_at = None;
@@ -629,14 +680,14 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                     .withdraw(workspace_id, id, revision)
                     .await
                     .map_err(ManagedAgentError::Storage)?;
-                self.plane
-                    .get_versioned(&scope, id)
-                    .await
-                    .map_err(ManagedAgentError::Storage)?
-                    .ok_or_else(|| {
-                        ManagedAgentError::Storage("archived Agent is not readable".into())
-                    })
-                    .and_then(|revision| project(revision, self.clock.as_ref()))
+                Ok(AgentArchiveReceipt {
+                    id: id.into(),
+                    revision,
+                    archived_at: config.archived_at.ok_or_else(|| {
+                        ManagedAgentError::Storage("Archived Agent has no archive timestamp".into())
+                    })?,
+                    already_archived: false,
+                })
             }
             ConfigWrite::Conflict { current_revision } => Err(ManagedAgentError::Conflict(
                 format!("Agent changed concurrently (current version: {current_revision:?})"),

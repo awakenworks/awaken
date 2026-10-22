@@ -75,7 +75,8 @@ pub use rate_limit::{
     managed_admission_unavailable, managed_org_admission_class,
 };
 pub use routes::agents_registry::{
-    AgentRegistryState, ManagedAgentError, ManagedAgentRepository, agents_router,
+    AgentArchiveReceipt, AgentRegistryState, ManagedAgentError, ManagedAgentRepository,
+    agents_router,
 };
 pub use routes::deployments::{ManagedDeploymentSessionLauncher, deployments_router};
 pub use routes::dreams_router;

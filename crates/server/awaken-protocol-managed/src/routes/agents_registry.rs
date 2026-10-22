@@ -34,6 +34,16 @@ pub enum ManagedAgentError {
     Storage(String),
 }
 
+/// Native lifecycle receipt over the same authoritative Agent aggregate. This
+/// port value is not the Managed SDK's narrower `Agent` wire representation.
+#[derive(Debug, Clone)]
+pub struct AgentArchiveReceipt {
+    pub id: String,
+    pub revision: u64,
+    pub archived_at: String,
+    pub already_archived: bool,
+}
+
 /// Durable authoring port for the SDK-facing Agent aggregate.
 ///
 /// `workspace_id` is trusted routing context supplied by the edge. It is an
@@ -63,6 +73,19 @@ pub trait ManagedAgentRepository: Send + Sync {
         params: AgentUpdateParams,
     ) -> Result<Agent, ManagedAgentError>;
     async fn archive(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError>;
+    /// Archive one reviewed revision without requiring a Managed model-id
+    /// projection. Production delegates both public representations to one CAS
+    /// command. Existing repository implementations fail closed by default.
+    async fn archive_at_revision(
+        &self,
+        _workspace_id: &str,
+        _id: &str,
+        _expected_revision: u64,
+    ) -> Result<AgentArchiveReceipt, ManagedAgentError> {
+        Err(ManagedAgentError::Invalid(
+            "revision-fenced Agent archive is unavailable for this repository".into(),
+        ))
+    }
     async fn versions(&self, workspace_id: &str, id: &str)
     -> Result<Vec<Agent>, ManagedAgentError>;
 }
@@ -79,6 +102,30 @@ pub struct AgentRegistryState {
 }
 
 impl AgentRegistryState {
+    /// Native and Managed HTTP adapters share this state and its one downstream
+    /// cascade. The repository remains the sole lifecycle mutation authority.
+    pub async fn archive_at_revision(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<AgentArchiveReceipt, ManagedAgentError> {
+        let receipt = self
+            .repository
+            .archive_at_revision(workspace_id, id, expected_revision)
+            .await?;
+        self.archive_dependents(workspace_id, id)
+            .await
+            .map_err(ManagedAgentError::Storage)?;
+        Ok(receipt)
+    }
+
+    async fn archive_dependents(&self, workspace_id: &str, id: &str) -> Result<(), String> {
+        match &self.archive_cascade {
+            Some(cascade) => cascade.archive_agent_dependents(workspace_id, id).await,
+            None => Ok(()),
+        }
+    }
     #[must_use]
     pub fn from_repository(repository: Arc<dyn ManagedAgentRepository>) -> Self {
         Self {
@@ -262,17 +309,15 @@ async fn archive_agent(
         .archive(&scope, &id)
         .await
         .map_err(wire_error)?;
-    if let Some(cascade) = &state.archive_cascade {
-        cascade
-            .archive_agent_dependents(&scope, &id)
-            .await
-            .map_err(|error| {
-                (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(ErrorResponse::new("api_error", error)),
-                )
-            })?;
-    }
+    state
+        .archive_dependents(&scope, &id)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse::new("api_error", error)),
+            )
+        })?;
     Ok(Json(agent))
 }
 
