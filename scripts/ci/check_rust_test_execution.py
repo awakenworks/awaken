@@ -70,6 +70,8 @@ def execution_evidence(inventory: str, results: str, exit_code: int,
 
 def required_commands(arguments: list[str]) -> tuple[list[list[str]], list[str]]:
     """The existing focused libtest argv, with frontend-only floors removed."""
+    if os.environ.get("RUST_TEST_NOCAPTURE") not in (None, "0"):
+        raise ValueError("required test execution owns captured output; unset RUST_TEST_NOCAPTURE")
     required, cargo_arguments = [], []
     frontend = True
     for argument in arguments:
@@ -81,6 +83,8 @@ def required_commands(arguments: list[str]) -> tuple[list[list[str]], list[str]]
                 raise ValueError("required case must be nonempty")
             required.append(case)
         else:
+            if argument.split("=", 1)[0] in ("--nocapture", "--no-capture"):
+                raise ValueError("required test execution owns captured output; use its --show-output diagnostics")
             if argument == "--list" or argument.split("=", 1)[0] == "--format":
                 raise ValueError("required test execution owns list/output format")
             cargo_arguments.append(argument)
@@ -766,6 +770,32 @@ exit "$RESULT_STATUS"
         output = "test other ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n"
         self.assertEqual(execution_evidence(inventory, output, 0)["errors"], [])
         self.assertIn("required selection omits cases: critical", execution_evidence(inventory, output, 0, floor)["errors"])
+
+    def test_uncaptured_output_is_refused_before_build_and_cannot_mimic_named_results(self) -> None:
+        # A real observation printed metrics between libtest's name and `ok`.
+        # C1 an argv switch or ambient nonzero/empty NOCAPTURE -> reject before
+        # either build or execution. C2 normal capture -> preserve all literal
+        # selection and show buffered diagnostics. C3 partial/interleaved name
+        # rows cannot qualify from the final passing count alone.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RUST_TEST_NOCAPTURE", None)
+            for switch in ("--nocapture", "--no-capture", "--nocapture=true"):
+                args=["-p", "critical", "--", switch]
+                for planner in (required_commands, required_build_command):
+                    with self.subTest(switch=switch, planner=planner.__name__):
+                        with self.assertRaisesRegex(ValueError, "owns captured output"): planner(args)
+            for value in ("", "1", "false"):
+                os.environ["RUST_TEST_NOCAPTURE"]=value
+                with self.subTest(value=value), self.assertRaisesRegex(ValueError, "RUST_TEST_NOCAPTURE"):
+                    required_build_command(["-p", "critical"])
+            os.environ["RUST_TEST_NOCAPTURE"]="0"
+            commands,_=required_commands(["-p", "critical", "--", "--skip=--nocapture"])
+            self.assertIn("--skip=--nocapture",commands[0]);self.assertEqual(commands[1][-1],"--show-output")
+        inventory="critical: test\n"
+        interleaved="test critical ... metric=10\nok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n"
+        self.assertTrue(execution_evidence(inventory,interleaved,0,["critical"])["errors"])
+        captured="test critical ... ok\nsuccesses:\nmetric=10\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n"
+        self.assertEqual(execution_evidence(inventory,captured,0,["critical"])["errors"],[])
 
     def test_floor_failure_stops_before_run(self) -> None:
         # E3/E4: listing returns0 with a nonempty wrong identity, while a run

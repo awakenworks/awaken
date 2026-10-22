@@ -16,6 +16,7 @@ import uuid
 
 from native_services import NatsService, sha256
 from _native_postgres import PostgresService
+from _native_postgres_scopes import POSTGRES_PACKAGES, postgres_plan
 from _native_s3 import MinioService
 from _native_recovery_postgres import ArchivePrimary
 from _native_recovery_drill import run_recovery
@@ -27,6 +28,8 @@ def parser() -> argparse.ArgumentParser:
     p=argparse.ArgumentParser(allow_abbrev=False)
     p.add_argument("--service",choices=["nats", "postgres", "s3"],required=True)
     p.add_argument("--nats-bin",type=Path,help="native Windows NATS server executable")
+    p.add_argument("--postgres-scope",choices=sorted(POSTGRES_PACKAGES),default="core",
+                   help="required domain group on the owned PostgreSQL fixture")
     p.add_argument("--postgres-bin",type=Path,help="directory of native Windows PostgreSQL 16 bin tools")
     p.add_argument("--minio-bin",type=Path,help="native Windows MinIO executable")
     p.add_argument("--mc-bin",type=Path,help="native Windows MinIO admin client executable")
@@ -37,17 +40,17 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
-def reconcile_receipts(log: str, source_digest: str, *, service: str) -> list[dict]:
+def reconcile_receipts(log: str, source_digest: str, *, service: str, postgres_scope: str = "core") -> list[dict]:
     import check_rust_test_execution as q
     from collections import Counter
     references=re.findall(r"^execution evidence: (.+)$",log,re.M)
     if service not in ("nats", "postgres", "s3"): raise ValueError("unsupported native service receipt kind")
     postgres = service == "postgres"
     s3 = service == "s3"
-    expected_count={"postgres":17,"nats":2,"s3":4}[service]
+    expected_count=len(POSTGRES_PACKAGES[postgres_scope]) if postgres else {"nats":2,"s3":4}[service]
     if len(references)!=expected_count:
         if s3: raise ValueError("S3 gate must return all four phase receipts")
-        raise ValueError("PostgreSQL gate must return all 17 required domain receipts" if postgres
+        raise ValueError(f"PostgreSQL {postgres_scope} gate must return all {expected_count} required domain receipts" if postgres
                          else "NATS gate must return both complete domain receipts")
     receipts=[]
     observed=set()
@@ -85,10 +88,7 @@ def reconcile_receipts(log: str, source_digest: str, *, service: str) -> list[di
         receipts.append({"directory":str(directory),"receipt_sha256":sha256(directory/"results.json"),
             "selected_cases":document["selected_cases"]})
     if postgres:
-        expected=Counter({"awaken-reliability-testkit":1,"awaken-model-catalog-store":1,
-            "awaken-credential-store":2,"awaken-data-subject-store":1,"awaken-captured-content-store":1,
-            "awaken-work-store":2,"awaken-session-store":2,"awaken-memory-store":1,"awaken-skill-store":1,
-            "awaken-run-ingress-http":1,"awaken-config-store":1,"awaken-cli":2,"awaken-coordinator":1})
+        expected=Counter(POSTGRES_PACKAGES[postgres_scope])
         if Counter(packages)!=expected:
             raise ValueError("PostgreSQL gate omitted or duplicated a canonical backend domain")
     elif s3:
@@ -109,8 +109,8 @@ def reconcile_nats(log: str, source_digest: str) -> list[dict]:
     return reconcile_receipts(log,source_digest,service="nats")
 
 
-def reconcile_postgres(log: str, source_digest: str) -> list[dict]:
-    return reconcile_receipts(log,source_digest,service="postgres")
+def reconcile_postgres(log: str, source_digest: str, scope: str = "core") -> list[dict]:
+    return reconcile_receipts(log,source_digest,service="postgres",postgres_scope=scope)
 
 
 def reconcile_s3(log: str, source_digest: str) -> list[dict]:
@@ -156,10 +156,8 @@ def worker(args: argparse.Namespace) -> int:
                     ROOT/"scripts/ci/fixtures/minio-file-store-policy.json")
             else:
                 service=PostgresService(args.postgres_bin,root/"postgres",out,owner)
-            plan=[("postgres-backend-parity","backend-parity.log",["scripts/ci/pg_tests.sh","--backend-parity"]),
-                  ("postgres-work-store","work-store.log",["scripts/ci/pg_tests.sh","--work-store"]),
-                  ("postgres-http","http.log",["scripts/ci/pg_tests.sh","--http"]),
-                  ("postgres-critical","critical.log",["scripts/ci/pg_tests.sh","--critical"])]
+            plan=postgres_plan(args.postgres_scope)
+            record["postgres_scope"]=args.postgres_scope
         elif args.service=="s3":
             service=MinioService(args.minio_bin,args.mc_bin,root/"minio",out,owner,
                 ROOT/"scripts/ci/fixtures/minio-file-store-policy.json")
@@ -206,7 +204,8 @@ def worker(args: argparse.Namespace) -> int:
             record["final_fixture"]=service.receipt()
             record["credential_rotation_applied"]=service.rotated
         reconcile={"nats":reconcile_nats,"postgres":reconcile_postgres,"s3":reconcile_s3}[args.service]
-        record["execution"]=reconcile("\n".join(logs),digest)
+        record["execution"]=(reconcile_postgres("\n".join(logs),digest,args.postgres_scope)
+                             if args.service=="postgres" else reconcile("\n".join(logs),digest))
         if recovery_objects is not None:
             record["recovery"]=run_recovery(service,recovery_objects,root/"physical-recovery",out)
         if working_subject()[0]!=digest:
@@ -246,6 +245,7 @@ def worker(args: argparse.Namespace) -> int:
 def main(argv: list[str]) -> int:
     p=parser()
     args=p.parse_args(argv)
+    if args.postgres_scope!="core" and args.service!="postgres": p.error("--postgres-scope requires postgres")
     if args.service=="nats" and args.nats_bin is None: p.error("nats requires --nats-bin")
     if args.service=="postgres" and args.postgres_bin is None: p.error("postgres requires --postgres-bin")
     if args.service=="s3" and (args.minio_bin is None or args.mc_bin is None): p.error("s3 requires --minio-bin and --mc-bin")

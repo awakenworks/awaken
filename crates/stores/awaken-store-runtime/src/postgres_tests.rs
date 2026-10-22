@@ -63,15 +63,23 @@ async fn missing_permission_and_blocked_health_check_fail_within_their_boundary(
             .await?;
         isolated = Some(pool);
         let mut connection = sqlx::PgConnection::connect_with(&role_options).await?;
-        let permission_error = super::verify_postgres_checkout(&mut connection)
-            .await
-            .expect_err("R6 authenticated connection lacks plpgsql USAGE");
+        // R6 classifies the real SQL probe's permission semantics. It must
+        // not race the separate 500ms production health policy under host IO.
+        // Fresh pool rejection below and R7's blocked wrapper still exercise
+        // that exact public admission path and unchanged production deadline.
+        let permission_error = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::probe_postgres_checkout_state(&mut connection),
+        )
+        .await
+        .expect("R6 authenticated SQL-state probe must reach its error boundary")
+        .expect_err("R6 authenticated connection lacks plpgsql USAGE");
         assert_eq!(
             permission_error
                 .as_database_error()
                 .and_then(|error| error.code()),
             Some("42501".into()),
-            "R6 permission rejection, not transport or authentication failure"
+            "R6 permission rejection, not transport or authentication failure: {permission_error:?}"
         );
         let denied = match super::postgres_pool_options()
             .max_connections(1)

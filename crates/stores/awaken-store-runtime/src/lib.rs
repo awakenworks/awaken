@@ -27,6 +27,23 @@ pub fn postgres_pool_options() -> sqlx::postgres::PgPoolOptions {
 async fn verify_postgres_checkout(
     connection: &mut sqlx::postgres::PgConnection,
 ) -> Result<(), sqlx::Error> {
+    // Construction and recycled checkout share this unchanged health budget.
+    // The probe owns SQL state/error semantics independently of this deadline.
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        probe_postgres_checkout_state(connection),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(sqlx::Error::PoolTimedOut),
+    }
+}
+
+#[cfg(feature = "postgres")]
+async fn probe_postgres_checkout_state(
+    connection: &mut sqlx::postgres::PgConnection,
+) -> Result<(), sqlx::Error> {
     // SQLx 0.8.6 can cancel BEGIN before increasing its client-side depth.
     // Its ping drains ReadyForQuery but accepts a server transaction left open.
     // PostgreSQL permits transaction control in a top-level DO only outside
@@ -36,18 +53,12 @@ async fn verify_postgres_checkout(
     // connection before another borrower can execute against the stale prefix.
     // Fresh connections run the same check so missing plpgsql USAGE fails at
     // connection construction rather than silently causing repeated reconnects.
-    match tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        sqlx::Executor::execute(
-            connection,
-            "DO $awaken_pool$ BEGIN ROLLBACK; END $awaken_pool$",
-        ),
+    sqlx::Executor::execute(
+        connection,
+        "DO $awaken_pool$ BEGIN ROLLBACK; END $awaken_pool$",
     )
     .await
-    {
-        Ok(result) => result.map(|_| ()),
-        Err(_) => Err(sqlx::Error::PoolTimedOut),
-    }
+    .map(|_| ())
 }
 
 #[cfg(all(test, feature = "postgres"))]

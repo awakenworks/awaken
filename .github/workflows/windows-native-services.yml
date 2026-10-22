@@ -2,6 +2,11 @@ name: awaken-windows-native-services
 
 on:
   workflow_dispatch:
+    inputs:
+      include_storage_observations:
+        description: "Run the six heavy storage observations separately"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -53,6 +58,11 @@ jobs:
         run: python scripts/ci/deadline.py 900 -- python scripts/ci/install_windows_services.py --service s3 --output target/windows-s3
       - name: Require backend parity, Work, HTTP failover and process-crash durability
         run: python scripts/ci/check_native_services.py --service postgres --postgres-bin target/windows-postgres/postgres/pgsql/bin --recovery --minio-bin target/windows-s3/minio/minio.exe --mc-bin target/windows-s3/mc/mc.exe --output target/test-timings/native-postgres
+      - name: Require storage migrations, cancellation and crash atomicity
+        run: python scripts/ci/check_native_services.py --service postgres --postgres-scope storage --postgres-bin target/windows-postgres/postgres/pgsql/bin --output target/test-timings/native-postgres-storage
+      - name: Observe native storage capacity with explicit heavy selectors
+        if: ${{ inputs.include_storage_observations }}
+        run: python scripts/ci/check_native_services.py --service postgres --postgres-scope storage-observations --postgres-bin target/windows-postgres/postgres/pgsql/bin --output target/test-timings/native-postgres-storage-observations
       - name: Require S3 admission, least privilege and real credential rotation
         run: python scripts/ci/check_native_services.py --service s3 --minio-bin target/windows-s3/minio/minio.exe --mc-bin target/windows-s3/mc/mc.exe --output target/test-timings/native-s3
       - name: Retain exact-source service and execution receipts

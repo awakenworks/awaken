@@ -13,7 +13,7 @@
 # gate passes ``--require-docker`` so the same condition fails instead of
 # producing a false green.
 #
-# Usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--self-test]
+# Usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--storage|--storage-observations|--self-test]
 # --backend-parity uses a caller-owned live URL and runs only the named matrix.
 # --work-store uses a caller-owned live URL and requires the complete Work suite.
 # --http requires the four live transport targets, including native failover.
@@ -176,6 +176,104 @@ critical_durability_evidence() {
   pg_required_test -p awaken-cli --locked --lib postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling \
     --require-case=postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling -- --ignored --exact --test-threads=1 || record_failure "$?"
   pg_required_test -p awaken-coordinator --locked --lib application_access_store::tests::provisioned_postgres_application_access_durability_release_gate --require-case=application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact --test-threads=1 || record_failure "$?"
+}
+
+storage_observation_evidence() {
+  # These six heavy observations are selected explicitly, not silently ignored
+  # inside the ordinary correctness lane. Timings do not establish a fleet SLO.
+  pg_required_test --locked -p awaken-store-runtime --features postgres --lib postgres_tests::checkout_health_policy_performance_observation \
+    --require-case=postgres_tests::checkout_health_policy_performance_observation \
+    -- --ignored --exact --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-store-postgres --test postgres_live \
+    --require-case=chunk_boundary_commit_throughput_observation \
+    --require-case=hot_thread_history_open_reports_its_scoped_cost \
+    --require-case=independent_thread_commit_throughput_observation \
+    --require-case=million_historical_facts_do_not_gate_startup_or_unrelated_thread_open \
+    --require-case=multi_fact_commit_throughput_observation \
+    -- --ignored --test-threads=1 || record_failure "$?"
+}
+
+storage_evidence() {
+  pg_required_test --locked -p awaken-store-runtime --features postgres --lib postgres_tests \
+    --require-case=postgres_tests::cancelled_begin_cannot_poison_the_next_recovery_transaction \
+    --require-case=postgres_tests::checkout_supports_read_only_role_without_schema_create_permission \
+    --require-case=postgres_tests::missing_permission_and_blocked_health_check_fail_within_their_boundary \
+    --require-case=postgres_tests::returned_transaction_cancellation_preserves_commits_and_backend_reuse \
+    --require-case=postgres_tests::untracked_aborted_transaction_is_retired_before_another_borrower \
+    -- --ignored --skip checkout_health_policy_performance_observation --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-session-store --features test-support --lib postgres_ \
+    --require-case=dream::tests::postgres_dream_store_conforms_and_reopens \
+    --require-case=extraction::tests::postgres_integer_conversion_rejects_clamping_and_lease_erasure \
+    --require-case=tests::keyset_query_plans::postgres_cached_recovery_and_startup_cursors_keep_the_index_condition \
+    --require-case=tests::postgres_normalization_and_index_repair_share_one_crash_boundary \
+    --require-case=tests::postgres_original_history_converges_with_the_same_domain_effects \
+    --require-case=tests::postgres_owner_scope_is_recorded_and_survives_a_reopen \
+    --require-case=tests::postgres_published_prefixes_converge_and_server_open_is_read_only \
+    --require-case=tests::postgres_round_trips_and_upserts \
+    --require-case=tests::postgres_v2_dependency_backfill_and_operational_repair_use_the_same_root_decoder \
+    --require-case=tests::repository_reads::postgres_reader_preserves_quarantine_and_only_maintenance_clears_it \
+    --require-case=tests::root_update_history::session_update_history_survives_postgres_pool_reconnect \
+    -- --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-config-store --features test-support --test postgres \
+    --require-case=existing_postgres_store_validates_without_applying_schema \
+    --require-case=postgres_allows_one_source_revision_in_distinct_execution_workspaces \
+    --require-case=postgres_audit_and_config_commit_are_atomic_replay_safe_and_scope_fenced \
+    --require-case=postgres_audit_begin_serializes_concurrent_exact_and_conflicting_requests \
+    --require-case=postgres_audit_identity_decision_table \
+    --require-case=postgres_audit_identity_migration_preserves_truth_or_rolls_back \
+    --require-case=postgres_conditional_publication_fences_one_fingerprint_per_source_revision \
+    --require-case=postgres_config_cas_exhaustion_preserves_reopenable_truth \
+    --require-case=postgres_config_cas_missing_row_and_revision_decision_table \
+    --require-case=postgres_config_history_insert_failure_rolls_back_all_write_paths \
+    --require-case=postgres_config_store_round_trips_config_and_publication \
+    --require-case=postgres_list_published_reloads_published_rows_of_the_scope \
+    --require-case=postgres_list_published_warm_load_same_agent_reloads_the_full_set \
+    --require-case=postgres_management_effect_stale_completion_preserves_replacement \
+    --require-case=postgres_publication_commit_order_lock_serializes_only_its_workspace \
+    --require-case=postgres_publication_order_migration_does_not_certify_old_rows \
+    --require-case=postgres_publication_source_admission_preserves_rejected_frame \
+    -- --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-store-postgres --test postgres_live \
+    --require-case=concurrent_thread_open_observes_one_complete_postgres_snapshot \
+    --require-case=corrupt_waiting_ticket_is_isolated_from_postgres_restart_and_recovery \
+    --require-case=peer_lifecycle_feed_reads_authoritative_postgres_without_projection_refresh \
+    --require-case=recovery_time_truncates_postgres_submilliseconds_and_normalizes_timezone \
+    --require-case=thread_projection_opens_from_postgres_after_reconnect \
+    -- --skip chunk_boundary_commit_throughput_observation \
+      --skip hot_thread_history_open_reports_its_scoped_cost \
+      --skip independent_thread_commit_throughput_observation \
+      --skip million_historical_facts_do_not_gate_startup_or_unrelated_thread_open \
+      --skip multi_fact_commit_throughput_observation \
+      --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-env-store --features test-support --tests \
+    --require-case=tests::file_open_and_pg_connect_entry_points \
+    --require-case=fixture_admission_tests::file_and_postgres_entry_points_fixture_admission \
+    --require-case=fixture_admission_tests::postgres_parity_fixture_admission \
+    --require-case=postgres_backend_conforms \
+    --require-case=tests::postgres_parity_over_a_live_db \
+    -- --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-file-store --features postgres,sqlite,object-store \
+    --require-case=postgres_capture_contract_and_reconnect \
+    --require-case=tests::postgres_round_trip \
+    --require-case=tests::postgres_shared_set_and_empty_blob_laws \
+    --require-case=tests::postgres_v4_widens_legacy_file_flags_without_losing_values \
+    -- --skip minio_ --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-store-schema --test apply \
+    --require-case=fixture_admission::postgres_fixture_admission \
+    --require-case=bundle_applies_on_real_postgres \
+    --require-case=concurrent_postgres_startup_has_one_migration_applier \
+    --require-case=every_postgres_historical_prefix_migrates_to_full \
+    --require-case=postgres_failed_migration_rolls_back_schema_and_ledger_rows \
+    --require-case=postgres_v10_canonicalizes_historical_kinds_and_rolls_back_as_one_unit \
+    --require-case=postgres_v11_indexes_run_predecessors_without_rewriting_history \
+    --require-case=postgres_v12_indexes_recovery_ranges_atomically_without_changing_rows \
+    -- --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-store-sqlite --features test-support --test failure_atomicity \
+    --require-case=corrupt_uncommitted_wal_never_projects_a_partial_commit \
+    --require-case=sqlite_full_rolls_back_the_complete_domain_commit \
+    --require-case=sqlite_read_only_rolls_back_the_complete_domain_commit \
+    --require-case=uncommitted_transaction_is_rolled_back_after_process_kill \
+    -- --test-threads=1 || record_failure "$?"
 }
 
 published_port() {
@@ -511,7 +609,7 @@ self_test() {
     echo "Postgres gate omits Session and Deployment repository conformance" >&2
     return 1
   }
-  grep -Fqx 'pg_test cargo test -p awaken-session-store --features test-support --lib postgres_ -- --test-threads=1 \' "$0" || {
+  grep -Fqx '  pg_required_test --locked -p awaken-session-store --features test-support --lib postgres_ \' "$0" || {
     echo "Postgres gate omits Session history, read-only open, and repository parity" >&2
     return 1
   }
@@ -528,7 +626,7 @@ self_test() {
   }
   # P16 live URL + postgres feature + ignored correctness tests -> execute R1-R7
   # in this fixture. The separate performance observation keeps its own opt-in.
-  grep -Fqx 'pg_test cargo test -p awaken-store-runtime --features postgres --lib postgres_tests -- --ignored --skip checkout_health_policy_performance_observation --test-threads=1 || record_failure "$?"' "$0" || {
+  grep -Fqx '  pg_required_test --locked -p awaken-store-runtime --features postgres --lib postgres_tests \' "$0" || {
     echo "Postgres gate omits explicit shared checkout correctness" >&2
     return 1
   }
@@ -562,7 +660,7 @@ self_test() {
       return 1
     }
   done
-  grep -Fq "cargo test -p awaken-file-store --features postgres,sqlite,object-store" "$0" || {
+  grep -Fq "pg_required_test --locked -p awaken-file-store --features postgres,sqlite,object-store" "$0" || {
     echo "Durable backend gate omits the production object-store adapter" >&2
     return 1
   }
@@ -590,7 +688,7 @@ self_test() {
     echo "Postgres recovery drill is not executable" >&2
     return 1
   }
-  grep -Fq "cargo test -p awaken-store-sqlite --features test-support --test failure_atomicity" "$0" || {
+  grep -Fq "pg_required_test --locked -p awaken-store-sqlite --features test-support --test failure_atomicity" "$0" || {
     echo "Durable backend gate omits SQLite crash and injected fault atomicity" >&2
     return 1
   }
@@ -600,12 +698,14 @@ self_test() {
   }
 }
 
-[ "$#" -le 1 ] || { echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--self-test]" >&2; exit 2; }
+[ "$#" -le 1 ] || { echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--storage|--storage-observations|--self-test]" >&2; exit 2; }
 
 backend_only=0
 work_store_only=0
 http_only=0
 critical_only=0
+storage_only=0
+storage_observations_only=0
 case "${1:-}" in
   "") ;;
   --require-docker) require_docker=1 ;;
@@ -614,7 +714,9 @@ case "${1:-}" in
   --work-store) work_store_only=1 ;;
   --http) http_only=1 ;;
   --critical) critical_only=1 ;;
-  *) echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--self-test]" >&2; exit 2 ;;
+  --storage) storage_only=1 ;;
+  --storage-observations) storage_observations_only=1 ;;
+  *) echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--storage|--storage-observations|--self-test]" >&2; exit 2 ;;
 esac
 
 for deadline in "$PG_OPERATION_TIMEOUT_SECONDS" "$PG_READY_TIMEOUT_SECONDS" \
@@ -625,12 +727,16 @@ for deadline in "$PG_OPERATION_TIMEOUT_SECONDS" "$PG_READY_TIMEOUT_SECONDS" \
   }
 done
 
-if [ "$backend_only" -eq 1 ] || [ "$work_store_only" -eq 1 ] || [ "$http_only" -eq 1 ] || [ "$critical_only" -eq 1 ]; then
+if [ "$backend_only" -eq 1 ] || [ "$work_store_only" -eq 1 ] || [ "$http_only" -eq 1 ] || [ "$critical_only" -eq 1 ] || [ "$storage_only" -eq 1 ] || [ "$storage_observations_only" -eq 1 ]; then
   [ "$#" -eq 1 ] && [ -n "${AWAKEN_TEST_DATABASE_URL:-}" ] || {
     echo "focused PostgreSQL tests require an explicit owned fixture URL" >&2; exit 2;
   }
   export AWAKEN_TEST_REQUIRE_POSTGRES=1
-  if [ "$critical_only" -eq 1 ]; then
+  if [ "$storage_observations_only" -eq 1 ]; then
+    storage_observation_evidence
+  elif [ "$storage_only" -eq 1 ]; then
+    storage_evidence
+  elif [ "$critical_only" -eq 1 ]; then
     critical_durability_evidence
   elif [ "$http_only" -eq 1 ]; then
     http_transport_evidence || record_failure "$?"
@@ -855,7 +961,7 @@ fi
 # fallback before these same entries run against this live fixture.
 # Shared checkout's cancellation, poisoned backend and capability boundaries
 # are meaningful only against this live database. This selects all R1-R7 rules.
-pg_test cargo test -p awaken-store-runtime --features postgres --lib postgres_tests -- --ignored --skip checkout_health_policy_performance_observation --test-threads=1 || record_failure "$?"
+storage_evidence
 pg_test cargo test -p awaken-worker-registry --features test-support --lib --test conformance || record_failure "$?"
 pg_test cargo test -p awaken-run-ingress --features test-support || record_failure "$?"
 # Scale qualification remains owned by the existing ingress target and this
@@ -866,18 +972,12 @@ pg_test cargo test -p awaken-run-ingress --features test-support \
   --test dispatch_claim_perf -- --ignored --test-threads=1 --nocapture \
   || record_failure "$?"
 http_transport_evidence || record_failure "$?"
-pg_test cargo test -p awaken-session-store --features test-support --lib postgres_ -- --test-threads=1 \
-  || record_failure "$?"
 critical_durability_evidence
 # P15 live fixture + explicit ignored selector => measure the canonical shared
 # cap and closed-pool rejection, never a no-database/default-suite passing skip.
 # The Rust case owns adapter assertions; this runner owns fixture and deadlines.
-pg_test cargo test -p awaken-config-store --features test-support --test postgres || record_failure "$?"
 pg_test cargo test -p awaken-admin-config-api --features postgres --test postgres_store || record_failure "$?"
-pg_test cargo test -p awaken-store-postgres --test postgres_live || record_failure "$?"
 backend_parity
-pg_test cargo test -p awaken-env-store --features test-support --tests || record_failure "$?"
-pg_test cargo test -p awaken-file-store --features postgres,sqlite,object-store || record_failure "$?"
 
 # Credential-lifecycle state machine: seed -> revoke old credential -> issue
 # replacement -> read the same durable object. Both transitions are mandatory.
@@ -914,8 +1014,6 @@ pg_test cargo test -p awaken-session-application --lib postgres_ -- --test-threa
 # PostgreSQL Session connections; a no-URL workspace test cannot claim this.
 pg_test cargo test -p awaken-protocol-managed --lib postgres_two_connection_late_hitl_frontier_preserves_old_cursors -- --test-threads=1 \
   || record_failure "$?"
-pg_test cargo test -p awaken-store-schema --test apply || record_failure "$?"
-pg_test cargo test -p awaken-store-sqlite --features test-support --test failure_atomicity || record_failure "$?"
 pg_test cargo test -p awaken-sandbox-policy-store --features test-support || record_failure "$?"
 pg_test cargo test -p awaken-executable-agent-catalog || record_failure "$?"
 pg_test cargo test -p awaken-executable-environment-catalog || record_failure "$?"
