@@ -940,7 +940,6 @@
   },
   "not_qualified": [
     "PostgreSQL ingress crash/scale and remaining full release selections beyond this matrix",
-    "Physical PostgreSQL/object-store PITR in the committed CI lane",
     "Hosted Windows CI execution",
     "Live Kubernetes and platform-exclusive Linux gates"
   ],
@@ -972,5 +971,13 @@
     "sha256": "9f830ae67ac9976b418d29ffe20b098eea46bb54704d23b0b7b5da70b8e94a7d",
     "status": "passed",
     "named_executions": 6
+  },
+  "native_physical_recovery_qualification": {
+    "path": "docs/windows-native-recovery-20261023.json",
+    "git_blob_sha256": "6ebb744182a78e150aa8d120be75e046b9b90e402a1f563882f4d355cfb42d50",
+    "status": "passed",
+    "named_rust_executions": 241,
+    "physical_recovery_scenarios": 1,
+    "note": "Digest identifies the UTF-8 LF document blob in Git; qualification facts retain their original working-source identity."
   }
 }

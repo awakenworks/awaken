@@ -17,6 +17,8 @@ import uuid
 from native_services import NatsService, sha256
 from _native_postgres import PostgresService
 from _native_s3 import MinioService
+from _native_recovery_postgres import ArchivePrimary
+from _native_recovery_drill import run_recovery
 
 ROOT=Path(__file__).resolve().parents[2]
 
@@ -29,6 +31,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--minio-bin",type=Path,help="native Windows MinIO executable")
     p.add_argument("--mc-bin",type=Path,help="native Windows MinIO admin client executable")
     p.add_argument("--output",type=Path,required=True)
+    p.add_argument("--recovery",action="store_true",help="require physical target-LSN recovery through native S3 on this same PostgreSQL fixture")
     p.add_argument("--timeout",type=int,default=7200)
     p.add_argument("--owned-worker",action="store_true",help=argparse.SUPPRESS)
     return p
@@ -135,13 +138,20 @@ def worker(args: argparse.Namespace) -> int:
     (root/"owner.json").write_text(json.dumps({"owner":owner,"evidence":str(out)}),encoding="utf-8")
     record.update(fixture_root=str(root),fixture_data_retained=True)
     service=None
+    recovery_objects=None
     code=0
     try:
         if args.service=="nats":
             service=NatsService(args.nats_bin,root/"nats",out,owner)
             plan=[("nats-domain-tests","tests.log",["scripts/ci/nats_tests.sh"])]
         elif args.service=="postgres":
-            service=PostgresService(args.postgres_bin,root/"postgres",out,owner)
+            if args.recovery:
+                archive=root/"wal";archive.mkdir()
+                service=ArchivePrimary(args.postgres_bin,root/"postgres",out,owner,archive)
+                recovery_objects=MinioService(args.minio_bin,args.mc_bin,root/"recovery-objects",out,owner,
+                    ROOT/"scripts/ci/fixtures/minio-file-store-policy.json")
+            else:
+                service=PostgresService(args.postgres_bin,root/"postgres",out,owner)
             plan=[("postgres-backend-parity","backend-parity.log",["scripts/ci/pg_tests.sh","--backend-parity"]),
                   ("postgres-work-store","work-store.log",["scripts/ci/pg_tests.sh","--work-store"]),
                   ("postgres-http","http.log",["scripts/ci/pg_tests.sh","--http"]),
@@ -154,7 +164,11 @@ def worker(args: argparse.Namespace) -> int:
         else:
             raise ValueError("unsupported native service")
         record["fixture"]=service.start()
+        record["recovery_required"]=args.recovery
         save()
+        if recovery_objects is not None:
+            record["recovery_object_fixture"]=recovery_objects.start()
+            save()
         environment=dict(os.environ)
         for name in list(environment):
             if name.upper().startswith(("AWAKEN_TEST_", "AWS_", "MINIO_", "MC_HOST_")):
@@ -187,6 +201,8 @@ def worker(args: argparse.Namespace) -> int:
             record["credential_rotation_applied"]=service.rotated
         reconcile={"nats":reconcile_nats,"postgres":reconcile_postgres,"s3":reconcile_s3}[args.service]
         record["execution"]=reconcile("\n".join(logs),digest)
+        if recovery_objects is not None:
+            record["recovery"]=run_recovery(service,recovery_objects,root/"physical-recovery",out)
         if working_subject()[0]!=digest:
             raise RuntimeError("source changed during native service verification")
         record["source_unchanged"]=True
@@ -194,6 +210,11 @@ def worker(args: argparse.Namespace) -> int:
         code=code or 1
         record["error"]=str(error)
     finally:
+        try:
+            if recovery_objects is not None: record["recovery_object_cleanup"]=recovery_objects.close()
+        except Exception as error:
+            code=code or 1
+            record["recovery_object_cleanup_error"]=str(error)
         try:
             if service is not None: record["cleanup"]=service.close()
         except Exception as error:
@@ -211,6 +232,8 @@ def main(argv: list[str]) -> int:
     if args.service=="nats" and args.nats_bin is None: p.error("nats requires --nats-bin")
     if args.service=="postgres" and args.postgres_bin is None: p.error("postgres requires --postgres-bin")
     if args.service=="s3" and (args.minio_bin is None or args.mc_bin is None): p.error("s3 requires --minio-bin and --mc-bin")
+    if args.recovery and (args.service!="postgres" or args.minio_bin is None or args.mc_bin is None):
+        p.error("--recovery requires postgres and both --minio-bin and --mc-bin")
     if os.name!="nt":
         raise SystemExit("native service validation requires Windows; no container fallback")
     if args.timeout<=0:
@@ -225,7 +248,12 @@ def main(argv: list[str]) -> int:
         str(Path(__file__).resolve()),*argv,"--owned-worker"])
     if result==0:
         report=json.loads((args.output/"result.json").read_text(encoding="utf-8"))
-        if report.get("status")!="passed" or not report.get("cleanup",{}).get("stopped"):
+        if report.get("status")!="passed" or report.get("cleanup",{}).get("stopped") is not True:
+            return 1
+        if args.recovery and (report.get("recovery_required") is not True
+                or report.get("recovery",{}).get("status")!="passed"
+                or report.get("recovery",{}).get("cleanup",{}).get("stopped") is not True
+                or report.get("recovery_object_cleanup",{}).get("stopped") is not True):
             return 1
     return result
 
