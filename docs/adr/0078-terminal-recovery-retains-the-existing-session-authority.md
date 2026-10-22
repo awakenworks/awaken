@@ -1143,3 +1143,21 @@ this inventory grants no retry, publication, execution or cleanup permission.
 The original Session preparation and disposal owners remain unchanged; no new
 ledger, queue, scheduler or cleanup receipt is introduced. This projection alone
 does not qualify business continuation or automatic-development acceptance.
+
+## Amendment 2026-10-22: Ready terminal sources do not reopen control
+
+A published original Sandbox may still be physically Ready after its Session
+becomes terminal. Terminal preparation must use the existing TerminalCleanup
+adoption purpose for that source, just as it does for a Terminal source. The
+Container provider retains the exact recorded control incarnation and closes
+its existing publication slot; it does not bind a live control channel or
+transfer the Pod's runtime owner. This prevents an upgraded Worker's current
+control-forwarder image from blocking cleanup of the original pinned Pod.
+
+The original handle, frozen specification, provider observation, participants,
+current terminal fence and subsequent disposal authorization remain required.
+Ready still permits the existing source harvesting before durable preparation;
+preparation itself is neither physical disposal nor a cleanup receipt. Missing
+handles with live Control sources remain refused. Ordinary recovery continues
+to require its exact live control binding. No new role, state, protocol or
+recovery authority is introduced.

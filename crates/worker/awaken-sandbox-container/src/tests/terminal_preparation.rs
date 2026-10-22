@@ -88,15 +88,19 @@ async fn retained_original_observation_never_grants_adoption_or_terminal_prepara
 #[tokio::test]
 async fn terminal_control_reconstruction_does_not_require_a_live_binding() {
     // Control reconstruction table TC1: exact frozen spec/handle/fence plus a
-    // Terminal or Disposing observation -> preserve the recorded control
+    // Ready, Terminal or Disposing observation -> preserve the recorded control
     // incarnation for exact physical cleanup, with zero live binding calls.
-    // TC2 Ready still needs a real binding; a missing binding rejects. TC3
+    // TC2 ordinary Ready adoption still needs a real binding; absence rejects. TC3
     // ordinary adoption of Terminal remains refused. This provider fixture
     // asserts routing/identity/absence of live control, not a real Pod receipt.
     // TC4: terminal wrapper's existing publication slot is absorbing-closed;
     // an attempted publication must fail before any channel opens. Ordinary
     // Ready adoption still requires its real binding (TC2), never this closure.
-    for disposing in [false, true] {
+    // TC5 Ready terminal preparation has the same closed publication slot and
+    // zero live binding as Terminal. A new Worker's control artifact is not
+    // authority to rebind the retained original during cleanup.
+    for phase in ["ready", "terminal", "disposing"] {
+        let disposing = phase == "disposing";
         let runtime = Arc::new(
             FakeRuntime::default()
                 .with_sandbox_control()
@@ -136,7 +140,9 @@ async fn terminal_control_reconstruction_does_not_require_a_live_binding() {
             state.control_binding_missing = true;
             state.control_binding_calls.clear();
         }
-        runtime.set_observation(if disposing {
+        runtime.set_observation(if phase == "ready" {
+            pc::SandboxObservation::Ready
+        } else if disposing {
             pc::SandboxObservation::Disposing {
                 physical_incarnation: incarnation,
             }
@@ -156,8 +162,9 @@ async fn terminal_control_reconstruction_does_not_require_a_live_binding() {
             )
             .await
             .is_err(),
-            "TC3 ordinary execution is refused"
+            "TC2/TC3 ordinary execution requires live binding or is refused"
         );
+        runtime.st.lock().unwrap().control_binding_calls.clear();
         let cleanup = SandboxProvider::prepare_terminal_for_effect(
             &provider,
             &desired,
@@ -199,17 +206,17 @@ async fn terminal_control_reconstruction_does_not_require_a_live_binding() {
         );
         runtime.set_observation(pc::SandboxObservation::Ready);
         assert!(
-            SandboxProvider::prepare_terminal_for_effect(
+            SandboxProvider::adopt_for_effect(
                 &provider,
-                &desired,
-                Some(&handle),
-                None,
-                &fence,
-                &authority,
+                SandboxAdoption::new(&desired, &handle),
+                pc::SandboxEffect::Fenced {
+                    fence: &fence,
+                    authority: &authority
+                },
             )
             .await
             .is_err(),
-            "TC2 Ready cannot fake a missing live binding"
+            "TC2 ordinary Ready adoption cannot fake a missing live binding"
         );
     }
 }
