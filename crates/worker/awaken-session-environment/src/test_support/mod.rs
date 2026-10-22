@@ -23,6 +23,7 @@ use tokio::io::AsyncReadExt;
 
 #[derive(Default)]
 pub struct FakeContainerProvider {
+    pub observation_calls: std::sync::atomic::AtomicUsize,
     /// One typed observation override; None retains the original unavailable
     /// read. Filesystem test bytes no longer double as provider control state.
     pub observation: std::sync::Mutex<Option<Result<pc::SandboxObservation, pc::SandboxError>>>,
@@ -289,6 +290,7 @@ impl awaken_provisioning_contract::SandboxProvider for FakeContainerProvider {
         adoption: awaken_provisioning_contract::SandboxAdoption<'_>,
         basis: pc::SandboxObservationBasis<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        self.observation_calls.fetch_add(1, Ordering::SeqCst);
         if let pc::SandboxObservationBasis::Effect { effect_fence, .. } = basis {
             self.observations
                 .lock()

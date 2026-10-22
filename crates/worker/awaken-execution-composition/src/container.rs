@@ -71,6 +71,13 @@ struct BuiltContainerEnvironment {
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 const RESIDENT_HAND_PORT: u16 = 7777;
 
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContainerAssembly {
+    Execution,
+    Observation,
+}
+
 #[cfg(feature = "k8s")]
 fn k8s_sandbox_control_forwarder(
     image: Option<&str>,
@@ -141,6 +148,7 @@ async fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     policy: &ContainerTierPolicy,
     package_provisioner: Option<Arc<dyn awaken_sandbox_container::PackageImageProvisioner>>,
     clock: Arc<dyn awaken_time::WallClock>,
+    assembly: ContainerAssembly,
 ) -> Result<BuiltContainerEnvironment, String> {
     let leased = runtime.capacity_lease_domain().is_some();
     let mut provider =
@@ -168,6 +176,12 @@ async fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     }
     if policy.worker_mcp_relay_substitution {
         provider = provider.with_worker_mcp_relay_substitution();
+    }
+    if assembly == ContainerAssembly::Observation {
+        return Ok(BuiltContainerEnvironment {
+            provider: Arc::new(provider),
+            capacity: None,
+        });
     }
     // Every advertised capability is proven before the Worker derives its
     // manifest; an unproven one is withheld (ADR-0092 decision 5).
@@ -213,15 +227,18 @@ fn docker_runtime(
 fn docker_runtime_for_realization(
     realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
     settings: &awaken_session_executor::SandboxSettings,
+    assembly: ContainerAssembly,
 ) -> Result<awaken_sandbox_container::docker::DockerRuntime, String> {
-    configure_docker_runtime(
-        awaken_sandbox_container::docker::DockerRuntime::connect_local_for_realization(
-            realization_namespace,
-            8080,
-        )
-        .map_err(|error| format!("docker runtime: {error}"))?,
-        settings,
+    let runtime = awaken_sandbox_container::docker::DockerRuntime::connect_local_for_realization(
+        realization_namespace,
+        8080,
     )
+    .map_err(|error| format!("docker runtime: {error}"))?;
+    if assembly == ContainerAssembly::Observation {
+        Ok(runtime)
+    } else {
+        configure_docker_runtime(runtime, settings)
+    }
 }
 
 #[cfg(feature = "podman")]
@@ -261,15 +278,67 @@ fn podman_runtime(
 fn podman_runtime_for_realization(
     realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
     settings: &awaken_session_executor::SandboxSettings,
+    assembly: ContainerAssembly,
 ) -> Result<awaken_sandbox_container::podman::PodmanRuntime, String> {
-    configure_podman_runtime(
-        awaken_sandbox_container::podman::PodmanRuntime::with_bin_for_realization(
-            realization_namespace,
-            8080,
-            settings.podman_bin.clone(),
-        ),
-        settings,
+    let runtime = awaken_sandbox_container::podman::PodmanRuntime::with_bin_for_realization(
+        realization_namespace,
+        8080,
+        settings.podman_bin.clone(),
+    );
+    if assembly == ContainerAssembly::Observation {
+        Ok(runtime)
+    } else {
+        configure_podman_runtime(runtime, settings)
+    }
+}
+
+#[cfg(feature = "k8s")]
+async fn k8s_runtime_for_realization(
+    realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
+    image: Option<&str>,
+    settings: &awaken_session_executor::SandboxSettings,
+    policy: &ContainerTierPolicy,
+    clock: Arc<dyn awaken_time::WallClock>,
+    assembly: ContainerAssembly,
+) -> Result<awaken_sandbox_kubernetes::K8sRuntime, String> {
+    let namespace = settings.k8s_namespace.clone();
+    // Exec-attached Session environments do not publish an ACP port. Keep the
+    // constructor's legacy address inert until that adapter parameter is removed.
+    let inert = "127.0.0.1:1".parse().expect("literal socket address");
+    let mut runtime = awaken_sandbox_kubernetes::K8sRuntime::connect_for_realization_with_repository_gateway_trust(
+        namespace,
+        realization_namespace,
+        inert,
+        policy.repository_gateway_trust.clone(),
     )
+    .await
+    .map_err(|error| format!("k8s runtime: {error}"))?
+    .with_image_pull_secrets(settings.k8s_image_pull_secrets.clone())
+    .with_clock(clock.clone())
+    .with_unschedulable_wait(std::time::Duration::from_secs(
+        settings.k8s_unschedulable_wait_secs,
+    ));
+    if let Some(policy) = settings.k8s_image_prewarm.clone()
+        && assembly == ContainerAssembly::Execution
+    {
+        runtime = runtime
+            .with_image_prewarm(policy)
+            .map_err(|error| error.to_string())?;
+    }
+    runtime =
+        runtime.with_sandbox_control_forwarder(k8s_sandbox_control_forwarder(image, settings)?);
+    if let Some(continuation) = settings.k8s_continuation_volume.clone() {
+        runtime = runtime.with_continuation_volume(continuation);
+    }
+    if settings.container_hand_residency == ContainerHandResidency::Resident {
+        runtime = runtime.with_pod_channel_port(RESIDENT_HAND_PORT);
+    }
+    if let Some(transport) = &policy.k8s_create_transport {
+        runtime = runtime
+            .with_create_transport(transport.clone())
+            .map_err(|error| format!("k8s Create transport: {error}"))?;
+    }
+    Ok(runtime)
 }
 
 #[cfg(feature = "k8s")]
@@ -367,7 +436,67 @@ pub async fn build_container_environment_for_realization(
     policy: &ContainerTierPolicy,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<ContainerEnvironmentComponents, String> {
-    if let Some(policy) = &settings.k8s_image_prewarm {
+    build_container_environment(
+        realization_namespace,
+        tier,
+        image,
+        settings,
+        policy,
+        clock,
+        ContainerAssembly::Execution,
+    )
+    .await
+}
+
+/// The same backend and layout configuration without execution startup effects.
+pub(crate) async fn build_container_environment_for_observation(
+    realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
+    tier: SandboxTier,
+    image: Option<&str>,
+    settings: &awaken_session_executor::SandboxSettings,
+    policy: &ContainerTierPolicy,
+    clock: Arc<dyn awaken_time::WallClock>,
+) -> Result<ContainerEnvironmentComponents, String> {
+    #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+    {
+        build_container_environment(
+            realization_namespace,
+            tier,
+            image,
+            settings,
+            policy,
+            clock,
+            ContainerAssembly::Observation,
+        )
+        .await
+    }
+    #[cfg(not(any(feature = "docker", feature = "podman", feature = "k8s")))]
+    {
+        build_container_environment_for_realization(
+            realization_namespace,
+            tier,
+            image,
+            settings,
+            policy,
+            clock,
+        )
+        .await
+    }
+}
+
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+async fn build_container_environment(
+    realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
+    tier: SandboxTier,
+    image: Option<&str>,
+    settings: &awaken_session_executor::SandboxSettings,
+    policy: &ContainerTierPolicy,
+    clock: Arc<dyn awaken_time::WallClock>,
+    assembly: ContainerAssembly,
+) -> Result<ContainerEnvironmentComponents, String> {
+    if let Some(policy) = &settings.k8s_image_prewarm
+        && assembly == ContainerAssembly::Execution
+    {
         policy.validate()?;
         if tier != SandboxTier::K8s {
             return Err("k8s_image_prewarm requires the Kubernetes backend".into());
@@ -384,14 +513,20 @@ pub async fn build_container_environment_for_realization(
             let runtime = Arc::new(docker_runtime_for_realization(
                 realization_namespace.clone(),
                 settings,
+                assembly,
             )?);
             finish(
                 runtime.clone(),
                 image,
                 settings,
                 policy,
-                Some(runtime),
+                if assembly == ContainerAssembly::Execution {
+                    Some(runtime)
+                } else {
+                    None
+                },
                 clock,
+                assembly,
             )
             .await?
         }
@@ -400,58 +535,51 @@ pub async fn build_container_environment_for_realization(
             let runtime = Arc::new(podman_runtime_for_realization(
                 realization_namespace.clone(),
                 settings,
+                assembly,
             )?);
             finish(
                 runtime.clone(),
                 image,
                 settings,
                 policy,
-                Some(runtime),
+                if assembly == ContainerAssembly::Execution {
+                    Some(runtime)
+                } else {
+                    None
+                },
                 clock,
+                assembly,
             )
             .await?
         }
         #[cfg(feature = "k8s")]
         SandboxTier::K8s => {
-            let namespace = settings.k8s_namespace.clone();
-            // Exec-attached Session environments do not publish an ACP port. Keep the
-            // constructor's legacy address inert until that adapter parameter is removed.
-            let inert = "127.0.0.1:1".parse().expect("literal socket address");
-            let mut runtime = awaken_sandbox_kubernetes::K8sRuntime::connect_for_realization_with_repository_gateway_trust(
-                namespace,
-                realization_namespace,
-                inert,
-                policy.repository_gateway_trust.clone(),
+            let runtime = Arc::new(
+                k8s_runtime_for_realization(
+                    realization_namespace,
+                    image,
+                    settings,
+                    policy,
+                    clock.clone(),
+                    assembly,
+                )
+                .await?,
+            );
+            let package_provisioner = if assembly == ContainerAssembly::Execution {
+                k8s_package_provisioner(settings, policy.k8s_create_transport.clone()).await?
+            } else {
+                None
+            };
+            finish(
+                runtime,
+                image,
+                settings,
+                policy,
+                package_provisioner,
+                clock,
+                assembly,
             )
-            .await
-            .map_err(|error| format!("k8s runtime: {error}"))?
-            .with_image_pull_secrets(settings.k8s_image_pull_secrets.clone())
-            .with_clock(clock.clone())
-            .with_unschedulable_wait(std::time::Duration::from_secs(
-                settings.k8s_unschedulable_wait_secs,
-            ));
-            if let Some(policy) = settings.k8s_image_prewarm.clone() {
-                runtime = runtime
-                    .with_image_prewarm(policy)
-                    .map_err(|error| error.to_string())?;
-            }
-            runtime = runtime
-                .with_sandbox_control_forwarder(k8s_sandbox_control_forwarder(image, settings)?);
-            if let Some(continuation) = settings.k8s_continuation_volume.clone() {
-                runtime = runtime.with_continuation_volume(continuation);
-            }
-            if settings.container_hand_residency == ContainerHandResidency::Resident {
-                runtime = runtime.with_pod_channel_port(RESIDENT_HAND_PORT);
-            }
-            if let Some(transport) = &policy.k8s_create_transport {
-                runtime = runtime
-                    .with_create_transport(transport.clone())
-                    .map_err(|error| format!("k8s Create transport: {error}"))?;
-            }
-            let runtime = Arc::new(runtime);
-            let package_provisioner =
-                k8s_package_provisioner(settings, policy.k8s_create_transport.clone()).await?;
-            finish(runtime, image, settings, policy, package_provisioner, clock).await?
+            .await?
         }
         SandboxTier::Local | SandboxTier::Namespace => {
             return Err("local/namespace tiers do not use a container provider".into());
@@ -469,11 +597,12 @@ pub async fn build_container_environment_for_realization(
             return Err("AWAKEN_SANDBOX_TIER=k8s needs the `container-k8s` feature".into());
         }
     };
-    let cache_volume_initializer = matches!(tier, SandboxTier::K8s).then(|| {
-        Arc::new(awaken_session_executor::SandboxCacheVolumeInitializer::new(
-            built.provider.clone(),
-        )) as Arc<dyn awaken_session_executor::CacheVolumeInitializer>
-    });
+    let cache_volume_initializer =
+        (assembly == ContainerAssembly::Execution && tier == SandboxTier::K8s).then(|| {
+            Arc::new(awaken_session_executor::SandboxCacheVolumeInitializer::new(
+                built.provider.clone(),
+            )) as Arc<dyn awaken_session_executor::CacheVolumeInitializer>
+        });
     Ok(ContainerEnvironmentComponents {
         provider: built.provider,
         capacity: built.capacity,
@@ -592,34 +721,93 @@ mod tests {
 
     #[tokio::test]
     async fn provider_startup_requires_runtime_evidence() {
-        // S1 no image -> configuration refusal before the runtime probe;
-        // S2 image + unavailable engine -> startup refusal, never a provider.
+        // S1 no image -> configuration refusal in either assembly;
+        // S2 image + unavailable engine + Execution -> startup refusal.
+        // S3 the same engine + Observation -> metadata only, no probe or warm
+        // capacity despite a positive configured target. This is a read role,
+        // never execution capability evidence.
         // An absolute, absent executable makes both rows deterministic on
         // every OS without consuming a host Podman installation or daemon.
         let temporary = tempfile::tempdir().unwrap();
         let missing = temporary.path().join("podman-not-installed.exe");
         assert!(!missing.exists());
-        let settings = awaken_session_executor::SandboxSettings::default();
-        for (image, expected) in [
-            (None, "AWAKEN_CONTAINER_IMAGE"),
-            (Some("busybox"), "container backend start-up evidence"),
-        ] {
-            let result = finish(
-                Arc::new(awaken_sandbox_container::podman::PodmanRuntime::with_bin(
-                    8080,
-                    missing.to_string_lossy().into_owned(),
-                )),
-                image,
-                &settings,
-                &ContainerTierPolicy::default(),
-                None,
-                awaken_time::system_clock(),
-            )
-            .await;
-            let error = result.err().expect("S1/S2 must not publish a provider");
-            assert!(error.contains(expected), "S1/S2: {error}");
+        let settings = awaken_session_executor::SandboxSettings {
+            warm_pool_size: 2,
+            ..Default::default()
+        };
+        for assembly in [ContainerAssembly::Execution, ContainerAssembly::Observation] {
+            for image in [None, Some("busybox")] {
+                let result = finish(
+                    Arc::new(awaken_sandbox_container::podman::PodmanRuntime::with_bin(
+                        8080,
+                        missing.to_string_lossy().into_owned(),
+                    )),
+                    image,
+                    &settings,
+                    &ContainerTierPolicy::default(),
+                    None,
+                    awaken_time::system_clock(),
+                    assembly,
+                )
+                .await;
+                if image.is_some() && assembly == ContainerAssembly::Observation {
+                    assert!(
+                        result
+                            .expect("S3 metadata needs no engine probe")
+                            .capacity
+                            .is_none()
+                    );
+                } else {
+                    let expected = if image.is_none() {
+                        "AWAKEN_CONTAINER_IMAGE"
+                    } else {
+                        "container backend start-up evidence"
+                    };
+                    let error = result.err().expect("S1/S2 must not publish a provider");
+                    assert!(error.contains(expected), "S1/S2: {error}");
+                }
+            }
         }
         temporary.close().unwrap();
+    }
+
+    #[test]
+    fn observation_runtime_does_not_read_package_write_credentials() {
+        // RC1 cause/effect table: observation/execution assembly x missing
+        // registry credential file and engine. Observation construction needs
+        // neither write credential nor engine probe; execution retains its
+        // exact configuration refusal before startup. No credential bytes or
+        // daemon are supplied by this fixture.
+        let temporary = tempfile::tempdir().unwrap();
+        let settings = awaken_session_executor::SandboxSettings {
+            podman_bin: temporary
+                .path()
+                .join("missing-podman")
+                .to_string_lossy()
+                .into_owned(),
+            package_image_registry: Some("registry.invalid/packages".into()),
+            package_registry_auth_file: Some(temporary.path().join("missing-registry-auth")),
+            ..Default::default()
+        };
+        let namespace =
+            awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
+                "observation-credential-independence",
+            ])
+            .unwrap();
+        assert!(
+            podman_runtime_for_realization(
+                namespace.clone(),
+                &settings,
+                ContainerAssembly::Observation,
+            )
+            .is_ok(),
+            "RC1 observation has no registry write dependency"
+        );
+        let error =
+            podman_runtime_for_realization(namespace, &settings, ContainerAssembly::Execution)
+                .err()
+                .expect("RC1 execution still validates configured write credentials");
+        assert!(error.contains("registry authentication"), "{error}");
     }
 
     /// L7 (warm-capacity lease table in `awaken_sandbox_container::pool::lease`):

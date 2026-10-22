@@ -5,6 +5,46 @@ It delegates the existing role catalog to the
 [remote Worker component catalog](remote-worker-protocol.md#10-remote-worker-component-catalog);
 it adds no service, queue, durable cleanup state or permission authority.
 
+## Amendment 2026-10-22: install observation in the registered-Worker composition
+
+The split Coordinator still owns no local claim pool or Hand. Its complete
+Session-owner retirement read nevertheless needs the same physical source
+observer the selected container tier supplies. Leaving the construction-time
+uninstalled provider in that path makes `effective_spec` fail before any
+Kubernetes observation, even when the original source and its guard are intact.
+Tests that explicitly install an execution provider do not qualify this
+process assembly.
+
+Reuse the existing Deployment, container backend builder, effective-spec
+projection, observation roles and immutable-incarnation classifier. The
+Coordinator installs a read-only adapter into the existing realizer/adoption
+role handles: metadata and retirement observation delegate to those same
+owners, while creation, adoption, rebind and closed-evidence validation refuse
+before backend access. Terminal, capacity and installation roles retain their
+uninstalled behavior. This does not mark an execution provider installed.
+There is no new provider protocol, observer service, state or receipt.
+
+The canonical container factory distinguishes execution from observation
+assembly. Observation preserves the same backend and layout configuration,
+but never performs execution probes, runs package building, leases/prepares warm
+capacity, constructs a Hand, or installs cache-volume mutation services.
+Execution startup keeps all its existing evidence requirements unchanged.
+Kubernetes construction retains the existing namespace NetworkPolicy read;
+the composing infrastructure must grant that read without policy mutation.
+
+The dynamic order is registered-Worker placement -> read-only tier assembly ->
+existing Session projection -> effective spec -> exact provider observation ->
+the existing retirement predicate. Errors remain errors; the read changes no
+Session, Worker, Pod or PVC. Actual exit, original Create closure, same-root CAS
+and cleanup still require their existing independent authorities.
+
+Regression comments own the decision table. They must exercise the actual
+Coordinator assembly from an uninstalled provider, rather than preinstalling a
+test provider; prove read availability with no local execution capability;
+refuse every mutation before backend I/O; and retain the existing exact-source,
+foreign/missing participant and provider-unavailability cases. Source checks,
+live observer qualification and original-mission acceptance remain separate.
+
 ## Amendment 2026-10-21: retain an active Resident Session across Actor replacement
 
 Worker retirement observes Actor lifetime separately from Session and Run

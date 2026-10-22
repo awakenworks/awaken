@@ -124,6 +124,49 @@ pub fn install_container_provider(
     )
 }
 
+fn direct_host_realization_namespace(
+    host: &SessionExecutorBuilder,
+) -> Result<awaken_sandbox_container::ContainerRealizationNamespace, String> {
+    awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
+        "direct-host-installation",
+        host.local_workspace(),
+    ])
+    .map_err(|error| format!("configure Session container identity: {error}"))
+}
+
+/// Install only retained-source observation for registered-Worker placement.
+/// The same container factory supplies the backend/layout; no Hand or physical
+/// execution, capacity or cache-volume role is installed on the Coordinator.
+pub async fn with_session_environment_observation_from_deployment(
+    host: SessionExecutorBuilder,
+    deployment: &DeploymentConfig,
+) -> Result<SessionExecutorBuilder, String> {
+    if !deployment.sandbox_tier.is_container() {
+        return Ok(host);
+    }
+    if host.session_environment_provider_installed() {
+        return Err(
+            "registered-Worker observation cannot replace a Session execution provider".into(),
+        );
+    }
+    let components = container::build_container_environment_for_observation(
+        direct_host_realization_namespace(&host)?,
+        deployment.sandbox_tier,
+        deployment.container_image.as_deref(),
+        &deployment.sandbox,
+        &ContainerTierPolicy::default(),
+        host.clock(),
+    )
+    .await?;
+    host.with_session_environment_observation(Arc::new(
+        awaken_session_environment::ContainerEnvironmentObservation::new(
+            components.provider,
+            components.extra_mounts,
+        ),
+    ))
+    .map_err(str::to_owned)
+}
+
 /// Install the container-tier Session provider a container deployment names.
 ///
 /// A non-container tier, or a Host whose startup already installed its Session
@@ -142,12 +185,7 @@ pub async fn install_container_environment(
     deployment.validate_local_execution()?;
     let hand_factory =
         hand_factory.ok_or("container Session environments require a hand executor factory")?;
-    let realization_namespace =
-        awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
-            "direct-host-installation",
-            host.local_workspace(),
-        ])
-        .map_err(|error| format!("configure Session container identity: {error}"))?;
+    let realization_namespace = direct_host_realization_namespace(&host)?;
     let components = build_container_environment_for_realization(
         realization_namespace,
         deployment.sandbox_tier,

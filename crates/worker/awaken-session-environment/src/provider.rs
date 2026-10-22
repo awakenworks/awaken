@@ -515,7 +515,7 @@ impl SandboxEnvironmentProvider {
     /// The Host has validated the retained lifecycle owner; recheck exact
     /// handle equality before borrowing its unpersisted create-attempt proof.
     /// A matching serialized handle alone cannot mint this proof after restart.
-    fn container_observation_adoption<'a>(
+    pub(crate) fn container_observation_adoption<'a>(
         spec: &'a pc::SandboxSpec,
         handle: &'a pc::SandboxHandle,
         retained: Option<&'a super::SessionEnvironment>,
@@ -585,14 +585,7 @@ impl SandboxEnvironmentProvider {
                 .await
             }
             Self::Container { provider, .. } => {
-                let mut adoption = Self::container_observation_adoption(
-                    spec,
-                    handle,
-                    retained,
-                    purpose == pc::SandboxObservationPurpose::Recovery,
-                )?;
-                adoption.observation_purpose = purpose;
-                provider.observe(adoption, basis).await
+                observe_container(provider.as_ref(), spec, handle, retained, basis, purpose).await
             }
         }
     }
@@ -1206,7 +1199,7 @@ fn own_environment(
         })
 }
 
-fn container_spec(
+pub(crate) fn container_spec(
     spec: &pc::SandboxSpec,
     extra_mounts: &[pc::MountRequirement],
 ) -> Result<pc::SandboxSpec, pc::SandboxError> {
@@ -1219,6 +1212,25 @@ fn container_spec(
         }
     }
     Ok(spec)
+}
+
+/// One container observation projection for executing and read-only processes.
+pub(crate) async fn observe_container(
+    provider: &dyn pc::SandboxProvider<Environment = dyn pc::SessionSandbox>,
+    spec: &pc::SandboxSpec,
+    handle: &pc::SandboxHandle,
+    retained: Option<&super::SessionEnvironment>,
+    basis: pc::SandboxObservationBasis<'_>,
+    purpose: pc::SandboxObservationPurpose,
+) -> Result<pc::SandboxObservation, pc::SandboxError> {
+    let mut adoption = SandboxEnvironmentProvider::container_observation_adoption(
+        spec,
+        handle,
+        retained,
+        purpose == pc::SandboxObservationPurpose::Recovery,
+    )?;
+    adoption.observation_purpose = purpose;
+    provider.observe(adoption, basis).await
 }
 
 #[cfg(test)]
