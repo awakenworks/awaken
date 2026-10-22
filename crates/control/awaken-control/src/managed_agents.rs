@@ -603,6 +603,11 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .await
             .map_err(ManagedAgentError::Storage)?
             .ok_or(ManagedAgentError::NotFound)?;
+        // A Managed command must be representable before any lifecycle effect.
+        // The config plane can author richer model/tool selections than this
+        // wire carries; refusing their projection after CAS/withdraw would
+        // report 400 even though the Agent was already archived.
+        project(current.clone(), self.clock.as_ref())?;
         if current.config.lifecycle() == AgentLifecycle::Archived {
             self.plane
                 .withdraw(workspace_id, id, current.revision)
