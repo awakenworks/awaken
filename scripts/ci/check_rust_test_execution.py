@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from collections import Counter
 import json
 import contextlib
@@ -95,7 +96,92 @@ def _write_receipt(path: Path, document: dict) -> None:
     path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
 
-def run_required(arguments: list[str], inventory: Path, results: Path, receipt: Path) -> int:
+def required_build_command(arguments: list[str]) -> list[str]:
+    """Compile the authored graph, keeping libtest-only arguments out of Cargo."""
+    commands, _ = required_commands(arguments)
+    return [*commands[0][:commands[0].index("--")], "--no-run"]
+
+
+def prepare_required(arguments: list[str], build_log: Path, receipt: Path) -> int:
+    """Bound compilation separately; a successful build never qualifies tests."""
+    from crate_test import execute_commands, native_command
+    from rust_test_plan import source_snapshot, working_subject
+
+    try:
+        command = required_build_command(arguments)
+    except ValueError as error:
+        raise argparse.ArgumentError(None, str(error)) from error
+    if build_log.parent != receipt.parent or build_log.exists() or receipt.exists():
+        raise ValueError("required build needs one fresh evidence directory")
+    digest, facts = working_subject()
+    from _required_build_context import build_context
+    context = build_context(ROOT, arguments)
+    document = {"schema_version": 1, "kind": "required-libtest-build", "full_gate": False,
+                "source_kind": "working-tree", "revision": facts["revision"].decode().strip(),
+                "source_digest": digest, "index_tree": facts["index_tree"].decode().strip(),
+                "arguments": arguments, "command": command, "compile_context": context, "build_log": str(build_log),
+                "status": "running", "rows": []}
+    _write_receipt(receipt, document)
+    def verify():
+        if source_snapshot()[0] != digest:
+            raise ValueError("Source changed before or during required build")
+        build_context(ROOT, arguments, context)
+    def run(command, **kwargs):
+        with build_log.open("w", encoding="utf-8") as output:
+            return subprocess.run(native_command(command, kwargs.get("env")), stdout=output,
+                                  stderr=subprocess.STDOUT, **kwargs)
+    def record(rows):
+        document["rows"] = rows
+        _write_receipt(receipt, document)
+    status, rows = execute_commands([command], dict(os.environ), root=ROOT, verify=verify,
+                                    record=record, run=run)
+    try:
+        unchanged = source_snapshot()[0] == digest
+        context_unchanged = True
+        try:
+            build_context(ROOT, arguments, context)
+        except ValueError:
+            context_unchanged = False
+        status = status or int(not unchanged or not context_unchanged)
+        document.update(status="built" if status == 0 else "failed", rows=rows,
+                        source_unchanged=unchanged, context_unchanged=context_unchanged, exit_code=status,
+                        build_log_sha256=hashlib.sha256(build_log.read_bytes()).hexdigest()
+                        if build_log.exists() else None)
+        _write_receipt(receipt, document)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        print("Cannot retain required build evidence: " + str(error), file=sys.stderr)
+        status = status or 1
+    return status
+
+
+def verify_preparation(path: Path, arguments: list[str], digest: str) -> dict:
+    data = path.read_bytes()
+    document = json.loads(data)
+    command = required_build_command(arguments)
+    if not isinstance(document, dict):
+        raise ValueError("Required build record must be an object")
+    rows = document.get("rows", [])
+    if (document.get("kind") != "required-libtest-build" or document.get("status") != "built"
+            or document.get("exit_code") != 0 or document.get("source_unchanged") is not True
+            or document.get("context_unchanged") is not True
+            or document.get("source_digest") != digest or document.get("arguments") != arguments
+            or document.get("command") != command or not isinstance(rows, list) or len(rows) != 1
+            or not isinstance(rows[0], dict)
+            or rows[0].get("command") != command or rows[0].get("exit_code") != 0
+            or "subject_error" in rows[0] or "record_error" in rows[0]):
+        raise ValueError("Required build does not bind this source and authored test graph")
+    from _required_build_context import build_context
+    build_context(ROOT, arguments, document.get("compile_context", {}))
+    log = Path(document["build_log"])
+    if log.parent != path.parent:
+        raise ValueError("Required build log must share its evidence directory")
+    if hashlib.sha256(log.read_bytes()).hexdigest() != document.get("build_log_sha256"):
+        raise ValueError("Required build log changed")
+    return {"path": str(path), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def run_required(arguments: list[str], inventory: Path, results: Path, receipt: Path,
+                 prepared: Path | None = None) -> int:
     """Adapt two focused commands to the existing sequence, never run a loop."""
     from crate_test import execute_commands, native_command
     from rust_test_plan import source_snapshot, working_subject
@@ -104,7 +190,8 @@ def run_required(arguments: list[str], inventory: Path, results: Path, receipt: 
         commands, required = required_commands(arguments)
     except ValueError as error:
         raise argparse.ArgumentError(None, str(error)) from error
-    if inventory.parent != results.parent or receipt.parent != results.parent or receipt.exists():
+    if (inventory.parent != results.parent or receipt.parent != results.parent or receipt.exists()
+            or (prepared is not None and prepared.parent != receipt.parent)):
         raise ValueError("required execution needs one fresh evidence directory")
     inventory.touch()
     results.touch()
@@ -112,6 +199,7 @@ def run_required(arguments: list[str], inventory: Path, results: Path, receipt: 
     index = facts["index_tree"].decode().strip()
     if source_snapshot()[0] != digest:
         raise ValueError("Source changed while binding required execution facts")
+    preparation = verify_preparation(prepared, arguments, digest) if prepared is not None else None
     (receipt.parent / "working-tree.patch").write_bytes(facts["patch"])
     document = {"schema_version": 1, "kind": "required-libtest", "full_gate": False,
                 "source_kind": "working-tree", "revision": facts["revision"].decode().strip(),
@@ -122,10 +210,14 @@ def run_required(arguments: list[str], inventory: Path, results: Path, receipt: 
                 "postgres_fixture_required": os.environ.get("AWAKEN_TEST_REQUIRE_POSTGRES") == "1",
                 "postgres_fixture_configured": "AWAKEN_TEST_DATABASE_URL" in os.environ,
                 "status": "running", "rows": [], "errors": []}
+    if preparation is not None:
+        document["preparation"] = preparation
     _write_receipt(receipt, document)
     def verify():
         if source_snapshot()[0] != digest:
             raise ValueError("Source changed before or during required execution")
+        if preparation is not None and verify_preparation(prepared, arguments, digest) != preparation:
+            raise ValueError("Required build evidence changed before or during execution")
     def run(command, **kwargs):
         log = inventory if command == commands[0] else results
         with log.open("w", encoding="utf-8") as output:
@@ -168,6 +260,11 @@ def validate_receipt(inventory: Path, results: Path, status: int, receipt: Path,
                                       status, document["required_cases"])
         document.update(observed)
         errors = observed["errors"]
+        if "preparation" in document:
+            preparation = document["preparation"]
+            prepared = Path(preparation["path"])
+            if prepared.parent != receipt.parent or verify_preparation(prepared, document["arguments"], document["source_digest"]) != preparation:
+                errors.append("Required build evidence changed")
         if source_snapshot()[0] != document["source_digest"]:
             errors.append("Source changed during required execution")
             document["source_unchanged"] = False
@@ -201,7 +298,7 @@ class ExecutionTests(unittest.TestCase):
         (fixture / ".gitignore").write_text("target/\n", encoding="utf-8")
         (fixture / "subject.txt").write_text("original source\n", encoding="utf-8")
         values = detached_git_environment()
-        for arguments in (("init", "--quiet"), ("add", "."),
+        for arguments in (("init", "--quiet"), ("config", "core.autocrlf", "false"), ("add", "."),
                           ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                            "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "fixture")):
             subprocess.run(["git", "-C", str(fixture), *arguments], env=values, check=True)
@@ -221,6 +318,13 @@ if [ "$1" = awaken-ci-deadline ]; then
   [ -z "${DEADLINE_COORDINATE:-}" ] || printf '%s\\n' "$$" > "$DEADLINE_COORDINATE"
   entry=$(command -v "cargo-$1"); exec "$entry" "$@"
 fi
+case " $* " in *" --no-run "*)
+  printf '%s\\n' "$*" >> "$CARGO_TARGET_DIR/preparation-calls"
+  sleep "${PREPARATION_DELAY:-0}"
+  [ "${MUTATE_PREPARATION:-0}" != 1 ] || printf 'changed source\\n' > subject.txt
+  exit "${PREPARATION_STATUS:-0}"
+  ;;
+esac
 ''' + body, encoding="utf-8")
         cargo.chmod(0o755)
         values = dict(detached_git_environment(), PATH=str(binary) + os.pathsep + os.environ['PATH'],
@@ -231,6 +335,260 @@ fi
             shutil.copyfile(native_fixture_launcher(), binary / "cargo.exe")
             values.update(AWAKEN_FIXTURE_PROGRAM=bash_executable(), AWAKEN_FIXTURE_SCRIPT=str(cargo))
         return values
+
+    def test_prepared_graph_refuses_compile_environment_config_and_tool_drift(self) -> None:
+        import rust_test_plan
+        from _required_build_context import build_context
+        for fault in ("CARGO_BUILD_TARGET", "RUSTUP_TOOLCHAIN", "RUSTFLAGS", "LIB", "INCLUDE", "LINK", "config", "tool"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary:
+                fixture = Path(temporary)/"repo"; fixture.mkdir(); self.runner_fixture(fixture)
+                values = self.cargo_fixture(fixture, "exit 99\n")
+                cargo_home = Path(temporary)/"cargo-home"; cargo_home.mkdir()
+                values["CARGO_HOME"] = str(cargo_home)
+                # This owned fake executable is an external compilation input,
+                # excluded from the working-source digest, like installed tools.
+                with (fixture/".gitignore").open("a") as stream: stream.write("bin/\n")
+                directory = fixture/"target/evidence"; directory.mkdir()
+                build = directory/"build.json"; arguments = ["-p", "critical", "--lib"]
+                with mock.patch.dict(os.environ, values, clear=True), mock.patch(__name__ + ".ROOT", fixture), \
+                     mock.patch.object(rust_test_plan, "ROOT", fixture):
+                    self.assertEqual(prepare_required(arguments, directory/"build.log", build), 0)
+                    original_source = rust_test_plan.source_snapshot()[0]
+                    if fault == "config": (cargo_home/"config.toml").write_text("[build]\ntarget='different'\n")
+                    elif fault == "tool":
+                        tool = fixture/"bin"/("cargo.exe" if os.name == "nt" else "cargo")
+                        with tool.open("ab") as stream: stream.write(b"\nchanged-tool-identity\n")
+                    else: os.environ[fault] = "different-compilation-input"
+                    self.assertEqual(rust_test_plan.source_snapshot()[0], original_source)
+                    with self.assertRaisesRegex(ValueError, "changed"):
+                        verify_preparation(build, arguments, original_source)
+                    self.assertFalse((directory/"results.json").exists())
+
+    def test_configuration_is_cargo_owned_and_external_files_are_bound(self) -> None:
+        from _required_build_context import build_context
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root/"external-inputs"
+            config.write_text('[build]\nrustc="opaque/compiler"\n[alias]\nlinker="check"\n')
+            options = (["--config", 'build.rustflags=["-C", "linker=rust-lld"]'],
+                       ['--config=build.rustflags=["-C", "linker=rust-lld"]'],
+                       ["--config", str(config)], ["--config="+str(config)])
+            for option in options:
+                with self.subTest(option=option), \
+                     mock.patch.dict(os.environ, {"CARGO_HOME": str(root/"cargo-home"), "RUSTFLAGS": "-C linker=rust-lld"}), \
+                     mock.patch("subprocess.check_output") as query:
+                    context = build_context(root, ["-p", "critical", "--lib", *option])
+                    self.assertEqual(context["kind"], "known-compilation-inputs")
+                    if str(config) in " ".join(option):
+                        self.assertIn({"path": str(config.resolve()), "sha256": hashlib.sha256(config.read_bytes()).hexdigest()}, context["files"])
+                    query.assert_not_called()
+
+    def test_changed_rustup_is_rejected_before_it_can_execute(self) -> None:
+        import rust_test_plan
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary); self.runner_fixture(fixture)
+            values = self.cargo_fixture(fixture, "exit 99\n")
+            name = "rustup.exe" if os.name == "nt" else "rustup"
+            target = fixture/"bin"/name
+            original = shutil.which("rustup")
+            self.assertIsNotNone(original); shutil.copy2(original, target); target.chmod(0o755)
+            with (fixture/".gitignore").open("a") as stream: stream.write("bin/\n")
+            directory = fixture/"target/evidence"; directory.mkdir()
+            arguments = ["-p", "critical", "--lib"]
+            with mock.patch.dict(os.environ, values, clear=True), mock.patch(__name__ + ".ROOT", fixture), \
+                 mock.patch.object(rust_test_plan, "ROOT", fixture):
+                self.assertEqual(prepare_required(arguments, directory/"build.log", directory/"build.json"), 0)
+                digest = rust_test_plan.source_snapshot()[0]
+                replacement = target.with_name("replacement-rustup")
+                replacement.write_bytes(b"a replaced resolver must never execute")
+                replacement.replace(target)
+                self.assertEqual(rust_test_plan.source_snapshot()[0], digest)
+                with self.assertRaisesRegex(ValueError, "tool identity changed"):
+                    verify_preparation(directory/"build.json", arguments, digest)
+
+    def test_prepare_initial_source_refusal_preserves_original_exit(self) -> None:
+        import rust_test_plan
+        for status in (75, 23, -15):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                argv = [__file__, "--prepare", "--build-log", str(root/"build.log"),
+                        "--receipt", str(root/"build.json"), "--", "-p", "critical", "--lib"]
+                with mock.patch.object(sys, "argv", argv), \
+                     mock.patch.object(rust_test_plan, "working_subject", side_effect=subprocess.CalledProcessError(status, ["git", "subject"])), \
+                     mock.patch("crate_test.execute_commands") as execute, contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(main(), status if status >= 0 else 128-status)
+                execute.assert_not_called(); self.assertFalse((root/"build.json").exists())
+
+    @unittest.skipUnless(os.name == "nt", "native Windows Job and Cargo boundary")
+    def test_windows_cold_build_execution_budget_and_owned_tree_cleanup(self) -> None:
+        # Windows process startup and receipt finalization need headroom under
+        # parallel CI load. Keep build > execution so a shared budget fails;
+        # timed-out rows still require 124 and both owned processes terminated.
+        import ctypes
+        from ctypes import wintypes
+        from _native_shell import bash_executable
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        kernel.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        execution_seconds = 20
+        preparation_seconds = execution_seconds + 2
+        build_seconds = preparation_seconds + 30
+        outer_seconds = build_seconds + execution_seconds + 45
+        for row, expected in (("fast", 0), ("build-timeout", 124), ("execution-timeout", 124)):
+            with self.subTest(row=row), tempfile.TemporaryDirectory() as temporary:
+                fixture = Path(temporary); self.runner_fixture(fixture)
+                tree = fixture/"owned-tree.py"
+                tree.write_text("import json,os,subprocess,sys,time\nfrom pathlib import Path\n"
+                                "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(120)'])\n"
+                                "path=Path(sys.argv[1]);pending=path.with_suffix('.pending');pending.write_text(json.dumps([os.getpid(),child.pid]));pending.replace(path)\n"
+                                "print('ready',flush=True)\ntime.sleep(120)\n")
+                body = "case \"$*\" in *--list*) echo 'critical: test'; exit 0 ;; esac\n"
+                if row == "execution-timeout":
+                    body += "exec " + shlex.quote(Path(sys.executable).as_posix()) + " " + shlex.quote(tree.as_posix()) + ' "$CARGO_TARGET_DIR/ready"\n'
+                else: body += "echo 'test critical ... ok'\necho 'test result: ok. 1 passed; 0 failed; 0 ignored;'\n"
+                values = self.cargo_fixture(fixture, body)
+                values.update(PREPARATION_DELAY=str(preparation_seconds), AWAKEN_REQUIRED_TEST_BUILD_TIMEOUT_SECONDS="3" if row == "build-timeout" else str(build_seconds),
+                              AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS=str(execution_seconds), AWAKEN_NATIVE_BASH=bash_executable())
+                entry = fixture/"invoke.sh"
+                entry.write_text("source scripts/ci/_rust_test_execution.sh\nrun_required_rust_tests -p critical --lib critical --require-case=critical\n", newline="\n")
+                process = subprocess.Popen([sys.executable, str(fixture/"scripts/ci/deadline.py"), str(outer_seconds), "--",
+                                            bash_executable(), entry.as_posix()], cwd=fixture, env=values,
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                handles = []
+                try:
+                    if row == "execution-timeout":
+                        ready = fixture/"target/ready"; until = time.monotonic()+build_seconds+execution_seconds
+                        # awaken-allow(wait): retain actual child process handles before the execution deadline kills the owned Job.
+                        while not ready.exists() and process.poll() is None and time.monotonic() < until: time.sleep(.01)
+                        self.assertTrue(ready.exists(), "owned execution did not start")
+                        for pid in json.loads(ready.read_text()):
+                            handle = kernel.OpenProcess(0x00100001, False, pid)
+                            self.assertTrue(handle, "cannot retain owned process handle"); handles.append(handle)
+                    output = process.communicate(timeout=outer_seconds+5)
+                    self.assertEqual(process.returncode, expected, output)
+                    directory = next((fixture/"target/test-timings").glob("rust-execution.*"))
+                    if row == "build-timeout":
+                        self.assertFalse((directory/"results.json").exists())
+                        self.assertNotEqual(json.loads((directory/"build.json").read_text())["status"], "built")
+                    else:
+                        self.assertEqual(json.loads((directory/"build.json").read_text())["status"], "built")
+                        result = json.loads((directory/"results.json").read_text())
+                        self.assertEqual(result["exit_code"], expected)
+                        if row == "fast":
+                            self.assertEqual(result["status"], "passed")
+                            self.assertEqual(result["selected_cases"], ["critical"])
+                            self.assertEqual(result["executed_cases"], [["critical", "ok"]])
+                            self.assertEqual(result["errors"], [])
+                    for handle in handles: self.assertEqual(kernel.WaitForSingleObject(handle, 5000), 0)
+                finally:
+                    if process.poll() is None: process.kill(); process.communicate(timeout=10)
+                    for handle in handles:
+                        if kernel.WaitForSingleObject(handle, 0) != 0: kernel.TerminateProcess(handle, 1)
+                        kernel.CloseHandle(handle)
+
+    def test_build_keeps_authored_features_without_spending_libtest_arguments(self) -> None:
+        arguments = ["-p", "critical", "--lib", "--features", "sqlite,test-support", "critical",
+                     "--require-case=critical", "--", "--ignored", "--test-threads=1"]
+        expected = ["cargo", "test", "--locked", "-p", "critical", "--lib", "--features",
+                    "sqlite,test-support", "critical", "--no-run"]
+        self.assertEqual(required_build_command(arguments), expected)
+        self.assertEqual(required_build_command(["--locked", "-p", "critical", "--lib"])
+                         .count("--locked"), 1)
+
+    def test_build_fact_never_qualifies_execution_or_another_subject(self) -> None:
+        # Decision rows: an exact successful build may prepare execution; build
+        # alone, different source/argv, or altered evidence cannot qualify it.
+        import rust_test_plan
+        for fault in (None, "source", "arguments", "record"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary:
+                fixture = Path(temporary); self.runner_fixture(fixture)
+                values = self.cargo_fixture(fixture, '''
+printf '%s\n' "$*" >> "$CARGO_TARGET_DIR/calls"
+case "$*" in *--list*) echo 'critical: test'; exit 0 ;; esac
+echo 'test critical ... ok'
+echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
+''')
+                directory = fixture / "target/evidence"; directory.mkdir()
+                build = directory / "build.json"; arguments = ["-p", "critical", "--lib"]
+                inventory, results, receipt = [directory / name for name in ("list.log", "results.log", "results.json")]
+                with mock.patch.dict(os.environ, values, clear=True), mock.patch(__name__ + ".ROOT", fixture), \
+                     mock.patch.object(rust_test_plan, "ROOT", fixture):
+                    self.assertEqual(prepare_required(arguments, directory / "build.log", build), 0)
+                    data = json.loads(build.read_text()); self.assertEqual(data["status"], "built")
+                    self.assertFalse(data["full_gate"])
+                    self.assertNotIn("executed_cases", data)
+                    self.assertFalse((fixture / "target/calls").exists())
+                    if fault == "source": (fixture / "subject.txt").write_text("different source\n")
+                    if fault == "arguments": arguments = ["-p", "another", "--lib"]
+                    if fault == "record":
+                        data["rows"][0]["exit_code"] = 23
+                        build.write_text(json.dumps(data))
+                    if fault is not None:
+                        with self.assertRaisesRegex(ValueError, "does not bind"):
+                            run_required(arguments, inventory, results, receipt, build)
+                        self.assertFalse((fixture / "target/calls").exists())
+                    else:
+                        fake = directory / "not-execution.json"; fake.write_bytes(build.read_bytes())
+                        inventory.write_text("critical: test\n")
+                        results.write_text("test critical ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n")
+                        rejected = validate_receipt(inventory, results, 0, fake)
+                        self.assertEqual(rejected["status"], "failed")
+                        self.assertEqual(run_required(arguments, inventory, results, receipt, build), 0)
+                        qualified = validate_receipt(inventory, results, 0, receipt)
+                        self.assertEqual(qualified["status"], "passed")
+                        self.assertEqual(qualified["selected_cases"], ["critical"])
+                        data["build_log_sha256"] = "0" * 64; build.write_text(json.dumps(data))
+                        self.assertEqual(validate_receipt(inventory, results, 0, receipt)["status"], "failed")
+
+    def test_build_failure_source_drift_and_writer_fault_keep_first_cause(self) -> None:
+        import rust_test_plan
+        original_writer = _write_receipt
+        for raw in (0, 23):
+            for fault in ("source", "writer"):
+                with self.subTest(raw=raw, fault=fault), tempfile.TemporaryDirectory() as temporary:
+                    fixture = Path(temporary); self.runner_fixture(fixture)
+                    values = self.cargo_fixture(fixture, "exit 99\n")
+                    values.update(PREPARATION_STATUS=str(raw), MUTATE_PREPARATION=str(int(fault == "source")))
+                    directory = fixture / "target/evidence"; directory.mkdir()
+                    def write(path, document):
+                        if fault == "writer" and document.get("status") in ("built", "failed"):
+                            raise OSError("controlled build writer fault")
+                        original_writer(path, document)
+                    with mock.patch.dict(os.environ, values, clear=True), mock.patch(__name__ + ".ROOT", fixture), \
+                         mock.patch.object(rust_test_plan, "ROOT", fixture), \
+                         mock.patch(__name__ + "._write_receipt", side_effect=write), contextlib.redirect_stderr(io.StringIO()):
+                        status = prepare_required(["-p", "critical", "--lib"], directory / "build.log", directory / "build.json")
+                    self.assertEqual(status, raw or 1)
+                    data = json.loads((directory / "build.json").read_text())
+                    self.assertNotEqual(data["status"], "built")
+                    self.assertEqual(data["rows"][0]["exit_code"], raw)
+
+    @unittest.skipIf(os.name == "nt", "POSIX real deadline fixture; Windows runs build/source/receipt rows")
+    def test_cold_build_does_not_consume_or_extend_shared_execution_deadline(self) -> None:
+        # Build3s > list/run2s: separate8s preparation succeeds. A real3s test
+        # still times out124 inside that same2s list/run deadline, never4s.
+        for slow, expected in ((False, 0), (True, 124)):
+            with self.subTest(slow=slow), tempfile.TemporaryDirectory() as temporary:
+                fixture = Path(temporary); self.runner_fixture(fixture)
+                values = self.cargo_fixture(fixture, '''
+case "$*" in *--list*) echo 'critical: test'; exit 0 ;; esac
+sleep "$TEST_DELAY"
+echo 'test critical ... ok'
+echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
+''')
+                values.update(PREPARATION_DELAY="3", TEST_DELAY="3" if slow else "0",
+                              AWAKEN_REQUIRED_TEST_BUILD_TIMEOUT_SECONDS="8", AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="2")
+                result = subprocess.run(["bash", "-c", "source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical --require-case=critical"],
+                                        cwd=fixture, env=values, capture_output=True, text=True, timeout=25)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                builds = list((fixture / "target/test-timings").glob("rust-execution.*/build.json"))
+                self.assertEqual(len(builds), 1); self.assertEqual(json.loads(builds[0].read_text())["status"], "built")
+                data = json.loads(builds[0].with_name("results.json").read_text())
+                self.assertEqual(data["status"], "failed" if slow else "passed")
+                self.assertEqual(data["exit_code"], expected)
 
     @unittest.skipIf(os.name == "nt", "POSIX admitted shell composition")
     def test_shared_budget_starts_after_queued_admission(self) -> None:
@@ -1016,14 +1374,36 @@ def main() -> int:
     parser.add_argument("--exit-code", type=int)
     parser.add_argument("--require-case", action="append", default=[])
     parser.add_argument("--run", action="store_true")
+    parser.add_argument("--prepare", action="store_true")
+    parser.add_argument("--build-log", type=Path)
+    parser.add_argument("--prepared", type=Path)
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.self_test:
-        if args.inventory or args.results or args.exit_code is not None or args.run or args.receipt or args.arguments or args.require_case:
+        if args.inventory or args.results or args.exit_code is not None or args.run or args.prepare or args.build_log or args.prepared or args.receipt or args.arguments or args.require_case:
             parser.error("--self-test cannot be combined with execution arguments")
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(ExecutionTests)
         return int(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())
+    if args.prepare:
+        if (args.run or args.inventory or args.results or args.exit_code is not None
+                or args.require_case or args.prepared or args.build_log is None or args.receipt is None):
+            parser.error("--prepare requires --build-log and --receipt, without execution arguments")
+        arguments = args.arguments[1:] if args.arguments[:1] == ["--"] else args.arguments
+        if not arguments:
+            parser.error("--prepare requires the focused Cargo test arguments after --")
+        try:
+            return prepare_required(arguments, args.build_log, args.receipt)
+        except argparse.ArgumentError as error:
+            parser.error(str(error))
+        except subprocess.CalledProcessError as error:
+            print("Cannot establish required working source (build): " + str(error), file=sys.stderr)
+            return error.returncode if error.returncode >= 0 else 128 - error.returncode
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            print("Cannot prepare required build: " + str(error), file=sys.stderr)
+            return 1
+    if args.build_log or (args.prepared and not args.run):
+        parser.error("--build-log requires --prepare; --prepared requires --run")
     if args.run:
         if args.inventory is None or args.results is None or args.receipt is None or args.exit_code is not None:
             parser.error("--run requires --inventory, --results and --receipt, without --exit-code")
@@ -1033,7 +1413,7 @@ def main() -> int:
         if not arguments:
             parser.error("--run requires the focused Cargo test arguments after --")
         try:
-            return run_required(arguments, args.inventory, args.results, args.receipt)
+            return run_required(arguments, args.inventory, args.results, args.receipt, args.prepared)
         except argparse.ArgumentError as error:
             parser.error(str(error))
         except subprocess.CalledProcessError as error:

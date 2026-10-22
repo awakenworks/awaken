@@ -278,7 +278,11 @@ run static "product release checker self-test" python3 scripts/ci/check_product_
 run static "product release contract" python3 scripts/ci/check_product_release.py
 run static "observation-collapse self-test" python3 scripts/ci/check_observation_collapse.py --self-test
 run static "observation-collapse" python3 scripts/ci/check_observation_collapse.py
-run static "reliability checker self-test" python3 scripts/ci/check_reliability.py --self-test
+# Three bounded groups retain every original decision row. Windows runs real
+# private Git/process fixtures here; one nine-fixture batch exceeded 600 seconds.
+run static "reliability checker preflight self-test" python3 scripts/ci/check_reliability.py --self-test preflight
+run static "reliability output directories self-test" python3 scripts/ci/check_reliability.py --self-test directories
+run static "reliability tool failures self-test" python3 scripts/ci/check_reliability.py --self-test faults
 run static "reliability evidence contract" python3 scripts/ci/check_reliability.py
 run static "Cargo target isolation self-test" scripts/ci/_cargo_target.sh --self-test
 run static "public API gate tests" python3 scripts/ci/test_public_api.py
