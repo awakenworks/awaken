@@ -13,9 +13,10 @@
 # gate passes ``--require-docker`` so the same condition fails instead of
 # producing a false green.
 #
-# Usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--self-test]
+# Usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--self-test]
 # --backend-parity uses a caller-owned live URL and runs only the named matrix.
 # --work-store uses a caller-owned live URL and requires the complete Work suite.
+# --http requires the four live transport targets, including native failover.
 set -uo pipefail
 # Keep phase diagnostics visible even when a command suppresses probe output.
 # This descriptor belongs to this runner; never log command arguments/secrets.
@@ -149,6 +150,16 @@ work_store_evidence() {
     --require-case=restart::postgres_identity_high_watermark_survives_a_native_process_restart \
     -- --include-ignored --test-threads=1 \
     --skip environment_revision_restart_child --skip restart::identity_restart_child
+}
+
+http_transport_evidence() {
+  pg_required_test -p awaken-run-ingress-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http \
+    --require-case=two_control_processes_retry_recover_and_settle_without_sticky_routing \
+    --require-case=active_active_child_diagnostics_are_isolated_and_bounded \
+    --require-case=immutable_pod_registration_postgres_when_configured \
+    --require-case=postgres_signed_registration_rejects_historical_incarnation \
+    --require-case=postgres_guarded_admission_uses_one_process_connection_and_rejects_foreign_pools \
+    -- --skip active_active_control_child --test-threads=1
 }
 
 published_port() {
@@ -476,7 +487,7 @@ self_test() {
   # P9 immutable Pod registration must exercise the real database rather than
   # merely compiling a self-skipping test in the no-database workspace gate.
   # P10 independent predecessor stopping exercises the same exact Registry CAS.
-  grep -Fq "cargo test -p awaken-run-ingress-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http" "$0" || {
+  grep -Fq "pg_required_test -p awaken-run-ingress-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http" "$0" || {
     echo "Postgres gate omits the coordinator-owned active/active transport test" >&2
     return 1
   }
@@ -575,13 +586,15 @@ self_test() {
 
 backend_only=0
 work_store_only=0
+http_only=0
 case "${1:-}" in
   "") ;;
   --require-docker) require_docker=1 ;;
   --self-test) self_test; exit $? ;;
   --backend-parity) backend_only=1 ;;
   --work-store) work_store_only=1 ;;
-  *) echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--self-test]" >&2; exit 2 ;;
+  --http) http_only=1 ;;
+  *) echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--self-test]" >&2; exit 2 ;;
 esac
 
 for deadline in "$PG_OPERATION_TIMEOUT_SECONDS" "$PG_READY_TIMEOUT_SECONDS" \
@@ -592,12 +605,14 @@ for deadline in "$PG_OPERATION_TIMEOUT_SECONDS" "$PG_READY_TIMEOUT_SECONDS" \
   }
 done
 
-if [ "$backend_only" -eq 1 ] || [ "$work_store_only" -eq 1 ]; then
+if [ "$backend_only" -eq 1 ] || [ "$work_store_only" -eq 1 ] || [ "$http_only" -eq 1 ]; then
   [ "$#" -eq 1 ] && [ -n "${AWAKEN_TEST_DATABASE_URL:-}" ] || {
     echo "focused PostgreSQL tests require an explicit owned fixture URL" >&2; exit 2;
   }
   export AWAKEN_TEST_REQUIRE_POSTGRES=1
-  if [ "$work_store_only" -eq 1 ]; then
+  if [ "$http_only" -eq 1 ]; then
+    http_transport_evidence || record_failure "$?"
+  elif [ "$work_store_only" -eq 1 ]; then
     work_store_evidence || record_failure "$?"
   else
     backend_parity
@@ -828,8 +843,7 @@ pg_test cargo test -p awaken-run-ingress --features test-support || record_failu
 pg_test cargo test -p awaken-run-ingress --features test-support \
   --test dispatch_claim_perf -- --ignored --test-threads=1 --nocapture \
   || record_failure "$?"
-pg_test cargo test -p awaken-run-ingress-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http -- --test-threads=1 --show-output \
-  || record_failure "$?"
+http_transport_evidence || record_failure "$?"
 pg_test cargo test -p awaken-session-store --features test-support --lib postgres_ -- --test-threads=1 \
   || record_failure "$?"
 pg_test cargo test -p awaken-cli --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy -- --test-threads=1 --exact || record_failure "$?"

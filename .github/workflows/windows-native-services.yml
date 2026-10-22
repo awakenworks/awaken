@@ -45,7 +45,7 @@ jobs:
         run: python scripts/ci/check_native_services.py --service nats --nats-bin target/windows-services/nats/nats-server-v2.15.0-windows-amd64/nats-server.exe --output target/test-timings/native-nats
       - name: Install the reviewed Windows PostgreSQL runtime without a service cache
         run: python scripts/ci/deadline.py 900 -- python scripts/ci/install_windows_services.py --service postgres --output target/windows-postgres
-      - name: Require live backend parity and complete Work durability laws
+      - name: Require live backend parity, Work durability and HTTP process failover
         run: python scripts/ci/check_native_services.py --service postgres --postgres-bin target/windows-postgres/postgres/pgsql/bin --output target/test-timings/native-postgres
       - name: Retain exact-source service and execution receipts
         if: always()

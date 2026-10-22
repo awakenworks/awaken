@@ -133,7 +133,7 @@ class ExecutionReceiptTests(unittest.TestCase):
         import check_rust_test_execution as q
         packages=["awaken-reliability-testkit","awaken-model-catalog-store","awaken-credential-store",
             "awaken-data-subject-store","awaken-captured-content-store","awaken-work-store",
-            "awaken-session-store","awaken-memory-store","awaken-skill-store","awaken-work-store"]
+            "awaken-session-store","awaken-memory-store","awaken-skill-store","awaken-work-store","awaken-run-ingress-http"]
         with tempfile.TemporaryDirectory() as directory,mock.patch.object(q,"verify_preparation"):
             base=Path(directory);receipts=[]
             for index,package in enumerate(packages):
@@ -147,8 +147,8 @@ class ExecutionReceiptTests(unittest.TestCase):
                 receipts.append(path)
             log="".join("execution evidence: "+str(path)+"\n" for path in receipts)
             with mock.patch.dict(os.environ,{"CARGO_TARGET_DIR":str(base)}):
-                self.assertEqual(len(gate.reconcile_postgres(log,"source")),10)
-                with self.assertRaisesRegex(ValueError,"all 10"):gate.reconcile_postgres("","source")
+                self.assertEqual(len(gate.reconcile_postgres(log,"source")),11)
+                with self.assertRaisesRegex(ValueError,"all 11"):gate.reconcile_postgres("","source")
                 path=receipts[0]/"results.json";original=json.loads(path.read_text())
                 for key in ("postgres_fixture_required","postgres_fixture_configured"):
                     for invalid in (False,"1"):

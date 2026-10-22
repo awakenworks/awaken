@@ -35,9 +35,9 @@ def reconcile_receipts(log: str, source_digest: str, *, postgres: bool) -> list[
     import check_rust_test_execution as q
     from collections import Counter
     references=re.findall(r"^execution evidence: (.+)$",log,re.M)
-    expected_count=10 if postgres else 2
+    expected_count=11 if postgres else 2
     if len(references)!=expected_count:
-        raise ValueError("PostgreSQL gate must return all 10 required domain receipts" if postgres
+        raise ValueError("PostgreSQL gate must return all 11 required domain receipts" if postgres
                          else "NATS gate must return both complete domain receipts")
     receipts=[]
     observed=set()
@@ -71,7 +71,8 @@ def reconcile_receipts(log: str, source_digest: str, *, postgres: bool) -> list[
     if postgres:
         expected=Counter({"awaken-reliability-testkit":1,"awaken-model-catalog-store":1,
             "awaken-credential-store":1,"awaken-data-subject-store":1,"awaken-captured-content-store":1,
-            "awaken-work-store":2,"awaken-session-store":1,"awaken-memory-store":1,"awaken-skill-store":1})
+            "awaken-work-store":2,"awaken-session-store":1,"awaken-memory-store":1,"awaken-skill-store":1,
+            "awaken-run-ingress-http":1})
         if Counter(packages)!=expected:
             raise ValueError("PostgreSQL gate omitted or duplicated a canonical backend domain")
     elif not {"wake::nats_tests::nats_wake_signal_notifies_a_waiter",
@@ -117,7 +118,8 @@ def worker(args: argparse.Namespace) -> int:
         elif args.service=="postgres":
             service=PostgresService(args.postgres_bin,root/"postgres",out,owner)
             plan=[("postgres-backend-parity","backend-parity.log",["scripts/ci/pg_tests.sh","--backend-parity"]),
-                  ("postgres-work-store","work-store.log",["scripts/ci/pg_tests.sh","--work-store"])]
+                  ("postgres-work-store","work-store.log",["scripts/ci/pg_tests.sh","--work-store"]),
+                  ("postgres-http","http.log",["scripts/ci/pg_tests.sh","--http"])]
         else:
             raise ValueError("unsupported native service")
         record["fixture"]=service.start()

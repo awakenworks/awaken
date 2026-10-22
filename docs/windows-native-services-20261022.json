@@ -1,12 +1,13 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "status": "passed",
   "platform": "Windows/MSVC",
   "linux_verification_allowed": false,
   "full_gate": false,
   "scope": [
     "NATS wake hint and real Sandbox tool request/reply",
-    "PostgreSQL canonical backend parity and complete Work durability suite"
+    "PostgreSQL canonical backend parity and complete Work durability suite",
+    "PostgreSQL HTTP transport, native two-process failover and isolated child diagnostics"
   ],
   "nats_published_commit": "38966db48db5609af2a6a5c0d176952c996977f8",
   "nats_original_qualification": {
@@ -884,17 +885,18 @@
   },
   "qualified_runtime_files_sha256": {
     "scripts/ci/_native_postgres.py": "a645c2c8adabc673c048d0666ff008ee4799e107141add39e174ff6f1243cf5f",
-    "scripts/ci/check_native_services.py": "84bb36d1d705319147d29ffe361dae9149200de6d14fb000bb38a1ed5f4ddd21",
+    "scripts/ci/check_native_services.py": "3d4addd935388d12a844490f6bc5df1fa077a9e39a07bce478cc97af423a87b2",
     "scripts/ci/native_services.py": "9c10757797aa292123670012362cd00795b0bae396fd2534536743598737ba31",
     "scripts/ci/nats_tests.sh": "c643363bbbf85c47dd9fd4a132ac1eb734fee462248cb14ede9c7ae396162e91",
-    "scripts/ci/pg_tests.sh": "8859e2870dca45727178f687dc93a3d44187d383fb4289dd2342f0129d2f63ad",
-    ".github/workflows/windows-native-services.yml": "122b277d50e0ebf2d8ab366b9478a70d92af04ebdb05c42deba6a1f6de14ddd4"
+    "scripts/ci/pg_tests.sh": "41c39474c65f5e9fd1503d9c19754697b8df13948e806b773fc62f418f4c0337",
+    ".github/workflows/windows-native-services.yml": "398f4a405fe5f673b8401cf6dcb0b70128b326f1d2352485c5c55c2d6aaed0fa",
+    "crates/server/awaken-run-ingress-http/tests/active_active_postgres.rs": "4887022cc9f89b44bab7b484d8bf7a2f5e49759f2225933009edf990d8b59ccb"
   },
   "runner_self_tests": {
     "count": 16,
     "status": "passed",
-    "log_sha256": "0ddc62413d858015e6f674243b83c2f76718dfe8489f35cfadf0ab9d6909fd06",
-    "source_sha256": "8ffc7e83422b62bec4aa232c3f35c62d9d2deb632ac4b2b7824aa0bb97883b15"
+    "log_sha256": "9981abac353a24a9f1adf2f2a6af9247e6a7d0d41005e57c860e018c2c5c6588",
+    "source_sha256": "5bd7ca2a5c3981dce1bad872ec8b0c6f5123421dea25e5b16034f2a679d87e81"
   },
   "postgres_installation": {
     "platform": "Windows",
@@ -926,18 +928,38 @@
     ],
     "execution": [
       "same canonical pg_tests.sh --backend-parity and --work-store selections",
-      "all ten domain receipts required; omitted or duplicated domains rejected",
+      "all eleven domain receipts required; omitted or duplicated domains rejected",
       "required/configured fixture flags must be booleans true",
       "named execution reconciled with the inventory and source-bound build",
       "NATS and PostgreSQL fixture environments isolated",
-      "primary failure and cleanup failure cannot become success"
+      "primary failure and cleanup failure cannot become success",
+      "HTTP selection is owned by pg_tests.sh --http and shared by substrate runners",
+      "Real nested libtest writes beyond pipe capacity are isolated into an owned file; every retained line is prefixed and bounded",
+      "Four HTTP inventories reconcile to 41 executed cases; private control helper remains parent-only"
     ]
   },
   "not_qualified": [
-    "PostgreSQL HTTP, ingress crash/scale and remaining full release selections beyond this matrix",
+    "PostgreSQL ingress crash/scale and remaining full release selections beyond this matrix",
     "S3 Rust conformance and credential rotation in the committed CI lane",
     "Physical PostgreSQL/object-store PITR in the committed CI lane",
     "Hosted Windows CI execution",
     "Live Kubernetes and platform-exclusive Linux gates"
-  ]
+  ],
+  "postgres_published_commit": "7cd3267dcea794add457e608f5c0842adffeb787",
+  "postgres_http_execution_counts": {
+    "backend_parity": 93,
+    "complete_work": 87,
+    "http_transport": 41,
+    "total_named_executions": 221,
+    "receipts": 11,
+    "skipped": 0
+  },
+  "hosted_ci_publication_policy": "User authorized internal origin only; do not publish this code to public GitHub or dispatch hosted CI (2026-10-22)",
+  "postgres_http_extension_qualification": {
+    "path": "docs/windows-postgres-http-20261022.json",
+    "sha256": "ab5c7790ed155038f4fb9f8e369dfe972a854aa836ade85db950df04daa7f865",
+    "status": "passed",
+    "named_executions": 221,
+    "receipts": 11
+  }
 }
