@@ -97,6 +97,90 @@ impl ScopedConfigRegistry for PublicationReadProbe {
 }
 
 #[tokio::test]
+async fn managed_archive_projection_refusal_has_no_lifecycle_effect() {
+    // Cause/effect graph: C1 a Config-authored current model has no Managed
+    // representation (Auto or catalog Target); C2 the prior immutable
+    // publication remains executable; C3 the request names another Workspace.
+    // R1 C3 -> NotFound, no owner effect. R2 C1+C2 -> Invalid before any CAS or
+    // withdrawal: exact authoring revision/config and executable registration
+    // remain unchanged. A 400 after applying archive is not a refusal.
+    // Valid Managed models and interrupted withdrawal/idempotent replay retain
+    // coverage in managed_agent_archive_retains_immutable_publication (L1..L3).
+    for model in [
+        ModelSelection::Auto,
+        serde_json::from_value(serde_json::json!({
+            "mode": "target", "backend_ref": "genai",
+            "target": {"model_id": "selected", "protocol_endpoint_id": "chat"}
+        }))
+        .unwrap(),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.sqlite");
+        let (plane, catalog) = plane_with_catalog(path.to_str().unwrap()).await;
+        let repository = ConfigPlaneManagedAgentRepository::new(
+            plane.clone(),
+            "workspace-a",
+            awaken_time::system_clock(),
+        );
+        let created = repository
+            .create("workspace-a", create_params("published source"))
+            .await
+            .unwrap();
+        let scope = ScopeId::from("workspace-a");
+        let mut edited = plane
+            .get_versioned(&scope, &created.id)
+            .await
+            .unwrap()
+            .unwrap();
+        edited.config.model_binding = model;
+        plane
+            .put_if_revision(&scope, &edited.config, edited.revision)
+            .await
+            .unwrap();
+        let before = plane
+            .get_versioned(&scope, &created.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let fingerprint = catalog
+            .current("workspace-a", &created.id)
+            .unwrap()
+            .snapshot
+            .fingerprint;
+        assert!(
+            matches!(
+                repository.archive("workspace-b", &created.id).await,
+                Err(ManagedAgentError::NotFound)
+            ),
+            "R1 foreign Workspace"
+        );
+        assert!(
+            matches!(
+                repository.archive("workspace-a", &created.id).await,
+                Err(ManagedAgentError::Invalid(_))
+            ),
+            "R2 unsupported projection"
+        );
+        let after = plane
+            .get_versioned(&scope, &created.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.revision, before.revision, "R2 zero-write refusal");
+        assert_eq!(after.config, before.config, "R2 exact config retained");
+        assert_eq!(
+            catalog
+                .current("workspace-a", &created.id)
+                .unwrap()
+                .snapshot
+                .fingerprint,
+            fingerprint,
+            "R2 executable registration retained"
+        );
+    }
+}
+
+#[tokio::test]
 async fn immutable_agent_reads_do_not_repeat_published_table_loads() {
     // Cause/effect graph: growing immutable history H + requested revision V +
     // durable publication P + request scope S + store availability A determine
