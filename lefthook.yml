@@ -337,6 +337,12 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/test_deadline.py
 
+    native-service-runner:
+      # >>> generated glob from test_native_services.py INPUT_GLOBS — do not edit
+      glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**}"
+      # <<< generated glob
+      run: python3 scripts/ci/test_native_services.py
+
     full-gate-admission:
       # >>> generated glob from test_full_gate_admission.py INPUT_GLOBS — do not edit
       glob: "{scripts/ci/_deadline.sh,scripts/ci/check-all.sh,scripts/ci/deadline.py,scripts/ci/test_full_gate_admission.py}"

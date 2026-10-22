@@ -6,9 +6,13 @@
 //! marker, schema and behavioral assertions.
 
 mod fixture;
+mod nats_fixture;
 #[cfg(feature = "postgres")]
 pub use fixture::postgres_fixture_pool;
 pub use fixture::{assert_postgres_fixture_child_contract, postgres_fixture_url};
+pub use nats_fixture::{
+    assert_nats_fixture_child_contract, nats_fixture_url, report_nats_fixture_exercised,
+};
 
 #[cfg(feature = "postgres")]
 mod postgres_crash;

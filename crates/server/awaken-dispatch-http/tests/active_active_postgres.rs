@@ -8,6 +8,7 @@
 
 mod postgres_support;
 
+use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -291,7 +292,10 @@ async fn active_active_control_child() {
         .expect("serve active-active child");
 }
 
-struct ChildGuard(Option<Child>);
+struct ChildGuard {
+    child: Option<Child>,
+    output: tempfile::NamedTempFile,
+}
 
 impl ChildGuard {
     fn spawn(port: u16, database_url: &str, exit_after_commit: bool) -> Self {
@@ -302,17 +306,51 @@ impl ChildGuard {
             .arg("--nocapture")
             .arg("--test-threads=1")
             .env(CHILD_PORT_ENV, port.to_string())
-            .env(CHILD_DATABASE_URL_ENV, database_url)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
+            .env(CHILD_DATABASE_URL_ENV, database_url);
         if exit_after_commit {
             command.env(CHILD_EXIT_AFTER_COMMIT_ENV, "1");
         }
-        Self(Some(command.spawn().expect("spawn Control child")))
+        Self::spawn_command(&mut command)
+    }
+
+    fn spawn_command(command: &mut Command) -> Self {
+        // A nested libtest must never write directly to the parent's result
+        // stream. Files also avoid pipe backpressure while the server runs.
+        let output = tempfile::NamedTempFile::new().expect("child diagnostic file");
+        let child = command
+            .stdin(Stdio::null())
+            .stdout(output.as_file().try_clone().expect("child stdout file"))
+            .stderr(output.as_file().try_clone().expect("child stderr file"))
+            .spawn()
+            .expect("spawn Control child");
+        Self {
+            child: Some(child),
+            output,
+        }
+    }
+
+    fn diagnostics(&self) -> std::io::Result<String> {
+        const LIMIT: u64 = 64 * 1024;
+        let file = std::fs::File::open(self.output.path())?;
+        let truncated = file.metadata()?.len() > LIMIT;
+        let mut bytes = Vec::new();
+        file.take(LIMIT).read_to_end(&mut bytes)?;
+        let mut text = String::new();
+        for line in String::from_utf8_lossy(&bytes).lines() {
+            // Prefix EVERY line, including nested test summaries, so retained
+            // diagnostics cannot impersonate the parent's named outcomes.
+            text.push_str("active-active child: ");
+            text.push_str(line);
+            text.push('\n');
+        }
+        if truncated {
+            text.push_str("active-active child: [output truncated at 64 KiB]\n");
+        }
+        Ok(text)
     }
 
     async fn wait_for_exit(&mut self) -> std::process::ExitStatus {
-        let child = self.0.as_mut().expect("child is present");
+        let child = self.child.as_mut().expect("child is present");
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if let Some(status) = child.try_wait().expect("poll child") {
@@ -328,11 +366,55 @@ impl ChildGuard {
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        if let Some(child) = self.0.as_mut() {
+        if let Some(child) = self.child.as_mut() {
             let _ = child.kill();
             let _ = child.wait();
         }
+        match self.diagnostics() {
+            Ok(output) if !output.is_empty() => eprintln!("{output}"),
+            Err(error) => eprintln!("active-active child: diagnostic read failed: {error}"),
+            _ => {}
+        }
     }
+}
+
+#[tokio::test]
+async fn active_active_child_diagnostics_are_isolated_and_bounded() {
+    const MODE: &str = "AWAKEN_ACTIVE_ACTIVE_DIAGNOSTIC_CHILD";
+    const BYTES: usize = 128 * 1024;
+    if std::env::var(MODE).as_deref() == Ok("1") {
+        // Raw writes bypass libtest capture, as inherited child output did.
+        std::io::stdout()
+            .write_all(b"test active_active_control_child ... ok\n")
+            .unwrap();
+        std::io::stderr()
+            .write_all(b"child stderr retained\n")
+            .unwrap();
+        std::io::stdout().write_all(&vec![b'O'; BYTES]).unwrap();
+        std::io::stderr().write_all(&vec![b'E'; BYTES]).unwrap();
+        return;
+    }
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "active_active_child_diagnostics_are_isolated_and_bounded",
+            "--nocapture",
+        ])
+        .env(MODE, "1");
+    let mut child = ChildGuard::spawn_command(&mut command);
+    assert!(child.wait_for_exit().await.success());
+    assert!(child.output.as_file().metadata().unwrap().len() >= (2 * BYTES) as u64);
+    let output = child.diagnostics().unwrap();
+    assert!(output.contains("active-active child: test active_active_control_child ... ok"));
+    assert!(output.contains("active-active child: child stderr retained"));
+    assert!(output.contains("[output truncated at 64 KiB]"));
+    assert!(output.len() < 66 * 1024);
+    assert!(
+        output
+            .lines()
+            .all(|line| line.starts_with("active-active child: "))
+    );
 }
 
 async fn reserve_port() -> u16 {
@@ -352,7 +434,7 @@ async fn wait_for_port(port: u16, child: &mut ChildGuard) {
                 break;
             }
             if let Some(status) = child
-                .0
+                .child
                 .as_mut()
                 .expect("child is present")
                 .try_wait()

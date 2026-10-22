@@ -80,15 +80,6 @@ PG_GATE_EXEMPTIONS: dict[str, str] = {
 # the file, because a line number rots; the value says why green is sound.
 SILENT_SKIP_EXEMPTIONS: dict[str, str] = {
     # ---- substrates no lane stands up -----------------------------------
-    "crates/server/awaken-dispatch/tests/nats.rs": (
-        "No CI gate starts a broker for a cargo test, so this one cannot run "
-        "here. Real NATS wake is covered instead by the k3d group: "
-        "check-all.sh runs e2e/k3d/nats_wake_e2e.sh with AWAKEN_K3D_REQUIRED=1 "
-        "against a live broker and a live Postgres dispatch owner. Registered "
-        "rather than deleted so the unit-level gap is written down: if the k3d "
-        "group is ever dropped, NATS wake loses its only real coverage and "
-        "nothing else will say so."
-    ),
     "crates/runtime/awaken-ext-mcp/tests/http_real_server.rs": (
         "Points at an external MCP server through MCP_TEST_URL/MCP_TEST_BEARER. "
         "Nothing in this repository stands one up and no lane supplies those "

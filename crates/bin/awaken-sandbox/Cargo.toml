@@ -88,6 +88,7 @@ rustix = { version = "1", features = ["stdio"], optional = true }
 awaken-sandbox-local.workspace = true
 
 [dev-dependencies]
+awaken-reliability-testkit.workspace = true
 awaken-resource-application.workspace = true
 awaken-lease-testkit.workspace = true
 async-trait.workspace = true
