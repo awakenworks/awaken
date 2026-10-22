@@ -2400,11 +2400,14 @@ async fn cold_reconstruction_and_adoption_recheck_authority_after_each_provider_
     // no NEXT staging/control effect or success (including None); R2 renewal
     // completes; R3 cancellation retains original host bytes. R4 explicit
     // restored fixture authority retries the exact handle. C3 live adoption or
-    // terminal reconstruction; C4 past/future Control expiry. All 8x5x2 rows
+    // terminal reconstruction; C4 past/future Control expiry. All 7x5x2 rows
     // assert zero removal/writeback: reconstruction is
     // not disposal. These checks do not cancel already accepted backend work.
     // R5 every cold observation uses TerminalCleanup, including the None row:
     // Recovery absence is insufficient for terminal resource acknowledgement.
+    // R6 Ready terminal reconstruction has no Control wait/effect at all; only
+    // live adoption crosses that boundary. Observation/staging revocation rows
+    // still cover Ready preparation, and every such row asserts zero binding.
     for expiry in [100, u64::MAX - 1] {
         for (phase, boundary) in [
             ("live", "observation"),
@@ -2412,7 +2415,6 @@ async fn cold_reconstruction_and_adoption_recheck_authority_after_each_provider_
             ("live", "control"),
             ("ready", "observation"),
             ("ready", "staging"),
-            ("ready", "control"),
             ("absent", "observation"),
             ("disposing", "observation"),
         ] {
@@ -2539,8 +2541,7 @@ async fn cold_reconstruction_and_adoption_recheck_authority_after_each_provider_
                     assert_eq!(
                         state.control_binding_calls.len() - bindings,
                         usize::from(
-                            boundary == "control"
-                                || (change == "renew" && matches!(phase, "ready" | "live"))
+                            phase == "live" && (boundary == "control" || change == "renew")
                         )
                     );
                     assert!(state.removals.is_empty());
