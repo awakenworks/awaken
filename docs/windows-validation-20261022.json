@@ -1,0 +1,860 @@
+{
+  "schema_version": 3,
+  "date": "2026-10-22",
+  "platform": "x86_64-pc-windows-msvc",
+  "full_gate": false,
+  "policy": {
+    "linux_verification_allowed": false,
+    "source": "Explicit user instruction: 以后禁止在 linux 环境验证",
+    "allowed": "Local native Windows/MSVC; normal remote Git synchronization remains permitted"
+  },
+  "qualified_source": {
+    "commit": "20f23728f7abc96de4908970aff29a81debc0802",
+    "tree": "c99dc2dd72493c0c5a66669b48c79a206ef8e5c3",
+    "worktree_clean": true
+  },
+  "rust": {
+    "nextest_executed": 9300,
+    "ordinary_profile_exclusions": 94,
+    "excluded_binaries": 0,
+    "doctests_passed": 223,
+    "execution_names_reconciled": true,
+    "debug_assertions_enabled": true,
+    "required_named_regressions": {
+      "awaken-cli": [
+        "process_role_surface_tests::service_roles_expose_only_their_owned_api",
+        "runtime_process_router::local_execution::tests::registered_worker_observation_does_not_install_execution"
+      ],
+      "awaken-control": [
+        "agent_revision_visibility::tests::visibility_requires_a_publication_or_the_current_terminal_revision",
+        "config_routes::versions::tests::automatic_and_profile_history_remain_configuration_values",
+        "config_routes::versions::tests::current_lifecycle_and_cursor_keep_their_exact_coordinates",
+        "config_routes::versions::tests::exact_targets_and_opaque_configuration_survive_the_bounded_read",
+        "config_routes::versions::tests::invalid_pages_never_invent_a_revision"
+      ],
+      "awaken-sandbox-container": [
+        "tests::terminal_preparation::disposing_terminal_preparation_reconstructs_only_physical_cleanup",
+        "tests::terminal_preparation::terminal_control_reconstruction_does_not_require_a_live_binding"
+      ],
+      "awaken-sandbox-kubernetes": [
+        "cleanup_tests::original_joined_empty_runs_the_provider_terminal_protocol_but_never_adopts_for_execution"
+      ]
+    }
+  },
+  "native": {
+    "startup_required_cases_verified": true,
+    "windows_long_paths_verified": true,
+    "focused_groups": 18,
+    "required_groups_have_no_ignored_executions": true,
+    "cli": {
+      "profiles": {
+        "HOST-FIXTURE": 2,
+        "WORKER-HOST-FIXTURE": 2,
+        "NATIVE-HOST-FIXTURE": 1
+      },
+      "resources": {
+        "codex": 2,
+        "claude": 2,
+        "native": 1
+      },
+      "credential_custody": {
+        "codex": 2,
+        "claude": 2
+      },
+      "worker_shutdowns": [
+        {
+          "worker_id": "resource-codex-worker",
+          "generation": 4,
+          "exit_code": 0,
+          "signal": null
+        },
+        {
+          "worker_id": "resource-claude-worker",
+          "generation": 4,
+          "exit_code": 0,
+          "signal": null
+        }
+      ],
+      "systemd_shutdowns": []
+    }
+  },
+  "browser": {
+    "inventory_count": 154,
+    "executed_passed": 141,
+    "skipped_count": 13,
+    "unexpected": 0,
+    "flaky": 0,
+    "owned_data_removed": true,
+    "execution_names_reconciled": true,
+    "skipped_by_reason": {
+      "needs KIMI_KEY or KIMI_EXISTING_CREDENTIAL=1": 7,
+      "requires the isolated real-reader runner": 3,
+      "needs a Gemini/Google key to submit via the credential API": 3
+    },
+    "skipped": [
+      {
+        "file": "assistant-real.spec.ts",
+        "line": 72,
+        "title": "Admin Assistant authors an agent with tools + a memory-store binding (real model)",
+        "project": "chromium",
+        "id": "c9ff9c64392174826308-f40aef9ec7bb520cfe64",
+        "reason": "needs KIMI_KEY or KIMI_EXISTING_CREDENTIAL=1",
+        "declaration_line": 21
+      },
+      {
+        "file": "assistant-real.spec.ts",
+        "line": 103,
+        "title": "KIMI writes and recalls an Agent-bound memory store across fresh sessions",
+        "project": "chromium",
+        "id": "c9ff9c64392174826308-5162c5ac92aa30cde4a3",
+        "reason": "needs KIMI_KEY or KIMI_EXISTING_CREDENTIAL=1",
+        "declaration_line": 21
+      },
+      {
+        "file": "assistant-real.spec.ts",
+        "line": 156,
+        "title": "Admin Assistant authors an official self-hosted environment from plain English (real model)",
+        "project": "chromium",
+        "id": "c9ff9c64392174826308-061954b4f9aa3e195336",
+        "reason": "needs KIMI_KEY or KIMI_EXISTING_CREDENTIAL=1",
+        "declaration_line": 21
+      },
+      {
+        "file": "assistant-real.spec.ts",
+        "line": 187,
+        "title": "Admin Assistant answers a how-to question as an in-console manual (real model)",
+        "project": "chromium",
+        "id": "c9ff9c64392174826308-1a50cfc77a10031fe202",
+        "reason": "needs KIMI_KEY or KIMI_EXISTING_CREDENTIAL=1",
+        "declaration_line": 21
+      },
+      {
+        "file": "assistant-real.spec.ts",
+        "line": 204,
+        "title": "Admin Assistant authors a repeat-safe read-before-write machine (real model)",
+        "project": "chromium",
+        "id": "c9ff9c64392174826308-770bdfb7442f29e65d4c",
+        "reason": "needs KIMI_KEY or KIMI_EXISTING_CREDENTIAL=1",
+        "declaration_line": 21
+      },
+      {
+        "file": "assistant-real.spec.ts",
+        "line": 242,
+        "title": "Publish hands an invalid Draft to KIMI, highlights the repair, then asks only for confirmation",
+        "project": "chromium",
+        "id": "c9ff9c64392174826308-b78df62f918e4f331474",
+        "reason": "needs KIMI_KEY or KIMI_EXISTING_CREDENTIAL=1",
+        "declaration_line": 21
+      },
+      {
+        "file": "mcp-config.spec.ts",
+        "line": 505,
+        "title": "account, keyboard action and asynchronous result are spoken",
+        "project": "chromium",
+        "id": "533bdff5fc3e457f0fff-0e9b655a71c0edc02317",
+        "reason": "requires the isolated real-reader runner",
+        "declaration_line": 504
+      },
+      {
+        "file": "mcp-config.spec.ts",
+        "line": 522,
+        "title": "Agent shared-account choice and Session Vault choice have spoken context",
+        "project": "chromium",
+        "id": "533bdff5fc3e457f0fff-c31ca5aadbae3aa8d429",
+        "reason": "requires the isolated real-reader runner",
+        "declaration_line": 504
+      },
+      {
+        "file": "mcp-config.spec.ts",
+        "line": 535,
+        "title": "Chinese document language, required form controls and secret masking",
+        "project": "chromium",
+        "id": "533bdff5fc3e457f0fff-c2fbb9472129ee2e1477",
+        "reason": "requires the isolated real-reader runner",
+        "declaration_line": 504
+      },
+      {
+        "file": "real-llm.spec.ts",
+        "line": 63,
+        "title": "Sandbox answers for real via config-plane credential (no env)",
+        "project": "chromium",
+        "id": "655556a9c44ef372f0d9-ef873c2070c45302deea",
+        "reason": "needs a Gemini/Google key to submit via the credential API",
+        "declaration_line": 19
+      },
+      {
+        "file": "real-llm.spec.ts",
+        "line": 105,
+        "title": "Agent reads/writes its bound memory store across sessions (real model)",
+        "project": "chromium",
+        "id": "655556a9c44ef372f0d9-f0b553d0940e2333e6ce",
+        "reason": "needs a Gemini/Google key to submit via the credential API",
+        "declaration_line": 19
+      },
+      {
+        "file": "real-llm.spec.ts",
+        "line": 170,
+        "title": "Agent reads a bound read-only file (real model)",
+        "project": "chromium",
+        "id": "655556a9c44ef372f0d9-fc500a8e0b8ffbf0bafd",
+        "reason": "needs a Gemini/Google key to submit via the credential API",
+        "declaration_line": 19
+      },
+      {
+        "file": "state-machine-real.spec.ts",
+        "line": 39,
+        "title": "read-before-write state machine blocks an unread write at runtime (real model)",
+        "project": "chromium",
+        "id": "6da9dc22896b096968c3-113d4a062da8684aa482",
+        "reason": "needs KIMI_KEY or KIMI_EXISTING_CREDENTIAL=1",
+        "declaration_line": 17
+      }
+    ]
+  },
+  "static": {
+    "checks_passed": 88,
+    "checks_failed": 0,
+    "parallel_workers": 2,
+    "source_commit": "20f23728f7abc96de4908970aff29a81debc0802",
+    "source_tree": "c99dc2dd72493c0c5a66669b48c79a206ef8e5c3",
+    "all_check_commands_exit_zero": true,
+    "checks": [
+      {
+        "check": "repository-hygiene self-test",
+        "seconds": 0.279
+      },
+      {
+        "check": "dependency-sources self-test",
+        "seconds": 0.478
+      },
+      {
+        "check": "trust-roots self-test",
+        "seconds": 0.406
+      },
+      {
+        "check": "trust-root compatibility",
+        "seconds": 0.405
+      },
+      {
+        "check": "cold dependency fetch self-test",
+        "seconds": 2.446
+      },
+      {
+        "check": "repository-hygiene",
+        "seconds": 20.051
+      },
+      {
+        "check": "authority-arithmetic self-test",
+        "seconds": 0.646
+      },
+      {
+        "check": "receive hook integration",
+        "seconds": 23.314
+      },
+      {
+        "check": "hook-glob generator self-test",
+        "seconds": 1.455
+      },
+      {
+        "check": "hook-glob generation",
+        "seconds": 1.329
+      },
+      {
+        "check": "test-orchestration self-test",
+        "seconds": 8.379
+      },
+      {
+        "check": "test-orchestration",
+        "seconds": 6.903
+      },
+      {
+        "check": "required Rust execution self-test",
+        "seconds": 247.839
+      },
+      {
+        "check": "crate-boundaries",
+        "seconds": 406.406
+      },
+      {
+        "check": "CI performance report self-test",
+        "seconds": 0.509
+      },
+      {
+        "check": "CI performance artifact policy",
+        "seconds": 0.323
+      },
+      {
+        "check": "Nextest selection evidence self-test",
+        "seconds": 0.237
+      },
+      {
+        "check": "ordinary Rust benchmark evidence self-test",
+        "seconds": 0.36
+      },
+      {
+        "check": "parallel static check tests",
+        "seconds": 0.277
+      },
+      {
+        "check": "combined coverage gate tests",
+        "seconds": 0.251
+      },
+      {
+        "check": "unit-test CLI decision table",
+        "seconds": 1.066
+      },
+      {
+        "check": "formal-product-ledger",
+        "seconds": 4.092
+      },
+      {
+        "check": "managed-wire-naming self-test",
+        "seconds": 0.912
+      },
+      {
+        "check": "managed-wire-naming",
+        "seconds": 0.413
+      },
+      {
+        "check": "gate-argument hygiene self-test",
+        "seconds": 3.991
+      },
+      {
+        "check": "lane-reachability self-test",
+        "seconds": 0.288
+      },
+      {
+        "check": "lane reachability",
+        "seconds": 5.561
+      },
+      {
+        "check": "gate-argument hygiene",
+        "seconds": 22.163
+      },
+      {
+        "check": "guard navigation self-test",
+        "seconds": 0.78
+      },
+      {
+        "check": "gate path references self-test",
+        "seconds": 0.418
+      },
+      {
+        "check": "gate path references",
+        "seconds": 0.863
+      },
+      {
+        "check": "dependency-gates self-test",
+        "seconds": 0.229
+      },
+      {
+        "check": "dependency-gates",
+        "seconds": 19.042
+      },
+      {
+        "check": "degrading-defaults self-test",
+        "seconds": 0.541
+      },
+      {
+        "check": "affected Rust plan self-test",
+        "seconds": 210.179
+      },
+      {
+        "check": "fabricated-facts self-test",
+        "seconds": 0.255
+      },
+      {
+        "check": "degrading-defaults",
+        "seconds": 10.279
+      },
+      {
+        "check": "proof-input-derivation self-test",
+        "seconds": 0.348
+      },
+      {
+        "check": "contract-shape self-test",
+        "seconds": 0.481
+      },
+      {
+        "check": "contract-shape",
+        "seconds": 7.447
+      },
+      {
+        "check": "coverage checker tests",
+        "seconds": 1.82
+      },
+      {
+        "check": "LCOV export tests",
+        "seconds": 0.279
+      },
+      {
+        "check": "per-crate coverage tests",
+        "seconds": 0.371
+      },
+      {
+        "check": "fabricated-facts",
+        "seconds": 25.299
+      },
+      {
+        "check": "provider-environment self-test",
+        "seconds": 1.0
+      },
+      {
+        "check": "node dependencies",
+        "seconds": 0.228
+      },
+      {
+        "check": "e2e runner unit",
+        "seconds": 203.0
+      },
+      {
+        "check": "full-gate host admission tests",
+        "seconds": 0.416
+      },
+      {
+        "check": "command deadline tests",
+        "seconds": 15.79
+      },
+      {
+        "check": "postgres harness self-test",
+        "seconds": 104.0
+      },
+      {
+        "check": "k3d harness self-test",
+        "seconds": 41.0
+      },
+      {
+        "check": "distributed role rollout self-test",
+        "seconds": 11.0
+      },
+      {
+        "check": "NATS wake runner self-test",
+        "seconds": 6.0
+      },
+      {
+        "check": "k3d-product-image-contract",
+        "seconds": 0.212
+      },
+      {
+        "check": "k3d product topology contract",
+        "seconds": 4.0
+      },
+      {
+        "check": "secrets self-test",
+        "seconds": 7.505
+      },
+      {
+        "check": "standard local storage deployment contract",
+        "seconds": 8.273
+      },
+      {
+        "check": "file-limits self-test",
+        "seconds": 4.435
+      },
+      {
+        "check": "secrets",
+        "seconds": 18.764
+      },
+      {
+        "check": "test-wait self-test",
+        "seconds": 6.736
+      },
+      {
+        "check": "file-limits",
+        "seconds": 27.701
+      },
+      {
+        "check": "test waits name a durable fact",
+        "seconds": 7.317
+      },
+      {
+        "check": "a guard's scope is derived, not hand-written",
+        "seconds": 1.906
+      },
+      {
+        "check": "commit-message self-test",
+        "seconds": 0.192
+      },
+      {
+        "check": "scan-scope self-test",
+        "seconds": 3.405
+      },
+      {
+        "check": "commit wrapper self-test",
+        "seconds": 3.0
+      },
+      {
+        "check": "release-package self-test",
+        "seconds": 8.934
+      },
+      {
+        "check": "product release contract",
+        "seconds": 0.252
+      },
+      {
+        "check": "observation-collapse self-test",
+        "seconds": 9.981
+      },
+      {
+        "check": "observation-collapse",
+        "seconds": 8.708
+      },
+      {
+        "check": "product release checker self-test",
+        "seconds": 31.225
+      },
+      {
+        "check": "reliability output directories self-test",
+        "seconds": 334.444
+      },
+      {
+        "check": "reliability checker preflight self-test",
+        "seconds": 352.95
+      },
+      {
+        "check": "reliability evidence contract",
+        "seconds": 25.475
+      },
+      {
+        "check": "reliability tool failures self-test",
+        "seconds": 285.347
+      },
+      {
+        "check": "Cargo target isolation self-test",
+        "seconds": 0.0
+      },
+      {
+        "check": "public API gate tests",
+        "seconds": 49.971
+      },
+      {
+        "check": "Rust gate control-flow self-test",
+        "seconds": 1.0
+      },
+      {
+        "check": "Kani bootstrap publication rules",
+        "seconds": 0.338
+      },
+      {
+        "check": "build-space reclamation self-test",
+        "seconds": 0.793
+      },
+      {
+        "check": "full-gate freshness self-test",
+        "seconds": 2.599
+      },
+      {
+        "check": "full-gate freshness",
+        "seconds": 0.253
+      },
+      {
+        "check": "gate tool manifest self-test",
+        "seconds": 12.648
+      },
+      {
+        "check": "prerequisite doctor self-test",
+        "seconds": 12.0
+      },
+      {
+        "check": "sandbox image build deadline self-test",
+        "seconds": 4.0
+      },
+      {
+        "check": "sandbox image provenance self-test",
+        "seconds": 0.226
+      },
+      {
+        "check": "sandbox image release contract",
+        "seconds": 6.278
+      },
+      {
+        "check": "sandbox image release checker self-test",
+        "seconds": 11.108
+      }
+    ],
+    "required_execution_self_test": {
+      "total": 32,
+      "executed": 18,
+      "skipped": 14,
+      "skipped_names": [
+        "test_actual_required_runner_rejects_empty_ignored_skipped_and_failed_runs",
+        "test_cold_build_does_not_consume_or_extend_shared_execution_deadline",
+        "test_floor_failure_stops_before_run",
+        "test_hidden_index_and_untracked_bytes_are_working_source_causes",
+        "test_mutations_at_each_sequence_fence_stop_or_reject_execution",
+        "test_portability_entrypoint_requires_the_current_launch_adapter_selection",
+        "test_required_shell_keeps_execution_status",
+        "test_required_source_uses_same_hook_index_and_detaches_foreign_hook",
+        "test_sandbox_entrypoint_requires_the_current_systemd_case",
+        "test_shared_budget_starts_after_queued_admission",
+        "test_source_and_record_faults_preserve_the_actual_child_status",
+        "test_terminal_source_and_writer_failures_preserve_outer_status",
+        "test_unreadable_index_refuses_before_any_cargo",
+        "test_whole_deadline_finalizes_but_dead_parent_leaves_partial_record"
+      ]
+    },
+    "reported_python_skips": [
+      {
+        "case": "test_actual_required_runner_rejects_empty_ignored_skipped_and_failed_runs",
+        "identity": "__main__.ExecutionTests.test_actual_required_runner_rejects_empty_ignored_skipped_and_failed_runs",
+        "reason": "'the Bash orchestration runs in the Linux gate'",
+        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+      },
+      {
+        "case": "test_cold_build_does_not_consume_or_extend_shared_execution_deadline",
+        "identity": "__main__.ExecutionTests.test_cold_build_does_not_consume_or_extend_shared_execution_deadline",
+        "reason": "'POSIX real deadline fixture; Windows runs build/source/receipt rows'",
+        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+      },
+      {
+        "case": "test_floor_failure_stops_before_run",
+        "identity": "__main__.ExecutionTests.test_floor_failure_stops_before_run",
+        "reason": "'actual POSIX libtest boundary fixture'",
+        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+      },
+      {
+        "case": "test_hidden_index_and_untracked_bytes_are_working_source_causes",
+        "identity": "__main__.ExecutionTests.test_hidden_index_and_untracked_bytes_are_working_source_causes",
+        "reason": "'private Git/POSIX command fixture'",
+        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+      },
+      {
+        "case": "test_mutations_at_each_sequence_fence_stop_or_reject_execution",
+        "identity": "__main__.ExecutionTests.test_mutations_at_each_sequence_fence_stop_or_reject_execution",
+        "reason": "'real private source boundaries'",
+        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+      },
+      {
+        "case": "test_portability_entrypoint_requires_the_current_launch_adapter_selection",
+        "identity": "__main__.ExecutionTests.test_portability_entrypoint_requires_the_current_launch_adapter_selection",
+        "reason": "'the Bash orchestration runs in the Linux gate'",
+        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+      },
+      {
+        "case": "test_required_shell_keeps_execution_status",
+        "identity": "__main__.ExecutionTests.test_required_shell_keeps_execution_status",
+        "reason": "'POSIX shell status/admission fixture'",
+        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+      },
+      {
+        "case": "test_required_source_uses_same_hook_index_and_detaches_foreign_hook",
+        "identity": "__main__.ExecutionTests.test_required_source_uses_same_hook_index_and_detaches_foreign_hook",
+        "reason": "'private hook/index admission fixture'",
+        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+      },
+      {
+        "case": "test_sandbox_entrypoint_requires_the_current_systemd_case",
+        "identity": "__main__.ExecutionTests.test_sandbox_entrypoint_requires_the_current_systemd_case",
+        "reason": "'systemd substrate qualification belongs to Linux'",
+        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+      },
+      {
+        "case": "test_shared_budget_starts_after_queued_admission",
+        "identity": "__main__.ExecutionTests.test_shared_budget_starts_after_queued_admission",
+        "reason": "'POSIX admitted shell composition'",
+        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+      },
+      {
+        "case": "test_source_and_record_faults_preserve_the_actual_child_status",
+        "identity": "__main__.ExecutionTests.test_source_and_record_faults_preserve_the_actual_child_status",
+        "reason": "'private POSIX process/source fixture'",
+        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+      },
+      {
+        "case": "test_terminal_source_and_writer_failures_preserve_outer_status",
+        "identity": "__main__.ExecutionTests.test_terminal_source_and_writer_failures_preserve_outer_status",
+        "reason": "'actual private libtest terminal fixture'",
+        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+      },
+      {
+        "case": "test_unreadable_index_refuses_before_any_cargo",
+        "identity": "__main__.ExecutionTests.test_unreadable_index_refuses_before_any_cargo",
+        "reason": "'private Git index refusal'",
+        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+      },
+      {
+        "case": "test_whole_deadline_finalizes_but_dead_parent_leaves_partial_record",
+        "identity": "__main__.ExecutionTests.test_whole_deadline_finalizes_but_dead_parent_leaves_partial_record",
+        "reason": "'Linux owned parent/PID observation'",
+        "log": "windows-static-v5/static-checks.0cXqLI/13.log"
+      }
+    ],
+    "scope": "Passing Windows checker commands; platform-limited unit-test skips below are not counted as executed passes"
+  },
+  "supporting_gates": [
+    {
+      "stage": "documentation",
+      "exit_code": 0
+    },
+    {
+      "stage": "formal-profile-python-tests",
+      "exit_code": 0
+    },
+    {
+      "stage": "frontend-full",
+      "exit_code": 0
+    },
+    {
+      "stage": "dependency-policy",
+      "exit_code": 0
+    },
+    {
+      "stage": "managed-sdk-oracle",
+      "exit_code": 0
+    },
+    {
+      "stage": "generated-contracts",
+      "exit_code": 0
+    },
+    {
+      "stage": "public-api",
+      "exit_code": 0
+    },
+    {
+      "stage": "browser-e2e",
+      "exit_code": 0
+    }
+  ],
+  "observation_test_fix": {
+    "original_focus_commit": "3de24f7f12a1994539d4e6e23ebf5a20957ebb76",
+    "scope": "Test-only cloned spec replaced by std::slice::from_ref; accepted sockets explicitly use blocking request reads under the existing timeout; assertions and all four combinations retained",
+    "focused_validation": [
+      {
+        "stage": "format",
+        "code": 0,
+        "seconds": 18.884875300049316
+      },
+      {
+        "stage": "clippy-maximal-graph",
+        "code": 0,
+        "seconds": 41.243914199993014
+      },
+      {
+        "stage": "focused-observation-matrix",
+        "code": 0,
+        "seconds": 41.693112800014205
+      },
+      {
+        "stage": "normal-commit",
+        "code": 0,
+        "seconds": 929.0229316999903
+      }
+    ]
+  },
+  "role_test_fix": {
+    "original_focus_commit": "01e3be29a9c70160d31c7d4a18280dea3b75c102",
+    "scope": "API ownership fixture uses an explicitly absent namespace Hand; container observation remains covered by its separate protocol fixture; all route assertions retained",
+    "focused_validation": [
+      {
+        "stage": "format",
+        "code": 0,
+        "seconds": 19.32748989999527
+      },
+      {
+        "stage": "clippy-maximal-graph",
+        "code": 0,
+        "seconds": 49.34938259999035
+      },
+      {
+        "stage": "role-and-observation-regressions",
+        "code": 0,
+        "seconds": 125.7038008000236
+      },
+      {
+        "stage": "normal-commit",
+        "code": 0,
+        "seconds": 870.3540419000201
+      }
+    ]
+  },
+  "git_synchronization": {
+    "rebased_origin": "f24407baf11eeb510abf24a938e40f509324deaf",
+    "local_patches_retained_unchanged": true,
+    "source_review": "Two upstream commits reviewed: closed terminal cleanup control and scoped complete config revision reads; seven local patches unchanged by range-diff; no dependency manifest/lock/toolchain changes.",
+    "range_diff": "1:  a46f3c6293 = 1:  86e874923f 🧪 test(ci): validate proof profiles before long batches\n2:  09d74d4194 = 2:  351ee8d269 🧪 test(http): drain PostgreSQL fixture output concurrently\n3:  0a0aa754d2 = 3:  2bac7117c0 🐛 fix(ci): separate cold build and test deadlines\n4:  104bc8b715 = 4:  9f6821aad8 🧪 test(ci): bound Windows orchestration self-tests\n5:  37f6a59a10 = 5:  5f1e7225c6 📝 docs(ci): require native Windows validation\n6:  3de24f7f12 = 6:  0cca27672b 🧪 test(runtime): make observation fixture native Windows compatible\n7:  01e3be29a9 = 7:  20f23728f7 🧪 test(cli): isolate process role fixture from cluster observation"
+  },
+  "cold_build": {
+    "source_commit": "02ccc425a7ef600fa59a8ea30b87ed7afbed5f3e",
+    "historical_evidence": true,
+    "empty_project_target_before": true,
+    "dependency_cache_permitted": true,
+    "compile_seconds": 962.7757278999779,
+    "build_budget_seconds": 3600,
+    "shared_test_execution_budget_seconds": 600,
+    "executed_cases": [
+      [
+        "realization_composed_tests::provisioning::provisioning_registry_tests::trusted_host_repository_projection_preserves_the_exact_tier",
+        "ok"
+      ]
+    ],
+    "scope": "Separate previously qualified cold build, not relabelled as a cold compile of the current runtime source"
+  },
+  "cold_dependency_fetch": {
+    "status": "passed",
+    "historical_source_commit": "02ccc425a7ef600fa59a8ea30b87ed7afbed5f3e",
+    "empty_cargo_and_git_stores": true,
+    "dependency_manifests_and_lock_unchanged_since_proof": true,
+    "public_pins": {
+      "https://github.com/awakenworks/awaken-foundation": "247ee33a1d8f56f362217176886c346c87d207d9",
+      "https://github.com/awakenworks/awaken-iam": "cbfe337b305721391641c35aaa51308b51eb5075",
+      "https://github.com/awakenworks/awaken-ui": "15ab31ef4943042ac4795c27f0e82c78586a214e"
+    },
+    "scope": "Public locked Foundation, IAM and UI pins; separate from current-source runtime execution"
+  },
+  "compilation_context_scope": "Known compilation inputs and canonical Cargo argv are recorded; Cargo owns configuration and toolchain resolution.",
+  "unverified": [
+    "Linux-specific namespace/pidfd/systemd behavior",
+    "Platform-limited Python unit cases explicitly listed under static",
+    "Complete Kani/formal toolchain execution",
+    "Live Linux-container Docker/Podman/PostgreSQL/Kubernetes/k3d gates",
+    "Optional browser cases explicitly listed above",
+    "A fresh hosted GitHub Actions run"
+  ],
+  "qualification_history": {
+    "original_failures_retained": true,
+    "linux": "Cancelled by user instruction, not qualified",
+    "prior_windows_lint": "Upstream observation test failed Clippy",
+    "prior_windows_observation": "Actual four-combination regression failed with Winsock WouldBlock; accepted-stream blocking mode fixed and current source revalidated",
+    "prior_windows_role_surface": "The earlier full run passed 9294 of 9295 cases and failed the API-ownership fixture because it attempted live Kubernetes observation; the fixture now explicitly selects an absent namespace Hand and both repaired cases execute in the current full graph"
+  },
+  "proof_sha256": {
+    "windows-role-rebase-reviewed-v1.json": "d1f3b593a03edef1bc43e6bf516b45ac79350a5371a0c7f5d507e3886670d79e",
+    "windows-role-rebase-v1.json": "d5cb5af7e51590e95d2ae2516d9d09ef8d5e23d33e8aaf7f51c856e46a397996",
+    "windows-role-fixture-commit-v2.json": "d7ad798281aa1ee0cb6c0878c44f00e8695ecbb05ed60feb56446a89b88a7297",
+    "windows-observation-lint-commit-v4.json": "cd6d6c2a4cef869471be8c8700f63807aca999e149393f4d840d34e676530a04",
+    "current-windows-root-v12-independent-audit.json": "8e823477cfacf3cbaa46e588b52adf914285808baa3d310e4f159318102e5074",
+    "windows-supplement-v7-independent-audit.json": "c531098774cc74571b3d4b0e896b143b7d0b593d7610955d2905b561f183628c",
+    "windows-static-v5/summary.json": "a14a23c991e1a59f6d2b043ff603de5ab3c58c16ff9b2a8ef7fba4b648657bce",
+    "windows-default-cold-v2/summary.json": "c40c7e4272cc7b3ed423e3ccea25223c94e4783ed2fc3001a5af8243b9a09b32",
+    "current-windows-cold-v5/evidence/result.json": "7c6c589baa8d6371e1be8b44ca1e0b061de3d25cab8d0446d22565c47d0c3abe",
+    "confirm-linux-cancellation-v1.json": "826991fa38dd933b4a044d093c91bf6c481a0ab43c94600fd1910808dcb36768"
+  },
+  "raw_archives": [
+    {
+      "scope": "Windows Rust/native/CLI/SDK",
+      "name": "current-windows-root-v12-complete.zip",
+      "sha256": "7dc0bcde6abc7938a9599a335a17110e188fe644537d899272be0c2307413e34"
+    },
+    {
+      "scope": "Windows contracts/API/browser",
+      "name": "windows-supplement-v7-complete.zip",
+      "sha256": "beb6690cf3837a84dfc534cd3ad9d3d51840ebce2d8cd3f38103a9ce2a5423a5"
+    },
+    {
+      "scope": "Historical Windows empty compilation target",
+      "name": "windows-default-cold-v2.tar.gz",
+      "sha256": "1d7a539cd06fd16221340bec7f63a8c86e3b24c087645b7a5abc9e243005c39a"
+    },
+    {
+      "scope": "Current Windows static checks",
+      "name": "windows-static-v5-complete.zip",
+      "sha256": "477c1d03526682bfcd39cf325dbdea31448048c9863e4dbba6016e44d6a1a4e6"
+    },
+    {
+      "scope": "Historical Windows empty dependency stores",
+      "name": "windows-cold-fetch-complete-v4.zip",
+      "sha256": "2a92f87756e137a9009f362c4266535a44c0a63ecccd9a0c6186f9104daae2e2"
+    }
+  ],
+  "receipt_commit_scope": "The next metadata commit adds only this JSON receipt; its publication is verified separately after that commit exists."
+}
