@@ -5,6 +5,30 @@ It delegates the existing role catalog to the
 [remote Worker component catalog](remote-worker-protocol.md#10-remote-worker-component-catalog);
 it adds no service, queue, durable cleanup state or permission authority.
 
+## Amendment 2026-10-22: observe the original source independently of execution configuration
+
+The original published handle and Create fence identify the retained source.
+The Coordinator's current Hand residency, installation namespace and volume
+configuration describe a possible new execution, not that original source.
+Comparing the current adoption-plan fingerprint before a retirement read can
+therefore refuse a guarded original Pod/PVC which the canonical runtime observer
+positively identifies as retained.
+
+Reuse the ContainerProvider observation entry point and the runtime's immutable
+incarnation/fingerprint/fence classifier. WorkerRetirement requires the original
+effect fence, complete durable fingerprints and matching Session scope, then
+passes those original coordinates to the same runtime observer without requiring
+today's execution configuration to reproduce the original adoption fingerprint.
+Existing legacy-handle normalization still validates its derivation. Recovery
+and TerminalCleanup retain their existing adoption-plan validation; retirement
+does not authorize either operation. Missing/foreign identities, failed retention
+premises and backend errors keep their existing non-destructive outcomes.
+
+The sequence remains complete Session-owner scan -> settled original Dispatch
+scope -> exact retained-source observation -> existing Worker-domain decision ->
+independently observed Actor exit. No Session or Run transition, source
+preparation, cleanup receipt or execution capability is supplied by this read.
+
 ## Amendment 2026-10-22: install observation in the registered-Worker composition
 
 The split Coordinator still owns no local claim pool or Hand. Its complete
