@@ -414,6 +414,8 @@ pub struct SessionApplication {
     executable_projections: ExecutableProjections,
     realizations: Arc<crate::SessionRealizations>,
     terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
+    continuations: Arc<crate::SessionContinuations>,
+    activities: Arc<crate::SessionActivities>,
     /// One complete set of immutable execution observations.
     execution_admission: Arc<SessionExecutionAdmission>,
     runtime_incarnation: String,
@@ -784,6 +786,16 @@ impl SessionApplication {
     #[must_use]
     pub fn terminal_cleanups(&self) -> Arc<crate::SessionTerminalCleanups> {
         self.terminal_cleanups.clone()
+    }
+
+    #[must_use]
+    pub fn continuations(&self) -> Arc<crate::SessionContinuations> {
+        self.continuations.clone()
+    }
+
+    #[must_use]
+    pub fn activities(&self) -> Arc<crate::SessionActivities> {
+        self.activities.clone()
     }
 
     #[cfg(any(test, feature = "test-support"))]

@@ -52,7 +52,8 @@ async fn scan_interests_skip_only_phases_absent_from_the_observed_prefix() {
     let events = app.reconcile_event_batches_from(&candidates).await;
     assert_eq!((events.pending, events.settled), (0, 0), "H1/E2 events");
     assert_eq!(
-        app.reconcile_environment_continuations_from(&candidates, 0)
+        app.continuations
+            .reconcile_environment_continuations_from(&candidates, 0)
             .await,
         0,
         "H1/E2 continuation"

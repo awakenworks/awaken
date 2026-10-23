@@ -123,6 +123,7 @@ async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_in
                 Arc::new(RecordingEnvironmentSource::default()),
             );
             let (admitted, epoch) = cold
+                .activities
                 .begin_activity_for_operation(&SessionId::from(id), &format!("approval-{cursor}"))
                 .await
                 .unwrap();
@@ -274,14 +275,15 @@ async fn reserved_run_without_activity_recovers_through_the_same_operation_recei
         &command.run_id,
     );
     assert!(
-        warm.recover_activity_for_operation(
-            &SessionId::from("reservation-before-activity"),
-            &operation,
-            None,
-        )
-        .await
-        .expect("C1 receipt query")
-        .is_none(),
+        warm.activities
+            .recover_activity_for_operation(
+                &SessionId::from("reservation-before-activity"),
+                &operation,
+                None,
+            )
+            .await
+            .expect("C1 receipt query")
+            .is_none(),
         "C1/E1 no activity before retry"
     );
 
@@ -300,15 +302,16 @@ async fn reserved_run_without_activity_recovers_through_the_same_operation_recei
     );
     assert_eq!(runtime.reserved.lock().unwrap().len(), 1, "C2/E3");
     assert_eq!(
-        cold.recover_activity_for_operation(
-            &SessionId::from("reservation-before-activity"),
-            &operation,
-            None,
-        )
-        .await
-        .expect("C2 receipt query")
-        .expect("C2/E2 receipt")
-        .1,
+        cold.activities
+            .recover_activity_for_operation(
+                &SessionId::from("reservation-before-activity"),
+                &operation,
+                None,
+            )
+            .await
+            .expect("C2 receipt query")
+            .expect("C2/E2 receipt")
+            .1,
         epoch,
         "C2/E2 exact operation receipt"
     );

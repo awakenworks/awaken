@@ -120,14 +120,15 @@ impl SessionApplication {
             // Session activity receipt to prove membership without creating a
             // Run record or relying on process-local "latest Run" state.
             let operation = session_run_activity_operation_id(session_id, run_id);
-            self.recover_activity_for_operation(
-                session_id,
-                &operation,
-                Some((&ThreadId(session_id.to_string()), run_id)),
-            )
-            .await
-            .map_err(|error| SessionProjectionRecoveryError::Unavailable(error.to_string()))?
-            .ok_or(SessionProjectionRecoveryError::NotFound)?;
+            self.activities
+                .recover_activity_for_operation(
+                    session_id,
+                    &operation,
+                    Some((&ThreadId(session_id.to_string()), run_id)),
+                )
+                .await
+                .map_err(|error| SessionProjectionRecoveryError::Unavailable(error.to_string()))?
+                .ok_or(SessionProjectionRecoveryError::NotFound)?;
             return Ok(SessionRunEventPage {
                 session_id: session_id.to_string(),
                 run_id: run_id.clone(),
@@ -216,6 +217,7 @@ pub(crate) async fn validate_failed_profiled_execution(
         .ok_or_else(refused)?;
     let operation = session_run_activity_operation_id(&session.session_id, &run.id);
     let (observed, epoch) = application
+        .activities
         .recover_activity_for_operation(
             &session.session_id,
             &operation,

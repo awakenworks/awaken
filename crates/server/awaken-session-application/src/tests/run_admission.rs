@@ -725,6 +725,7 @@ async fn cold_replica_recovers_projection_before_reusing_exact_activity_receipt(
         &run_id,
     );
     let (_, original_epoch) = application
+        .activities
         .begin_activity_for_operation(
             &SessionId::from("cold-replica-activity"),
             &activity_operation,
@@ -1832,6 +1833,7 @@ async fn recovered_running_activity_admits_a_fenced_successor() {
         .await
         .expect("Running is an execution-ready, epoch-fenced state");
     let successor = application
+        .activities
         .begin_activity(&SessionId::from("crash-orphaned-activity"))
         .await
         .expect("successor activity advances the durable fence");

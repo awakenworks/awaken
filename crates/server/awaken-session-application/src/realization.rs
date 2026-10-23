@@ -250,6 +250,7 @@ impl SessionApplication {
             );
         }
         let continuation_failure_count = self
+            .continuations
             .reconcile_environment_continuations_from(&candidates, self.clock.now_ms())
             .await;
         let continuations_elapsed = cycle_started.elapsed();

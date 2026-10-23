@@ -617,6 +617,7 @@ async fn assert_late_hitl_frontier(
 
     let admitted = warm
         .application
+        .activities()
         .begin_activity(&SessionId::from(id))
         .await
         .unwrap();

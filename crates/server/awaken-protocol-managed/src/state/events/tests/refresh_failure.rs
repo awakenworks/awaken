@@ -114,6 +114,7 @@ async fn exhausted_projection_cache_revision_preserves_complete_warm_frame() {
         .unwrap();
     state
         .application
+        .activities()
         .begin_activity(&awaken_session_types::SessionId::from(&session.id))
         .await
         .unwrap();
@@ -555,6 +556,7 @@ async fn session_usage_reads_closed_intervals_only_and_never_the_read_clock() {
         .unwrap();
     let opened = state
         .application
+        .activities()
         .begin_activity(&SessionId::from(&session.id))
         .await
         .unwrap();

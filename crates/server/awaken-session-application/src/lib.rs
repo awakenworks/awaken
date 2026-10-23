@@ -181,7 +181,7 @@ include!("application.rs");
 mod activity;
 mod inputs;
 mod lifecycle_outbox_relay;
-pub use activity::SessionActivityError;
+pub use activity::{SessionActivities, SessionActivityError};
 pub use inputs::{PreparedSessionInputs, SessionInputs};
 pub use lifecycle_outbox_relay::{
     LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL, LifecycleOutboxRelay, LifecycleOutboxReplay,
@@ -191,7 +191,7 @@ mod coordination;
 mod creation;
 mod creation_request;
 mod session_input;
-pub use continuation::SessionContinuationError;
+pub use continuation::{SessionContinuationError, SessionContinuations};
 pub use creation::{CreateSessionCommand, SessionCreateReceipt, SessionCreationError};
 pub use creation_request::{
     SessionBudgetRequest, SessionCreateProtocol, SessionCreateRequest, SessionCreateRequestError,

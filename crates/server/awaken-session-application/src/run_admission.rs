@@ -302,6 +302,7 @@ impl SessionApplication {
             };
             let existing_activity_epoch = match durable_owner.as_ref() {
                 Some(_) => self
+                    .activities
                     .recover_activity_for_operation(
                         &session_id,
                         &operation,
@@ -331,6 +332,7 @@ impl SessionApplication {
                     reservation_replayed,
                 } => {
                     let session_activity_epoch = self
+                        .activities
                         .begin_activity_for_operation_at_revision(
                             &session_id,
                             &operation,

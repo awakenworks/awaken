@@ -381,6 +381,18 @@ impl SessionAssembly {
                 runtime: self.runtime.clone(),
             },
         ));
+        let continuations = Arc::new(crate::SessionContinuations::new(
+            mutations.clone(),
+            &self.runtime,
+            realizations.clone(),
+        ));
+        let activities = Arc::new(crate::SessionActivities::new(
+            mutations.clone(),
+            clock.clone(),
+            &self.runtime,
+            continuations.clone(),
+            &runtime_incarnation,
+        ));
         SessionApplication {
             clock,
             configuration: self.configuration.clone(),
@@ -404,6 +416,8 @@ impl SessionAssembly {
             executable_projections,
             realizations,
             terminal_cleanups,
+            continuations,
+            activities,
             execution_admission,
             runtime_incarnation,
             event_batch_cutover_validation,
@@ -446,6 +460,8 @@ pub(crate) fn reassemble(
             Arc::strong_count(&application.repository_participants),
             Arc::strong_count(&application.realizations),
             Arc::strong_count(&application.terminal_cleanups),
+            Arc::strong_count(&application.continuations),
+            Arc::strong_count(&application.activities),
         ]
     };
     let unshared = application.fixture_assembly.clone().assemble(kernel());

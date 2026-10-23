@@ -1878,7 +1878,10 @@ fn terminal_only_release_rejects_live_execution_and_preserves_failure_truth() {
             let id = format!("terminal-release-{state}");
             create(repo.as_ref(), persisted(&id, false, state)).await;
             assert!(
-                app.begin_activity(&SessionId::from(&id)).await.is_err(),
+                app.activities
+                    .begin_activity(&SessionId::from(&id))
+                    .await
+                    .is_err(),
                 "T3 terminal absorption before archive"
             );
             assert!(
@@ -1906,7 +1909,10 @@ fn terminal_only_release_rejects_live_execution_and_preserves_failure_truth() {
                 awaken_session_state_contract::SessionDisposition::Archived { .. }
             ));
             assert!(
-                app.begin_activity(&SessionId::from(&id)).await.is_err(),
+                app.activities
+                    .begin_activity(&SessionId::from(&id))
+                    .await
+                    .is_err(),
                 "T4 no reopening"
             );
             app.release_terminal_session(&id, "another-timestamp", fact(&id))
@@ -2122,6 +2128,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     assert_eq!(replay.session.revision, revision, "L2");
 
     let root_running = app
+        .activities
         .begin_activity(&SessionId::from("archive-running"))
         .await
         .expect("L3 open root activity");
@@ -2153,6 +2160,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     // operation-scoped activity epoch is the authoritative aggregate evidence
     // that an admitted child/requires-action boundary is still active.
     let (child_running, child_epoch) = app
+        .activities
         .begin_activity_for_operation(
             &SessionId::from("archive-child-active"),
             "child-requires-action",
@@ -2212,6 +2220,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     );
 
     let forced_running = app
+        .activities
         .begin_activity(&SessionId::from("archive-force"))
         .await
         .expect("L6 open internal activity");
@@ -3050,6 +3059,7 @@ async fn recovered_scalar_activity_is_settled_or_superseded_without_parallel_tru
     assert!(recovered.begin_runtime_interval(1, 0), "A11 fixture");
     create(repo.as_ref(), recovered).await;
     let successor = app
+        .activities
         .begin_activity(&SessionId::from("activity-recovered-successor"))
         .await
         .expect("A11 successor");
@@ -3116,8 +3126,10 @@ async fn operation_activity_replay_uses_the_root_receipt_as_its_only_epoch_autho
 
     let joined_session = SessionId::from("activity-operation");
     let (left, right) = tokio::join!(
-        app.begin_activity_for_operation(&joined_session, "op-a"),
-        app.begin_activity_for_operation(&joined_session, "op-a")
+        app.activities
+            .begin_activity_for_operation(&joined_session, "op-a"),
+        app.activities
+            .begin_activity_for_operation(&joined_session, "op-a")
     );
     let (left_session, left_epoch) = left.expect("O1/O2 left");
     let (right_session, right_epoch) = right.expect("O1/O2 right");
@@ -3147,6 +3159,7 @@ async fn operation_activity_replay_uses_the_root_receipt_as_its_only_epoch_autho
         .expect("O3 settle");
     let settled_revision = settled.revision;
     let (replayed, replayed_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from("activity-operation"), "op-a")
         .await
         .expect("O3 exact replay");
@@ -3155,6 +3168,7 @@ async fn operation_activity_replay_uses_the_root_receipt_as_its_only_epoch_autho
     assert!(replayed.active_activity_epochs.is_empty(), "O3/E3");
 
     let (next, next_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from("activity-operation"), "op-b")
         .await
         .expect("O4 distinct operation");
@@ -3207,6 +3221,7 @@ async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_pa
         let child = ThreadId(format!("settlement-child-{rule}"));
         let run = RunId(format!("settlement-run-{rule}"));
         let (_, epoch) = app
+            .activities
             .begin_activity_for_operation_with_policy(
                 &SessionId::from(&session_id),
                 &format!("settlement-operation-{rule}"),
@@ -3951,7 +3966,8 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
 
     assert!(
         matches!(
-            app.begin_activity_for_operation(&SessionId::from("reached-valid-reply"), "new-run")
+            app.activities
+                .begin_activity_for_operation(&SessionId::from("reached-valid-reply"), "new-run")
                 .await,
             Err(SessionActivityError::BudgetReached)
         ),
@@ -4150,6 +4166,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     );
 
     let (_, awaiting_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from("boundary-awaiting"), "boundary-op")
         .await
         .expect("B1 activity");
@@ -4206,6 +4223,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     );
 
     let (_, running_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from("boundary-running"), "boundary-op")
         .await
         .expect("B3 activity");
@@ -4240,6 +4258,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     );
 
     let (_, interrupted_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from("boundary-interrupted"), "boundary-op")
         .await
         .expect("B4 activity");
@@ -4272,6 +4291,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     assert!(runtime.continuations.lock().unwrap().is_empty(), "B4/E4");
 
     let (_, failed_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from("boundary-failed"), "boundary-op")
         .await
         .expect("B5 activity");
@@ -4313,6 +4333,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     assert!(runtime.continuations.lock().unwrap().is_empty(), "B5/E5");
 
     let (_, unprojected_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from("boundary-unprojected"), "boundary-op")
         .await
         .expect("B6 activity");
@@ -4383,6 +4404,7 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
     );
 
     let (_, source_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from(session_id), "source-operation")
         .await
         .expect("R2 source activity");
@@ -4395,6 +4417,7 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
         .await
         .expect("R2 observer effect committed before queue settlement");
     let (_, successor_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from(session_id), "successor-operation")
         .await
         .expect("R2 successor activity");
@@ -4567,6 +4590,7 @@ async fn completed_child_without_a_committed_reply_settles_without_a_report_run(
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let (_, activity_epoch) = app
+        .activities
         .begin_activity_for_operation(
             &SessionId::from("completed-without-report"),
             "missing-report-operation",
@@ -5155,6 +5179,7 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
     };
 
     let (_, awaiting_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from("boundary-budget-awaiting"), "awaiting-op")
         .await
         .expect("B1 activity");
@@ -5202,6 +5227,7 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
         )),
     ]);
     let (_, ended_epoch) = app
+        .activities
         .begin_activity_for_operation_with_policy(
             &SessionId::from("boundary-budget-ended"),
             "ended-op",
@@ -5354,6 +5380,7 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
         "b",
     );
     let (_, epoch_a) = app
+        .activities
         .begin_activity_for_operation_with_policy(
             &SessionId::from("concurrent-child-budget"),
             "child-a-op",
@@ -5365,6 +5392,7 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
         .await
         .expect("C1 child A activity");
     let (_, epoch_b) = app
+        .activities
         .begin_activity_for_operation_with_policy(
             &SessionId::from("concurrent-child-budget"),
             "child-b-op",

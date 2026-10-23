@@ -590,12 +590,13 @@ async fn native_run_claim_is_visible_before_the_first_commit_only_with_exact_adm
         ),
         "E2 no receipt"
     );
-    app.begin_activity_for_operation(
-        &id,
-        &awaken_session_runtime_contract::session_run_activity_operation_id(&id, &run),
-    )
-    .await
-    .unwrap();
+    app.activities
+        .begin_activity_for_operation(
+            &id,
+            &awaken_session_runtime_contract::session_run_activity_operation_id(&id, &run),
+        )
+        .await
+        .unwrap();
     let before = repository.get(&id).await.unwrap();
     let page = app
         .session_run_events_after(

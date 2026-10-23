@@ -31,7 +31,7 @@ async fn live_session_usage_projects_the_same_clock_that_opened_its_root_interva
         idle_since_unix_ms: None,
     };
     let mut session = SessionAggregate::try_from(session).expect("valid admission fixture");
-    SessionApplication::open_activity_on_snapshot(
+    crate::SessionActivities::open_activity_on_snapshot(
         &mut session,
         None,
         false,

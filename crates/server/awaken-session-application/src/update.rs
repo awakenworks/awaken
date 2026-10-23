@@ -639,6 +639,7 @@ impl SessionApplication {
                 ))
             );
             let (_, session_activity_epoch) = self
+                .activities
                 .transfer_committed_activity_for_operation(
                     &session_id,
                     &operation_id,

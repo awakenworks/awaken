@@ -3259,6 +3259,7 @@ async fn recover_failed_reply_with_interrupt() -> (
         "CR1/E2 one Interrupt anchor owns the atomic supersession"
     );
     let (activity_root, reply_activity_epoch) = cold
+        .activities
         .recover_activity_for_operation(
             &SessionId::from("cold-interrupt-priority"),
             &reply_activity_operation,
@@ -3430,6 +3431,7 @@ async fn cold_recovery_interrupt_failure_preserves_failed_reply_and_activity() {
     assert!(reply.events.iter().all(|entry| !entry.processed), "CR2/E2");
     assert!(!interrupt.events[0].processed, "CR2/E2");
     let (activity_root, reply_activity_epoch) = cold
+        .activities
         .recover_activity_for_operation(
             &SessionId::from("cold-interrupt-failure"),
             &reply_activity_operation,
@@ -3695,6 +3697,7 @@ async fn legacy_processed_interrupt_without_anchor_cannot_starve_later_recovery(
         "LA1/E3 later valid anchor owns exact supersession"
     );
     let (activity_root, reply_activity_epoch) = app
+        .activities
         .recover_activity_for_operation(
             &SessionId::from("legacy-interrupt-anchor"),
             &reply_activity_operation,
@@ -3819,6 +3822,7 @@ async fn cold_recovery_reuses_a_processed_interrupt_anchor_to_close_the_failed_r
         "PA1/E2 reuses the committed Interrupt anchor"
     );
     let (activity_root, reply_activity_epoch) = cold
+        .activities
         .recover_activity_for_operation(
             &SessionId::from("processed-interrupt-recovery"),
             &reply_activity_operation,
@@ -3940,6 +3944,7 @@ async fn failed_interrupt_root_cas_cannot_supersede_the_failed_reply() {
     assert!(reply.events.iter().all(|entry| !entry.processed), "CF1/E2");
     assert!(!interrupt.events[0].processed, "CF1/E2");
     let (activity_root, reply_activity_epoch) = app
+        .activities
         .recover_activity_for_operation(
             &SessionId::from("interrupt-cas-failure"),
             &reply_activity_operation,
@@ -4095,6 +4100,7 @@ async fn failed_reply_activity_settlement_cannot_close_pending_supersession() {
     );
     assert!(!interrupt_after_failure.events[0].processed, "SF1/E2");
     let (activity_root, reply_activity_epoch) = app
+        .activities
         .recover_activity_for_operation(
             &SessionId::from("interrupt-settle-failure"),
             &reply_activity_operation,
@@ -5343,14 +5349,15 @@ async fn rejected_user_reservation_cannot_orphan_an_accompanying_system_case() {
         &run_id,
     );
     assert!(
-        app.recover_activity_for_operation(
-            &SessionId::from("system-after-admission"),
-            &operation,
-            None
-        )
-        .await
-        .expect("S1/E2 receipt query")
-        .is_none(),
+        app.activities
+            .recover_activity_for_operation(
+                &SessionId::from("system-after-admission"),
+                &operation,
+                None
+            )
+            .await
+            .expect("S1/E2 receipt query")
+            .is_none(),
         "S1/E2 no orphan activity"
     );
     assert!(runtime.reserved.lock().unwrap().is_empty(), "S1/E3");
@@ -5875,6 +5882,7 @@ async fn queued_input_before_awaiting_boundary(with_system: bool, legacy: bool) 
         "AQ3"
     );
     let (_, newer_epoch) = cold
+        .activities
         .begin_activity_for_operation(&SessionId::from(id), "newer-execution")
         .await
         .unwrap();

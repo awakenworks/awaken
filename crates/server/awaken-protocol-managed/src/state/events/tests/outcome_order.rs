@@ -283,6 +283,7 @@ async fn terminal_committing_between_outcome_query_and_root_read_cannot_backfill
     // Reserve the next Session interval before its Runtime effect; the later
     // Run opening is valid only after this root admission fence.
     warm.application
+        .activities()
         .begin_activity(&SessionId::from(&session_id))
         .await
         .unwrap();

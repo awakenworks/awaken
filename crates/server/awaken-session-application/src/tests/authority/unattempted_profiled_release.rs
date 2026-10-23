@@ -320,7 +320,10 @@ fn unattempted_profiled_release_retains_cleanup_and_absorbs_replay() {
             "U1 whole cleanup receipt"
         );
         assert!(
-            app.begin_activity(&SessionId::from(id)).await.is_err(),
+            app.activities
+                .begin_activity(&SessionId::from(id))
+                .await
+                .is_err(),
             "U1 terminal absorption"
         );
         let effects = runtime.effective_ids.lock().unwrap().len();
@@ -370,7 +373,7 @@ fn unattempted_profiled_release_and_activity_share_the_root_cas() {
         create(repo.as_ref(), unattempted(id)).await;
         let session_id = SessionId::from(id);
         let (activity, release) = tokio::join!(
-            app.begin_activity(&session_id),
+            app.activities.begin_activity(&session_id),
             app.terminate_session_with_admission(
                 &session_id,
                 "2026-10-10T00:00:00Z",
@@ -462,22 +465,24 @@ fn failed_profiled_release_joins_current_run_activity_without_claiming_cleanup()
             create(repo.as_ref(), session).await;
             let operation =
                 awaken_session_runtime_contract::session_run_activity_operation_id(&sid, &run);
-            app.begin_activity_for_operation_with_policy(
-                &sid,
-                if cause == "missing_receipt" {
-                    "unrelated-operation"
-                } else {
-                    &operation
-                },
-                false,
-                None,
-                None,
-                Some((&thread, &run)),
-            )
-            .await
-            .unwrap();
+            app.activities
+                .begin_activity_for_operation_with_policy(
+                    &sid,
+                    if cause == "missing_receipt" {
+                        "unrelated-operation"
+                    } else {
+                        &operation
+                    },
+                    false,
+                    None,
+                    None,
+                    Some((&thread, &run)),
+                )
+                .await
+                .unwrap();
             if cause == "newer_activity" {
-                app.begin_activity_for_operation(&sid, "newer-operation")
+                app.activities
+                    .begin_activity_for_operation(&sid, "newer-operation")
                     .await
                     .unwrap();
             }
@@ -515,7 +520,8 @@ fn failed_profiled_release_joins_current_run_activity_without_claiming_cleanup()
                         fact(&id),
                         awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
                     ),
-                    app.begin_activity_for_operation(&sid, "racing-operation"),
+                    app.activities
+                        .begin_activity_for_operation(&sid, "racing-operation"),
                 );
                 (release, Some(activity))
             } else {
@@ -542,7 +548,10 @@ fn failed_profiled_release_joins_current_run_activity_without_claiming_cleanup()
                     !after.verified_terminal_cleanup().unwrap().is_completed(),
                     "R1 retained cleanup"
                 );
-                assert!(app.begin_activity(&sid).await.is_err(), "R1 no reentry");
+                assert!(
+                    app.activities.begin_activity(&sid).await.is_err(),
+                    "R1 no reentry"
+                );
                 let restarted = application_with_runtime(
                     runtime.clone(),
                     repo.clone(),
