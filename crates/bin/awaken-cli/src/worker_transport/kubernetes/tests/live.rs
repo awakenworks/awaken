@@ -29,6 +29,8 @@ use std::time::Duration;
 const TTL: u64 = 60_000;
 const FINALIZER: &str = awaken_sandbox_kubernetes::WORKER_PROCESS_EVIDENCE_FINALIZER;
 
+mod source_retention;
+
 async fn ready_deployment_pod(pods: &kube::Api<Pod>, previous_uid: Option<&str>) -> Pod {
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
@@ -705,7 +707,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     // survive. E8 successor seals the old Worker ledger and joins that request
     // without recreating its ConfigMap or borrowing the successor's UID. This
     // is request closure only, not a Session terminal cleanup receipt.
-    let successor_create = WorkerK8sCreateClient::new(next_upstream.clone());
+    let successor_create = Arc::new(WorkerK8sCreateClient::new(next_upstream.clone()));
     successor_create.bind_identity(successor.clone()).unwrap();
     let old_effect = awaken_provisioning_contract::SandboxEffectFence::new(
         "old-create-effect",
@@ -737,6 +739,14 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
             .is_none(),
         "L4 never stop successor"
     );
+    source_retention::assert_original_sources_remain_observable(
+        client.clone(),
+        name,
+        successor_create,
+        &successor,
+        clock.clone(),
+    )
+    .await;
     // E10 observes a retained, independently stopped idle Pod. L7 below
     // separately proves Deployment UID replacement after idle retirement.
     std::fs::write(&idle_token, token(&accounts, &created[2], audience).await).unwrap();

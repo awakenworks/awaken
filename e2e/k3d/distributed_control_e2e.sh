@@ -1040,6 +1040,7 @@ TRANSPORT_TESTS=$(cargo test --locked -p awaken-cli --features container-k8s --l
 grep -Fqx "$TRANSPORT_TEST: test" <<<"$TRANSPORT_TESTS" \
   || { err "exact Kubernetes transport qualification test was not selected"; exit 1; }
 AWAKEN_K8S_E2E=1 AWAKEN_K3D_CLUSTER="$CLUSTER" AWAKEN_K8S_FIXTURE_IMAGE="$IMAGE" \
+  AWAKEN_K8S_CONTROL_IMAGE="$SANDBOX_IMAGE" \
   cargo test --locked -p awaken-cli --features container-k8s --lib \
   "$TRANSPORT_TEST" -- --exact --nocapture
 kubectl -n "$NS" scale statefulset/worker --replicas=0 >/dev/null
