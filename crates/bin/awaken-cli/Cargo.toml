@@ -80,6 +80,7 @@ awaken-environment-image-build.workspace = true
 awaken-environment-package-image-builder.workspace = true
 awaken-ext-builtin-tools.workspace = true
 awaken-dispatch = { workspace = true, features = ["durable"] }
+awaken-dispatch-execution.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-work-store.workspace = true
@@ -152,6 +153,7 @@ awaken-provider-genai = { workspace = true }
 awaken-agent-contract = { workspace = true }
 awaken-runtime-contract = { workspace = true }
 async-trait.workspace = true
+thiserror.workspace = true
 awaken-time.workspace = true
 axum = "0.8"
 bytes = "1"

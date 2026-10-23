@@ -5,7 +5,6 @@
 
 use super::*;
 
-use awaken_coordinator::install_managed_agent_coordination;
 use cloud_plane::{CloudPlane, assemble_cloud_plane};
 
 mod cloud_plane;
@@ -91,7 +90,7 @@ pub(super) async fn prepare_runtime_routers(
     )?;
     let event_batch_cutover_validation = session.event_batch_cutover_validation.clone();
     let coordinator = assemble_coordinator(
-        &mut base, &resources, &mut cloud, &control, &execution, &host, session,
+        &mut base, &resources, &mut cloud, &control, &execution, session,
     )
     .await?;
     Ok(finish_process_routers(
@@ -196,9 +195,12 @@ async fn selected_runtime_authority(
             .clone()
             .unwrap_or_else(awaken_session_executor::DeploymentConfig::ephemeral);
         process.runtime_authority = Some(
-            awaken_coordinator::init_scenario_runtime(&selected, stores.clock.clone())
-                .await
-                .map_err(|error| error.to_string())?,
+            crate::scenario_runtime_authority(
+                &selected.coordinator_storage(),
+                stores.clock.clone(),
+            )
+            .await
+            .map_err(|error| error.to_string())?,
         );
     }
     #[cfg(not(any(test, feature = "test-support")))]
@@ -674,6 +676,9 @@ async fn assemble_execution_host(
 /// The Session application, the Managed state over it and the lifecycle
 /// delivery they share.
 struct SessionPlane {
+    /// The executor as the Coordinator consumes it, selected once the
+    /// Session application is bound into it.
+    execution: awaken_coordinator::ExecutionPorts,
     session_application: Arc<awaken_session_application::SessionApplication>,
     managed_state: Arc<ManagedState>,
     lifecycle_delivery: awaken_coordinator::PreparedManagedLifecycleDelivery,
@@ -758,8 +763,8 @@ fn assemble_session_plane(
     bind_session_lifecycle_hooks(base, host, &session_application)?;
     let event_batch_cutover_validation =
         session_application.session_event_batch_cutover_validation_source();
-    install_managed_agent_coordination(&host.host, &session_application)
-        .expect("Managed Session coordination application binds before dispatch starts");
+    let coordinator_execution = crate::coordinator_execution(&host.host, &session_application)
+        .map_err(|error| error.to_string())?;
     // The Session `content_capture` projection decides with the Host's own
     // ceiling and the very policy sources its Run boundary reads.
     let mut managed_state = ManagedState::from_application(
@@ -780,6 +785,7 @@ fn assemble_session_plane(
     .expect("Managed lifecycle delivery binds before Coordinator serves traffic");
     install_credential_rollout_target(base, control, &session_application, &managed_state);
     Ok(SessionPlane {
+        execution: coordinator_execution,
         session_application,
         managed_state,
         lifecycle_delivery,
@@ -883,7 +889,6 @@ async fn assemble_coordinator(
     cloud: &mut CloudPlane,
     control: &ControlSurface,
     execution: &ExecutionStores,
-    host: &ExecutionHost,
     session: SessionPlane,
 ) -> Result<awaken_coordinator::CoordinatorComponent, String> {
     // AllInOne and split Coordinator expose the same rebuildable runtime
@@ -910,7 +915,7 @@ async fn assemble_coordinator(
     awaken_coordinator::build_coordinator_component(awaken_coordinator::CoordinatorDependencies {
         service_lifecycle: base.process.service_lifecycle.clone(),
         lifecycle_delivery: session.lifecycle_delivery,
-        host: host.host.clone(),
+        execution: session.execution,
         session_application: session.session_application,
         managed_state: session.managed_state,
         resource_registry: resources.resource_registry.clone(),

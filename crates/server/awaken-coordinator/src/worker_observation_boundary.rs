@@ -25,8 +25,6 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use crate::ExecutorComponents;
-
 pub const WORKER_OBSERVATIONS_PATH: &str = "/internal/v1/workers/observations";
 pub const WORKER_OBSERVE_PERMISSION: &str = "worker:observe";
 pub(crate) const WORKER_BOOTSTRAP_CLOSE_PATH: &str = "/internal/v1/workers/bootstrap/close";
@@ -49,7 +47,8 @@ struct BoundaryState {
 #[derive(Clone)]
 pub(crate) struct DomainState {
     pub(crate) directory: Arc<dyn WorkerDirectory>,
-    pub(crate) host: Arc<ExecutorComponents>,
+    /// The durable dispatch authority whose physical attempts the read judges.
+    pub(crate) dispatch: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
     pub(crate) environments:
         Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     pub(crate) sessions: Arc<awaken_session_application::SessionApplication>,
@@ -455,16 +454,7 @@ async fn handle_domain(
             );
         }
     };
-    let dispatch = match state.host.session_runs().coordinator_dispatch() {
-        Ok(store) => store,
-        Err(error) => {
-            return domain_read_failure(
-                &identity,
-                "dispatch_owner",
-                awaken_session_executor::to_run_error(error),
-            );
-        }
-    };
+    let dispatch = state.dispatch.clone();
     let owner = identity.lease_owner();
     let physical_attempt_active =
         match awaken_dispatch::has_active_physical_attempt_for_owner(dispatch.as_ref(), &owner)
@@ -751,14 +741,14 @@ mod tests {
     #[tokio::test]
     async fn domain_read_errors_preserve_fault_class_and_scope_without_operator_details() {
         // DR3 decision table: all four neutral fault kinds x misleading/ordinary
-        // codes x the five actual read stages. HTTP follows kind, never code
+        // codes x the four actual read stages (the dispatch owner is a
+        // construction-time port, so it has no read stage). HTTP follows kind, never code
         // prose; the original code and exact Worker identity survive. DR4 a
         // large sensitive operator message is absent from the bounded JSON and
         // no failure can expose a successful retirement permission field.
         let identity = awaken_worker_registry::WorkerIdentity::new("worker-a", "boot-a", 7);
         for stage in [
             "registry",
-            "dispatch_owner",
             "physical_attempts",
             "work_claims",
             "session_realizations",

@@ -197,15 +197,15 @@ fn scenario_deployment_from(
             .expect("SESSION_DEPLOYMENT_POSTGRES_MAX_CONNECTIONS must be a positive u32");
     }
     if read("SESSION_DEPLOYMENT_DISPATCH_BACKEND").as_deref() == Some("postgres") {
-        deployment.dispatch_backend = awaken_session_executor::DispatchBackend::Postgres;
+        deployment.dispatch_backend = awaken_dispatch_execution::DispatchBackend::Postgres;
     }
     if read("SESSION_DEPLOYMENT_STORE").as_deref() == Some("postgres") {
-        deployment.store = awaken_session_executor::StoreKind::Postgres;
+        deployment.store = awaken_dispatch_execution::StoreKind::Postgres;
     }
     deployment.wake = match read("SESSION_DEPLOYMENT_WAKE").as_deref() {
-        None | Some("") | Some("none") => awaken_session_executor::Wake::None,
-        Some("pg-notify") => awaken_session_executor::Wake::PgNotify,
-        Some("nats") => awaken_session_executor::Wake::Nats,
+        None | Some("") | Some("none") => awaken_dispatch_execution::Wake::None,
+        Some("pg-notify") => awaken_dispatch_execution::Wake::PgNotify,
+        Some("nats") => awaken_dispatch_execution::Wake::Nats,
         Some(value) => {
             panic!("SESSION_DEPLOYMENT_WAKE must be none, pg-notify, or nats (got {value})")
         }
@@ -348,10 +348,10 @@ fn select_scenario_runtime_authority(
             assert!(
                 !deployment.durable
                     && deployment.database_url.is_none()
-                    && deployment.store == awaken_session_executor::StoreKind::Sqlite
+                    && deployment.store == awaken_dispatch_execution::StoreKind::Sqlite
                     && deployment.dispatch_backend
-                        == awaken_session_executor::DispatchBackend::Sqlite
-                    && deployment.wake == awaken_session_executor::Wake::None,
+                        == awaken_dispatch_execution::DispatchBackend::Sqlite
+                    && deployment.wake == awaken_dispatch_execution::Wake::None,
                 "durable or distributed Scenario Runtime requires an installed Coordinator authority"
             );
             awaken_session_executor_testkit::volatile_runtime_authority(clock)
@@ -408,10 +408,12 @@ mod tests {
         // -> E1. The absent/local R2 is exercised by factory_topology's AI SDK
         // Run; absent/durable R3 is the fail-closed case below.
         let deployment = awaken_session_executor::DeploymentConfig::ephemeral();
-        let selected =
-            awaken_coordinator::init_scenario_runtime(&deployment, awaken_time::system_clock())
-                .await
-                .expect("selected Coordinator scenario authority");
+        let selected = awaken_cli::scenario_runtime_authority(
+            &deployment.coordinator_storage(),
+            awaken_time::system_clock(),
+        )
+        .await
+        .expect("selected Coordinator scenario authority");
         let exact_dispatch = selected.dispatch_store();
         let (host, _resources) = resource_host_with_selected_runtime(
             Arc::new(crate::EchoModel),
@@ -474,18 +476,18 @@ mod tests {
         );
         assert_eq!(
             deployment.dispatch_backend,
-            awaken_session_executor::DispatchBackend::Postgres
+            awaken_dispatch_execution::DispatchBackend::Postgres
         );
         assert_eq!(
             deployment.store,
-            awaken_session_executor::StoreKind::Postgres
+            awaken_dispatch_execution::StoreKind::Postgres
         );
         assert_eq!(
             deployment.database_url.as_deref(),
             Some("postgres://fixture")
         );
         assert_eq!(deployment.postgres_max_connections.get(), 8);
-        assert_eq!(deployment.wake, awaken_session_executor::Wake::Nats);
+        assert_eq!(deployment.wake, awaken_dispatch_execution::Wake::Nats);
         assert_eq!(deployment.wake_channel, "wake.test");
         assert_eq!(deployment.nats_url.as_deref(), Some("nats://fixture"));
         assert_eq!(deployment.dispatch_owner, "brain-2");

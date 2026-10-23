@@ -14,19 +14,15 @@ separation = "process"
 
 [dependencies]
 awaken-dispatch-contract.workspace = true
-# Real Web compiler used by this bootstrap crate's explicit scenario assembly only.
-awaken-ext-builtin-tools = { workspace = true, optional = true }
+# The process dispatch and its lifecycle port; the executor that resolves
+# claimed Runs is selected by the composition root (ExecutionPorts).
+awaken-dispatch-execution.workspace = true
 awaken-tool-contract.workspace = true
 awaken-data-governance-contract.workspace = true
 awaken-service-lifecycle.workspace = true
-# The extracted service layer: ExecutorComponents / ManagedHost / RunApplicationHost and all
-# host modules live here; Coordinator startup selects the served router modes.
-awaken-session-executor.workspace = true
 awaken-dispatch-http.workspace = true
 awaken-resource-worker-http.workspace = true
 awaken-config-service.workspace = true
-# Concrete materialization is selected only by the existing scenario assembly.
-awaken-credential-materializer = { workspace = true, optional = true }
 awaken-ext-skills.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-dispatch = { workspace = true, features = ["durable"] }
@@ -61,12 +57,6 @@ awaken-protocol-mcp = { workspace = true }
 awaken-agent-config.workspace = true
 awaken-resource-persistence = { workspace = true, optional = true }
 awaken-session-store = { workspace = true }
-# Volatile Environment execution for test/scenario startup only.
-awaken-work-store = { workspace = true, optional = true }
-awaken-executable-environment-catalog = { workspace = true, optional = true }
-# Volatile scenario wiring is available only through `test-support`; production
-# Coordinator receives exact credential contracts and never opens Vault.
-awaken-credential-vault = { workspace = true, features = ["oauth-command"], optional = true }
 awaken-credential-contract.workspace = true
 # Data-subject consent/erasure store (ADR-0050): backs the /v1/user_profiles/:id/erasure endpoint.
 # Embedded IAM (ADR-0042/0043 P1): typed self-managed identity gates management
@@ -89,7 +79,6 @@ awaken-session-realization-contract.workspace = true
 awaken-session-repository-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-state-contract.workspace = true
-awaken-session-budget-contract.workspace = true
 awaken-session-dream-contract.workspace = true
 awaken-session-event-contract.workspace = true
 awaken-session-types.workspace = true
@@ -128,16 +117,9 @@ url.workspace = true
 [features]
 # Volatile embedded/scenario assembly is excluded from product builds.
 test-support = [
-    "dep:awaken-ext-builtin-tools",
-    "dep:awaken-work-store",
-    "dep:awaken-executable-environment-catalog",
-    "awaken-work-store/test-support",
     "awaken-session-application/test-support",
     "dep:awaken-store-inmem",
     "dep:awaken-resource-persistence",
-    "dep:awaken-credential-vault",
-    "dep:awaken-credential-materializer",
-    "awaken-credential-materializer/authority",
     "awaken-resource-persistence/test-support",
     "awaken-deployment-application/test-support",
     "awaken-captured-content-store/test-support",
@@ -145,18 +127,15 @@ test-support = [
     "awaken-dispatch/test-support",
     "awaken-resource-worker-http/test-support",
     "awaken-config-store/test-support",
-    "awaken-credential-vault/test-support",
     "awaken-model-catalog/test-support",
     "awaken-session-store/test-support",
     "awaken-protocol-managed/test-support",
     "awaken-dream-application/test-support",
-    "awaken-session-executor/test-support",
     "awaken-worker-registry/test-support",
     "awaken-webhook/test-support",
 ]
 # Cross-node dispatch wake over NATS (AWAKEN_DISPATCH_WAKE=nats). Passes through to
-# awaken-session-executor → awaken-dispatch so the built binary carries a NATS-capable
-# wake selector. This is the *wake* channel only and is independent of the crate's
+# awaken-dispatch so the built binary carries a NATS-capable wake selector. This is the *wake* channel only and is independent of the crate's
 # non-optional `async-nats` used for the ADR-0045 hand relay — do not conflate them.
 nats = ["awaken-dispatch/nats"]
 # The same Coordinator Create broker uses the canonical effects role. Pod
@@ -165,6 +144,13 @@ nats = ["awaken-dispatch/nats"]
 container-k8s = ["dep:awaken-container-contract"]
 
 [dev-dependencies]
+# Integration fixtures build the co-located Session executor the Coordinator
+# consumes through ExecutionPorts; only the composition roots link it normally.
+awaken-session-executor = { workspace = true, features = ["test-support"] }
+awaken-ext-builtin-tools.workspace = true
+awaken-executable-environment-catalog.workspace = true
+awaken-work-store = { workspace = true, features = ["test-support"] }
+awaken-session-budget-contract.workspace = true
 # Integration fixtures drive the actual outbound A2A attempt through its neutral port.
 awaken-run-executor-a2a.workspace = true
 # The Broker regressions retain the original real Kube client/ledger fixture.
@@ -177,7 +163,7 @@ awaken-run-executor-acp.workspace = true
 awaken-coordinator-client.workspace = true
 # Cross-component closure cases select the actual existing transport and keep
 # all original Registry/Dispatch/ledger assertions at the broker decision owner.
-awaken-cli = { workspace = true, features = ["container-k8s"] }
+awaken-cli = { workspace = true, features = ["container-k8s", "test-support"] }
 awaken-executable-environment-contract.workspace = true
 # Captures the Session adoption's correlated rollout diagnostics in its tests.
 awaken-reliability-testkit = { workspace = true, features = ["tracing", "postgres"] }

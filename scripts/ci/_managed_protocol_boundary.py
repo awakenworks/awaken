@@ -48,6 +48,12 @@ AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
 # call does not compile.
 
 
+# The co-located root that selects the Coordinator's execution ports, and the
+# ports themselves.
+COORDINATOR_EXECUTION_ROOT = "crates/bin/awaken-cli/src/coordinator_execution.rs"
+COORDINATOR_EXECUTION_PORTS = "crates/server/awaken-coordinator/src/execution_ports.rs"
+
+
 def session_admission_ownership_violations(sources: dict[str, str]) -> list[str]:
     """SessionApplication, never a protocol adapter, owns Run admission."""
     errors: list[str] = []
@@ -71,14 +77,20 @@ def session_admission_ownership_violations(sources: dict[str, str]) -> list[str]
         errors.append(
             "awaken-session-application: missing the authoritative Session Run command or adapter"
         )
-    # The Coordinator builds the one public Run adapter over the Session
-    # application its composition root injected; the Managed adapter holds only
-    # narrowed roles and is never the source of that application.
-    coordinator = sources.get("crates/server/awaken-coordinator/src/lib.rs", "")
-    if "awaken_session_application::SessionRunApplication::new(" not in coordinator:
+    # The composition root that builds the executor builds the one public Run
+    # adapter over the Session application it injected, and the Coordinator
+    # receives that adapter typed as SessionRunApplication, so every public Run
+    # protocol it mounts admits through the application. The Managed adapter
+    # holds only narrowed roles and is never the source of that application.
+    root = sources.get(COORDINATOR_EXECUTION_ROOT, "")
+    ports = sources.get(COORDINATOR_EXECUTION_PORTS, "")
+    if "SessionRunApplication::new(" not in _crate_boundary_workspace.production_rust(root) or (
+        not re.search(r"pub session_runs:\s*Arc<SessionRunApplication>", ports)
+    ):
         errors.append(
             "awaken-coordinator: public Run protocols are not wired to SessionApplication admission"
         )
+    coordinator = sources.get("crates/server/awaken-coordinator/src/lib.rs", "")
     if "managed_state.session_application()" in _crate_boundary_workspace.production_rust(
         coordinator
     ):
@@ -94,6 +106,8 @@ def check_session_admission_ownership(repo_root: Path) -> list[str]:
         repo_root / "crates/server/awaken-protocol-managed/src/state/sessions.rs",
         repo_root / "crates/server/awaken-coordinator/src/lib.rs",
         repo_root / "crates/server/awaken-session-application/src/run_admission.rs",
+        repo_root / COORDINATOR_EXECUTION_ROOT,
+        repo_root / COORDINATOR_EXECUTION_PORTS,
     )
     return session_admission_ownership_violations(
         {
@@ -403,7 +417,8 @@ def selftest() -> None:
     ), "R6 omitted"
 
     # Admission-ownership cause/effect graph: C8 SessionApplication owns the
-    # neutral command and sole adapter; C9 Coordinator injects that application;
+    # neutral command and sole adapter; C9 the composition root builds that
+    # adapter and the Coordinator receives it typed (A4 unbuilt, A6 erased);
     # C10 Managed or Coordinator defines a compatibility admission. Effects: E8 one owner;
     # E9 all public Run adapters share it; E10 reject a second creation/recovery
     # path. Decision table: A1 C8+C9,!C10 -> accept; A2 !C8 -> reject; A3 C10 ->
@@ -413,8 +428,9 @@ def selftest() -> None:
             "pub async fn admit_session_run_for_owner() {} "
             "pub struct SessionRunApplication; "
             "impl RunApplication for SessionRunApplication {}",
-        "crates/server/awaken-coordinator/src/lib.rs":
-            "awaken_session_application::SessionRunApplication::new(runs, sessions)",
+        "crates/server/awaken-coordinator/src/lib.rs": "let session_runs = execution.session_runs;",
+        COORDINATOR_EXECUTION_ROOT: "let runs = Arc::new(SessionRunApplication::new(runs, sessions));",
+        COORDINATOR_EXECUTION_PORTS: "pub session_runs: Arc<SessionRunApplication>,",
         "crates/server/awaken-protocol-managed/src/state/sessions.rs": "",
     }
     assert session_admission_ownership_violations(valid) == [], "A1/E8/E9"
@@ -422,8 +438,11 @@ def selftest() -> None:
     missing["crates/server/awaken-session-application/src/run_admission.rs"] = ""
     assert session_admission_ownership_violations(missing), "A2/E10"
     unwired = dict(valid)
-    unwired["crates/server/awaken-coordinator/src/lib.rs"] = ""
+    unwired[COORDINATOR_EXECUTION_ROOT] = ""
     assert session_admission_ownership_violations(unwired), "A4/!E9"
+    erased = dict(valid)
+    erased[COORDINATOR_EXECUTION_PORTS] = "pub session_runs: Arc<dyn RunApplication>,"
+    assert session_admission_ownership_violations(erased), "A6/!E9 erased port type"
     read_back = dict(valid)
     read_back["crates/server/awaken-coordinator/src/lib.rs"] += (
         "; let sessions = managed_state.session_application();"

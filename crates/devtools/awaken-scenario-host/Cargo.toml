@@ -34,6 +34,7 @@ awaken-ext-builtin-tools.workspace = true
 awaken-ext-memory.workspace = true
 awaken-ext-skills.workspace = true
 awaken-dispatch = { workspace = true, features = ["durable"] }
+awaken-dispatch-execution.workspace = true
 awaken-worker-transport-security.workspace = true
 awaken-admin-assistant = { workspace = true }
 awaken-tenancy = { workspace = true }
@@ -113,6 +114,14 @@ awaken-session-budget-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-dream-application.workspace = true
 awaken-coordinator = { workspace = true, features = ["test-support"] }
+# The scenario root builds the Session executor, the Session application over
+# it and the volatile Environment execution the Coordinator consumes.
+awaken-session-application = { workspace = true, features = ["test-support"] }
+awaken-session-repository-contract.workspace = true
+awaken-session-store = { workspace = true, features = ["test-support"] }
+awaken-environment-application.workspace = true
+awaken-executable-environment-catalog.workspace = true
+awaken-work-store = { workspace = true, features = ["test-support"] }
 # Reuse the production worker lifecycle/registration/heartbeat/dispatch wiring in
 # the worker-failover scenario; only its deterministic executor provider differs.
 awaken-worker = { workspace = true }
