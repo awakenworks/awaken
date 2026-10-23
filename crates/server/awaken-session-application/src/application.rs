@@ -16,6 +16,25 @@ use awaken_session_state_contract::{
 };
 use awaken_time::WallClockExt;
 use awaken_tool_contract::ToolConfigurationCompiler;
+/// Invoke the Runtime's pure provider-effective Sandbox-layout gate after the
+/// placement's idle-retention check. It performs no durable mutation or
+/// external realization and is the one seam used before create, live
+/// Resource and final root persistence boundaries.
+pub(crate) fn validate_session_sandbox_layout(
+    effects: &dyn awaken_session_runtime_contract::RealizationEffects,
+    session_id: &str,
+    layout: &awaken_session_configuration_contract::SessionSandboxLayout,
+) -> Result<(), RunError> {
+    validate_environment_continuation_topology(
+        awaken_session_state_contract::SessionPlacementClass::new(
+            layout.runtime_placement,
+            layout.environment.self_hosted,
+        ),
+        &layout.environment.idle_retention,
+    )?;
+    effects.validate_session_sandbox_layout(session_id, layout)
+}
+
 /// Reject a layout whose idle policy its placement cannot honour
 /// ([`awaken_session_state_contract::SessionPlacementClass::supports_idle_retention`]).
 fn validate_environment_continuation_topology(
@@ -398,7 +417,6 @@ pub struct SessionApplication {
     model_publication_resolver:
         Option<Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>>,
     resource_registry: Option<Arc<dyn awaken_resource_contract::ResourceRegistry>>,
-    resource_references: Arc<crate::SessionResourceReferences>,
     work_assignments: Arc<crate::SessionWorkAssignments>,
     repository_participants: Arc<crate::SessionRepositoryParticipants>,
     resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
@@ -418,6 +436,8 @@ pub struct SessionApplication {
     activities: Arc<crate::SessionActivities>,
     termination_commands: Arc<crate::SessionTerminationCommands>,
     update_commands: Arc<crate::SessionUpdateCommands>,
+    resource_reconciliation: Arc<crate::SessionResourceReconciliation>,
+    resource_manifests: Arc<crate::SessionResourceManifests>,
     /// One complete set of immutable execution observations.
     execution_admission: Arc<SessionExecutionAdmission>,
     runtime_incarnation: String,
@@ -483,16 +503,7 @@ impl SessionApplication {
         session_id: &str,
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
     ) -> Result<(), RunError> {
-        let effects = self.runtime().realization_effects();
-
-        validate_environment_continuation_topology(
-            awaken_session_state_contract::SessionPlacementClass::new(
-                layout.runtime_placement,
-                layout.environment.self_hosted,
-            ),
-            &layout.environment.idle_retention,
-        )?;
-        effects.validate_session_sandbox_layout(session_id, layout)
+        validate_session_sandbox_layout(self.runtime().realization_effects(), session_id, layout)
     }
 
     #[must_use]
@@ -808,6 +819,16 @@ impl SessionApplication {
     #[must_use]
     pub fn update_commands(&self) -> Arc<crate::SessionUpdateCommands> {
         self.update_commands.clone()
+    }
+
+    #[must_use]
+    pub fn resource_reconciliation(&self) -> Arc<crate::SessionResourceReconciliation> {
+        self.resource_reconciliation.clone()
+    }
+
+    #[must_use]
+    pub fn resource_manifests(&self) -> Arc<crate::SessionResourceManifests> {
+        self.resource_manifests.clone()
     }
 
     #[cfg(any(test, feature = "test-support"))]

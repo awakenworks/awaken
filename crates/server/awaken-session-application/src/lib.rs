@@ -233,10 +233,12 @@ mod terminal_cleanup;
 pub use terminal_cleanup::SessionTerminalCleanups;
 mod work_assignments;
 pub(crate) use resource_effect_authorization::require_live_root_lease;
-pub use resource_reconciliation::{
+mod resource_manifests;
+pub use resource_manifests::{
     ReplaceSessionResourceManifest, SessionResourceAttachment, SessionResourceManifestError,
-    SessionResourceManifestOutcome, SessionResourceManifestRequest, SessionResourcePurgeGuard,
+    SessionResourceManifestOutcome, SessionResourceManifestRequest, SessionResourceManifests,
 };
+pub use resource_reconciliation::{SessionResourcePurgeGuard, SessionResourceReconciliation};
 pub use roles::{
     DeploymentSessionEnvironment, ProfiledSessionCommands, SessionCreation,
     SessionCredentialCommands, SessionEventBatches, SessionObservation, SessionProjectionReads,

@@ -901,7 +901,10 @@ async fn repository_retirement_requires_durable_owner_before_any_vault_effect() 
 
     let app =
         repository_retirement_application(sessions.clone(), registry.clone(), ingress.clone());
-    let report = app.reconcile_resource_activations().await;
+    let report = app
+        .resource_reconciliation
+        .reconcile_resource_activations()
+        .await;
     assert!(report.failures.is_empty(), "A1-A2/E4: {report:?}");
     assert!(
         sessions
@@ -983,16 +986,19 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
         let before_barrier = sessions.get(&SessionId::from(session_id)).await.unwrap();
         assert!(
             matches!(
-                app.replace_session_resource_manifest(
-                    &SessionId::from(session_id),
-                    ReplaceSessionResourceManifest {
-                        request_fingerprint: awaken_agent_contract::stable_fingerprint(&manifest),
-                        resources: manifest.clone(),
-                        expected_resource_revision: None,
-                        idempotency_key: None,
-                    },
-                )
-                .await,
+                app.resource_manifests
+                    .replace_session_resource_manifest(
+                        &SessionId::from(session_id),
+                        ReplaceSessionResourceManifest {
+                            request_fingerprint: awaken_agent_contract::stable_fingerprint(
+                                &manifest
+                            ),
+                            resources: manifest.clone(),
+                            expected_resource_revision: None,
+                            idempotency_key: None,
+                        },
+                    )
+                    .await,
                 Err(SessionResourceManifestError::Conflict)
             ),
             "R2/E2"
@@ -1004,7 +1010,10 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
         );
 
         ingress.fail_next_retirement();
-        let first = app.reconcile_resource_activations().await;
+        let first = app
+            .resource_reconciliation
+            .reconcile_resource_activations()
+            .await;
         assert_eq!(first.failures.len(), 1, "R1/E1: {first:?}");
         assert!(
             !sessions
@@ -1035,7 +1044,10 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
     );
     let app =
         repository_retirement_application(sessions.clone(), registry.clone(), ingress.clone());
-    let restarted = app.reconcile_resource_activations().await;
+    let restarted = app
+        .resource_reconciliation
+        .reconcile_resource_activations()
+        .await;
     assert!(restarted.failures.is_empty(), "R3/E3-E4: {restarted:?}");
     assert!(
         sessions
@@ -1064,6 +1076,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
     );
 
     let admitted = app
+        .resource_manifests
         .replace_session_resource_manifest(
             &SessionId::from(session_id),
             ReplaceSessionResourceManifest {

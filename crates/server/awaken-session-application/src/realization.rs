@@ -223,7 +223,10 @@ impl SessionApplication {
         // owns this value across sequential cycles, so an older concurrent
         // status/phase scan cannot overwrite a newer diagnostic view.
         let scan_elapsed = cycle_started.elapsed();
-        let resources = self.reconcile_resource_activations_from(&candidates).await;
+        let resources = self
+            .resource_reconciliation
+            .reconcile_resource_activations_from(&candidates)
+            .await;
         let resources_elapsed = cycle_started.elapsed();
         let resource_failure_count = resources.failures.len();
         let pending = resources.pending;

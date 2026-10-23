@@ -320,6 +320,27 @@ impl SessionAssembly {
             lease.activities.clone(),
             &self.runtime,
         ));
+        let resource_reconciliation = Arc::new(crate::SessionResourceReconciliation::new(
+            kernel.mutations.clone(),
+            kernel.clock.clone(),
+            foundation.credentials.clone(),
+            foundation.resource_references.clone(),
+            foundation.repository_participants.clone(),
+            lease.terminal_cleanups.clone(),
+            &self.runtime,
+        ));
+        let resource_manifests = Arc::new(crate::SessionResourceManifests::new(
+            crate::resource_manifests::SessionResourceManifestCollaborators {
+                mutations: kernel.mutations.clone(),
+                clock: kernel.clock.clone(),
+                resource_references: foundation.resource_references.clone(),
+                work_assignments: foundation.work_assignments.clone(),
+                repository_participants: foundation.repository_participants.clone(),
+                resource_reconciliation: resource_reconciliation.clone(),
+                resource_registry: self.resource_registry.clone(),
+                realization_effects: self.runtime.realization_effects.clone(),
+            },
+        ));
         let SessionKernel {
             #[cfg(any(test, feature = "test-support"))]
             store,
@@ -338,7 +359,7 @@ impl SessionAssembly {
             queries,
             inputs,
             resource_effect_authorization,
-            resource_references,
+            resource_references: _,
             work_assignments,
             repository_participants,
             executable_projections,
@@ -358,7 +379,6 @@ impl SessionAssembly {
             environments: self.environments.clone(),
             model_publication_resolver: self.models.clone(),
             resource_registry: self.resource_registry.clone(),
-            resource_references,
             work_assignments,
             repository_participants,
             resource_files: self.resource_files.clone(),
@@ -376,6 +396,8 @@ impl SessionAssembly {
             activities,
             termination_commands,
             update_commands,
+            resource_reconciliation,
+            resource_manifests,
             execution_admission,
             runtime_incarnation,
             event_batch_cutover_validation,
@@ -537,7 +559,6 @@ pub(crate) fn reassemble(
             Arc::strong_count(&application.queries),
             Arc::strong_count(&application.inputs),
             Arc::strong_count(&application.resource_effect_authorization),
-            Arc::strong_count(&application.resource_references),
             Arc::strong_count(&application.work_assignments),
             Arc::strong_count(&application.repository_participants),
             Arc::strong_count(&application.realizations),
@@ -546,6 +567,8 @@ pub(crate) fn reassemble(
             Arc::strong_count(&application.activities),
             Arc::strong_count(&application.termination_commands),
             Arc::strong_count(&application.update_commands),
+            Arc::strong_count(&application.resource_reconciliation),
+            Arc::strong_count(&application.resource_manifests),
         ]
     };
     let unshared = application.fixture_assembly.clone().assemble(kernel());

@@ -46,7 +46,10 @@ async fn scan_interests_skip_only_phases_absent_from_the_observed_prefix() {
         quarantined: Vec::new(),
     };
 
-    let resources = app.reconcile_resource_activations_from(&candidates).await;
+    let resources = app
+        .resource_reconciliation
+        .reconcile_resource_activations_from(&candidates)
+        .await;
     assert!(resources.settled.is_empty(), "H1/E2 resources");
     assert!(resources.failures.is_empty(), "H1/E2 resources");
     let events = app.reconcile_event_batches_from(&candidates).await;
@@ -258,8 +261,11 @@ async fn slow_background_resource_cleanup_cannot_block_startup_activations() {
         ],
         quarantined: Vec::new(),
     };
-    let task =
-        tokio::spawn(async move { app.reconcile_resource_activations_from(&candidates).await });
+    let task = tokio::spawn(async move {
+        app.resource_reconciliation
+            .reconcile_resource_activations_from(&candidates)
+            .await
+    });
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             let completed = observed.completed_gets.lock().unwrap().clone();
@@ -317,7 +323,10 @@ impl Phase {
                 )
             }
             Self::Resources => {
-                let report = app.reconcile_resource_activations_from(candidates).await;
+                let report = app
+                    .resource_reconciliation
+                    .reconcile_resource_activations_from(candidates)
+                    .await;
                 (
                     report.pending,
                     report.settled.len(),

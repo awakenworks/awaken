@@ -408,7 +408,12 @@ async fn resource_manifest_replay_uses_the_committed_receipt_without_a_late_quer
     let delayed = app.clone();
     let delayed_id = id.clone();
     let task = tokio::spawn(async move {
-        Box::pin(delayed.replace_session_resource_manifest(&delayed_id, command)).await
+        Box::pin(
+            delayed
+                .resource_manifests
+                .replace_session_resource_manifest(&delayed_id, command),
+        )
+        .await
     });
     tokio::time::timeout(std::time::Duration::from_secs(5), pause.entered.notified())
         .await
@@ -486,6 +491,7 @@ async fn resource_manifest_replay_uses_the_committed_receipt_without_a_late_quer
         "R9 no extra mutation"
     );
     let probe = app
+        .resource_manifests
         .replay_session_resource_manifest(&id, "receipt-source", "same-original-manifest")
         .await;
     assert!(

@@ -1282,7 +1282,11 @@ async fn resource_reclaimer_finishes_terminal_release_after_restart_case() {
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
     };
-    let report = restarted.application.reconcile_resource_activations().await;
+    let report = restarted
+        .application
+        .resource_reconciliation()
+        .reconcile_resource_activations()
+        .await;
     assert!(report.failures.is_empty(), "{:?}", report.failures);
     assert_eq!(report.settled.len(), 1);
     assert!(
@@ -1359,7 +1363,11 @@ async fn resource_reclaimer_never_tears_down_a_live_session_environment_case() {
         )
     };
 
-    let report = restarted.application.reconcile_resource_activations().await;
+    let report = restarted
+        .application
+        .resource_reconciliation()
+        .reconcile_resource_activations()
+        .await;
     assert!(report.failures.is_empty(), "{:?}", report.failures);
     assert_eq!(report.settled.len(), 2);
     assert!(applied.lock().unwrap().is_empty(), "R1-R5");

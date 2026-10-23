@@ -12,6 +12,11 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, atomic::Ordering};
 use std::time::Duration;
 
+/// The application's own Resource commit bracket.
+fn bracket(app: &crate::SessionApplication) -> &super::SessionResourceReferences {
+    app.resource_manifests.resource_references()
+}
+
 /// Reference-projection FMECA and cause/effect decision table. C1 the
 /// Resource index accepts or rejects a replacement; C2 the Session root CAS
 /// wins or conflicts after projection. Effects are E1 no durable intent is
@@ -63,8 +68,7 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
         .unwrap();
     references.fail_replace.store(true, Ordering::SeqCst);
     assert!(
-        application
-            .resource_references
+        bracket(&application)
             .commit(
                 "workspace",
                 awaken_session_state_contract::SessionAggregate::try_from(rejected)
@@ -108,8 +112,7 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
         )
         .unwrap();
     assert!(matches!(
-        application
-            .resource_references
+        bracket(&application)
             .commit(
                 "workspace",
                 awaken_session_state_contract::SessionAggregate::try_from(stale)
@@ -139,8 +142,7 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
             skill_resources("new"),
         )
         .unwrap();
-    application
-        .resource_references
+    bracket(&application)
         .commit(
             "workspace",
             awaken_session_state_contract::SessionAggregate::try_from(accepted)
@@ -193,14 +195,12 @@ async fn reference_bracket_rejection_rules(explicit: bool) {
         let subject = app.clone();
         let attempt = tokio::spawn(async move {
             if explicit {
-                subject
-                    .resource_references
+                bracket(&subject)
                     .commit_with_record("workspace", candidate, record, Vec::new())
                     .await
                     .map(crate::SnapshotCommit::into_session)
             } else {
-                subject
-                    .resource_references
+                bracket(&subject)
                     .commit("workspace", candidate, &operation, Vec::new())
                     .await
                     .map(crate::SessionAggregate::into_snapshot)
@@ -290,7 +290,7 @@ async fn reference_bracket_rejection_rules(explicit: bool) {
             "{rule} repair outcome/{explicit}"
         );
         references.fail_replace.store(false, Ordering::SeqCst);
-        app.resource_references.repair("workspace", &id).await;
+        bracket(&app).repair("workspace", &id).await;
         assert_eq!(
             ids(),
             BTreeSet::from(["old".to_string()]),
@@ -326,8 +326,7 @@ async fn reference_bracket_success_rules(explicit: bool) {
     let operation = "reference-receipt-command";
     let record = crate::mutation::compile_session_snapshot_idempotency(&candidate, operation);
     let first = if explicit {
-        let commit = app
-            .resource_references
+        let commit = bracket(&app)
             .commit_with_record("workspace", candidate.clone(), record.clone(), Vec::new())
             .await
             .unwrap();
@@ -339,7 +338,7 @@ async fn reference_bracket_success_rules(explicit: bool) {
         );
         commit.into_session()
     } else {
-        app.resource_references
+        bracket(&app)
             .commit("workspace", candidate.clone(), operation, Vec::new())
             .await
             .unwrap()
@@ -385,8 +384,7 @@ async fn reference_bracket_success_rules(explicit: bool) {
         "R8 newer reload/{explicit}"
     );
     let replay = if explicit {
-        let commit = app
-            .resource_references
+        let commit = bracket(&app)
             .commit_with_record("workspace", candidate, record.clone(), Vec::new())
             .await
             .unwrap();
@@ -403,7 +401,7 @@ async fn reference_bracket_success_rules(explicit: bool) {
         );
         commit.into_session()
     } else {
-        app.resource_references
+        bracket(&app)
             .commit("workspace", candidate, operation, Vec::new())
             .await
             .unwrap()
@@ -456,8 +454,7 @@ async fn reference_bracket_success_rules(explicit: bool) {
         later.resources.revision, resource_generation,
         "R10 Resource generation remains stable; root CAS revision will advance"
     );
-    let later = app
-        .resource_references
+    let later = bracket(&app)
         .commit("workspace", later, "reference-later-targets", Vec::new())
         .await
         .unwrap()
@@ -496,8 +493,7 @@ async fn reference_bracket_success_rules(explicit: bool) {
         let original_record = record.clone();
         let task = tokio::spawn(async move {
             if explicit {
-                subject
-                    .resource_references
+                bracket(&subject)
                     .commit_with_record(
                         "workspace",
                         target_replay_candidate,
@@ -515,8 +511,7 @@ async fn reference_bracket_success_rules(explicit: bool) {
                         commit.into_session()
                     })
             } else {
-                subject
-                    .resource_references
+                bracket(&subject)
                     .commit("workspace", target_replay_candidate, operation, Vec::new())
                     .await
                     .map(crate::SessionAggregate::into_snapshot)
@@ -625,7 +620,7 @@ async fn reference_bracket_success_rules(explicit: bool) {
                 "R13 current durable Session still blocks reclamation after repair failure"
             );
             references.fail_replace.store(false, Ordering::SeqCst);
-            app.resource_references.repair("workspace", &id).await;
+            bracket(&app).repair("workspace", &id).await;
             assert_eq!(
                 references
                     .records

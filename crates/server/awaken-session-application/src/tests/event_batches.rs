@@ -2934,7 +2934,7 @@ async fn deleting_tombstone_waits_for_terminal_batch_provenance_case() {
     // Each D1-D3 reconciliation owns a large generated future. Pin the three
     // decision rules independently so the test driver does not retain one
     // reconciler frame while SQLite decodes the next root snapshot.
-    let first = Box::pin(app.reconcile_resource_activations()).await;
+    let first = Box::pin(app.resource_reconciliation.reconcile_resource_activations()).await;
     assert!(first.failures.is_empty(), "D1/E1");
     assert!(
         !repository
@@ -2962,7 +2962,7 @@ async fn deleting_tombstone_waits_for_terminal_batch_provenance_case() {
         "D2/E2"
     );
 
-    let second = Box::pin(app.reconcile_resource_activations()).await;
+    let second = Box::pin(app.resource_reconciliation.reconcile_resource_activations()).await;
     assert!(second.failures.is_empty(), "D3/E3");
     assert!(matches!(
         repository.get(&SessionId::from("deleting-batch")).await,

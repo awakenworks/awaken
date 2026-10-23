@@ -51,7 +51,7 @@ impl SessionApplicationRoles {
             profiled: application.clone(),
             termination: application.termination_commands(),
             updates: application.update_commands(),
-            resources: application.clone(),
+            resources: application.resource_manifests(),
             observation: application.clone(),
             deployments: application.clone(),
             clock: application.clock(),

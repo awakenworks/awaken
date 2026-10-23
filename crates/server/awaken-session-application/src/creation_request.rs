@@ -257,26 +257,6 @@ impl SessionApplication {
         Ok(resources)
     }
 
-    /// Retire the Repository participants a failed request configured; a
-    /// compensation that cannot finish is left to terminal reconciliation.
-    pub(super) async fn compensate_request_repositories(
-        &self,
-        session_id: &str,
-        configurations: &[super::ConfiguredSessionRepository],
-        failure_message: &str,
-    ) {
-        if !self
-            .repository_participants
-            .abort_unadopted(configurations)
-            .await
-        {
-            tracing::warn!(
-                session = %session_id,
-                "{failure_message}"
-            );
-        }
-    }
-
     /// Create one Session from a protocol-neutral request.
     ///
     /// Input admission is the first domain operation: the complete explicit
@@ -679,14 +659,15 @@ impl SessionApplication {
         {
             Ok(inputs) => inputs,
             Err((first, stage)) => {
-                self.compensate_request_repositories(
-                    &session_id,
-                    &repository_configurations,
-                    &format!(
-                        "Managed Session Repository compensation remains pending after {stage}"
-                    ),
-                )
-                .await;
+                self.repository_participants
+                    .compensate(
+                        &session_id,
+                        &repository_configurations,
+                        &format!(
+                            "Managed Session Repository compensation remains pending after {stage}"
+                        ),
+                    )
+                    .await;
                 return Err(first);
             }
         };

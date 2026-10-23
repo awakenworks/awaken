@@ -354,6 +354,7 @@ impl ManagedSessionRootFixture {
         let id = awaken_session_types::SessionId::from(thread);
         let fingerprint = awaken_agent_contract::stable_fingerprint(&desired);
         self.application(managed)
+            .resource_manifests()
             .replace_session_resource_manifest(
                 &id,
                 awaken_session_application::ReplaceSessionResourceManifest {

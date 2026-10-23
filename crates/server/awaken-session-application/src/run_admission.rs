@@ -474,9 +474,10 @@ impl SessionApplication {
         // credential, and Resource reconciliation graph in their poll stack.
         // The owned aggregate still crosses exactly one domain boundary; this
         // is execution-shape isolation, not another persistence abstraction.
-        let session = Box::pin(
-            admission.enter(|| self.reconcile_persisted_resources(&owner, recovered.session)),
-        )
+        let session = Box::pin(admission.enter(|| {
+            self.resource_reconciliation
+                .reconcile_persisted_resources(&owner, recovered.session)
+        }))
         .await
         .map_err(|error| SessionProjectionRecoveryError::Rejected(preparation_error(error)))?;
         let requires_external_realization = session.requires_external_environment_owner();
@@ -839,7 +840,7 @@ impl SessionApplication {
             {
                 Ok(configured) => configured,
                 Err(first) => {
-                    self.compensate_request_repositories(
+                    self.repository_participants.compensate(
     &session_id,
     &repository_configurations,
     "Profiled Session Repository compensation remains pending after configuration failure",
@@ -870,14 +871,15 @@ impl SessionApplication {
         {
             Ok(resources) => resources,
             Err((first, stage)) => {
-                self.compensate_request_repositories(
-                    &session_id,
-                    &repository_configurations,
-                    &format!(
-                        "Profiled Session Repository compensation remains pending after {stage}"
-                    ),
-                )
-                .await;
+                self.repository_participants
+                    .compensate(
+                        &session_id,
+                        &repository_configurations,
+                        &format!(
+                            "Profiled Session Repository compensation remains pending after {stage}"
+                        ),
+                    )
+                    .await;
                 return Err(first);
             }
         };
@@ -897,7 +899,7 @@ impl SessionApplication {
                 let first = RunError::bad_request(format!(
                     "repository `{repository_id}` credential revision changed before Session admission"
                 ));
-                self.compensate_request_repositories(
+                self.repository_participants.compensate(
     &session_id,
     &repository_configurations,
     "Profiled Session Repository compensation remains pending after credential drift",

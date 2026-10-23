@@ -600,12 +600,13 @@ impl SessionApplication {
             Ok(compiled) => compiled,
             Err(error) => {
                 let first = SessionCreationError::Rejected(error);
-                self.compensate_request_repositories(
-                    &session_id,
-                    &repository_configurations,
-                    "Session Repository compensation remains pending after compile rejection",
-                )
-                .await;
+                self.repository_participants
+                    .compensate(
+                        &session_id,
+                        &repository_configurations,
+                        "Session Repository compensation remains pending after compile rejection",
+                    )
+                    .await;
                 return Err(first);
             }
         };
@@ -623,7 +624,7 @@ impl SessionApplication {
         };
         if let Err(error) = self.validate_session_sandbox_layout(&session_id, &layout) {
             let first = SessionCreationError::Rejected(error);
-            self.compensate_request_repositories(
+            self.repository_participants.compensate(
                 &session_id,
                 &repository_configurations,
                 "Session Repository compensation remains pending after Sandbox-layout rejection",
@@ -642,12 +643,13 @@ impl SessionApplication {
         ) {
             Ok(root) => root,
             Err(first) => {
-                self.compensate_request_repositories(
-                    &session_id,
-                    &repository_configurations,
-                    "Session Repository compensation remains pending after root compilation",
-                )
-                .await;
+                self.repository_participants
+                    .compensate(
+                        &session_id,
+                        &repository_configurations,
+                        "Session Repository compensation remains pending after root compilation",
+                    )
+                    .await;
                 return Err(first);
             }
         };
@@ -673,7 +675,7 @@ impl SessionApplication {
                 {
                     Ok(Some(session)) => return validated_create_replay(session, completion),
                     Ok(None) => {
-                        self.compensate_request_repositories(
+                        self.repository_participants.compensate(
                             &session_id,
                             &repository_configurations,
                             "Session Repository compensation remains pending after create failure",
@@ -692,7 +694,7 @@ impl SessionApplication {
                         // exact create receipt was not adopted. The compensation
                         // helper still rereads the root and preserves any
                         // participant referenced by a concurrent winner.
-                        self.compensate_request_repositories(
+                        self.repository_participants.compensate(
                             &session_id,
                             &repository_configurations,
                             "Session Repository compensation remains pending after deterministic create rejection",

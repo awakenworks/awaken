@@ -2,7 +2,7 @@
 //! end to end through the Managed adapter's Resource route suites.
 
 use super::*;
-use crate::resource_reconciliation::MEMORY_STORE_CREATE_ONLY;
+use crate::resource_manifests::MEMORY_STORE_CREATE_ONLY;
 use crate::{SessionInputRequest, SessionInputTarget, SessionResourceManifestRequest};
 use awaken_resource_contract::{
     BindingId, ConfigVersion, FileId, MemoryStoreConfigVersion, ResourceAccess, RetentionPolicy,
@@ -95,7 +95,7 @@ async fn resource_commands_refuse_before_any_lowering_or_root_change() {
         SessionInputRequest::derived_memory_store("memory".into(), ResourceAccess::ReadWrite, None);
     assert!(
         matches!(
-            app.attach_session_file(&session_id, memory_target).await,
+            app.resource_manifests.attach_session_file(&session_id, memory_target).await,
             Err(SessionResourceManifestError::Rejected(error))
                 if error.kind == awaken_session_types::RunErrorKind::BadRequest
         ),
@@ -103,7 +103,8 @@ async fn resource_commands_refuse_before_any_lowering_or_root_change() {
     );
     assert!(
         matches!(
-            app.detach_session_input(&session_id, &BindingId::new("session:absent"))
+            app.resource_manifests
+                .detach_session_input(&session_id, &BindingId::new("session:absent"))
                 .await,
             Err(SessionResourceManifestError::NotFound)
         ),
@@ -111,7 +112,7 @@ async fn resource_commands_refuse_before_any_lowering_or_root_change() {
     );
     assert!(
         matches!(
-            app.detach_session_input(&session_id, &BindingId::new("session:memory"))
+            app.resource_manifests.detach_session_input(&session_id, &BindingId::new("session:memory"))
                 .await,
             Err(SessionResourceManifestError::Rejected(error))
                 if error.message == MEMORY_STORE_CREATE_ONLY
@@ -126,11 +127,12 @@ async fn resource_commands_refuse_before_any_lowering_or_root_change() {
     };
     assert!(
         matches!(
-            app.replace_session_resource_manifest_request(
-                &session_id,
-                request(Some(before.resources.revision + 1)),
-            )
-            .await,
+            app.resource_manifests
+                .replace_session_resource_manifest_request(
+                    &session_id,
+                    request(Some(before.resources.revision + 1)),
+                )
+                .await,
             Err(SessionResourceManifestError::Conflict)
         ),
         "M2"
@@ -151,7 +153,7 @@ async fn resource_commands_refuse_before_any_lowering_or_root_change() {
     let before = repo.get(&profiled_id).await.unwrap();
     assert!(
         matches!(
-            app.replace_session_resource_manifest_request(&profiled_id, request(None))
+            app.resource_manifests.replace_session_resource_manifest_request(&profiled_id, request(None))
                 .await,
             Err(SessionResourceManifestError::Rejected(error))
                 if error.message.contains("profiled Session whole-resource manifest")

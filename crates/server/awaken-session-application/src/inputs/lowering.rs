@@ -54,7 +54,7 @@ impl SessionApplication {
                 {
                     Ok(configured) => configured,
                     Err(first) => {
-                        self.compensate_request_repositories(
+                        self.repository_participants.compensate(
                             session_id,
                             &repository_configurations,
                             "Managed Session Repository compensation remains pending after lowering failure",

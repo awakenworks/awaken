@@ -666,14 +666,14 @@ impl SessionUpdates for crate::SessionUpdateCommands {
 }
 
 #[async_trait]
-impl SessionResourceCommands for SessionApplication {
+impl SessionResourceCommands for crate::SessionResourceManifests {
     async fn replace_session_resource_manifest(
         &self,
         session_id: &SessionId,
         request: SessionResourceManifestRequest,
     ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError> {
         Box::pin(
-            SessionApplication::replace_session_resource_manifest_request(
+            crate::SessionResourceManifests::replace_session_resource_manifest_request(
                 self, session_id, request,
             ),
         )
@@ -685,7 +685,7 @@ impl SessionResourceCommands for SessionApplication {
         session_id: &SessionId,
         request: crate::SessionInputRequest,
     ) -> Result<SessionResourceAttachment, SessionResourceManifestError> {
-        Box::pin(SessionApplication::attach_session_file(
+        Box::pin(crate::SessionResourceManifests::attach_session_file(
             self, session_id, request,
         ))
         .await
@@ -696,7 +696,7 @@ impl SessionResourceCommands for SessionApplication {
         session_id: &SessionId,
         binding_id: &awaken_resource_contract::BindingId,
     ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError> {
-        Box::pin(SessionApplication::detach_session_input(
+        Box::pin(crate::SessionResourceManifests::detach_session_input(
             self, session_id, binding_id,
         ))
         .await

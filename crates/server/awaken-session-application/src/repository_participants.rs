@@ -807,4 +807,20 @@ impl SessionRepositoryParticipants {
             OwnedRepositoryRetirement::Pending
         }
     }
+
+    /// Retire the Repository participants a failed request configured; a
+    /// compensation that cannot finish is left to terminal reconciliation.
+    pub(crate) async fn compensate(
+        &self,
+        session_id: &str,
+        configurations: &[ConfiguredSessionRepository],
+        failure_message: &str,
+    ) {
+        if !self.abort_unadopted(configurations).await {
+            tracing::warn!(
+                session = %session_id,
+                "{failure_message}"
+            );
+        }
+    }
 }

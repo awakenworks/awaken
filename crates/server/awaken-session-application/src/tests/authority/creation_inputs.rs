@@ -96,12 +96,13 @@ async fn creation_finalization_preserves_resolution_skill_and_pin_failure_stages
             other => panic!("{rule} changed original error variant: {other:?}"),
         }
         let original = first.to_string();
-        app.compensate_request_repositories(
-            &id,
-            std::slice::from_ref(&configured),
-            &format!("Managed Session Repository compensation remains pending after {stage}"),
-        )
-        .await;
+        app.repository_participants
+            .compensate(
+                &id,
+                std::slice::from_ref(&configured),
+                &format!("Managed Session Repository compensation remains pending after {stage}"),
+            )
+            .await;
         assert_eq!(
             first.to_string(),
             original,
@@ -267,12 +268,13 @@ async fn creation_finalization_failure_cannot_dispose_replayed_adopted_or_unread
             .await
             .unwrap_err();
         let original = first.to_string();
-        app.compensate_request_repositories(
-            &id,
-            std::slice::from_ref(&configured),
-            &format!("Managed Session Repository compensation remains pending after {stage}"),
-        )
-        .await;
+        app.repository_participants
+            .compensate(
+                &id,
+                std::slice::from_ref(&configured),
+                &format!("Managed Session Repository compensation remains pending after {stage}"),
+            )
+            .await;
         assert_eq!(first.to_string(), original, "F6/{rule} original failure");
         let expected = if matches!(rule, "applied" | "retire-failed") {
             awaken_resource_contract::ResourceState::Deleted
