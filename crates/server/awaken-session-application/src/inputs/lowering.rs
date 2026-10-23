@@ -7,7 +7,7 @@
 //! Consume the selected Inputs' validated plan through existing Repository effects.
 
 use super::PreparedSessionInputs;
-use crate::{RepositoryAccessToken, SessionApplication, SessionInputTarget};
+use crate::{SessionApplication, SessionInputTarget};
 use awaken_session_types::RunError;
 
 impl SessionApplication {
@@ -31,7 +31,7 @@ impl SessionApplication {
         for (index, request) in prepared.requests.iter().enumerate() {
             let repository_id = if let SessionInputTarget::Repository {
                 remote_url,
-                access_token,
+                credential_material,
                 initial_branch,
                 initial_commit,
             } = &request.target
@@ -43,9 +43,7 @@ impl SessionApplication {
                         name: format!("Session repository {index}"),
                         description: "Managed compatibility Session input".into(),
                         remote_url: remote_url.clone(),
-                        credential_material: access_token
-                            .clone()
-                            .map(RepositoryAccessToken::into_credential_material),
+                        credential_material: credential_material.clone(),
                         credential: None,
                         mount_path: request.mount_path.clone(),
                         initial_branch: initial_branch.clone(),

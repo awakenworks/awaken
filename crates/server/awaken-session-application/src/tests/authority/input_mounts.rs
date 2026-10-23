@@ -76,7 +76,7 @@ async fn input_mount_normalization_preserves_absent_catalogue_and_lookup_failure
     let repository = SessionInputRequest {
         target: SessionInputTarget::Repository {
             remote_url: "https://example.test/source.git".into(),
-            access_token: None,
+            credential_material: None,
             initial_branch: None,
             initial_commit: None,
         },

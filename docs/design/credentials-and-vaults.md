@@ -173,8 +173,11 @@ The vault container and the public Managed wire are unchanged:
 struct Vault { id, workspace_id, display_name, metadata }   // container aggregate
 ```
 
-`RedactedString` (`secrecy::SecretBox` + zeroize + redacted `Debug`/`Display`; the
-sole plaintext accessor is `expose_secret()`) is the one secret value object.
+`RedactedString` owns a `String`, redacts `Debug`/`Display`, deliberately has no
+Serde implementation, and zeroizes its owned string on Drop. Its sole plaintext
+accessor is `expose_secret()`. Clones own independent strings; the canonical
+structured material and material input copy those same redacted leaves. This
+does not guarantee erasure of other temporary codec buffers or all heap copies.
 
 The routing entities that combine credential × model × protocol
 (`ProtocolEndpoint`, `Offering`, `InferenceProfile`, `InferenceTriple`,

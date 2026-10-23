@@ -2,8 +2,8 @@
 //! [`RedactedString`] — the one already-resolved secret value type that crosses
 //! into the runtime (ADR-0043, D6/D9). The host resolves credentials and hands
 //! the runtime/adapters this opaque value; it is redacted in `Debug`/`Display`,
-//! deliberately **not** `Serialize`/`Deserialize` (so it can never land in a log,
-//! wire payload, snapshot, or idempotency record), and zeroized on drop.
+//! deliberately **not** `Serialize`/`Deserialize` (rejecting implicit Serde
+//! encoding in wire or durable values), and zeroizes its owned string on drop.
 //!
 //! `expose_secret()` is the single trust boundary: every caller of it is
 //! responsible for not propagating the returned `&str` into any path that logs.
@@ -13,7 +13,26 @@ use zeroize::Zeroize;
 /// Open, typed secret material shared by storage and execution contracts.
 /// Namespaced `type_id` owners define field semantics; core keeps values
 /// redacted and never serializes this plaintext form.
-#[derive(Debug)]
+/// Cloning copies metadata and each independently owned redacted field value;
+/// dropping one copy does not invalidate another. Debug redacts field values,
+/// not the type id or field names.
+///
+/// S1: a plaintext document cannot satisfy a durable serialization boundary.
+///
+/// ```compile_fail,E0277
+/// use awaken_agent_contract::StructuredCredentialMaterial;
+/// fn durable<T: serde::Serialize>() {}
+/// durable::<StructuredCredentialMaterial>();
+/// ```
+///
+/// S2: a plaintext document cannot be reconstructed by a durable Serde path.
+///
+/// ```compile_fail,E0277
+/// use awaken_agent_contract::StructuredCredentialMaterial;
+/// fn durable<T: serde::de::DeserializeOwned>() {}
+/// durable::<StructuredCredentialMaterial>();
+/// ```
+#[derive(Debug, Clone)]
 pub struct StructuredCredentialMaterial {
     pub type_id: String,
     pub fields: std::collections::BTreeMap<String, RedactedString>,

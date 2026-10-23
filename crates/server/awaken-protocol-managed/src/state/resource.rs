@@ -72,9 +72,9 @@ impl ResourceInput {
                 }),
                 target: SessionInputTarget::Repository {
                     remote_url: url.clone(),
-                    access_token: authorization_token
+                    credential_material: authorization_token
                         .clone()
-                        .map(|token| token.into_access_token()),
+                        .map(|token| token.into_credential_material()),
                     initial_branch: match checkout {
                         Some(RepositoryCheckout::Branch { name }) => Some(name.clone()),
                         Some(RepositoryCheckout::Commit { .. }) | None => None,

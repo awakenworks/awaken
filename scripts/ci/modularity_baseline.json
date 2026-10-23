@@ -286,7 +286,7 @@
     "awaken-protocol-managed::state/events/admission.rs::validate_event_batch": 355,
     "awaken-protocol-managed::state/events/committed_projection.rs::build_committed_projection_candidate_over": 172,
     "awaken-protocol-managed::state/events/committed_projection/canonical_order.rs::canonicalize_committed_events": 200,
-    "awaken-protocol-managed::state/resources.rs::lower_complete_resource_manifest": 260,
+    "awaken-protocol-managed::state/resources.rs::lower_complete_resource_manifest": 258,
     "awaken-provider-genai::lib.rs::infer_streaming": 228,
     "awaken-resource-reclaimer::lib.rs::reconcile": 237,
     "awaken-resource-worker-http::file_content_http.rs::read_file_content": 157,
