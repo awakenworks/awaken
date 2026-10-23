@@ -56,7 +56,8 @@ async fn admit_fresh_agent_report(
         .observe_activity_runtime_boundary(&continuation.session_id, observation)
         .await
         .map_err(crate::SessionActivityError::run_error)?;
-    app.install_dispatch_projection(owner, &settled)
+    app.realizations
+        .install_dispatch_projection(owner, &settled)
         .await
         .map_err(|error| {
             RunError::unavailable(format!(
@@ -802,7 +803,8 @@ impl SessionAgentCoordination for SessionApplication {
         // Resource envelope must use the Session's current desired generation.
         // Reuse complete dispatch projection; this stages facts only. The
         // claimed Worker remains the sole physical realization owner.
-        self.install_dispatch_projection(&owner, &session)
+        self.realizations
+            .install_dispatch_projection(&owner, &session)
             .await
             .map_err(|error| {
                 RunError::unavailable(format!(

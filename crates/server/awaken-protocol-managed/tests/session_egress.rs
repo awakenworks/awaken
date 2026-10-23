@@ -260,6 +260,7 @@ async fn realize_accepted_sessions(managed: &ManagedState) {
     // delivers its exact network policy to Runtime. Rule E1.
     let report = managed
         .session_application()
+        .realizations()
         .reconcile_session_realizations()
         .await;
     assert!(

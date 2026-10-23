@@ -125,16 +125,12 @@ pub(super) async fn scan_recovery_candidates(
 /// The application's recovery scan at its clock's `now`, the instant the
 /// continuation hint is decided at.
 pub(super) async fn recovery_candidates(
-    application: &super::SessionApplication,
+    repository: &dyn SessionRepository,
+    clock: &dyn awaken_time::WallClock,
     audit_resource_references: bool,
 ) -> Result<SessionRecoveryCandidates, SessionRepositoryError> {
-    let now = application.clock.now().as_epoch_ms();
-    scan_recovery_candidates(
-        application.session_repository(),
-        audit_resource_references,
-        now,
-    )
-    .await
+    let now = clock.now().as_epoch_ms();
+    scan_recovery_candidates(repository, audit_resource_references, now).await
 }
 
 /// Disposable diagnostics owned by the existing, sequential lifecycle loop.
@@ -184,7 +180,12 @@ impl ContinuationDiagnostics {
         application: &super::SessionApplication,
         audit_resource_references: bool,
     ) -> Result<SessionRecoveryCandidates, SessionRepositoryError> {
-        let candidates = recovery_candidates(application, audit_resource_references).await?;
+        let candidates = recovery_candidates(
+            application.session_repository(),
+            application.clock.as_ref(),
+            audit_resource_references,
+        )
+        .await?;
         self.signal(&candidates);
         Ok(candidates)
     }

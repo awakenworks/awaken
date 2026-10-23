@@ -483,6 +483,7 @@ mod tests {
         };
         let staged = state
             .application
+            .realizations()
             .begin_session_realization(begin.clone())
             .await
             .expect("Q1");
@@ -506,6 +507,7 @@ mod tests {
 
         let replay = state
             .application
+            .realizations()
             .begin_session_realization(begin)
             .await
             .expect("Q2");
@@ -524,6 +526,7 @@ mod tests {
 
         let stale = state
             .application
+            .realizations()
             .begin_session_realization(BeginSessionRealization {
                 expected_resources: None,
                 session_id: "session-phase".into(),
@@ -549,6 +552,7 @@ mod tests {
 
         let missing = state
             .application
+            .realizations()
             .activate_session_realization(ActivateSessionRealization {
                 session_id: "session-phase".into(),
                 lease: staged.authority.lease.clone(),
@@ -574,6 +578,7 @@ mod tests {
         mismatched[0].receipt_fingerprint = "another-request".into();
         let mismatch = state
             .application
+            .realizations()
             .activate_session_realization(ActivateSessionRealization {
                 session_id: "session-phase".into(),
                 lease: staged.authority.lease.clone(),
@@ -588,6 +593,7 @@ mod tests {
 
         let activated = state
             .application
+            .realizations()
             .activate_session_realization(ActivateSessionRealization {
                 session_id: "session-phase".into(),
                 lease: staged.authority.lease.clone(),
@@ -617,6 +623,7 @@ mod tests {
 
         let activate_replay = state
             .application
+            .realizations()
             .activate_session_realization(ActivateSessionRealization {
                 session_id: "session-phase".into(),
                 lease: staged.authority.lease.clone(),
@@ -638,6 +645,7 @@ mod tests {
 
         let wrong_ack = state
             .application
+            .realizations()
             .acknowledge_session_realization(AcknowledgeSessionRealization {
                 session_id: "session-phase".into(),
                 lease: staged.authority.lease.clone(),
@@ -660,6 +668,7 @@ mod tests {
 
         let duplicate_ack = state
             .application
+            .realizations()
             .acknowledge_session_realization(AcknowledgeSessionRealization {
                 session_id: "session-phase".into(),
                 lease: staged.authority.lease.clone(),
@@ -691,6 +700,7 @@ mod tests {
         };
         let complete = state
             .application
+            .realizations()
             .acknowledge_session_realization(acknowledgement.clone())
             .await
             .expect("Q10");
@@ -704,6 +714,7 @@ mod tests {
 
         let ack_replay = state
             .application
+            .realizations()
             .acknowledge_session_realization(acknowledgement)
             .await
             .expect("Q11");
@@ -768,6 +779,7 @@ mod tests {
             .unwrap();
         let renewal = state
             .application
+            .realizations()
             .renew_session_realization(RenewSessionRealization {
                 session_id: "session-phase".into(),
                 asserted_lease: before_renewal
@@ -824,6 +836,7 @@ mod tests {
         let renewed_revision = renewed.revision;
         let replay = state
             .application
+            .realizations()
             .renew_session_realization(RenewSessionRealization {
                 session_id: "session-phase".into(),
                 asserted_lease: renewal.lease.clone(),
@@ -856,6 +869,7 @@ mod tests {
         let (state, repo) = harness("session-supervised").await;
         state
             .application
+            .realizations()
             .realize_session(&awaken_session_types::SessionId::from("session-supervised"))
             .await
             .expect("L1 setup");
@@ -866,6 +880,7 @@ mod tests {
         assert!(
             state
                 .application
+                .realizations()
                 .renew_due_session_realizations()
                 .await
                 .is_err(),
@@ -900,6 +915,7 @@ mod tests {
         };
         let first = state
             .application
+            .realizations()
             .begin_session_realization(BeginSessionRealization {
                 expected_resources: None,
                 session_id: "session-owner-restart".into(),
@@ -909,6 +925,7 @@ mod tests {
             .expect("O1 initial claim");
         let replay = state
             .application
+            .realizations()
             .begin_session_realization(BeginSessionRealization {
                 expected_resources: None,
                 session_id: "session-owner-restart".into(),
@@ -920,6 +937,7 @@ mod tests {
 
         let restarted = state
             .application
+            .realizations()
             .begin_session_realization(BeginSessionRealization {
                 expected_resources: None,
                 session_id: "session-owner-restart".into(),
@@ -957,6 +975,7 @@ mod tests {
 
         let other = state
             .application
+            .realizations()
             .begin_session_realization(BeginSessionRealization {
                 expected_resources: None,
                 session_id: "session-owner-restart".into(),
@@ -1000,6 +1019,7 @@ mod tests {
         };
         let baseline_stage = baseline_state
             .application
+            .realizations()
             .begin_session_realization(BeginSessionRealization {
                 expected_resources: None,
                 session_id: "session-baseline-only".into(),
@@ -1020,6 +1040,7 @@ mod tests {
         let (empty_state, empty_repo) = harness_for(empty).await;
         let staged = empty_state
             .application
+            .realizations()
             .begin_session_realization(BeginSessionRealization {
                 expected_resources: None,
                 session_id: "session-empty".into(),
@@ -1039,6 +1060,7 @@ mod tests {
         );
         let activated = empty_state
             .application
+            .realizations()
             .activate_session_realization(ActivateSessionRealization {
                 session_id: "session-empty".into(),
                 lease: staged.authority.lease.clone(),
@@ -1059,6 +1081,7 @@ mod tests {
         );
         empty_state
             .application
+            .realizations()
             .acknowledge_session_realization(AcknowledgeSessionRealization {
                 session_id: "session-empty".into(),
                 lease: staged.authority.lease,
@@ -1080,6 +1103,7 @@ mod tests {
         let (failed_state, failed_repo) = harness("session-failed").await;
         let staged = failed_state
             .application
+            .realizations()
             .begin_session_realization(BeginSessionRealization {
                 expected_resources: None,
                 session_id: "session-failed".into(),
@@ -1098,6 +1122,7 @@ mod tests {
         };
         failed_state
             .application
+            .realizations()
             .fail_session_realization(failure.clone())
             .await
             .expect("F3");
@@ -1117,6 +1142,7 @@ mod tests {
         );
         failed_state
             .application
+            .realizations()
             .fail_session_realization(failure)
             .await
             .expect("F4");
@@ -1132,6 +1158,7 @@ mod tests {
         assert_eq!(
             failed_state
                 .application
+                .realizations()
                 .begin_session_realization(BeginSessionRealization {
                     expected_resources: None,
                     session_id: "session-failed".into(),

@@ -434,6 +434,7 @@ impl ManagedSessionRootFixture {
             ));
         }
         self.application(managed)
+            .realizations()
             .activate_session_realization(
                 awaken_session_realization_contract::ActivateSessionRealization {
                     session_id: id,
@@ -736,6 +737,7 @@ mod retry_hint_tests {
                 },
             );
             let error = app
+                .realizations()
                 .realize_session(&SessionId::from(thread.clone()))
                 .await
                 .unwrap_err();

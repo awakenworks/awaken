@@ -45,7 +45,7 @@ REALIZATION_DRIVER_ENTRIES = {
         "sessions().acquire_realization("
     ),
     "crates/server/awaken-session-application/src/realization.rs": (
-        "self.local_realization_locks().acquire(session_id.as_str())"
+        "self.local_realization_locks.acquire(session_id.as_str())"
     ),
 }
 # The driver lives in `awaken-session-realization-driver`, re-exported by
@@ -55,11 +55,10 @@ REALIZATION_DRIVER_ENTRIES = {
 REALIZATION_DRIVER_CALL = re.compile(
     r"\b(?:awaken_session_application|awaken_session_realization_driver|crate)::drive_session_realization\s*\("
 )
-# The co-located registry type has exactly one owner, one re-export and one
-# composition-root field; a second instance would be a second exclusion.
+# The co-located registry type has exactly one owner and one holder, the
+# realization component; a second instance would be a second exclusion.
 LOCAL_REALIZATION_REGISTRY = "LocalRealizationLocks"
 LOCAL_REALIZATION_REGISTRY_HOLDERS = (
-    "crates/server/awaken-session-application/src/application.rs",
     "crates/server/awaken-session-application/src/realization.rs",
     "crates/server/awaken-session-application/src/realization/local_lock.rs",
 )
@@ -208,11 +207,9 @@ awaken_session_realization_driver::drive_session_realization(realization, None)
 """,
         "crates/server/awaken-session-application/src/realization.rs": """
 pub(crate) use local_lock::LocalRealizationLocks;
-let permit = self.local_realization_locks().acquire(session_id.as_str()).await;
+local_realization_locks: Arc<LocalRealizationLocks>,
+let permit = self.local_realization_locks.acquire(session_id.as_str()).await;
 crate::drive_session_realization(&permit, None)
-""",
-        "crates/server/awaken-session-application/src/application.rs": """
-local_realization_locks: Arc<crate::realization::LocalRealizationLocks>,
 """,
     }
     assert realization_driver_permit_violations(canonical) == [], "R1 canonical shape holds"
@@ -277,7 +274,7 @@ local_realization_locks: Arc<crate::realization::LocalRealizationLocks>,
     ad_hoc_permit = dict(canonical)
     ad_hoc_permit["crates/server/awaken-session-application/src/realization.rs"] = (
         canonical["crates/server/awaken-session-application/src/realization.rs"].replace(
-            "self.local_realization_locks().acquire(session_id.as_str())",
+            "self.local_realization_locks.acquire(session_id.as_str())",
             "LocalRealizationLocks::default().acquire(session_id.as_str())",
         )
     )

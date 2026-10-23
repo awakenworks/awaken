@@ -241,7 +241,8 @@ impl SessionApplication {
                 continue;
             }
             if resident && !root.requires_external_environment_owner() {
-                self.synchronize_resident_environment_projection(&owner_scope, &root)
+                self.realizations
+                    .synchronize_resident_environment_projection(&owner_scope, &root)
                     .await?;
             }
             return Ok(root);

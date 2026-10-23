@@ -532,7 +532,9 @@ pub struct RegisteredDispatchDependencies {
     pub checkpoint: Arc<dyn StreamCheckpointStore>,
     pub directory: Arc<dyn WorkerDirectory>,
     pub policy: Arc<dyn PlacementPolicy>,
-    pub sessions: Arc<dyn awaken_session_realization_contract::WorkerSessionRealizationControl>,
+    pub realizations: Arc<dyn awaken_session_realization_contract::SessionRealizationControl>,
+    pub terminal_cleanup:
+        Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>,
     pub session_preparation:
         Arc<dyn awaken_session_realization_contract::SessionPreparationControl>,
     pub session_environment_bindings:
@@ -559,7 +561,8 @@ pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) 
         checkpoint,
         directory,
         policy,
-        sessions,
+        realizations,
+        terminal_cleanup,
         session_preparation,
         session_environment_bindings,
         coordination,
@@ -585,9 +588,9 @@ pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) 
     .with_completion_sink(completion)
     .with_terminal_observer(terminal_observer)
     .with_stream_sink(stream_sink)
-    .with_session_control(sessions.clone())
+    .with_session_control(realizations)
     .with_session_preparation_control(session_preparation)
-    .with_terminal_cleanup_control(sessions)
+    .with_terminal_cleanup_control(terminal_cleanup)
     .with_session_environment_bindings(session_environment_bindings)
     .with_session_coordination(coordination)
     .with_session_work_authority(session_work);

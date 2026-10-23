@@ -731,11 +731,13 @@ impl SessionApplication {
         }
 
         let realized = if persisted.requires_external_environment_owner() {
-            self.install_dispatch_projection(&owner_scope, &persisted)
+            self.realizations
+                .install_dispatch_projection(&owner_scope, &persisted)
                 .await
                 .map(|()| persisted.clone())
         } else {
-            self.realize_session_after_refresh(&awaken_session_types::SessionId::from(&session_id))
+            self.realizations
+                .realize_session_after_refresh(&awaken_session_types::SessionId::from(&session_id))
                 .await
         };
         persisted = match realized {

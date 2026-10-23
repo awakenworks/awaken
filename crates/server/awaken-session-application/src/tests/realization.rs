@@ -1189,6 +1189,7 @@ async fn lease_renewal_is_a_projection_free_root_cas() {
         .unwrap();
 
     let renewed = application
+        .realizations
         .renew_session_realization(
             awaken_session_realization_contract::RenewSessionRealization {
                 session_id: "lease-only-renewal".into(),
@@ -1206,6 +1207,7 @@ async fn lease_renewal_is_a_projection_free_root_cas() {
         .unwrap();
 
     let replayed = application
+        .realizations
         .renew_session_realization(
             awaken_session_realization_contract::RenewSessionRealization {
                 session_id: "lease-only-renewal".into(),
@@ -1226,6 +1228,7 @@ async fn lease_renewal_is_a_projection_free_root_cas() {
     );
 
     let older = application
+        .realizations
         .renew_session_realization(
             awaken_session_realization_contract::RenewSessionRealization {
                 session_id: "lease-only-renewal".into(),
@@ -1244,6 +1247,7 @@ async fn lease_renewal_is_a_projection_free_root_cas() {
     let mut stale = asserted;
     stale.epoch -= 1;
     let stale = application
+        .realizations
         .renew_session_realization(
             awaken_session_realization_contract::RenewSessionRealization {
                 session_id: "lease-only-renewal".into(),
@@ -1326,6 +1330,7 @@ async fn terminal_root_renewal_preserves_frozen_mcp_cleanup_identity() {
     );
 
     let renewed = application
+        .realizations
         .renew_session_realization(
             awaken_session_realization_contract::RenewSessionRealization {
                 session_id: "terminal-mcp-renewal".into(),
@@ -1362,6 +1367,7 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
         configured("embedded-worker"),
     );
     let first_session = first
+        .realizations
         .realize_session(&SessionId::from("local-restart"))
         .await
         .expect("L1");
@@ -1369,6 +1375,7 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
     assert_eq!(first_lease.owner, "embedded-worker", "L1/E1");
     assert_eq!(
         first
+            .realizations
             .realize_session(&SessionId::from("local-restart"))
             .await
             .expect("L1 exact replay")
@@ -1384,6 +1391,7 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
         configured("embedded-worker"),
     );
     let replaced = replacement
+        .realizations
         .realize_session(&SessionId::from("local-restart"))
         .await
         .expect("L2 same logical owner may fence a crashed incarnation");
@@ -1403,7 +1411,7 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
     assert!(
         matches!(
             other
-                .realize_session(&SessionId::from("local-restart"))
+                .realizations.realize_session(&SessionId::from("local-restart"))
                 .await,
             Err(awaken_session_realization_contract::SessionRealizationDriveError::Control(
                 awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership
@@ -1413,7 +1421,7 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
     );
     let reassigned =
         awaken_session_realization_contract::SessionRealizationControl::begin_session_realization(
-            &other,
+            other.realizations.as_ref(),
             awaken_session_realization_contract::BeginSessionRealization {
                 expected_resources: None,
                 session_id: "local-restart".into(),
@@ -1444,7 +1452,7 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
     for _ in 0..3 {
         let successor =
             awaken_session_realization_contract::SessionRealizationControl::begin_session_realization(
-                &other,
+                other.realizations.as_ref(),
                 awaken_session_realization_contract::BeginSessionRealization {
                     expected_resources: None,
                     session_id: "local-restart".into(),
@@ -1461,7 +1469,7 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
         assert_eq!(successor.authority.lease.epoch, predecessor.epoch + 1, "L5");
         assert_eq!(
             awaken_session_realization_contract::SessionRealizationControl::renew_session_realization(
-                &other,
+                other.realizations.as_ref(),
                 awaken_session_realization_contract::RenewSessionRealization {
                     session_id: "local-restart".into(),
                     asserted_lease: predecessor,
@@ -1510,7 +1518,7 @@ async fn remote_realization_adopts_only_the_exact_legacy_resource_generation() {
     }
 
     let exact = awaken_session_realization_contract::SessionRealizationControl::activate_session_realization(
-        &application,
+        application.realizations.as_ref(),
         awaken_session_realization_contract::ActivateSessionRealization {
             session_id: "legacy-exact".into(),
             lease: lease.clone(),
@@ -1540,7 +1548,7 @@ async fn remote_realization_adopts_only_the_exact_legacy_resource_generation() {
     assert_eq!(adopted.resources.activations[0].attempts, 1, "L1/E1");
 
     let stale = awaken_session_realization_contract::SessionRealizationControl::activate_session_realization(
-        &application,
+        application.realizations.as_ref(),
         awaken_session_realization_contract::ActivateSessionRealization {
             session_id: "legacy-stale".into(),
             lease,
@@ -3396,6 +3404,7 @@ async fn local_terminal_cleanup_claim_reads_the_exact_root_beyond_the_recovery_b
         .expires_at_unix_ms
         .saturating_add(crate::realization::LOCAL_SESSION_REALIZATION_LEASE_MS);
     let renewed = application
+        .realizations
         .renew_session_realization(
             awaken_session_realization_contract::RenewSessionRealization {
                 session_id: target_id.into(),
@@ -4325,6 +4334,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                     .expires_at_unix_ms;
                 if renewed {
                     application
+                        .realizations
                         .renew_session_realization(
                             awaken_session_realization_contract::RenewSessionRealization {
                                 session_id: SessionId::from(&id),
@@ -4336,6 +4346,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                         .unwrap();
                 }
                 let directive = application
+                    .realizations
                     .activate_session_realization(
                         awaken_session_realization_contract::ActivateSessionRealization {
                             session_id: SessionId::from(&id),
@@ -4379,11 +4390,13 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                     drained: drain,
                 };
                 recovered
+                    .realizations
                     .acknowledge_session_realization(ack.clone())
                     .await
                     .unwrap();
                 let first = repo.get(&SessionId::from(&id)).await.unwrap();
                 recovered
+                    .realizations
                     .acknowledge_session_realization(ack)
                     .await
                     .unwrap();
@@ -4453,6 +4466,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
             .realization
             .unwrap();
         application
+            .realizations
             .renew_session_realization(
                 awaken_session_realization_contract::RenewSessionRealization {
                     session_id: id.into(),
@@ -4470,6 +4484,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                     receipts.push(NoopMcpRealizer.stage_mcp_attachment(request).await.unwrap());
                 }
                 application
+                    .realizations
                     .activate_session_realization(
                         awaken_session_realization_contract::ActivateSessionRealization {
                             session_id: id.into(),
@@ -4484,6 +4499,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
             Action::Publish { publish, drain } => {
                 publications += 1;
                 application
+                    .realizations
                     .acknowledge_session_realization(
                         awaken_session_realization_contract::AcknowledgeSessionRealization {
                             session_id: id.into(),
@@ -4625,6 +4641,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         let before = repo.get(&SessionId::from(&id)).await.unwrap();
         assert!(
             application
+                .realizations
                 .activate_session_realization(
                     awaken_session_realization_contract::ActivateSessionRealization {
                         session_id: SessionId::from(&id),
@@ -4692,6 +4709,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         let before = repo.get(&SessionId::from(&id)).await.unwrap();
         assert!(
             application
+                .realizations
                 .acknowledge_session_realization(
                     awaken_session_realization_contract::AcknowledgeSessionRealization {
                         session_id: SessionId::from(&id),
@@ -4735,6 +4753,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
             drained: Vec::new(),
         };
         let replay = application
+            .realizations
             .acknowledge_session_realization(command.clone())
             .await
             .unwrap();
@@ -4752,6 +4771,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         duplicate.published.push(generation);
         assert!(
             application
+                .realizations
                 .acknowledge_session_realization(duplicate)
                 .await
                 .is_err(),
@@ -4768,7 +4788,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
     create(repo.as_ref(), exact).await;
     let exact_result =
         awaken_session_realization_contract::SessionRealizationControl::acknowledge_session_realization(
-            &application,
+            application.realizations.as_ref(),
             awaken_session_realization_contract::AcknowledgeSessionRealization {
                 session_id: "ack-exact".into(),
                 lease: exact_lease,
@@ -4802,7 +4822,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
     predecessor_lease.expires_at_unix_ms -= 1;
     let renewed_result =
         awaken_session_realization_contract::SessionRealizationControl::acknowledge_session_realization(
-            &application,
+            application.realizations.as_ref(),
             awaken_session_realization_contract::AcknowledgeSessionRealization {
                 session_id: "ack-renewed".into(),
                 lease: predecessor_lease,
@@ -4837,7 +4857,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
     let wrong_generation: crate::session_mcp::McpGenerationRef = w.try_into().unwrap();
     let error =
         awaken_session_realization_contract::SessionRealizationControl::acknowledge_session_realization(
-            &application,
+            application.realizations.as_ref(),
             awaken_session_realization_contract::AcknowledgeSessionRealization {
                 session_id: "ack-replaced".into(),
                 lease: replacement_lease,
@@ -4929,7 +4949,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
 
     let activated =
         awaken_session_realization_contract::SessionRealizationControl::activate_session_realization(
-            &application,
+            application.realizations.as_ref(),
             awaken_session_realization_contract::ActivateSessionRealization {
                 session_id: "running-realization".into(),
                 lease: lease.clone(),
@@ -4962,7 +4982,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
     );
 
     awaken_session_realization_contract::SessionRealizationControl::acknowledge_session_realization(
-        &application,
+        application.realizations.as_ref(),
         awaken_session_realization_contract::AcknowledgeSessionRealization {
             session_id: "running-realization".into(),
             lease: lease.clone(),
@@ -5005,6 +5025,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
     failed.realization = Some(lease.clone());
     create(repo.as_ref(), failed).await;
     application
+        .realizations
         .fail_session_realization(
             awaken_session_realization_contract::FailSessionRealization {
                 session_id: "running-realization-failed".into(),
@@ -5052,6 +5073,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
     assert_eq!(later.updated_at_unix_ms, Some(900));
     assert_eq!(later.realization_progress().failed_at_unix_ms(), Some(500));
     application
+        .realizations
         .fail_session_realization(
             awaken_session_realization_contract::FailSessionRealization {
                 session_id: "running-realization-failed".into(),

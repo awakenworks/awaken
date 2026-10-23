@@ -33,22 +33,23 @@ async fn capacity_failures_keep_preparing_without_consuming_the_durable_budget()
     let begin = |round: usize| {
         let app = &app;
         async move {
-            app.begin_session_realization(
-                awaken_session_realization_contract::BeginSessionRealization {
-                    expected_resources: None,
-                    session_id: "capacity-budget".into(),
-                    target: awaken_session_realization_contract::SessionRealizationTarget {
-                        owner: "worker".into(),
-                        runtime_incarnation: format!("worker/{round}"),
-                        lease_expires_at_unix_ms: u64::MAX,
-                        reassign_existing_lease: false,
+            app.realizations
+                .begin_session_realization(
+                    awaken_session_realization_contract::BeginSessionRealization {
+                        expected_resources: None,
+                        session_id: "capacity-budget".into(),
+                        target: awaken_session_realization_contract::SessionRealizationTarget {
+                            owner: "worker".into(),
+                            runtime_incarnation: format!("worker/{round}"),
+                            lease_expires_at_unix_ms: u64::MAX,
+                            reassign_existing_lease: false,
+                        },
                     },
-                },
-            )
-            .await
-            .expect("begin")
-            .authority
-            .lease
+                )
+                .await
+                .expect("begin")
+                .authority
+                .lease
         }
     };
     let failure =
@@ -73,7 +74,8 @@ async fn capacity_failures_keep_preparing_without_consuming_the_durable_budget()
             1,
             "D1 assignment counts one attempt"
         );
-        app.fail_session_realization(failure(lease, true, true))
+        app.realizations
+            .fail_session_realization(failure(lease, true, true))
             .await
             .expect("D1 capacity failure");
         let after = repo.get(&id).await.unwrap();
@@ -90,7 +92,8 @@ async fn capacity_failures_keep_preparing_without_consuming_the_durable_budget()
     let before_malformed = repo.get(&id).await.unwrap();
     assert!(
         matches!(
-            app.fail_session_realization(failure(lease.clone(), false, true))
+            app.realizations
+                .fail_session_realization(failure(lease.clone(), false, true))
                 .await,
             Err(awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(_))
         ),
@@ -98,7 +101,8 @@ async fn capacity_failures_keep_preparing_without_consuming_the_durable_budget()
     );
     assert_eq!(repo.get(&id).await.unwrap(), before_malformed, "D3/E3");
 
-    app.fail_session_realization(failure(lease, true, false))
+    app.realizations
+        .fail_session_realization(failure(lease, true, false))
         .await
         .expect("D2 first retryable failure");
     let after_first = repo.get(&id).await.unwrap();
@@ -113,7 +117,8 @@ async fn capacity_failures_keep_preparing_without_consuming_the_durable_budget()
         "D2 consumed"
     );
     let lease = begin(7).await;
-    app.fail_session_realization(failure(lease, true, false))
+    app.realizations
+        .fail_session_realization(failure(lease, true, false))
         .await
         .expect("D2 exhausted");
     assert_eq!(
@@ -164,7 +169,7 @@ async fn conflict_and_unclassified_internal_failures_retry_until_the_durable_bud
         );
         let id = SessionId::from(session.as_str());
         let begin = |round: usize| {
-            app.begin_session_realization(
+            app.realizations.begin_session_realization(
                 awaken_session_realization_contract::BeginSessionRealization {
                     expected_resources: None,
                     session_id: session.as_str().into(),
@@ -186,7 +191,8 @@ async fn conflict_and_unclassified_internal_failures_retry_until_the_durable_bud
                 None,
                 &failure(),
             );
-            app.fail_session_realization(report)
+            app.realizations
+                .fail_session_realization(report)
                 .await
                 .expect("report the failure");
             let after = repo.get(&id).await.unwrap();
@@ -262,14 +268,15 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
     let before_refresh_failure = repo.get(&SessionId::from("retry-budget")).await.unwrap();
     assert!(
         matches!(
-            app.begin_session_realization(
-                awaken_session_realization_contract::BeginSessionRealization {
-                    expected_resources: None,
-                    session_id: "retry-budget".into(),
-                    target: target("worker/refresh-failure"),
-                }
-            )
-            .await,
+            app.realizations
+                .begin_session_realization(
+                    awaken_session_realization_contract::BeginSessionRealization {
+                        expected_resources: None,
+                        session_id: "retry-budget".into(),
+                        target: target("worker/refresh-failure"),
+                    }
+                )
+                .await,
             Err(
                 awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
                     _
@@ -286,6 +293,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
     refresh.fail.store(false, Ordering::SeqCst);
 
     let first = app
+        .realizations
         .begin_session_realization(
             awaken_session_realization_contract::BeginSessionRealization {
                 expected_resources: None,
@@ -295,19 +303,20 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
         )
         .await
         .expect("R1 begin");
-    app.fail_session_realization(
-        awaken_session_realization_contract::FailSessionRealization {
-            session_id: "retry-budget".into(),
-            lease: first.authority.lease,
-            prepared_resource_revision: None,
-            retryable: true,
-            not_ready: false,
-            source_run_id: None,
-            reason: "worker unavailable".into(),
-        },
-    )
-    .await
-    .expect("R1 retryable failure");
+    app.realizations
+        .fail_session_realization(
+            awaken_session_realization_contract::FailSessionRealization {
+                session_id: "retry-budget".into(),
+                lease: first.authority.lease,
+                prepared_resource_revision: None,
+                retryable: true,
+                not_ready: false,
+                source_run_id: None,
+                reason: "worker unavailable".into(),
+            },
+        )
+        .await
+        .expect("R1 retryable failure");
     let after_first = repo.get(&SessionId::from("retry-budget")).await.unwrap();
     assert_eq!(
         after_first.execution,
@@ -322,6 +331,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
     );
 
     let second = app
+        .realizations
         .begin_session_realization(
             awaken_session_realization_contract::BeginSessionRealization {
                 expected_resources: None,
@@ -341,19 +351,20 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
         2,
         "R2/E2"
     );
-    app.fail_session_realization(
-        awaken_session_realization_contract::FailSessionRealization {
-            session_id: "retry-budget".into(),
-            lease: second.authority.lease,
-            prepared_resource_revision: None,
-            retryable: true,
-            not_ready: false,
-            source_run_id: None,
-            reason: "worker unavailable again".into(),
-        },
-    )
-    .await
-    .expect("R3 exhausted");
+    app.realizations
+        .fail_session_realization(
+            awaken_session_realization_contract::FailSessionRealization {
+                session_id: "retry-budget".into(),
+                lease: second.authority.lease,
+                prepared_resource_revision: None,
+                retryable: true,
+                not_ready: false,
+                source_run_id: None,
+                reason: "worker unavailable again".into(),
+            },
+        )
+        .await
+        .expect("R3 exhausted");
     assert_eq!(
         repo.get(&SessionId::from("retry-budget"))
             .await
@@ -416,9 +427,18 @@ async fn failed_nonterminal_realization_expires_assignment_before_same_incarnati
                 };
                 let mut stale = command.clone();
                 stale.lease.epoch -= 1;
-                assert!(app.fail_session_realization(stale).await.is_err(), "F0");
+                assert!(
+                    app.realizations
+                        .fail_session_realization(stale)
+                        .await
+                        .is_err(),
+                    "F0"
+                );
                 assert_eq!(repo.get(&SessionId::from(&id)).await.unwrap(), before, "F0");
-                app.fail_session_realization(command.clone()).await.unwrap();
+                app.realizations
+                    .fail_session_realization(command.clone())
+                    .await
+                    .unwrap();
                 let failed = repo.get(&SessionId::from(&id)).await.unwrap();
                 let recoverable = idle || (retryable && attempts < 2);
                 assert_eq!(
@@ -453,6 +473,7 @@ async fn failed_nonterminal_realization_expires_assignment_before_same_incarnati
                         "F1/F3 root cannot reissue the locally closed generation"
                     );
                     let directive = app
+                        .realizations
                         .begin_session_realization(
                             awaken_session_realization_contract::BeginSessionRealization {
                                 session_id: SessionId::from(&id),
@@ -471,7 +492,10 @@ async fn failed_nonterminal_realization_expires_assignment_before_same_incarnati
                     assert_eq!(directive.authority.lease.epoch, 8, "F4");
                     let successor = repo.get(&SessionId::from(&id)).await.unwrap();
                     assert!(
-                        app.fail_session_realization(command).await.is_err(),
+                        app.realizations
+                            .fail_session_realization(command)
+                            .await
+                            .is_err(),
                         "F4 stale replay"
                     );
                     assert_eq!(

@@ -348,12 +348,29 @@ impl SessionAssembly {
             self.resource_purge_scheduler.clone(),
             clock.clone(),
         ));
+        let executable_projections = crate::ExecutableProjections(self.refresh.clone());
+        let realizations = Arc::new(crate::SessionRealizations::new(
+            crate::realization::SessionRealizationCollaborators {
+                mutations: mutations.clone(),
+                clock: clock.clone(),
+                queries: queries.clone(),
+                credentials: credentials.clone(),
+                lifecycle: lifecycle.clone(),
+                resource_references: resource_references.clone(),
+                realization: self.runtime.realization.clone(),
+                mcp: self.mcp.clone(),
+                executable_projections: executable_projections.clone(),
+                execution_admission: execution_admission.clone(),
+                local_realization_owner: self.configuration.local_realization_owner.clone(),
+                runtime_incarnation: runtime_incarnation.clone(),
+                realization_retry_budget: self.configuration.realization_retry_budget,
+            },
+        ));
         SessionApplication {
             clock,
             configuration: self.configuration.clone(),
             runtime: self.runtime.clone(),
             tool_configuration_compiler: self.tool_configuration_compiler.clone(),
-            mcp_realizer: self.mcp.clone(),
             credentials,
             environments: self.environments.clone(),
             model_publication_resolver: self.models.clone(),
@@ -369,11 +386,10 @@ impl SessionAssembly {
             inputs,
             resource_effect_authorization,
             environment_binding_sink,
-            executable_projection_refresh: self.refresh.clone(),
+            executable_projections,
+            realizations,
             execution_admission,
-            session_preparation_cursors: tokio::sync::Mutex::new(std::collections::BTreeMap::new()),
             runtime_incarnation,
-            local_realization_locks: Arc::default(),
             event_batch_cutover_validation,
             #[cfg(any(test, feature = "test-support"))]
             store,
@@ -412,6 +428,7 @@ pub(crate) fn reassemble(
             Arc::strong_count(&application.resource_references),
             Arc::strong_count(&application.work_assignments),
             Arc::strong_count(&application.repository_participants),
+            Arc::strong_count(&application.realizations),
         ]
     };
     let unshared = application.fixture_assembly.clone().assemble(kernel());

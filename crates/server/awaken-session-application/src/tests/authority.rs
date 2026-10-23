@@ -6467,7 +6467,7 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
         };
         let result =
             awaken_session_realization_contract::SessionRealizationControl::activate_session_realization(
-                &app,
+                app.realizations.as_ref(),
                 command.clone(),
             )
             .await;
@@ -6515,7 +6515,7 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
         // each response independently samples its remaining authority horizon.
         assert!(
             awaken_session_realization_contract::SessionRealizationControl::activate_session_realization(
-                &app, command
+                app.realizations.as_ref(), command
             )
             .await
             .unwrap()
@@ -6680,6 +6680,7 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
                 .unwrap();
             create(repo.as_ref(), session).await;
             let staged = app
+                .realizations
                 .begin_session_realization(BeginSessionRealization {
                     session_id: "recovery-replacement".into(),
                     expected_resources: None,
@@ -6717,13 +6718,14 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
                 mcp_receipts: receipts.clone(),
             };
             if renewal {
-                app.renew_session_realization(RenewSessionRealization {
-                    session_id: command.session_id.clone(),
-                    asserted_lease: command.lease.clone(),
-                    requested_expires_at_unix_ms: expiry + 60_000,
-                })
-                .await
-                .unwrap();
+                app.realizations
+                    .renew_session_realization(RenewSessionRealization {
+                        session_id: command.session_id.clone(),
+                        asserted_lease: command.lease.clone(),
+                        requested_expires_at_unix_ms: expiry + 60_000,
+                    })
+                    .await
+                    .unwrap();
             }
             if recovery {
                 let before = repo.get(&command.session_id).await.unwrap();
@@ -6733,7 +6735,7 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
                     .push_str("-corrupt");
                 assert!(
                     matches!(
-                        app.activate_session_realization(corrupt).await,
+                        app.realizations.activate_session_realization(corrupt).await,
                         Err(SessionRealizationControlFailure::Invalid(_))
                     ),
                     "R3 old receipt is not ignored"
@@ -6745,6 +6747,7 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
                 );
             }
             let activated = app
+                .realizations
                 .activate_session_realization(command.clone())
                 .await
                 .unwrap();
@@ -6787,6 +6790,7 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
                 );
             }
             let replay = app
+                .realizations
                 .activate_session_realization(command.clone())
                 .await
                 .unwrap();
@@ -6833,7 +6837,7 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
                 }
                 assert!(
                     matches!(
-                        app.activate_session_realization(invalid).await,
+                        app.realizations.activate_session_realization(invalid).await,
                         Err(SessionRealizationControlFailure::Invalid(_))
                     ),
                     "R4 reject {fault}"
@@ -6845,6 +6849,7 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
                 );
             }
             let complete = app
+                .realizations
                 .acknowledge_session_realization(AcknowledgeSessionRealization {
                     session_id: command.session_id.clone(),
                     lease: activated.authority.lease,

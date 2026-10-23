@@ -479,7 +479,8 @@ impl SessionApplication {
         .map_err(|error| SessionProjectionRecoveryError::Rejected(preparation_error(error)))?;
         let requires_external_realization = session.requires_external_environment_owner();
         let session = if requires_external_realization {
-            self.install_dispatch_projection(&owner, &session)
+            self.realizations
+                .install_dispatch_projection(&owner, &session)
                 .await
                 .map_err(|error| {
                     SessionProjectionRecoveryError::Rejected(realization_error(error))
@@ -501,14 +502,16 @@ impl SessionApplication {
             // be reserved. Its later activity boundary joins the one
             // continuation operation and performs the Resident handoff before
             // activation; no realization effect may run against the old phase.
-            self.install_dispatch_projection(&owner, &session)
+            self.realizations
+                .install_dispatch_projection(&owner, &session)
                 .await
                 .map_err(|error| {
                     SessionProjectionRecoveryError::Rejected(realization_error(error))
                 })?;
             session
         } else {
-            self.realize_session_after_refresh(&awaken_session_types::SessionId::from(thread_id))
+            self.realizations
+                .realize_session_after_refresh(&awaken_session_types::SessionId::from(thread_id))
                 .await
                 .map_err(|error| {
                     SessionProjectionRecoveryError::Rejected(realization_error(error))

@@ -666,7 +666,13 @@ impl SessionApplication {
     /// boundary; no process-local task owns later progress.
     #[cfg(test)]
     pub(crate) async fn reconcile_event_batches(&self) -> EventBatchReconciliation {
-        let candidates = match super::recovery_scan::recovery_candidates(self, true).await {
+        let candidates = match super::recovery_scan::recovery_candidates(
+            self.session_repository(),
+            self.clock.as_ref(),
+            true,
+        )
+        .await
+        {
             Ok(candidates) => candidates,
             Err(error) => {
                 let mut report = EventBatchReconciliation::default();

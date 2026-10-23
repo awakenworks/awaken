@@ -246,7 +246,8 @@ impl SessionApplication {
             |command| async move {
                 let lease =
                     awaken_session_realization_contract::SessionRealizationControl::renew_session_realization(
-                        self, command,
+                        self.realizations.as_ref(),
+                        command,
                     )
                     .await?;
                 Ok(lease)

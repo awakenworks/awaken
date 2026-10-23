@@ -67,6 +67,25 @@ mod environment_owner_kani_proof {
     }
 }
 
+/// The process's executable-projection refresh, or process-local admission
+/// when the authoritative catalogs live in this process. Every component that
+/// enters a lifecycle admission boundary shares this one selection.
+#[derive(Clone)]
+pub(crate) struct ExecutableProjections(
+    pub(crate) Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
+);
+
+impl ExecutableProjections {
+    pub(crate) async fn refresh(
+        &self,
+    ) -> Result<awaken_session_application_contract::ExecutableProjectionAdmission, String> {
+        match &self.0 {
+            Some(refresh) => refresh.refresh().await,
+            None => Ok(process_local_executable_projection_admission()),
+        }
+    }
+}
+
 /// One immutable persistence selection made before the execution Host exists.
 /// The application and its Environment receipt sink always share these exact
 /// Store/Clock handles; no app-to-Host installation is needed to create it.
@@ -374,7 +393,6 @@ pub struct SessionApplication {
     configuration: SessionApplicationConfiguration,
     runtime: crate::SessionExecutor,
     tool_configuration_compiler: Arc<dyn ToolConfigurationCompiler>,
-    mcp_realizer: Arc<dyn McpAttachmentRealizer>,
     credentials: Arc<crate::SessionCredentials>,
     environments: SessionEnvironments,
     model_publication_resolver:
@@ -393,18 +411,12 @@ pub struct SessionApplication {
     environment_binding_sink: Arc<dyn SessionEnvironmentBindingSink>,
     /// The one process-owned high-water reconciler, invoked at lifecycle
     /// admission boundaries. Query reads never drive it.
-    executable_projection_refresh:
-        Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
+    executable_projections: ExecutableProjections,
+    realizations: Arc<crate::SessionRealizations>,
     /// One complete set of immutable execution observations.
     execution_admission: Arc<SessionExecutionAdmission>,
-    /// Disposable keyset position for one bounded preparation-candidate page
-    /// per poll. The root and its CAS remain the scheduling authority.
-    session_preparation_cursors:
-        tokio::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<Option<SessionScanCursor>>>>>,
     runtime_incarnation: String,
     event_batch_cutover_validation: Arc<SessionEventBatchCutoverValidationSource>,
-    /// Process-local mutual exclusion for the co-located realization driver.
-    local_realization_locks: Arc<crate::realization::LocalRealizationLocks>,
     /// The composition inputs a fixture may still change before sharing.
     #[cfg(any(test, feature = "test-support"))]
     store: Arc<dyn awaken_session_repository_contract::SessionStore>,
@@ -476,11 +488,6 @@ impl SessionApplication {
             &layout.environment.idle_retention,
         )?;
         effects.validate_session_sandbox_layout(session_id, layout)
-    }
-
-    #[must_use]
-    pub(crate) fn mcp_realizer(&self) -> &dyn McpAttachmentRealizer {
-        self.mcp_realizer.as_ref()
     }
 
     #[must_use]
@@ -661,13 +668,6 @@ impl SessionApplication {
         &self.configuration.local_realization_owner
     }
 
-    /// Serialize this process's own realization drivers for one Session.
-    pub(crate) fn local_realization_locks(
-        &self,
-    ) -> &Arc<crate::realization::LocalRealizationLocks> {
-        &self.local_realization_locks
-    }
-
     /// Resolve and validate the exact Environment snapshot frozen into a new Session.
     pub async fn resolve_session_environment(
         &self,
@@ -756,12 +756,6 @@ impl SessionApplication {
         self.execution_admission.workers.get().map(Arc::as_ref)
     }
 
-    pub(crate) fn session_preparation_placement(
-        &self,
-    ) -> Option<&dyn awaken_session_realization_contract::SessionPreparationPlacement> {
-        self.execution_admission.placement.get().map(Arc::as_ref)
-    }
-
     /// Bind the one executable-projection reconciliation operation used by
     /// request and autonomous Session boundaries. Duplicate installation is an
     /// error instead of allowing two freshness authorities to overlap.
@@ -770,7 +764,7 @@ impl SessionApplication {
         &mut self,
         refresh: Arc<awaken_session_application_contract::ExecutableProjectionRefresh>,
     ) -> Result<(), &'static str> {
-        if self.executable_projection_refresh.is_some() {
+        if self.fixture_assembly.refresh.is_some() {
             return Err("executable projection refresh is already installed");
         }
         crate::construction::reassemble(self, |assembly| assembly.refresh = Some(refresh));
@@ -782,10 +776,12 @@ impl SessionApplication {
     pub async fn refresh_executable_projections(
         &self,
     ) -> Result<awaken_session_application_contract::ExecutableProjectionAdmission, String> {
-        match self.executable_projection_refresh.as_ref() {
-            Some(refresh) => refresh.refresh().await,
-            None => Ok(process_local_executable_projection_admission()),
-        }
+        self.executable_projections.refresh().await
+    }
+
+    #[must_use]
+    pub fn realizations(&self) -> Arc<crate::SessionRealizations> {
+        self.realizations.clone()
     }
 
     #[cfg(any(test, feature = "test-support"))]

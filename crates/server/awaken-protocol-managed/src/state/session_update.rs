@@ -11,7 +11,11 @@ impl ManagedState {
     /// sweep in the Session application's lifecycle supervisor.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn reconcile_session_realizations(&self) -> usize {
-        let report = self.application.reconcile_session_realizations().await;
+        let report = self
+            .application
+            .realizations()
+            .reconcile_session_realizations()
+            .await;
         for session in &report.settled {
             if let Err(error) = self.publish_persisted_session(session) {
                 tracing::warn!(

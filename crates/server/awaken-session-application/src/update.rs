@@ -573,6 +573,7 @@ impl SessionApplication {
             )
         {
             match self
+                .realizations
                 .realize_session_after_refresh(&outcome.session.session_id)
                 .await
             {

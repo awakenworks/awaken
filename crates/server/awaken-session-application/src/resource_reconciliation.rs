@@ -807,7 +807,13 @@ impl SessionApplication {
 
     /// Reconcile every local durable Resource projection requiring convergence.
     pub async fn reconcile_resource_activations(&self) -> SessionReconciliation {
-        let candidates = match super::recovery_scan::recovery_candidates(self, true).await {
+        let candidates = match super::recovery_scan::recovery_candidates(
+            self.session_repository(),
+            self.clock.as_ref(),
+            true,
+        )
+        .await
+        {
             Ok(candidates) => candidates,
             Err(error) => {
                 let mut report = SessionReconciliation::default();

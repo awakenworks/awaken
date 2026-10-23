@@ -126,7 +126,7 @@ impl TerminalCleanupWorkerRevalidation {
     }
 }
 
-impl SessionApplication {
+impl SessionRealizations {
     /// Monotonic, idempotent demand on the one Session root. Product callers
     /// can request Worker preparation after creation or after an upgrade; the
     /// Worker polls only this retained intent and never receives a model Run.
@@ -875,10 +875,9 @@ impl SessionApplication {
         );
         let initial_realization = session.execution != SessionExecutionState::Idle;
         let retry_initial = {
-            match command.initial_realization_failure_plan(
-                &session,
-                self.configuration.realization_retry_budget,
-            )? {
+            match command
+                .initial_realization_failure_plan(&session, self.realization_retry_budget)?
+            {
                 awaken_session_realization_contract::RealizationFailureOutcome::Retry {
                     refund_attempt,
                 } => {
@@ -981,12 +980,12 @@ impl SessionApplication {
     /// an external cleanup claim. HTTP authentication is an adapter boundary;
     /// the root-CAS owner repeats this read so direct callers and a stale
     /// transport snapshot cannot mint a durable Session lease.
-    async fn terminal_cleanup_worker_for_target(
+    pub(crate) async fn worker_for_target(
         &self,
         target: &awaken_session_realization_contract::SessionRealizationTarget,
     ) -> Result<Option<awaken_worker_contract::WorkerSnapshot>, SessionRealizationControlFailure>
     {
-        let observations = self.worker_observation_source().ok_or_else(|| {
+        let observations = self.execution_admission.workers.get().ok_or_else(|| {
             SessionRealizationControlFailure::Unavailable(
                 "Worker observation source is not installed for external terminal cleanup".into(),
             )
@@ -994,7 +993,9 @@ impl SessionApplication {
         let workers = observations.list().await.map_err(unavailable)?;
         target.worker_from_registry_observation(workers, self.clock.now_ms())
     }
+}
 
+impl SessionApplication {
     /// Undo only this invocation's exact uncertain claim after Registry
     /// authority disappears. Each retry reloads the aggregate and preserves
     /// every concurrent field; a different realization proves that another
@@ -1077,7 +1078,7 @@ impl SessionApplication {
             Some(conflict) => conflict.previous_realization.as_ref(),
             None => session.realization.as_ref(),
         };
-        let admission = match self.terminal_cleanup_worker_for_target(target).await {
+        let admission = match self.realizations.worker_for_target(target).await {
             Ok(Some(worker)) if !target.admits_terminal_cleanup_generation(&worker, prior) => {
                 Ok(false)
             }
@@ -1293,7 +1294,7 @@ impl SessionApplication {
             // Re-read the canonical Worker registry on every root-CAS attempt.
             // A conflict never carries eligibility from the older Session or
             // Worker snapshot into the retry.
-            match self.terminal_cleanup_worker_for_target(&target).await {
+            match self.realizations.worker_for_target(&target).await {
                 Ok(Some(_)) => {}
                 Ok(None) => {
                     if let Some(conflict) = conflicted_claim.as_deref() {
@@ -1449,7 +1450,7 @@ impl SessionApplication {
 /// Local application drivers cross an executable-refresh boundary before they
 /// enter the multi-phase protocol. This adapter reuses that proof for the
 /// Stage/Activate/Acknowledge calls without adding a token, cache, or cursor.
-pub(super) struct RefreshedSessionRealizationControl<'a>(pub(super) &'a SessionApplication);
+pub(super) struct RefreshedSessionRealizationControl<'a>(pub(super) &'a SessionRealizations);
 
 #[async_trait::async_trait]
 impl SessionRealizationControl for RefreshedSessionRealizationControl<'_> {
@@ -1501,14 +1502,15 @@ impl SessionRealizationControl for RefreshedSessionRealizationControl<'_> {
 }
 
 #[async_trait::async_trait]
-impl SessionRealizationControl for SessionApplication {
+impl SessionRealizationControl for SessionRealizations {
     async fn begin_session_realization(
         &self,
         command: BeginSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
         validate_target(&command, self.clock.now_ms())?;
         let admission = self
-            .refresh_executable_projections()
+            .executable_projections
+            .refresh()
             .await
             .map_err(unavailable)?;
         admission
@@ -1534,7 +1536,8 @@ impl SessionRealizationControl for SessionApplication {
         command: ActivateSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
         let admission = self
-            .refresh_executable_projections()
+            .executable_projections
+            .refresh()
             .await
             .map_err(unavailable)?;
         admission
@@ -1547,7 +1550,8 @@ impl SessionRealizationControl for SessionApplication {
         command: AcknowledgeSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
         let admission = self
-            .refresh_executable_projections()
+            .executable_projections
+            .refresh()
             .await
             .map_err(unavailable)?;
         admission
@@ -1564,7 +1568,7 @@ impl SessionRealizationControl for SessionApplication {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionPreparationControl for SessionApplication {
+impl awaken_session_realization_contract::SessionPreparationControl for SessionRealizations {
     async fn claim_next_session_preparation(
         &self,
         target: awaken_session_realization_contract::SessionRealizationTarget,
@@ -1579,12 +1583,13 @@ impl awaken_session_realization_contract::SessionPreparationControl for SessionA
             ));
         }
         let admission = self
-            .refresh_executable_projections()
+            .executable_projections
+            .refresh()
             .await
             .map_err(unavailable)?;
         admission
             .enter(|| async {
-                let Some(worker) = self.terminal_cleanup_worker_for_target(&target).await? else {
+                let Some(worker) = self.worker_for_target(&target).await? else {
                     return Ok(None);
                 };
                 if worker.state != awaken_worker_contract::WorkerState::Ready {
@@ -1608,7 +1613,8 @@ impl awaken_session_realization_contract::SessionPreparationControl for SessionA
                     drop(cursors);
                     let mut cursor = cursor_state.lock().await;
                     let scan = self
-                        .session_repository()
+                        .mutations
+                        .repository()
                         .preparation_candidates(cursor.as_ref())
                         .await
                         .map_err(repository_control)?;
@@ -1627,7 +1633,7 @@ impl awaken_session_realization_contract::SessionPreparationControl for SessionA
                     let session_id = scoped.session.session_id;
                     // The scan is a wake hint only. Eligibility and the
                     // directive are both re-derived from the current root.
-                    let current = match self.session_repository().get(&session_id).await {
+                    let current = match self.mutations.repository().get(&session_id).await {
                         Ok(session) => session,
                         Err(SessionRepositoryError::NotFound) => continue,
                         Err(error) => return Err(repository_control(error)),
@@ -1662,13 +1668,12 @@ impl awaken_session_realization_contract::SessionPreparationControl for SessionA
                     };
                     // A withdrawn Worker cannot start physical effects from
                     // a lease minted just before its Registry transition.
-                    let Some(current_worker) =
-                        self.terminal_cleanup_worker_for_target(&target).await?
-                    else {
+                    let Some(current_worker) = self.worker_for_target(&target).await? else {
                         return Ok(None);
                     };
                     let current_root = self
-                        .session_repository()
+                        .mutations
+                        .repository()
                         .get(&session_id)
                         .await
                         .map_err(repository_control)?;

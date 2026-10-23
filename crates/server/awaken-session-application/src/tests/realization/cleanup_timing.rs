@@ -226,6 +226,7 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
             let original = assigned.authority.lease.clone();
             clock.advance(100);
             let renewed = app
+                .realizations
                 .renew_session_realization(
                     awaken_session_realization_contract::RenewSessionRealization {
                         session_id: id.clone(),
@@ -249,6 +250,7 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
             after = repo.get(&id).await.unwrap();
             clock.set(original.expires_at_unix_ms + 1);
             let replay = app
+                .realizations
                 .renew_session_realization(
                     awaken_session_realization_contract::RenewSessionRealization {
                         session_id: id.clone(),
@@ -273,7 +275,7 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
                 "R9/{rule} replay is a stutter"
             );
             clock.set(renewed.lease.expires_at_unix_ms);
-            assert!(matches!(app.renew_session_realization(
+            assert!(matches!(app.realizations.renew_session_realization(
                 awaken_session_realization_contract::RenewSessionRealization {
                     session_id: id.clone(), asserted_lease: renewed.lease.clone(),
                     requested_expires_at_unix_ms: renewed.lease.expires_at_unix_ms + 100,
