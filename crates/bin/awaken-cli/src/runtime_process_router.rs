@@ -196,9 +196,12 @@ async fn selected_runtime_authority(
             .clone()
             .unwrap_or_else(awaken_session_executor::DeploymentConfig::ephemeral);
         process.runtime_authority = Some(
-            awaken_coordinator::init_scenario_runtime(&selected, stores.clock.clone())
-                .await
-                .map_err(|error| error.to_string())?,
+            crate::scenario_runtime_authority(
+                &selected.coordinator_storage(),
+                stores.clock.clone(),
+            )
+            .await
+            .map_err(|error| error.to_string())?,
         );
     }
     #[cfg(not(any(test, feature = "test-support")))]

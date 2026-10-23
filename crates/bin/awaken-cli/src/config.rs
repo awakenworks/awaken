@@ -12,9 +12,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
+use awaken_dispatch_execution::{DispatchBackend, StoreKind};
+use awaken_session_executor::DeploymentConfig;
 #[cfg(test)]
 use awaken_session_executor::{ContentRedaction, PackageImageBuilder};
-use awaken_session_executor::{DeploymentConfig, DispatchBackend, StoreKind};
 mod browser_access;
 mod cloud_iam;
 mod deployment;

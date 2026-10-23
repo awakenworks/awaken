@@ -14,6 +14,7 @@ separation = "process"
 
 [dependencies]
 awaken-run-ingress-contract.workspace = true
+awaken-dispatch-execution.workspace = true
 # Real Web compiler used by this bootstrap crate's explicit scenario assembly only.
 awaken-ext-builtin-tools = { workspace = true, optional = true }
 awaken-tool-contract.workspace = true
@@ -177,7 +178,7 @@ awaken-run-executor-acp.workspace = true
 awaken-worker-runtime.workspace = true
 # Cross-component closure cases select the actual existing transport and keep
 # all original Registry/Dispatch/ledger assertions at the broker decision owner.
-awaken-cli = { workspace = true, features = ["container-k8s"] }
+awaken-cli = { workspace = true, features = ["container-k8s", "test-support"] }
 awaken-executable-environment-contract.workspace = true
 # Captures the Session adoption's correlated rollout diagnostics in its tests.
 awaken-reliability-testkit = { workspace = true, features = ["tracing", "postgres"] }

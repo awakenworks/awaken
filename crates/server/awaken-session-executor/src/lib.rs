@@ -130,9 +130,9 @@ pub use crate::cache_volume::{
 pub use crate::commit_ingest::session_commit_owner;
 pub use crate::config::{advertised_tools, authorable_tools, block_text};
 pub use crate::deployment_config::{
-    ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
-    PackageImageBuilder, SandboxPackageSettingsInput, SandboxSettings, SandboxTier, StoreKind,
-    Wake, default_postgres_max_connections, session_sandbox_base,
+    ContentCaptureSettings, ContentRedaction, DeploymentConfig, PackageImageBuilder,
+    SandboxPackageSettingsInput, SandboxSettings, SandboxTier, default_postgres_max_connections,
+    session_sandbox_base,
 };
 pub(crate) use crate::host::ApplicationPortBinding;
 pub use crate::host::capability::WorkerContentAdapters;

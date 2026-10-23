@@ -64,10 +64,12 @@ async fn app() -> Router {
     };
     AUTHORITY_INSTALLED
         .get_or_init(|| async {
-            let authority =
-                awaken_coordinator::init_scenario_runtime(&deployment, awaken_time::system_clock())
-                    .await
-                    .expect("select Coordinator-owned durable Scenario Runtime");
+            let authority = awaken_cli::scenario_runtime_authority(
+                &deployment.coordinator_storage(),
+                awaken_time::system_clock(),
+            )
+            .await
+            .expect("select Coordinator-owned durable Scenario Runtime");
             awaken_scenario_host::install_scenario_runtime_authority(authority)
                 .expect("install the single Scenario Runtime authority");
         })

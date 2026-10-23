@@ -1,10 +1,11 @@
 use std::path::Path;
 
 use awaken_acp_contract::AcpWorkerProfile;
+use awaken_dispatch_execution::Wake;
 use awaken_session_environment_contract::ContainerHandResidency;
 use awaken_session_executor::{
     ContentCaptureSettings, ContentRedaction, SandboxPackageSettingsInput, SandboxSettings,
-    SandboxTier, Wake,
+    SandboxTier,
 };
 use awaken_session_mcp::ContainerMcpRelayExposure;
 

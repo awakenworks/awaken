@@ -12,6 +12,7 @@ mod commit_fence;
 mod composition_tests;
 mod control_dispatch;
 mod coordination_activation;
+mod coordinator_storage;
 mod error;
 pub mod execution_capacity;
 mod execution_topology;
@@ -48,6 +49,7 @@ pub use commit_fence::{
 };
 pub use control_dispatch::{ControlDispatch, LocalWorkerDispatch, TerminalRecoveryDispatch};
 pub use coordination_activation::{coordinated_activation_matches, coordinated_run_activation};
+pub use coordinator_storage::{CoordinatorStorage, DispatchBackend, StoreKind, Wake};
 pub use error::{Error, NotReady};
 pub use execution_topology::{
     DispatchPoolSizing, ExecutionTopology, LeaseOwnerId, LocalExecution, QueueDepthSource,

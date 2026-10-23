@@ -76,7 +76,7 @@ pub use coordinator_component::{
     restore_deployment_application,
 };
 #[cfg(any(test, feature = "test-support"))]
-pub use coordinator_persistence::init_scenario_runtime;
+pub use coordinator_persistence::open_durable_runtime_authority;
 pub use coordinator_persistence::{
     CoordinatorPersistence, migrate_postgres_schema as migrate_postgres_coordinator_schema,
     migrate_postgres_schema_with_pool as migrate_postgres_coordinator_schema_with_pool,

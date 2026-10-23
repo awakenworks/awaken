@@ -251,7 +251,7 @@
     "awaken-agent-config::compile.rs::compile_with_models": 358,
     "awaken-cli::config/resolve.rs::resolve_file": 502,
     "awaken-cli::control_component.rs::prepare_control_routers": 230,
-    "awaken-cli::deployment_process.rs::prepare_runtime_process_with_coordinator_services_and_installations": 211,
+    "awaken-cli::deployment_process.rs::prepare_runtime_process_with_coordinator_services_and_installations": 208,
     "awaken-cli::process_stores.rs::open_process_stores": 393,
     "awaken-cli::service.rs::serve_prepared_process": 234,
     "awaken-config-service::publication.rs::prepare_agent_publication": 174,
