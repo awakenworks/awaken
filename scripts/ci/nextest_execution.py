@@ -68,25 +68,34 @@ def reconcile(document: dict, output: str, status: int) -> dict:
 
 
 def listing_arguments(arguments: list[str]) -> list[str]:
-    """Preserve all build/selection options; omit only execution-only settings."""
+    """Preserve build/selection arguments; omit supported run-only settings."""
     result = []
     iterator = iter(arguments)
     for argument in iterator:
-        flag, equals, _ = argument.partition("=")
+        if argument == "--":
+            result.extend((argument, *iterator))
+            break
+        flag, equals, value = argument.partition("=")
         if len(argument) > 2 and argument.startswith("-j"):
+            flag, equals, value = "-j", "=", argument[2:].removeprefix("=")
+        if argument in ("--no-fail-fast", "--fail-fast", "--nff", "--ff",
+                        "--no-capture", "--nocapture", "--no-output-indent",
+                        "--hide-progress-bar", "--no-input-handler"):
             continue
-        if flag in ("--no-fail-fast", "--fail-fast"):
-            continue
-        if flag in ("--test-threads", "-j", "--failure-output"):
+        if flag in ("--test-threads", "--jobs", "-j", "--failure-output", "--success-output",
+                    "--status-level", "--final-status-level", "--show-progress",
+                    "--max-progress-running", "--message-format", "--message-format-version"):
             if not equals:
                 try:
-                    next(iterator)
+                    value = next(iterator)
                 except StopIteration as error:
                     raise ValueError("missing runtime option value: " + flag) from error
+            negative_threads = flag in ("--test-threads", "--jobs", "-j") and value[1:].isdecimal()
+            if not value or (value.startswith("-") and not negative_threads):
+                raise ValueError("missing runtime option value: " + flag)
             continue
         result.append(argument)
     return result
-
 
 
 class ExecutionTests(unittest.TestCase):
@@ -160,13 +169,49 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(result["excluded_binaries"], [{"binary": "pkg::excluded", "reason": "binary-filter"}])
 
     def test_runtime_options_do_not_change_the_independent_selection(self):
-        selection = ["--locked", "-p", "pkg", "--features", "backend", "-E", "test(critical)"]
-        for runtime in (["--no-fail-fast"], ["--test-threads", "2"], ["--test-threads=2"],
-                        ["--failure-output", "immediate-final"], ["--fail-fast", "-j", "1"], ["-j2"]):
-            self.assertEqual(listing_arguments([*selection, *runtime]), selection)
-        with self.assertRaises(ValueError):
-            listing_arguments(["--test-threads"])
-
+        # Causes: C1=before --; C2=supported run-only setting; C3=has a
+        # nonempty value when required; C4=negative thread count. Effects:
+        # R1 C1+C2+C3 -> omit only that setting/value, retain selection order.
+        # R2 C1+C2+!C3 -> ValueError before listing (never swallow a selector).
+        # R3 !C1 -> retain -- and its entire tail byte-for-byte, even tokens
+        # resembling runtime flags. R4 !C2 -> retain all build/selection and
+        # unknown arguments; native Nextest must reject unsupported syntax.
+        # C4 is valid Nextest thread syntax, not a following option. Both
+        # --flag value and --flag=value obey R1/R2; joined -j is the short form.
+        # This is CLI projection evidence, not execution or domain acceptance.
+        selection = ["--locked", "-p", "pkg", "--features", "backend", "-E", "test(critical)",
+                     "--cargo-profile", "ci", "-P", "qualification", "--run-ignored", "default",
+                     "--partition", "hash:1/2", "--ignore-default-filter", "--build-jobs", "4",
+                     "--color", "never", "--no-pager", "--cargo-message-format", "json", "critical"]
+        values = {"--test-threads": "2", "--jobs": "2", "-j": "2",
+                  "--failure-output": "immediate-final", "--success-output": "never",
+                  "--status-level": "pass", "--final-status-level": "all",
+                  "--show-progress": "none", "--max-progress-running": "0",
+                  "--message-format": "libtest-json", "--message-format-version": "0.1"}
+        for flag, value in values.items():
+            for runtime in ([flag, value], [flag + "=" + value]):
+                with self.subTest(runtime=runtime):
+                    self.assertEqual(listing_arguments([*selection, *runtime]), selection)
+                    self.assertEqual(listing_arguments([*runtime, *selection]), selection)
+            for missing in ([flag], [flag + "="], [flag, ""], [flag, "--locked"],
+                            [flag, "-E", "test(other)"], [flag, "--", "critical"]):
+                with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, "missing runtime option value"):
+                    listing_arguments(missing)
+        for runtime in (["--no-fail-fast"], ["--fail-fast"], ["--nff"], ["--ff"],
+                        ["--no-capture"], ["--nocapture"], ["--no-output-indent"],
+                        ["--hide-progress-bar"], ["--no-input-handler"], ["-j2"], ["-j=2"],
+                        ["-j-1"], ["-j", "-1"], ["--test-threads=-1"], ["--jobs", "-1"],
+                        ["--no-fail-fast", "--status-level", "pass", "--failure-output=final"]):
+            with self.subTest(runtime=runtime):
+                self.assertEqual(listing_arguments([*selection, *runtime]), selection)
+        with self.assertRaisesRegex(ValueError, "missing runtime option value"):
+            listing_arguments(["-j="])
+        for tail in (["--", "--exact", "critical", "--skip", "slow"],
+                     ["--", "--status-level", "-j2", "--no-fail-fast"]):
+            self.assertEqual(listing_arguments([*selection, "--status-level=pass", *tail]), [*selection, *tail])
+        unsupported = ["--future-selection=value", "--rerun", "previous", "--no-tests", "pass",
+                       "--retries=1", "--no-run", "--fail-fast=true"]
+        self.assertEqual(listing_arguments([*selection, *unsupported]), [*selection, *unsupported])
 
 
 if __name__ == "__main__":

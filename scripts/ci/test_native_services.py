@@ -223,6 +223,56 @@ class WorkerResultTests(unittest.TestCase):
 
 
 class PostgresFixtureTests(unittest.TestCase):
+    def test_native_diagnostics_and_sql_have_distinct_encoding_contracts(self):
+        # C1 command kind; C2 native-localized versus UTF8 output; C3 success.
+        # D1/D2: initdb/pg_ctl + non-UTF8 + success -> preserve raw diagnostics;
+        # S1/S2: SQL + valid UTF8 (ASCII/Unicode) -> exact stripped text;
+        # S3: SQL + invalid UTF8 -> refuse, never replace or ignore bytes.
+        # The existing nonzero-psql case separately requires a sanitized error.
+        localized = "数据库初始化完成".encode("gb18030")
+        rows = [
+            ("initdb", localized, localized),
+            ("pg_ctl", localized, localized),
+            ("psql", b"  owned\n", "owned"),
+            ("psql", ' {"owner":"工作区"}\n'.encode("utf-8"), '{"owner":"工作区"}'),
+            ("psql", localized, None),
+        ]
+        for name, output, expected in rows:
+            with self.subTest(command=name, valid_sql=expected is not None):
+                service = object.__new__(pg.PostgresService)
+                service.binaries = {name: {"path": "owned-" + name + ".exe"}}
+                service.environment = {}
+                with mock.patch.object(pg.subprocess, 'CREATE_NO_WINDOW', 0, create=True), mock.patch.object(
+                    pg.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, output, b'')
+                ):
+                    if name != "psql":
+                        self.assertEqual(service.command(name, []), expected)
+                    elif expected is None:
+                        with self.assertRaises(UnicodeDecodeError):
+                            service.sql("SELECT 1")
+                    else:
+                        self.assertEqual(service.sql("SELECT 1"), expected)
+
+    def test_sql_client_encoding_is_owned_instead_of_inherited(self):
+        # C1 ambient PG client encoding/password; C2 a fresh owned fixture.
+        # E1 SQL explicitly uses UTF8; E2 the ambient credential is replaced.
+        # Database locale and native command diagnostics remain independent.
+        inherited_password = secrets.token_hex(24)
+        # This table exercises environment selection independently of the
+        # native-platform/PE admission covered by the service boundary tests.
+        with tempfile.TemporaryDirectory() as directory:
+            binaries = Path(directory)
+            fixture_root = binaries / "owned"
+            with mock.patch.dict(
+                os.environ, {"PGCLIENTENCODING": "LATIN1", "PGPASSWORD": inherited_password}
+            ), mock.patch.object(pg.os, 'name', 'nt'), mock.patch.object(
+                pg, 'windows_executable', side_effect=lambda path: {"path": str(path)}
+            ):
+                service = pg.PostgresService(binaries, fixture_root, binaries, "owned")
+        self.assertEqual(service.environment.get("PGCLIENTENCODING"), "UTF8")
+        self.assertEqual(service.environment["PGPASSWORD"], service.password)
+        self.assertNotEqual(service.password, inherited_password)
+
     def test_sql_identity_requires_every_ownership_and_platform_premise(self):
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory) / 'data'

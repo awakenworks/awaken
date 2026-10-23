@@ -153,6 +153,85 @@ mod tests {
         request
     }
 
+    #[test]
+    fn repository_token_fingerprints_preserve_original_request_identity() {
+        // F1-F4 cause/effect table: absent/A/A/B token with every other create,
+        // Repository and Session-id field fixed. Exact token replay matches;
+        // absent/A/B are pairwise distinct at the original Resource and create
+        // request functions and the manifest's original vector composition.
+        // All serialized Resource DTOs still omit the write-only token. The
+        // literals below were captured by this unchanged Rust case on native
+        // Windows/MSVC at 2025b27345 before the conversion-owner move; all 17
+        // original producer/dependency sources were byte-exact to old886.
+        // These are request-equivalence witnesses, not authorization proofs.
+        let mut fingerprints = Vec::new();
+        for token in [
+            None,
+            Some("fixture-token-a"),
+            Some("fixture-token-a"),
+            Some("fixture-token-b"),
+        ] {
+            let mut wire = serde_json::json!({
+                "type": "github_repository",
+                "url": "https://github.com/acme/repo.git",
+                "mount_path": "/workspace/source",
+                "checkout": {"type": "branch", "name": "main"}
+            });
+            if let Some(token) = token {
+                wire["authorization_token"] = serde_json::json!(token);
+            }
+            let mut request = request("Token identity fixture");
+            request.resources = vec![serde_json::from_value(wire).unwrap()];
+            let resource = request.resources[0].idempotency_fingerprint();
+            let manifest = awaken_agent_contract::stable_fingerprint(&vec![resource.clone()]);
+            let create = request_fingerprint(&request, "sesn_token_identity_fixture")
+                .expect("valid old request fingerprint");
+            println!("baseline resource={resource} manifest={manifest} create={create}");
+            let serialized = serde_json::to_string(&request.resources[0]).unwrap();
+            assert!(!serialized.contains("authorization_token"));
+            assert!(!serialized.contains("fixture-token"));
+            fingerprints.push([resource, manifest, create]);
+        }
+        let original = [
+            [
+                "fnv1a64:05842ba748cc3c35",
+                "fnv1a64:fa623d0f7b51fbda",
+                "fnv1a64:34ec6737c6b8a722",
+            ],
+            [
+                "fnv1a64:e7582c6ec9d567ff",
+                "fnv1a64:fd4de969c7c0d6e2",
+                "fnv1a64:cccb5c884f27071e",
+            ],
+            [
+                "fnv1a64:e7582c6ec9d567ff",
+                "fnv1a64:fd4de969c7c0d6e2",
+                "fnv1a64:cccb5c884f27071e",
+            ],
+            [
+                "fnv1a64:192aacb29c366dc6",
+                "fnv1a64:76081503bf2c2418",
+                "fnv1a64:84ace51ad98c405c",
+            ],
+        ];
+        assert_eq!(
+            fingerprints,
+            original.map(|row| row.map(str::to_owned)).to_vec(),
+            "F1-F4 exact original Rust literals"
+        );
+        for (((absent, first), replay), different) in fingerprints[0]
+            .iter()
+            .zip(&fingerprints[1])
+            .zip(&fingerprints[2])
+            .zip(&fingerprints[3])
+        {
+            assert_eq!(first, replay, "F2=F3 exact token replay");
+            assert_ne!(absent, first, "F1!=F2 absent/present");
+            assert_ne!(absent, different, "F1!=F4 absent/different");
+            assert_ne!(first, different, "F2!=F4 token-only change");
+        }
+    }
+
     #[tokio::test]
     async fn idempotent_create_rehydrates_durable_session_after_restart() {
         // Cause/effect graph: C1 the owner-scoped key is new or already durable;

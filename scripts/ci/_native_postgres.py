@@ -42,9 +42,10 @@ class PostgresService:
         self.environment = {key: value for key, value in os.environ.items()
                             if not key.upper().startswith("PG")}
         self.environment.update(PGHOST="127.0.0.1", PGPORT=str(self.port), PGUSER="postgres",
-                                PGDATABASE="postgres", PGPASSWORD=self.password, PGCONNECT_TIMEOUT="3")
+                                PGDATABASE="postgres", PGPASSWORD=self.password, PGCONNECT_TIMEOUT="3",
+                                PGCLIENTENCODING="UTF8")
 
-    def command(self, name: str, arguments: list[str], *, timeout: int = 30) -> str:
+    def command(self, name: str, arguments: list[str], *, timeout: int = 30) -> bytes:
         result = subprocess.run([self.binaries[name]["path"], *arguments],
                                 env=self.environment, capture_output=True, stdin=subprocess.DEVNULL,
                                 timeout=timeout, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -52,11 +53,13 @@ class PostgresService:
             # Configuration can include credentials. Never copy argv/environment
             # or server connection errors into a public execution receipt.
             raise RuntimeError(f"owned PostgreSQL {name} failed with status {result.returncode}")
-        return result.stdout.decode("utf-8").strip()
+        # initdb/pg_ctl diagnostics follow the native message locale, even when
+        # the database uses UTF8. Only SQL results have a UTF8 wire contract.
+        return result.stdout
 
     def sql(self, statement: str) -> str:
         return self.command("psql", ["-X", "-qAt", "-w", "-v", "ON_ERROR_STOP=1",
-                                     "-c", statement], timeout=8)
+                                     "-c", statement], timeout=8).decode("utf-8").strip()
 
     def read_identity(self) -> dict:
         value = json.loads(self.sql("SELECT json_build_object("
