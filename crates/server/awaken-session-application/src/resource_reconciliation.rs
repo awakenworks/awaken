@@ -37,6 +37,9 @@ use super::{
 };
 
 mod manifest_command;
+#[cfg(test)]
+pub(crate) use manifest_command::MEMORY_STORE_CREATE_ONLY;
+pub use manifest_command::{SessionResourceAttachment, SessionResourceManifestRequest};
 mod ordinary_reconciliation_gate;
 mod purge_guard;
 #[cfg(test)]
@@ -212,7 +215,7 @@ pub enum SessionResourceManifestError {
 }
 
 impl SessionResourceManifestError {
-    fn mutation(error: SessionMutationError) -> Self {
+    pub(crate) fn mutation(error: SessionMutationError) -> Self {
         match error {
             SessionMutationError::NotFound => Self::NotFound,
             SessionMutationError::Conflict => Self::Conflict,
@@ -242,18 +245,18 @@ async fn reconcile_terminal_resource_candidate(
     }
 }
 
-impl SessionApplication {
-    fn terminal_cleanup_lease_matches(
-        session: &PersistedSession,
-        asserted: &SessionRealizationLease,
-    ) -> bool {
-        session.realization.as_ref().is_some_and(|current| {
-            awaken_session_realization_contract::realization_lease_generation_authorizes(
-                current, asserted,
-            )
-        })
-    }
+fn terminal_cleanup_lease_matches(
+    session: &PersistedSession,
+    asserted: &SessionRealizationLease,
+) -> bool {
+    session.realization.as_ref().is_some_and(|current| {
+        awaken_session_realization_contract::realization_lease_generation_authorizes(
+            current, asserted,
+        )
+    })
+}
 
+impl SessionApplication {
     /// Read one terminal-work projection from one Session-root snapshot.
     ///
     /// Cause/effect table: C1 the asserted generation matches the root's current
@@ -277,7 +280,7 @@ impl SessionApplication {
             .session_aggregate(session_id)
             .await
             .map_err(repository_control)?;
-        if !Self::terminal_cleanup_lease_matches(&session, lease) {
+        if !terminal_cleanup_lease_matches(&session, lease) {
             return Err(SessionRealizationControlFailure::StaleOwnership);
         }
         session
@@ -300,7 +303,7 @@ impl SessionApplication {
             .enter(|| mutations.session_aggregate(session_id))
             .await
             .map_err(repository_control)?;
-        if !Self::terminal_cleanup_lease_matches(&session, lease) {
+        if !terminal_cleanup_lease_matches(&session, lease) {
             return Err(SessionRealizationControlFailure::StaleOwnership);
         }
         session
@@ -388,7 +391,7 @@ impl SessionApplication {
         // current root lease to be live; its exact readback travels with the
         // immutable command so transport adapters never reconstruct it.
         crate::require_live_root_lease(&session, self.clock.now_ms())?;
-        if !Self::terminal_cleanup_lease_matches(&session, lease) {
+        if !terminal_cleanup_lease_matches(&session, lease) {
             return Err(SessionRealizationControlFailure::StaleOwnership);
         }
         let terminal_cleanup = session
@@ -481,7 +484,7 @@ impl SessionApplication {
                     "Session is not terminal".into(),
                 ));
             }
-            if !Self::terminal_cleanup_lease_matches(&session, lease) {
+            if !terminal_cleanup_lease_matches(&session, lease) {
                 return Err(SessionRealizationControlFailure::StaleOwnership);
             }
             let changed = match effect.clone() {

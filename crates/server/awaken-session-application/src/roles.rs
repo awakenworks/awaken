@@ -45,15 +45,15 @@ use awaken_session_types::RunError;
 use awaken_session_types::SessionId;
 
 use crate::{
-    CommittedSessionFacts, ConfiguredSessionRepository, CreateProfiledSessionCommand,
-    ProjectionThreadSnapshots, RecoveredSessionProjection, ReplaceSessionResourceManifest,
-    SessionApplication, SessionArchiveWithRepositoryPublicationCommand,
+    CommittedSessionFacts, CreateProfiledSessionCommand, ProjectionThreadSnapshots,
+    RecoveredSessionProjection, SessionApplication, SessionArchiveWithRepositoryPublicationCommand,
     SessionArchiveWithRepositoryPublicationError, SessionArchiveWithRepositoryPublicationOutcome,
     SessionCreateProtocol, SessionCreateRequest, SessionCreateRequestError, SessionCreationError,
     SessionDeleteCommand, SessionDispositionMutation, SessionEventBatchIdempotency,
     SessionExecutionObservation, SessionMutationError, SessionPreparationError,
-    SessionProjectionRecoveryError, SessionRepositoryResourceInput, SessionResourceManifestError,
-    SessionResourceManifestOutcome, SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
+    SessionProjectionRecoveryError, SessionResourceAttachment, SessionResourceManifestError,
+    SessionResourceManifestOutcome, SessionResourceManifestRequest, SessionUpdateCommand,
+    SessionUpdateError, SessionUpdateOutcome,
 };
 
 /// Create a Session from a protocol-lowered request, and replay a create.
@@ -347,94 +347,35 @@ pub trait SessionUpdates: Send + Sync {
     ) -> Result<SessionUpdateOutcome, SessionUpdateError>;
 }
 
-/// Resolve, configure and replace a Session's Resources.
+/// Replace, attach and detach a Session's Resources.
 ///
-/// Consumer: a protocol's Session Resource commands and the input resolution
-/// of its create and Deployment launch paths.
+/// The protocol lowers its wire resources into input requests and projects the
+/// returned outcome; identity, reuse, admission, layout, Repository
+/// participants and compensation are decided by the application.
+///
+/// Consumer: a protocol's Session Resource commands.
 #[async_trait]
 pub trait SessionResourceCommands: Send + Sync {
-    /// See [`SessionApplication::abort_unadopted_session_repositories`].
-    async fn abort_unadopted_session_repositories(
-        &self,
-        configured: &[ConfiguredSessionRepository],
-    ) -> bool;
-
-    /// Configure one Session-owned Repository participant.
-    async fn configure_session_repository(
-        &self,
-        input: SessionRepositoryResourceInput,
-    ) -> Result<ConfiguredSessionRepository, RunError>;
-
-    /// See [`SessionApplication::replace_session_resource_manifest`].
+    /// See [`SessionApplication::replace_session_resource_manifest_request`].
     async fn replace_session_resource_manifest(
         &self,
         session_id: &SessionId,
-        command: ReplaceSessionResourceManifest,
+        request: SessionResourceManifestRequest,
     ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError>;
 
-    /// See [`SessionApplication::replay_session_resource_manifest`].
-    async fn replay_session_resource_manifest(
+    /// See [`SessionApplication::attach_session_file`].
+    async fn attach_session_file(
         &self,
         session_id: &SessionId,
-        idempotency_key: &str,
-        request_fingerprint: &str,
-    ) -> Result<Option<SessionResourceManifestOutcome>, SessionResourceManifestError>;
+        request: crate::SessionInputRequest,
+    ) -> Result<SessionResourceAttachment, SessionResourceManifestError>;
 
-    /// Resolve Agent defaults and Session attachments into Resource bindings.
-    /// R1 the existing Resource command role is the sole entrance; its original
-    /// resolver and intrinsic error mapping are unchanged.
-    ///
-    /// ```compile_fail,E0599
-    /// use awaken_session_application::SessionApplication;
-    /// let _ = SessionApplication::resolve_session_inputs;
-    /// ```
-    async fn resolve_session_inputs(
+    /// See [`SessionApplication::detach_session_input`].
+    async fn detach_session_input(
         &self,
-        workspace_id: &str,
-        agent_defaults: &[awaken_resource_contract::InputBinding],
-        session_inputs: &[crate::session_resource::SessionInputAttachment],
-    ) -> Result<crate::session_resource::ResolvedSessionResources, RunError>;
-
-    /// Normalize derived MemoryStore mounts through the selected Inventory.
-    /// This does not assign input identities, validate the complete layout, or
-    /// configure Repository/Vault participants.
-    ///
-    /// The existing role accepts normalized requests, without exposing an
-    /// Inventory lookup primitive that lets another caller rebuild the loop.
-    ///
-    /// ```
-    /// use awaken_session_application::{SessionInputRequest, SessionResourceCommands};
-    /// async fn normalize(role: &dyn SessionResourceCommands, inputs: &[SessionInputRequest]) {
-    ///     let _ = role.normalize_session_input_mounts("workspace", inputs, &[]).await;
-    /// }
-    /// ```
-    ///
-    /// ```compile_fail,E0599
-    /// use awaken_session_application::SessionResourceCommands;
-    /// async fn old_leaf(role: &dyn SessionResourceCommands) {
-    ///     role.session_memory_store("workspace", "memory").await;
-    /// }
-    /// ```
-    async fn normalize_session_input_mounts(
-        &self,
-        workspace_id: &str,
-        requests: &[crate::SessionInputRequest],
-        agent_defaults: &[awaken_resource_contract::InputBinding],
-    ) -> Result<Vec<crate::SessionInputRequest>, RunError>;
-
-    /// Revalidate the original frozen Session layout through its selected effects.
-    /// R2 absence of this old entrance is independent of R1.
-    ///
-    /// ```compile_fail,E0599
-    /// use awaken_session_application::SessionApplication;
-    /// let _ = SessionApplication::validate_persisted_session_resource_layout;
-    /// ```
-    fn validate_persisted_session_resource_layout(
-        &self,
-        workspace_id: &str,
-        session: &PersistedSession,
-        resources: Vec<awaken_resource_contract::InputBinding>,
-    ) -> Result<(), RunError>;
+        session_id: &SessionId,
+        binding_id: &awaken_resource_contract::BindingId,
+    ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError>;
 }
 
 /// Observe a Session's live and committed execution.
@@ -755,109 +696,39 @@ impl SessionUpdates for SessionApplication {
 
 #[async_trait]
 impl SessionResourceCommands for SessionApplication {
-    async fn abort_unadopted_session_repositories(
-        &self,
-        configured: &[ConfiguredSessionRepository],
-    ) -> bool {
-        SessionApplication::abort_unadopted_session_repositories(self, configured).await
-    }
-
-    async fn configure_session_repository(
-        &self,
-        input: SessionRepositoryResourceInput,
-    ) -> Result<ConfiguredSessionRepository, RunError> {
-        SessionApplication::configure_session_repository(self, input).await
-    }
-
     async fn replace_session_resource_manifest(
         &self,
         session_id: &SessionId,
-        command: ReplaceSessionResourceManifest,
+        request: SessionResourceManifestRequest,
     ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError> {
-        Box::pin(SessionApplication::replace_session_resource_manifest(
-            self, session_id, command,
+        Box::pin(
+            SessionApplication::replace_session_resource_manifest_request(
+                self, session_id, request,
+            ),
+        )
+        .await
+    }
+
+    async fn attach_session_file(
+        &self,
+        session_id: &SessionId,
+        request: crate::SessionInputRequest,
+    ) -> Result<SessionResourceAttachment, SessionResourceManifestError> {
+        Box::pin(SessionApplication::attach_session_file(
+            self, session_id, request,
         ))
         .await
     }
 
-    async fn replay_session_resource_manifest(
+    async fn detach_session_input(
         &self,
         session_id: &SessionId,
-        idempotency_key: &str,
-        request_fingerprint: &str,
-    ) -> Result<Option<SessionResourceManifestOutcome>, SessionResourceManifestError> {
-        SessionApplication::replay_session_resource_manifest(
-            self,
-            session_id,
-            idempotency_key,
-            request_fingerprint,
-        )
+        binding_id: &awaken_resource_contract::BindingId,
+    ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError> {
+        Box::pin(SessionApplication::detach_session_input(
+            self, session_id, binding_id,
+        ))
         .await
-    }
-
-    async fn resolve_session_inputs(
-        &self,
-        workspace_id: &str,
-        agent_defaults: &[awaken_resource_contract::InputBinding],
-        session_inputs: &[crate::session_resource::SessionInputAttachment],
-    ) -> Result<crate::session_resource::ResolvedSessionResources, RunError> {
-        crate::session_resource::SessionInputResolver::resolve_inputs(
-            workspace_id,
-            self.resource_registry
-                .as_deref()
-                .map(|catalog| catalog as &dyn awaken_resource_contract::ExecutionResourceResolver),
-            agent_defaults,
-            session_inputs,
-        )
-        .await
-        .map_err(crate::runtime_commands::session_input_error)
-    }
-
-    async fn normalize_session_input_mounts(
-        &self,
-        workspace_id: &str,
-        requests: &[crate::SessionInputRequest],
-        agent_defaults: &[awaken_resource_contract::InputBinding],
-    ) -> Result<Vec<crate::SessionInputRequest>, RunError> {
-        crate::session_input::normalize_session_input_mounts(
-            self.resource_registry
-                .as_deref()
-                .map(|registry| registry as &dyn awaken_resource_contract::ResourceInventory),
-            workspace_id,
-            requests,
-            agent_defaults,
-        )
-        .await
-    }
-
-    /// Revalidate a proposed complete Resource manifest against the immutable
-    /// baseline already owned by a Session. The caller may pass provisional
-    /// typed bindings before Repository/Vault configuration because layout does
-    /// not depend on catalog versions or credential pins.
-    fn validate_persisted_session_resource_layout(
-        &self,
-        workspace_id: &str,
-        session: &PersistedSession,
-        resources: Vec<awaken_resource_contract::InputBinding>,
-    ) -> Result<(), RunError> {
-        let baseline = session
-            .frozen_baseline()
-            .ok_or_else(|| RunError::unavailable("Session creation intent was not consumed"))?;
-        self.validate_session_sandbox_layout(
-            session.session_id.as_str(),
-            &awaken_session_configuration_contract::SessionSandboxLayout {
-                workspace_id: workspace_id.to_string(),
-                agent_id: baseline.agent_id.clone(),
-                agent_revision: baseline.agent_revision,
-                runtime_placement: baseline.runtime_placement,
-                model_override: baseline.model_override.clone(),
-                runtime: baseline.runtime.clone(),
-                mounts: baseline.mounts.clone(),
-                env: baseline.env.clone(),
-                environment: baseline.environment.clone(),
-                resources,
-            },
-        )
     }
 }
 

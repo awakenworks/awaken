@@ -4973,5 +4973,6 @@ mod execution_observation;
 pub(crate) mod realization;
 mod recovery_scan;
 mod recovery_sweep;
+mod resource_commands;
 mod resource_resume;
 mod run_admission;

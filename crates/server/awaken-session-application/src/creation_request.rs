@@ -15,7 +15,7 @@
 //! participants and their compensation, budget pricing, and whether the root
 //! is accepted or awaited — is decided here once for every protocol.
 
-use crate::{SessionResourceCommands as _, SessionRootReads as _};
+use crate::SessionRootReads as _;
 use awaken_time::WallClockExt as _;
 use std::collections::BTreeMap;
 
@@ -234,10 +234,14 @@ impl SessionApplication {
         selected_holder: &awaken_credential_contract::PlaintextHolder,
         map_pin_error: impl FnOnce(SessionPreparationError) -> E,
     ) -> Result<crate::session_resource::ResolvedSessionResources, (E, &'static str)> {
-        let mut resources = self
-            .resolve_session_inputs(owner_scope, agent_defaults, attachments)
-            .await
-            .map_err(|error| (E::from(error), "input resolution"))?;
+        let mut resources = crate::resource_lowering::resolve_session_inputs(
+            self.resource_registry.as_deref(),
+            owner_scope,
+            agent_defaults,
+            attachments,
+        )
+        .await
+        .map_err(|error| (E::from(error), "input resolution"))?;
         if let Some(skills) = resolved_skills {
             resources = resources.with_skills(skills).map_err(|error| {
                 (
