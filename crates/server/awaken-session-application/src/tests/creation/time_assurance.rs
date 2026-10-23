@@ -149,7 +149,7 @@ async fn postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack()
     // The same T3/T4/T7 decision rules run through the production Postgres
     // transaction adapter. Explicitly configured database failure is fatal;
     // an unconfigured native run does not claim Postgres coverage.
-    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
         return;
     };
     let repo = awaken_session_store::PostgresManagedSessionRepository::connect(&url)
@@ -422,4 +422,11 @@ async fn concurrent_archives_keep_only_the_winning_clock_sample() {
     let durable = repo.get(&SessionId::from(id)).await.unwrap();
     assert_eq!(durable.archived_at_unix_ms(), Some(time), "C1-C2");
     assert_eq!(durable.archived_at(), Some("2026-09-07T00:00:00Z"), "C1-C2");
+}
+
+#[test]
+fn postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack_fixture_admission() {
+    awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+        "tests::creation::time_assurance::postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack",
+    );
 }

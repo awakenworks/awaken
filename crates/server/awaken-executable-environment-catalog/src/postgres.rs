@@ -1041,8 +1041,7 @@ mod tests {
         // P1 exact history in the real SQL log reopens without admission.
         // P2 separate replicas race conflicting modes at one identity: exactly
         // one immutable fact can commit. P3 normal exact promotion survives reopen.
-        let Some(database_url) = std::env::var("AWAKEN_TEST_DATABASE_URL").ok() else {
-            eprintln!("[skip] AWAKEN_TEST_DATABASE_URL unset for PostgreSQL history replay");
+        let Some(database_url) = awaken_reliability_testkit::postgres_fixture_url() else {
             return;
         };
         let admin = PgPoolOptions::new()
@@ -1136,5 +1135,12 @@ mod tests {
             .await
             .unwrap();
         admin.close().await;
+    }
+    #[test]
+    fn postgres_history_command_reopens_without_admission_and_fences_cross_mode_conflicts_fixture_admission()
+     {
+        awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+            "postgres::tests::postgres_history_command_reopens_without_admission_and_fences_cross_mode_conflicts",
+        );
     }
 }

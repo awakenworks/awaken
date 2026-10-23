@@ -13,7 +13,7 @@
 # gate passes ``--require-docker`` so the same condition fails instead of
 # producing a false green.
 #
-# Usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--storage|--storage-observations|--self-test]
+# Usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--storage|--storage-observations|--resources|--self-test]
 # --backend-parity uses a caller-owned live URL and runs only the named matrix.
 # --work-store uses a caller-owned live URL and requires the complete Work suite.
 # --http requires the four live transport targets, including native failover.
@@ -191,6 +191,76 @@ storage_observation_evidence() {
     --require-case=million_historical_facts_do_not_gate_startup_or_unrelated_thread_open \
     --require-case=multi_fact_commit_throughput_observation \
     -- --ignored --test-threads=1 || record_failure "$?"
+}
+
+resources_evidence() {
+  pg_required_test --locked -p awaken-admin-config-api --features postgres --test postgres_store \
+    --require-case=postgres_admin_rows_survive_a_reconnect \
+    --require-case=postgres_admin_store_serves_every_port \
+    --require-case=postgres_agent_input_ambiguous_keys_fail_closed \
+    --require-case=postgres_agent_input_first_writers_have_one_authoritative_winner \
+    --require-case=postgres_agent_input_rollback_replay_and_corrupt_key_readback \
+    --require-case=postgres_mcp_configuration_cas_and_restart \
+    --require-case=postgres_telemetry_configuration_cas_restart_and_scope \
+    -- --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-resource-store --all-features \
+    --require-case=postgres::tests::live_postgres_identical_reference_replacement_is_a_storage_noop \
+    --require-case=postgres::tests::live_postgres_rehydrates_references_for_every_resource_kind \
+    --require-case=postgres::tests::live_postgres_serializes_references_with_reclamation_fences \
+    --require-case=postgres::tests::live_postgres_verify_is_fail_closed_and_read_only \
+    --require-case=postgres::tests::live_postgres_verify_is_fail_closed_and_read_only_fixture_admission \
+    --require-case=postgres::tests::live_postgres_serializes_references_with_reclamation_fences_fixture_admission \
+    --require-case=postgres::tests::live_postgres_identical_reference_replacement_is_a_storage_noop_fixture_admission \
+    --require-case=postgres::tests::live_postgres_rehydrates_references_for_every_resource_kind_fixture_admission \
+    -- --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-resource-persistence \
+    --require-case=postgres_registry_satisfies_the_same_contract_and_survives_reconnect \
+    --require-case=tests::postgres_metadata_and_injected_blob_store_form_one_application \
+    --require-case=tests::postgres_resource_authorities_survive_verify_mode_restart \
+    --require-case=tests::postgres_resource_authorities_fixture_admission \
+    --require-case=tests::postgres_injected_blob_store_fixture_admission \
+    --require-case=postgres_registry_fixture_admission \
+    -- --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-session-application --lib postgres_ \
+    --require-case=tests::construction::required_tool_compiler_postgres_preserves_the_frozen_configuration \
+    --require-case=tests::creation::time_assurance::postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack \
+    --require-case=tests::event_batches::postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict \
+    --require-case=tests::construction::required_tool_compiler_postgres_preserves_the_frozen_configuration_fixture_admission \
+    --require-case=tests::event_batches::postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict_fixture_admission \
+    --require-case=tests::creation::time_assurance::postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack_fixture_admission \
+    -- --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-protocol-managed --lib postgres_two_connection_late_hitl_frontier_preserves_old_cursors \
+    --require-case=state::events::tests::hitl_frontier::postgres_two_connection_late_hitl_frontier_preserves_old_cursors \
+    --require-case=state::events::tests::hitl_frontier::postgres_two_connection_late_hitl_frontier_preserves_old_cursors_fixture_admission \
+    -- --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-sandbox-policy-store --features test-support \
+    --require-case=tests::postgres_verify_is_fail_closed_and_read_only \
+    -- --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-executable-agent-catalog \
+    --require-case=postgres::tests::active_active_peer_refreshes_the_durable_command_projection \
+    --require-case=postgres::tests::agent_command_above_captured_high_water_waits_for_next_refresh \
+    --require-case=postgres::tests::concurrent_agent_refreshes_are_serialized_by_the_domain_registrar \
+    --require-case=postgres::tests::install_error_precedes_agent_target_publication \
+    --require-case=postgres::tests::legacy_registration_time_is_appended_without_rewriting_its_command \
+    --require-case=postgres::tests::persisted_registration_replays_the_previous_tool_identity_wire \
+    --require-case=postgres::tests::persistence_precedes_projection_and_failure_leaves_catalog_unchanged \
+    --require-case=postgres::tests::postgres_adapter_migrates_persists_verifies_and_rehydrates \
+    --require-case=postgres::tests::restart_replays_registration_and_withdrawal_through_canonical_state_machine \
+    --require-case=tests::historical_postgres_order_is_unknown_after_two_unfenced_rows \
+    -- --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-executable-environment-catalog \
+    --require-case=postgres::tests::active_active_peer_refreshes_the_durable_environment_projection \
+    --require-case=postgres::tests::concurrent_environment_refreshes_are_serialized_by_the_domain_registrar \
+    --require-case=postgres::tests::durable_history_replay_is_distinct_from_admission_and_allows_later_promotion \
+    --require-case=postgres::tests::environment_command_above_captured_high_water_waits_for_next_refresh \
+    --require-case=postgres::tests::install_error_precedes_environment_target_publication \
+    --require-case=postgres::tests::postgres_history_command_reopens_without_admission_and_fences_cross_mode_conflicts \
+    --require-case=postgres::tests::postgres_migration_persists_high_water_and_rehydrates_environment \
+    --require-case=postgres::tests::postgres_history_command_reopens_without_admission_and_fences_cross_mode_conflicts_fixture_admission \
+    -- --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-environment-image-build postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority \
+    --require-case=postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority \
+    -- --exact --test-threads=1 || record_failure "$?"
 }
 
 storage_evidence() {
@@ -655,7 +725,7 @@ self_test() {
   }
   local crate
   for crate in awaken-admin-config-api; do
-    grep -Fq "cargo test -p $crate --features postgres" "$0" || {
+    grep -Fq "pg_required_test --locked -p $crate --features postgres" "$0" || {
       echo "Postgres gate omits --features postgres for $crate" >&2
       return 1
     }
@@ -672,7 +742,7 @@ self_test() {
     echo "Durable backend gate omits the least-privilege object-store policy" >&2
     return 1
   }
-  grep -Fq "cargo test -p awaken-resource-persistence" "$0" || {
+  grep -Fq "pg_required_test --locked -p awaken-resource-persistence" "$0" || {
     echo "Postgres gate omits the composed Resources restart matrix" >&2
     return 1
   }
@@ -698,13 +768,14 @@ self_test() {
   }
 }
 
-[ "$#" -le 1 ] || { echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--storage|--storage-observations|--self-test]" >&2; exit 2; }
+[ "$#" -le 1 ] || { echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--storage|--storage-observations|--resources|--self-test]" >&2; exit 2; }
 
 backend_only=0
 work_store_only=0
 http_only=0
 critical_only=0
 storage_only=0
+resources_only=0
 storage_observations_only=0
 case "${1:-}" in
   "") ;;
@@ -715,8 +786,9 @@ case "${1:-}" in
   --http) http_only=1 ;;
   --critical) critical_only=1 ;;
   --storage) storage_only=1 ;;
+  --resources) resources_only=1 ;;
   --storage-observations) storage_observations_only=1 ;;
-  *) echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--storage|--storage-observations|--self-test]" >&2; exit 2 ;;
+  *) echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--storage|--storage-observations|--resources|--self-test]" >&2; exit 2 ;;
 esac
 
 for deadline in "$PG_OPERATION_TIMEOUT_SECONDS" "$PG_READY_TIMEOUT_SECONDS" \
@@ -727,12 +799,14 @@ for deadline in "$PG_OPERATION_TIMEOUT_SECONDS" "$PG_READY_TIMEOUT_SECONDS" \
   }
 done
 
-if [ "$backend_only" -eq 1 ] || [ "$work_store_only" -eq 1 ] || [ "$http_only" -eq 1 ] || [ "$critical_only" -eq 1 ] || [ "$storage_only" -eq 1 ] || [ "$storage_observations_only" -eq 1 ]; then
+if [ "$backend_only" -eq 1 ] || [ "$work_store_only" -eq 1 ] || [ "$http_only" -eq 1 ] || [ "$critical_only" -eq 1 ] || [ "$storage_only" -eq 1 ] || [ "$storage_observations_only" -eq 1 ] || [ "$resources_only" -eq 1 ]; then
   [ "$#" -eq 1 ] && [ -n "${AWAKEN_TEST_DATABASE_URL:-}" ] || {
     echo "focused PostgreSQL tests require an explicit owned fixture URL" >&2; exit 2;
   }
   export AWAKEN_TEST_REQUIRE_POSTGRES=1
-  if [ "$storage_observations_only" -eq 1 ]; then
+  if [ "$resources_only" -eq 1 ]; then
+    resources_evidence
+  elif [ "$storage_observations_only" -eq 1 ]; then
     storage_observation_evidence
   elif [ "$storage_only" -eq 1 ]; then
     storage_evidence
@@ -976,7 +1050,6 @@ critical_durability_evidence
 # P15 live fixture + explicit ignored selector => measure the canonical shared
 # cap and closed-pool rejection, never a no-database/default-suite passing skip.
 # The Rust case owns adapter assertions; this runner owns fixture and deadlines.
-pg_test cargo test -p awaken-admin-config-api --features postgres --test postgres_store || record_failure "$?"
 backend_parity
 
 # Credential-lifecycle state machine: seed -> revoke old credential -> issue
@@ -1006,22 +1079,11 @@ fi
 export AWAKEN_TEST_S3_OLD_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow(secret):
 export AWAKEN_TEST_S3_SECRET_KEY="$FILE_STORE_ROTATED_SECRET_KEY"
 pg_run_with_deadline object-verify "$PG_TEST_TIMEOUT_SECONDS" scripts/ci/object_store_tests.sh --verify || record_failure "$?"
-pg_test cargo test -p awaken-resource-store --all-features || record_failure "$?"
-pg_test cargo test -p awaken-resource-persistence || record_failure "$?"
-pg_test cargo test -p awaken-session-application --lib postgres_ -- --test-threads=1 \
-  || record_failure "$?"
 # Run the existing Managed HITL frontier decision table with two independent
 # PostgreSQL Session connections; a no-URL workspace test cannot claim this.
-pg_test cargo test -p awaken-protocol-managed --lib postgres_two_connection_late_hitl_frontier_preserves_old_cursors -- --test-threads=1 \
-  || record_failure "$?"
-pg_test cargo test -p awaken-sandbox-policy-store --features test-support || record_failure "$?"
-pg_test cargo test -p awaken-executable-agent-catalog || record_failure "$?"
-pg_test cargo test -p awaken-executable-environment-catalog || record_failure "$?"
-pg_test cargo test -p awaken-environment-image-build \
-  postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority \
-  -- --exact --test-threads=1 || record_failure "$?"
 # Both entry points require these physical outcomes. Private restart children
 # stay parent-only; the shared helper selects all seven live witnesses.
+resources_evidence
 work_store_evidence || record_failure "$?"
 
 # The same live PostgreSQL and object-store substrates finish with a physical

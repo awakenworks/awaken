@@ -11,6 +11,7 @@ POSTGRES_PACKAGES = {
         "awaken-store-runtime", "awaken-session-store", "awaken-config-store", "awaken-store-postgres",
         "awaken-env-store", "awaken-file-store", "awaken-store-schema", "awaken-store-sqlite"),
     "storage-observations": ("awaken-store-runtime", "awaken-store-postgres"),
+    "resources": ('awaken-admin-config-api', 'awaken-resource-store', 'awaken-resource-persistence', 'awaken-session-application', 'awaken-protocol-managed', 'awaken-sandbox-policy-store', 'awaken-executable-agent-catalog', 'awaken-executable-environment-catalog', 'awaken-environment-image-build'),
 }
 
 
@@ -22,4 +23,6 @@ def postgres_plan(scope):
         return [("postgres-storage", "storage.log", ["scripts/ci/pg_tests.sh", "--storage"])]
     if scope == "storage-observations":
         return [("postgres-storage-observations", "storage-observations.log", ["scripts/ci/pg_tests.sh", "--storage-observations"])]
+    if scope == "resources":
+        return [("postgres-resources", "resources.log", ["scripts/ci/pg_tests.sh", "--resources"])]
     raise ValueError("unsupported native PostgreSQL scope")

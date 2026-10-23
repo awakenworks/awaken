@@ -2225,6 +2225,7 @@ dependencies = [
  "awaken-file-store",
  "awaken-lease-testkit",
  "awaken-memory-store",
+ "awaken-reliability-testkit",
  "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-store",

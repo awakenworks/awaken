@@ -63,6 +63,8 @@ jobs:
       - name: Observe native storage capacity with explicit heavy selectors
         if: ${{ inputs.include_storage_observations }}
         run: python scripts/ci/check_native_services.py --service postgres --postgres-scope storage-observations --postgres-bin target/windows-postgres/postgres/pgsql/bin --output target/test-timings/native-postgres-storage-observations
+      - name: Require resource authority, Session and catalog PostgreSQL laws
+        run: python scripts/ci/check_native_services.py --service postgres --postgres-scope resources --postgres-bin target/windows-postgres/postgres/pgsql/bin --output target/test-timings/native-postgres-resources
       - name: Require S3 admission, least privilege and real credential rotation
         run: python scripts/ci/check_native_services.py --service s3 --minio-bin target/windows-s3/minio/minio.exe --mc-bin target/windows-s3/mc/mc.exe --output target/test-timings/native-s3
       - name: Retain exact-source service and execution receipts

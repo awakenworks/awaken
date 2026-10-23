@@ -432,7 +432,7 @@ async fn required_tool_compiler_precedes_session_creation_and_update_effects() {
 async fn required_tool_compiler_postgres_preserves_the_frozen_configuration() {
     // An explicitly configured backend must run the same rejection/persistence
     // table; the ordinary unconfigured run makes no PostgreSQL coverage claim.
-    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
         return;
     };
     let repository = Arc::new(
@@ -606,5 +606,12 @@ async fn session_observation_keeps_an_absent_runtime_observer_without_effects() 
         store.get(&created.session_id).await.unwrap(),
         created,
         "L2a exact root"
+    );
+}
+
+#[test]
+fn required_tool_compiler_postgres_preserves_the_frozen_configuration_fixture_admission() {
+    awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+        "tests::construction::required_tool_compiler_postgres_preserves_the_frozen_configuration",
     );
 }

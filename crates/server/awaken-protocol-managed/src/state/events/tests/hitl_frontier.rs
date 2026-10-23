@@ -457,7 +457,7 @@ async fn postgres_two_connection_late_hitl_frontier_preserves_old_cursors() {
     // cache keeps every issued ID/payload/position; E3 the second returns the
     // same complete page and every old-cursor suffix. Rule P1+P2+P3=>E1-E3.
     // An absent URL is no PG claim; pg_tests.sh supplies a required live URL.
-    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
         return;
     };
     let first: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
@@ -689,4 +689,11 @@ async fn assert_late_hitl_frontier(
             "R3/E6 old cursor {cursor}"
         );
     }
+}
+
+#[test]
+fn postgres_two_connection_late_hitl_frontier_preserves_old_cursors_fixture_admission() {
+    awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+        "state::events::tests::hitl_frontier::postgres_two_connection_late_hitl_frontier_preserves_old_cursors",
+    );
 }
