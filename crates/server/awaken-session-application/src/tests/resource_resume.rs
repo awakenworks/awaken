@@ -104,12 +104,13 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                 ] {
                     let before = repo.get(&SessionId::from(id)).await.unwrap();
                     assert!(
-                        app.begin_session_realization(BeginSessionRealization {
-                            expected_resources: Some(wrong),
-                            ..begin.clone()
-                        })
-                        .await
-                        .is_err(),
+                        app.realizations
+                            .begin_session_realization(BeginSessionRealization {
+                                expected_resources: Some(wrong),
+                                ..begin.clone()
+                            })
+                            .await
+                            .is_err(),
                         "R4"
                     );
                     assert_eq!(
@@ -118,7 +119,11 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                         "R4 no mutation"
                     );
                 }
-                let directive = app.begin_session_realization(begin.clone()).await.unwrap();
+                let directive = app
+                    .realizations
+                    .begin_session_realization(begin.clone())
+                    .await
+                    .unwrap();
                 assert_eq!(
                     directive
                         .projection
@@ -132,16 +137,17 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                     // Ordinary observation replays the assigned generation.
                     // A second explicit reassignment is a new claim-authorized
                     // assignment, not an observation of the previous lease.
-                    app.begin_session_realization(BeginSessionRealization {
-                        target: SessionRealizationTarget {
-                            reassign_existing_lease: false,
-                            ..begin.target.clone()
-                        },
-                        ..begin
-                    })
-                    .await
-                    .unwrap()
-                    .projection,
+                    app.realizations
+                        .begin_session_realization(BeginSessionRealization {
+                            target: SessionRealizationTarget {
+                                reassign_existing_lease: false,
+                                ..begin.target.clone()
+                            },
+                            ..begin
+                        })
+                        .await
+                        .unwrap()
+                        .projection,
                     directive.projection,
                     "exact Begin replay"
                 );
@@ -162,6 +168,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                     "R2 cold Worker may read exact A while B remains pending"
                 );
                 let activated = app
+                    .realizations
                     .activate_session_realization(ActivateSessionRealization {
                         session_id: id.into(),
                         lease: directive.authority.lease,
@@ -187,6 +194,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                 );
                 if replace {
                     let next = app
+                        .realizations
                         .begin_session_realization(BeginSessionRealization {
                             session_id: id.into(),
                             target,
@@ -205,6 +213,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                     assert_eq!(selected.desired().revision, 2, "R3");
                     assert_eq!(selected.desired().resources, desired, "R3");
                     let settled = app
+                        .realizations
                         .activate_session_realization(ActivateSessionRealization {
                             session_id: id.into(),
                             lease: next.authority.lease.clone(),
@@ -234,14 +243,15 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                         "retired A cannot be read"
                     );
                     assert!(
-                        app.activate_session_realization(ActivateSessionRealization {
-                            session_id: id.into(),
-                            lease: next.authority.lease,
-                            prepared_resource_revision: Some(1),
-                            mcp_receipts: Vec::new(),
-                        })
-                        .await
-                        .is_err(),
+                        app.realizations
+                            .activate_session_realization(ActivateSessionRealization {
+                                session_id: id.into(),
+                                lease: next.authority.lease,
+                                prepared_resource_revision: Some(1),
+                                mcp_receipts: Vec::new(),
+                            })
+                            .await
+                            .is_err(),
                         "retired Stage A cannot roll back committed B"
                     );
                     assert_eq!(
@@ -398,6 +408,7 @@ async fn failed_retained_stage_does_not_attribute_its_error_to_pending_resources
         create(repo.as_ref(), session).await;
         let before = repo.get(&SessionId::from(id)).await.unwrap();
         let result = app
+            .realizations
             .fail_session_realization(
                 awaken_session_realization_contract::FailSessionRealization {
                     session_id: id.into(),

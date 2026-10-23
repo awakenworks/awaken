@@ -30,7 +30,13 @@ impl SessionApplication {
     /// active/terminal marker into the Session root would create a second truth.
     #[cfg(test)]
     pub(crate) async fn reconcile_outcome_continuations(&self) -> OutcomeReconciliation {
-        let candidates = match super::recovery_scan::recovery_candidates(self, true).await {
+        let candidates = match super::recovery_scan::recovery_candidates(
+            self.session_repository(),
+            self.clock.as_ref(),
+            true,
+        )
+        .await
+        {
             Ok(candidates) => candidates,
             Err(error) => {
                 let mut report = OutcomeReconciliation::default();
@@ -84,7 +90,11 @@ impl SessionApplication {
                     continue;
                 }
             };
-            if let Err(error) = self.install_dispatch_projection(&owner, &session).await {
+            if let Err(error) = self
+                .realizations
+                .install_dispatch_projection(&owner, &session)
+                .await
+            {
                 report
                     .failures
                     .push((String::from(session_id), error.to_string()));

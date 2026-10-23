@@ -117,19 +117,9 @@ impl SessionResources {
 /// A process-local assembly value. Each enabled feature carries its required
 /// ports; consuming `build` removes the configuration mutation surface.
 pub struct SessionApplicationBuilder {
-    runtime: SessionExecutor,
-    tool_configuration_compiler: Arc<dyn ToolConfigurationCompiler>,
-    mcp: Arc<dyn McpAttachmentRealizer>,
     persistence: SessionPersistence,
-    environments: SessionEnvironments,
     execution: SessionExecutionAdmission,
-    configuration: SessionApplicationConfiguration,
-    credentials: Option<SessionCredentialAuthorities>,
-    resources: Option<SessionResources>,
-    profiles: Option<Arc<dyn ExecutableAgentProfileSource>>,
-    models: Option<Arc<dyn SessionModelPublicationResolver>>,
-    prices: Option<Arc<dyn ManagedListPriceProvider>>,
-    refresh: Option<Arc<ExecutableProjectionRefresh>>,
+    assembly: SessionAssembly,
 }
 
 impl SessionApplicationBuilder {
@@ -162,54 +152,66 @@ impl SessionApplicationBuilder {
         tool_configuration_compiler: Arc<dyn ToolConfigurationCompiler>,
     ) -> Self {
         Self {
-            runtime: runtime.into(),
-            tool_configuration_compiler,
-            mcp,
             persistence,
-            environments: environments.into(),
             execution,
-            configuration: SessionApplicationConfiguration::default(),
-            credentials: None,
-            resources: None,
-            profiles: None,
-            models: None,
-            prices: None,
-            refresh: None,
+            assembly: SessionAssembly {
+                runtime: runtime.into(),
+                tool_configuration_compiler,
+                mcp,
+                environments: environments.into(),
+                configuration: SessionApplicationConfiguration::default(),
+                credential_source: None,
+                credential_material_ingress: None,
+                resource_registry: None,
+                resource_purge_scheduler: None,
+                resource_references: None,
+                resource_files: None,
+                profiles: None,
+                models: None,
+                prices: None,
+                refresh: None,
+            },
         }
     }
     #[must_use]
     pub fn configuration(mut self, configuration: SessionApplicationConfiguration) -> Self {
-        self.configuration = configuration;
+        self.assembly.configuration = configuration;
         self
     }
 
     #[must_use]
     pub fn credentials(mut self, credentials: SessionCredentialAuthorities) -> Self {
-        self.credentials = Some(credentials);
+        self.assembly.credential_source = Some(credentials.source);
+        self.assembly.credential_material_ingress = credentials.ingress;
         self
     }
 
     #[must_use]
     pub fn resources(mut self, resources: SessionResources) -> Self {
-        self.resources = Some(resources);
+        self.assembly.resource_registry = Some(resources.catalog);
+        if let Some(retention) = resources.retention {
+            self.assembly.resource_references = Some(retention.references);
+            self.assembly.resource_files = Some(retention.files);
+            self.assembly.resource_purge_scheduler = Some(retention.purge);
+        }
         self
     }
 
     #[must_use]
     pub fn agent_profiles(mut self, profiles: Arc<dyn ExecutableAgentProfileSource>) -> Self {
-        self.profiles = Some(profiles);
+        self.assembly.profiles = Some(profiles);
         self
     }
 
     #[must_use]
     pub fn model_overrides(mut self, models: Arc<dyn SessionModelPublicationResolver>) -> Self {
-        self.models = Some(models);
+        self.assembly.models = Some(models);
         self
     }
 
     #[must_use]
     pub fn managed_prices(mut self, prices: Arc<dyn ManagedListPriceProvider>) -> Self {
-        self.prices = Some(prices);
+        self.assembly.prices = Some(prices);
         self
     }
 
@@ -218,86 +220,226 @@ impl SessionApplicationBuilder {
         mut self,
         refresh: Arc<ExecutableProjectionRefresh>,
     ) -> Self {
-        self.refresh = Some(refresh);
+        self.assembly.refresh = Some(refresh);
         self
     }
 
-    pub fn build(self) -> Result<SessionApplication, SessionApplicationBuildError> {
-        let configuration = self.configuration.validate()?;
+    pub fn build(mut self) -> Result<SessionApplication, SessionApplicationBuildError> {
+        self.assembly.configuration = self.assembly.configuration.validate()?;
         let crate::SessionPersistence {
             store,
             clock,
             environment_binding_sink,
         } = self.persistence;
-        let (credential_source, credential_material_ingress) = self
-            .credentials
-            .map_or((None, None), |value| (Some(value.source), value.ingress));
-        let (resource_registry, retention) = self
-            .resources
-            .map_or((None, None), |value| (Some(value.catalog), value.retention));
-        let (resource_references, resource_files, resource_purge_scheduler) = retention
-            .map_or((None, None, None), |value| {
-                (Some(value.references), Some(value.files), Some(value.purge))
-            });
         let started_at = clock.now().as_unix_nanos();
         let mutations = Arc::new(crate::SessionMutations::new(store.clone(), clock.clone()));
-        let credentials = Arc::new(crate::SessionCredentials::new(
-            mutations.clone(),
-            clock.clone(),
-            credential_source,
-            credential_material_ingress,
-        ));
         let lifecycle = Arc::new(crate::SessionLifecycle::new(
             mutations.clone(),
             clock.clone(),
             store.clone(),
         ));
-        let queries = Arc::new(crate::SessionQueries::new(
-            store.clone(),
-            &self.runtime,
-            self.profiles,
-        ));
-        let inputs = Arc::new(crate::SessionInputs::new(
-            store.clone(),
-            self.runtime.live_inbox.clone(),
-            resource_registry.as_ref().map(|registry| {
-                registry.clone() as Arc<dyn awaken_resource_contract::ResourceInventory>
-            }),
-        ));
-        let resource_effect_authorization = Arc::new(
-            crate::SessionResourceEffectAuthorization::new(mutations.clone(), clock.clone()),
-        );
-        Ok(SessionApplication {
+        Ok(self.assembly.assemble(SessionKernel {
+            store,
             clock,
-            configuration,
-            runtime: self.runtime,
-            tool_configuration_compiler: self.tool_configuration_compiler,
-            mcp_realizer: self.mcp,
-            credentials,
-            environments: self.environments,
-            model_publication_resolver: self.models,
-            resource_registry,
-            resource_purge_scheduler,
-            resource_references,
-            resource_files,
-            managed_list_prices: self.prices,
             mutations,
             lifecycle,
-            queries,
-            inputs,
-            resource_effect_authorization,
             environment_binding_sink,
-            executable_projection_refresh: self.refresh,
-            execution_admission: self.execution,
-            session_preparation_cursors: tokio::sync::Mutex::new(std::collections::BTreeMap::new()),
+            execution_admission: Arc::new(self.execution),
             runtime_incarnation: format!(
                 "session:{}:{started_at}:{}",
                 std::process::id(),
                 crate::APPLICATION_INCARNATION_SEQ
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ),
-            local_realization_locks: Arc::default(),
             event_batch_cutover_validation: Arc::default(),
-        })
+        }))
     }
+}
+
+/// What every component shares and a re-assembly never replaces: the selected
+/// Store and Clock, the one CAS kernel and lifecycle signal, the process
+/// incarnation and the Event-batch cutover validation it publishes.
+pub(crate) struct SessionKernel {
+    pub(crate) store: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    pub(crate) clock: Arc<dyn awaken_time::WallClock>,
+    pub(crate) mutations: Arc<crate::SessionMutations>,
+    pub(crate) lifecycle: Arc<crate::SessionLifecycle>,
+    pub(crate) environment_binding_sink:
+        Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
+    pub(crate) execution_admission: Arc<SessionExecutionAdmission>,
+    pub(crate) runtime_incarnation: String,
+    pub(crate) event_batch_cutover_validation: Arc<crate::SessionEventBatchCutoverValidationSource>,
+}
+
+/// The validated composition inputs every use-case component is built from.
+/// `build` consumes them once. A test-support application retains a copy so
+/// a fixture can change one input before the application is shared; the
+/// change re-assembles every component from the same kernel, so no component
+/// keeps a port another one no longer sees.
+#[derive(Clone)]
+pub(crate) struct SessionAssembly {
+    pub(crate) runtime: SessionExecutor,
+    pub(crate) tool_configuration_compiler: Arc<dyn ToolConfigurationCompiler>,
+    pub(crate) mcp: Arc<dyn McpAttachmentRealizer>,
+    pub(crate) environments: SessionEnvironments,
+    pub(crate) configuration: SessionApplicationConfiguration,
+    pub(crate) credential_source: Option<Arc<dyn SessionCredentialSource>>,
+    pub(crate) credential_material_ingress: Option<Arc<dyn CredentialMaterialIngress>>,
+    pub(crate) resource_registry: Option<Arc<dyn ResourceRegistry>>,
+    pub(crate) resource_purge_scheduler: Option<Arc<dyn ResourcePurgeScheduler>>,
+    pub(crate) resource_references: Option<Arc<dyn ResourceReferenceIndex>>,
+    pub(crate) resource_files: Option<Arc<dyn FileCatalog>>,
+    pub(crate) profiles: Option<Arc<dyn ExecutableAgentProfileSource>>,
+    pub(crate) models: Option<Arc<dyn SessionModelPublicationResolver>>,
+    pub(crate) prices: Option<Arc<dyn ManagedListPriceProvider>>,
+    pub(crate) refresh: Option<Arc<ExecutableProjectionRefresh>>,
+}
+
+impl SessionAssembly {
+    pub(crate) fn assemble(self, kernel: SessionKernel) -> SessionApplication {
+        let SessionKernel {
+            store,
+            clock,
+            mutations,
+            lifecycle,
+            environment_binding_sink,
+            execution_admission,
+            runtime_incarnation,
+            event_batch_cutover_validation,
+        } = kernel;
+        let credentials = Arc::new(crate::SessionCredentials::new(
+            mutations.clone(),
+            clock.clone(),
+            self.credential_source.clone(),
+            self.credential_material_ingress.clone(),
+        ));
+        let queries = Arc::new(crate::SessionQueries::new(
+            store.clone(),
+            &self.runtime,
+            self.profiles.clone(),
+        ));
+        let inputs = Arc::new(crate::SessionInputs::new(
+            store.clone(),
+            self.runtime.live_inbox.clone(),
+            self.resource_registry.as_ref().map(|registry| {
+                registry.clone() as Arc<dyn awaken_resource_contract::ResourceInventory>
+            }),
+        ));
+        let resource_effect_authorization = Arc::new(
+            crate::SessionResourceEffectAuthorization::new(mutations.clone(), clock.clone()),
+        );
+        let resource_references = Arc::new(crate::SessionResourceReferences::new(
+            mutations.clone(),
+            self.resource_references.clone(),
+            self.resource_files.clone(),
+        ));
+        let work_assignments = Arc::new(crate::SessionWorkAssignments::new(
+            mutations.repository().clone(),
+            self.environments.assignment.clone(),
+            self.environments.leases.clone(),
+            lifecycle.clone(),
+            clock.clone(),
+        ));
+        let repository_participants = Arc::new(crate::SessionRepositoryParticipants::new(
+            mutations.clone(),
+            resource_references.clone(),
+            credentials.clone(),
+            self.resource_registry.clone(),
+            self.resource_purge_scheduler.clone(),
+            clock.clone(),
+        ));
+        let executable_projections = crate::ExecutableProjections(self.refresh.clone());
+        let realizations = Arc::new(crate::SessionRealizations::new(
+            crate::realization::SessionRealizationCollaborators {
+                mutations: mutations.clone(),
+                clock: clock.clone(),
+                queries: queries.clone(),
+                credentials: credentials.clone(),
+                lifecycle: lifecycle.clone(),
+                resource_references: resource_references.clone(),
+                realization: self.runtime.realization.clone(),
+                mcp: self.mcp.clone(),
+                executable_projections: executable_projections.clone(),
+                execution_admission: execution_admission.clone(),
+                local_realization_owner: self.configuration.local_realization_owner.clone(),
+                runtime_incarnation: runtime_incarnation.clone(),
+                realization_retry_budget: self.configuration.realization_retry_budget,
+            },
+        ));
+        SessionApplication {
+            clock,
+            configuration: self.configuration.clone(),
+            runtime: self.runtime.clone(),
+            tool_configuration_compiler: self.tool_configuration_compiler.clone(),
+            credentials,
+            environments: self.environments.clone(),
+            model_publication_resolver: self.models.clone(),
+            resource_registry: self.resource_registry.clone(),
+            resource_references,
+            work_assignments,
+            repository_participants,
+            resource_files: self.resource_files.clone(),
+            managed_list_prices: self.prices.clone(),
+            mutations,
+            lifecycle,
+            queries,
+            inputs,
+            resource_effect_authorization,
+            environment_binding_sink,
+            executable_projections,
+            realizations,
+            execution_admission,
+            runtime_incarnation,
+            event_batch_cutover_validation,
+            #[cfg(any(test, feature = "test-support"))]
+            store,
+            #[cfg(any(test, feature = "test-support"))]
+            fixture_assembly: self,
+        }
+    }
+}
+
+/// Change one composition input of a fixture that has not been shared and
+/// rebuild every component from it over the same kernel. A component already
+/// handed out would keep the ports it was built with while the application
+/// moved on, so a shared fixture refuses before any change: each component
+/// must have exactly the holders a fresh assembly of the same inputs gives it.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn reassemble(
+    application: &mut SessionApplication,
+    change: impl FnOnce(&mut SessionAssembly),
+) {
+    let kernel = || SessionKernel {
+        store: application.store.clone(),
+        clock: application.clock.clone(),
+        mutations: application.mutations.clone(),
+        lifecycle: application.lifecycle.clone(),
+        environment_binding_sink: application.environment_binding_sink.clone(),
+        execution_admission: application.execution_admission.clone(),
+        runtime_incarnation: application.runtime_incarnation.clone(),
+        event_batch_cutover_validation: application.event_batch_cutover_validation.clone(),
+    };
+    let holders = |application: &SessionApplication| {
+        [
+            Arc::strong_count(&application.credentials),
+            Arc::strong_count(&application.queries),
+            Arc::strong_count(&application.inputs),
+            Arc::strong_count(&application.resource_effect_authorization),
+            Arc::strong_count(&application.resource_references),
+            Arc::strong_count(&application.work_assignments),
+            Arc::strong_count(&application.repository_participants),
+            Arc::strong_count(&application.realizations),
+        ]
+    };
+    let unshared = application.fixture_assembly.clone().assemble(kernel());
+    assert_eq!(
+        holders(application),
+        holders(&unshared),
+        "fixture ports must be configured before the application is shared"
+    );
+    drop(unshared);
+    let mut assembly = application.fixture_assembly.clone();
+    change(&mut assembly);
+    let kernel = kernel();
+    *application = assembly.assemble(kernel);
 }

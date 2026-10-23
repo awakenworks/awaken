@@ -57,7 +57,10 @@ async fn scan_interests_skip_only_phases_absent_from_the_observed_prefix() {
         0,
         "H1/E2 continuation"
     );
-    let realizations = app.reconcile_session_realizations_from(&candidates).await;
+    let realizations = app
+        .realizations
+        .reconcile_session_realizations_from(&candidates)
+        .await;
     assert!(realizations.settled.is_empty(), "H1/E2 realization");
     assert!(realizations.failures.is_empty(), "H1/E2 realization");
     assert!(observed.observed_gets.lock().unwrap().is_empty(), "H1/E1");

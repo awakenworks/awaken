@@ -8,7 +8,6 @@
 //! caches.  This crate owns the application collaborators and durable Session
 //! repository so every protocol drives the same Session authority.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -30,7 +29,7 @@ use {
     awaken_session_types::SessionRuntimePlacement,
 };
 use {
-    awaken_session_state_contract::{PersistedSession, SessionScan, SessionScanCursor},
+    awaken_session_state_contract::{PersistedSession, SessionScan},
     awaken_session_types::SessionRecoveryQuarantine,
 };
 
@@ -45,7 +44,6 @@ mod tool_compilation;
 pub use construction::{SessionApplicationBuilder, SessionCredentialAuthorities, SessionResources};
 
 mod recovery_scan;
-use recovery_scan::scan_recovery_candidates;
 pub use recovery_scan::{WorkerRealizationObservation, WorkerRealizationRead};
 
 /// Single Session-application projection from repository policy into the Run
@@ -226,9 +224,12 @@ pub use awaken_session_realization_driver::{
     SessionTerminalCleanupDriveOutcome, drive_session_realization, drive_session_terminal_cleanup,
 };
 pub use mcp::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
-pub use realization::{SessionReconciliation, SessionReconciliationFailure};
+pub use realization::{SessionRealizations, SessionReconciliation, SessionReconciliationFailure};
 mod resource_effect_authorization;
 pub use resource_effect_authorization::SessionResourceEffectAuthorization;
+mod resource_references;
+pub use resource_references::SessionResourceReferences;
+mod work_assignments;
 pub(crate) use resource_effect_authorization::require_live_root_lease;
 pub use resource_reconciliation::{
     ReplaceSessionResourceManifest, SessionResourceAttachment, SessionResourceManifestError,
@@ -244,10 +245,15 @@ pub use run_admission::{
     SessionProjectionRecoveryError, SessionRunApplication,
 };
 pub use runtime_commands::{
-    ConfiguredSessionRepository, SessionExecutionObservation, SessionModelRequestObservation,
-    SessionRepositoryOwner, SessionRepositoryResourceInput, SessionRunExecutionObservation,
+    SessionExecutionObservation, SessionModelRequestObservation, SessionRunExecutionObservation,
     SessionToolUseObservation,
 };
+mod repository_participants;
+pub use repository_participants::{
+    ConfiguredSessionRepository, SessionRepositoryOwner, SessionRepositoryParticipants,
+    SessionRepositoryResourceInput,
+};
+pub use work_assignments::SessionWorkAssignments;
 mod update;
 pub use update::{
     SessionMcpUpdate, SessionMetadataUpdate, SessionUpdateCommand, SessionUpdateError,

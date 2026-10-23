@@ -1092,7 +1092,7 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
     assert!(
         matches!(
             awaken_session_realization_contract::SessionRealizationControl::begin_session_realization(
-                &app,
+                app.realizations.as_ref(),
                 awaken_session_realization_contract::BeginSessionRealization {
                     expected_resources: None,
                     session_id: "suspend-with-mcp".into(),
@@ -1104,7 +1104,7 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
         ),
         "D2 direct realization gate"
     );
-    let scan = app.reconcile_session_realizations().await;
+    let scan = app.realizations.reconcile_session_realizations().await;
     assert!(scan.settled.is_empty(), "D2 scan gate");
     assert!(scan.failures.is_empty(), "D2 scan gate");
     assert!(
@@ -1123,7 +1123,7 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
         .unwrap();
     let staged =
         awaken_session_realization_contract::SessionRealizationControl::begin_session_realization(
-            &app,
+            app.realizations.as_ref(),
             awaken_session_realization_contract::BeginSessionRealization {
                 expected_resources: None,
                 session_id: "suspend-with-mcp".into(),
@@ -1152,7 +1152,7 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
     };
     let published =
         awaken_session_realization_contract::SessionRealizationControl::activate_session_realization(
-            &app,
+            app.realizations.as_ref(),
             awaken_session_realization_contract::ActivateSessionRealization {
                 session_id: "suspend-with-mcp".into(),
                 lease: staged.authority.lease.clone(),
@@ -1175,7 +1175,7 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
     assert!(drain.is_empty(), "D3");
     let completed =
         awaken_session_realization_contract::SessionRealizationControl::acknowledge_session_realization(
-            &app,
+            app.realizations.as_ref(),
             awaken_session_realization_contract::AcknowledgeSessionRealization {
                 session_id: "suspend-with-mcp".into(),
                 lease: staged.authority.lease,
@@ -1275,7 +1275,7 @@ async fn continuation_phases_gate_direct_and_recovery_realization_effects() {
         assert!(
             matches!(
                 awaken_session_realization_contract::SessionRealizationControl::begin_session_realization(
-                    &app,
+                    app.realizations.as_ref(),
                     awaken_session_realization_contract::BeginSessionRealization {
                         expected_resources: None,
                         session_id: session_id.into(),
@@ -1293,7 +1293,7 @@ async fn continuation_phases_gate_direct_and_recovery_realization_effects() {
             "{rule}/E1"
         );
     }
-    let scan = app.reconcile_session_realizations().await;
+    let scan = app.realizations.reconcile_session_realizations().await;
     assert!(scan.settled.is_empty(), "G1-G3/E1 scan");
     assert!(scan.failures.is_empty(), "G1-G3/E1 scan");
     for (rule, session_id) in [

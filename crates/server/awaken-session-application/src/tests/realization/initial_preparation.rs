@@ -169,6 +169,7 @@ async fn preparation_candidate_index_skips_a_saturated_live_owner_front() {
         .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
         .unwrap();
     let assignment = application
+        .realizations
         .claim_next_session_preparation(target)
         .await
         .unwrap()
@@ -257,6 +258,7 @@ async fn preparation_claim_advances_one_candidate_page_per_poll() {
         .unwrap();
     assert!(
         application
+            .realizations
             .claim_next_session_preparation(target.clone())
             .await
             .unwrap()
@@ -276,12 +278,14 @@ async fn preparation_claim_advances_one_candidate_page_per_poll() {
         terminal_cleanup_worker(&gpu_target, gpu_manifest),
     ]);
     let gpu_claimed = application
+        .realizations
         .claim_next_session_preparation(gpu_target)
         .await
         .unwrap()
         .expect("R2 independent GPU cursor");
     assert_eq!(gpu_claimed.session_id.as_str(), "gpu-000", "R2");
     let claimed = application
+        .realizations
         .claim_next_session_preparation(target.clone())
         .await
         .unwrap()
@@ -289,6 +293,7 @@ async fn preparation_claim_advances_one_candidate_page_per_poll() {
     assert_eq!(claimed.session_id.as_str(), "z-compatible", "R3");
     assert!(
         application
+            .realizations
             .claim_next_session_preparation(target)
             .await
             .unwrap()
@@ -355,6 +360,7 @@ async fn run_free_request_is_one_idempotent_session_root_transition() {
     let id = SessionId::from("selected");
     let before = repo.get(&id).await.unwrap();
     let first = application
+        .realizations
         .request_run_free_initial_preparation(&id)
         .await
         .expect("R1/E1");
@@ -364,6 +370,7 @@ async fn run_free_request_is_one_idempotent_session_root_transition() {
     );
     assert!(first.revision.0 > before.revision.0, "R1 one root CAS");
     let replay = application
+        .realizations
         .request_run_free_initial_preparation(&id)
         .await
         .expect("R2/E2");
@@ -373,6 +380,7 @@ async fn run_free_request_is_one_idempotent_session_root_transition() {
         assert!(
             matches!(
                 application
+                    .realizations
                     .request_run_free_initial_preparation(&invalid)
                     .await,
                 Err(
@@ -396,6 +404,7 @@ async fn run_free_request_is_one_idempotent_session_root_transition() {
     let completed = SessionId::from("completed");
     let before = repo.get(&completed).await.unwrap();
     let after = application
+        .realizations
         .request_run_free_initial_preparation(&completed)
         .await
         .expect("R4/E4");
@@ -409,6 +418,7 @@ async fn run_free_request_is_one_idempotent_session_root_transition() {
         assert!(
             matches!(
                 application
+                    .realizations
                     .request_run_free_initial_preparation(&blocked)
                     .await,
                 Err(
@@ -499,6 +509,7 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
     assert!(
         matches!(
             application
+                .realizations
                 .claim_next_session_preparation(target.clone())
                 .await,
             Err(
@@ -520,6 +531,7 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
     observations.replace(vec![incapable]);
     assert!(
         application
+            .realizations
             .claim_next_session_preparation(target.clone())
             .await
             .unwrap()
@@ -532,6 +544,7 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
     observations.replace(vec![draining]);
     assert!(
         application
+            .realizations
             .claim_next_session_preparation(target.clone())
             .await
             .unwrap()
@@ -541,6 +554,7 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
 
     observations.replace(vec![eligible]);
     let assignment = application
+        .realizations
         .claim_next_session_preparation(target.clone())
         .await
         .unwrap()
@@ -594,6 +608,7 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
     )]);
     assert!(
         application
+            .realizations
             .claim_next_session_preparation(another)
             .await
             .unwrap()
@@ -643,6 +658,7 @@ async fn preparation_rechecks_worker_capability_after_root_assignment() {
         .unwrap();
     assert!(
         application
+            .realizations
             .claim_next_session_preparation(target)
             .await
             .unwrap()

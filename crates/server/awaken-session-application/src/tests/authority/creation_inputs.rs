@@ -55,7 +55,8 @@ async fn creation_finalization_preserves_resolution_skill_and_pin_failure_stages
     ] {
         let id = format!("finalizer-{rule}");
         let configured = app
-            .configure_session_repository(token_repository_input(&id, rule))
+            .repository_participants
+            .configure(token_repository_input(&id, rule))
             .await
             .unwrap();
         let target = if missing {
@@ -221,11 +222,13 @@ async fn creation_finalization_failure_cannot_dispose_replayed_adopted_or_unread
         app.set_resource_registry(registry.clone());
         app.set_credential_material_ingress(ingress.clone());
         let configured = app
-            .configure_session_repository(token_repository_input(&id, rule))
+            .repository_participants
+            .configure(token_repository_input(&id, rule))
             .await
             .unwrap();
         let configured = if rule == "replayed" {
-            app.configure_session_repository(token_repository_input(&id, rule))
+            app.repository_participants
+                .configure(token_repository_input(&id, rule))
                 .await
                 .unwrap()
         } else {

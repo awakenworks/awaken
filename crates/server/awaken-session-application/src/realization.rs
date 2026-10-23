@@ -7,6 +7,7 @@ use crate::SessionAggregate;
 
 use awaken_time::WallClockExt as _;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use awaken_session_configuration_contract::mcp::{
     McpAttachmentState, McpGenerationRef, StageMcpAttachment,
@@ -230,59 +231,6 @@ impl SessionApplication {
         })
     }
 
-    /// Reproject one already-committed local Resident Environment through the
-    /// same complete-projection port used by the canonical realization driver.
-    /// Resident durable truth is deliberately the retry fact: Runtime owns no
-    /// projection receipt or parallel restore-completion state.
-    pub(super) async fn synchronize_resident_environment_projection(
-        &self,
-        owner_scope: &str,
-        session: &PersistedSession,
-    ) -> Result<(), RunError> {
-        let realization_runtime = self.runtime().realization();
-
-        if !matches!(
-            session.environment,
-            SessionEnvironmentState::Resident { .. }
-        ) {
-            return Err(RunError::internal(
-                "only a committed Resident Environment may be reprojected",
-            ));
-        }
-        if session.requires_external_environment_owner() {
-            return Err(RunError::internal(
-                "a Worker-owned Resident Environment cannot be projected by the local Runtime",
-            ));
-        }
-        let lease = session.realization.as_ref().ok_or_else(|| {
-            RunError::unavailable_classified(
-                "session_environment_realization_missing",
-                "Resident Environment has no exact realization lease",
-            )
-        })?;
-        let request_started = realization_runtime.observe_realization_request()?;
-        let projection = self
-            .queries
-            .frozen_session_projection(owner_scope.to_string(), session, true)
-            .await?;
-        awaken_session_realization_contract::SessionProjectionSynchronizer::synchronize_session_projection(
-            &LocalProjectionSynchronizer {
-                runtime: realization_runtime,
-            },
-            &session.session_id,
-            &projection,
-            &awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
-                lease.clone(),
-                self.clock.now_ms(),
-            )
-            .map_err(|error| RunError::unavailable(error.to_string()))?
-            .observed(request_started),
-            true,
-        )
-        .await
-        .map_err(RunError::from)
-    }
-
     #[cfg(test)]
     pub(crate) async fn reconcile_pending_session_state(
         self: std::sync::Arc<Self>,
@@ -348,7 +296,10 @@ impl SessionApplication {
             .reconcile_environment_continuations_from(&candidates, self.clock.now_ms())
             .await;
         let continuations_elapsed = cycle_started.elapsed();
-        let realizations = self.reconcile_session_realizations_from(&candidates).await;
+        let realizations = self
+            .realizations
+            .reconcile_session_realizations_from(&candidates)
+            .await;
         let realizations_elapsed = cycle_started.elapsed();
         let realization_failure_count = realizations.failures.len();
         let settled_realizations = realizations.settled.len();
@@ -479,6 +430,162 @@ impl SessionApplication {
             result = super::lifecycle_supervisor::run_lifecycle_loop(self, cancellation.clone()) => result,
         }
     }
+}
+
+/// The Session realization lease protocol: the root-CAS phase commands a
+/// realization driver calls (begin, activate, acknowledge, fail, renew), the
+/// run-free initial preparation queue, and the co-located driver that installs
+/// a local Session's frozen projection.
+///
+/// It holds the CAS kernel, the read and credential components the phases
+/// consult, the Resource commit bracket, the selected realization runtime and
+/// MCP realizer, the process-local exclusion registry and this process's
+/// realization identity. Every phase decision is the aggregate's or the
+/// realization contract's; this component orders reads, decisions and commits.
+pub struct SessionRealizations {
+    mutations: Arc<crate::SessionMutations>,
+    clock: Arc<dyn awaken_time::WallClock>,
+    queries: Arc<crate::SessionQueries>,
+    credentials: Arc<crate::SessionCredentials>,
+    lifecycle: Arc<crate::SessionLifecycle>,
+    resource_references: Arc<crate::SessionResourceReferences>,
+    realization: Arc<dyn RealizationRuntime>,
+    mcp: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
+    executable_projections: crate::ExecutableProjections,
+    execution_admission: Arc<crate::SessionExecutionAdmission>,
+    local_realization_owner: String,
+    runtime_incarnation: String,
+    realization_retry_budget: u32,
+    local_realization_locks: Arc<LocalRealizationLocks>,
+    session_preparation_cursors: tokio::sync::Mutex<
+        std::collections::BTreeMap<
+            String,
+            Arc<tokio::sync::Mutex<Option<awaken_session_state_contract::SessionScanCursor>>>,
+        >,
+    >,
+}
+
+/// The collaborators one [`SessionRealizations`] is built from.
+pub(crate) struct SessionRealizationCollaborators {
+    pub(crate) mutations: Arc<crate::SessionMutations>,
+    pub(crate) clock: Arc<dyn awaken_time::WallClock>,
+    pub(crate) queries: Arc<crate::SessionQueries>,
+    pub(crate) credentials: Arc<crate::SessionCredentials>,
+    pub(crate) lifecycle: Arc<crate::SessionLifecycle>,
+    pub(crate) resource_references: Arc<crate::SessionResourceReferences>,
+    pub(crate) realization: Arc<dyn RealizationRuntime>,
+    pub(crate) mcp: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
+    pub(crate) executable_projections: crate::ExecutableProjections,
+    pub(crate) execution_admission: Arc<crate::SessionExecutionAdmission>,
+    pub(crate) local_realization_owner: String,
+    pub(crate) runtime_incarnation: String,
+    pub(crate) realization_retry_budget: u32,
+}
+
+impl SessionRealizations {
+    pub(crate) fn new(parts: SessionRealizationCollaborators) -> Self {
+        let SessionRealizationCollaborators {
+            mutations,
+            clock,
+            queries,
+            credentials,
+            lifecycle,
+            resource_references,
+            realization,
+            mcp,
+            executable_projections,
+            execution_admission,
+            local_realization_owner,
+            runtime_incarnation,
+            realization_retry_budget,
+        } = parts;
+        Self {
+            mutations,
+            clock,
+            queries,
+            credentials,
+            lifecycle,
+            resource_references,
+            realization,
+            mcp,
+            executable_projections,
+            execution_admission,
+            local_realization_owner,
+            runtime_incarnation,
+            realization_retry_budget,
+            local_realization_locks: Arc::default(),
+            session_preparation_cursors: tokio::sync::Mutex::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn local_realization_owner(&self) -> &str {
+        &self.local_realization_owner
+    }
+
+    #[must_use]
+    pub fn runtime_incarnation(&self) -> &str {
+        &self.runtime_incarnation
+    }
+
+    fn session_preparation_placement(
+        &self,
+    ) -> Option<&dyn awaken_session_realization_contract::SessionPreparationPlacement> {
+        self.execution_admission.placement.get().map(Arc::as_ref)
+    }
+
+    /// Reproject one already-committed local Resident Environment through the
+    /// same complete-projection port used by the canonical realization driver.
+    /// Resident durable truth is deliberately the retry fact: Runtime owns no
+    /// projection receipt or parallel restore-completion state.
+    pub(super) async fn synchronize_resident_environment_projection(
+        &self,
+        owner_scope: &str,
+        session: &PersistedSession,
+    ) -> Result<(), RunError> {
+        let realization_runtime = self.realization.as_ref();
+
+        if !matches!(
+            session.environment,
+            SessionEnvironmentState::Resident { .. }
+        ) {
+            return Err(RunError::internal(
+                "only a committed Resident Environment may be reprojected",
+            ));
+        }
+        if session.requires_external_environment_owner() {
+            return Err(RunError::internal(
+                "a Worker-owned Resident Environment cannot be projected by the local Runtime",
+            ));
+        }
+        let lease = session.realization.as_ref().ok_or_else(|| {
+            RunError::unavailable_classified(
+                "session_environment_realization_missing",
+                "Resident Environment has no exact realization lease",
+            )
+        })?;
+        let request_started = realization_runtime.observe_realization_request()?;
+        let projection = self
+            .queries
+            .frozen_session_projection(owner_scope.to_string(), session, true)
+            .await?;
+        awaken_session_realization_contract::SessionProjectionSynchronizer::synchronize_session_projection(
+            &LocalProjectionSynchronizer {
+                runtime: realization_runtime,
+            },
+            &session.session_id,
+            &projection,
+            &awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                lease.clone(),
+                self.clock.now_ms(),
+            )
+            .map_err(|error| RunError::unavailable(error.to_string()))?
+            .observed(request_started),
+            true,
+        )
+        .await
+        .map_err(RunError::from)
+    }
 
     /// Install frozen dispatch facts without acquiring a local realization
     /// lease. Worker-owned placement crosses this seam before enqueue only; the
@@ -488,7 +595,7 @@ impl SessionApplication {
         owner_scope: &str,
         session: &PersistedSession,
     ) -> Result<(), SessionRealizationDriveError> {
-        let realization_runtime = self.runtime().realization();
+        let realization_runtime = self.realization.as_ref();
 
         let projection = self
             .queries
@@ -515,7 +622,8 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
     ) -> Result<PersistedSession, SessionRealizationDriveError> {
         let admission = self
-            .refresh_executable_projections()
+            .executable_projections
+            .refresh()
             .await
             .map_err(|error| SessionRealizationDriveError::Control(unavailable(error)))?;
         admission
@@ -529,14 +637,14 @@ impl SessionApplication {
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<PersistedSession, SessionRealizationDriveError> {
-        let realization_runtime = self.runtime().realization();
+        let realization_runtime = self.realization.as_ref();
 
         // One co-located phase driver per Session. The request path and the
         // recovery sweep share this process; letting both drive interleaves
         // their phases and repeats the same external MCP effect. The permit is
         // the only way to reach `drive_session_realization` below.
         let permit = self
-            .local_realization_locks()
+            .local_realization_locks
             .acquire(session_id.as_str())
             .await;
         let request_started = realization_runtime
@@ -584,9 +692,9 @@ impl SessionApplication {
             None,
             &control,
             &LocalProjectionSynchronizer {
-                runtime: self.runtime().realization(),
+                runtime: self.realization.as_ref(),
             },
-            self.mcp_realizer(),
+            self.mcp.as_ref(),
             directive,
             request_started,
         )
@@ -597,7 +705,7 @@ impl SessionApplication {
     pub async fn renew_due_session_realizations(
         &self,
     ) -> Result<usize, SessionRealizationDriveError> {
-        let realization_runtime = self.runtime().realization();
+        let realization_runtime = self.realization.as_ref();
 
         realization_runtime
             .renew_session_realization_projections(
@@ -617,7 +725,13 @@ impl SessionApplication {
     /// same canonical realization driver used by create/update, not a restart-only
     /// environment or MCP path. Terminal and Worker-owned Sessions remain untouched.
     pub async fn reconcile_session_realizations(&self) -> SessionReconciliation {
-        let candidates = match super::recovery_scan::recovery_candidates(self, true).await {
+        let candidates = match super::recovery_scan::recovery_candidates(
+            self.mutations.repository().as_ref(),
+            self.clock.as_ref(),
+            true,
+        )
+        .await
+        {
             Ok(candidates) => candidates,
             Err(error) => {
                 let mut report = SessionReconciliation::default();
@@ -650,7 +764,7 @@ impl SessionApplication {
         if realization_candidates.is_empty() {
             return report;
         }
-        let admission = match self.refresh_executable_projections().await {
+        let admission = match self.executable_projections.refresh().await {
             Ok(admission) => admission,
             Err(error) => {
                 report.failures.push(SessionReconciliationFailure {
@@ -662,7 +776,7 @@ impl SessionApplication {
         };
         for candidate in realization_candidates {
             let session = match admission
-                .enter(|| self.session_repository().get(&candidate.session_id))
+                .enter(|| self.mutations.repository().get(&candidate.session_id))
                 .await
             {
                 Ok(session) => match DurableSessionRoot::from_recovery(session) {
@@ -849,7 +963,8 @@ impl SessionApplication {
             .await
             .map_err(mutation_control)?;
         let session = self
-            .session_repository()
+            .mutations
+            .repository()
             .get(session_id)
             .instrument(tracing::info_span!("session.realization.root_load"))
             .await

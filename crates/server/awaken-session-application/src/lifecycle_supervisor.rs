@@ -12,7 +12,11 @@ use super::realization::recovery_backoff::{
 };
 
 async fn run_lifecycle_maintenance(application: &SessionApplication) {
-    if let Err(error) = application.renew_due_session_realizations().await {
+    if let Err(error) = application
+        .realizations
+        .renew_due_session_realizations()
+        .await
+    {
         tracing::warn!(
             error = ?error,
             "Session realization lease renewal remains pending"
@@ -22,7 +26,7 @@ async fn run_lifecycle_maintenance(application: &SessionApplication) {
 }
 
 async fn reconcile_dispatch(application: &SessionApplication) {
-    let dispatch = application.reconcile_work_dispatches().await;
+    let dispatch = application.work_assignments.reconcile().await;
     for failure in dispatch.failures {
         tracing::warn!(
             session = %failure.session_id,
