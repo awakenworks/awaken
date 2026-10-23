@@ -366,6 +366,21 @@ impl SessionAssembly {
                 realization_retry_budget: self.configuration.realization_retry_budget,
             },
         ));
+        let terminal_cleanups = Arc::new(crate::SessionTerminalCleanups::new(
+            crate::terminal_cleanup::SessionTerminalCleanupCollaborators {
+                mutations: mutations.clone(),
+                clock: clock.clone(),
+                queries: queries.clone(),
+                lifecycle: lifecycle.clone(),
+                resource_references: resource_references.clone(),
+                repository_participants: repository_participants.clone(),
+                work_assignments: work_assignments.clone(),
+                realizations: realizations.clone(),
+                executable_projections: executable_projections.clone(),
+                execution_admission: execution_admission.clone(),
+                runtime: self.runtime.clone(),
+            },
+        ));
         SessionApplication {
             clock,
             configuration: self.configuration.clone(),
@@ -388,6 +403,7 @@ impl SessionAssembly {
             environment_binding_sink,
             executable_projections,
             realizations,
+            terminal_cleanups,
             execution_admission,
             runtime_incarnation,
             event_batch_cutover_validation,
@@ -429,6 +445,7 @@ pub(crate) fn reassemble(
             Arc::strong_count(&application.work_assignments),
             Arc::strong_count(&application.repository_participants),
             Arc::strong_count(&application.realizations),
+            Arc::strong_count(&application.terminal_cleanups),
         ]
     };
     let unshared = application.fixture_assembly.clone().assemble(kernel());

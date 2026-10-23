@@ -1600,6 +1600,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     );
     let effects_before_foreign = runtime.terminal_effect_order.lock().unwrap().len();
     let foreign_outcome = guarded
+        .terminal_cleanups
         .release_terminal_resources("workspace", "profiled-foreign-outcome")
         .await;
     assert!(
@@ -2232,7 +2233,8 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
             .await
             .expect("L7");
     let transition = deleted.clone();
-    app.release_terminal_resources(&transition.owner_scope, "delete-live")
+    app.terminal_cleanups
+        .release_terminal_resources(&transition.owner_scope, "delete-live")
         .await
         .expect("L7 reconciliation");
     assert!(transition.transitioned(), "L7");
@@ -2449,6 +2451,7 @@ async fn deletion_fixture(
     create(repo.as_ref(), root).await;
     if initial == "archived-completed" {
         let completed = app
+            .terminal_cleanups
             .release_terminal_resources("workspace", session_id)
             .await
             .unwrap()
@@ -2548,7 +2551,8 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                         .fail_before_effect_once
                         .store(true, Ordering::SeqCst);
                     assert!(
-                        cold.release_terminal_resources("workspace", &session_id)
+                        cold.terminal_cleanups
+                            .release_terminal_resources("workspace", &session_id)
                             .await
                             .is_err(),
                         "D4 pre-effect failure"
@@ -2567,7 +2571,8 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                     // that happen to contain this Session's delete-* id.
                     repo.fail_once("session:delete:");
                     assert!(
-                        cold.release_terminal_resources("workspace", &session_id)
+                        cold.terminal_cleanups
+                            .release_terminal_resources("workspace", &session_id)
                             .await
                             .is_err(),
                         "D4 tombstone outage"
@@ -2614,7 +2619,8 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                 .0;
             let effect_calls = runtime.intents.lock().unwrap().len();
             assert!(
-                cold.release_terminal_resources("workspace", &session_id)
+                cold.terminal_cleanups
+                    .release_terminal_resources("workspace", &session_id)
                     .await
                     .unwrap()
                     .is_none()
@@ -2643,7 +2649,8 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                 .await;
             assert!(matches!(absent, Err(SessionPreparationError::NotFound)));
             assert!(
-                cold.release_terminal_resources("workspace", &session_id)
+                cold.terminal_cleanups
+                    .release_terminal_resources("workspace", &session_id)
                     .await
                     .unwrap()
                     .is_none()
@@ -2777,7 +2784,8 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                 }
                 if schedule == "after_tombstone" {
                     assert!(
-                        app.release_terminal_resources("workspace", session_id)
+                        app.terminal_cleanups
+                            .release_terminal_resources("workspace", session_id)
                             .await
                             .unwrap()
                             .is_none()

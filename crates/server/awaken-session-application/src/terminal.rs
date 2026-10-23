@@ -393,6 +393,7 @@ impl SessionApplication {
         }
         self.lifecycle.request_reconciliation();
         let pending_reason = self
+            .terminal_cleanups
             .release_terminal_resources(&transition.owner_scope, command.session_id.as_str())
             .await
             .err()
@@ -555,13 +556,14 @@ impl SessionApplication {
         // only shortens convergence when the current projector is available.
         self.lifecycle.request_reconciliation();
         let cleanup = self
+            .terminal_cleanups
             .release_terminal_resources(&transition.owner_scope, session_id.as_str())
             .await;
         match (admission != ArchiveAdmission::IdleOnly, cleanup) {
             (true, Ok(Some(session))) => {
                 if !session
                     .verified_terminal_cleanup()
-                    .map_err(super::resource_reconciliation::internal)?
+                    .map_err(super::credentials::internal)?
                     .is_completed()
                 {
                     return Err(SessionPreparationError::Unavailable(
@@ -598,6 +600,7 @@ impl SessionApplication {
         let session_id = transition.session.session_id.clone();
         tokio::spawn(async move {
             if let Err(error) = application
+                .terminal_cleanups
                 .release_terminal_resources(&owner_scope, session_id.as_str())
                 .await
             {

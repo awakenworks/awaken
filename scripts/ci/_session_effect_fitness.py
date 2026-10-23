@@ -34,7 +34,7 @@ from _session_effect_sources import (
     APPLICATION_TERMINAL,
     APPLICATION_LIFECYCLE,
     APPLICATION_WORK_DISPATCH,
-    APPLICATION_RESOURCE_RECONCILIATION,
+    APPLICATION_TERMINAL_RECORDS,
     APPLICATION_RESOURCE_EFFECT_AUTHORIZATION,
     PROTOCOL_SESSIONS,
     SESSION_STORE,
@@ -283,11 +283,11 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
         ))
         if _rust_function(sources.get(APPLICATION_PUBLICATION_CONTROL, ""), function) is not None:
             errors.append(f"{APPLICATION_PUBLICATION_CONTROL}: {ownership} retains a retired application role")
-    for retired_owner in (APPLICATION_RESOURCE_RECONCILIATION, APPLICATION_CLEANUP):
+    for retired_owner in (APPLICATION_TERMINAL_RECORDS, APPLICATION_CLEANUP):
         if _rust_function(sources.get(retired_owner, ""), "require_current_live_terminal_generation") is not None:
             errors.append(f"{retired_owner}: the terminal live-lease gate has a duplicate or retired owner")
 
-    if _rust_function(sources.get(APPLICATION_RESOURCE_RECONCILIATION, ""),
+    if _rust_function(sources.get(APPLICATION_TERMINAL_RECORDS, ""),
                       "authorize_terminal_cleanup_effect_from_root") is not None:
         errors.append(f"{APPLICATION_CLEANUP}: terminal preparation authorization has a duplicate or retired owner")
 
@@ -311,7 +311,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             "root-derived terminal preparation authorization",
         ),
         (
-            APPLICATION_RESOURCE_RECONCILIATION,
+            APPLICATION_TERMINAL_RECORDS,
             "authorize_terminal_cleanup_disposal_from_root",
             (
                 ".get(&effect.command.session_id)",
@@ -321,7 +321,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             "root-derived terminal disposal authorization",
         ),
         (
-            APPLICATION_RESOURCE_RECONCILIATION,
+            APPLICATION_TERMINAL_RECORDS,
             "record_terminal_cleanup_preparation_from_root",
             (
                 ".session_aggregate(&session_id)",
@@ -331,7 +331,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             "root-CAS terminal preparation receipt",
         ),
         (
-            APPLICATION_RESOURCE_RECONCILIATION,
+            APPLICATION_TERMINAL_RECORDS,
             "record_terminal_cleanup_disposal_from_root",
             (
                 ".session_aggregate(&session_id)",
@@ -354,7 +354,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
     errors.extend(
         _require_ordered_function(
             sources,
-            APPLICATION_RESOURCE_RECONCILIATION,
+            APPLICATION_TERMINAL_RECORDS,
             "record_terminal_repository_publication_effect_from_root",
             (
                 "session.lifecycle().record_repository_publication_rejection(rejection)",
@@ -640,7 +640,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
 
     for relative in (
         APPLICATION_CLEANUP,
-        APPLICATION_RESOURCE_RECONCILIATION,
+        APPLICATION_TERMINAL_RECORDS,
         APPLICATION_EVENT_BATCHES,
     ):
         if "session.terminal_cleanup.is_completed()" in sources.get(relative, ""):
@@ -992,7 +992,7 @@ fn drive_local_terminal_cleanup() {
 }
 """
     canonical[APPLICATION_CLEANUP] += preparation_authorization
-    canonical[APPLICATION_RESOURCE_RECONCILIATION] = """
+    canonical[APPLICATION_TERMINAL_RECORDS] = """
 fn terminal_cleanup_projection() { session.terminal_cleanup_work_action(); }
 fn authorize_terminal_cleanup_disposal_from_root() {
     repository.get(&effect.command.session_id);
@@ -1213,7 +1213,7 @@ fn recover_terminal_receipts() {
         retired = dict(canonical)
         retired[APPLICATION_PUBLICATION_CONTROL] += f"\nasync fn {function}() {{}}\n"
         assert any("retired application role" in error for error in session_effect_violations(retired)), function
-    for retired_owner in (APPLICATION_RESOURCE_RECONCILIATION, APPLICATION_CLEANUP):
+    for retired_owner in (APPLICATION_TERMINAL_RECORDS, APPLICATION_CLEANUP):
         duplicated = dict(canonical)
         duplicated[retired_owner] += "\nfn require_current_live_terminal_generation() {}\n"
         assert any("live-lease gate" in error for error in session_effect_violations(duplicated)), retired_owner
@@ -1262,7 +1262,7 @@ fn recover_terminal_receipts() {
         mutant = dict(canonical)
         if not keep_child:
             mutant[APPLICATION_CLEANUP] = mutant[APPLICATION_CLEANUP].replace(preparation_authorization, "")
-        mutant[APPLICATION_RESOURCE_RECONCILIATION] += preparation_authorization
+        mutant[APPLICATION_TERMINAL_RECORDS] += preparation_authorization
         assert session_effect_violations(mutant), ("retired/duplicate preparation owner", keep_child)
     assert repository_publication_writer_violations(canonical) == [], (
         "canonical Repository publication writer"
@@ -1321,7 +1321,7 @@ fn recover_terminal_receipts() {
         ("local completed binding", APPLICATION_CLEANUP, ".verified_terminal_cleanup()"),
         (
             "root outcome completed binding",
-            APPLICATION_RESOURCE_RECONCILIATION,
+            APPLICATION_TERMINAL_RECORDS,
             ".verified_terminal_cleanup()",
         ),
         (
@@ -1341,7 +1341,7 @@ fn recover_terminal_receipts() {
         ),
         (
             "shared root outcome CAS",
-            APPLICATION_RESOURCE_RECONCILIATION,
+            APPLICATION_TERMINAL_RECORDS,
             '"terminal-repository-publication-worker-outcome"',
         ),
         (
@@ -1508,7 +1508,7 @@ fn recover_terminal_receipts() {
     for rule, owner, earlier, later in (
         (
             "root rejection before outcome CAS",
-            APPLICATION_RESOURCE_RECONCILIATION,
+            APPLICATION_TERMINAL_RECORDS,
             "session.lifecycle().record_repository_publication_rejection(rejection)",
             '"terminal-repository-publication-worker-outcome"',
         ),
@@ -1545,7 +1545,7 @@ fn recover_terminal_receipts() {
     # or remove/move source comparison after mutation -> refuse. This extends
     # the existing owner/order oracle instead of tolerating both paths.
     for owner, before, after in (
-        (APPLICATION_RESOURCE_RECONCILIATION,
+        (APPLICATION_TERMINAL_RECORDS,
          "session.lifecycle().record_repository_publication_rejection(rejection)",
          "session.terminal_cleanup.record_repository_publication_rejection(rejection)"),
         (SESSION_REPOSITORY_PUBLICATION_AGGREGATE,

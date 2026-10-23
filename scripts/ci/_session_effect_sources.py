@@ -49,11 +49,10 @@ PROVISIONING_REPOSITORY_PUBLICATION = (
 )
 RESOURCE_EXECUTION = "crates/contract/awaken-resource-contract/src/execution.rs"
 APPLICATION_CLEANUP = (
-    "crates/server/awaken-session-application/src/"
-    "resource_reconciliation/terminal_cleanup.rs"
+    "crates/server/awaken-session-application/src/terminal_cleanup/local_drive.rs"
 )
 APPLICATION_PUBLICATION_CONTROL = (
-    "crates/server/awaken-session-application/src/realization/control.rs"
+    "crates/server/awaken-session-application/src/terminal_cleanup.rs"
 )
 APPLICATION_EVENT_BATCHES = (
     "crates/server/awaken-session-application/src/event_batches.rs"
@@ -61,8 +60,8 @@ APPLICATION_EVENT_BATCHES = (
 APPLICATION_TERMINAL = "crates/server/awaken-session-application/src/terminal.rs"
 APPLICATION_LIFECYCLE = "crates/server/awaken-session-application/src/lifecycle.rs"
 APPLICATION_WORK_DISPATCH = "crates/server/awaken-session-application/src/work_assignments.rs"
-APPLICATION_RESOURCE_RECONCILIATION = (
-    "crates/server/awaken-session-application/src/resource_reconciliation.rs"
+APPLICATION_TERMINAL_RECORDS = (
+    "crates/server/awaken-session-application/src/terminal_cleanup/records.rs"
 )
 APPLICATION_RESOURCE_EFFECT_AUTHORIZATION = (
     "crates/server/awaken-session-application/src/resource_effect_authorization.rs"
@@ -253,7 +252,7 @@ REQUIRED = {
         "async fn authorize_terminal_memory_intent(",
     ),
     APPLICATION_EVENT_BATCHES: (".verified_terminal_cleanup()",),
-    APPLICATION_RESOURCE_RECONCILIATION: (
+    APPLICATION_TERMINAL_RECORDS: (
         ".terminal_cleanup_work_action()",
         ".authorize_terminal_cleanup_disposal_effect(&owner_scope, effect)",
         ".record_terminal_cleanup_preparation(",

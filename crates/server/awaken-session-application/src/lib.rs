@@ -229,6 +229,8 @@ mod resource_effect_authorization;
 pub use resource_effect_authorization::SessionResourceEffectAuthorization;
 mod resource_references;
 pub use resource_references::SessionResourceReferences;
+mod terminal_cleanup;
+pub use terminal_cleanup::SessionTerminalCleanups;
 mod work_assignments;
 pub(crate) use resource_effect_authorization::require_live_root_lease;
 pub use resource_reconciliation::{
@@ -280,7 +282,6 @@ pub use awaken_session_application_contract::{
 pub type ResolvedSessionEnvironment =
     awaken_executable_environment_contract::ResolvedSessionEnvironment<EnvironmentSnapshot>;
 use awaken_executable_environment_contract::SessionEnvironmentProjectionSource;
-use awaken_worker_contract::WorkerIncarnationSource;
 
 /// Required Environment roles projected from one coherent application source.
 /// Construction is explicit and has no optional capability discovery.

@@ -305,6 +305,7 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
     state.delete_session(id).await.unwrap();
     state
         .session_application()
+        .terminal_cleanups()
         .release_terminal_resources("default", id)
         .await
         .unwrap();

@@ -1075,7 +1075,7 @@ async fn mount_with_managed_over_and_models(
             policy: worker_placement_policy
                 .unwrap_or_else(|| worker_placement::shared_worker_placement_policy()),
             realizations: session_application.realizations(),
-            terminal_cleanup: session_application.clone(),
+            terminal_cleanup: session_application.terminal_cleanups(),
             session_preparation: session_application.realizations(),
             session_environment_bindings: session_application.environment_binding_sink(),
             coordination: session_application.clone(),
@@ -1110,7 +1110,7 @@ async fn mount_with_managed_over_and_models(
                 worker_directory.clone(),
                 worker_clock.clone(),
             )
-            .with_terminal_preparation_control(session_application.clone())
+            .with_terminal_preparation_control(session_application.terminal_cleanups())
             .with_checkpoint_artifact_control(session_application.resource_effect_authorization()),
         ));
     let memory = worker_memory::memory_router(
@@ -1130,7 +1130,7 @@ async fn mount_with_managed_over_and_models(
     )
     .with_worker_directory(worker_directory.clone())
     .with_materialization_control(session_application.resource_effect_authorization())
-    .with_publication_control(session_application.clone());
+    .with_publication_control(session_application.terminal_cleanups());
     let repository_service = match repository_transport_authorizer {
         Some(authorizer) => repository_service.with_transport_authorizer(authorizer),
         None => repository_service,

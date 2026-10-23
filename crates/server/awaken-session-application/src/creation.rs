@@ -763,6 +763,7 @@ impl SessionApplication {
                 match current {
                     Ok(Some(session)) if session.execution.is_terminal() => {
                         let _ = self
+                            .terminal_cleanups
                             .release_terminal_resources(&owner_scope, &session_id)
                             .await;
                     }

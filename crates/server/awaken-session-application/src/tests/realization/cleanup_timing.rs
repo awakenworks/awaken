@@ -180,6 +180,7 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
             reassign_existing_lease: false,
         };
         let assigned = app
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .unwrap();
@@ -195,7 +196,8 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
                 );
                 assert_eq!(after.revision, before.revision, "R6 zero root CAS");
                 assert!(
-                    app.claim_next_terminal_cleanup(target, Some(&id))
+                    app.terminal_cleanups
+                        .claim_next_terminal_cleanup(target, Some(&id))
                         .await
                         .unwrap()
                         .is_none(),

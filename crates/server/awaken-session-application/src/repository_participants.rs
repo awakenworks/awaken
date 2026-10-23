@@ -24,8 +24,8 @@ use awaken_session_state_contract::SessionAggregate;
 use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 
+use crate::credentials::internal;
 use crate::credentials::{mutation_failure, repository_preparation};
-use crate::resource_reconciliation::internal;
 mod repository_reference;
 
 use crate::{
