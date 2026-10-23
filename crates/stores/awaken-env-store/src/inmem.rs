@@ -112,8 +112,39 @@ impl EnvironmentDefinitionQueries for InMemoryEnvRegistry {
     }
 }
 
+fn committed_create_result(
+    state: &InMemoryEnvRegistryState,
+    command: &CreateEnvironmentCommand,
+) -> Result<Option<EnvItem>, CreateEnvironmentError> {
+    let fingerprint = command.fingerprint();
+    if let Some((existing_fingerprint, environment_id)) = state.commands.get(&command.command_id) {
+        if existing_fingerprint != &fingerprint {
+            return Err(CreateEnvironmentError::IdempotencyConflict);
+        }
+        let item = state
+            .revisions
+            .get(&(environment_id.clone(), EnvironmentRevision(1)))
+            .cloned()
+            .ok_or_else(|| CreateEnvironmentError::OriginalResultUnavailable {
+                environment_id: environment_id.clone(),
+            })?;
+        return Ok(Some(item));
+    }
+    Ok(None)
+}
+
 #[async_trait]
 impl EnvironmentDefinitionStore for InMemoryEnvRegistry {
+    async fn find_create_result(
+        &self,
+        command: &CreateEnvironmentCommand,
+    ) -> Result<Option<EnvItem>, CreateEnvironmentError> {
+        let state = self
+            .state()
+            .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        committed_create_result(&state, command)
+    }
+
     async fn create_once(
         &self,
         command: CreateEnvironmentCommand,
@@ -124,19 +155,7 @@ impl EnvironmentDefinitionStore for InMemoryEnvRegistry {
         let mut state = self
             .state()
             .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
-        if let Some((existing_fingerprint, environment_id)) =
-            state.commands.get(&command.command_id)
-        {
-            if existing_fingerprint != &fingerprint {
-                return Err(CreateEnvironmentError::IdempotencyConflict);
-            }
-            let item = state
-                .revisions
-                .get(&(environment_id.clone(), EnvironmentRevision(1)))
-                .cloned()
-                .ok_or_else(|| CreateEnvironmentError::OriginalResultUnavailable {
-                    environment_id: environment_id.clone(),
-                })?;
+        if let Some(item) = committed_create_result(&state, &command)? {
             return Ok(CreateEnvironmentOutcome::Replayed(item));
         }
         let n = state.seq;

@@ -191,6 +191,11 @@ impl EnvironmentApplication {
         &self,
         command: CreateEnvironmentCommand,
     ) -> Result<EnvItem, EnvironmentApplicationError> {
+        // Replay is an observation of an already committed command. Admission
+        // policy still gates fresh commands and any pending registration delivery.
+        if let Some(item) = self.definitions.find_create_result(&command).await? {
+            return self.deliver_committed_revision(item).await;
+        }
         validate_environment_policy(
             self.sandbox_policies.as_deref(),
             &command.config,
@@ -409,6 +414,7 @@ impl EnvironmentAuthor for EnvironmentApplication {
 
 #[cfg(test)]
 mod tests {
+    mod create_replay;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
 
