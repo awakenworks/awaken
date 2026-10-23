@@ -17,6 +17,9 @@ Decision table (--self-test):
 | L5   | fast-forward adding a merge commit     | refused |
 | L6   | fast-forward of single-parent commits  | allowed |
 | L7   | refused case with the explicit override| allowed |
+| L12  | main changes value outside the configured writer (`git config awaken.mainWriter <worktree>`; a push has no worktree) | refused |
+| L13  | main changes value inside the configured writer, or no writer is configured | judged by L3–L6 |
+| L14  | update that keeps main's value (`pack-refs` writing `packed-refs`) | allowed |
 | L8   | state `preparing` / `committed` / `aborted` | ignored |
 | L9   | any other argument                     | usage error |
 """
@@ -70,9 +73,23 @@ def packed_main() -> str | None:
     return None
 
 
+def writer_violation() -> str | None:
+    """L12: main moves only from the one integration worktree, when one is configured."""
+    writer = git("config", "--get", "awaken.mainWriter").stdout.strip()
+    if not writer:
+        return None
+    here = git("rev-parse", "--show-toplevel").stdout.strip()
+    if here and os.path.realpath(here) == os.path.realpath(writer):
+        return None
+    where = f"worktree {here}" if here else "a push"
+    return (f"main moves only from the integration worktree {writer}, not from {where}; "
+            "commit to a branch and let the integrator fast-forward main")
+
+
 def violations(lines: list[str], ancestor: Callable[[str, str], bool],
                merges: Callable[[str, str], list[str]], current: Callable[[], str],
-               packed: Callable[[], str | None] = lambda: None) -> list[str]:
+               packed: Callable[[], str | None] = lambda: None,
+               writer: Callable[[], str | None] = lambda: None) -> list[str]:
     found = []
     for line in lines:
         parts = line.split()
@@ -84,11 +101,15 @@ def violations(lines: list[str], ancestor: Callable[[str, str], bool],
             # `branch -f`) is reported with a zero old value; judge it against the value
             # main still holds while the transaction is prepared.
             old = current()
-        if old == ZERO:
+        if old == ZERO or new == old:
+            continue  # L2 creation; L14 a rewrite that keeps main's value (`pack-refs`)
+        if new == ZERO and packed() == old:
             continue
+        outside = writer()
+        if outside:
+            found.append(outside)
         if new == ZERO:
-            if packed() != old:
-                found.append("main may not be deleted")
+            found.append("main may not be deleted")
         elif not ancestor(old, new):
             found.append(f"main {old[:10]} -> {new[:10]} is not a fast-forward; rebase onto main instead")
         else:
@@ -109,7 +130,8 @@ def main(argv: list[str]) -> int:
         return 0
     if argv[1] != "prepared":
         return 0
-    errors = violations(sys.stdin.read().splitlines(), is_ancestor, merges_between, current_main, packed_main)
+    errors = violations(sys.stdin.read().splitlines(), is_ancestor, merges_between, current_main, packed_main,
+                        writer_violation)
     if errors and os.environ.get("AWAKEN_ALLOW_MAIN_REWRITE") != "1":
         for error in errors:
             print(f"ERROR: {error} (deliberate rewrite: AWAKEN_ALLOW_MAIN_REWRITE=1)", file=sys.stderr)
@@ -132,6 +154,16 @@ def self_test() -> None:
     assert "deleted" in violations([f"{a} {ZERO} {MAIN}"], ancestor, merges, absent, lambda: b)[0], \
         "L3 packed-refs records another value"
     assert violations([f"{a} {ZERO} {MAIN}"], ancestor, merges, absent, lambda: a) == [], "L11"
+    elsewhere = lambda: "main moves only from the integration worktree /integ, not from a push"
+    assert "integration worktree" in violations([f"{a} {b} {MAIN}"], ancestor, merges, absent,
+                                                writer=elsewhere)[0], "L12 a fast-forward outside the writer"
+    assert violations([f"{a} {ZERO} {MAIN}"], ancestor, merges, absent, lambda: a, elsewhere) == [], \
+        "L11 holds outside the writer: pack-refs keeps main's value"
+    assert violations([f"{a} {b} {MAIN}"], ancestor, merges, absent, writer=lambda: None) == [], "L13"
+    assert violations([f"{ZERO} {a} {MAIN}"], ancestor, merges, lambda: a, writer=elsewhere) == [], \
+        "L14 pack-refs records main's unchanged value outside the writer"
+    assert violations([f"{a} {b} refs/heads/feature"], ancestor, merges, absent, writer=elsewhere) == [], \
+        "L12 only guards main"
     assert "fast-forward" in violations([f"{b} {a} {MAIN}"], ancestor, merges, absent)[0], "L4"
     assert "merge commit" in violations([f"{a} {c} {MAIN}"], ancestor, merges, absent)[0], "L5"
     assert violations([f"{a} {b} {MAIN}"], ancestor, merges, absent) == [], "L6"
