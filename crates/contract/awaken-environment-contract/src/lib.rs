@@ -810,6 +810,15 @@ pub trait EnvironmentDefinitionQueries: Send + Sync {
 /// Every mutation commits all three facts under one backend transaction or lock.
 #[async_trait]
 pub trait EnvironmentDefinitionStore: Send + Sync {
+    /// Read the original immutable result of this exact command before admitting
+    /// a new mutation. None means no committed command exists; mismatched input
+    /// is an idempotency conflict. This lookup creates no definition or intent.
+    /// It cannot substitute the current head for a missing original revision.
+    async fn find_create_result(
+        &self,
+        command: &CreateEnvironmentCommand,
+    ) -> Result<Option<EnvItem>, CreateEnvironmentError>;
+
     /// Atomically persist or replay one create command. A command id can name
     /// exactly one fingerprint for the lifetime of the authority store.
     /// Replay returns the original immutable revision, even after updates or
