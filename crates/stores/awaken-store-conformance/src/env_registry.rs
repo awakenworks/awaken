@@ -680,7 +680,7 @@ pub async fn idempotent_create_decision_table<
 ) {
     // Cause/effect graph: a new command creates one row; the same id and exact
     // payload replays that row; the same id with another payload conflicts and
-    // creates no row. This runs unchanged against memory and SQLite.
+    // creates no row. Volatile, SQLite and PostgreSQL run the same table.
     let command = CreateEnvironmentCommand {
         command_id: "command-1".into(),
         name: "stable".into(),
@@ -690,10 +690,53 @@ pub async fn idempotent_create_decision_table<
         config: EnvironmentConfig::SelfHosted,
         sandbox_policy: None,
     };
+    let before = r
+        .registration_intents(EnvironmentRegistrationIntentFilter::All)
+        .await
+        .unwrap();
+    let definitions_before = r.list_all().await.unwrap();
+    assert_eq!(
+        r.find_create_result(&command).await.unwrap(),
+        None,
+        "R0 absent command lookup"
+    );
+    assert_eq!(
+        r.registration_intents(EnvironmentRegistrationIntentFilter::All)
+            .await
+            .unwrap(),
+        before,
+        "R0 lookup cannot author an intent"
+    );
+    assert_eq!(
+        r.list_all().await.unwrap(),
+        definitions_before,
+        "R0 lookup cannot author a definition"
+    );
     let CreateEnvironmentOutcome::Created(created) = r.create_once(command.clone()).await.unwrap()
     else {
         panic!("R1 must create")
     };
+    let created_intents = r
+        .registration_intents(EnvironmentRegistrationIntentFilter::All)
+        .await
+        .unwrap();
+    assert_eq!(
+        r.find_create_result(&command).await.unwrap(),
+        Some(created.clone()),
+        "R2 read-only replay"
+    );
+    assert_eq!(
+        r.list_all().await.unwrap(),
+        vec![created.clone()],
+        "R2 lookup retains exactly one original definition"
+    );
+    assert_eq!(
+        r.registration_intents(EnvironmentRegistrationIntentFilter::All)
+            .await
+            .unwrap(),
+        created_intents,
+        "R2 lookup creates no intent"
+    );
     let replayed = r.create_once(command.clone()).await.unwrap();
     assert_eq!(replayed.item(), &created, "R2 exact replay");
     let updated = r
@@ -729,10 +772,27 @@ pub async fn idempotent_create_decision_table<
         intents,
         "R4 retry cannot create an intent"
     );
-    let mut conflicting = command;
+    assert_eq!(
+        r.find_create_result(&command).await.unwrap(),
+        Some(created.clone()),
+        "R4 lookup retains revision one"
+    );
+    assert_eq!(
+        r.list_all().await.unwrap(),
+        vec![updated.clone()],
+        "R4 lookup cannot rewind or add a head"
+    );
+    assert_eq!(
+        r.registration_intents(EnvironmentRegistrationIntentFilter::All)
+            .await
+            .unwrap(),
+        intents,
+        "R4 lookup retains exact outbox facts"
+    );
+    let mut conflicting = command.clone();
     conflicting.name = "different".into();
     assert_eq!(
-        r.create_once(conflicting).await.unwrap_err(),
+        r.create_once(conflicting.clone()).await.unwrap_err(),
         CreateEnvironmentError::IdempotencyConflict,
         "R3 conflicting reuse"
     );
@@ -744,7 +804,45 @@ pub async fn idempotent_create_decision_table<
         1,
         "R1-R3 one effect"
     );
+    assert_eq!(
+        r.find_create_result(&conflicting).await.unwrap_err(),
+        CreateEnvironmentError::IdempotencyConflict,
+        "R3 lookup checks input before replay"
+    );
+    assert_eq!(
+        r.list_all().await.unwrap(),
+        vec![updated.clone()],
+        "R3 failed lookup cannot mutate any definition"
+    );
+    assert_eq!(
+        r.registration_intents(EnvironmentRegistrationIntentFilter::All)
+            .await
+            .unwrap(),
+        intents,
+        "R3 failed lookup cannot mutate the outbox"
+    );
     let archived = r.archive(&created.id).await.unwrap().unwrap();
+    let terminal_intents = r
+        .registration_intents(EnvironmentRegistrationIntentFilter::All)
+        .await
+        .unwrap();
+    assert_eq!(
+        r.find_create_result(&command).await.unwrap(),
+        Some(created.clone()),
+        "R5 lookup cannot substitute archived head"
+    );
+    assert_eq!(
+        r.registration_intents(EnvironmentRegistrationIntentFilter::All)
+            .await
+            .unwrap(),
+        terminal_intents,
+        "R5 lookup cannot resurrect registration"
+    );
+    assert_eq!(
+        r.list_all().await.unwrap(),
+        vec![archived.clone()],
+        "R5 lookup retains exactly the terminal head"
+    );
     assert_eq!(
         r.create_once(CreateEnvironmentCommand {
             command_id: "command-1".into(),

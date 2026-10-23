@@ -125,8 +125,54 @@ impl EnvironmentDefinitionQueries for PostgresEnvRegistry {
     }
 }
 
+async fn committed_create_result(
+    connection: &mut sqlx::PgConnection,
+    command: &CreateEnvironmentCommand,
+) -> Result<Option<EnvItem>, CreateEnvironmentError> {
+    let fingerprint = command.fingerprint();
+    let replay = sqlx::query(
+        "SELECT fingerprint, env_id FROM env_registry_create_command WHERE command_id = $1",
+    )
+    .bind(&command.command_id)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+    if let Some(row) = replay {
+        let existing_fingerprint: String = row.get("fingerprint");
+        if existing_fingerprint != fingerprint {
+            return Err(CreateEnvironmentError::IdempotencyConflict);
+        }
+        let environment_id: String = row.get("env_id");
+        let item = sqlx::query(&format!(
+            "SELECT {COLS} FROM env_registry_revision WHERE env_id = $1 AND revision = 1"
+        ))
+        .bind(&environment_id)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?
+        .ok_or(CreateEnvironmentError::OriginalResultUnavailable { environment_id })?;
+        let item =
+            pg_row(&item).map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        return Ok(Some(item));
+    }
+    Ok(None)
+}
+
 #[async_trait]
 impl EnvironmentDefinitionStore for PostgresEnvRegistry {
+    async fn find_create_result(
+        &self,
+        command: &CreateEnvironmentCommand,
+    ) -> Result<Option<EnvItem>, CreateEnvironmentError> {
+        // Reuse the immutable command decoder without acquiring a writer lock.
+        let mut connection = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        committed_create_result(&mut connection, command).await
+    }
+
     async fn create_once(
         &self,
         command: CreateEnvironmentCommand,
@@ -143,29 +189,7 @@ impl EnvironmentDefinitionStore for PostgresEnvRegistry {
             .await
             .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
         let fingerprint = command.fingerprint();
-        let replay = sqlx::query(
-            "SELECT fingerprint, env_id FROM env_registry_create_command WHERE command_id = $1",
-        )
-        .bind(&command.command_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
-        if let Some(row) = replay {
-            let existing_fingerprint: String = row.get("fingerprint");
-            if existing_fingerprint != fingerprint {
-                return Err(CreateEnvironmentError::IdempotencyConflict);
-            }
-            let environment_id: String = row.get("env_id");
-            let item = sqlx::query(&format!(
-                "SELECT {COLS} FROM env_registry_revision WHERE env_id = $1 AND revision = 1"
-            ))
-            .bind(&environment_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?
-            .ok_or(CreateEnvironmentError::OriginalResultUnavailable { environment_id })?;
-            let item =
-                pg_row(&item).map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        if let Some(item) = committed_create_result(&mut tx, &command).await? {
             return Ok(CreateEnvironmentOutcome::Replayed(item));
         }
         sqlx::query("LOCK TABLE env_registry_env IN SHARE ROW EXCLUSIVE MODE")
