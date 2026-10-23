@@ -5,7 +5,10 @@ A harness opts into a profile with its own `/// @kani profile=<name>` tag; the
 derived plan (``formal_plan.py``) serializes the profile into the batch argv.
 Loop bounds change finite loop expansion, not the input domain or checks. Every
 unwinding assertion remains enabled, so a reachable extra iteration fails proof.
-Pinned Kani/std v0 identities select audited library loops. All unlisted loops
+Pinned Rust v0 prototypes select audited semantic library functions. The Kani
+driver binds each marked prototype to the unique function in the actual
+harness artifact before passing a concrete ID to CBMC; crate disambiguators
+are not portable identities. Literal C builtin loops remain unchanged. All unlisted loops
 and recursion retain each harness's global bound; optional solver choices are
 fixed per profile.
 """
@@ -15,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-# Pinned nightly-2026-05-01 / Kani 0.67 std loop identities. No shell expansion.
+# Audited v0 semantic prototypes, not compiled-harness IDs. No shell expansion.
 ACTIVITY_HEIGHT_LOOPS = (
     # navigate.rs:465
     ('_RINvMsj_NtNtNtCs6NSMbdZCE7r_5alloc11collections5btree8navigateINtNtB8_4node6HandleINtB11_7NodeRefNtNtB11_6marker5DyingyNtNtB8_7set_val9SetValZSTNtB1z_4LeafENtB1z_4EdgeE17deallocating_nextNtNtBc_5alloc6GlobalECsaNb1NCWtnRw_29awaken_session_state_contract.0', 1),
@@ -67,10 +70,11 @@ TOOL_RESULT_EMPTY_OBJECT_LOOPS = (
     ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtNtCse2RmgB3TfrN_21awaken_agent_contract5agent7message7MessageEBN_.0', 1),
 )
 
-# Actual ErasureProgress two-slot GOTOs, pinned nightly/Kani above. These
-# bounds retain the complete 0..2-row input list (including duplicates/order),
-# and the count proof may append one row. All other loops retain global 32,
-# including the 24-byte overflow error comparison and allocation/Drop checks.
+# Actual ErasureProgress two-slot construction/membership GOTOs. Both profiles
+# retain the complete 0..2-row input lists (including duplicates/order). Frame
+# equality belongs only to the selection/action callers that clone whole rows;
+# the successor's complete scalar/tuple frame does not emit that function.
+# Unlisted loops keep each harness's unchanged global bound and Drop checks.
 ERASURE_PROGRESS_LOOPS = (
     # vec/mod.rs:3999: at most two yielded targets plus loop exit.
     ('_RINvMsj_NtCs5YUhLFlCshu_5alloc3vecINtB6_3VecNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetE16extend_desugaredINtNtNtNtCsjxLPRqQEPX2_4core4iter8adapters7flatten7FlattenINtNtNtB2a_5array4iter8IntoIterINtNtB2a_6option6OptionBG_EKj2_EEEBI_.0', 3),
@@ -78,10 +82,16 @@ ERASURE_PROGRESS_LOOPS = (
     ('_RNvXsI_NtNtNtCsjxLPRqQEPX2_4core4iter8adapters7flattenINtB5_13FlattenCompatINtNtNtBb_5array4iter8IntoIterINtNtBb_6option6OptionNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetEKj2_EINtB1I_8IntoIterB21_EENtNtNtB9_6traits8iterator8Iterator4nextB23_.0', 3),
     # slice/iter/macros.rs:331: at most three targets after one append, plus exit.
     ('_RINvXs2J_NtNtCsjxLPRqQEPX2_4core5slice4iterINtB7_4IterNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetENtNtNtNtBb_4iter6traits8iterator8Iterator3anyNCNvXsf_NtB9_3cmpBQ_NtB2K_13SliceContains14slice_contains0EBS_.0', 4),
-    # slice/cmp.rs:132: full target frame equality covers at most three rows.
-    ('_RNvXs2_NtNtCsjxLPRqQEPX2_4core5slice3cmpNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetINtB5_14SlicePartialEqBC_E17equal_same_lengthBE_.0', 4),
-    # array/mod.rs:936: each arbitrary bool array has exactly two slots.
-    ('_RINvNtCsjxLPRqQEPX2_4core5array18try_from_fn_erasedINtNtNtB4_3ops9try_trait17NeverShortCircuitbEQINtNtB2_5drain5DrainuKj2_INtBQ_7WrappedbuNCINvYbNtCsjPMFoRXFuRd_4kani9Arbitrary9any_arrayKB1T_E0EEECs7LhrEI5S3s3_31awaken_data_subject_application.0', 3),
+)
+
+# slice/cmp.rs:132: the existing whole-row selection/action oracle keeps this
+# original conservative bound. Do not request it from a tuple-frame harness.
+ERASURE_FRAME_EQUALITY_LOOP = (
+    '_RNvXs2_NtNtCsjxLPRqQEPX2_4core5slice3cmpNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetINtB5_14SlicePartialEqBC_E17equal_same_lengthBE_.0', 4,
+)
+# array/mod.rs:936: both callers retain arbitrary two-slot flag arrays.
+ERASURE_FLAGS_ARRAY_LOOP = (
+    '_RINvNtCsjxLPRqQEPX2_4core5array18try_from_fn_erasedINtNtNtB4_3ops9try_trait17NeverShortCircuitbEQINtNtB2_5drain5DrainuKj2_INtBQ_7WrappedbuNCINvYbNtCsjPMFoRXFuRd_4kani9Arbitrary9any_arrayKB1T_E0EEECs7LhrEI5S3s3_31awaken_data_subject_application.0', 3,
 )
 
 
@@ -89,8 +99,9 @@ ERASURE_PROGRESS_LOOPS = (
 class Profile:
     """One audited option set. Consumer: ``formal_plan`` serializes it per batch.
 
-    ``package`` binds a profile whose loop identities are mangled against one
-    crate; ``None`` admits any package (a solver choice or a builtin symbol).
+    ``package`` binds audited semantic prototypes to their production caller;
+    concrete Rust identities are selected from each compiled harness. ``None``
+    admits any package (a solver choice or a builtin symbol).
     """
 
     package: str | None
@@ -107,6 +118,8 @@ PROFILES: dict[str, Profile] = {
     "erasure-progress-selection-v1": Profile(
         "awaken-data-subject-application",
         ERASURE_PROGRESS_LOOPS + (
+            ERASURE_FRAME_EQUALITY_LOOP,
+            ERASURE_FLAGS_ARRAY_LOOP,
             # index_range.rs:167: first-match scan of two adapter references, plus exit.
             ('_RINvXs_NtNtCsjxLPRqQEPX2_4core3ops11index_rangeNtB5_10IndexRangeNtNtNtNtB9_4iter6traits8iterator8Iterator8try_folduNCINvMs6_NtNtNtB9_5array4iter10iter_innerINtB1Y_15PolymorphicIterSINtNtNtB9_3mem12maybe_uninit11MaybeUninitTNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetINtNtB9_6option6OptionRhEEEE8try_folduNCINvNvB10_4find5checkB3y_NCINvMs0_B3B_NtB3B_15ErasureProgress14pending_targetB4X_E0E0INtNtB7_12control_flow11ControlFlowB3y_EE0B6B_EB3B_.0', 3),
         ),
@@ -115,10 +128,11 @@ PROFILES: dict[str, Profile] = {
     "erasure-checkpoint-successor-v1": Profile(
         "awaken-data-subject-application",
         ERASURE_PROGRESS_LOOPS + (
+            ERASURE_FLAGS_ARRAY_LOOP,
             # slice/iter/macros.rs:314: all visits at most two old rows plus exit.
             ('_RINvXs2J_NtNtCsjxLPRqQEPX2_4core5slice4iterINtB7_4IterNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetENtNtNtNtBb_4iter6traits8iterator8Iterator3allNCNvMs0_BS_NtBS_15ErasureProgress7follows0EBS_.0', 3),
         ),
-        "cadical",  # Same default solver; global 32 retains allocation and Drop.
+        "cadical",  # Same solver; global 3 and all real allocation/Drop remain.
     ),
     # Exact final wire encoding only: SHA/FNV algorithms and enclosing request
     # histories keep their separate obligations. Every default check stays on.
@@ -193,4 +207,7 @@ def serialize(name: str, package: str, selection: list[str]) -> list[str]:
     if not profile.loops:
         return [*solver, *selection]
     return ["-Z", "unstable-options", *solver, *selection,
-            "--cbmc-args", "--unwindset", ",".join(f"{loop}:{bound}" for loop, bound in profile.loops)]
+            "--cbmc-args", "--unwindset", ",".join(
+                f"{'@' if loop.startswith('_R') else ''}{loop}:{bound}"
+                for loop, bound in profile.loops
+            )]

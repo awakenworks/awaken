@@ -7,7 +7,7 @@ set -euo pipefail
 readonly kani_revision="e43ae2c255f11dd6b0f91468c40e0b3403b810c5"
 readonly kani_nightly="nightly-2026-05-01"
 readonly kani_backend_version="0.67.0"
-readonly kani_patch_sha256="3238739bb566d4ec122ccc1224f01a45576a4b86b187ba95dc690104ac30e1fd"
+readonly kani_patch_sha256="2f0ef7514c7ac69a40a145ca45e19907e6588938e04da2e801de79f1471988d2"
 # The compiler still uses the release-matched GOTO tools. Only CBMC's reviewed
 # SMT encoder/model reader is replaced; this script owns both source identities.
 readonly cbmc_revision="cdee49cb1a32c6d6703cebf6ae67161977264ad4"
@@ -81,8 +81,12 @@ verify_source() {
   if [ "${5:-}" = "allow-clean" ] && git -C "$directory" diff --quiet; then
     return 0
   fi
+  # Git accepts an empty patch context line with or without its single space.
+  # Use that one canonical spelling so the reviewed patch itself carries no
+  # trailing whitespace. Added/deleted source lines and every other byte remain
+  # exact; this does not ignore whitespace changes in the tool's source.
   if ! git -C "$directory" diff --no-ext-diff --no-textconv --no-color --binary HEAD |
-       cmp -s "$patch" -; then
+       sed 's/^ $//' | cmp -s <(sed 's/^ $//' "$patch") -; then
     echo "$label source cache differs from its reviewed patch: $directory" >&2
     exit 1
   fi
@@ -90,6 +94,49 @@ verify_source() {
 
 verify_kani_source() {
   verify_source Kani "$source_dir" "$kani_revision" "$compiler_patch" "${1:-}"
+}
+
+# Both tool sources enter through this one checked apply/verifier path. New
+# reviewed files get intent-to-add, not staged content: the same exact diff
+# includes them while arbitrary untracked and cached changes still refuse.
+apply_reviewed_patch() {
+  local label="$1" directory="$2" revision="$3" patch="$4"
+  local listing row path
+  local -a new_paths=()
+  verify_source "$label" "$directory" "$revision" "$patch" allow-clean
+  if git -C "$directory" diff --quiet; then
+    git -C "$directory" apply --check "$patch"
+    # Git's patch parser owns paths, including whitespace. Only paths absent
+    # from the original index may become ITA: apply --intent-to-add also marks
+    # modified tracked paths ITA and would erase their staged baseline.
+    listing="$(mktemp)"
+    if ! git -C "$directory" apply --numstat -z "$patch" >"$listing"; then
+      rm -f "$listing"
+      return 1
+    fi
+    while IFS= read -r -d '' row; do
+      path="${row#*$'\t'}"; path="${path#*$'\t'}"
+      if [ -z "$path" ]; then
+        rm -f "$listing"
+        echo "$label reviewed patch has an unsupported renamed path" >&2
+        return 1
+      fi
+      if git --literal-pathspecs -C "$directory" ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+        :
+      elif [ "$?" -eq 1 ]; then
+        new_paths+=("$path")
+      else
+        rm -f "$listing"
+        return 1
+      fi
+    done <"$listing"
+    rm -f "$listing"
+    git -C "$directory" apply "$patch"
+    if [ "${#new_paths[@]}" -gt 0 ]; then
+      git --literal-pathspecs -C "$directory" add --intent-to-add -- "${new_paths[@]}"
+    fi
+  fi
+  verify_source "$label" "$directory" "$revision" "$patch"
 }
 
 # Paths as well as dereferenced bytes form the package identity: retargeting a
@@ -287,12 +334,7 @@ else
       git -C "$cbmc_source" fetch --depth 1 origin "$cbmc_revision"
       git -C "$cbmc_source" checkout --detach "$cbmc_revision"
     fi
-    verify_source CBMC "$cbmc_source" "$cbmc_revision" "$backend_patch" allow-clean
-    if git -C "$cbmc_source" diff --quiet; then
-      git -C "$cbmc_source" apply --check "$backend_patch"
-      git -C "$cbmc_source" apply "$backend_patch"
-    fi
-    verify_source CBMC "$cbmc_source" "$cbmc_revision" "$backend_patch"
+    apply_reviewed_patch CBMC "$cbmc_source" "$cbmc_revision" "$backend_patch"
     # Only this unqualified, canonically derived build directory is disposable.
     # A failed attempt must not leave extra CMake flags in the next build.
     rm -rf -- "$backend_root/build"
@@ -341,14 +383,10 @@ if [ ! -d "$source_dir/.git" ]; then
   git -C "$source_dir" checkout --detach "$kani_revision"
   git -C "$source_dir" submodule update --init --depth 1 charon
 fi
-# The reviewed compiler patch preserves full u128 niches and accepts imported
-# constructor shims in diagnostic statistics. Refuse unrelated cached edits.
-verify_kani_source allow-clean
-if git -C "$source_dir" diff --quiet; then
-  git -C "$source_dir" apply --check "$compiler_patch"
-  git -C "$source_dir" apply "$compiler_patch"
-fi
-verify_kani_source
+# The reviewed patch preserves full u128 niches, imported-constructor stats,
+# per-harness semantic profile binding and backend ERROR diagnostics.
+# Refuse unrelated cached edits.
+apply_reviewed_patch Kani "$source_dir" "$kani_revision" "$compiler_patch"
 
 # Qualified builds are immutable, including when current already selects them.
 # Never overwrite their compiler or libraries during a repeated bootstrap.
@@ -363,6 +401,18 @@ else
   # Bind this build and its nested Cargo calls to Kani's reviewed nightly only.
   RUSTUP_TOOLCHAIN="$kani_nightly" cargo build-dev
   popd >/dev/null
+  # Exercise the real binder/JSON renderer before publishing a new build.
+  # Cache replay never rebuilds/retests the driver. The original constructor
+  # qualification below still uses Cargo; --verify-source is the read-only path.
+  driver_test_log="$(mktemp "$source_dir/target/artifact-profile-tests.XXXXXX.log")"
+  (
+    cd "$source_dir"
+    CARGO_TARGET_DIR="$source_dir/target/driver-regression" \
+      CARGO_BUILD_BUILD_DIR="$source_dir/target/driver-regression" \
+      RUSTUP_TOOLCHAIN="$kani_nightly" \
+      cargo test --locked -p kani-driver artifact_profile -- --nocapture
+  ) 2>&1 | tee "$driver_test_log"
+  grep -Eq '^test result: ok\. 4 passed; 0 failed; 0 ignored;' "$driver_test_log"
 fi
 # Qualify the formerly crashing layout before making this cache discoverable.
 PATH="$backend_dir:$PATH" "$source_dir/scripts/kani" \
