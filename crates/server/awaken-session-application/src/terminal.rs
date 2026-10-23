@@ -110,6 +110,94 @@ pub struct SessionArchiveWithRepositoryPublicationCommand {
     pub repository: SessionRepositoryPublicationSelector,
 }
 
+impl SessionArchiveWithRepositoryPublicationCommand {
+    /// One release request observed at `observed_at_ms`. Its intent (owner,
+    /// Session, fact identity and Repository selector) is independent of the
+    /// observation time; only the display time and fact timestamp follow it.
+    #[must_use]
+    pub fn new(
+        owner_scope: String,
+        session_id: awaken_session_types::SessionId,
+        repository: SessionRepositoryPublicationSelector,
+        observed_at_ms: u64,
+    ) -> Self {
+        let (archived_at, lifecycle_fact) = session_terminated_record(
+            session_id.as_str(),
+            Some(owner_scope.clone()),
+            observed_at_ms,
+        );
+        Self {
+            owner_scope,
+            session_id,
+            archived_at,
+            lifecycle_fact,
+            repository,
+        }
+    }
+}
+
+/// The display time and `session.terminated` lifecycle fact of one archive
+/// command observed at `observed_at_ms`. The fact identity derives from the
+/// Session alone, so independent requests converge on one receipt.
+pub(crate) fn session_terminated_record(
+    session_id: &str,
+    owner_scope: Option<String>,
+    observed_at_ms: u64,
+) -> (String, ManagedLifecycleFact) {
+    (
+        awaken_session_application_contract::epoch_millis_to_rfc3339(observed_at_ms),
+        ManagedLifecycleFact {
+            id: awaken_session_event_contract::session_terminated_fact_id(session_id),
+            object_id: session_id.to_string(),
+            workspace_id: owner_scope,
+            event_type: awaken_session_event_contract::SESSION_TERMINATED.to_string(),
+            timestamp: i64::try_from(observed_at_ms / 1_000).unwrap_or(i64::MAX),
+            runtime_interval: None,
+        },
+    )
+}
+
+/// The archive record of a command issued now by the Session's owner.
+async fn archive_record_now(
+    mutations: &crate::SessionMutations,
+    clock: &dyn awaken_time::WallClock,
+    session_id: &str,
+) -> Result<(String, ManagedLifecycleFact), SessionPreparationError> {
+    let owner_scope = mutations
+        .owner(&awaken_session_types::SessionId::from(session_id))
+        .await
+        .map_err(mutation_failure)?;
+    Ok(session_terminated_record(
+        session_id,
+        Some(owner_scope),
+        clock.now_ms(),
+    ))
+}
+
+/// The first archive admission a profiled release with verified cleanup
+/// issues before joining terminal cleanup.
+///
+/// | Rule | Execution | First admission |
+/// |---|---|---|
+/// | F1 | terminal | none: join cleanup directly |
+/// | F2 | Preparing or Running | profiled release |
+/// | F3 | any other live state | idle-only archive |
+const fn profiled_release_first_admission(
+    execution: SessionExecutionState,
+    terminal: bool,
+) -> Option<ArchiveAdmission> {
+    if terminal {
+        None
+    } else if matches!(
+        execution,
+        SessionExecutionState::Preparing | SessionExecutionState::Running
+    ) {
+        Some(ArchiveAdmission::ProfiledRelease)
+    } else {
+        Some(ArchiveAdmission::IdleOnly)
+    }
+}
+
 /// A release response is not successful until the exact Repository receipt is
 /// durable in the Session root. The disposition mutation is retained so exact
 /// response-loss replay exposes the same aggregate truth.
@@ -392,6 +480,44 @@ impl SessionApplication {
         .await
     }
 
+    /// Archive one publicly idle Session now: the command records the current
+    /// application time and the owner's `session.terminated` fact.
+    pub async fn archive_session(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionDispositionMutation, SessionPreparationError> {
+        let (archived_at, fact) =
+            archive_record_now(&self.mutations, self.clock.as_ref(), session_id).await?;
+        self.terminate_session(session_id, &archived_at, fact).await
+    }
+
+    /// Release a profiled Session through verified cleanup: a live Session is
+    /// first archived under [`profiled_release_first_admission`], then the
+    /// terminal Session joins its canonical cleanup receipt. Each command
+    /// rereads and rechecks the durable root.
+    pub async fn release_profiled_session_with_verified_cleanup(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionDispositionMutation, SessionPreparationError> {
+        let (archived_at, fact) =
+            archive_record_now(&self.mutations, self.clock.as_ref(), session_id).await?;
+        let id = awaken_session_types::SessionId::from(session_id);
+        let root = self
+            .mutations
+            .session_aggregate(&id)
+            .await
+            .map_err(repository_failure)
+            .map_err(mutation_failure)?;
+        if let Some(admission) =
+            profiled_release_first_admission(root.execution, root.is_terminal())
+        {
+            self.terminate_session_with_admission(&id, &archived_at, fact.clone(), admission)
+                .await?;
+        }
+        self.release_terminal_session(session_id, &archived_at, fact)
+            .await
+    }
+
     /// Force a terminal Session fence for an internal lifecycle owner such as
     /// Dream cleanup. This deliberately bypasses public idle admission while
     /// retaining the same archive CAS and terminal cleanup implementation. A
@@ -649,6 +775,104 @@ mod publication_error_tests {
                 std::mem::discriminant(&expected)
             );
             assert_eq!(actual.to_string(), expected.to_string());
+        }
+    }
+
+    #[test]
+    fn independent_managed_archives_share_intent_across_route_clock_samples() {
+        // Causes: M1 two independent archive requests sample 1s/2s for the
+        // same owned Session. Effects: M1 display and fact timestamp differ,
+        // while Session/Workspace/fact id/type and interval semantics remain
+        // identical. The lost-CAS table tests one receipt.
+        let (first_time, first) =
+            super::session_terminated_record("session", Some("workspace".into()), 1_000);
+        let (second_time, second) =
+            super::session_terminated_record("session", Some("workspace".into()), 2_000);
+        assert_ne!(first_time, second_time, "M1");
+        assert_ne!(first.timestamp, second.timestamp, "M1");
+        assert_eq!(first.id, second.id, "M1");
+        assert_eq!(first.object_id, second.object_id, "M1");
+        assert_eq!(first.workspace_id, second.workspace_id, "M1");
+        assert_eq!(first.event_type, second.event_type, "M1");
+        assert_eq!(first.runtime_interval, second.runtime_interval, "M1");
+    }
+
+    #[test]
+    fn independent_route_requests_keep_intent_while_observation_time_changes() {
+        // Causes: P1 two release requests carry the same Repository selector
+        // but sample 1s and 2s; P2 another request changes the expected Git
+        // commit. Effects: P1 identical Session/Workspace/fact identity and
+        // selector, different display/fact timestamps; P2 a distinct intent.
+        let selector = |commit: &str| super::SessionRepositoryPublicationSelector {
+            binding_id: awaken_resource_contract::BindingId::new("source"),
+            expectation: serde_json::from_value(serde_json::json!({
+                "branch": "awf/work",
+                "commit": commit,
+            }))
+            .unwrap(),
+        };
+        let command = |commit: &str, observed_at| {
+            super::SessionArchiveWithRepositoryPublicationCommand::new(
+                "workspace".into(),
+                awaken_session_types::SessionId::from("session"),
+                selector(commit),
+                observed_at,
+            )
+        };
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let first = command(commit, 1_000);
+        let second = command(commit, 2_000);
+        assert_eq!(first.owner_scope, second.owner_scope, "P1");
+        assert_eq!(first.session_id, second.session_id, "P1");
+        assert_eq!(first.lifecycle_fact.id, second.lifecycle_fact.id, "P1");
+        assert_eq!(
+            first.lifecycle_fact.event_type, second.lifecycle_fact.event_type,
+            "P1"
+        );
+        assert_eq!(first.repository, second.repository, "P1");
+        assert_ne!(first.archived_at, second.archived_at, "P1");
+        assert_ne!(
+            first.lifecycle_fact.timestamp, second.lifecycle_fact.timestamp,
+            "P1"
+        );
+        assert_ne!(
+            first.repository,
+            command("1111111111111111111111111111111111111111", 3_000).repository,
+            "P2"
+        );
+    }
+
+    #[test]
+    fn profiled_release_selects_its_first_admission_from_the_execution_state() {
+        // Exhaustive table over every execution state x terminal flag:
+        // F1 terminal -> none; F2 Preparing/Running -> profiled release;
+        // F3 any other live state -> idle-only archive.
+        use awaken_session_state_contract::{SessionArchiveAdmission, SessionExecutionState};
+        for execution in [
+            SessionExecutionState::Preparing,
+            SessionExecutionState::Activating,
+            SessionExecutionState::ActivationFailed,
+            SessionExecutionState::Running,
+            SessionExecutionState::Rescheduling,
+            SessionExecutionState::Idle,
+            SessionExecutionState::Terminated,
+        ] {
+            assert_eq!(
+                super::profiled_release_first_admission(execution, true),
+                None,
+                "F1 {execution:?}"
+            );
+            let expected = match execution {
+                SessionExecutionState::Preparing | SessionExecutionState::Running => {
+                    SessionArchiveAdmission::ProfiledRelease
+                }
+                _ => SessionArchiveAdmission::IdleOnly,
+            };
+            assert_eq!(
+                super::profiled_release_first_admission(execution, false),
+                Some(expected),
+                "F2/F3 {execution:?}"
+            );
         }
     }
 }

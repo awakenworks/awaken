@@ -10,11 +10,7 @@ impl ManagedState {
     pub(super) async fn project_replayed_session(
         &self,
         session_id: &str,
-        persisted: PersistedSession,
     ) -> Result<Session, StateError> {
-        if persisted.execution == SessionExecutionState::ActivationFailed {
-            return Err(StateError::TerminalCreateConflict);
-        }
         self.ensure_session(session_id).await?;
         self.get_session(session_id)
     }

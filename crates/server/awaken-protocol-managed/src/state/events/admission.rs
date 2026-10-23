@@ -99,8 +99,7 @@ impl ManagedState {
             // never mistake an Awaiting Run with an isolated/corrupt ticket for
             // that no-op. Interrupt needs topology and lifecycle facts, not reply
             // authority, so it deliberately does not materialize ResumeTickets.
-            if !persisted_session.budget.can_admit_model_request()
-                && persisted_session.execution == SessionExecutionState::Idle
+            if awaken_session_state_contract::session_is_budget_paused(&persisted_session)
                 && !has_awaiting_run
             {
                 return Ok(ValidatedEventBatch {
@@ -199,13 +198,12 @@ impl ManagedState {
                 awaken_managed_session_events::RuntimeToolFollowupAdmission::Ready => {}
             }
         }
-        let budget_cap_reached = !persisted_session.budget.can_admit_model_request();
         // A pending committed tool reply is the stronger aggregate state. With
         // no pending reply, a reached shared cap makes interrupt an accepted
         // no-op; it must not create an event/receipt or touch Runtime state.
-        let ignore_budget_pause_interrupts = budget_cap_reached
-            && persisted_session.execution == SessionExecutionState::Idle
-            && candidates.is_empty();
+        let ignore_budget_pause_interrupts =
+            awaken_session_state_contract::session_is_budget_paused(&persisted_session)
+                && candidates.is_empty();
         let mut inputs = Vec::with_capacity(events.len());
         let mut drive = ValidatedEventBatchDrive::PreferredBatch;
         for event in events {

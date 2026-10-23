@@ -194,7 +194,7 @@ mod creation;
 mod creation_request;
 mod session_input;
 pub use continuation::SessionContinuationError;
-pub use creation::{CreateSessionCommand, SessionCreationError};
+pub use creation::{CreateSessionCommand, SessionCreateReceipt, SessionCreationError};
 pub use creation_request::{
     SessionBudgetRequest, SessionCreateProtocol, SessionCreateRequest, SessionCreateRequestError,
     SessionModelRequest, SessionToolsOverride,

@@ -264,6 +264,19 @@ and no bundle trait combines them. Composition hands each Worker transport the
 one role it calls: terminal preparation and Repository publication stay with
 the application's terminal cleanup, Resource effects go to the component.
 
+Protocol adapters translate only (plan D7). Resource commands take lowered
+`SessionInputRequest`s: complete-manifest replacement, live File attachment
+and input detachment allocate bindings, reuse equal sources, configure and
+compensate the request's Repository participants, and validate layout inside
+the application (`resource_commands`). Archive and profiled release derive
+their time and `session.terminated` fact from the application clock and the
+owner; profiled release selects its first archive admission from the root.
+Create receipts (`SessionCreateReceipt`), profiled Run admission and the
+budget-pause fact (`PersistedSession::is_budget_paused`) have one owner each.
+`_protocol_translation_fitness.py` refuses, in every protocol crate, the
+persistence port, constructed write vocabulary, state-machine evaluation, raw
+lifecycle-variant selection and Resource manifest editing; it holds at zero.
+
 Session process configuration and optional application features are installed by
 the consuming `SessionApplicationBuilder`. Production exposes no setters for
 credentials, models, Resources, Environment source or projection refresh.

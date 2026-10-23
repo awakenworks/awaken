@@ -29,11 +29,9 @@ impl ManagedState {
             "sesn_{}",
             awaken_agent_contract::stable_fingerprint(&("deployment-run", deployment_run_id))
         );
-        let idempotency = awaken_session_state_contract::IdempotencyRecord {
-            key: format!("managed:deployment-session:{session_id}"),
-            payload_hash: launch_fingerprint.to_owned(),
-        };
-        if let Some(persisted) = self
+        let idempotency = awaken_session_application::SessionCreateReceipt::DeploymentRun
+            .record(&session_id, launch_fingerprint.to_owned());
+        if self
             .roles
             .creation
             .replay_session_create(
@@ -43,8 +41,9 @@ impl ManagedState {
             )
             .await
             .map_err(Self::map_create_replay_error)?
+            .is_some()
         {
-            return self.project_replayed_session(&session_id, persisted).await;
+            return self.project_replayed_session(&session_id).await;
         }
 
         req.metadata

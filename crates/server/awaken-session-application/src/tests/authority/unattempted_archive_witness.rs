@@ -44,9 +44,14 @@ fn only_the_exact_committed_unattempted_archive_receipt_projects_no_create() {
             .unwrap(),
             "W2 before admission"
         );
-        app.release_profiled_session(id, "2026-10-10T00:00:00Z", fact(id))
-            .await
-            .unwrap();
+        app.terminate_session_with_admission(
+            &SessionId::from(id),
+            "2026-10-10T00:00:00Z",
+            fact(id),
+            awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+        )
+        .await
+        .unwrap();
         let root = repo.get(&SessionId::from(id)).await.unwrap();
         assert!(
             crate::archive_intent::unattempted_profiled_archive_witness(

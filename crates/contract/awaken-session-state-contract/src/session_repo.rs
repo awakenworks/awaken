@@ -51,7 +51,7 @@ pub use persisted_session::{
     PersistedSession, SessionEventDispatchSettlementEffect, session_is_terminal,
     session_is_unattempted_profiled_preparation,
 };
-pub use placement::{SessionPlacementClass, SessionPublicStatus};
+pub use placement::{SessionPlacementClass, SessionPublicStatus, session_is_budget_paused};
 pub use recovery::{
     SessionRepositoryRecoveryAction, SessionScan, SessionScanCursor, SessionScanQuery,
 };
