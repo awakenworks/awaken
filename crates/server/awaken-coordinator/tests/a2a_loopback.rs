@@ -16,7 +16,6 @@ use awaken_agent_contract::credential::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
     CredentialUsage,
 };
-use awaken_coordinator::ExecutorComponents;
 use awaken_credential_contract::{CredentialPurpose, CredentialTarget};
 use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
 use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};
@@ -31,6 +30,7 @@ use awaken_scenario_host::{
     EchoModel, build_router, build_unmounted_dependencies_with_agent_publications,
 };
 use awaken_service_lifecycle::run_composed_async_test;
+use awaken_session_executor::ExecutorComponents;
 use awaken_tool_contract::tool::ToolCall;
 use axum::Router;
 use axum::body::Body;

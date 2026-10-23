@@ -152,13 +152,14 @@ async fn nonlocal_environment_refusals_precede_agent_reads_and_session_creation(
                 source.clone(),
             ),
         );
-        let managed = awaken_coordinator::local_managed_state_with_environments_and_agent_source(
+        let managed = awaken_scenario_host::local_managed_state_with_environments_and_agent_source(
             host,
             resources.authorities().resource_registry(),
             environments,
             source.clone(),
         )
-        .await;
+        .await
+        .state;
         let launcher = ManagedDeploymentSessionLauncher::new(managed.managed.clone());
         let outcome = launcher
             .launch(DeploymentLaunch {

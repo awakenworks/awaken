@@ -11,11 +11,11 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_coordinator::{ExecutorComponents, HostResume};
 use awaken_scenario_host::{
     CustomToolModel, SessionExecutorBuilder, build_unmounted_dependencies,
     build_unmounted_dependencies_with_deployment,
 };
+use awaken_session_executor::{ExecutorComponents, HostResume};
 
 fn user(id: &str, text: &str) -> Message {
     Message::text(MessageId(id.into()), Role::User, text)

@@ -174,18 +174,13 @@ pub async fn build_model_route_router() -> Router {
         .map_dependencies(|host| host.with_inference_materializer(Arc::new(RouteProvider)));
     let (host, resources) = platform.into_dependencies();
     let catalog = resources.authorities().resource_registry();
-    let managed =
-        awaken_coordinator::local_managed_state_with_agent_source_and_model_publication_resolver(
-            host,
-            catalog.clone(),
-            publication,
-            Arc::new(RoutePublicationResolver),
-        )
-        .await;
-    awaken_coordinator::mount_with_managed_and_resource_registry(
-        managed.host.clone(),
-        managed,
-        resources.clone(),
+    let managed = crate::local_managed_state_with_agent_source_and_model_publication_resolver(
+        host,
+        catalog.clone(),
+        publication,
+        Arc::new(RoutePublicationResolver),
     )
-    .await
+    .await;
+    awaken_coordinator::mount_with_managed_and_resource_registry(managed.state, resources.clone())
+        .await
 }

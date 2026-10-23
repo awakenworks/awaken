@@ -69,6 +69,23 @@ fn starts_terminal_reconciliation(
     durable_ingress && !runs_local_pool && scans_committed_terminals && !started
 }
 
+/// Starting and draining this process's dispatch work over the executor that
+/// resolves its claimed Runs. Consumer: the Coordinator component, which
+/// starts the work once its composition validates and drains it at shutdown,
+/// without linking the executor. Implementer: the Session executor's
+/// Coordinator role set, which hands [`ProcessDispatch`] its resolver.
+#[async_trait::async_trait]
+pub trait ProcessDispatchLifecycle: Send + Sync {
+    /// Spawn the co-located pool when the topology runs one, and the
+    /// committed-terminal reconciliation when this process owns committed
+    /// truth but runs no pool. Idempotent.
+    fn start(&self) -> Result<(), Error>;
+
+    /// Drain claimed Runs, then the auxiliary work they created, by
+    /// `timeout`; whether everything settled in time.
+    async fn drain(&self, timeout: std::time::Duration) -> bool;
+}
+
 /// Every claimed Run of the local pool settled while its absorbing drain fence
 /// was held; the fence stays installed while this value lives.
 #[must_use]

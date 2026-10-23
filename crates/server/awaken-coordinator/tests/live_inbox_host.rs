@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_coordinator::ExecutorComponents;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+use awaken_session_executor::ExecutorComponents;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
 

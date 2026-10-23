@@ -130,6 +130,21 @@ impl CoordinatorRoles {
     }
 }
 
+/// The Coordinator component starts and drains this process's dispatch work
+/// through the role set, without linking the executor.
+#[async_trait::async_trait]
+impl awaken_dispatch_execution::ProcessDispatchLifecycle for CoordinatorRoles {
+    fn start(&self) -> Result<(), awaken_dispatch_execution::Error> {
+        self.start_local_pool()?;
+        self.start_terminal_reconciliation();
+        Ok(())
+    }
+
+    async fn drain(&self, timeout: std::time::Duration) -> bool {
+        CoordinatorRoles::drain(self, timeout).await
+    }
+}
+
 impl WorkerRoles {
     /// The Worker role set over `host`'s components.
     #[must_use]

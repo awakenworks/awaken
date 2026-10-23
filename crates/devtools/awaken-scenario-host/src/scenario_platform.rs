@@ -58,12 +58,11 @@ async fn mount_parts_on_lifecycle(
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
     let catalog = resources.authorities().resource_registry();
-    let managed = awaken_coordinator::local_managed_state(host, catalog.clone()).await;
+    let managed = crate::local_managed_state(host, catalog.clone()).await;
     let host = managed.host.clone();
     let router =
         awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
-            host.clone(),
-            managed,
+            managed.state,
             resources.clone(),
             lifecycle,
             None,
@@ -80,7 +79,7 @@ pub(super) async fn mount_parts_with_model_publication_resolver(
     dream_executor_decorator: Option<awaken_coordinator::ScenarioDreamExecutorDecorator>,
 ) -> (Router, Arc<ExecutorComponents>) {
     let catalog = resources.authorities().resource_registry();
-    let managed = awaken_coordinator::local_managed_state_with_model_publication_resolver(
+    let managed = crate::local_managed_state_with_model_publication_resolver(
         host,
         catalog.clone(),
         resolver.clone(),
@@ -88,8 +87,7 @@ pub(super) async fn mount_parts_with_model_publication_resolver(
     .await;
     let host = managed.host.clone();
     let (router, dreams) = awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams(
-        host.clone(),
-        managed,
+        managed.state,
         resources.clone(),
         dream_executor_decorator,
     )
@@ -155,17 +153,12 @@ pub(super) async fn mount_parts_with_agent_source_on_lifecycle(
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
     let catalog = resources.authorities().resource_registry();
-    let managed = awaken_coordinator::local_managed_state_with_agent_source(
-        host,
-        catalog.clone(),
-        agent_source,
-    )
-    .await;
+    let managed =
+        crate::local_managed_state_with_agent_source(host, catalog.clone(), agent_source).await;
     let host = managed.host.clone();
     let router =
         awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
-            host.clone(),
-            managed,
+            managed.state,
             resources.clone(),
             lifecycle,
             None,
@@ -195,7 +188,7 @@ pub(super) async fn mount_with_environments_and_agent_source(
     } = awaken_protocol_managed_testkit::environment_fixture(host.clock());
     let managed = match agent_source {
         Some(source) => {
-            awaken_coordinator::local_managed_state_with_environments_and_agent_source(
+            crate::local_managed_state_with_environments_and_agent_source(
                 host,
                 catalog.clone(),
                 environment_execution.clone(),
@@ -204,7 +197,7 @@ pub(super) async fn mount_with_environments_and_agent_source(
             .await
         }
         None => {
-            awaken_coordinator::local_managed_state_with_environments(
+            crate::local_managed_state_with_environments(
                 host,
                 catalog.clone(),
                 environment_execution.clone(),
@@ -215,7 +208,7 @@ pub(super) async fn mount_with_environments_and_agent_source(
     let host = managed.host.clone();
     let work_session_access = awaken_protocol_managed::ManagedWorkSessionAccess::new(
         environment_execution.clone(),
-        managed.managed.clone(),
+        managed.state.managed.clone(),
     );
     // Environment routes are composed outside the Coordinator's already-layered
     // Managed router. Give that one adjacent sub-router the same scenario ingress
@@ -233,7 +226,7 @@ pub(super) async fn mount_with_environments_and_agent_source(
         environment_authoring.clone(),
         Some(sandbox_policies),
     ));
-    awaken_coordinator::mount_with_managed_and_resource_registry(host, managed, resources.clone())
+    awaken_coordinator::mount_with_managed_and_resource_registry(managed.state, resources.clone())
         .await
         .merge(environments)
         .layer(axum::middleware::from_fn_with_state(

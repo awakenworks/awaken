@@ -186,12 +186,13 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
     .await;
     let workspace_id = host.local_workspace().to_string();
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
-    let managed = awaken_coordinator::local_managed_state_with_agent_source(
+    let managed = awaken_scenario_host::local_managed_state_with_agent_source(
         host,
         resources.authorities().resource_registry(),
         catalog,
     )
-    .await;
+    .await
+    .state;
     let launcher = ManagedDeploymentSessionLauncher::new(managed.managed.clone());
     let request = DeploymentLaunch {
         deployment_id: "depl_failed_initial".into(),
@@ -344,23 +345,20 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
     .await;
     let workspace_id = host.local_workspace().to_string();
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
-    let managed = awaken_coordinator::local_managed_state_with_agent_source(
+    let managed = awaken_scenario_host::local_managed_state_with_agent_source(
         host,
         resources.authorities().resource_registry(),
         catalog,
     )
-    .await;
-    let host = managed.host.clone();
+    .await
+    .state;
     // The public Session scope guard must observe the same trusted Workspace as
     // the internal Deployment launcher. Omitting this edge stamp proves only a
     // cross-tenant 404, not the launch or initial-Event contract.
-    let app = awaken_coordinator::mount_with_managed_and_resource_registry(
-        host,
-        managed.clone(),
-        resources,
-    )
-    .await
-    .layer(axum::Extension(WorkspaceScope(workspace_id.clone())));
+    let app =
+        awaken_coordinator::mount_with_managed_and_resource_registry(managed.clone(), resources)
+            .await
+            .layer(axum::Extension(WorkspaceScope(workspace_id.clone())));
     let launcher = ManagedDeploymentSessionLauncher::new(managed.managed.clone());
     let request = DeploymentLaunch {
         deployment_id: "depl_retry".into(),
@@ -473,28 +471,25 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     .await;
     let workspace_id = host.local_workspace().to_string();
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
-    let managed = awaken_coordinator::local_managed_state_with_agent_source_and_list_prices(
+    let managed = awaken_scenario_host::local_managed_state_with_agent_source_and_list_prices(
         host,
         resources.authorities().resource_registry(),
         catalog,
         Arc::new(DeploymentPriceProvider),
     )
-    .await;
-    let host = managed.host.clone();
+    .await
+    .state;
     let deployments = Arc::new(DeploymentApplication::new(awaken_time::system_clock()));
     deployments.bind_launcher(Arc::new(ManagedDeploymentSessionLauncher::new(
         managed.managed.clone(),
     )));
     let deployment_api = deployments_router(deployments.clone())
         .layer(axum::Extension(WorkspaceScope(workspace_id.clone())));
-    let app = awaken_coordinator::mount_with_managed_and_resource_registry(
-        host,
-        managed.clone(),
-        resources,
-    )
-    .await
-    .merge(deployment_api)
-    .layer(axum::Extension(WorkspaceScope(workspace_id)));
+    let app =
+        awaken_coordinator::mount_with_managed_and_resource_registry(managed.clone(), resources)
+            .await
+            .merge(deployment_api)
+            .layer(axum::Extension(WorkspaceScope(workspace_id)));
 
     let (status, deployment) = call(
         &app,

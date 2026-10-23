@@ -91,21 +91,21 @@ async fn destination_boundary_requires_exact_auth_root_registry_and_pod() {
         "relay-test",
     )
     .await;
-    let environments = crate::volatile_environment_execution(clock.clone());
+    let environments = awaken_scenario_host::volatile_environment_execution(clock.clone());
     let resources = awaken_resource_persistence::ephemeral(
         clock.clone(),
         Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default()),
     )
     .await
     .unwrap();
-    let assembled = crate::local_managed_state_with_environments(
+    let assembled = awaken_scenario_host::local_managed_state_with_environments(
         host,
         resources.authorities().resource_registry(),
         environments.clone(),
     )
     .await;
-    let host = assembled.host;
-    let sessions = assembled.sessions;
+    let dispatch = assembled.state.execution.coordinator_dispatch.clone();
+    let sessions = assembled.state.sessions;
     let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
     let registered = directory
         .register(
@@ -229,7 +229,7 @@ async fn destination_boundary_requires_exact_auth_root_registry_and_pod() {
         .unwrap();
     let state = DomainState {
         directory: directory.clone(),
-        host,
+        dispatch,
         environments,
         sessions,
         relay_targets: Some(pod.clone()),

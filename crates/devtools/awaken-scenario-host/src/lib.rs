@@ -11,6 +11,7 @@ mod delegation;
 mod deployment;
 mod distributed_control;
 mod dream;
+mod managed_state;
 mod model_publication;
 mod model_routing;
 mod models;
@@ -33,6 +34,13 @@ pub use deployment::{install_scenario_runtime_authority, scenario_deployment};
 pub use distributed_control::build_distributed_provider_router;
 pub use distributed_control::serve_distributed_control;
 pub use dream::{build_dream_router, build_dream_router_and_host, build_dream_runtime_router};
+pub use managed_state::{
+    LocalManagedState, local_managed_state, local_managed_state_with_agent_source,
+    local_managed_state_with_agent_source_and_list_prices,
+    local_managed_state_with_agent_source_and_model_publication_resolver,
+    local_managed_state_with_environments, local_managed_state_with_environments_and_agent_source,
+    local_managed_state_with_model_publication_resolver, volatile_environment_execution,
+};
 pub use model_routing::{build_model_route_router, scenario_model};
 pub use scenario_platform::build_unscoped_resource_router;
 pub use web::build_management_web_router;
