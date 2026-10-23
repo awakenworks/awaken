@@ -258,8 +258,8 @@ pub use repository_participants::{
 pub use work_assignments::SessionWorkAssignments;
 mod update;
 pub use update::{
-    SessionMcpUpdate, SessionMetadataUpdate, SessionUpdateCommand, SessionUpdateError,
-    SessionUpdateOutcome,
+    SessionMcpUpdate, SessionMetadataUpdate, SessionUpdateCommand, SessionUpdateCommands,
+    SessionUpdateError, SessionUpdateOutcome,
 };
 mod archive_intent;
 mod terminal;

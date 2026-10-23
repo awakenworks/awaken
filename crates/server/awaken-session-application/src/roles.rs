@@ -652,13 +652,13 @@ impl SessionTermination for crate::SessionTerminationCommands {
 }
 
 #[async_trait]
-impl SessionUpdates for SessionApplication {
+impl SessionUpdates for crate::SessionUpdateCommands {
     async fn update_session(
         &self,
         session_id: &SessionId,
         command: SessionUpdateCommand,
     ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
-        Box::pin(SessionApplication::update_session(
+        Box::pin(crate::SessionUpdateCommands::update_session(
             self, session_id, command,
         ))
         .await

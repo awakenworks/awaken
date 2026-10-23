@@ -537,6 +537,7 @@ async fn compiler_precedes_effects(
     let before = repository.get(&created.session_id).await.unwrap();
     let effects_before = runtime.preparations.load(Ordering::SeqCst);
     let error = cold
+        .update_commands
         .update_session(
             &created.session_id,
             SessionUpdateCommand {

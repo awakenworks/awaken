@@ -417,6 +417,7 @@ pub struct SessionApplication {
     continuations: Arc<crate::SessionContinuations>,
     activities: Arc<crate::SessionActivities>,
     termination_commands: Arc<crate::SessionTerminationCommands>,
+    update_commands: Arc<crate::SessionUpdateCommands>,
     /// One complete set of immutable execution observations.
     execution_admission: Arc<SessionExecutionAdmission>,
     runtime_incarnation: String,
@@ -802,6 +803,11 @@ impl SessionApplication {
     #[must_use]
     pub fn termination_commands(&self) -> Arc<crate::SessionTerminationCommands> {
         self.termination_commands.clone()
+    }
+
+    #[must_use]
+    pub fn update_commands(&self) -> Arc<crate::SessionUpdateCommands> {
+        self.update_commands.clone()
     }
 
     #[cfg(any(test, feature = "test-support"))]

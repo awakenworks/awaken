@@ -5526,6 +5526,7 @@ async fn update_admission_uses_only_durable_session_status() {
     };
 
     let updated = app
+        .update_commands
         .update_session(&SessionId::from("update-idle"), command("accepted"))
         .await
         .expect("U1");
@@ -5535,7 +5536,8 @@ async fn update_admission_uses_only_durable_session_status() {
         let before = repo.get(&SessionId::from(id)).await.expect(rule);
         assert!(
             matches!(
-                app.update_session(&SessionId::from(id), command("rejected"))
+                app.update_commands
+                    .update_session(&SessionId::from(id), command("rejected"))
                     .await,
                 Err(SessionUpdateError::NotIdle)
             ),
@@ -5612,12 +5614,13 @@ async fn profiled_update_authority_separates_public_agent_and_credential_lifecyc
         if_match: None,
     };
 
-    app.update_session(
-        &SessionId::from("update-managed-policy"),
-        command(Some(tools.clone()), None, None, "U1"),
-    )
-    .await
-    .expect("U1/E1");
+    app.update_commands
+        .update_session(
+            &SessionId::from("update-managed-policy"),
+            command(Some(tools.clone()), None, None, "U1"),
+        )
+        .await
+        .expect("U1/E1");
     assert_eq!(
         repo.get(&SessionId::from("update-managed-policy"))
             .await
@@ -5638,11 +5641,12 @@ async fn profiled_update_authority_separates_public_agent_and_credential_lifecyc
         .unwrap();
     assert!(
         matches!(
-            app.update_session(
-                &SessionId::from("update-frozen-policy"),
-                command(Some(tools.clone()), None, None, "U2")
-            )
-            .await,
+            app.update_commands
+                .update_session(
+                    &SessionId::from("update-frozen-policy"),
+                    command(Some(tools.clone()), None, None, "U2")
+                )
+                .await,
             Err(SessionUpdateError::Rejected(_))
         ),
         "U2/E2"
@@ -5661,16 +5665,17 @@ async fn profiled_update_authority_separates_public_agent_and_credential_lifecyc
         .unwrap();
     assert!(
         matches!(
-            app.update_session(
-                &SessionId::from("update-files-policy"),
-                command(
-                    None,
-                    Some(SessionMcpUpdate::PublicReplacement(Vec::new())),
-                    None,
-                    "U3"
+            app.update_commands
+                .update_session(
+                    &SessionId::from("update-files-policy"),
+                    command(
+                        None,
+                        Some(SessionMcpUpdate::PublicReplacement(Vec::new())),
+                        None,
+                        "U3"
+                    )
                 )
-            )
-            .await,
+                .await,
             Err(SessionUpdateError::Rejected(_))
         ),
         "U3/E2"
@@ -5683,42 +5688,45 @@ async fn profiled_update_authority_separates_public_agent_and_credential_lifecyc
         "U3/E2"
     );
 
-    app.update_session(
-        &SessionId::from("update-files-policy"),
-        command(
-            None,
-            Some(SessionMcpUpdate::CredentialLifecycle {
-                source_id: "vault-source".into(),
-                revoked: false,
-                candidates: Vec::new(),
-            }),
-            None,
-            "U4",
-        ),
-    )
-    .await
-    .expect("U4/E3");
+    app.update_commands
+        .update_session(
+            &SessionId::from("update-files-policy"),
+            command(
+                None,
+                Some(SessionMcpUpdate::CredentialLifecycle {
+                    source_id: "vault-source".into(),
+                    revoked: false,
+                    candidates: Vec::new(),
+                }),
+                None,
+                "U4",
+            ),
+        )
+        .await
+        .expect("U4/E3");
     assert!(
         matches!(
-            app.update_session(
-                &SessionId::from("update-files-policy"),
-                command(
-                    None,
-                    Some(SessionMcpUpdate::CredentialLifecycle {
-                        source_id: "vault-source".into(),
-                        revoked: false,
-                        candidates: Vec::new(),
-                    }),
-                    Some(SessionFieldUpdate::Replace("forbidden".into())),
-                    "U5"
+            app.update_commands
+                .update_session(
+                    &SessionId::from("update-files-policy"),
+                    command(
+                        None,
+                        Some(SessionMcpUpdate::CredentialLifecycle {
+                            source_id: "vault-source".into(),
+                            revoked: false,
+                            candidates: Vec::new(),
+                        }),
+                        Some(SessionFieldUpdate::Replace("forbidden".into())),
+                        "U5"
+                    )
                 )
-            )
-            .await,
+                .await,
             Err(SessionUpdateError::Rejected(_))
         ),
         "U5/E4"
     );
     let titled = app
+        .update_commands
         .update_session(
             &SessionId::from("update-frozen-policy"),
             command(
@@ -5801,13 +5809,15 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
 
     assert!(
         matches!(
-            app.update_session(&SessionId::from("budget-absent"), command(Some(3)))
+            app.update_commands
+                .update_session(&SessionId::from("budget-absent"), command(Some(3)))
                 .await,
             Err(SessionUpdateError::Rejected(_))
         ),
         "B1/E1"
     );
     let updated = app
+        .update_commands
         .update_session(&SessionId::from("budget-active"), command(Some(3)))
         .await
         .expect("B2");
@@ -5823,13 +5833,15 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
     );
     assert!(
         matches!(
-            app.update_session(&SessionId::from("budget-active"), command(Some(2)))
+            app.update_commands
+                .update_session(&SessionId::from("budget-active"), command(Some(2)))
                 .await,
             Err(SessionUpdateError::Rejected(_))
         ),
         "B3/E3"
     );
     let removed = app
+        .update_commands
         .update_session(&SessionId::from("budget-active"), command(None))
         .await
         .expect("B4");
@@ -5848,7 +5860,8 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
     );
     assert!(
         matches!(
-            app.update_session(&SessionId::from("budget-active"), command(Some(4)))
+            app.update_commands
+                .update_session(&SessionId::from("budget-active"), command(Some(4)))
                 .await,
             Err(SessionUpdateError::Rejected(_))
         ),
@@ -5971,6 +5984,7 @@ async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
 
     Box::pin(async {
         let raised = app
+            .update_commands
             .update_session(
                 &SessionId::from("resume-budget-root"),
                 command(Some(2), "raise-root"),
@@ -5979,6 +5993,7 @@ async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
             .expect("R1 raise resumes root");
         assert_eq!(raised.session.budget.max_list_cost_minor(), Some(2), "R1");
         let removed = app
+            .update_commands
             .update_session(
                 &SessionId::from("resume-budget-child"),
                 command(None, "remove-child"),
@@ -6024,8 +6039,11 @@ async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
         let concurrent = command(Some(2), "concurrent-exact");
         let session_id = SessionId::from("resume-budget-concurrent");
         let (left, right) = tokio::join!(
-            Box::pin(app.update_session(&session_id, concurrent.clone())),
-            Box::pin(app.update_session(&session_id, concurrent)),
+            Box::pin(
+                app.update_commands
+                    .update_session(&session_id, concurrent.clone())
+            ),
+            Box::pin(app.update_commands.update_session(&session_id, concurrent)),
         );
         left.expect("R3 left exact update");
         right.expect("R3 right exact update");
@@ -6062,12 +6080,13 @@ async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
 
     Box::pin(async {
         runtime.set_budget_resume_dispositions([SessionBudgetResumeDisposition::Stale]);
-        app.update_session(
-            &SessionId::from("resume-budget-stale"),
-            command(Some(2), "stale-raise"),
-        )
-        .await
-        .expect("R4 stale resume is a successful update");
+        app.update_commands
+            .update_session(
+                &SessionId::from("resume-budget-stale"),
+                command(Some(2), "stale-raise"),
+            )
+            .await
+            .expect("R4 stale resume is a successful update");
         let stale = repo
             .get(&SessionId::from("resume-budget-stale"))
             .await

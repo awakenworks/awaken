@@ -3102,7 +3102,10 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     let c3_idempotency_key = "cas-publication-ack-repair";
     let c3_receipt_key = format!(
         "managed:update-command:{id}:{}",
-        awaken_session_application::SessionApplication::update_operation_id(id, c3_idempotency_key)
+        awaken_session_application::SessionUpdateCommands::update_operation_id(
+            id,
+            c3_idempotency_key
+        )
     );
     let durable_before_c3 = h
         .repo

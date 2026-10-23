@@ -299,6 +299,7 @@ async fn update_replay_keeps_the_original_atomic_receipt_after_a_later_root_writ
             let delayed_request = delayed_command.clone();
             let delayed = tokio::spawn(async move {
                 delayed_app
+                    .update_commands
                     .update_session(&delayed_id, delayed_request)
                     .await
             });
@@ -322,6 +323,7 @@ async fn update_replay_keeps_the_original_atomic_receipt_after_a_later_root_writ
                 delayed_command.clone()
             };
             let winner = app
+                .update_commands
                 .update_session(&id, winner_command.clone())
                 .await
                 .unwrap();
@@ -408,7 +410,7 @@ async fn update_replay_keeps_the_original_atomic_receipt_after_a_later_root_writ
             );
             let mut noop = winner_command;
             noop.if_match = None;
-            let noop = app.update_session(&id, noop).await.unwrap();
+            let noop = app.update_commands.update_session(&id, noop).await.unwrap();
             assert!(!noop.changes.any(), "U4 no event-producing change mask");
             assert_eq!(
                 durable.get(&id).await.unwrap(),
