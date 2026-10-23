@@ -99,28 +99,8 @@ pub async fn submit_profiled_session_run(
             crate::routes::extractors::managed_json_message(rejection.body_text()),
         )))
     })?;
-    let projection = state
-        .roles
-        .projection
-        .read_session_projection(&id, Some(&owner_scope))
-        .await
-        .map_err(session_projection_error)?
-        .ok_or_else(|| error_response(StateError::NotFound))?;
-    let baseline = projection
-        .session
-        .frozen_baseline()
-        .ok_or_else(|| error_response(StateError::NotFound))?;
-    if baseline.mutation_policy.is_managed() {
-        return Err(error_response(StateError::NotFound));
-    }
-    if baseline.agent_id != body.agent_id {
-        return Err(error_response(StateError::Run(RunError::bad_request(
-            "profiled Session Run Agent does not match the frozen Session",
-        ))));
-    }
-
     let run_id = body.run_id.clone();
-    let admitted = Box::pin(state.roles.profiled.admit_session_run_for_owner(
+    let admitted = Box::pin(state.roles.profiled.admit_profiled_session_run(
         &owner_scope,
         awaken_session_execution_contract::AdmitSessionRun {
             session_id: awaken_session_types::SessionId::from(&id),
@@ -135,7 +115,7 @@ pub async fn submit_profiled_session_run(
         },
     ))
     .await
-    .map_err(|error| error_response(StateError::Run(error)))?;
+    .map_err(session_projection_error)?;
     let receipt = exact_receipt(&id, &run_id, &admitted)?;
     Box::pin(state.roles.profiled.activate_admitted_session_run(admitted))
         .await

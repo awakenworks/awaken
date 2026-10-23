@@ -4,7 +4,6 @@
 
 use super::*;
 use awaken_session_application::SessionRecoveryPurpose;
-use awaken_time::WallClockExt as _;
 
 use super::session_mcp_projection::typed_mcp_servers;
 
@@ -23,23 +22,6 @@ fn managed_tools_override(
             .map_err(invalid_tool_configuration)?,
         clears_all: tools.is_empty(),
     })
-}
-
-fn managed_archive_command(
-    id: &str,
-    owner: Option<String>,
-    observed_at: u64,
-) -> (String, ManagedLifecycleFact) {
-    (
-        awaken_session_application_contract::epoch_millis_to_rfc3339(observed_at),
-        lifecycle_fact(
-            awaken_session_event_contract::session_terminated_fact_id(id),
-            id,
-            owner,
-            awaken_session_event_contract::SESSION_TERMINATED,
-            observed_at,
-        ),
-    )
 }
 
 impl ManagedState {
@@ -685,36 +667,11 @@ impl ManagedState {
         verified_cleanup: bool,
     ) -> Result<Session, StateError> {
         self.ensure_session_for_frozen_control(id).await?;
-        let owner = self.resolve_owner(id).await?;
-        let (archived_at, terminated_fact) =
-            managed_archive_command(id, owner, self.roles.clock.now_ms());
         let termination = &self.roles.termination;
         let release = if verified_cleanup {
-            // This read selects a safe command, not a second status authority.
-            // Application commands reload and recheck the durable root.
-            let execution = self
-                .roles
-                .roots
-                .session(&awaken_session_types::SessionId::from(id))
-                .await?
-                .execution;
-            if !execution.is_terminal() {
-                let initial_fact = terminated_fact.clone();
-                let initial_release = match execution {
-                    SessionExecutionState::Preparing | SessionExecutionState::Running => {
-                        termination.release_profiled_session(id, &archived_at, initial_fact)
-                    }
-                    _ => termination.terminate_session(id, &archived_at, initial_fact),
-                };
-                initial_release.await.map_err(Self::map_preparation_error)?;
-            }
-            termination
-                .release_terminal_session(id, &archived_at, terminated_fact)
-                .await
+            termination.release_profiled_session(id).await
         } else {
-            termination
-                .terminate_session(id, &archived_at, terminated_fact)
-                .await
+            termination.archive_session(id).await
         };
         release.map_err(Self::map_preparation_error)?;
         // No direct cache mutation or bespoke terminal append belongs here. The
@@ -903,28 +860,4 @@ pub(crate) fn session_agent_from_configuration(
             .collect(),
         multiagent,
     })
-}
-
-#[cfg(test)]
-mod rehydration_publication_policy_tests {
-    use super::*;
-
-    #[test]
-    fn independent_managed_archives_share_intent_across_route_clock_samples() {
-        // Causes: M1 two independent Managed archive requests sample 1s/2s
-        // for the same owned Session. Effects: M1 display and fact timestamp
-        // differ, while Session/Workspace/fact id/type and interval semantics
-        // remain identical. The Application lost-CAS table tests one receipt.
-        let (first_time, first) =
-            managed_archive_command("session", Some("workspace".into()), 1_000);
-        let (second_time, second) =
-            managed_archive_command("session", Some("workspace".into()), 2_000);
-        assert_ne!(first_time, second_time, "M1");
-        assert_ne!(first.timestamp, second.timestamp, "M1");
-        assert_eq!(first.id, second.id, "M1");
-        assert_eq!(first.object_id, second.object_id, "M1");
-        assert_eq!(first.workspace_id, second.workspace_id, "M1");
-        assert_eq!(first.event_type, second.event_type, "M1");
-        assert_eq!(first.runtime_interval, second.runtime_interval, "M1");
-    }
 }

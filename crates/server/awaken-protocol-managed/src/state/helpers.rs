@@ -30,24 +30,6 @@ pub(crate) fn is_transient_event_id(id: &str) -> bool {
     })
 }
 
-pub(crate) fn lifecycle_fact(
-    id: String,
-    session_id: &str,
-    workspace_id: Option<String>,
-    event_type: &str,
-    observed_at_unix_ms: u64,
-) -> ManagedLifecycleFact {
-    let timestamp = i64::try_from(observed_at_unix_ms / 1_000).unwrap_or(i64::MAX);
-    ManagedLifecycleFact {
-        id,
-        object_id: session_id.to_string(),
-        workspace_id,
-        event_type: event_type.to_string(),
-        timestamp,
-        runtime_interval: None,
-    }
-}
-
 /// Normalize the typed Managed rubric to the evaluator's text/file reference.
 pub(crate) fn rubric_text(rubric: &crate::types::OutcomeRubric) -> String {
     match rubric {

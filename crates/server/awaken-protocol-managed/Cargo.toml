@@ -44,7 +44,6 @@ awaken-executable-environment-contract.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-realization-contract.workspace = true
-awaken-session-repository-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-budget-contract.workspace = true
@@ -152,6 +151,7 @@ name = "tenancy_required"
 required-features = ["test-support"]
 
 [dev-dependencies]
+awaken-session-repository-contract.workspace = true
 awaken-store-conformance.workspace = true
 awaken-tool-contract.workspace = true
 # Draws long committed histories for the timeline's schedule-independence property.

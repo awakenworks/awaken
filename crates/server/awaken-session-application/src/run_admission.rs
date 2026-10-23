@@ -225,6 +225,45 @@ impl SessionApplication {
             .await
     }
 
+    /// Admit one product-authored Run on an existing profiled Session under
+    /// its authenticated owner. The profiled edge never addresses a Managed
+    /// Session and never creates one.
+    ///
+    /// | Rule | Cause | Effect |
+    /// |---|---|---|
+    /// | P1 | no root visible to the owner, or no frozen baseline | `NotFound` |
+    /// | P2 | the frozen mutation policy is Managed | `NotFound` |
+    /// | P3 | the Run Agent differs from the frozen Agent | rejected |
+    /// | P4 | otherwise | the shared owner-fenced durable admission |
+    pub async fn admit_profiled_session_run(
+        &self,
+        owner_scope: &str,
+        command: AdmitSessionRun,
+    ) -> Result<AdmittedSessionRun, crate::SessionProjectionRecoveryError> {
+        let projection = self
+            .queries
+            .read_session_projection(command.session_id.as_str(), Some(owner_scope))
+            .await?
+            .ok_or(crate::SessionProjectionRecoveryError::NotFound)?;
+        let baseline = projection
+            .session
+            .frozen_baseline()
+            .ok_or(crate::SessionProjectionRecoveryError::NotFound)?;
+        if baseline.mutation_policy.is_managed() {
+            return Err(crate::SessionProjectionRecoveryError::NotFound);
+        }
+        if baseline.agent_id != command.agent_id {
+            return Err(crate::SessionProjectionRecoveryError::Rejected(
+                RunError::bad_request(
+                    "profiled Session Run Agent does not match the frozen Session",
+                ),
+            ));
+        }
+        self.admit_session_run_for_owner(owner_scope, command)
+            .await
+            .map_err(crate::SessionProjectionRecoveryError::Rejected)
+    }
+
     fn admit_session_run_with_owner<'a>(
         &'a self,
         command: AdmitSessionRun,
