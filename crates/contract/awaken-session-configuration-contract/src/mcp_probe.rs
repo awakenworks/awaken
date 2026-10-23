@@ -17,9 +17,8 @@ pub const PROBE_HTTP_BODY_LIMIT: usize = 4096;
 /// The placeholder that replaces every scrubbed value.
 const SCRUBBED: &str = "[REDACTED]";
 
-/// JSON object keys whose string values are credentials in OAuth token and
-/// MCP error bodies.
-const SENSITIVE_KEYS: [&str; 8] = [
+/// Sensitive JSON fields shared by credential probe and configuration inspection.
+const SENSITIVE_KEYS: [&str; 16] = [
     "access_token",
     "refresh_token",
     "id_token",
@@ -28,6 +27,14 @@ const SENSITIVE_KEYS: [&str; 8] = [
     "password",
     "secret",
     "authorization",
+    "api_key",
+    "apikey",
+    "api-key",
+    "authorization_token",
+    "private_key",
+    "credential",
+    "credentials",
+    "reference",
 ];
 
 /// One HTTP response a credential-validation probe observed, safe to project:
@@ -80,18 +87,23 @@ impl ProbeHttpResponse {
     }
 }
 
-/// Replace the string value of every sensitive key, at any depth. Returns
+/// Replace every sensitive field, at any depth, including structured values. Returns
 /// whether anything was replaced.
-fn scrub_sensitive_keys(value: &mut serde_json::Value) -> bool {
+/// SDK: none — internal safe-read projection, not a Managed command.
+pub fn scrub_sensitive_keys(value: &mut serde_json::Value) -> bool {
     match value {
         serde_json::Value::Object(object) => {
             let mut changed = false;
             for (key, member) in object.iter_mut() {
-                if member.is_string()
-                    && SENSITIVE_KEYS
-                        .iter()
-                        .any(|sensitive| key.eq_ignore_ascii_case(sensitive))
-                {
+                if SENSITIVE_KEYS.iter().any(|sensitive| {
+                    key.chars()
+                        .filter(|c| *c != '_' && *c != '-')
+                        .flat_map(char::to_lowercase)
+                        .eq(sensitive
+                            .chars()
+                            .filter(|c| *c != '_' && *c != '-')
+                            .flat_map(char::to_lowercase))
+                }) {
                     *member = serde_json::Value::String(SCRUBBED.to_owned());
                     changed = true;
                 } else {

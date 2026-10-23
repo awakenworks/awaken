@@ -11,9 +11,13 @@ use serde::{Deserialize, Serialize};
 
 /// Product-facing projection of one immutable Session execution selection and
 /// its committed primary-Thread Runs. This is evidence, not another authority.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionExecutionEvidence {
+    /// SDK: none — optional safe original-configuration inspection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration:
+        Option<awaken_session_configuration_contract::SessionConfigurationInspection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preparation: Option<awaken_session_execution_contract::SessionRecoveryPreparationReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -47,6 +51,9 @@ pub struct SessionExecutionEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRunExecutionEvidence {
+    /// SDK: none — recorded attempts from the canonical model journal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_operations: Vec<awaken_runtime_contract::model_inspection::ModelOperationInspection>,
     pub run_id: RunId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
@@ -71,6 +78,7 @@ mod tests {
 
     fn evidence_fixture() -> SessionExecutionEvidence {
         SessionExecutionEvidence {
+            configuration: None,
             preparation: None,
             artifact_capture: None,
             operation_footprint: None,
@@ -93,6 +101,7 @@ mod tests {
             backend_ref: Some("acp:claude".into()),
             execution: SessionExecutionState::Idle,
             runs: vec![SessionRunExecutionEvidence {
+                model_operations: Vec::new(),
                 run_id: RunId("run-1".into()),
                 idempotency_key: Some("command-1".into()),
                 state: RunState::Running,

@@ -170,20 +170,8 @@ impl ManagedState {
         &self,
         id: &str,
     ) -> Result<(u64, Vec<crate::types::resource::SessionResource>), StateError> {
-        let resource_state = self
-            .read_persisted_session_projection(id)
-            .await?
-            .session
-            .resources;
-        Ok((
-            resource_state.revision,
-            resource_state
-                .desired()
-                .inputs()
-                .iter()
-                .map(|input| resolved_resource_dto(id, input))
-                .collect(),
-        ))
+        let observation = observe_resource_manifest(self, id).await?;
+        Ok((observation.revision, observation.manifest.resources))
     }
 
     pub async fn create_resource(
@@ -267,5 +255,76 @@ impl ManagedState {
                 .await,
         )?;
         Ok(())
+    }
+}
+
+/// One read projection shared by the official list and Awaken observation.
+pub(crate) async fn observe_resource_manifest(
+    state: &ManagedState,
+    id: &str,
+) -> Result<crate::types::resource::SessionResourceObservation, StateError> {
+    let session = state.read_persisted_session_projection(id).await?.session;
+    let policy = session
+        .frozen_baseline()
+        .map(|baseline| baseline.mutation_policy)
+        .unwrap_or_default();
+    let mut manifest = ManagedState::resource_manifest_view(&session);
+    // The watermark survives rollback; the desired/active pairs do not advance
+    // unless their manifests do. The read must not pair old inputs with a new
+    // attempted-generation number, nor strand the Console in Preparing.
+    manifest.desired_revision = session.resources.desired_generation().0;
+    Ok(crate::types::resource::SessionResourceObservation {
+        revision: session.resources.revision,
+        inputs: session
+            .resources
+            .desired()
+            .inputs()
+            .iter()
+            .map(input_details)
+            .collect(),
+        skills: session.resources.desired().skills().to_vec(),
+        unapplied_revision: (session.resources.pending.is_none()
+            && session.resources.revision > manifest.applied_revision)
+            .then_some(session.resources.revision),
+        manifest,
+        mutations: crate::types::resource::SessionResourceMutations::observe(
+            policy,
+            session.is_terminal(),
+        ),
+    })
+}
+
+fn input_details(
+    input: &crate::session_resource::ResolvedInput,
+) -> crate::types::resource::SessionInputDetails {
+    use crate::session_resource::ResolvedInputSource;
+    let (kind, id, configuration_version) = match &input.source {
+        ResolvedInputSource::File { file_id } => ("file", file_id.to_string(), None),
+        ResolvedInputSource::MemoryStore {
+            memory_store_id,
+            config,
+        } => (
+            "memory_store",
+            memory_store_id.to_string(),
+            Some(config.version.0.to_string()),
+        ),
+        ResolvedInputSource::Repository {
+            repository_id,
+            config,
+            ..
+        } => (
+            "repository",
+            repository_id.to_string(),
+            Some(config.version.0.to_string()),
+        ),
+    };
+    crate::types::resource::SessionInputDetails {
+        binding_id: input.binding_id.to_string(),
+        resource_kind: kind,
+        target_id: id,
+        mount_path: input.mount_path.clone(),
+        access: input.access,
+        configuration_version,
+        instructions: input.instructions.clone(),
     }
 }

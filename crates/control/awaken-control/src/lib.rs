@@ -544,35 +544,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     // The presentation route reads the Workspace the edge resolved. The
     // installation's own Workspace is filled in by ONE layer below, never by
     // the handler, so this projection can never invent a tenant name.
-    let workspace_context = Router::new().route(
-        "/v1/config/workspace-context",
-        get(
-            move |Extension(scope): Extension<awaken_tenancy::WorkspaceScope>,
-                  principal: Option<Extension<crate::authz::AuthedPrincipal>>| {
-                let organization_id = presentation_org.clone();
-                async move {
-                    let workspace_id = scope.0;
-                    let user_display_name = principal_display_name(
-                        principal.as_ref().map(|Extension(principal)| &principal.0),
-                        presentation_identity_mode,
-                    );
-                    let workspace_name = workspace_display_name(&workspace_id);
-                    let organization_name = if presentation_identity_mode == "no-login" {
-                        "Local Organization".into()
-                    } else {
-                        organization_display_name(&organization_id)
-                    };
-                    Json(serde_json::json!({
-                        "workspace_id": workspace_id,
-                        "workspace_display_name": workspace_name,
-                        "organization_id": organization_id,
-                        "organization_display_name": organization_name,
-                        "user_display_name": user_display_name,
-                    }))
-                }
-            },
-        ),
-    );
+    let workspace_context = workspace_context_router(presentation_org, presentation_identity_mode);
 
     // The IAM guard (when enabled) wraps the admin + vault routers only. An
     // axum layer binds to the routes present when it is applied, so merging
@@ -716,5 +688,74 @@ mod presentation_tests {
             workspace_display_name("awaken:personal:acct_0123456789"),
             "Personal Workspace"
         );
+    }
+}
+
+fn workspace_context_router(organization: String, identity_mode: &'static str) -> Router {
+    Router::new().route(
+        "/v1/config/workspace-context",
+        get(
+            move |Extension(scope): Extension<awaken_tenancy::WorkspaceScope>,
+                  principal: Option<Extension<crate::authz::AuthedPrincipal>>| {
+                let organization_id = organization.clone();
+                async move {
+                    let workspace_id = scope.0;
+                    let user_display_name = principal_display_name(
+                        principal.as_ref().map(|Extension(principal)| &principal.0),
+                        identity_mode,
+                    );
+                    let workspace_name = workspace_display_name(&workspace_id);
+                    let organization_name = if identity_mode == "no-login" {
+                        "Local Organization".into()
+                    } else {
+                        organization_display_name(&organization_id)
+                    };
+                    Json(serde_json::json!({
+                        "workspace_id": workspace_id,
+                        "workspace_display_name": workspace_name,
+                        "organization_id": organization_id,
+                        "organization_display_name": organization_name,
+                        "user_display_name": user_display_name,
+                        "principal_scope_key": principal_scope_key(principal.as_ref().map(|Extension(p)| &p.0), identity_mode),
+                    }))
+                }
+            },
+        ),
+    )
+}
+
+fn principal_scope_key(
+    principal: Option<&awaken_iam_contract::PrincipalRef>,
+    identity_mode: &str,
+) -> Option<String> {
+    if principal.is_none() && identity_mode != "no-login" {
+        return None;
+    }
+    let bytes =
+        serde_json::to_vec(&(identity_mode, principal)).expect("principal reference serialization");
+    Some(format!("{:x}", Sha256::digest(bytes)))
+}
+
+#[cfg(test)]
+mod workspace_context_tests {
+    use super::*;
+    #[test]
+    fn draft_scope_uses_only_trusted_actor_identity_and_explicit_local_mode() {
+        // DT-ACTOR: no principal + no-login -> stable local scope; no principal
+        // + authenticated mode -> absent; distinct trusted principals ->
+        // distinct scopes. The opaque value contains no credential or clear id
+        // and is never consumed by command admission.
+        assert!(principal_scope_key(None, "no-login").is_some());
+        assert!(principal_scope_key(None, "awaken-cloud").is_none());
+        let a = awaken_iam_contract::PrincipalRef::Service {
+            service_id: "service-a".into(),
+        };
+        let b = awaken_iam_contract::PrincipalRef::Service {
+            service_id: "service-b".into(),
+        };
+        let first = principal_scope_key(Some(&a), "self-managed");
+        assert_eq!(first, principal_scope_key(Some(&a), "self-managed"));
+        assert_ne!(first, principal_scope_key(Some(&b), "self-managed"));
+        assert!(!first.unwrap().contains("service-a"));
     }
 }

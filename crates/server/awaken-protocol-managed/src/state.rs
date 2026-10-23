@@ -92,3 +92,5 @@ pub(crate) use session_record::{
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) use resources::observe_resource_manifest;
