@@ -170,13 +170,13 @@ impl ManagedState {
                 (
                     awaken_session_application::SessionInputTarget::Repository {
                         remote_url,
-                        access_token,
+                        credential_material,
                         initial_branch,
                         initial_commit,
                     },
                     crate::session_resource::ResolvedInputSource::Repository { config, .. },
                 ) => {
-                    access_token.is_none()
+                    credential_material.is_none()
                         && remote_url == &config.remote_url
                         && initial_branch == &config.initial_branch
                         && initial_commit == &config.initial_commit
@@ -214,7 +214,7 @@ impl ManagedState {
             let repository_id =
                 if let awaken_session_application::SessionInputTarget::Repository {
                     remote_url,
-                    access_token,
+                    credential_material,
                     initial_branch,
                     initial_commit,
                 } = &input.target
@@ -238,9 +238,7 @@ impl ManagedState {
                                 name: format!("Session repository at /{normalized_mount}"),
                                 description: "Managed Session resource manifest input".into(),
                                 remote_url: remote_url.clone(),
-                                credential_material: access_token
-                                    .clone()
-                                    .map(|token| token.into_credential_material()),
+                                credential_material: credential_material.clone(),
                                 credential: None,
                                 mount_path: input.mount_path.clone(),
                                 initial_branch: initial_branch.clone(),

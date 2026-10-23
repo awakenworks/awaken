@@ -58,6 +58,23 @@ pub trait SessionCredentialSource: Send + Sync {
 /// The consumer adapter owns only the provider-specific transformation into an
 /// opaque or typed material document. Vault encoding, persistence, revisioning,
 /// and retirement remain behind [`CredentialMaterialIngress`].
+/// Cloning preserves the existing redacted leaf ownership; it carries no write
+/// attempt, receipt or permission to enter material again.
+///
+/// S3-S4: neither variant may cross a durable Serde boundary.
+///
+/// ```compile_fail,E0277
+/// use awaken_credential_contract::CredentialPlaintext;
+/// fn durable<T: serde::Serialize>() {}
+/// durable::<CredentialPlaintext>();
+/// ```
+///
+/// ```compile_fail,E0277
+/// use awaken_credential_contract::CredentialPlaintext;
+/// fn durable<T: serde::de::DeserializeOwned>() {}
+/// durable::<CredentialPlaintext>();
+/// ```
+#[derive(Debug, Clone)]
 pub enum CredentialPlaintext {
     Opaque(RedactedString),
     Structured(StructuredCredentialMaterial),
@@ -66,6 +83,23 @@ pub enum CredentialPlaintext {
 /// Provider identity plus write-only material supplied by a protocol adapter.
 /// Target and usage are deliberately absent: the consuming application owns
 /// those facts and adds them when it constructs an ingress command.
+/// Debug exposes provider/type/field-name metadata, with every material value
+/// redacted by its existing [`RedactedString`] leaf.
+///
+/// S5-S6: copying an input must not add a durable Serde representation.
+///
+/// ```compile_fail,E0277
+/// use awaken_credential_contract::CredentialMaterialInput;
+/// fn durable<T: serde::Serialize>() {}
+/// durable::<CredentialMaterialInput>();
+/// ```
+///
+/// ```compile_fail,E0277
+/// use awaken_credential_contract::CredentialMaterialInput;
+/// fn durable<T: serde::de::DeserializeOwned>() {}
+/// durable::<CredentialMaterialInput>();
+/// ```
+#[derive(Debug, Clone)]
 pub struct CredentialMaterialInput {
     pub provider: String,
     pub plaintext: CredentialPlaintext,
@@ -137,4 +171,73 @@ pub trait CredentialMaterialIngress: Send + Sync {
         &self,
         command: CredentialMaterialRetirementCommand,
     ) -> Result<(), String>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_material_preserves_values_and_redaction_across_clone_and_drop() {
+        // Cause/effect graph: C1 opaque/structured, C2 original/clone after
+        // dropping original. E1 provider/type/every value remain exact; E2 Debug
+        // contains no secret value. Four exhaustive rows V1=opaque+original,
+        // V2=opaque+clone/drop, V3=structured+original, V4=structured+clone/drop.
+        // This proves independent valid ownership, not heap-wide erasure or a
+        // shorter lifetime. Provider/type/field-name metadata is not secret.
+        for structured in [false, true] {
+            for clone_after_drop in [false, true] {
+                let input = if structured {
+                    CredentialMaterialInput::structured(
+                        "adapter/provider",
+                        StructuredCredentialMaterial {
+                            type_id: "adapter.material/v1".into(),
+                            fields: std::collections::BTreeMap::from([
+                                ("first".into(), RedactedString::new("first-secret-value")),
+                                ("second".into(), RedactedString::new("second-secret-value")),
+                            ]),
+                        },
+                    )
+                } else {
+                    CredentialMaterialInput::opaque(
+                        "adapter/provider",
+                        RedactedString::new("opaque-secret-value"),
+                    )
+                };
+                let retained = if clone_after_drop {
+                    let cloned = input.clone();
+                    drop(input);
+                    cloned
+                } else {
+                    input
+                };
+                assert_eq!(retained.provider, "adapter/provider", "V1-V4/E1");
+                let debug = format!("{retained:?}");
+                assert!(!debug.contains("opaque-secret-value"), "V1-V2/E2");
+                assert!(!debug.contains("first-secret-value"), "V3-V4/E2");
+                assert!(!debug.contains("second-secret-value"), "V3-V4/E2");
+                match retained.plaintext {
+                    CredentialPlaintext::Opaque(value) => {
+                        assert!(!structured, "V1-V2 variant");
+                        assert_eq!(value.expose_secret(), "opaque-secret-value", "V1-V2/E1");
+                    }
+                    CredentialPlaintext::Structured(material) => {
+                        assert!(structured, "V3-V4 variant");
+                        assert_eq!(material.type_id, "adapter.material/v1", "V3-V4/E1");
+                        assert_eq!(material.fields.len(), 2, "V3-V4/E1");
+                        assert_eq!(
+                            material.fields["first"].expose_secret(),
+                            "first-secret-value",
+                            "V3-V4/E1"
+                        );
+                        assert_eq!(
+                            material.fields["second"].expose_secret(),
+                            "second-secret-value",
+                            "V3-V4/E1"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

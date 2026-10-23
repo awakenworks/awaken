@@ -131,8 +131,11 @@ enum SecretInput { Literal(RedactedString), Handle(SecretHandle) }
 trait SecretResolver: Send + Sync { async fn resolve(&self, h: &SecretHandle) -> Result<RedactedString>; }
 ```
 
-`RedactedString` (`secrecy::SecretBox` + zeroize + redacted `Debug`/`Display`; sole
-accessor `expose_secret()`) is the one value type that crosses into the runtime.
+`RedactedString` owns a `String`, redacts `Debug`/`Display`, has no Serde
+implementation, and zeroizes its owned string on Drop. Its sole plaintext
+accessor is `expose_secret()`. Clones own independent strings; this is not a
+guarantee that temporary codec buffers or every heap copy are erased. It is the
+one resolved secret value type that crosses into the runtime.
 
 **Lazy / rotating resolution is a provider-adapter concern, not the kernel's.** If a
 long run must re-fetch an expiring token, the concrete adapter (e.g.

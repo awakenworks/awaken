@@ -8,8 +8,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 /// Write-only repository credential admitted by the Anthropic-compatible wire.
 ///
 /// It is deliberately neither serializable nor printable. The state adapter
-/// consumes it into the canonical credential Vault before a Session snapshot is
-/// persisted, and the wrapped value is zeroized when this request DTO is dropped.
+/// translates it into canonical write-only material before the application seals
+/// it through the existing Vault ingress. Dropping this DTO zeroizes its owned
+/// token copy; cloned copies retain their own redacted leaf ownership.
 ///
 /// SDK: inline — `BetaManagedAgentsGitHubRepositoryResourceParams.authorization_token` (also `ResourceUpdateParams.authorization_token`).
 #[derive(Clone)]
@@ -17,15 +18,16 @@ pub struct RepositoryAuthorizationToken(awaken_agent_contract::RedactedString);
 
 impl RepositoryAuthorizationToken {
     #[must_use]
-    pub(crate) fn into_access_token(self) -> awaken_session_application::RepositoryAccessToken {
-        awaken_session_application::RepositoryAccessToken::new(self.0)
-    }
-
-    #[must_use]
     pub(crate) fn into_credential_material(
         self,
     ) -> awaken_credential_contract::CredentialMaterialInput {
-        self.into_access_token().into_credential_material()
+        awaken_credential_contract::CredentialMaterialInput::structured(
+            "github",
+            awaken_credential_contract::http_basic_material(
+                awaken_agent_contract::RedactedString::new("x-access-token"),
+                self.0,
+            ),
+        )
     }
 }
 
@@ -307,36 +309,78 @@ mod tests {
 
     #[test]
     fn github_token_translation_owns_only_provider_and_typed_material() {
-        // Cause/effect graph: C1 the Managed wire supplies one GitHub token;
-        // C2 the protocol adapter, not Session or Vault, owns GitHub's Basic
-        // username convention. E1 translation yields provider `github`; E2 it
-        // yields the canonical HTTP Basic structured shape; E3 the password is
-        // retained only as redacted write-only material. Target/usage are absent
-        // from this input and are added later by the Repository consumer.
-        // Decision rule G1: C1+C2 => E1+E2+E3.
-        let token: RepositoryAuthorizationToken =
-            serde_json::from_value(json!("github-token")).expect("G1 token");
-        let material = token.into_credential_material();
-        assert_eq!(material.provider, "github", "G1/E1");
-        let awaken_credential_contract::CredentialPlaintext::Structured(material) =
-            material.plaintext
-        else {
-            panic!("G1/E2 expected structured material")
-        };
-        assert_eq!(
-            material.type_id,
-            awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
-            "G1/E2"
-        );
-        assert_eq!(
-            material.fields["username"].expose_secret(),
-            "x-access-token",
-            "G1/E2"
-        );
-        assert_eq!(
-            material.fields["password"].expose_secret(),
-            "github-token",
-            "G1/E3"
+        // Cause/effect graph: C1 a Managed GitHub token is present/absent;
+        // C2 the existing direct rotation or Session-input translation consumes
+        // it. G1a=present+direct and G1b=present+input both yield the same github
+        // HTTP Basic document, exact password, and redacted Debug. G2=absent
+        // input preserves None. The protocol owns x-access-token; the App adds
+        // target/usage and calls the same existing Vault ingress later.
+        for through_input in [false, true] {
+            let material = if through_input {
+                let input: ResourceInput = serde_json::from_value(json!({
+                    "type": "github_repository",
+                    "url": "https://github.com/acme/repo.git",
+                    "authorization_token": "github-token" // awaken-allow(secret): deliberate test fixture
+                }))
+                .expect("G1b wire token");
+                let request = input.to_input_request();
+                assert!(
+                    !format!("{request:?}").contains("github-token"),
+                    "G1b redacted input"
+                );
+                let awaken_session_application::SessionInputTarget::Repository {
+                    credential_material: Some(material),
+                    ..
+                } = request.target
+                else {
+                    panic!("G1b canonical material must reach the existing App input")
+                };
+                material
+            } else {
+                let token: RepositoryAuthorizationToken =
+                    serde_json::from_value(json!("github-token")).expect("G1a token");
+                token.into_credential_material()
+            };
+            assert_eq!(material.provider, "github", "G1/E1");
+            assert!(
+                !format!("{material:?}").contains("github-token"),
+                "G1/E3 redacted material"
+            );
+            let awaken_credential_contract::CredentialPlaintext::Structured(material) =
+                material.plaintext
+            else {
+                panic!("G1/E2 expected structured material")
+            };
+            assert_eq!(
+                material.type_id,
+                awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+                "G1/E2"
+            );
+            assert_eq!(material.fields.len(), 2, "G1/E2 closed HTTP Basic shape");
+            assert_eq!(
+                material.fields["username"].expose_secret(),
+                "x-access-token",
+                "G1/E2"
+            );
+            assert_eq!(
+                material.fields["password"].expose_secret(),
+                "github-token",
+                "G1/E3"
+            );
+        }
+        let input: ResourceInput = serde_json::from_value(json!({
+            "type": "github_repository", "url": "https://github.com/acme/repo.git"
+        }))
+        .expect("G2 no token");
+        assert!(
+            matches!(
+                input.to_input_request().target,
+                awaken_session_application::SessionInputTarget::Repository {
+                    credential_material: None,
+                    ..
+                }
+            ),
+            "G2 no invented material"
         );
     }
 }

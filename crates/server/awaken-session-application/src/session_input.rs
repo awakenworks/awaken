@@ -21,37 +21,6 @@ pub const MAX_SESSION_MEMORY_STORES: usize = 8;
 /// Longest MemoryStore instructions, in characters.
 pub const MAX_MEMORY_INSTRUCTIONS_CHARS: usize = 4_096;
 
-/// A write-only Repository access token authored with an input. It is
-/// neither serializable nor printable; lowering seals it into the Vault as the
-/// Repository's HTTP-basic credential before any Session state is persisted.
-#[derive(Clone)]
-pub struct RepositoryAccessToken(awaken_agent_contract::RedactedString);
-
-impl RepositoryAccessToken {
-    #[must_use]
-    pub fn new(token: awaken_agent_contract::RedactedString) -> Self {
-        Self(token)
-    }
-
-    /// The write-only material this token seals as.
-    #[must_use]
-    pub fn into_credential_material(self) -> awaken_credential_contract::CredentialMaterialInput {
-        awaken_credential_contract::CredentialMaterialInput::structured(
-            "github",
-            awaken_credential_contract::http_basic_material(
-                awaken_agent_contract::RedactedString::new("x-access-token"),
-                self.0,
-            ),
-        )
-    }
-}
-
-impl std::fmt::Debug for RepositoryAccessToken {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("RepositoryAccessToken(***)")
-    }
-}
-
 /// What one Session input names.
 #[derive(Debug, Clone)]
 pub enum SessionInputTarget {
@@ -59,7 +28,7 @@ pub enum SessionInputTarget {
     MemoryStore(awaken_resource_contract::MemoryStoreId),
     Repository {
         remote_url: String,
-        access_token: Option<RepositoryAccessToken>,
+        credential_material: Option<awaken_credential_contract::CredentialMaterialInput>,
         initial_branch: Option<String>,
         initial_commit: Option<String>,
     },
