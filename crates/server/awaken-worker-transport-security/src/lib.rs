@@ -66,11 +66,17 @@ pub async fn authenticate_worker_request(
             request.extensions_mut().insert(worker);
             next.run(request).await
         }
-        Err(error) => (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        )
-            .into_response(),
+        Err(error) => {
+            let status = match &error {
+                WorkerAuthError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+                WorkerAuthError::Missing | WorkerAuthError::Invalid(_) => StatusCode::UNAUTHORIZED,
+            };
+            (
+                status,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -1200,6 +1206,8 @@ pub enum WorkerAuthError {
     Missing,
     #[error("worker authentication is invalid: {0}")]
     Invalid(String),
+    #[error("worker authentication is unavailable: {0}")]
+    Unavailable(String),
 }
 
 #[async_trait]

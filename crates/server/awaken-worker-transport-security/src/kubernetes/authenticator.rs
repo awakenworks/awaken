@@ -65,8 +65,12 @@ impl KubernetesWorkerAuthenticator {
         status: &TokenReviewStatus,
     ) -> Result<KubernetesPodIdentity, WorkerAuthError> {
         let invalid = || invalid("Kubernetes token is not authorized for this Worker deployment");
+        if status.error.is_some() {
+            return Err(WorkerAuthError::Unavailable(
+                "Kubernetes token review could not complete".into(),
+            ));
+        }
         if status.authenticated != Some(true)
-            || status.error.is_some()
             || !status
                 .audiences
                 .as_ref()
@@ -157,18 +161,18 @@ impl WorkerRequestAuthenticator for KubernetesWorkerAuthenticator {
             ..Default::default()
         };
         // Never include response bodies or credential-bearing review objects in
-        // errors. A timeout is authentication failure, not a cached grant.
+        // errors. Dependency failure denies this request without declaring its
+        // credentials invalid; the existing registration retry retains the Pod.
         let reviewed = tokio::time::timeout(
             self.timeout,
             self.reviews.create(&PostParams::default(), &review),
         )
         .await
-        .map_err(|_| invalid("Kubernetes token review timed out"))?
-        .map_err(|_| invalid("Kubernetes token review unavailable"))?;
-        let status = reviewed
-            .status
-            .as_ref()
-            .ok_or_else(|| invalid("missing Kubernetes token review status"))?;
+        .map_err(|_| WorkerAuthError::Unavailable("Kubernetes token review timed out".into()))?
+        .map_err(|_| WorkerAuthError::Unavailable("Kubernetes token review unavailable".into()))?;
+        let status = reviewed.status.as_ref().ok_or_else(|| {
+            WorkerAuthError::Unavailable("missing Kubernetes token review status".into())
+        })?;
         let pod = self.verified_pod(status)?;
         if pod != requested_pod {
             return Err(invalid("Kubernetes token belongs to another Pod"));

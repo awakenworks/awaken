@@ -25,6 +25,9 @@ pub trait WorkerExecutionBindingSource: Send + Sync {
     /// Deny a fresh, provably unbound bootstrap through its original provider
     /// ledger. This returns that original anchor only; it is not Registry
     /// absence, process-exit evidence or Session cleanup acknowledgement.
+    /// A provider may retire that exact unadmitted process domain after its
+    /// absorbing original-ledger CAS excludes first enrollment and every
+    /// Create ticket. Failures retain the seal for the same exact replay.
     async fn seal_unattempted_worker(
         &self,
         _worker_id: &str,

@@ -37,7 +37,7 @@ struct ApiState {
 #[cfg(feature = "kubernetes")]
 struct MockApi {
     state: Arc<ApiState>,
-    auth: KubernetesWorkerAuthenticator,
+    auth: Arc<KubernetesWorkerAuthenticator>,
     server: tokio::task::JoinHandle<()>,
 }
 
@@ -95,7 +95,7 @@ impl MockApi {
         .unwrap();
         Self {
             state,
-            auth,
+            auth: Arc::new(auth),
             server,
         }
     }
@@ -445,20 +445,25 @@ async fn provider_failure_timeout_and_revocation_never_reuse_prior_authority() {
     let mut revoked = accepted();
     revoked["status"]["authenticated"] = json!(false);
     api.set(StatusCode::OK, revoked);
-    assert!(api.auth.authenticate(&request).await.is_err(), "R4");
+    assert!(
+        matches!(
+            api.auth.authenticate(&request).await,
+            Err(WorkerAuthError::Invalid(_))
+        ),
+        "R4"
+    );
     for status in [
         StatusCode::FORBIDDEN,
         StatusCode::SERVICE_UNAVAILABLE,
         StatusCode::OK,
     ] {
         api.set(status, json!({"error":"fixture-secret"}));
-        let error = api
-            .auth
-            .authenticate(&request)
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(!error.contains("fixture-secret"), "R5 {status}");
+        let error = api.auth.authenticate(&request).await.unwrap_err();
+        assert!(
+            matches!(error, WorkerAuthError::Unavailable(_)),
+            "R5 dependency failure {status}"
+        );
+        assert!(!error.to_string().contains("fixture-secret"), "R5 {status}");
     }
     let api = MockApi::new(Duration::from_millis(20), Duration::from_secs(5)).await;
     let error = tokio::time::timeout(Duration::from_secs(2), api.auth.authenticate(&request))
@@ -466,6 +471,10 @@ async fn provider_failure_timeout_and_revocation_never_reuse_prior_authority() {
         .unwrap()
         .unwrap_err();
     assert!(error.to_string().contains("timed out"), "R6");
+    assert!(
+        matches!(error, WorkerAuthError::Unavailable(_)),
+        "R6 retryable dependency"
+    );
 }
 
 #[cfg(feature = "kubernetes")]
@@ -538,4 +547,74 @@ async fn projected_token_rotation_and_registration_use_the_existing_authorizer_p
         "R9 foreign binding"
     );
     assert_eq!(api.state.calls.load(Ordering::SeqCst), 2, "R8/R9 no review");
+}
+
+#[cfg(feature = "kubernetes")]
+#[tokio::test]
+async fn token_review_dependency_retries_do_not_authenticate_or_restart_the_worker_identity() {
+    // Cause/effect rules: A1 review API unavailable -> HTTP 503, no protected
+    // handler; A2 completed negative/revoked review -> HTTP 401, no handler;
+    // A3 recovered positive review -> HTTP 200, exactly one handler entry for
+    // the same Pod. Missing/invalid request headers keep their local denial.
+    // A1 is the existing registration client's retry class, not an auth grant.
+    let api = MockApi::new(Duration::from_secs(2), Duration::ZERO).await;
+    let entries = Arc::new(AtomicUsize::new(0));
+    let entered = entries.clone();
+    let authenticator: Arc<dyn WorkerRequestAuthenticator> = api.auth.clone();
+    let router = axum::Router::new()
+        .route(
+            REGISTER_PATH,
+            axum::routing::post(move || {
+                let entered = entered.clone();
+                async move {
+                    entered.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::OK
+                }
+            }),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            authenticator,
+            authenticate_worker_request,
+        ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    for (status, body, expected, count) in [
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"fixture-secret"}),
+            StatusCode::SERVICE_UNAVAILABLE,
+            0,
+        ),
+        (
+            StatusCode::OK,
+            {
+                let mut v = accepted();
+                v["status"]["authenticated"] = json!(false);
+                v
+            },
+            StatusCode::UNAUTHORIZED,
+            0,
+        ),
+        (StatusCode::OK, accepted(), StatusCode::OK, 1),
+    ] {
+        api.set(status, body);
+        let response = client
+            .post(format!("http://{address}{REGISTER_PATH}"))
+            .header(WORKER_ID_HEADER, pod().worker_id())
+            .bearer_auth("fixture-pod-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        assert!(!response.text().await.unwrap().contains("fixture-secret"));
+        assert_eq!(entries.load(Ordering::SeqCst), count);
+    }
+    assert_eq!(
+        api.state.calls.load(Ordering::SeqCst),
+        3,
+        "no cached authentication"
+    );
+    server.abort();
 }
