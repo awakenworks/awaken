@@ -187,7 +187,7 @@ impl SessionApplication {
         // domain check below proves the old assertion is that same generation.
         // Worker Registry authentication remains the independent transport
         // identity edge; no second lease record or timer authority is created.
-        self.require_current_live_terminal_generation(&session)?;
+        crate::require_live_root_lease(&session, self.clock.now_ms())?;
         let workspace_id = self
             .session_repository()
             .owner(&effect.command.session_id)

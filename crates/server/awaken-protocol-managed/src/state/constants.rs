@@ -13,8 +13,3 @@ pub(crate) fn persisted_time(epoch_ms: Option<u64>) -> String {
         .map(awaken_session_application_contract::epoch_millis_to_rfc3339)
         .unwrap_or_else(|| LEGACY_UNRECORDED_AT.to_string())
 }
-
-/// The Managed Agents contract error for a `memory_store` add/remove on a running
-/// session — memory stores bind at session creation only.
-pub(crate) const MEMORY_CREATE_ONLY: &str = "memory stores can only be attached at session creation time; adding or removing one from a \
-     running session is not supported";

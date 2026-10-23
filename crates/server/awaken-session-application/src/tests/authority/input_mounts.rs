@@ -1,6 +1,7 @@
 //! Both application callers consume the one definition/mount normalization.
 use super::*;
-use crate::{SessionInputRequest, SessionInputTarget, SessionResourceCommands};
+use crate::resource_lowering::ResourceLowering;
+use crate::{SessionInputRequest, SessionInputTarget};
 use awaken_resource_contract::{
     BindingId, ConfigVersion, FileId, InputBinding, InputResourceId, MemoryStoreConfigVersion,
     MemoryStoreDefinition, RegisterMemoryStore, ResourceAccess, ResourceRegistryError,
@@ -222,8 +223,8 @@ async fn input_mount_normalization_is_shared_by_creation_and_manifest_roles() {
         "/mnt/memory/project-memory-mem-b-2",
         "/mnt/memory/project-memory-mem-b-3",
     ];
-    let normalized = app
-        .normalize_session_input_mounts("workspace", &requests, &defaults)
+    let normalized = ResourceLowering::new(&app, "mount-session", "workspace")
+        .normalize(&requests, &defaults)
         .await
         .unwrap();
     assert_eq!(
@@ -299,8 +300,8 @@ async fn fixture_inventory_replacement_refuses_after_inputs_are_shared() {
         .await
         .err()
         .expect("N7 selected Inventory remains absent");
-    let manifest = app
-        .normalize_session_input_mounts("workspace", &requests, &[])
+    let manifest = ResourceLowering::new(&app, "refused", "workspace")
+        .normalize(&requests, &[])
         .await
         .expect_err("N7 Resource authority remains absent");
     let expected =

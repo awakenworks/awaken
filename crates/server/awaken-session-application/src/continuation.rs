@@ -18,7 +18,6 @@ use awaken_session_state_contract::{
 };
 use awaken_session_types::RunError;
 
-use super::realization::repository_control;
 use super::{SessionApplication, SessionMutationError, SessionRecoveryCandidates};
 
 fn expected_mcp_generations(
@@ -96,36 +95,6 @@ impl From<SessionEnvironmentTransitionError> for SessionContinuationError {
 }
 
 impl SessionApplication {
-    pub(crate) async fn authorize_checkpoint_release_artifact_effect_from_root(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
-    ) -> Result<String, awaken_session_realization_contract::SessionRealizationControlFailure> {
-        let session = self
-            .mutations
-            .session_aggregate(session_id)
-            .await
-            .map_err(repository_control)?;
-        session
-            .authorize_checkpoint_release_artifact_effect(operation)
-            .map_err(|error| match error {
-                awaken_session_state_contract::SessionEnvironmentReceiptError::Rejected(
-                    rejection,
-                ) => rejection.into(),
-                awaken_session_state_contract::SessionEnvironmentReceiptError::RealizationStale
-                | awaken_session_state_contract::SessionEnvironmentReceiptError::Mismatch => {
-                    awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership
-                }
-                error => awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
-                    error.to_string(),
-                ),
-            })?;
-        self.session_repository()
-            .owner(session_id)
-            .await
-            .map_err(repository_control)
-    }
-
     pub(super) async fn reconcile_environment_continuations_from(
         &self,
         candidates: &SessionRecoveryCandidates,

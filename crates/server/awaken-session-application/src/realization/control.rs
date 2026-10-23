@@ -1422,76 +1422,6 @@ impl SessionApplication {
         }
         Err(SessionRealizationControlFailure::Conflict)
     }
-
-    async fn terminal_cleanup_work_after_refresh(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        lease: &SessionRealizationLease,
-    ) -> Result<
-        Option<awaken_session_realization_contract::SessionTerminalCleanupWork>,
-        SessionRealizationControlFailure,
-    > {
-        self.terminal_cleanup_work_for_lease(session_id, lease)
-            .await
-    }
-
-    async fn record_terminal_cleanup_preparation_after_refresh(
-        &self,
-        lease: &SessionRealizationLease,
-        preparation: awaken_session_state_contract::SessionCleanupPreparation,
-    ) -> Result<(), SessionRealizationControlFailure> {
-        self.record_terminal_cleanup_preparation_from_root(lease, preparation)
-            .await
-    }
-
-    async fn record_terminal_cleanup_disposal_after_refresh(
-        &self,
-        lease: &SessionRealizationLease,
-        receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
-    ) -> Result<(), SessionRealizationControlFailure> {
-        self.record_terminal_cleanup_disposal_from_root(lease, receipt)
-            .await
-    }
-
-    async fn terminal_repository_publication_command_after_refresh(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        lease: &SessionRealizationLease,
-    ) -> Result<
-        Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
-        SessionRealizationControlFailure,
-    > {
-        self.terminal_repository_publication_command_for_lease(session_id, lease)
-            .await
-    }
-
-    async fn record_terminal_repository_publication_receipt_after_refresh(
-        &self,
-        session_id: &str,
-        lease: &SessionRealizationLease,
-        receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
-    ) -> Result<(), SessionRealizationControlFailure> {
-        self.record_terminal_repository_publication_receipt_from_root(
-            &awaken_session_types::SessionId::from(session_id),
-            lease,
-            receipt,
-        )
-        .await
-    }
-
-    async fn record_terminal_repository_publication_rejection_after_refresh(
-        &self,
-        session_id: &str,
-        lease: &SessionRealizationLease,
-        rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
-    ) -> Result<(), SessionRealizationControlFailure> {
-        self.record_terminal_repository_publication_rejection_from_root(
-            &awaken_session_types::SessionId::from(session_id),
-            lease,
-            rejection,
-        )
-        .await
-    }
 }
 
 /// Local application drivers cross an executable-refresh boundary before they
@@ -1745,45 +1675,6 @@ impl awaken_session_realization_contract::SessionPreparationControl for SessionA
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionResourceMaterializationControl
-    for SessionApplication
-{
-    async fn authorize_resource_materialization_intent(
-        &self,
-        intent: &awaken_session_realization_contract::SessionResourceMaterializationIntent,
-    ) -> Result<String, SessionRealizationControlFailure> {
-        self.authorize_resource_materialization_intent_from_root(intent)
-            .await
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionCheckpointArtifactControl for SessionApplication {
-    async fn authorize_checkpoint_release_artifact_effect(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
-    ) -> Result<String, SessionRealizationControlFailure> {
-        self.authorize_checkpoint_release_artifact_effect_from_root(session_id, operation)
-            .await
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalMemoryControl for SessionApplication {
-    async fn authorize_terminal_memory_intent(
-        &self,
-        intent: &awaken_session_state_contract::SessionTerminalMemoryIntent,
-    ) -> Result<
-        awaken_session_state_contract::SessionTerminalMemoryTarget,
-        SessionRealizationControlFailure,
-    > {
-        self.authorize_terminal_memory_intent_from_root(intent)
-            .await
-    }
-}
-
-#[async_trait::async_trait]
 impl awaken_session_realization_contract::SessionTerminalCleanupQueue for SessionApplication {
     async fn claim_next_terminal_cleanup(
         &self,
@@ -1813,7 +1704,7 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue for Sessio
         Option<awaken_session_realization_contract::SessionTerminalCleanupWork>,
         SessionRealizationControlFailure,
     > {
-        self.terminal_cleanup_work_after_refresh(session_id, lease)
+        self.terminal_cleanup_work_for_lease(session_id, lease)
             .await
     }
 }
@@ -1836,7 +1727,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl for 
         lease: &SessionRealizationLease,
         preparation: awaken_session_state_contract::SessionCleanupPreparation,
     ) -> Result<(), SessionRealizationControlFailure> {
-        self.record_terminal_cleanup_preparation_after_refresh(lease, preparation)
+        self.record_terminal_cleanup_preparation_from_root(lease, preparation)
             .await
     }
 }
@@ -1856,7 +1747,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl for Ses
         lease: &SessionRealizationLease,
         receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
     ) -> Result<(), SessionRealizationControlFailure> {
-        self.record_terminal_cleanup_disposal_after_refresh(lease, receipt)
+        self.record_terminal_cleanup_disposal_from_root(lease, receipt)
             .await
     }
 }
@@ -1873,7 +1764,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
         SessionRealizationControlFailure,
     > {
-        self.terminal_repository_publication_command_after_refresh(session_id, lease)
+        self.terminal_repository_publication_command_for_lease(session_id, lease)
             .await
     }
 
@@ -1883,12 +1774,8 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         lease: &SessionRealizationLease,
         receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), SessionRealizationControlFailure> {
-        self.record_terminal_repository_publication_receipt_after_refresh(
-            session_id.as_str(),
-            lease,
-            receipt,
-        )
-        .await
+        self.record_terminal_repository_publication_receipt_from_root(session_id, lease, receipt)
+            .await
     }
 
     async fn record_terminal_repository_publication_rejection(
@@ -1897,10 +1784,8 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         lease: &SessionRealizationLease,
         rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), SessionRealizationControlFailure> {
-        self.record_terminal_repository_publication_rejection_after_refresh(
-            session_id.as_str(),
-            lease,
-            rejection,
+        self.record_terminal_repository_publication_rejection_from_root(
+            session_id, lease, rejection,
         )
         .await
     }

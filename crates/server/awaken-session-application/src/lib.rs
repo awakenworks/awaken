@@ -199,12 +199,7 @@ pub use creation_request::{
     SessionBudgetRequest, SessionCreateProtocol, SessionCreateRequest, SessionCreateRequestError,
     SessionModelRequest, SessionToolsOverride,
 };
-pub use session_input::{
-    InputProjectionClass, MAX_MEMORY_INSTRUCTIONS_CHARS, MAX_SESSION_FILE_RESOURCES,
-    MAX_SESSION_MEMORY_STORES, SessionInputRequest, SessionInputTarget, admit_file_count,
-    admit_memory_inputs, input_binding, memory_mount_component, preflight_repository_mount_paths,
-    unique_memory_mount_path,
-};
+pub use session_input::{SessionInputRequest, SessionInputTarget};
 mod credentials;
 mod event_batches;
 pub use event_batches::SessionEventBatchIdempotency;
@@ -221,6 +216,7 @@ mod lifecycle_supervisor;
 pub use queries::SessionQueries;
 mod mcp;
 mod realization;
+mod resource_lowering;
 mod resource_reconciliation;
 mod roles;
 mod run_admission;
@@ -231,9 +227,12 @@ pub use awaken_session_realization_driver::{
 };
 pub use mcp::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
 pub use realization::{SessionReconciliation, SessionReconciliationFailure};
+mod resource_effect_authorization;
+pub use resource_effect_authorization::SessionResourceEffectAuthorization;
+pub(crate) use resource_effect_authorization::require_live_root_lease;
 pub use resource_reconciliation::{
-    ReplaceSessionResourceManifest, SessionResourceManifestError, SessionResourceManifestOutcome,
-    SessionResourcePurgeGuard,
+    ReplaceSessionResourceManifest, SessionResourceAttachment, SessionResourceManifestError,
+    SessionResourceManifestOutcome, SessionResourceManifestRequest, SessionResourcePurgeGuard,
 };
 pub use roles::{
     DeploymentSessionEnvironment, ProfiledSessionCommands, SessionCreation,

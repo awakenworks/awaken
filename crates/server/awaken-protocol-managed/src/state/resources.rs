@@ -55,293 +55,6 @@ impl ManagedState {
         }
     }
 
-    async fn resolve_live_file_input(
-        &self,
-        owner_scope: &str,
-        binding_id: String,
-        parsed: &awaken_session_application::SessionInputRequest,
-    ) -> Result<crate::session_resource::ResolvedInput, StateError> {
-        debug_assert!(matches!(
-            parsed.target,
-            awaken_session_application::SessionInputTarget::File(_)
-        ));
-        let binding = awaken_session_application::input_binding(binding_id, parsed, None);
-        let attachment = crate::session_resource::SessionInputAttachment {
-            binding,
-            replaces: None,
-        };
-        let (mut inputs, _) = self
-            .roles
-            .resources
-            .resolve_session_inputs(owner_scope, &[], &[attachment])
-            .await
-            .map_err(StateError::Run)?
-            .into_parts();
-        inputs
-            .pop()
-            .ok_or_else(|| StateError::Run(RunError::internal("resolved input is empty")))
-    }
-
-    async fn lower_complete_resource_manifest(
-        &self,
-        session_id: &str,
-        owner_scope: &str,
-        resources: &[crate::types::resource::ResourceInput],
-        session: &awaken_session_state_contract::PersistedSession,
-    ) -> Result<
-        (
-            crate::session_resource::ResolvedSessionResources,
-            Vec<awaken_session_application::ConfiguredSessionRepository>,
-        ),
-        StateError,
-    > {
-        let current = session.resources.desired();
-        let parsed = resources
-            .iter()
-            .map(crate::types::resource::ResourceInput::to_input_request)
-            .collect::<Vec<_>>();
-        // Validate the entire authored Repository set before even a preceding
-        // implicit MemoryStore can read its definition. Later phases reuse the
-        // same shared rule at the aggregate and provider effect boundaries.
-        awaken_session_application::preflight_repository_mount_paths(&parsed)
-            .map_err(StateError::Run)?;
-        awaken_session_application::admit_file_count(&parsed).map_err(StateError::Run)?;
-
-        // Reuse the application's one definition/path normalization before
-        // this manifest's original identity, layout and participant decisions.
-        let parsed = self
-            .roles
-            .resources
-            .normalize_session_input_mounts(owner_scope, &parsed, &[])
-            .await
-            .map_err(StateError::Run)?;
-        let provisional = parsed
-            .iter()
-            .enumerate()
-            .map(|(index, input)| {
-                awaken_session_application::input_binding(
-                    format!("manifest-validation-{index}"),
-                    input,
-                    matches!(
-                        input.target,
-                        awaken_session_application::SessionInputTarget::Repository { .. }
-                    )
-                    .then(|| awaken_resource_contract::RepositoryId::from("validation")),
-                )
-            })
-            .collect::<Vec<_>>();
-        let effective_bindings =
-            crate::session_resource::SessionInputResolver::effective_bindings(&provisional, &[])
-                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        self.roles
-            .resources
-            .validate_persisted_session_resource_layout(owner_scope, session, effective_bindings)
-            .map_err(StateError::Run)?;
-
-        let mut authored_mount_counts = std::collections::BTreeMap::<String, usize>::new();
-        for input in &parsed {
-            *authored_mount_counts
-                .entry(input.mount_path.trim_start_matches('/').to_string())
-                .or_default() += 1;
-        }
-        let mut inputs = Vec::with_capacity(parsed.len());
-        let mut repository_configurations = Vec::new();
-        for input in parsed {
-            let normalized_mount = input.mount_path.trim_start_matches('/');
-            let same_mount = current.inputs().iter().find(|existing| {
-                existing.mount_path.trim_start_matches('/') == normalized_mount
-                    && awaken_session_application::InputProjectionClass::of_request(&input.target)
-                        == awaken_session_application::InputProjectionClass::of_resolved(
-                            &existing.source,
-                        )
-            });
-            let reusable = same_mount.filter(|existing| match (&input.target, &existing.source) {
-                (
-                    awaken_session_application::SessionInputTarget::File(requested),
-                    crate::session_resource::ResolvedInputSource::File { file_id },
-                ) => requested == file_id,
-                (
-                    awaken_session_application::SessionInputTarget::MemoryStore(requested),
-                    crate::session_resource::ResolvedInputSource::MemoryStore {
-                        memory_store_id,
-                        ..
-                    },
-                ) => requested == memory_store_id,
-                (
-                    awaken_session_application::SessionInputTarget::Repository {
-                        remote_url,
-                        credential_material,
-                        initial_branch,
-                        initial_commit,
-                    },
-                    crate::session_resource::ResolvedInputSource::Repository { config, .. },
-                ) => {
-                    credential_material.is_none()
-                        && remote_url == &config.remote_url
-                        && initial_branch == &config.initial_branch
-                        && initial_commit == &config.initial_commit
-                }
-                _ => false,
-            });
-            if let Some(existing) = reusable {
-                let mut existing = existing.clone();
-                existing.access = input.access;
-                existing.instructions = input.instructions;
-                inputs.push(existing);
-                continue;
-            }
-
-            let binding_id = same_mount
-                .map(|existing| existing.binding_id.to_string())
-                .unwrap_or_else(|| {
-                    let fingerprint = if authored_mount_counts
-                        .get(normalized_mount)
-                        .copied()
-                        .unwrap_or_default()
-                        > 1
-                    {
-                        awaken_agent_contract::stable_fingerprint(&(
-                            normalized_mount,
-                            awaken_session_application::InputProjectionClass::of_request(
-                                &input.target,
-                            ),
-                        ))
-                    } else {
-                        awaken_agent_contract::stable_fingerprint(&normalized_mount)
-                    };
-                    format!("session:{session_id}:manifest:{}", fingerprint)
-                });
-            let repository_id =
-                if let awaken_session_application::SessionInputTarget::Repository {
-                    remote_url,
-                    credential_material,
-                    initial_branch,
-                    initial_commit,
-                } = &input.target
-                {
-                    let id = format!(
-                        "managed:{session_id}:repository:{}",
-                        awaken_agent_contract::stable_fingerprint(&(
-                            normalized_mount,
-                            remote_url,
-                            initial_branch,
-                            initial_commit,
-                        ))
-                    );
-                    let configured = match self
-                        .roles
-                        .resources
-                        .configure_session_repository(
-                            awaken_session_application::SessionRepositoryResourceInput {
-                                id,
-                                workspace_id: owner_scope.to_string(),
-                                name: format!("Session repository at /{normalized_mount}"),
-                                description: "Managed Session resource manifest input".into(),
-                                remote_url: remote_url.clone(),
-                                credential_material: credential_material.clone(),
-                                credential: None,
-                                mount_path: input.mount_path.clone(),
-                                initial_branch: initial_branch.clone(),
-                                initial_commit: initial_commit.clone(),
-                            },
-                        )
-                        .await
-                    {
-                        Ok(configured) => configured,
-                        Err(first) => {
-                            if !self
-                                .roles
-                                .resources
-                                .abort_unadopted_session_repositories(&repository_configurations)
-                                .await
-                            {
-                                tracing::warn!(
-                                    session = %session_id,
-                                    "Resource Manifest Repository compensation remains pending after lowering failure"
-                                );
-                            }
-                            return Err(StateError::Run(first));
-                        }
-                    };
-                    let repository_id = configured.repository_id.clone();
-                    repository_configurations.push(configured);
-                    Some(repository_id)
-                } else {
-                    None
-                };
-            let attachment = crate::session_resource::SessionInputAttachment {
-                binding: awaken_session_application::input_binding(
-                    binding_id,
-                    &input,
-                    repository_id,
-                ),
-                replaces: None,
-            };
-            let (mut resolved, _) = match self
-                .roles
-                .resources
-                .resolve_session_inputs(owner_scope, &[], &[attachment])
-                .await
-            {
-                Ok(resources) => resources.into_parts(),
-                Err(first) => {
-                    if !self
-                        .roles
-                        .resources
-                        .abort_unadopted_session_repositories(&repository_configurations)
-                        .await
-                    {
-                        tracing::warn!(
-                            session = %session_id,
-                            "Resource Manifest Repository compensation remains pending after input resolution"
-                        );
-                    }
-                    return Err(StateError::Run(first));
-                }
-            };
-            let Some(resolved) = resolved.pop() else {
-                let first = StateError::Run(RunError::internal(
-                    "resolved resource manifest input is empty",
-                ));
-                if !self
-                    .roles
-                    .resources
-                    .abort_unadopted_session_repositories(&repository_configurations)
-                    .await
-                {
-                    tracing::warn!(
-                        session = %session_id,
-                        "Resource Manifest Repository compensation remains pending after empty input resolution"
-                    );
-                }
-                return Err(first);
-            };
-            inputs.push(resolved);
-        }
-        let resources = match crate::session_resource::ResolvedSessionResources::try_new(
-            inputs,
-            current.skills().to_vec(),
-        ) {
-            Ok(resources) => resources,
-            Err(error) => {
-                let first = StateError::Run(RunError::bad_request(error.to_string()));
-                if !self
-                    .roles
-                    .resources
-                    .abort_unadopted_session_repositories(&repository_configurations)
-                    .await
-                {
-                    tracing::warn!(
-                        session = %session_id,
-                        "Resource Manifest Repository compensation remains pending after final validation"
-                    );
-                }
-                return Err(first);
-            }
-        };
-        Ok((resources, repository_configurations))
-    }
-
     pub async fn replace_resource_manifest(
         &self,
         id: &str,
@@ -350,59 +63,23 @@ impl ManagedState {
         expected_resource_revision: Option<u64>,
         request_fingerprint: String,
     ) -> Result<crate::types::resource::SessionResourceManifest, StateError> {
-        let owner_scope = self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
-        if let Some(key) = idempotency_key.as_deref()
-            && let Some(outcome) = self
-                .roles
+        let request = awaken_session_application::SessionResourceManifestRequest {
+            inputs: body
                 .resources
-                .replay_session_resource_manifest(
-                    &awaken_session_types::SessionId::from(id),
-                    key,
-                    &request_fingerprint,
-                )
-                .await
-                .map_err(Self::map_resource_manifest_error)?
-        {
-            self.publish_persisted_session(&outcome.session)?;
-            return Ok(Self::resource_manifest_view(&outcome.session));
-        }
-        let persisted = self
-            .roles
-            .roots
-            .session(&awaken_session_types::SessionId::from(id))
-            .await
-            .map_err(StateError::from)?;
-        if expected_resource_revision
-            .is_some_and(|expected| expected != persisted.resources.revision)
-        {
-            return Err(StateError::Conflict);
-        }
-        if persisted
-            .frozen_baseline()
-            .is_some_and(|baseline| !baseline.mutation_policy.is_managed())
-        {
-            // Complete-manifest lowering may configure Repository/Vault state.
-            // Profiled Sessions use item-level File verbs when their immutable
-            // policy admits them, so reject before any lowering side effect.
-            return Err(StateError::Run(RunError::bad_request(
-                "profiled Session whole-resource manifest replacement is unavailable",
-            )));
-        }
-        let (desired, repository_configurations) = self
-            .lower_complete_resource_manifest(id, &owner_scope, &body.resources, &persisted)
-            .await?;
-        let outcome = self
-            .execute_resource_manifest_command(
-                id,
-                awaken_session_application::ReplaceSessionResourceManifest {
-                    resources: desired,
-                    expected_resource_revision,
-                    idempotency_key,
-                    request_fingerprint,
-                },
-                &repository_configurations,
-            )
-            .await?;
+                .iter()
+                .map(crate::types::resource::ResourceInput::to_input_request)
+                .collect(),
+            expected_resource_revision,
+            idempotency_key,
+            request_fingerprint,
+        };
+        let outcome = self.publish_resource_outcome(
+            Box::pin(self.roles.resources.replace_session_resource_manifest(
+                &awaken_session_types::SessionId::from(id),
+                request,
+            ))
+            .await,
+        )?;
         Ok(Self::resource_manifest_view(&outcome.session))
     }
 
@@ -442,22 +119,17 @@ impl ManagedState {
         }
     }
 
-    /// One protocol-side execution path for complete replacement and the
-    /// compatibility item verbs. If desired truth commits but realization
-    /// fails, refresh the read projection before returning the effect error so
-    /// a retry observes the accepted intent instead of inventing another one.
-    async fn execute_resource_manifest_command(
+    /// Refresh the wire projection from every committed command outcome,
+    /// including one whose realization failed after desired truth committed,
+    /// so a retry observes the accepted intent instead of inventing another.
+    fn publish_resource_outcome(
         &self,
-        session_id: &str,
-        command: awaken_session_application::ReplaceSessionResourceManifest,
-        repository_configurations: &[awaken_session_application::ConfiguredSessionRepository],
+        result: Result<
+            awaken_session_application::SessionResourceManifestOutcome,
+            awaken_session_application::SessionResourceManifestError,
+        >,
     ) -> Result<awaken_session_application::SessionResourceManifestOutcome, StateError> {
-        match Box::pin(self.roles.resources.replace_session_resource_manifest(
-            &awaken_session_types::SessionId::from(session_id),
-            command,
-        ))
-        .await
-        {
+        match result {
             Ok(outcome) => {
                 self.publish_persisted_session(&outcome.session)?;
                 Ok(outcome)
@@ -471,21 +143,7 @@ impl ManagedState {
                 self.publish_persisted_session(&outcome.session)?;
                 Err(Self::map_preparation_error(source))
             }
-            Err(error) => {
-                let first = Self::map_resource_manifest_error(error);
-                if !self
-                    .roles
-                    .resources
-                    .abort_unadopted_session_repositories(repository_configurations)
-                    .await
-                {
-                    tracing::warn!(
-                        session = %session_id,
-                        "Resource Manifest Repository compensation remains pending after root rejection"
-                    );
-                }
-                Err(first)
-            }
+            Err(error) => Err(Self::map_resource_manifest_error(error)),
         }
     }
 
@@ -529,117 +187,25 @@ impl ManagedState {
         id: &str,
         body: crate::types::resource::ResourceAddParams,
     ) -> Result<crate::types::resource::SessionResource, StateError> {
-        let parsed = body.into_resource_input().to_input_request();
-        let owner_scope = self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
-        let persisted = self
+        let request = body.into_resource_input().to_input_request();
+        let session_id = awaken_session_types::SessionId::from(id);
+        let attachment = self
             .roles
-            .roots
-            .session(&awaken_session_types::SessionId::from(id))
-            .await
-            .map_err(StateError::from)?;
-        let read_revision = persisted.resources.revision;
-        let current = persisted.resources.desired().clone();
-        let normalized_mount = parsed.mount_path.trim_start_matches('/');
-        if let awaken_session_application::SessionInputTarget::File(requested_file) = &parsed.target
-            && let Some(existing) = current.inputs().iter().find(|input| {
-                input.mount_path.trim_start_matches('/') == normalized_mount
-                    && matches!(
-                        &input.source,
-                        crate::session_resource::ResolvedInputSource::File { file_id }
-                            if file_id == requested_file
-                    )
-            })
-        {
-            // An earlier response may have been lost after desired truth
-            // committed but before realization settled. Re-drive that exact
-            // generation through the canonical Manifest command; never allocate
-            // a second binding or report a misleading mount collision.
-            let existing_binding = existing.binding_id.clone();
-            let outcome = self
-                .execute_resource_manifest_command(
-                    id,
-                    awaken_session_application::ReplaceSessionResourceManifest {
-                        request_fingerprint: awaken_agent_contract::stable_fingerprint(&current),
-                        resources: current,
-                        expected_resource_revision: Some(read_revision),
-                        idempotency_key: None,
-                    },
-                    &[],
-                )
-                .await?;
-            return Self::resource_dto_for_binding(
-                id,
-                &outcome.session.resources,
-                existing_binding.as_str(),
-            )
-            .ok_or_else(|| {
-                StateError::Run(RunError::internal(
-                    "replayed Resource binding disappeared after Manifest convergence",
-                ))
-            });
-        }
-        if matches!(
-            parsed.target,
-            awaken_session_application::SessionInputTarget::File(_)
-        ) && current
-            .inputs()
-            .iter()
-            .filter(|input| {
-                matches!(
-                    input.source,
-                    crate::session_resource::ResolvedInputSource::File { .. }
-                )
-            })
-            .count()
-            >= awaken_session_application::MAX_SESSION_FILE_RESOURCES
-        {
-            return Err(StateError::Run(RunError::bad_request(format!(
-                "a Session supports at most {} files",
-                awaken_session_application::MAX_SESSION_FILE_RESOURCES
-            ))));
-        }
-        let mut suffix = current.inputs().len();
-        let binding_id = loop {
-            let candidate = format!("session:{id}:live:{suffix}");
-            if current
-                .inputs()
-                .iter()
-                .all(|input| input.binding_id.as_str() != candidate)
-            {
-                break candidate;
-            }
-            suffix += 1;
-        };
-        let input = self
-            .resolve_live_file_input(&owner_scope, binding_id, &parsed)
-            .await?;
-        let desired = current
-            .attach(input.clone())
-            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        self.roles
             .resources
-            .validate_persisted_session_resource_layout(
-                &owner_scope,
-                &persisted,
-                desired.sandbox_layout_bindings(),
-            )
-            .map_err(StateError::Run)?;
-        let outcome = self
-            .execute_resource_manifest_command(
-                id,
-                awaken_session_application::ReplaceSessionResourceManifest {
-                    request_fingerprint: awaken_agent_contract::stable_fingerprint(&desired),
-                    resources: desired,
-                    expected_resource_revision: Some(read_revision),
-                    idempotency_key: None,
-                },
-                &[],
-            )
-            .await?;
+            .attach_session_file(&session_id, request)
+            .await;
+        let (outcome, binding_id) = match attachment {
+            Ok(attachment) => (Ok(attachment.outcome), Some(attachment.binding_id)),
+            Err(error) => (Err(error), None),
+        };
+        let outcome = self.publish_resource_outcome(outcome)?;
         // The accepted command already owns the exact durable result. A query
         // optimization must not add a fallible post-effect read or report a
         // concurrent later generation as this command's receipt.
-        Self::resource_dto_for_binding(id, &outcome.session.resources, input.binding_id.as_str())
+        binding_id
+            .and_then(|binding_id| {
+                Self::resource_dto_for_binding(id, &outcome.session.resources, binding_id.as_str())
+            })
             .ok_or(StateError::NotFound)
     }
 
@@ -689,45 +255,13 @@ impl ManagedState {
     }
 
     pub async fn delete_resource(&self, id: &str, resource_id: &str) -> Result<(), StateError> {
-        self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
-        let persisted = self
-            .roles
-            .roots
-            .session(&awaken_session_types::SessionId::from(id))
-            .await
-            .map_err(StateError::from)?;
-        let read_revision = persisted.resources.revision;
-        let input = persisted
-            .resources
-            .desired()
-            .inputs()
-            .iter()
-            .find(|input| input.binding_id == binding_id)
-            .cloned()
-            .ok_or(StateError::NotFound)?;
-        if matches!(
-            input.source,
-            crate::session_resource::ResolvedInputSource::MemoryStore { .. }
-        ) {
-            return Err(StateError::Run(RunError::bad_request(MEMORY_CREATE_ONLY)));
-        }
-        let (desired, _) = persisted
-            .resources
-            .desired()
-            .detach(&binding_id)
-            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        self.execute_resource_manifest_command(
-            id,
-            awaken_session_application::ReplaceSessionResourceManifest {
-                request_fingerprint: awaken_agent_contract::stable_fingerprint(&desired),
-                resources: desired,
-                expected_resource_revision: Some(read_revision),
-                idempotency_key: None,
-            },
-            &[],
-        )
-        .await?;
+        self.publish_resource_outcome(
+            self.roles
+                .resources
+                .detach_session_input(&awaken_session_types::SessionId::from(id), &binding_id)
+                .await,
+        )?;
         Ok(())
     }
 }

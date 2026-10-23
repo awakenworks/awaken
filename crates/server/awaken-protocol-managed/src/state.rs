@@ -76,7 +76,7 @@ use awaken_session_execution_contract::SessionRuntime;
 use awaken_session_execution_contract::{OutcomeDrive, OutcomeFailure, OutcomeReport};
 use awaken_session_types::RunError;
 pub use constants::COMMITTED_PREFIX_READ_CONFLICT;
-pub(crate) use constants::{LEGACY_UNRECORDED_AT, MEMORY_CREATE_ONLY};
+pub(crate) use constants::LEGACY_UNRECORDED_AT;
 pub(crate) use helpers::{
     durable_inbound_event_id, is_transient_event_id, lifecycle_fact, rubric_text,
     session_thread_usage_value, session_usage_value,
