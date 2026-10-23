@@ -901,7 +901,10 @@ async fn repository_retirement_requires_durable_owner_before_any_vault_effect() 
 
     let app =
         repository_retirement_application(sessions.clone(), registry.clone(), ingress.clone());
-    let report = app.reconcile_resource_activations().await;
+    let report = app
+        .resource_reconciliation
+        .reconcile_resource_activations()
+        .await;
     assert!(report.failures.is_empty(), "A1-A2/E4: {report:?}");
     assert!(
         sessions
@@ -983,16 +986,19 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
         let before_barrier = sessions.get(&SessionId::from(session_id)).await.unwrap();
         assert!(
             matches!(
-                app.replace_session_resource_manifest(
-                    &SessionId::from(session_id),
-                    ReplaceSessionResourceManifest {
-                        request_fingerprint: awaken_agent_contract::stable_fingerprint(&manifest),
-                        resources: manifest.clone(),
-                        expected_resource_revision: None,
-                        idempotency_key: None,
-                    },
-                )
-                .await,
+                app.resource_manifests
+                    .replace_session_resource_manifest(
+                        &SessionId::from(session_id),
+                        ReplaceSessionResourceManifest {
+                            request_fingerprint: awaken_agent_contract::stable_fingerprint(
+                                &manifest
+                            ),
+                            resources: manifest.clone(),
+                            expected_resource_revision: None,
+                            idempotency_key: None,
+                        },
+                    )
+                    .await,
                 Err(SessionResourceManifestError::Conflict)
             ),
             "R2/E2"
@@ -1004,7 +1010,10 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
         );
 
         ingress.fail_next_retirement();
-        let first = app.reconcile_resource_activations().await;
+        let first = app
+            .resource_reconciliation
+            .reconcile_resource_activations()
+            .await;
         assert_eq!(first.failures.len(), 1, "R1/E1: {first:?}");
         assert!(
             !sessions
@@ -1035,7 +1044,10 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
     );
     let app =
         repository_retirement_application(sessions.clone(), registry.clone(), ingress.clone());
-    let restarted = app.reconcile_resource_activations().await;
+    let restarted = app
+        .resource_reconciliation
+        .reconcile_resource_activations()
+        .await;
     assert!(restarted.failures.is_empty(), "R3/E3-E4: {restarted:?}");
     assert!(
         sessions
@@ -1064,6 +1076,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
     );
 
     let admitted = app
+        .resource_manifests
         .replace_session_resource_manifest(
             &SessionId::from(session_id),
             ReplaceSessionResourceManifest {
@@ -4742,7 +4755,8 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     );
 
     assert_eq!(
-        app.session_thread_usage(&SessionId::from("advisor-usage"), "advisor-usage")
+        app.observations
+            .session_thread_usage(&SessionId::from("advisor-usage"), "advisor-usage")
             .await
             .expect("A1 primary usage")
             .output_tokens,
@@ -4750,7 +4764,8 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
         "A1/E1 primary attribution"
     );
     assert_eq!(
-        app.session_thread_usage(&SessionId::from("advisor-usage"), "advisor-thread")
+        app.observations
+            .session_thread_usage(&SessionId::from("advisor-usage"), "advisor-thread")
             .await
             .expect("A1 Advisor usage")
             .output_tokens,
@@ -4758,6 +4773,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
         "A1/E1 Advisor attribution"
     );
     let usage = app
+        .observations
         .session_usage("advisor-usage", None)
         .await
         .expect("A1 Session usage");
@@ -4784,6 +4800,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
         "A1 every counter and model attribution; Session owns active time"
     );
     let gated_usage = app
+        .observations
         .session_usage_for_model_request("advisor-usage", "advisor-thread")
         .await
         .expect("A2 gated Session usage");
@@ -4831,7 +4848,8 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
         "A3 repeated Thread fixture"
     );
     assert_eq!(
-        app.session_usage("advisor-usage", None)
+        app.observations
+            .session_usage("advisor-usage", None)
             .await
             .unwrap()
             .output_tokens,
@@ -4839,7 +4857,8 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
         "A3 cumulative usage once"
     );
     assert_eq!(
-        app.session_usage_for_model_request("advisor-usage", "advisor-thread")
+        app.observations
+            .session_usage_for_model_request("advisor-usage", "advisor-thread")
             .await
             .unwrap()
             .output_tokens,
@@ -4867,6 +4886,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     let before = runtime.usage_relationship_reads.load(Ordering::SeqCst);
     runtime.usage_thread_reads.lock().unwrap().clear();
     let usage = app
+        .observations
         .session_usage("advisor-usage", Some(&observed))
         .await
         .unwrap();
@@ -4883,7 +4903,8 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     );
     runtime.usage_thread_reads.lock().unwrap().clear();
     assert_eq!(
-        app.session_usage("advisor-usage", Some(&[]))
+        app.observations
+            .session_usage("advisor-usage", Some(&[]))
             .await
             .unwrap()
             .output_tokens,
@@ -4900,7 +4921,8 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
         "A5 explicit empty observation is not discovery"
     );
     assert_eq!(
-        app.session_usage("advisor-usage", None)
+        app.observations
+            .session_usage("advisor-usage", None)
             .await
             .unwrap()
             .output_tokens,
@@ -4918,7 +4940,8 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
         ("executing-before-link", 35),
     ] {
         assert_eq!(
-            app.session_usage_for_model_request("advisor-usage", additional)
+            app.observations
+                .session_usage_for_model_request("advisor-usage", additional)
                 .await
                 .unwrap()
                 .output_tokens,
@@ -4934,7 +4957,8 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
         .store(true, Ordering::SeqCst);
     runtime.usage_thread_reads.lock().unwrap().clear();
     assert_eq!(
-        app.session_usage("advisor-usage", None)
+        app.observations
+            .session_usage("advisor-usage", None)
             .await
             .unwrap_err()
             .kind,
@@ -4943,7 +4967,8 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     );
     assert!(runtime.usage_thread_reads.lock().unwrap().is_empty());
     assert_eq!(
-        app.session_usage("advisor-usage", Some(&observed))
+        app.observations
+            .session_usage("advisor-usage", Some(&observed))
             .await
             .unwrap(),
         expected_one,
@@ -4957,6 +4982,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     for invalid in [vec![foreign.clone()], vec![observed[0].clone(), foreign]] {
         runtime.usage_thread_reads.lock().unwrap().clear();
         let error = app
+            .observations
             .session_usage("advisor-usage", Some(&invalid))
             .await
             .unwrap_err();
@@ -4973,7 +4999,8 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     let mut root_entry = observed[0].clone();
     root_entry.thread_id = ThreadId("advisor-usage".into());
     assert_eq!(
-        app.session_usage("advisor-usage", Some(&[root_entry]))
+        app.observations
+            .session_usage("advisor-usage", Some(&[root_entry]))
             .await
             .unwrap()
             .output_tokens,

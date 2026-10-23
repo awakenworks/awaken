@@ -16,19 +16,19 @@ use awaken_session_state_contract::{IdempotencyRecord, SessionExecutionState};
 use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 
-use super::{
-    ReplaceSessionResourceManifest, SessionResourceManifestError, SessionResourceManifestOutcome,
-};
 use crate::mutation::repository_failure;
 use crate::resource_lowering::{ResourceLowering, live_file_binding_id, normalized_mount};
 use crate::session_input::{MAX_SESSION_FILE_RESOURCES, input_binding};
 use crate::session_resource::{
     ResolvedInputSource, ResolvedSessionResources, SessionInputAttachment,
 };
-use crate::{SessionApplication, SessionInputRequest, SessionInputTarget, SessionPreparationError};
+use crate::{
+    SessionInputRequest, SessionInputTarget, SessionMutationError, SessionPreparationError,
+};
 use awaken_resource_contract::BindingId;
 use awaken_session_state_contract::PersistedSession;
-use awaken_session_types::SessionId;
+use awaken_session_types::{SessionId, SessionRevision};
+use std::sync::Arc;
 
 fn resource_manifest_operation_id(session_id: &str, idempotency_key: &str) -> String {
     stable_fingerprint(&(session_id, idempotency_key))
@@ -48,7 +48,138 @@ fn resource_manifest_idempotency_record(
     }
 }
 
-impl SessionApplication {
+/// Protocol-neutral whole-manifest command. The interface owns request
+/// canonicalization; the Session application owns desired-state persistence,
+/// idempotency, and realization ordering.
+#[derive(Clone, Debug)]
+pub struct ReplaceSessionResourceManifest {
+    pub resources: ResolvedSessionResources,
+    /// Optimistic fence for the Resource sub-aggregate, not the Session root.
+    /// Runtime realization lease renewals advance the root revision without
+    /// changing this generation and therefore must not starve Resource writes.
+    pub expected_resource_revision: Option<u64>,
+    pub idempotency_key: Option<String>,
+    pub request_fingerprint: String,
+}
+
+/// Durable command receipt plus the latest aggregate projection. The command
+/// revision is stable across replay even if realization advances the root CAS.
+#[derive(Clone, Debug)]
+pub struct SessionResourceManifestOutcome {
+    pub session: PersistedSession,
+    pub command_revision: SessionRevision,
+    pub command_applied: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SessionResourceManifestError {
+    #[error("Session was not found")]
+    NotFound,
+    #[error("Session is terminal")]
+    Terminal,
+    #[error("Session revision conflict")]
+    Conflict,
+    #[error("Session idempotency key was reused with another manifest")]
+    IdempotencyMismatch,
+    #[error("Session resource manifest was rejected: {0}")]
+    Rejected(#[source] RunError),
+    /// Desired truth already committed; a retry/reconciler may repair the
+    /// disposable Runtime projection without accepting another generation.
+    #[error("Session resource realization failed after commit: {source}")]
+    ProjectionAfterCommit {
+        outcome: Box<SessionResourceManifestOutcome>,
+        #[source]
+        source: SessionPreparationError,
+    },
+    #[error("Session resource persistence is unavailable: {0}")]
+    Unavailable(String),
+}
+
+impl SessionResourceManifestError {
+    pub(crate) fn mutation(error: SessionMutationError) -> Self {
+        match error {
+            SessionMutationError::NotFound => Self::NotFound,
+            SessionMutationError::Conflict => Self::Conflict,
+            SessionMutationError::IdempotencyMismatch => Self::IdempotencyMismatch,
+            SessionMutationError::Unavailable(message) => Self::Unavailable(message),
+        }
+    }
+}
+
+/// The Session Resource commands: replace the complete desired manifest,
+/// attach a live File and detach an input, each with its exact idempotent
+/// receipt, then converge the accepted generation. It holds the CAS kernel,
+/// the clock, the Resource commit bracket, the Session Work projection, the
+/// Repository participants and Resource reconciliation, plus the Resource
+/// Registry and realization-effects role the request lowering reads.
+pub struct SessionResourceManifests {
+    mutations: Arc<crate::SessionMutations>,
+    clock: Arc<dyn awaken_time::WallClock>,
+    resource_references: Arc<crate::SessionResourceReferences>,
+    work_assignments: Arc<crate::SessionWorkAssignments>,
+    repository_participants: Arc<crate::SessionRepositoryParticipants>,
+    resource_reconciliation: Arc<crate::SessionResourceReconciliation>,
+    resource_registry: Option<Arc<dyn awaken_resource_contract::ResourceRegistry>>,
+    realization_effects: Arc<dyn awaken_session_execution_contract::RealizationEffects>,
+}
+
+/// The collaborators one [`SessionResourceManifests`] is built from.
+pub(crate) struct SessionResourceManifestCollaborators {
+    pub(crate) mutations: Arc<crate::SessionMutations>,
+    pub(crate) clock: Arc<dyn awaken_time::WallClock>,
+    pub(crate) resource_references: Arc<crate::SessionResourceReferences>,
+    pub(crate) work_assignments: Arc<crate::SessionWorkAssignments>,
+    pub(crate) repository_participants: Arc<crate::SessionRepositoryParticipants>,
+    pub(crate) resource_reconciliation: Arc<crate::SessionResourceReconciliation>,
+    pub(crate) resource_registry: Option<Arc<dyn awaken_resource_contract::ResourceRegistry>>,
+    pub(crate) realization_effects: Arc<dyn awaken_session_execution_contract::RealizationEffects>,
+}
+
+impl SessionResourceManifests {
+    pub(crate) fn new(collaborators: SessionResourceManifestCollaborators) -> Self {
+        let SessionResourceManifestCollaborators {
+            mutations,
+            clock,
+            resource_references,
+            work_assignments,
+            repository_participants,
+            resource_reconciliation,
+            resource_registry,
+            realization_effects,
+        } = collaborators;
+        Self {
+            mutations,
+            clock,
+            resource_references,
+            work_assignments,
+            repository_participants,
+            resource_reconciliation,
+            resource_registry,
+            realization_effects,
+        }
+    }
+
+    /// The Resource commit bracket this component commits through.
+    #[cfg(test)]
+    pub(crate) fn resource_references(&self) -> &crate::SessionResourceReferences {
+        &self.resource_references
+    }
+
+    /// The request lowering over this component's Resource authorities.
+    pub(crate) fn lowering<'a>(
+        &'a self,
+        session_id: &'a str,
+        owner_scope: &'a str,
+    ) -> ResourceLowering<'a> {
+        ResourceLowering::new(
+            self.resource_registry.as_deref(),
+            &self.repository_participants,
+            self.realization_effects.as_ref(),
+            session_id,
+            owner_scope,
+        )
+    }
+
     /// Resolve an exact command replay before an interface performs lowering
     /// side effects such as Repository/Vault configuration. The main command
     /// repeats this check to close the race with a concurrent first writer.
@@ -64,7 +195,8 @@ impl SessionApplication {
             request_fingerprint,
         );
         let Some(receipt) = self
-            .session_repository()
+            .mutations
+            .repository()
             .idempotency_receipt(session_id, &record.key)
             .await
             .map_err(repository_failure)
@@ -266,7 +398,8 @@ impl SessionApplication {
                 .map(|_| outcome.session.clone())
                 .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))
         } else if outcome.session.execution == SessionExecutionState::Idle {
-            self.reconcile_persisted_resources(&owner_scope, outcome.session.clone())
+            self.resource_reconciliation
+                .reconcile_persisted_resources(&owner_scope, outcome.session.clone())
                 .await
         } else {
             Ok(outcome.session.clone())
@@ -344,7 +477,7 @@ fn item_verb_manifest(
     }
 }
 
-impl SessionApplication {
+impl SessionResourceManifests {
     /// Replace the complete authored Resource manifest.
     ///
     /// | Rule | Cause | Effect |
@@ -386,7 +519,7 @@ impl SessionApplication {
                 ),
             ));
         }
-        let mut lowering = ResourceLowering::new(self, session_id.as_str(), &owner_scope);
+        let mut lowering = self.lowering(session_id.as_str(), &owner_scope);
         let resources = lowering
             .manifest(&request.inputs, &persisted)
             .await
@@ -485,7 +618,7 @@ impl SessionApplication {
                 "a Session supports at most {MAX_SESSION_FILE_RESOURCES} files"
             )));
         }
-        let lowering = ResourceLowering::new(self, session_id.as_str(), &owner_scope);
+        let lowering = self.lowering(session_id.as_str(), &owner_scope);
         let input = lowering
             .resolve(SessionInputAttachment {
                 binding: input_binding(

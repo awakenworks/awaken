@@ -20,7 +20,11 @@ impl ManagedState {
     /// facts reach this adapter through lifecycle delivery.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn reconcile_resource_activations(&self) -> usize {
-        let report = self.application.reconcile_resource_activations().await;
+        let report = self
+            .application
+            .resource_reconciliation()
+            .reconcile_resource_activations()
+            .await;
         for session in &report.settled {
             if let Err(error) = self.publish_persisted_session(session) {
                 tracing::warn!(

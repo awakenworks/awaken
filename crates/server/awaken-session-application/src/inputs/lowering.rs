@@ -1,24 +1,24 @@
 // @formal surface exclude=application_adapter
 // @formal owner crates/server/awaken-session-application/src/resource_reconciliation.rs
-// @formal owner crates/server/awaken-session-application/src/creation_request.rs
+// @formal owner crates/server/awaken-session-application/src/creation/request.rs
 // @formal owner crates/server/awaken-session-application/src/runtime_commands.rs
 // @formal reason: The original validated plan feeds the same Repository configuration and compensation;
 // @formal reason: this moved lowering loop makes no path/replacement, root CAS or cleanup decision.
 //! Consume the selected Inputs' validated plan through existing Repository effects.
 
 use super::PreparedSessionInputs;
-use crate::{SessionApplication, SessionInputTarget};
+use crate::{SessionInputTarget, SessionRepositoryParticipants};
 use awaken_session_types::RunError;
 
-impl SessionApplication {
+impl PreparedSessionInputs {
     /// Configure the Repository/Vault participants for one already-validated
     /// input plan. No path or replacement decision is recomputed here; a
     /// failure compensates every participant configured before it.
-    pub async fn lower_prepared_session_inputs(
+    pub(crate) async fn lower(
         &self,
+        participants: &SessionRepositoryParticipants,
         session_id: &str,
         owner_scope: &str,
-        prepared: &PreparedSessionInputs,
     ) -> Result<
         (
             Vec<crate::session_resource::SessionInputAttachment>,
@@ -26,9 +26,9 @@ impl SessionApplication {
         ),
         RunError,
     > {
-        let mut attachments = Vec::with_capacity(prepared.requests.len());
+        let mut attachments = Vec::with_capacity(self.requests.len());
         let mut repository_configurations = Vec::new();
-        for (index, request) in prepared.requests.iter().enumerate() {
+        for (index, request) in self.requests.iter().enumerate() {
             let repository_id = if let SessionInputTarget::Repository {
                 remote_url,
                 credential_material,
@@ -36,8 +36,7 @@ impl SessionApplication {
                 initial_commit,
             } = &request.target
             {
-                let configured = match self
-                    .repository_participants
+                let configured = match participants
                     .configure(crate::SessionRepositoryResourceInput {
                         id: format!("managed:{session_id}:repository:{index}"),
                         workspace_id: owner_scope.to_string(),
@@ -54,7 +53,7 @@ impl SessionApplication {
                 {
                     Ok(configured) => configured,
                     Err(first) => {
-                        self.compensate_request_repositories(
+                        participants.compensate(
                             session_id,
                             &repository_configurations,
                             "Managed Session Repository compensation remains pending after lowering failure",
@@ -69,7 +68,7 @@ impl SessionApplication {
             } else {
                 None
             };
-            let mut attachment = prepared.attachments[index].clone();
+            let mut attachment = self.attachments[index].clone();
             if let Some(repository_id) = repository_id {
                 attachment.binding.target =
                     awaken_resource_contract::InputResourceId::Repository(repository_id);

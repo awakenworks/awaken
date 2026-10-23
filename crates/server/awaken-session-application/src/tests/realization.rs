@@ -852,7 +852,8 @@ async fn rolled_back_resource_generation_recovers_only_the_installed_pair() {
     assert_eq!(projection.resources, installed, "G1/E2");
     assert!(projection.request_context.is_empty(), "G1/C4/E4");
 
-    app.reconcile_persisted_resources("workspace", session)
+    app.resource_reconciliation
+        .reconcile_persisted_resources("workspace", session)
         .await
         .expect("G1 active Runtime reconciliation");
     assert_eq!(
@@ -897,6 +898,7 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
     );
     let desired = file_resources("safe-boundary");
     let outcome = app
+        .resource_manifests
         .replace_session_resource_manifest(
             &SessionId::from("running-manifest"),
             ReplaceSessionResourceManifest {
@@ -952,7 +954,10 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
         )
         .await
         .unwrap();
-    let reconciliation = app.reconcile_resource_activations().await;
+    let reconciliation = app
+        .resource_reconciliation
+        .reconcile_resource_activations()
+        .await;
     assert!(reconciliation.failures.is_empty(), "M2/E2");
     let committed = repo
         .get(&SessionId::from("running-manifest"))
@@ -1040,21 +1045,23 @@ async fn assert_managed_and_frozen_resource_policy_rules(
         idempotency_key: None,
     };
 
-    app.replace_session_resource_manifest(
-        &SessionId::from("resource-managed"),
-        command(profiled_policy_manifest("next", 1)),
-    )
-    .await
-    .expect("R1/E1");
+    app.resource_manifests
+        .replace_session_resource_manifest(
+            &SessionId::from("resource-managed"),
+            command(profiled_policy_manifest("next", 1)),
+        )
+        .await
+        .expect("R1/E1");
 
     let frozen_before = repo.get(&SessionId::from("resource-frozen")).await.unwrap();
     assert!(
         matches!(
-            app.replace_session_resource_manifest(
-                &SessionId::from("resource-frozen"),
-                command(profiled_policy_manifest("next", 1)),
-            )
-            .await,
+            app.resource_manifests
+                .replace_session_resource_manifest(
+                    &SessionId::from("resource-frozen"),
+                    command(profiled_policy_manifest("next", 1)),
+                )
+                .await,
             Err(SessionResourceManifestError::Rejected(_))
         ),
         "R2/E2"
@@ -1076,20 +1083,22 @@ async fn assert_file_resource_and_credential_policy_rules(
         expected_resource_revision: None,
         idempotency_key: None,
     };
-    app.replace_session_resource_manifest(
-        &SessionId::from("resource-files"),
-        command(profiled_policy_manifest("next", 1)),
-    )
-    .await
-    .expect("R3/E3");
+    app.resource_manifests
+        .replace_session_resource_manifest(
+            &SessionId::from("resource-files"),
+            command(profiled_policy_manifest("next", 1)),
+        )
+        .await
+        .expect("R3/E3");
     let files_before = repo.get(&SessionId::from("resource-files")).await.unwrap();
     assert!(
         matches!(
-            app.replace_session_resource_manifest(
-                &SessionId::from("resource-files"),
-                command(profiled_policy_manifest("next", 2)),
-            )
-            .await,
+            app.resource_manifests
+                .replace_session_resource_manifest(
+                    &SessionId::from("resource-files"),
+                    command(profiled_policy_manifest("next", 2)),
+                )
+                .await,
             Err(SessionResourceManifestError::Rejected(_))
         ),
         "R4/E4"
@@ -1660,7 +1669,10 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup_case() {
             ..Default::default()
         },
     );
-    let report = application.reconcile_resource_activations().await;
+    let report = application
+        .resource_reconciliation
+        .reconcile_resource_activations()
+        .await;
     assert!(report.failures.is_empty(), "W2/E2: {:#?}", report.failures);
     assert_eq!(report.settled.len(), 1, "W2/E2 durable pending root");
 
@@ -3522,7 +3534,10 @@ async fn recovery_treats_a_concurrently_deleted_terminal_session_as_converged() 
     // The recovery scan already holds the terminal candidate when an eager
     // cleanup actor wins and removes the aggregate before the re-read.
     repository.get_not_found_once();
-    let report = application.reconcile_resource_activations().await;
+    let report = application
+        .resource_reconciliation
+        .reconcile_resource_activations()
+        .await;
 
     assert!(
         report.failures.is_empty(),
@@ -4228,9 +4243,12 @@ async fn realization_owner_follows_the_frozen_placement_decision_table() {
             "{rule}/frozen"
         );
     }
-    assert_eq!(local.runtime_placement(), SessionRuntimePlacement::Local);
     assert_eq!(
-        registered.runtime_placement(),
+        local.creation_commands.runtime_placement(),
+        SessionRuntimePlacement::Local
+    );
+    assert_eq!(
+        registered.creation_commands.runtime_placement(),
         SessionRuntimePlacement::Worker
     );
 }

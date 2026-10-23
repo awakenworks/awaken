@@ -11,9 +11,10 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
 use awaken_session_application::{
-    DeploymentSessionEnvironment, ProfiledSessionCommands, SessionApplication, SessionCreation,
-    SessionCredentialCommands, SessionEventBatches, SessionObservation, SessionProjectionReads,
-    SessionResourceCommands, SessionRootReads, SessionTermination, SessionUpdates,
+    DeploymentSessionEnvironment, ProfiledSessionCommands, ProfiledSessionReplies,
+    SessionApplication, SessionCreation, SessionCredentialCommands, SessionEventBatches,
+    SessionObservation, SessionProjectionReads, SessionResourceCommands, SessionRootReads,
+    SessionTermination, SessionUpdates,
 };
 use awaken_time::WallClock;
 
@@ -31,6 +32,7 @@ pub(crate) struct SessionApplicationRoles {
     pub(crate) projection: Arc<dyn SessionProjectionReads>,
     pub(crate) events: Arc<dyn SessionEventBatches>,
     pub(crate) profiled: Arc<dyn ProfiledSessionCommands>,
+    pub(crate) profiled_replies: Arc<dyn ProfiledSessionReplies>,
     pub(crate) termination: Arc<dyn SessionTermination>,
     pub(crate) updates: Arc<dyn SessionUpdates>,
     pub(crate) resources: Arc<dyn SessionResourceCommands>,
@@ -43,16 +45,17 @@ pub(crate) struct SessionApplicationRoles {
 impl SessionApplicationRoles {
     pub(super) fn of(application: &Arc<SessionApplication>) -> Self {
         Self {
-            creation: application.clone(),
+            creation: application.creation_commands(),
             credentials: application.credentials(),
             roots: application.queries(),
             projection: application.queries(),
             events: application.clone(),
-            profiled: application.clone(),
+            profiled: application.run_admissions(),
+            profiled_replies: application.clone(),
             termination: application.termination_commands(),
             updates: application.update_commands(),
-            resources: application.clone(),
-            observation: application.clone(),
+            resources: application.resource_manifests(),
+            observation: application.observations(),
             deployments: application.clone(),
             clock: application.clock(),
         }

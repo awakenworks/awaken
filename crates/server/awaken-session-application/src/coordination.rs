@@ -107,7 +107,8 @@ impl SessionApplication {
             .await
             .map_err(crate::SessionActivityError::mutation)
             .map_err(crate::SessionActivityError::run_error)?;
-        self.admit_run_session(&owner_scope, session_id.as_str(), agent_id)
+        self.run_admissions
+            .admit_run_session(&owner_scope, session_id.as_str(), agent_id)
             .await?;
         self.activities
             .begin_activity_for_operation_with_policy(
@@ -185,6 +186,7 @@ impl SessionApplication {
             return Ok(session);
         }
         let usage = self
+            .observations
             .session_usage_for_model_request(session.session_id.as_str(), &source_thread_id.0)
             .await?;
         self.lifecycle
@@ -710,6 +712,7 @@ impl SessionAgentCoordination for SessionApplication {
             self.lifecycle.request_reconciliation();
         }
         let usage = self
+            .observations
             .session_usage_for_model_request(session_id.as_str(), &thread_id.0)
             .await?;
         self.lifecycle

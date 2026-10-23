@@ -242,7 +242,8 @@ async fn reserved_run_without_activity_recovers_through_the_same_operation_recei
         data_subject_id: None,
         traceparent: None,
     };
-    warm.admit_run_session("workspace", "reservation-before-activity", "agent")
+    warm.run_admissions
+        .admit_run_session("workspace", "reservation-before-activity", "agent")
         .await
         .expect("C1 canonical projection");
     assert_eq!(

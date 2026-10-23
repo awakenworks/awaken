@@ -1647,7 +1647,7 @@ async fn closed_interval_usage_keeps_its_committed_value_when_clock_and_activity
             )
             .await
             .unwrap();
-            let current = awaken_session_application::SessionApplication::project_session_usage(
+            let current = awaken_session_application::SessionObservations::project_session_usage(
                 &root,
                 [],
                 clock.now_ms(),

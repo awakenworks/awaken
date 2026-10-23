@@ -23,7 +23,19 @@ use awaken_session_state_contract::{
 };
 use awaken_session_types::RunError;
 
-use super::{SessionApplication, SessionMutationError};
+use std::sync::Arc;
+
+use super::SessionMutationError;
+
+mod baseline;
+mod profiled;
+mod request;
+
+pub use profiled::{CreateProfiledSessionCommand, ProfiledSessionRepositoryInput};
+pub use request::{
+    SessionBudgetRequest, SessionCreateProtocol, SessionCreateRequest, SessionCreateRequestError,
+    SessionModelRequest, SessionToolsOverride,
+};
 
 /// The only value admitted to the Session root-insert boundary.
 ///
@@ -512,24 +524,22 @@ impl SessionCreationError {
 
 /// Join the realized DTO to the controlled activation commit boundary.
 async fn commit_creation_activation(
-    application: &SessionApplication,
+    mutations: &crate::SessionMutations,
     owner: &str,
     session: PersistedSession,
 ) -> Result<crate::SnapshotCommit, SessionMutationError> {
     let candidate = crate::mutation::aggregate_from_snapshot(session)
         .map_err(crate::mutation::repository_failure)?;
-    application
-        .mutations
+    mutations
         .commit_session_snapshot_with_outcome(owner, candidate, "activate", Vec::new())
         .await
 }
 
 fn compile_creation_configuration(
-    application: &SessionApplication,
+    compiler: &dyn awaken_tool_contract::ToolConfigurationCompiler,
     mut intent: SessionCreationIntent,
     tools: SessionToolConfiguration,
 ) -> Result<(CompiledSessionCreation, SessionToolConfiguration), RunError> {
-    let compiler = application.tool_configuration_compiler.as_ref();
     intent.control.toolsets = crate::tool_compilation::compile_tool_settings(
         compiler,
         SessionToolConfiguration {
@@ -544,7 +554,126 @@ fn compile_creation_configuration(
     crate::tool_compilation::compile_tool_settings(compiler, tools).map(|tools| (compiled, tools))
 }
 
-impl SessionApplication {
+/// Session creation: a Managed request or a published Agent profile is
+/// resolved into one frozen baseline, its Repository participants are
+/// configured, and the complete root is committed through the one durable
+/// create protocol before realization and Work projection.
+///
+/// It holds the CAS kernel, the clock and lifecycle signal, the read, input,
+/// credential, Repository participant and Work components, the realization
+/// and terminal cleanup components a create drives or compensates through,
+/// the executable-projection refresh and tool compiler, the Resource Registry,
+/// the Environment, model and list-price catalogs, the process placement and
+/// the Runtime roles a baseline resolution reads.
+pub struct SessionCreationCommands {
+    mutations: Arc<crate::SessionMutations>,
+    clock: Arc<dyn awaken_time::WallClock>,
+    lifecycle: Arc<crate::SessionLifecycle>,
+    queries: Arc<crate::SessionQueries>,
+    inputs: Arc<crate::SessionInputs>,
+    credentials: Arc<crate::SessionCredentials>,
+    repository_participants: Arc<crate::SessionRepositoryParticipants>,
+    work_assignments: Arc<crate::SessionWorkAssignments>,
+    realizations: Arc<crate::SessionRealizations>,
+    terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
+    executable_projections: crate::ExecutableProjections,
+    tool_configuration_compiler: Arc<dyn awaken_tool_contract::ToolConfigurationCompiler>,
+    resource_registry: Option<Arc<dyn awaken_resource_contract::ResourceRegistry>>,
+    environment_projection: Arc<
+        dyn awaken_executable_environment_contract::SessionEnvironmentProjectionSource<
+                Snapshot = awaken_session_configuration_contract::EnvironmentSnapshot,
+            >,
+    >,
+    model_publication_resolver:
+        Option<Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>>,
+    managed_list_prices: Option<Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>>,
+    execution_placement: crate::SessionExecutionPlacement,
+    core: Arc<dyn awaken_session_execution_contract::SessionRuntime>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
+    environment: Arc<dyn awaken_session_execution_contract::EnvironmentRuntime>,
+    realization_effects: Arc<dyn awaken_session_execution_contract::RealizationEffects>,
+}
+
+/// The collaborators one [`SessionCreationCommands`] is built from.
+pub(crate) struct SessionCreationCollaborators {
+    pub(crate) mutations: Arc<crate::SessionMutations>,
+    pub(crate) clock: Arc<dyn awaken_time::WallClock>,
+    pub(crate) lifecycle: Arc<crate::SessionLifecycle>,
+    pub(crate) queries: Arc<crate::SessionQueries>,
+    pub(crate) inputs: Arc<crate::SessionInputs>,
+    pub(crate) credentials: Arc<crate::SessionCredentials>,
+    pub(crate) repository_participants: Arc<crate::SessionRepositoryParticipants>,
+    pub(crate) work_assignments: Arc<crate::SessionWorkAssignments>,
+    pub(crate) realizations: Arc<crate::SessionRealizations>,
+    pub(crate) terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
+    pub(crate) executable_projections: crate::ExecutableProjections,
+    pub(crate) tool_configuration_compiler:
+        Arc<dyn awaken_tool_contract::ToolConfigurationCompiler>,
+    pub(crate) resource_registry: Option<Arc<dyn awaken_resource_contract::ResourceRegistry>>,
+    pub(crate) environments: crate::SessionEnvironments,
+    pub(crate) model_publication_resolver:
+        Option<Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>>,
+    pub(crate) managed_list_prices:
+        Option<Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>>,
+    pub(crate) execution_placement: crate::SessionExecutionPlacement,
+    pub(crate) runtime: crate::SessionExecutor,
+}
+
+impl SessionCreationCommands {
+    pub(crate) fn new(collaborators: SessionCreationCollaborators) -> Self {
+        let SessionCreationCollaborators {
+            mutations,
+            clock,
+            lifecycle,
+            queries,
+            inputs,
+            credentials,
+            repository_participants,
+            work_assignments,
+            realizations,
+            terminal_cleanups,
+            executable_projections,
+            tool_configuration_compiler,
+            resource_registry,
+            environments,
+            model_publication_resolver,
+            managed_list_prices,
+            execution_placement,
+            runtime,
+        } = collaborators;
+        Self {
+            mutations,
+            clock,
+            lifecycle,
+            queries,
+            inputs,
+            credentials,
+            repository_participants,
+            work_assignments,
+            realizations,
+            terminal_cleanups,
+            executable_projections,
+            tool_configuration_compiler,
+            resource_registry,
+            environment_projection: environments.projection,
+            model_publication_resolver,
+            managed_list_prices,
+            execution_placement,
+            core: runtime.core.clone(),
+            thread_reads: runtime.thread_reads.clone(),
+            environment: runtime.environment.clone(),
+            realization_effects: runtime.realization_effects.clone(),
+        }
+    }
+
+    /// This process's realization identity, which a create receipt names.
+    #[must_use]
+    pub fn runtime_incarnation(&self) -> &str {
+        self.realizations.runtime_incarnation()
+    }
+}
+
+impl SessionCreationCommands {
     /// Create one Session through the only durable creation protocol.
     pub async fn create_session(
         &self,
@@ -596,16 +725,21 @@ impl SessionApplication {
         } = command;
         // Compile the complete intent before insert so invalid input can never
         // strand a durable Session waiting for a second authoring path.
-        let (compiled, tools) = match compile_creation_configuration(self, intent, tools) {
+        let (compiled, tools) = match compile_creation_configuration(
+            self.tool_configuration_compiler.as_ref(),
+            intent,
+            tools,
+        ) {
             Ok(compiled) => compiled,
             Err(error) => {
                 let first = SessionCreationError::Rejected(error);
-                self.compensate_request_repositories(
-                    &session_id,
-                    &repository_configurations,
-                    "Session Repository compensation remains pending after compile rejection",
-                )
-                .await;
+                self.repository_participants
+                    .compensate(
+                        &session_id,
+                        &repository_configurations,
+                        "Session Repository compensation remains pending after compile rejection",
+                    )
+                    .await;
                 return Err(first);
             }
         };
@@ -623,7 +757,7 @@ impl SessionApplication {
         };
         if let Err(error) = self.validate_session_sandbox_layout(&session_id, &layout) {
             let first = SessionCreationError::Rejected(error);
-            self.compensate_request_repositories(
+            self.repository_participants.compensate(
                 &session_id,
                 &repository_configurations,
                 "Session Repository compensation remains pending after Sandbox-layout rejection",
@@ -642,12 +776,13 @@ impl SessionApplication {
         ) {
             Ok(root) => root,
             Err(first) => {
-                self.compensate_request_repositories(
-                    &session_id,
-                    &repository_configurations,
-                    "Session Repository compensation remains pending after root compilation",
-                )
-                .await;
+                self.repository_participants
+                    .compensate(
+                        &session_id,
+                        &repository_configurations,
+                        "Session Repository compensation remains pending after root compilation",
+                    )
+                    .await;
                 return Err(first);
             }
         };
@@ -673,7 +808,7 @@ impl SessionApplication {
                 {
                     Ok(Some(session)) => return validated_create_replay(session, completion),
                     Ok(None) => {
-                        self.compensate_request_repositories(
+                        self.repository_participants.compensate(
                             &session_id,
                             &repository_configurations,
                             "Session Repository compensation remains pending after create failure",
@@ -692,7 +827,7 @@ impl SessionApplication {
                         // exact create receipt was not adopted. The compensation
                         // helper still rereads the root and preserves any
                         // participant referenced by a concurrent winner.
-                        self.compensate_request_repositories(
+                        self.repository_participants.compensate(
                             &session_id,
                             &repository_configurations,
                             "Session Repository compensation remains pending after deterministic create rejection",
@@ -784,7 +919,8 @@ impl SessionApplication {
             }
         };
 
-        persisted = match commit_creation_activation(self, &owner_scope, persisted).await {
+        persisted = match commit_creation_activation(&self.mutations, &owner_scope, persisted).await
+        {
             Ok(commit) => commit.into_session(),
             Err(SessionMutationError::Conflict) => {
                 // The realization is complete, so a concurrent root writer (or
@@ -820,5 +956,48 @@ impl SessionApplication {
             self.lifecycle.request_reconciliation();
         }
         Ok(persisted)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::SessionCreation for SessionCreationCommands {
+    async fn refresh_executable_projections(
+        &self,
+    ) -> Result<awaken_session_application_contract::ExecutableProjectionAdmission, String> {
+        self.executable_projections.refresh().await
+    }
+
+    async fn create_requested_session(
+        &self,
+        request: request::SessionCreateRequest,
+        protocol: &dyn request::SessionCreateProtocol,
+    ) -> Result<PersistedSession, request::SessionCreateRequestError> {
+        SessionCreationCommands::create_requested_session(self, request, protocol).await
+    }
+
+    async fn replay_session_create(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_types::SessionId,
+        idempotency: &awaken_session_state_contract::IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, SessionCreationError> {
+        self.mutations
+            .replay_session_create(owner_scope, session_id, idempotency)
+            .await
+    }
+
+    async fn replay_accepted_session_create(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_types::SessionId,
+        idempotency: &awaken_session_state_contract::IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, SessionCreationError> {
+        self.mutations
+            .replay_accepted_session_create(owner_scope, session_id, idempotency)
+            .await
+    }
+
+    fn runtime_incarnation(&self) -> &str {
+        SessionCreationCommands::runtime_incarnation(self)
     }
 }

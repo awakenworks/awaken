@@ -59,6 +59,7 @@ async fn application_creation_time_survives_process_crash_boundaries() {
         *faulting.create_crash_boundary.lock().unwrap() =
             Some((mode == "after", std::env::var(MARKER).unwrap().into()));
         timed_application(faulting, 100)
+            .creation_commands
             .create_session(command())
             .await
             .unwrap();
@@ -107,7 +108,11 @@ async fn application_creation_time_survives_process_crash_boundaries() {
             .await
             .ok();
         let app = timed_application(repo.clone(), 2_000);
-        let recovered = app.create_session(command()).await.unwrap();
+        let recovered = app
+            .creation_commands
+            .create_session(command())
+            .await
+            .unwrap();
         crash_traces.push(super::super::observation_refinement::root_observation(
             prior.as_ref(),
             Some(&recovered),
@@ -119,7 +124,10 @@ async fn application_creation_time_survives_process_crash_boundaries() {
             Some(if mode == "before" { 2_000 } else { 100 })
         );
         assert_eq!(
-            app.create_session(command()).await.unwrap(),
+            app.creation_commands
+                .create_session(command())
+                .await
+                .unwrap(),
             recovered,
             "T2 exact replay"
         );
@@ -167,7 +175,7 @@ async fn mutation_time_receipt_table(
     create.session_id = format!("time-receipt-{}", std::process::id());
     let faulting = Arc::new(FaultingSessionRepository::new(repo.clone()));
     let app = timed_application(faulting.clone(), 100);
-    let original = app.create_session(create).await.unwrap();
+    let original = app.creation_commands.create_session(create).await.unwrap();
     let app = timed_application(faulting.clone(), 200);
     let owner = app.queries().owner(&original.session_id).await.unwrap();
     let mut desired = original.clone();
@@ -270,6 +278,7 @@ async fn concurrent_root_cas_time_belongs_only_to_the_winner() {
             .unwrap(),
     );
     let initial = timed_application(repo.clone(), 100)
+        .creation_commands
         .create_session(command())
         .await
         .unwrap();

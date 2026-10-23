@@ -106,7 +106,7 @@ impl SessionInputs {
     /// ```
     ///
     /// The plan is consumed unchanged by
-    /// [`crate::SessionApplication::lower_prepared_session_inputs`].
+    /// `PreparedSessionInputs::lower` through the Repository participants.
     pub async fn prepare_session_inputs(
         &self,
         session_id: &str,

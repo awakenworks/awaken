@@ -65,6 +65,17 @@ impl SessionWorkAssignments {
         .await
     }
 
+    /// Wake one self-hosted Session's stopped Work item for an admitted Run.
+    pub(crate) async fn wake(
+        &self,
+        environment_id: &str,
+        session_id: &SessionId,
+    ) -> Result<String, RunError> {
+        self.assignment
+            .wake_session(environment_id, session_id)
+            .await
+    }
+
     /// Retire a terminal self-hosted Session's Work item. Only the terminal
     /// cleanup driver calls this, inside its recoverable fence.
     pub(crate) async fn retire(

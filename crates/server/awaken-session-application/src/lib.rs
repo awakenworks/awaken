@@ -11,23 +11,16 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use awaken_agent_contract::McpTarget;
 #[cfg(test)]
 use awaken_environment_contract::EnvItem;
 #[cfg(test)]
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
-use awaken_session_configuration_contract::{
-    is_native_session_runtime, validate_sandbox_provisioning_runtime,
-};
+use awaken_session_configuration_contract::EnvironmentSnapshot;
 use awaken_session_repository_contract::SessionRepository;
 use awaken_session_execution_contract::{McpAttachmentRealizer, SessionEnvironmentBindingSink};
 use awaken_session_state_contract::SessionEnvironmentFacts;
 use awaken_session_state_contract::SessionExecutionState;
 use awaken_session_types::RunError;
-use {
-    awaken_session_configuration_contract::EnvironmentSnapshot,
-    awaken_session_types::SessionRuntimePlacement,
-};
 use {
     awaken_session_state_contract::{PersistedSession, SessionScan},
     awaken_session_types::SessionRecoveryQuarantine,
@@ -189,11 +182,12 @@ pub use lifecycle_outbox_relay::{
 mod continuation;
 mod coordination;
 mod creation;
-mod creation_request;
 mod session_input;
 pub use continuation::{SessionContinuationError, SessionContinuations};
-pub use creation::{CreateSessionCommand, SessionCreateReceipt, SessionCreationError};
-pub use creation_request::{
+pub use creation::{
+    CreateSessionCommand, SessionCreateReceipt, SessionCreationCommands, SessionCreationError,
+};
+pub use creation::{
     SessionBudgetRequest, SessionCreateProtocol, SessionCreateRequest, SessionCreateRequestError,
     SessionModelRequest, SessionToolsOverride,
 };
@@ -218,7 +212,6 @@ mod resource_lowering;
 mod resource_reconciliation;
 mod roles;
 mod run_admission;
-mod run_events;
 mod runtime_commands;
 pub use awaken_session_realization_driver::{
     SessionTerminalCleanupDriveOutcome, drive_session_realization, drive_session_terminal_cleanup,
@@ -231,20 +224,25 @@ mod resource_references;
 pub use resource_references::SessionResourceReferences;
 mod terminal_cleanup;
 pub use terminal_cleanup::SessionTerminalCleanups;
+mod observations;
+pub use observations::SessionObservations;
 mod work_assignments;
 pub(crate) use resource_effect_authorization::require_live_root_lease;
-pub use resource_reconciliation::{
+mod resource_manifests;
+pub use creation::{CreateProfiledSessionCommand, ProfiledSessionRepositoryInput};
+pub use resource_manifests::{
     ReplaceSessionResourceManifest, SessionResourceAttachment, SessionResourceManifestError,
-    SessionResourceManifestOutcome, SessionResourceManifestRequest, SessionResourcePurgeGuard,
+    SessionResourceManifestOutcome, SessionResourceManifestRequest, SessionResourceManifests,
 };
+pub use resource_reconciliation::{SessionResourcePurgeGuard, SessionResourceReconciliation};
 pub use roles::{
-    DeploymentSessionEnvironment, ProfiledSessionCommands, SessionCreation,
+    DeploymentSessionEnvironment, ProfiledSessionCommands, ProfiledSessionReplies, SessionCreation,
     SessionCredentialCommands, SessionEventBatches, SessionObservation, SessionProjectionReads,
     SessionResourceCommands, SessionRootReads, SessionTermination, SessionUpdates,
 };
 pub use run_admission::{
-    CreateProfiledSessionCommand, ProfiledSessionRepositoryInput, RecoveredSessionProjection,
-    SessionProjectionRecoveryError, SessionRunApplication,
+    RecoveredSessionProjection, SessionProjectionRecoveryError, SessionRunAdmissions,
+    SessionRunApplication,
 };
 pub use runtime_commands::{
     SessionExecutionObservation, SessionModelRequestObservation, SessionRunExecutionObservation,
