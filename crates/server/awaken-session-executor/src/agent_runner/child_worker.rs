@@ -141,8 +141,9 @@ impl ChildWorkerFactory {
             ),
         ));
         let has_model_request_gate = context.model_request_gate.is_some();
+        let commit_boundaries = crate::host::boundary_run::CommitBoundaryAssembly::new(host);
         let mut worker = crate::host::boundary_run::construct_boundary_worker(
-            host,
+            &commit_boundaries,
             claimed,
             commit,
             Some(context),
