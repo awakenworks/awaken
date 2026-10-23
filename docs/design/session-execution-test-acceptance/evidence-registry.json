@@ -1,0 +1,254 @@
+[
+  {
+    "id": "E01",
+    "receipt": "target/lifecycle-evidence-20261019/environment-session-dispatch-windows-20261021T152725.109638Z/receipt.json",
+    "receipt_sha256": "a24c7f9cf9bc10a94417ad6bfea592f2357191879e70040244d227ca491d2984",
+    "source": {
+      "head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+      "tree": "2dc06c1882b54d7792e10678c0626741a4ce84ff",
+      "patch": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "status": ""
+    },
+    "platform": "native-Windows",
+    "passed": true,
+    "scope": "Environment 与当前 Session/Dispatch/Tool 组件，1064 例，范围内 Windows 三后端",
+    "features": "awaken-env-store/test-support,awaken-work-store/test-support,awaken-protocol-managed/test-support,awaken-session-application/test-support,awaken-session-executor/test-support,awaken-dispatch-execution/test-support",
+    "backends": [
+      "Volatile/InMemory",
+      "SQLite",
+      "PostgreSQL16"
+    ],
+    "actual_unique_cases": 1064,
+    "command_location": "receipt.rows[].argv or receipt.steps[].argv; original unnormalized commands remain in the immutable receipt",
+    "historical": false
+  },
+  {
+    "id": "E02",
+    "receipt": "target/lifecycle-evidence-20261019/memory-phase2-windows-20261021T004234.575098Z/receipt.json",
+    "receipt_sha256": "4291deef5de1b28a19995308b2d99302360503d96a54780a21b84cbcf9648068",
+    "source": {
+      "head": "489252bc4f3b7e45854455f187b892a0af70f622",
+      "tree": "4f28c494e4a1941594933b1ab0dedb0cb6462de3",
+      "patch": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "platform": "native-Windows",
+    "passed": true,
+    "scope": "Memory 第二阶段 717 例，原提交 489252bc4f；不是当前提交重新执行",
+    "features": "awaken-memory-store/test-support,awaken-memory-store/sqlite,awaken-memory-store/postgres,awaken-protocol-managed/test-support,awaken-cli/test-support,awaken-coordinator/test-support",
+    "backends": [
+      "Volatile/InMemory",
+      "SQLite",
+      "PostgreSQL16"
+    ],
+    "actual_unique_cases": 717,
+    "command_location": "receipt.rows[].argv or receipt.steps[].argv; original unnormalized commands remain in the immutable receipt",
+    "historical": true
+  },
+  {
+    "id": "E03",
+    "receipt": "target/lifecycle-evidence-20261019/memory-owner-windows-20261021T021840.418012Z/receipt.json",
+    "receipt_sha256": "3ab346534cd0244906a03c89922ee1299a1cd84c3560ef78cc5832b598c3f01d",
+    "source": {
+      "head": "489252bc4f3b7e45854455f187b892a0af70f622",
+      "tree": "4f28c494e4a1941594933b1ab0dedb0cb6462de3",
+      "patch": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "platform": "native-Windows",
+    "passed": true,
+    "scope": "Host/realization/Memory 810 例，原提交 489252bc4f 的 Windows 适用组件",
+    "features": "all-features",
+    "backends": null,
+    "actual_unique_cases": 810,
+    "command_location": "receipt.rows[].argv or receipt.steps[].argv; original unnormalized commands remain in the immutable receipt",
+    "historical": true
+  },
+  {
+    "id": "E04",
+    "receipt": "target/lifecycle-evidence-20261019/environment-upstream-windows-regressions-20261021T161335.275604Z/receipt.json",
+    "receipt_sha256": "601f047e4f1c4863bdfa42b89fed6b886f55340f52bc074dd3adde7903bf9917",
+    "source": {
+      "head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+      "tree": "2dc06c1882b54d7792e10678c0626741a4ce84ff",
+      "status": ""
+    },
+    "platform": "native-Windows-Msvc",
+    "passed": true,
+    "scope": "当前 Windows 进程树、Git 路径和 Provider admission，25 例",
+    "features": "awaken-session-executor/test-support,awaken-execution-composition/test-support,awaken-execution-composition/podman",
+    "backends": null,
+    "actual_unique_cases": 25,
+    "command_location": "receipt.rows[].argv or receipt.steps[].argv; original unnormalized commands remain in the immutable receipt",
+    "historical": false
+  },
+  {
+    "id": "E05",
+    "receipt": "target/lifecycle-evidence-20261019/managed-native-client-20261021T161857.397876Z/receipt.json",
+    "receipt_sha256": "f942ce69be4090fd8aac48b7ae182ac0b54acba896c44c9a3ef071ea24345b3a",
+    "source": {
+      "head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+      "tree": "2dc06c1882b54d7792e10678c0626741a4ce84ff",
+      "patch": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "platform": "native-Windows",
+    "passed": true,
+    "scope": "当前官方 SDK mock 请求/序列化/传输，48 例；不是实际 Awaken 服务 E2E",
+    "features": null,
+    "backends": null,
+    "actual_unique_cases": null,
+    "command_location": "receipt.rows[].argv or receipt.steps[].argv; original unnormalized commands remain in the immutable receipt",
+    "historical": false
+  },
+  {
+    "id": "E06",
+    "receipt": "target/lifecycle-evidence-20261019/memoryd-portable-windows-20261021T162033.260990Z/receipt.json",
+    "receipt_sha256": "5ab5a62c0d07726244feaaa62d04eed0269b4c2f258c5e3533a24a4851405691",
+    "source": {
+      "head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+      "tree": "2dc06c1882b54d7792e10678c0626741a4ce84ff",
+      "status": ""
+    },
+    "platform": "native-Windows-Msvc",
+    "passed": true,
+    "scope": "当前 Windows Copy/mounter，24 个唯一病例、双特性 48 次执行；不含内核 FUSE",
+    "features": {
+      "all-features": {
+        "actual_cases": [
+          "copy::tests::concurrent_create_is_not_deleted_as_locally_absent",
+          "copy::tests::concurrent_update_blocks_a_stale_local_delete",
+          "copy::tests::concurrent_update_wins_over_a_stale_local_edit",
+          "copy::tests::copy_admission_uses_the_same_physical_budgets_as_harvest",
+          "copy::tests::copy_inputs_use_the_one_atomic_snapshot_primitive",
+          "copy::tests::fuse_available_is_a_bool",
+          "copy::tests::harvest_creates_new_updates_changed_and_skips_unchanged",
+          "copy::tests::harvest_deletes_a_removed_file_matching_fuse_unlink",
+          "copy::tests::harvest_on_a_missing_root_fails_even_without_captured_heads",
+          "copy::tests::harvest_rejects_non_utf8_before_any_mutation",
+          "copy::tests::materialize_writes_files_including_nested_paths",
+          "copy::tests::unsupported_path_cas_never_falls_back_to_id_only_write",
+          "mounter::tests::a_read_only_copy_mount_does_not_harvest",
+          "mounter::tests::copy_fallback_materializes_then_harvests_a_writable_edit",
+          "mounter::tests::copy_only_mount_realizes_copy_and_harvests_through_the_public_api",
+          "mounter::tests::distinct_stores_are_content_isolated_not_just_distinct_paths",
+          "mounter::tests::projection_cleanup_removes_directory_and_never_follows_symlink",
+          "mounter::tests::recovered_copy_reconciles_surviving_files_without_a_live_guard",
+          "mounter::tests::remount_starts_from_store_truth_and_drops_stale_projection_bytes",
+          "tests::immediate_children_rolls_up_one_level",
+          "tests::splice_overwrites_and_extends_with_zero_fill",
+          "tests::splice_rejects_a_negative_offset",
+          "tests::splice_rejects_a_non_utf8_result",
+          "tests::splice_rejects_oversized_projection_before_allocating"
+        ],
+        "actual_count": 24,
+        "executable": "F:\\BuildCache\\awaken\\lifecycle-followup-20261018\\target\\debug\\deps\\awaken_sandbox_memoryd-e7af5c0a1b42a4d3.exe",
+        "sha256": "146d8e0a48f9aadfefa8c07a6c68917364c66fc8f5119499eecd598d42d2a14e"
+      },
+      "no-default-features": {
+        "actual_cases": [
+          "copy::tests::concurrent_create_is_not_deleted_as_locally_absent",
+          "copy::tests::concurrent_update_blocks_a_stale_local_delete",
+          "copy::tests::concurrent_update_wins_over_a_stale_local_edit",
+          "copy::tests::copy_admission_uses_the_same_physical_budgets_as_harvest",
+          "copy::tests::copy_inputs_use_the_one_atomic_snapshot_primitive",
+          "copy::tests::fuse_available_is_a_bool",
+          "copy::tests::harvest_creates_new_updates_changed_and_skips_unchanged",
+          "copy::tests::harvest_deletes_a_removed_file_matching_fuse_unlink",
+          "copy::tests::harvest_on_a_missing_root_fails_even_without_captured_heads",
+          "copy::tests::harvest_rejects_non_utf8_before_any_mutation",
+          "copy::tests::materialize_writes_files_including_nested_paths",
+          "copy::tests::unsupported_path_cas_never_falls_back_to_id_only_write",
+          "mounter::tests::a_read_only_copy_mount_does_not_harvest",
+          "mounter::tests::copy_fallback_materializes_then_harvests_a_writable_edit",
+          "mounter::tests::copy_only_mount_realizes_copy_and_harvests_through_the_public_api",
+          "mounter::tests::distinct_stores_are_content_isolated_not_just_distinct_paths",
+          "mounter::tests::projection_cleanup_removes_directory_and_never_follows_symlink",
+          "mounter::tests::recovered_copy_reconciles_surviving_files_without_a_live_guard",
+          "mounter::tests::remount_starts_from_store_truth_and_drops_stale_projection_bytes",
+          "tests::immediate_children_rolls_up_one_level",
+          "tests::splice_overwrites_and_extends_with_zero_fill",
+          "tests::splice_rejects_a_negative_offset",
+          "tests::splice_rejects_a_non_utf8_result",
+          "tests::splice_rejects_oversized_projection_before_allocating"
+        ],
+        "actual_count": 24,
+        "executable": "F:\\BuildCache\\awaken\\lifecycle-followup-20261018\\target\\debug\\deps\\awaken_sandbox_memoryd-a5403aaf41ca838f.exe",
+        "sha256": "0abba4191dc29ea1e21cf5045cf05542922a57aba519671c9ec0d1c181adf16f"
+      }
+    },
+    "backends": null,
+    "actual_unique_cases": 24,
+    "command_location": "receipt.rows[].argv or receipt.steps[].argv; original unnormalized commands remain in the immutable receipt",
+    "historical": false
+  },
+  {
+    "id": "E07",
+    "receipt": "target/lifecycle-evidence-20261019/environment-post-preflight-qualification-20261021T161333.837982Z/receipt.json",
+    "receipt_sha256": "b497eae97b7d4504f613c54a187bddd15ec24f9bc271ad0b4a0b08f12d44a3bf",
+    "source": {
+      "head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+      "tree": "2dc06c1882b54d7792e10678c0626741a4ce84ff",
+      "status": ""
+    },
+    "platform": "native-Windows-Msvc",
+    "passed": true,
+    "scope": "当前独立 SDK consumer 8 例、静态/CI/正式模型等分项汇总，不能重复累计子证明",
+    "features": null,
+    "backends": null,
+    "actual_unique_cases": null,
+    "command_location": "receipt.rows[].argv or receipt.steps[].argv; original unnormalized commands remain in the immutable receipt",
+    "historical": false
+  },
+  {
+    "id": "E08",
+    "receipt": "target/lifecycle-evidence-20261019/retirement-tlc-native-windows-20261021T152550.529413Z/receipt.json",
+    "receipt_sha256": "bc1c13f2e3bb062f42f64d6571fb32fbac63ef07f39068ba3c7be9fb0a9cbcc1",
+    "source": {
+      "head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+      "tree": "2dc06c1882b54d7792e10678c0626741a4ce84ff",
+      "status": ""
+    },
+    "platform": "native-Windows-Java",
+    "passed": true,
+    "scope": "当前有界 TLC 4 个正常配置及 9 个预期语义反例；不是任意状态证明",
+    "features": null,
+    "backends": null,
+    "actual_unique_cases": null,
+    "command_location": "receipt.rows[].argv or receipt.steps[].argv; original unnormalized commands remain in the immutable receipt",
+    "historical": false
+  },
+  {
+    "id": "E09",
+    "receipt": "target/lifecycle-evidence-20261019/resource-consumer-diagnostics-20261021T011737.368844Z/receipt.json",
+    "receipt_sha256": "9421c5897189b91cc1ca4df5830485e936108c3f080da555c9089ab12ca37a14",
+    "source": {
+      "head": "489252bc4f3b7e45854455f187b892a0af70f622",
+      "tree": "4f28c494e4a1941594933b1ab0dedb0cb6462de3",
+      "patch": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "platform": "native-Windows",
+    "passed": true,
+    "scope": "历史 Resources API 消费者 6 个正反编译控制",
+    "features": null,
+    "backends": null,
+    "actual_unique_cases": null,
+    "command_location": "receipt.rows[].argv or receipt.steps[].argv; original unnormalized commands remain in the immutable receipt",
+    "historical": true
+  },
+  {
+    "id": "E10",
+    "receipt": "target/lifecycle-evidence-20261019/file-authorization-windows-20261021T011802.576990Z/receipt.json",
+    "receipt_sha256": "086c403735b425dd6d4654e726b8ede80be25d3e8febddd278b7000db63af7e7",
+    "source": {
+      "head": "489252bc4f3b7e45854455f187b892a0af70f622",
+      "tree": "4f28c494e4a1941594933b1ab0dedb0cb6462de3",
+      "patch": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "platform": "native-Windows",
+    "passed": true,
+    "scope": "历史文件授权 19 个用例",
+    "features": null,
+    "backends": null,
+    "actual_unique_cases": 19,
+    "command_location": "receipt.rows[].argv or receipt.steps[].argv; original unnormalized commands remain in the immutable receipt",
+    "historical": true
+  }
+]
