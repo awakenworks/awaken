@@ -1,5 +1,5 @@
 # Hooks print nothing when every check passes; a failing check prints its own
-# output and name. (The reference-transaction hook runs on every ref update.)
+# output and name.
 output:
   - failure
 
@@ -473,10 +473,7 @@ push-qualification:
     frontend-quick:
       run: python3 scripts/ci/_native_shell.py scripts/ci/check-frontend.sh --quick
 
-# main stays linear: every update is a fast-forward of single-parent commits
-# (plan v4 D10). Checked before any ref moves, whatever command moves it.
-reference-transaction:
-  commands:
-    main-linear:
-      run: python3 scripts/ci/check_main_linear.py {1}
-      use_stdin: true
+# main stays linear and moves only from the integration worktree. That guard is
+# the standalone `reference-transaction` hook installed by
+# `scripts/ci/install_receive_hooks.py --install` (one owner: it must run for
+# pushes and for worktrees on any commit, so it is not a Lefthook command).
