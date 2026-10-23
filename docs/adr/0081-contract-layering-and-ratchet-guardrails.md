@@ -335,8 +335,9 @@ ladder:
 
 - `SessionRealizationControl` owns only begin/renew/activate/acknowledge/fail.
 - Resource materialization, checkpoint Artifact publication and terminal Memory
-  authorization are independent roles, combined only by
-  `SessionResourceEffectControl`.
+  authorization are independent roles, implemented together by the Session
+  application's `SessionResourceEffectAuthorization` component; each Worker
+  transport receives only the role it calls. No bundle trait combines them.
 - Cleanup discovery, preparation, disposal and root Repository publication are
   independent roles, combined only by `SessionTerminalCleanupControl`.
 - `ClaimedSessionRealizationControl` and

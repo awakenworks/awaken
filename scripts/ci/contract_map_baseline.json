@@ -13,12 +13,10 @@
   },
   "bundle-trait": {
     "AgentChannel": 1,
-    "CompleteSessionRealizationControl": 1,
     "CompleteSessionRuntime": 1,
     "ResourceReclamationRepository": 1,
     "ResourceRegistry": 1,
     "Sealed": 1,
-    "SessionResourceEffectControl": 1,
     "SessionStore": 1,
     "SessionTerminalCleanupControl": 1,
     "TenureScope": 1,

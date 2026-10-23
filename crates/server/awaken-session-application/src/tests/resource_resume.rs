@@ -154,7 +154,8 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                     )
                     .unwrap();
                 assert_eq!(
-                    app.authorize_resource_materialization_intent(&intent)
+                    app.resource_effect_authorization()
+                        .authorize_resource_materialization_intent(&intent)
                         .await
                         .unwrap(),
                     "workspace",
@@ -226,7 +227,8 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                     );
                     let before = repo.get(&SessionId::from(id)).await.unwrap();
                     assert!(
-                        app.authorize_resource_materialization_intent(&intent)
+                        app.resource_effect_authorization()
+                            .authorize_resource_materialization_intent(&intent)
                             .await
                             .is_err(),
                         "retired A cannot be read"
@@ -334,7 +336,10 @@ async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
                                 "committed" => source == 2,
                                 _ => true,
                             };
-                        let result = app.authorize_resource_materialization_intent(&intent).await;
+                        let result = app
+                            .resource_effect_authorization()
+                            .authorize_resource_materialization_intent(&intent)
+                            .await;
                         if allowed {
                             assert_eq!(
                                 result.unwrap(),

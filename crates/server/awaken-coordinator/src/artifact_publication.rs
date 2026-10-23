@@ -43,21 +43,19 @@ impl ClaimFencedArtifactPublisher {
         }
     }
 
-    /// Complete the all-in-one composition cycle after the Session application
-    /// has been constructed around the Runtime Host. The cell is write-once;
-    /// it is only a reference to the existing aggregate authority, never a
-    /// second cleanup state or cache.
-    pub fn install_session_control<T>(&self, control: Arc<T>) -> Result<(), &'static str>
-    where
-        T: awaken_session_realization_contract::SessionTerminalPreparationControl
-            + awaken_session_realization_contract::SessionCheckpointArtifactControl
-            + 'static,
-    {
+    /// Complete the all-in-one composition after the Session application and
+    /// its shared mutation Core have been selected. Each original role cell is
+    /// write-once; neither stores a second cleanup state or receipt cache.
+    pub fn install_session_control(
+        &self,
+        terminal: Arc<dyn awaken_session_realization_contract::SessionTerminalPreparationControl>,
+        checkpoint: Arc<dyn awaken_session_realization_contract::SessionCheckpointArtifactControl>,
+    ) -> Result<(), &'static str> {
         self.terminal_preparation_control
-            .set(control.clone())
+            .set(terminal)
             .map_err(|_| "Session terminal Artifact authority is already installed")?;
         self.checkpoint_artifact_control
-            .set(control)
+            .set(checkpoint)
             .map_err(|_| "Session checkpoint Artifact authority is already installed")
     }
 
@@ -497,13 +495,14 @@ mod tests {
                 dispatch.clone(),
                 awaken_time::system_clock(),
             );
+            let control = Arc::new(ExactResourceControl {
+                workspace_id: "workspace".into(),
+                asserted_effect,
+                current_lease,
+                checkpoint: None,
+            });
             publisher
-                .install_session_control(Arc::new(ExactResourceControl {
-                    workspace_id: "workspace".into(),
-                    asserted_effect,
-                    current_lease,
-                    checkpoint: None,
-                }))
+                .install_session_control(control.clone(), control)
                 .expect("install exact root authority");
             (publisher, inner)
         };
@@ -900,7 +899,7 @@ mod tests {
                 awaken_time::system_clock(),
             );
             if cause != "unavailable" {
-                peer.install_session_control(Arc::new(ExactResourceControl {
+                let control = Arc::new(ExactResourceControl {
                     workspace_id: "workspace".into(),
                     asserted_effect:
                         awaken_session_state_contract::SessionTerminalCleanupEffect::new(
@@ -913,8 +912,9 @@ mod tests {
                         ),
                     current_lease: lease,
                     checkpoint: Some(operation.clone()),
-                }))
-                .unwrap();
+                });
+                peer.install_session_control(control.clone(), control)
+                    .unwrap();
             }
             if cause == "changed" {
                 // Existing changed-authority row: keep the same corrupted wire,
@@ -976,6 +976,114 @@ mod tests {
                 expected,
                 "K1/K2 {cause}"
             );
+        }
+    }
+    #[test]
+    fn artifact_role_installation_preserves_original_order_and_duplicate_failure() {
+        // C1 terminal cell already installed; C2 checkpoint cell installed.
+        // Effects: E1 original first-cell refusal leaves checkpoint untouched;
+        // E2 original second-cell refusal retains the newly installed terminal;
+        // E3 both new role identities are installed. Decision table:
+        // C1 + (C2=*) => E1; !C1+C2 => E2; !C1+!C2 => E3.
+        // Installing two original role values
+        // cannot add rollback, a second observer, or fallback aggregate control.
+        for (terminal_bound, checkpoint_bound) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let make_control = || {
+                let lease =
+                    awaken_session_configuration_contract::resource::SessionRealizationLease {
+                        owner: "coordinator".into(),
+                        runtime_incarnation: "coordinator:incarnation".into(),
+                        epoch: 1,
+                        expires_at_unix_ms: 10_000,
+                    };
+                Arc::new(ExactResourceControl {
+                    workspace_id: "workspace".into(),
+                    asserted_effect:
+                        awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+                            awaken_session_state_contract::SessionCleanupCommand::new(
+                                &awaken_session_types::SessionId::from("session"),
+                                "session",
+                                "cleanup",
+                            ),
+                            lease.clone(),
+                        ),
+                    current_lease: lease,
+                    checkpoint: None,
+                })
+            };
+            let dispatch = Arc::new(
+                awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
+                    awaken_dispatch::MemoryDispatchStore::new(awaken_time::system_clock()),
+                )
+                    as Arc<dyn awaken_dispatch::DurableDispatch>),
+            );
+            let publisher = ClaimFencedArtifactPublisher::new(
+                Arc::new(RecordingPublisher::default()),
+                dispatch,
+                awaken_time::system_clock(),
+            );
+            let terminal: Arc<
+                dyn awaken_session_realization_contract::SessionTerminalPreparationControl,
+            > = make_control();
+            let checkpoint: Arc<
+                dyn awaken_session_realization_contract::SessionCheckpointArtifactControl,
+            > = make_control();
+            let prior_terminal: Arc<
+                dyn awaken_session_realization_contract::SessionTerminalPreparationControl,
+            > = make_control();
+            let prior_checkpoint: Arc<
+                dyn awaken_session_realization_contract::SessionCheckpointArtifactControl,
+            > = make_control();
+            if terminal_bound {
+                assert!(
+                    publisher
+                        .terminal_preparation_control
+                        .set(prior_terminal.clone())
+                        .is_ok()
+                );
+            }
+            if checkpoint_bound {
+                assert!(
+                    publisher
+                        .checkpoint_artifact_control
+                        .set(prior_checkpoint.clone())
+                        .is_ok()
+                );
+            }
+            let result = publisher.install_session_control(terminal.clone(), checkpoint.clone());
+            let expected = if terminal_bound {
+                Err("Session terminal Artifact authority is already installed")
+            } else if checkpoint_bound {
+                Err("Session checkpoint Artifact authority is already installed")
+            } else {
+                Ok(())
+            };
+            assert_eq!(result, expected);
+            let installed_terminal = publisher.terminal_preparation_control.get().unwrap();
+            assert!(Arc::ptr_eq(
+                installed_terminal,
+                if terminal_bound {
+                    &prior_terminal
+                } else {
+                    &terminal
+                }
+            ));
+            match publisher.checkpoint_artifact_control.get() {
+                Some(installed) => assert!(Arc::ptr_eq(
+                    installed,
+                    if checkpoint_bound {
+                        &prior_checkpoint
+                    } else {
+                        &checkpoint
+                    }
+                )),
+                None => assert!(
+                    terminal_bound && !checkpoint_bound,
+                    "E1 second cell stays empty"
+                ),
+            }
         }
     }
 }

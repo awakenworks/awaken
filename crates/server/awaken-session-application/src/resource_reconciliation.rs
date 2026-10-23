@@ -37,7 +37,9 @@ use super::{
 };
 
 mod manifest_command;
-mod materialization_authorization;
+#[cfg(test)]
+pub(crate) use manifest_command::MEMORY_STORE_CREATE_ONLY;
+pub use manifest_command::{SessionResourceAttachment, SessionResourceManifestRequest};
 mod ordinary_reconciliation_gate;
 mod purge_guard;
 #[cfg(test)]
@@ -213,7 +215,7 @@ pub enum SessionResourceManifestError {
 }
 
 impl SessionResourceManifestError {
-    fn mutation(error: SessionMutationError) -> Self {
+    pub(crate) fn mutation(error: SessionMutationError) -> Self {
         match error {
             SessionMutationError::NotFound => Self::NotFound,
             SessionMutationError::Conflict => Self::Conflict,
@@ -243,18 +245,18 @@ async fn reconcile_terminal_resource_candidate(
     }
 }
 
-impl SessionApplication {
-    fn terminal_cleanup_lease_matches(
-        session: &PersistedSession,
-        asserted: &SessionRealizationLease,
-    ) -> bool {
-        session.realization.as_ref().is_some_and(|current| {
-            awaken_session_realization_contract::realization_lease_generation_authorizes(
-                current, asserted,
-            )
-        })
-    }
+fn terminal_cleanup_lease_matches(
+    session: &PersistedSession,
+    asserted: &SessionRealizationLease,
+) -> bool {
+    session.realization.as_ref().is_some_and(|current| {
+        awaken_session_realization_contract::realization_lease_generation_authorizes(
+            current, asserted,
+        )
+    })
+}
 
+impl SessionApplication {
     /// Read one terminal-work projection from one Session-root snapshot.
     ///
     /// Cause/effect table: C1 the asserted generation matches the root's current
@@ -278,7 +280,7 @@ impl SessionApplication {
             .session_aggregate(session_id)
             .await
             .map_err(repository_control)?;
-        if !Self::terminal_cleanup_lease_matches(&session, lease) {
+        if !terminal_cleanup_lease_matches(&session, lease) {
             return Err(SessionRealizationControlFailure::StaleOwnership);
         }
         session
@@ -301,7 +303,7 @@ impl SessionApplication {
             .enter(|| mutations.session_aggregate(session_id))
             .await
             .map_err(repository_control)?;
-        if !Self::terminal_cleanup_lease_matches(&session, lease) {
+        if !terminal_cleanup_lease_matches(&session, lease) {
             return Err(SessionRealizationControlFailure::StaleOwnership);
         }
         session
@@ -327,27 +329,6 @@ impl SessionApplication {
         ))
     }
 
-    /// A terminal generation may carry an assertion whose original timestamp
-    /// elapsed, but starting any new Resource/provider effect still requires
-    /// the one current Session-root lease to be live. The aggregate's domain
-    /// authorization immediately after this gate proves same-generation
-    /// identity; this helper owns only the shared current-clock decision.
-    fn require_current_live_terminal_generation(
-        &self,
-        session: &PersistedSession,
-    ) -> Result<(), SessionRealizationControlFailure> {
-        if session.realization.as_ref().is_some_and(|current| {
-            awaken_session_realization_contract::realization_lease_is_live_at(
-                current.expires_at_unix_ms,
-                self.clock.now_ms(),
-            )
-        }) {
-            Ok(())
-        } else {
-            Err(SessionRealizationControlFailure::StaleOwnership)
-        }
-    }
-
     pub(crate) async fn authorize_terminal_cleanup_disposal_from_root(
         &self,
         effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
@@ -357,7 +338,7 @@ impl SessionApplication {
             .get(&effect.command.session_id)
             .await
             .map_err(repository_control)?;
-        self.require_current_live_terminal_generation(&session)?;
+        crate::require_live_root_lease(&session, self.clock.now_ms())?;
         let owner_scope = self
             .session_repository()
             .owner(&effect.command.session_id)
@@ -379,40 +360,6 @@ impl SessionApplication {
             .authorize_terminal_cleanup_disposal_effect(&owner_scope, effect)
             .map_err(terminal_cleanup_authorization_failure)?;
         Ok(owner_scope)
-    }
-
-    pub(crate) async fn authorize_terminal_memory_intent_from_root(
-        &self,
-        intent: &awaken_session_state_contract::SessionTerminalMemoryIntent,
-    ) -> Result<
-        awaken_session_state_contract::SessionTerminalMemoryTarget,
-        SessionRealizationControlFailure,
-    > {
-        let session_id = &intent.effect().command.session_id;
-        let session = self
-            .mutations
-            .session_aggregate(session_id)
-            .await
-            .map_err(repository_control)?;
-        self.require_current_live_terminal_generation(&session)?;
-        session
-            .authorize_terminal_memory_intent(intent)
-            .map_err(|error| match error {
-                awaken_session_state_contract::SessionMemoryReconciliationError::Cleanup(
-                    awaken_session_state_contract::SessionCleanupError::RealizationMismatch,
-                ) => SessionRealizationControlFailure::StaleOwnership,
-                error => SessionRealizationControlFailure::Invalid(error.to_string()),
-            })?;
-        let workspace_id = self
-            .session_repository()
-            .owner(session_id)
-            .await
-            .map_err(repository_control)?;
-        awaken_session_state_contract::SessionTerminalMemoryTarget::from_authorized_root(
-            workspace_id,
-            intent.clone(),
-        )
-        .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))
     }
 
     /// Project the root-only Repository publication effect under the exact
@@ -443,8 +390,8 @@ impl SessionApplication {
         // renewal. Starting a new credential/source effect still requires the
         // current root lease to be live; its exact readback travels with the
         // immutable command so transport adapters never reconstruct it.
-        self.require_current_live_terminal_generation(&session)?;
-        if !Self::terminal_cleanup_lease_matches(&session, lease) {
+        crate::require_live_root_lease(&session, self.clock.now_ms())?;
+        if !terminal_cleanup_lease_matches(&session, lease) {
             return Err(SessionRealizationControlFailure::StaleOwnership);
         }
         let terminal_cleanup = session
@@ -537,7 +484,7 @@ impl SessionApplication {
                     "Session is not terminal".into(),
                 ));
             }
-            if !Self::terminal_cleanup_lease_matches(&session, lease) {
+            if !terminal_cleanup_lease_matches(&session, lease) {
                 return Err(SessionRealizationControlFailure::StaleOwnership);
             }
             let changed = match effect.clone() {

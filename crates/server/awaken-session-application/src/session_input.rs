@@ -34,6 +34,43 @@ pub enum SessionInputTarget {
     },
 }
 
+impl SessionInputTarget {
+    /// Whether this target can retain an already-resolved source. The caller
+    /// still selects the matching mount and retains its complete input;
+    /// access and instructions are authored separately from this source rule.
+    #[must_use]
+    pub(crate) fn can_reuse_resolved_source(
+        &self,
+        source: &crate::session_resource::ResolvedInputSource,
+    ) -> bool {
+        use crate::session_resource::ResolvedInputSource;
+        match (self, source) {
+            (Self::File(requested), ResolvedInputSource::File { file_id }) => requested == file_id,
+            (
+                Self::MemoryStore(requested),
+                ResolvedInputSource::MemoryStore {
+                    memory_store_id, ..
+                },
+            ) => requested == memory_store_id,
+            (
+                Self::Repository {
+                    remote_url,
+                    credential_material,
+                    initial_branch,
+                    initial_commit,
+                },
+                ResolvedInputSource::Repository { config, .. },
+            ) => {
+                credential_material.is_none()
+                    && remote_url == &config.remote_url
+                    && initial_branch == &config.initial_branch
+                    && initial_commit == &config.initial_commit
+            }
+            _ => false,
+        }
+    }
+}
+
 /// One requested Session input, lowered from a protocol's wire resource.
 ///
 /// Consumers: Session creation and resource replacement, which admit, place
@@ -367,6 +404,128 @@ pub(super) async fn normalize_session_input_mounts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolved_source_reuse_follows_exact_target_identity() {
+        use crate::session_resource::ResolvedInputSource;
+        use awaken_resource_contract::{
+            ClonePolicy, ConfigVersion, MemoryStoreConfigVersion, RepositoryConfigVersion,
+            RetentionPolicy,
+        };
+
+        // Cause/effect graph: C1 target/source families match; C2 File/Memory
+        // ids match; C3 Repository material is absent; C4 URL, C5 branch and C6
+        // commit match. E1 reuse the existing source; E2 resolve a new source.
+        // Rules: R1 !C1 => E2; R2 File/Memory+C1+C2 => E1, !C2 => E2;
+        // R3 Repository+C1+C3+C4+C5+C6 => E1; each single failed C3-C6 => E2.
+        // The 3x3 table owns R1 and the same-family positives. R2's different
+        // ids and R3's independent failures follow. Matching None, branch and
+        // commit selections remain distinct accepted rows; branch+commit is
+        // excluded by Repository aggregate validation, not this predicate.
+        // Mount, access and instructions are not source facts: the original
+        // caller still selects same_mount, clones the complete ResolvedInput,
+        // then replaces access/instructions. The real K1 and Memory manifest
+        // tests own binding/config/pin preservation; this pure table does not
+        // qualify Registry/Vault, root-CAS or Runtime effects.
+        let repository_source =
+            |branch: Option<&str>, commit: Option<&str>| ResolvedInputSource::Repository {
+                repository_id: "repository".into(),
+                config: RepositoryConfigVersion {
+                    repository_id: "repository".into(),
+                    version: ConfigVersion(7),
+                    remote_url: "https://example.test/repository.git".into(),
+                    credential_binding: Some("repository:credential".into()),
+                    initial_branch: branch.map(str::to_string),
+                    initial_commit: commit.map(str::to_string),
+                    clone_policy: ClonePolicy::default(),
+                },
+                credential: None,
+            };
+        let repository_target =
+            |material: bool, url: &str, branch: Option<&str>, commit: Option<&str>| {
+                SessionInputTarget::Repository {
+                    remote_url: url.into(),
+                    credential_material: material.then(|| {
+                        awaken_credential_contract::CredentialMaterialInput::structured(
+                            "github",
+                            awaken_credential_contract::http_basic_material(
+                                awaken_agent_contract::RedactedString::new("user"),
+                                awaken_agent_contract::RedactedString::new("replacement"),
+                            ),
+                        )
+                    }),
+                    initial_branch: branch.map(str::to_string),
+                    initial_commit: commit.map(str::to_string),
+                }
+            };
+        let url = "https://example.test/repository.git";
+        let sources = [
+            ResolvedInputSource::File {
+                file_id: "file".into(),
+            },
+            ResolvedInputSource::MemoryStore {
+                memory_store_id: "memory".into(),
+                config: MemoryStoreConfigVersion {
+                    memory_store_id: "memory".into(),
+                    version: ConfigVersion(4),
+                    retention_policy: RetentionPolicy::default(),
+                },
+            },
+            repository_source(None, None),
+        ];
+        let targets = [
+            SessionInputTarget::File("file".into()),
+            SessionInputTarget::MemoryStore("memory".into()),
+            repository_target(false, url, None, None),
+        ];
+        let expected = [
+            [true, false, false],
+            [false, true, false],
+            [false, false, true],
+        ];
+        for (target_index, target) in targets.iter().enumerate() {
+            for (source_index, source) in sources.iter().enumerate() {
+                assert_eq!(
+                    target.can_reuse_resolved_source(source),
+                    expected[target_index][source_index],
+                    "R1/R2/R3 family {target_index}/{source_index}"
+                );
+            }
+        }
+        assert!(
+            !SessionInputTarget::File("other-file".into()).can_reuse_resolved_source(&sources[0]),
+            "R2 different File identity"
+        );
+        assert!(
+            !SessionInputTarget::MemoryStore("other-memory".into())
+                .can_reuse_resolved_source(&sources[1]),
+            "R2 different Memory identity"
+        );
+        for (rule, target) in [
+            ("C3 material", repository_target(true, url, None, None)),
+            (
+                "C4 URL",
+                repository_target(false, "https://example.test/other.git", None, None),
+            ),
+            (
+                "C5 branch",
+                repository_target(false, url, Some("main"), None),
+            ),
+            (
+                "C6 commit",
+                repository_target(false, url, None, Some("0123456789abcdef")),
+            ),
+        ] {
+            assert!(!target.can_reuse_resolved_source(&sources[2]), "R3 {rule}");
+        }
+        for (branch, commit) in [(Some("main"), None), (None, Some("0123456789abcdef"))] {
+            assert!(
+                repository_target(false, url, branch, commit)
+                    .can_reuse_resolved_source(&repository_source(branch, commit)),
+                "R3 matching checkout selection"
+            );
+        }
+    }
 
     #[test]
     fn derived_memory_mounts_are_unique_and_display_named() {

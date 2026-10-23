@@ -256,6 +256,14 @@ The application has no preparation forwarding method. Independently retained
 Inputs do not retain the application. Fixture port configuration must finish
 before sharing that component, as it already must for Queries.
 
+Worker Resource-effect authorization is its own use-case component,
+`SessionResourceEffectAuthorization`, over the sole Mutations kernel and the
+application clock. It implements the Resource materialization, checkpoint
+Artifact and terminal Memory roles; the application no longer implements them
+and no bundle trait combines them. Composition hands each Worker transport the
+one role it calls: terminal preparation and Repository publication stay with
+the application's terminal cleanup, Resource effects go to the component.
+
 Session process configuration and optional application features are installed by
 the consuming `SessionApplicationBuilder`. Production exposes no setters for
 credentials, models, Resources, Environment source or projection refresh.

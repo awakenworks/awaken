@@ -1097,7 +1097,7 @@ async fn mount_with_managed_over_and_models(
         )
         .with_worker_directory(worker_directory.clone())
         .with_session_file_authorization(session_application.queries())
-        .with_session_control(session_application.clone())
+        .with_session_control(session_application.resource_effect_authorization())
         .with_recovery(execution.worker_recovery.clone()),
     ));
     let artifact_publication =
@@ -1109,13 +1109,14 @@ async fn mount_with_managed_over_and_models(
                 worker_directory.clone(),
                 worker_clock.clone(),
             )
-            .with_session_control(session_application.clone()),
+            .with_terminal_preparation_control(session_application.clone())
+            .with_checkpoint_artifact_control(session_application.resource_effect_authorization()),
         ));
     let memory = worker_memory::memory_router(
         &resource_authorities,
         resource_registry.clone(),
         dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
-        session_application.clone(),
+        session_application.resource_effect_authorization(),
         worker_authenticator.clone(),
         worker_directory.clone(),
         worker_clock.clone(),
@@ -1127,7 +1128,8 @@ async fn mount_with_managed_over_and_models(
         worker_clock.clone(),
     )
     .with_worker_directory(worker_directory.clone())
-    .with_session_control(session_application.clone());
+    .with_materialization_control(session_application.resource_effect_authorization())
+    .with_publication_control(session_application.clone());
     let repository_service = match repository_transport_authorizer {
         Some(authorizer) => repository_service.with_transport_authorizer(authorizer),
         None => repository_service,
@@ -1147,7 +1149,7 @@ async fn mount_with_managed_over_and_models(
                     worker_clock.clone(),
                 )
                 .with_worker_directory(worker_directory.clone())
-                .with_session_control(session_application.clone()),
+                .with_session_control(session_application.resource_effect_authorization()),
             ),
         ));
     let commit = Arc::new(awaken_dispatch_http::ClaimedCommitHttpService::new(

@@ -342,22 +342,6 @@ pub trait SessionTerminalMemoryControl: Send + Sync {
         intent: &crate::SessionTerminalMemoryIntent,
     ) -> Result<crate::SessionTerminalMemoryTarget, SessionRealizationControlFailure>;
 }
-
-pub trait SessionResourceEffectControl:
-    SessionResourceMaterializationControl
-    + SessionCheckpointArtifactControl
-    + SessionTerminalMemoryControl
-{
-}
-
-impl<T> SessionResourceEffectControl for T where
-    T: SessionResourceMaterializationControl
-        + SessionCheckpointArtifactControl
-        + SessionTerminalMemoryControl
-        + ?Sized
-{
-}
-
 /// Required cursor protocol for bounded terminal cleanup claim sweeps. An older
 /// Worker that cannot advance a cursor is rejected before Control mutation.
 pub const TERMINAL_CLEANUP_SWEEP_CURSOR_VERSION: u8 = 1;
@@ -470,22 +454,6 @@ impl<T> SessionTerminalCleanupControl for T where
         + SessionTerminalPreparationControl
         + SessionTerminalDisposalControl
         + SessionTerminalRepositoryPublicationControl
-        + ?Sized
-{
-}
-
-/// Complete Control application surface. The canonical Session application
-/// implements all three roles; narrower transports depend on only the role they
-/// actually expose.
-pub trait CompleteSessionRealizationControl:
-    SessionRealizationControl + SessionResourceEffectControl + SessionTerminalCleanupControl
-{
-}
-
-impl<T> CompleteSessionRealizationControl for T where
-    T: SessionRealizationControl
-        + SessionResourceEffectControl
-        + SessionTerminalCleanupControl
         + ?Sized
 {
 }
