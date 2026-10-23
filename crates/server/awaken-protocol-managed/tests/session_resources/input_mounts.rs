@@ -197,3 +197,192 @@ async fn manifest_repository_preflight_precedes_missing_memory_lookup_and_partic
         "N4 exact root unchanged"
     );
 }
+
+#[tokio::test]
+async fn create_and_manifest_preserve_distinct_participant_prefixes_on_resolution_failure() {
+    // Cause/effect graph: C1 POST creation / PUT complete manifest; C2 the
+    // middle MemoryStore passes the shared normalizer, then its real Registry
+    // state becomes Suspended during the first Repository material ingress;
+    // C3 a second valid Repository follows it. The original Registry resolver,
+    // not a replacement resolver or a missing fixture, produces the first error.
+    //
+    // | Rule | C1 | C2 | C3 | configured/retired Repo prefix | root/Runtime |
+    // |---|---|---|---|---|---|
+    // | PFX1 | POST | yes | yes | before + after | unchanged |
+    // | PFX2 | PUT | yes | yes | before only; after absent | unchanged |
+    // Creation lowers all participants before its one final resolver; manifest
+    // lowering resolves each row before advancing. Both must return the same
+    // original NotActive error and compensate only their actual owned prefix.
+    // Existing successful routes cover C2=false; N4 covers preflight refusal.
+    const BEFORE: &str = "https://github.com/awaken/prefix-before.git";
+    const AFTER: &str = "https://github.com/awaken/prefix-after.git";
+    for whole_manifest in [false, true] {
+        let runtime = AcceptingFake::default();
+        let sessions = support::session_repository("participant prefix Session store").await;
+        let catalog = resource_registry().await;
+        let ingress = Arc::new(CountingCredentialMaterialIngress::default());
+        let clock = awaken_time::system_clock();
+        let state = awaken_protocol_managed_testkit::managed_state_from_parts(
+            Arc::new(runtime.clone()),
+            None,
+            sessions.clone(),
+            awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
+            clock,
+            Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+        .with_resource_registry(catalog.clone())
+        .with_credential_material_ingress(ingress.clone());
+        let app = router(Arc::new(state));
+        let id = if whole_manifest {
+            let created = call(&app, "POST", "/v1/sessions", Some(json!({"agent": "a"})))
+                .await
+                .expect(StatusCode::OK);
+            Some(created["id"].as_str().unwrap().to_string())
+        } else {
+            None
+        };
+        let roots_before = sessions
+            .scan(awaken_session_state_contract::SessionScanQuery::Workspace {
+                workspace_id: "default",
+            })
+            .await
+            .map(awaken_session_state_contract::SessionScan::into_sessions)
+            .unwrap();
+        let prepared_before = runtime.prepared.lock().unwrap().len();
+        let staged_before = runtime.staged.lock().unwrap().len();
+        let applied_before = runtime.applied.lock().unwrap().len();
+        *ingress.memory_change_after_first_write.lock().unwrap() = Some((
+            catalog.clone(),
+            awaken_resource_contract::ChangeMemoryStoreState {
+                workspace_id: "default".into(),
+                id: "mem_1".into(),
+                state: ResourceState::Suspended,
+            },
+        ));
+        let resources = json!([
+            {"type": "github_repository", "url": BEFORE,
+                "mount_path": "/workspace/prefix-before",
+                "authorization_token": "prefix-before-fixture" // awaken-allow(secret): deliberate test fixture
+            },
+            {"type": "memory_store", "memory_store_id": "mem_1"},
+            {"type": "github_repository", "url": AFTER,
+                "mount_path": "/workspace/prefix-after",
+                "authorization_token": "prefix-after-fixture" // awaken-allow(secret): deliberate test fixture
+            }
+        ]);
+        let (method, uri, body) = if let Some(id) = &id {
+            (
+                "PUT",
+                format!("/v1/awaken/sessions/{id}/resources"),
+                json!({"resources": resources}),
+            )
+        } else {
+            (
+                "POST",
+                "/v1/sessions".to_string(),
+                json!({"agent": "a", "resources": resources}),
+            )
+        };
+        let rejected = call(&app, method, &uri, Some(body))
+            .await
+            .expect(StatusCode::BAD_REQUEST);
+        assert!(
+            rejected
+                .to_string()
+                .contains("resource `mem_1` is not active (Suspended)"),
+            "PFX1/PFX2 original resolver error: {rejected}"
+        );
+        assert_eq!(
+            catalog
+                .find_memory_store("default", "mem_1")
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            ResourceState::Suspended,
+            "PFX1/PFX2 actual Registry change, not a resolver stub"
+        );
+        let expected_prefix = if whole_manifest { 1 } else { 2 };
+        let sources = ingress.sources.lock().unwrap().clone();
+        assert_eq!(sources.len(), expected_prefix, "PFX1/PFX2 ingress order");
+        assert_eq!(
+            ingress.writes.load(std::sync::atomic::Ordering::SeqCst),
+            expected_prefix
+        );
+        assert_eq!(
+            ingress
+                .retirements
+                .load(std::sync::atomic::Ordering::SeqCst),
+            expected_prefix
+        );
+        for (source, expected_remote) in sources.iter().zip([BEFORE, AFTER]) {
+            let repository_id = source.strip_suffix(":credential").unwrap();
+            let definition = catalog
+                .find_repository("default", repository_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let config = catalog
+                .find_repository_config("default", repository_id, ConfigVersion::INITIAL)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                definition.state,
+                ResourceState::Deleted,
+                "PFX1/PFX2 owned compensation"
+            );
+            assert_eq!(
+                config.remote_url, expected_remote,
+                "PFX1/PFX2 exact ordered participant"
+            );
+        }
+        if let Some(id) = id {
+            // Use the original public fingerprint function and original tuple
+            // to address the later participant that PUT must never register.
+            let later = format!(
+                "managed:{id}:repository:{}",
+                awaken_agent_contract::stable_fingerprint(&(
+                    "workspace/prefix-after",
+                    AFTER,
+                    None::<String>,
+                    None::<String>
+                ))
+            );
+            assert!(
+                catalog
+                    .find_repository("default", &later)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "PFX2 no later Registry participant, including a tombstone"
+            );
+        }
+        assert_eq!(
+            sessions
+                .scan(awaken_session_state_contract::SessionScanQuery::Workspace {
+                    workspace_id: "default",
+                })
+                .await
+                .map(awaken_session_state_contract::SessionScan::into_sessions)
+                .unwrap(),
+            roots_before,
+            "PFX1 no new root; PFX2 exact original root, including revision and resources"
+        );
+        assert_eq!(
+            runtime.prepared.lock().unwrap().len(),
+            prepared_before,
+            "PFX1/PFX2 no preparation"
+        );
+        assert_eq!(
+            runtime.staged.lock().unwrap().len(),
+            staged_before,
+            "PFX1/PFX2 no staging"
+        );
+        assert_eq!(
+            runtime.applied.lock().unwrap().len(),
+            applied_before,
+            "PFX1/PFX2 no apply"
+        );
+    }
+}

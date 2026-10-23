@@ -5,6 +5,12 @@ pub(super) struct CountingCredentialMaterialIngress {
     pub(super) writes: std::sync::atomic::AtomicUsize,
     pub(super) retirements: std::sync::atomic::AtomicUsize,
     pub(super) sources: std::sync::Mutex<Vec<String>>,
+    pub(super) memory_change_after_first_write: std::sync::Mutex<
+        Option<(
+            std::sync::Arc<dyn awaken_resource_contract::ResourceAdministration>,
+            awaken_resource_contract::ChangeMemoryStoreState,
+        )>,
+    >,
 }
 
 #[async_trait::async_trait]
@@ -19,6 +25,15 @@ impl awaken_credential_contract::CredentialMaterialIngress for CountingCredentia
             .lock()
             .unwrap()
             .push(command.source_id.0.clone());
+        // A test may change real Registry state at this observed effect
+        // boundary; the Registry and its normal resolver still own the result.
+        let pending = self.memory_change_after_first_write.lock().unwrap().take();
+        if let Some((registry, change)) = pending {
+            registry
+                .change_memory_store_state(change)
+                .await
+                .map_err(|error| format!("Memory fixture state change failed: {error}"))?;
+        }
         Ok(awaken_credential_contract::MaterialEntry {
             credential: awaken_credential_contract::CredentialRef {
                 id: command.source_id.0,
