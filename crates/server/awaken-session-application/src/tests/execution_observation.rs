@@ -1168,6 +1168,21 @@ async fn execution_observation_joins_only_same_snapshot_run_and_model_facts() {
         .session_execution_observation("workspace", &SessionId::from("session-observed"))
         .await
         .expect("R1-R4 projection");
+    // R8 baseline inspection is exact; a missing immutable publication is
+    // explicit absence and cannot fall through to today's current Agent.
+    let configuration = observed.configuration.as_ref().expect("R8 baseline");
+    assert_eq!(
+        configuration.environment,
+        before.frozen_baseline().unwrap().environment
+    );
+    assert_eq!(
+        configuration.baseline_fingerprint,
+        before.frozen_baseline().unwrap().fingerprint.0
+    );
+    assert!(
+        configuration.publication.is_none(),
+        "R8 no invented publication"
+    );
     let first_tool_source = MessageId::assistant(&run_a, 0).0;
     let second_tool_source = MessageId::assistant(&run_a, 1).0;
 
@@ -1188,6 +1203,7 @@ async fn execution_observation_joins_only_same_snapshot_run_and_model_facts() {
         observed.runs,
         vec![
             SessionRunExecutionObservation {
+                model_operations: Vec::new(),
                 run_id: run_a,
                 idempotency_key: Some("command-observed".into()),
                 state: RunState::Running,
@@ -1208,6 +1224,7 @@ async fn execution_observation_joins_only_same_snapshot_run_and_model_facts() {
                 }],
             },
             SessionRunExecutionObservation {
+                model_operations: Vec::new(),
                 run_id: run_b,
                 idempotency_key: None,
                 state: RunState::Ended(EndCause::NaturalEnd),

@@ -6,8 +6,10 @@ use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 /// selection to committed Run/model-request facts. It owns no status or audit
 /// state: every field is rebuilt from the Session aggregate and the Runtime's
 /// one internally consistent Thread recovery prefix.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SessionExecutionObservation {
+    pub configuration:
+        Option<awaken_session_configuration_contract::SessionConfigurationInspection>,
     pub artifact_capture: Option<awaken_resource_contract::ArtifactCapture>,
     pub recovery: crate::SessionExecutionRecoveryObservation,
     pub session_id: String,
@@ -26,6 +28,7 @@ pub struct SessionExecutionObservation {
 /// belong to it. The Run record and audit log remain the authorities.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionRunExecutionObservation {
+    pub model_operations: Vec<awaken_runtime_contract::model_inspection::ModelOperationInspection>,
     pub run_id: RunId,
     pub idempotency_key: Option<String>,
     pub state: RunState,
@@ -49,4 +52,30 @@ pub struct SessionModelRequestObservation {
     pub sequence: u64,
     pub is_error: bool,
     pub retry_count: u32,
+}
+
+impl SessionModelRequestObservation {
+    /// Inspect only canonical completion records attributed to this exact Run.
+    pub fn for_run(
+        records: &[awaken_agent_contract::audit::record::Record],
+        run: &RunId,
+    ) -> Result<Vec<Self>, serde_json::Error> {
+        records
+            .iter()
+            .filter(|event| &event.run_id == run)
+            .filter_map(|event| {
+                awaken_agent_contract::audit::model_request::ModelRequestObservation::from_record(
+                    event,
+                )
+                .transpose()
+                .map(|result| {
+                    result.map(|value| Self {
+                        sequence: event.sequence,
+                        is_error: value.is_error,
+                        retry_count: value.retry_count,
+                    })
+                })
+            })
+            .collect()
+    }
 }

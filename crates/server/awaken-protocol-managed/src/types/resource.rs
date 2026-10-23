@@ -248,6 +248,58 @@ pub struct SessionResourceManifest {
     pub resources: Vec<SessionResource>,
 }
 
+/// Read-only Awaken observation; availability is structural, not an IAM grant.
+/// SDK: none — Awaken Resource Manifest observation over the existing Session root.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionResourceObservation {
+    /// Resource mutation watermark for If-Match; not the selected manifest generation.
+    pub revision: u64,
+    /// A newer attempted generation ended without replacing the selected inputs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unapplied_revision: Option<u64>,
+    pub inputs: Vec<SessionInputDetails>,
+    pub skills: Vec<crate::session_resource::ResolvedSkillBinding>,
+    #[serde(flatten)]
+    pub manifest: SessionResourceManifest,
+    pub mutations: SessionResourceMutations,
+}
+
+/// SDK: none — safe metadata from the selected Awaken input, without credential material.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionInputDetails {
+    pub binding_id: String,
+    pub resource_kind: &'static str,
+    pub target_id: String,
+    pub mount_path: String,
+    pub access: awaken_resource_contract::ResourceAccess,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub configuration_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+/// SDK: none — structural availability projected from the immutable Awaken Session policy.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct SessionResourceMutations {
+    pub files: bool,
+    pub replace_manifest: bool,
+    pub repository_credentials: bool,
+}
+
+impl SessionResourceMutations {
+    pub(crate) fn observe(
+        policy: crate::session_resource::SessionMutationPolicy,
+        terminal: bool,
+    ) -> Self {
+        use crate::session_resource::SessionMutationPolicy;
+        Self {
+            files: !terminal && !matches!(policy, SessionMutationPolicy::Frozen),
+            replace_manifest: !terminal && policy.is_managed(),
+            repository_credentials: !terminal && policy.admits_repository_credential_mutation(),
+        }
+    }
+}
+
 /// `BetaManagedAgentsDeleteSessionResource`.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct DeletedSessionResource {
@@ -260,6 +312,37 @@ pub struct DeletedSessionResource {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn observation_projects_each_frozen_policy_without_granting_mutations_to_terminal_sessions() {
+        // DT-OBS: C1 Managed/Frozen/FileResources; C2 live/terminal.
+        // R1 live Managed -> all structural classes; R2 live FileResources ->
+        // files only; R3 Frozen or any terminal -> none. This is a read
+        // projection: the original command policy and PEP still enforce writes.
+        use crate::session_resource::SessionMutationPolicy as P;
+        for (policy, live) in [
+            (P::Managed, (true, true, true)),
+            (P::FileResources, (true, false, false)),
+            (P::Frozen, (false, false, false)),
+        ] {
+            for terminal in [false, true] {
+                let view = SessionResourceMutations::observe(policy, terminal);
+                let expected = if terminal {
+                    (false, false, false)
+                } else {
+                    live
+                };
+                assert_eq!(
+                    (
+                        view.files,
+                        view.replace_manifest,
+                        view.repository_credentials
+                    ),
+                    expected
+                );
+            }
+        }
+    }
 
     #[test]
     fn resource_union_accepts_write_only_credentials_and_rejects_unknown_shapes() {

@@ -24,6 +24,9 @@ fn project_execution_evidence(
     let (operation_footprint, preparation, operation_inventory) =
         recovery.take_projection_details(selection);
     crate::awaken_extensions::SessionExecutionEvidence {
+        configuration: observation
+            .configuration
+            .filter(|_| selection.include_inspection),
         artifact_capture: observation.artifact_capture,
         operation_footprint,
         operation_inventory,
@@ -43,6 +46,11 @@ fn project_execution_evidence(
             .into_iter()
             .map(
                 |run| crate::awaken_extensions::SessionRunExecutionEvidence {
+                    model_operations: if selection.include_inspection {
+                        run.model_operations
+                    } else {
+                        Vec::new()
+                    },
                     run_id: run.run_id,
                     idempotency_key: run.idempotency_key,
                     state: run.state,
@@ -95,7 +103,7 @@ mod tests {
         // empty Run stays empty rather than being reported as executed. Rules:
         // R1=P1=>E1 and R2=P2=>E2.
         let mut observation = awaken_session_application::SessionExecutionObservation {
-                artifact_capture: Some(serde_json::from_value(serde_json::json!({
+                configuration: None,                artifact_capture: Some(serde_json::from_value(serde_json::json!({
                     "workspace_id":"workspace","session_id":"session-1","revision":2,
                     "file_ids":["file-original"],"origin":{"run_id":"original-run","owner":"worker","epoch":7}
                 })).unwrap()),
@@ -120,7 +128,7 @@ mod tests {
                 execution: awaken_session_state_contract::SessionExecutionState::Running,
                 runs: vec![
                     awaken_session_application::SessionRunExecutionObservation {
-                        run_id: RunId("run-observed".into()),
+                        model_operations: vec![awaken_runtime_contract::model_inspection::ModelOperationInspection { ordinal: 1, provider: "provider-original".into(), model: "model-original".into(), backend: "native".into(), phase: "entered".into() }],                        run_id: RunId("run-observed".into()),
                         idempotency_key: Some("command-observed".into()),
                         state: RunState::Running,
                         tool_uses: vec![awaken_session_application::SessionToolUseObservation {
@@ -136,7 +144,7 @@ mod tests {
                         ],
                     },
                     awaken_session_application::SessionRunExecutionObservation {
-                        run_id: RunId("run-unobserved".into()),
+                        model_operations: Vec::new(),                        run_id: RunId("run-unobserved".into()),
                         idempotency_key: None,
                         state: RunState::Running,
                         tool_uses: Vec::new(),
@@ -144,11 +152,31 @@ mod tests {
                     },
                 ],
             };
+        // P8/P9 inspection is opt-in; legacy/default readers receive neither
+        // a configuration snapshot nor model-operation fields. Explicit opt-in
+        // retains safe baseline facts; it never resolves a current publication.
         let projected = project_execution_evidence(
             observation.clone(),
             SessionExecutionEvidenceSelection::default(),
         );
         assert_eq!(projected.backend_ref.as_deref(), Some("native"), "R1/E1");
+        let legacy_wire = serde_json::to_value(&projected).unwrap();
+        assert!(legacy_wire.get("configuration").is_none(), "P8");
+        assert!(
+            legacy_wire["runs"][0].get("model_operations").is_none(),
+            "P8"
+        );
+        let inspected = project_execution_evidence(
+            observation.clone(),
+            SessionExecutionEvidenceSelection {
+                include_inspection: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            inspected.runs[0].model_operations[0].model, "model-original",
+            "P9 exact recorded route"
+        );
         // P3 immutable source carrier is projected exactly; it is non-bearer
         // provenance and adds neither an execution claim nor a permission.
         assert_eq!(
@@ -246,6 +274,7 @@ mod tests {
             observation.clone(),
             SessionExecutionEvidenceSelection {
                 include_operation_inventory: true,
+                ..Default::default()
             },
         );
         assert_eq!(expanded.operation_inventory, Some(inventory), "P5");
@@ -270,7 +299,8 @@ mod tests {
                 project_execution_evidence(
                     observation,
                     SessionExecutionEvidenceSelection {
-                        include_operation_inventory: true
+                        include_operation_inventory: true,
+                        ..Default::default()
                     }
                 )
                 .operation_inventory,
@@ -292,6 +322,8 @@ mod tests {
             ("", Some(false)),
             ("?include_operation_inventory=false", Some(false)),
             ("?include_operation_inventory=true", Some(true)),
+            ("?include_inspection=true", Some(false)),
+            ("?include_inspection=allow", None),
             ("?include_operation_inventory=allow", None),
             ("?safe_to_retry=true", None),
         ] {

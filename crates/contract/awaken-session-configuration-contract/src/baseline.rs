@@ -658,6 +658,49 @@ mod tests {
     }
 
     #[test]
+    fn inspection_preserves_environment_but_never_exports_execution_secrets_or_mount_bytes() {
+        // DT-SAFE: C1 exact frozen Environment; C2 inline declared value;
+        // C3 secret env capability; C4 inline mount contents. R1 preserve C1/C2;
+        // R2 mask C3 and omit C4 bytes while retaining paths/access. The read
+        // projection must not serialize the complete executable baseline.
+        let mut baseline =
+            SessionBaseline::compile(baseline_inputs(environment(4, SessionNetworkPolicy::None)));
+        baseline.env.push(EnvVar {
+            name: "TZ".into(),
+            value: EnvValue::Inline {
+                value: "UTC".into(),
+            },
+            visibility: EnvVisibility::Process,
+        });
+        baseline.env.push(EnvVar {
+            name: "API_KEY".into(),
+            value: EnvValue::Secret {
+                reference: "do-not-export-capability".into(),
+            },
+            visibility: EnvVisibility::Process,
+        });
+        let mut inline = mount("visible-mount");
+        inline.source = MountSource::Inline {
+            contents: "do-not-export-inline-bytes".into(),
+        };
+        baseline.mounts.push(inline);
+        let view = crate::SessionConfigurationInspection::from_baseline(&baseline);
+        assert_eq!(view.environment, baseline.environment);
+        let wire = serde_json::to_value(view).unwrap();
+        assert!(wire.to_string().contains("UTC"));
+        assert!(!wire.to_string().contains("do-not-export-capability"));
+        assert!(!wire.to_string().contains("do-not-export-inline-bytes"));
+        assert!(
+            wire["mounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|mount| mount.get("contents").is_none() && mount.get("reference").is_none())
+        );
+        assert!(wire["publication"].is_null());
+    }
+
+    #[test]
     fn public_model_id_and_execution_model_ref_are_frozen_as_distinct_facts() {
         // Causes: C1 public id may be provider/endpoint qualified; C2 the
         // publication resolves an exact upstream model coordinate. Effects: E1

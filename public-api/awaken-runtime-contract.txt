@@ -577,6 +577,14 @@ pub fn awaken_runtime_contract::metrics::NoopRecorder::record_dispatch_recovered
 pub fn awaken_runtime_contract::metrics::NoopRecorder::record_dispatch_settled(&self, &str)
 pub fn awaken_runtime_contract::metrics::NoopRecorder::record_inference(&self, awaken_runtime_contract::metrics::InferenceMetric<'_>)
 pub fn awaken_runtime_contract::metrics::NoopRecorder::record_tool(&self, &str, &str, core::time::Duration)
+pub mod awaken_runtime_contract::model_inspection
+pub struct awaken_runtime_contract::model_inspection::ModelOperationInspection
+pub awaken_runtime_contract::model_inspection::ModelOperationInspection::backend: alloc::string::String
+pub awaken_runtime_contract::model_inspection::ModelOperationInspection::model: alloc::string::String
+pub awaken_runtime_contract::model_inspection::ModelOperationInspection::ordinal: u64
+pub awaken_runtime_contract::model_inspection::ModelOperationInspection::phase: alloc::string::String
+pub awaken_runtime_contract::model_inspection::ModelOperationInspection::provider: alloc::string::String
+pub fn awaken_runtime_contract::model_inspection::recorded_model_operations(&[awaken_agent_contract::agent::state::Command], &awaken_agent_contract::agent::run::Id) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::model_inspection::ModelOperationInspection>, alloc::string::String>
 pub mod awaken_runtime_contract::model_operation
 pub enum awaken_runtime_contract::model_operation::ModelEffectScope
 pub awaken_runtime_contract::model_operation::ModelEffectScope::Opaque

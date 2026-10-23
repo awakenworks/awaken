@@ -16,6 +16,8 @@ mod accepting_fake;
 mod creation_inputs;
 #[path = "session_resources/input_mounts.rs"]
 mod input_mounts;
+#[path = "session_resources/observation.rs"]
+mod observation;
 use accepting_fake::AcceptingFake;
 #[path = "session_resources/credential_ingress.rs"]
 mod credential_ingress;
@@ -65,14 +67,12 @@ use tower::ServiceExt;
 /// Both surfaces behind the one trusted edge stamp the composition root
 /// installs; handlers are fail-closed on an absent Workspace.
 fn router(state: std::sync::Arc<ManagedState>) -> Router {
-    support::edge_stamped(
-        managed_router(state.clone()).merge(
-            awaken_protocol_managed::awaken_extensions::session_resource_manifest_router(
-                awaken_protocol_managed::replace_resource_manifest,
-            )
-            .with_state(state),
-        ),
+    let manifest = awaken_protocol_managed::awaken_extensions::session_resource_manifest_router(
+        awaken_protocol_managed::replace_resource_manifest,
+        awaken_protocol_managed::get_resource_manifest,
     )
+    .with_state(state.clone());
+    support::edge_stamped(managed_router(state).merge(manifest))
 }
 
 fn profiled_router(state: std::sync::Arc<ManagedState>, workspace: &str) -> Router {

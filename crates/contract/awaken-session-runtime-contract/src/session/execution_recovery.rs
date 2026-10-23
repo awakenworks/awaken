@@ -49,6 +49,9 @@ pub enum SessionExecutionRecoveryObservation {
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionExecutionEvidenceSelection {
+    /// Opt-in safe configuration and original model-operation inspection.
+    #[serde(default)]
+    pub include_inspection: bool,
     #[serde(default)]
     pub include_operation_inventory: bool,
 }

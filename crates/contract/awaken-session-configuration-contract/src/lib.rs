@@ -8,6 +8,8 @@ pub use accepted_agent::{
 mod agent_config;
 mod application_origin;
 mod baseline;
+mod inspection;
+pub use inspection::{SessionConfigurationInspection, publication_inspection};
 mod dispatched_runtime;
 pub mod environment_projection;
 mod execution_context;
@@ -48,7 +50,7 @@ pub use execution_context::{SessionContextError, SessionContextSeed, SessionTrig
 pub use mcp_probe::{
     CredentialRefreshExchange, McpInspection, McpProbe, McpProbeFailure, McpProbeStatus,
     McpProbeTool, PROBE_HTTP_BODY_LIMIT, ProbeHttpResponse, RefreshExchangeOutcome,
-    RefreshExchangeStatus,
+    RefreshExchangeStatus, scrub_sensitive_keys,
 };
 pub use model_resolution::{
     SessionModelOverride, SessionModelOverrideDecision, SessionModelPublication,

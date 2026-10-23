@@ -986,10 +986,7 @@ async fn mount_with_managed_over_and_models(
         }));
     }
     let dreams = awaken_protocol_managed::dreams_router(dream_application.clone());
-    let resource_manifests = awaken_extensions::session_resource_manifest_router(
-        awaken_protocol_managed::replace_resource_manifest,
-    )
-    .with_state(managed_state.clone());
+    let resource_manifests = resource_manifest_routes(managed_state.clone());
     let session_extensions = awaken_extensions::profiled_session_router(
         awaken_protocol_managed::create_profiled_session,
     )
@@ -1324,4 +1321,12 @@ fn resource_management_router_from_application(
         )),
         stores,
     )
+}
+
+fn resource_manifest_routes(state: Arc<awaken_protocol_managed::ManagedState>) -> axum::Router {
+    awaken_extensions::session_resource_manifest_router(
+        awaken_protocol_managed::replace_resource_manifest,
+        awaken_protocol_managed::get_resource_manifest,
+    )
+    .with_state(state)
 }

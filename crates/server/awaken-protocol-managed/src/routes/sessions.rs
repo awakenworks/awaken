@@ -1125,6 +1125,19 @@ async fn stream_thread_events(
 
 // -- Resources --
 
+/// Read-only projection of the canonical Session Resource root and policy.
+pub async fn get_resource_manifest(
+    State(state): State<Arc<ManagedState>>,
+    Path(id): Path<String>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
+) -> Result<Json<crate::types::resource::SessionResourceObservation>, WireErr> {
+    ensure_session_scope(state.as_ref(), &id, Some(&WorkspaceScope(workspace))).await?;
+    crate::state::observe_resource_manifest(state.as_ref(), &id)
+        .await
+        .map(Json)
+        .map_err(error_response)
+}
+
 /// Lower the Awaken Resource Manifest wire request into the canonical Session
 /// application command. The explicitly namespaced protocol crate owns the HTTP
 /// method/path and injects this one handler rather than duplicating the lowering.

@@ -8,11 +8,16 @@ use axum::routing::put;
 /// namespace. The injected method owns DTO lowering; this crate exclusively owns
 /// the non-Anthropic path so the compatibility router cannot acquire a second
 /// protocol surface.
-pub fn session_resource_manifest_router<H, T, S>(handler: H) -> Router<S>
+pub fn session_resource_manifest_router<H, T, G, U, S>(handler: H, observation: G) -> Router<S>
 where
     H: Handler<T, S>,
+    G: Handler<U, S>,
+    U: 'static,
     T: 'static,
     S: Clone + Send + Sync + 'static,
 {
-    Router::new().route("/v1/awaken/sessions/{id}/resources", put(handler))
+    Router::new().route(
+        "/v1/awaken/sessions/{id}/resources",
+        put(handler).get(observation),
+    )
 }
