@@ -558,6 +558,43 @@ mod tests {
     }
 
     #[test]
+    fn distributed_overlay_role_policies_exclude_sandbox_labels() {
+        // Cause/effect: C1 the distributed overlay imports the canonical base
+        // into the Workers' Sandbox namespace; C2 a role policy selects by a
+        // label the attestor cannot observe (database-role). D1 C1 + every
+        // C2 policy also excluding the immutable Sandbox app label => attests.
+        // D2 dropping that exclusion => fail closed, so the Worker never
+        // becomes Ready rather than trusting an unobservable label.
+        let documents = [
+            include_str!("../../../../deploy/k3d/bases/sandbox-network-policy/resources.yaml"),
+            include_str!("../../../../deploy/k3d/distributed-control/network-policies.yaml"),
+        ]
+        .into_iter()
+        .flat_map(|yaml| serde_saphyr::from_multiple::<serde_json::Value>(yaml).unwrap());
+        let mut policies = documents
+            .filter(|document| document["kind"] == "NetworkPolicy")
+            .map(|document| serde_json::from_value::<NetworkPolicy>(document).unwrap())
+            .collect::<Vec<_>>();
+        assert!(attests_contract(&policies), "D1");
+        let postgres = policies
+            .iter_mut()
+            .find(|policy| policy.metadata.name.as_deref() == Some("postgres"))
+            .unwrap();
+        postgres
+            .spec
+            .as_mut()
+            .unwrap()
+            .pod_selector
+            .as_mut()
+            .unwrap()
+            .match_expressions
+            .as_mut()
+            .unwrap()
+            .retain(|requirement| requirement.key != "app");
+        assert!(!attests_contract(&policies), "D2");
+    }
+
+    #[test]
     fn private_repository_port_must_share_the_one_gateway_peer() {
         // Causes: C1=proxy-only vs proxy+private-Git ports; C2=both ports TCP,
         // distinct and on the same exact Gateway peer; C3=third, duplicate,

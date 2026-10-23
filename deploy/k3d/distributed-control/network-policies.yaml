@@ -126,9 +126,12 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata: { name: postgres }
 spec:
+  # Sandbox Pods never carry database-role, but live attestation cannot prove
+  # an absent label stays absent; exclude them by their fixed app label.
   podSelector:
     matchExpressions:
       - { key: database-role, operator: In, values: [primary, standby] }
+      - { key: app, operator: NotIn, values: [awaken-sandbox] }
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
