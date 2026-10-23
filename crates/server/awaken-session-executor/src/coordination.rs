@@ -766,6 +766,143 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn commit_boundary_binds_late_coordination_without_retaining_run_assembly() {
+        // Causes: C1 the Coordinator has no local pool; C2 its commit factory
+        // predates application binding; C3 the bound application stays live or
+        // drops after Worker construction; C4 the composing executor drops;
+        // C5 an exact exhausted child claim carries parent affinity/epoch;
+        // C6 the actual Coordinator resolver remains live across Host drop,
+        // settlement and committed-truth assertions.
+        // Effects: E1 no RunAssembly is retained; E2 late binding delivers the
+        // exact child boundary and settles Done; E3 a dead owner refuses
+        // settlement without fabricating completion or undoing committed Ended.
+        // Rules B1=C1+C2+C4+C5+C6+live(C3)=>E1+E2;
+        // B2=C1+C2+C4+C5+C6+dead(C3)=>E1+E3. The real queue, commit, factory,
+        // Runtime terminalization and existing coordination fixture own this
+        // observation; no shadow claim model or physical executor is involved.
+        use awaken_dispatch_execution::session_execution::CommitBoundaryWorkers as _;
+        use awaken_dispatch::{
+            DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _,
+            DispatchReads as _,
+        };
+
+        for owner_live in [true, false] {
+            let now = awaken_time::system_clock().now().as_epoch_ms();
+            let clock = Arc::new(awaken_lease_testkit::ManualClock::new(now));
+            let queue = Arc::new(
+                awaken_dispatch_erasure::AnyCoordinatorDispatch::from_durable_store(
+                    awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
+                    None,
+                ),
+            );
+            let mut dependencies =
+                crate::SessionExecutorBuilder::ephemeral(Arc::new(EndpointModel), "stub")
+                    .await
+                    .with_ephemeral_dispatch(queue.clone());
+            dependencies.execution.ingress = crate::RunIngress::Durable;
+            dependencies.execution.local = crate::LocalExecution::RemoteWorkersOnly;
+            let host = dependencies.build().expect("Coordinator components");
+            let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+                .expect("original Coordinator resolver");
+            let assembly = Arc::downgrade(&host.run_assembly);
+            let boundaries =
+                crate::host::boundary_run::CommitBoundaryAssembly::new(&host.run_assembly);
+            let parent = ThreadId("boundary-parent".into());
+            let child = ThreadId("boundary-child".into());
+            let run = RunId("boundary-child-run".into());
+            let opened = boundaries
+                .open_commit(&parent)
+                .await
+                .expect("original commit");
+            let application = Arc::new(RecordingSessionAgentCoordination::default());
+            let port: Arc<dyn SessionAgentCoordination> = application.clone();
+            host.session_application_bindings()
+                .bind_agent_coordination(port.clone())
+                .expect("late application binding");
+            queue
+                .enqueue(
+                    RunDispatch::new(RunActivation::new(
+                        run.clone(),
+                        child.clone(),
+                        ExecutableAgentSnapshot::builder("researcher")
+                            .model(ModelBinding::new("test", "model", "native"))
+                            .fingerprint("researcher-v1")
+                            .build(),
+                        Vec::new(),
+                    ))
+                    .for_session(parent.clone())
+                    .with_session_activity_epoch(17),
+                )
+                .await
+                .expect("original dispatch");
+            let first = queue
+                .claim_run(&run, "old-worker", 1_000, &Default::default())
+                .await
+                .unwrap()
+                .unwrap();
+            clock.set(first.lease.expires_ms() + 1);
+            let second = queue
+                .claim_run(&run, "old-worker", 1_000, &Default::default())
+                .await
+                .unwrap()
+                .unwrap();
+            clock.set(second.lease.expires_ms() + 1);
+            let claimed = queue
+                .claim_retry_exhausted("boundary-worker", 1_000, 1)
+                .await
+                .unwrap()
+                .expect("exact exhausted claim");
+            let worker = opened
+                .boundary_worker(&claimed, None, false)
+                .await
+                .expect("environment-free boundary");
+            drop(port);
+            let application = if owner_live {
+                Some(application)
+            } else {
+                drop(application);
+                None
+            };
+            drop(host);
+            assert!(assembly.upgrade().is_none(), "B1-B2/E1");
+            let result = worker.terminalize_retry_exhausted(&claimed).await;
+            if let Some(application) = application {
+                assert!(result.is_ok(), "B1/E2: {result:?}");
+                {
+                    let boundaries = application.boundaries.lock().unwrap();
+                    assert_eq!(boundaries.len(), 1, "B1 late binding was observed");
+                    assert_eq!(boundaries[0].session_id.as_str(), parent.0, "B1 parent");
+                    assert_eq!(boundaries[0].source_thread_id, child, "B1 child");
+                    assert_eq!(boundaries[0].source_run_id, run, "B1 Run");
+                    assert_eq!(boundaries[0].session_activity_epoch, 17, "B1 epoch");
+                }
+                assert!(queue.list_dispatches().await.unwrap().is_empty(), "B1 Done");
+            } else {
+                assert!(result.is_err(), "B2 dead owner must refuse settlement");
+                assert_eq!(
+                    queue.list_dispatches().await.unwrap().len(),
+                    1,
+                    "B2 pending"
+                );
+                assert!(
+                    queue
+                        .completion_events_after(0, 10)
+                        .await
+                        .unwrap()
+                        .is_empty(),
+                    "B2 no fabricated completion"
+                );
+            }
+            assert_eq!(
+                opened.committed().run_state(&run),
+                Some(RunState::Ended(EndCause::Indeterminate)),
+                "B1-B2 preserve original committed terminal truth",
+            );
+            drop(resolver);
+        }
+    }
+
+    #[tokio::test]
     async fn dead_local_coordination_falls_through_to_the_remote_authority() {
         // Constraint/Invariant: the authoritative inputs and ownership boundaries
         // documented here remain the only decision source; no parallel path is admitted.
@@ -952,7 +1089,7 @@ mod tests {
             run.clone(),
             child.clone(),
             ExecutableAgentSnapshot::builder("researcher")
-                .model(ModelBinding::new("test", "model", "native"))
+                .model(ModelBinding::parse("test", "model", "native").expect("valid binding"))
                 .fingerprint("researcher-v1")
                 .build(),
             Vec::new(),
