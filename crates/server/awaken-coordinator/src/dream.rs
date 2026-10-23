@@ -557,6 +557,7 @@ impl DreamExecutor for BuiltInDreamAgent {
                 runtime_interval: None,
             };
             self.sessions
+                .termination_commands()
                 .force_terminate_session(&preparation.session_id, &archived_at, fact)
                 .await
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;

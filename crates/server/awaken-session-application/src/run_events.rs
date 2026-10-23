@@ -9,7 +9,7 @@ use awaken_agent_contract::{RunLifecycleCursor, ThreadId};
 use awaken_dispatch_contract::{DispatchCursor, DispatchPage, SessionRunEventPage};
 use awaken_session_types::{RunError, SessionId};
 
-use crate::{SessionApplication, SessionPreparationError, SessionProjectionRecoveryError};
+use crate::{SessionApplication, SessionProjectionRecoveryError};
 use awaken_session_execution_contract::session_run_activity_operation_id;
 
 fn rejected_projection(error: impl std::fmt::Display) -> SessionProjectionRecoveryError {
@@ -120,14 +120,15 @@ impl SessionApplication {
             // Session activity receipt to prove membership without creating a
             // Run record or relying on process-local "latest Run" state.
             let operation = session_run_activity_operation_id(session_id, run_id);
-            self.recover_activity_for_operation(
-                session_id,
-                &operation,
-                Some((&ThreadId(session_id.to_string()), run_id)),
-            )
-            .await
-            .map_err(|error| SessionProjectionRecoveryError::Unavailable(error.to_string()))?
-            .ok_or(SessionProjectionRecoveryError::NotFound)?;
+            self.activities
+                .recover_activity_for_operation(
+                    session_id,
+                    &operation,
+                    Some((&ThreadId(session_id.to_string()), run_id)),
+                )
+                .await
+                .map_err(|error| SessionProjectionRecoveryError::Unavailable(error.to_string()))?
+                .ok_or(SessionProjectionRecoveryError::NotFound)?;
             return Ok(SessionRunEventPage {
                 session_id: session_id.to_string(),
                 run_id: run_id.clone(),
@@ -190,42 +191,4 @@ impl SessionApplication {
                 .then(|| serde_json::to_value(usage).expect("ThreadUsage serializes")),
         })
     }
-}
-
-/// Join existing committed Thread and original activity evidence. This does not
-/// prove that effects stopped: archive only fences future Session entry, while
-/// the original cleanup/attempt owners retain every external obligation.
-pub(crate) async fn validate_failed_profiled_execution(
-    application: &SessionApplication,
-    session: &awaken_session_state_contract::PersistedSession,
-) -> Result<(), crate::SessionPreparationError> {
-    use awaken_lease_contract::fence::Epoch;
-    let refused = || {
-        SessionPreparationError::Rejected(RunError::bad_request(
-            "profiled release requires the exact failed or cancelled current Run activity",
-        ))
-    };
-    let snapshot = application
-        .runtime()
-        .thread_reads()
-        .session_thread_recovery_snapshot(&session.session_id, session.session_id.as_str())
-        .await
-        .map_err(SessionPreparationError::Rejected)?
-        .ok_or_else(refused)?;
-    let run = awaken_session_state_contract::failed_profiled_run_for_archive(session, &snapshot)
-        .ok_or_else(refused)?;
-    let operation = session_run_activity_operation_id(&session.session_id, &run.id);
-    let (observed, epoch) = application
-        .recover_activity_for_operation(
-            &session.session_id,
-            &operation,
-            Some((&run.thread_id, &run.id)),
-        )
-        .await
-        .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?
-        .ok_or_else(refused)?;
-    let epoch = Epoch::from_persisted(epoch).ok_or_else(refused)?;
-    awaken_session_state_contract::failed_profiled_activity_matches(session, &observed, epoch)
-        .then_some(())
-        .ok_or_else(refused)
 }

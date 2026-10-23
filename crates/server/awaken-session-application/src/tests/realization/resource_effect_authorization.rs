@@ -439,12 +439,14 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
             )
         };
     let renewed_work = application
+        .terminal_cleanups
         .terminal_cleanup_work(&SessionId::from("terminal-authority-renewed"), &asserted)
         .await
         .expect("A1 exact generation")
         .expect("A1 pending work");
     let renewed_effect = effect_for("terminal-authority-renewed", renewed_work, asserted.clone());
     application
+        .terminal_cleanups
         .authorize_terminal_cleanup_effect(&renewed_effect)
         .await
         .expect("A1/E1 old assertion uses current renewal");
@@ -468,10 +470,12 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
     )
     .expect("A1 terminal preparation");
     application
+        .terminal_cleanups
         .record_terminal_cleanup_preparation(&asserted, renewed_preparation)
         .await
         .expect("A1 admitted preparation remains recordable");
     let renewed_disposal = match application
+        .terminal_cleanups
         .terminal_cleanup_work(&SessionId::from("terminal-authority-renewed"), &asserted)
         .await
         .expect("A1 exact disposal generation")
@@ -488,6 +492,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
     };
     assert_eq!(
         application
+            .terminal_cleanups
             .authorize_terminal_cleanup_disposal(&renewed_disposal)
             .await
             .expect("A1/E1 old disposal assertion uses current renewal"),
@@ -501,6 +506,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
     // reject it, while an already-completed preparation may still be recorded.
     assert!(matches!(
         application
+            .terminal_cleanups
             .terminal_cleanup_work(&SessionId::from("terminal-authority-expired"), &asserted)
             .await,
         Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
@@ -524,7 +530,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
     assert!(
         matches!(
             application
-                .authorize_terminal_cleanup_effect(&expired_effect)
+                .terminal_cleanups.authorize_terminal_cleanup_effect(&expired_effect)
                 .await,
             Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
         ),
@@ -555,11 +561,13 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
     )
     .expect("A2 terminal preparation");
     application
+        .terminal_cleanups
         .record_terminal_cleanup_preparation(&asserted, expired_preparation)
         .await
         .expect("A2 admitted preparation receipt remains generation-based");
     assert!(matches!(
         application
+            .terminal_cleanups
             .terminal_cleanup_work(&SessionId::from("terminal-authority-expired"), &asserted)
             .await,
         Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
@@ -583,7 +591,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
     assert!(
         matches!(
             application
-                .authorize_terminal_cleanup_disposal(&expired_disposal)
+                .terminal_cleanups.authorize_terminal_cleanup_disposal(&expired_disposal)
                 .await,
             Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
         ),
@@ -600,7 +608,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
     assert!(
         matches!(
             application
-                .authorize_terminal_cleanup_effect(&foreign_effect)
+                .terminal_cleanups.authorize_terminal_cleanup_effect(&foreign_effect)
                 .await,
             Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
         ),
@@ -629,7 +637,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
     assert!(
         matches!(
             application
-                .authorize_terminal_cleanup_disposal(&foreign_disposal)
+                .terminal_cleanups.authorize_terminal_cleanup_disposal(&foreign_disposal)
                 .await,
             Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
         ),

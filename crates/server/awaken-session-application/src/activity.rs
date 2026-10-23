@@ -24,7 +24,11 @@ use awaken_session_types::RunError;
 use awaken_session_types::SessionRevision;
 use awaken_time::WallClockExt as _;
 
-use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
+use std::sync::Arc;
+
+use awaken_session_execution_contract::ThreadReadRuntime;
+
+use super::{SessionMutationError, mutation::repository_failure};
 
 /// Failure from a Session activity transition.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -303,7 +307,39 @@ impl SessionActivityError {
     }
 }
 
-impl SessionApplication {
+/// Durable activity fencing for overlapping Session Runs: open, transfer and
+/// recover one activity epoch per Run operation through the root CAS, after
+/// the Environment is Resident. It holds the CAS kernel, the clock, the Thread
+/// read role whose commit cursor admits a runtime interval, and the
+/// continuation saga that makes the Environment Resident first.
+pub struct SessionActivities {
+    mutations: Arc<crate::SessionMutations>,
+    clock: Arc<dyn awaken_time::WallClock>,
+    thread_reads: Arc<dyn ThreadReadRuntime>,
+    continuations: Arc<crate::SessionContinuations>,
+    #[cfg(any(test, feature = "test-support"))]
+    runtime_incarnation: String,
+}
+
+impl SessionActivities {
+    pub(crate) fn new(
+        mutations: Arc<crate::SessionMutations>,
+        clock: Arc<dyn awaken_time::WallClock>,
+        runtime: &crate::SessionExecutor,
+        continuations: Arc<crate::SessionContinuations>,
+        #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_variables))]
+        runtime_incarnation: &str,
+    ) -> Self {
+        Self {
+            mutations,
+            clock,
+            thread_reads: runtime.thread_reads.clone(),
+            continuations,
+            #[cfg(any(test, feature = "test-support"))]
+            runtime_incarnation: runtime_incarnation.to_owned(),
+        }
+    }
+
     fn activity_operation_record(session_id: &str, operation_id: &str) -> IdempotencyRecord {
         let identity = awaken_agent_contract::stable_fingerprint(&(
             "managed-session-activity-v1",
@@ -322,7 +358,8 @@ impl SessionApplication {
         record: &IdempotencyRecord,
     ) -> Result<Option<u64>, SessionActivityError> {
         let receipt = self
-            .session_repository()
+            .mutations
+            .repository()
             .idempotency_receipt(session_id, &record.key)
             .await
             .map_err(repository_failure)
@@ -399,7 +436,7 @@ impl SessionApplication {
         &self,
         session: &PersistedSession,
     ) -> Result<u64, SessionActivityError> {
-        let thread_reads = self.runtime().thread_reads();
+        let thread_reads = self.thread_reads.as_ref();
 
         if session.running_interval.is_some() {
             return Ok(0);
@@ -409,53 +446,6 @@ impl SessionApplication {
             .await
             .map(|snapshot| snapshot.map_or(0, |snapshot| snapshot.store_cursor))
             .map_err(|error| SessionActivityError::Unavailable(error.to_string()))
-    }
-
-    /// Recover/admit the frozen Session binding, then open exactly one activity
-    /// for a stable protocol operation. The existing operation receipt is the
-    /// only retry coordinate; the protocol receives the committed epoch and
-    /// must pass it through instead of performing another admission check.
-    pub async fn begin_admitted_activity_for_operation(
-        &self,
-        agent_id: &str,
-        session_id: &awaken_session_types::SessionId,
-        operation_id: &str,
-        source: (&ThreadId, &RunId),
-    ) -> Result<(PersistedSession, u64), RunError> {
-        if operation_id.trim().is_empty() {
-            return Err(RunError::internal(
-                "Session activity operation identity is required",
-            ));
-        }
-        let record = Self::activity_operation_record(session_id.as_str(), operation_id);
-        // Exact committed receipts are recovery truth. Re-read them before
-        // fresh policy so a response-loss repair can recover the original epoch
-        // even if the Session subsequently reached a budget or terminal state.
-        if let Some(committed) = self
-            .replayed_activity_operation(session_id, &record, operation_id, Some(source))
-            .await
-            .map_err(SessionActivityError::run_error)?
-        {
-            return Ok(committed);
-        }
-        let owner_scope = self
-            .mutations
-            .owner(session_id)
-            .await
-            .map_err(SessionActivityError::mutation)
-            .map_err(SessionActivityError::run_error)?;
-        self.admit_run_session(&owner_scope, session_id.as_str(), agent_id)
-            .await?;
-        self.begin_activity_for_operation_with_policy(
-            session_id,
-            operation_id,
-            false,
-            None,
-            None,
-            Some(source),
-        )
-        .await
-        .map_err(SessionActivityError::run_error)
     }
 
     /// Admit one driving event and return the committed aggregate carrying its
@@ -474,7 +464,8 @@ impl SessionApplication {
             }
             Err(error) => return Err(SessionActivityError::Unavailable(error.to_string())),
         }
-        self.ensure_environment_resident(session_id, self.clock.now_ms())
+        self.continuations
+            .ensure_environment_resident(session_id, self.clock.now_ms())
             .await
             .map_err(|error| match error {
                 super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
@@ -662,6 +653,7 @@ impl SessionApplication {
         // reads and checks its pre-continuation revision; both paths then use
         // the same existing continuation operation and error law exactly once.
         let resident = self
+            .continuations
             .ensure_environment_resident(session_id, self.clock.now_ms())
             .await
             .map_err(|error| match error {

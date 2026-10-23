@@ -527,7 +527,7 @@ async fn historic_missing_accepted_agent_keeps_tools_update_recovery_pending() {
     let receipt_key = format!(
         "managed:update-command:{}:{}",
         before.session_id,
-        awaken_session_application::SessionApplication::update_operation_id(
+        awaken_session_application::SessionUpdateCommands::update_operation_id(
             before.session_id.as_str(),
             key
         )

@@ -48,6 +48,7 @@ async fn draining_cleanup_claim_only_continues_its_owned_terminal_root() {
                 .set_worker_observation_source(workers)
                 .unwrap();
             let assignment = application
+                .terminal_cleanups
                 .claim_next_terminal_cleanup(target, None)
                 .await
                 .unwrap();
@@ -135,6 +136,7 @@ async fn draining_cleanup_claim_races_preserve_owned_roots_and_compensate_new_on
                 .set_worker_observation_source(workers)
                 .unwrap();
             let claimed = application
+                .terminal_cleanups
                 .claim_next_terminal_cleanup(target, None)
                 .await
                 .unwrap();
@@ -294,7 +296,7 @@ async fn independently_exited_predecessor_allows_terminal_assignment_without_cle
         app.execution_admission()
             .set_worker_observation_source(workers)
             .unwrap();
-        let observed = awaken_session_realization_contract::SessionTerminalCleanupQueue::claim_next_terminal_cleanup(&app, target.clone(), None).await;
+        let observed = awaken_session_realization_contract::SessionTerminalCleanupQueue::claim_next_terminal_cleanup(app.terminal_cleanups.as_ref(), target.clone(), None).await;
         if !allowed {
             if rule == "read-error" {
                 assert!(matches!(observed, Err(awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(_))), "{rule}");
@@ -427,6 +429,7 @@ async fn session_worker_demand_counts_live_affinity_and_terminal_cleanup() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     )
+    .terminal_cleanups
     .release_terminal_resources("workspace", "terminal-b")
     .await
     .expect("R2 cleanup")
@@ -458,6 +461,7 @@ async fn terminal_cleanup_worker_demand_follows_the_verified_session_root() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     application
+        .terminal_cleanups
         .release_terminal_resources("workspace", "demand-terminal")
         .await
         .expect("R3 cleanup")
@@ -522,6 +526,7 @@ async fn worker_realization_owner_read_keeps_expired_unfinished_session_occupied
         "invalid owner cannot prove an empty domain",
     );
     application
+        .terminal_cleanups
         .release_terminal_resources("workspace", "affinity-completed")
         .await
         .expect("R3 terminal cleanup")
@@ -599,6 +604,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     assert!(
         matches!(
             application
+                .terminal_cleanups
                 .claim_next_terminal_cleanup(target.clone(), None)
                 .await,
             Err(
@@ -631,6 +637,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     assert!(
         matches!(
             application
+                .terminal_cleanups
                 .claim_next_terminal_cleanup(target.clone(), None)
                 .await,
             Err(
@@ -644,6 +651,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     workers.fail.store(false, Ordering::SeqCst);
     assert!(
         application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("W2 stale Worker is ineligible")
@@ -656,6 +664,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     workers.replace(vec![starting]);
     assert!(
         application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("W3 unready Worker is ineligible")
@@ -691,6 +700,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
             .unwrap();
         assert!(
             application
+                .terminal_cleanups
                 .claim_next_terminal_cleanup(target.clone(), None)
                 .await
                 .expect("W4 protocol-incompatible candidate")
@@ -712,6 +722,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     )]);
     assert!(
         application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("W5 missing Resource capability is ineligible")
@@ -729,6 +740,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     workers.replace(vec![worker.clone()]);
     assert!(
         application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .unwrap()
@@ -738,6 +750,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     worker.snapshot.state = awaken_worker_contract::WorkerState::Ready;
     workers.replace(vec![worker.clone()]);
     let assignment = application
+        .terminal_cleanups
         .claim_next_terminal_cleanup(target.clone(), None)
         .await
         .expect("W6 compatible Worker admission")
@@ -747,6 +760,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     workers.replace(vec![worker]);
     assert_eq!(
         application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .unwrap()
@@ -773,6 +787,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     )]);
     assert!(
         application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), Some(&assignment.session_id))
             .await
             .expect("W7 missing Repository credential capability is ineligible")
@@ -787,6 +802,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
         resource_only_manifest,
     )]);
     let credentialed_assignment = application
+        .terminal_cleanups
         .claim_next_terminal_cleanup(target.clone(), Some(&assignment.session_id))
         .await
         .expect("W7 credential-compatible Worker admission")
@@ -856,6 +872,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
         )]);
         assert!(
             application
+                .terminal_cleanups
                 .claim_next_terminal_cleanup(
                     target.clone(),
                     Some(&credentialed_assignment.session_id),
@@ -876,6 +893,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
             .insert("portable-checkpoint-v1".into());
         workers.replace(vec![terminal_cleanup_worker(&target, checkpoint_manifest)]);
         let admitted = application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), Some(&credentialed_assignment.session_id))
             .await
             .expect("W9 supported checkpoint admission");
@@ -927,6 +945,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     assert!(
         matches!(
             application
+                .terminal_cleanups
                 .claim_next_terminal_cleanup(target, Some(&checkpoint_assignment.session_id))
                 .await,
             Err(awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(_))

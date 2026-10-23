@@ -79,16 +79,17 @@ async fn named_activity_cas_replay_retains_original_raw_identity_before_first_cr
     );
     faulting.fail_once("managed:session-activity:");
     assert!(
-        app.begin_activity_for_operation_with_policy(
-            &id,
-            "op-first",
-            false,
-            None,
-            None,
-            Some((&thread, &run))
-        )
-        .await
-        .is_err(),
+        app.activities
+            .begin_activity_for_operation_with_policy(
+                &id,
+                "op-first",
+                false,
+                None,
+                None,
+                Some((&thread, &run))
+            )
+            .await
+            .is_err(),
         "R1 outage"
     );
     assert_eq!(
@@ -104,15 +105,16 @@ async fn named_activity_cas_replay_retains_original_raw_identity_before_first_cr
         let thread = thread.clone();
         let run = run.clone();
         tokio::spawn(async move {
-            app.begin_activity_for_operation_with_policy(
-                &id,
-                "op-first",
-                false,
-                None,
-                None,
-                Some((&thread, &run)),
-            )
-            .await
+            app.activities
+                .begin_activity_for_operation_with_policy(
+                    &id,
+                    "op-first",
+                    false,
+                    None,
+                    None,
+                    Some((&thread, &run)),
+                )
+                .await
         })
     };
     tokio::time::timeout(std::time::Duration::from_secs(5), pause.entered.notified())
@@ -136,6 +138,7 @@ async fn named_activity_cas_replay_retains_original_raw_identity_before_first_cr
     );
     faulting.commit_then_conflict_once("managed:session-activity:");
     let (winner, epoch) = app
+        .activities
         .begin_activity_for_operation_with_policy(
             &id,
             "op-first",
@@ -165,22 +168,24 @@ async fn named_activity_cas_replay_retains_original_raw_identity_before_first_cr
     let wrong_run = RunId("different-run".into());
     for source in [(&wrong_thread, &run), (&thread, &wrong_run)] {
         assert_eq!(
-            app.begin_activity_for_operation_with_policy(
-                &id,
-                "op-first",
-                false,
-                None,
-                None,
-                Some(source)
-            )
-            .await
-            .unwrap_err(),
+            app.activities
+                .begin_activity_for_operation_with_policy(
+                    &id,
+                    "op-first",
+                    false,
+                    None,
+                    None,
+                    Some(source)
+                )
+                .await
+                .unwrap_err(),
             SessionActivityError::Conflict,
             "R3 original receipt cannot bless different raw coordinates"
         );
         assert_eq!(durable.get(&id).await.unwrap(), winner, "R3 no CAS");
     }
     let (continued, next_epoch) = app
+        .activities
         .transfer_committed_activity_for_operation(&id, "op-continue", Some(epoch), (&thread, &run))
         .await
         .unwrap();
@@ -212,6 +217,7 @@ async fn named_activity_cas_replay_retains_original_raw_identity_before_first_cr
         .into_session();
     assert!(terminal.is_terminal());
     let (replayed, original_epoch) = app
+        .activities
         .begin_activity_for_operation_with_policy(
             &id,
             "op-first",
@@ -258,18 +264,20 @@ async fn anonymous_and_legacy_activity_receipts_never_backfill_named_history() {
         let thread = ThreadId(id.to_string());
         let run = RunId("run-now".into());
         let (admitted, epoch) = if legacy {
-            app.begin_activity_for_operation_with_policy(
-                &id,
-                "op-old",
-                false,
-                None,
-                None,
-                Some((&thread, &run)),
-            )
-            .await
-            .unwrap()
+            app.activities
+                .begin_activity_for_operation_with_policy(
+                    &id,
+                    "op-old",
+                    false,
+                    None,
+                    None,
+                    Some((&thread, &run)),
+                )
+                .await
+                .unwrap()
         } else {
-            app.begin_activity_for_operation(&id, "op-old")
+            app.activities
+                .begin_activity_for_operation(&id, "op-old")
                 .await
                 .unwrap()
         };
@@ -279,6 +287,7 @@ async fn anonymous_and_legacy_activity_receipts_never_backfill_named_history() {
             assert_eq!(admitted.run_activities(), Some((&[][..], true)), "A1");
         }
         let recovered = app
+            .activities
             .recover_activity_for_operation(&id, "op-old", Some((&thread, &run)))
             .await
             .unwrap()
@@ -289,6 +298,7 @@ async fn anonymous_and_legacy_activity_receipts_never_backfill_named_history() {
             "A3 receipt read never backfills"
         );
         let replayed = app
+            .activities
             .begin_activity_for_operation_with_policy(
                 &id,
                 "op-old",
@@ -323,7 +333,7 @@ async fn late_boundary_settles_activity_without_claiming_a_pre_admission_commit(
         );
         let session = persisted(&id, false, "idle");
         let mut session = SessionAggregate::try_from(session).expect("valid admission fixture");
-        let epoch = SessionApplication::open_activity_on_snapshot(
+        let epoch = crate::SessionActivities::open_activity_on_snapshot(
             &mut session,
             None,
             false,
@@ -405,7 +415,7 @@ async fn user_event_boundary_before_admission_refuses_without_settlement() {
         );
         let session = persisted(&id, false, "idle");
         let mut session = SessionAggregate::try_from(session).expect("valid admission fixture");
-        let epoch = SessionApplication::open_activity_on_snapshot(
+        let epoch = crate::SessionActivities::open_activity_on_snapshot(
             &mut session,
             None,
             false,
@@ -470,6 +480,7 @@ async fn transferred_activity_fences_a_late_distinct_boundary_before_conflict_va
     );
 
     let first = app
+        .activities
         .begin_activity(&SessionId::from(session_id))
         .await
         .expect("A1 activity");
@@ -491,6 +502,7 @@ async fn transferred_activity_fences_a_late_distinct_boundary_before_conflict_va
         .await
         .expect("A1 closes with X");
     let successor = app
+        .activities
         .begin_activity(&SessionId::from(session_id))
         .await
         .expect("A2 successor");
@@ -539,7 +551,7 @@ async fn cancellation_before_external_realization_settles_without_a_runtime_inte
     );
     let session = persisted(session_id, false, "preparing");
     let mut session = SessionAggregate::try_from(session).expect("valid admission fixture");
-    let epoch = SessionApplication::open_activity_on_snapshot(
+    let epoch = crate::SessionActivities::open_activity_on_snapshot(
         &mut session,
         None,
         true,
@@ -639,8 +651,8 @@ async fn run_activity_fence_decision_table() {
     Box::pin(async {
         let session_id = SessionId::from("activity-oldest-first");
         let (first, second) = tokio::join!(
-            app.begin_activity(&session_id),
-            app.begin_activity(&session_id)
+            app.activities.begin_activity(&session_id),
+            app.activities.begin_activity(&session_id)
         );
         let first = first.expect("A1 first admission");
         let second = second.expect("A1 concurrent admission");
@@ -710,8 +722,8 @@ async fn run_activity_fence_decision_table() {
 
         let session_id = SessionId::from("activity-newest-first");
         let (first, second) = tokio::join!(
-            app.begin_activity(&session_id),
-            app.begin_activity(&session_id)
+            app.activities.begin_activity(&session_id),
+            app.activities.begin_activity(&session_id)
         );
         let mut reverse_epochs = [
             first.expect("A4 first admission").activity_epoch,
@@ -785,23 +797,25 @@ async fn run_activity_fence_decision_table() {
 
     Box::pin(async {
         let running = app
+            .activities
             .begin_activity(&SessionId::from("activity-oldest-first"))
             .await
             .expect("A7 activity before terminal transition");
-        app.force_terminate_session(
-            "activity-oldest-first",
-            "2026-08-11T00:00:00Z",
-            awaken_session_state_contract::ManagedLifecycleFact {
-                id: "activity-terminal".into(),
-                object_id: "activity-oldest-first".into(),
-                workspace_id: Some("workspace".into()),
-                event_type: "session.status_terminated".into(),
-                timestamp: 1,
-                runtime_interval: None,
-            },
-        )
-        .await
-        .expect("A7 terminal transition");
+        app.termination_commands
+            .force_terminate_session(
+                "activity-oldest-first",
+                "2026-08-11T00:00:00Z",
+                awaken_session_state_contract::ManagedLifecycleFact {
+                    id: "activity-terminal".into(),
+                    object_id: "activity-oldest-first".into(),
+                    workspace_id: Some("workspace".into()),
+                    event_type: "session.status_terminated".into(),
+                    timestamp: 1,
+                    runtime_interval: None,
+                },
+            )
+            .await
+            .expect("A7 terminal transition");
         let terminated = repo
             .get(&SessionId::from("activity-oldest-first"))
             .await
@@ -819,7 +833,8 @@ async fn run_activity_fence_decision_table() {
             .expect("A7 terminal settlement is idempotent");
         assert_eq!(fenced, terminated, "A7");
         assert_eq!(
-            app.begin_activity(&SessionId::from("activity-oldest-first"))
+            app.activities
+                .begin_activity(&SessionId::from("activity-oldest-first"))
                 .await,
             Err(SessionActivityError::Terminal),
             "A7"
@@ -836,7 +851,8 @@ async fn run_activity_fence_decision_table() {
             .await
             .expect("A8 durable Session before admission");
         assert_eq!(
-            app.begin_activity(&SessionId::from("activity-exhausted"))
+            app.activities
+                .begin_activity(&SessionId::from("activity-exhausted"))
                 .await,
             Err(SessionActivityError::EpochExhausted),
             "A8"
@@ -849,7 +865,9 @@ async fn run_activity_fence_decision_table() {
             "A8"
         );
         assert_eq!(
-            app.begin_activity(&SessionId::from("missing")).await,
+            app.activities
+                .begin_activity(&SessionId::from("missing"))
+                .await,
             Err(SessionActivityError::NotFound),
             "A8"
         );
@@ -860,7 +878,8 @@ async fn run_activity_fence_decision_table() {
         )
         .await;
         assert_eq!(
-            app.begin_activity(&SessionId::from("activity-preparing"))
+            app.activities
+                .begin_activity(&SessionId::from("activity-preparing"))
                 .await,
             Err(SessionActivityError::NotReady),
             "A8/E5"
@@ -881,6 +900,7 @@ async fn run_activity_fence_decision_table() {
         baseline.runtime_placement = SessionRuntimePlacement::Worker;
         create(repo.as_ref(), worker_preparing).await;
         let admitted = app
+            .activities
             .begin_activity(&SessionId::from("activity-worker-preparing"))
             .await
             .expect("A9 Worker claim must be triggered by the driving event");

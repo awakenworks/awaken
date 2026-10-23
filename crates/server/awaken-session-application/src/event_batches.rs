@@ -1222,6 +1222,7 @@ impl SessionApplication {
         failed: &FailedToolReplyCoordinate,
     ) -> Result<(), RunError> {
         let Some((_, activity_epoch)) = self
+            .activities
             .recover_activity_for_operation(
                 &awaken_session_types::SessionId::from(session_id),
                 &failed.activity_operation_id,

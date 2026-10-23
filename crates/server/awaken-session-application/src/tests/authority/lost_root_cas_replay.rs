@@ -111,6 +111,7 @@ async fn concurrent_repository_publication_archive_cannot_report_the_losing_cas_
     let delayed = Arc::clone(&delayed_app);
     let loser = tokio::spawn(async move {
         delayed
+            .termination_commands
             .archive_with_repository_publication(delayed_command)
             .await
     });
@@ -134,6 +135,7 @@ async fn concurrent_repository_publication_archive_cannot_report_the_losing_cas_
     );
 
     let winner = winner_app
+        .termination_commands
         .archive_with_repository_publication(winner_command)
         .await
         .expect("E1 winner releases");
@@ -198,6 +200,7 @@ async fn concurrent_repository_publication_archive_cannot_report_the_losing_cas_
     assert!(
         matches!(
             winner_app
+                .termination_commands
                 .archive_with_repository_publication(different_intent)
                 .await,
             Err(SessionArchiveWithRepositoryPublicationError::Conflict)
@@ -261,16 +264,19 @@ async fn every_disposition_command_reports_a_lost_root_cas_as_a_replay() {
             match case {
                 "public" => {
                     delayed
+                        .termination_commands
                         .terminate_session(&delayed_id, "2026-09-19T00:00:01Z", delayed_fact)
                         .await
                 }
                 "force" => {
                     delayed
+                        .termination_commands
                         .force_terminate_session(&delayed_id, "2026-09-19T00:00:01Z", delayed_fact)
                         .await
                 }
                 "release" => {
                     delayed
+                        .termination_commands
                         .release_terminal_session(&delayed_id, "2026-09-19T00:00:01Z", delayed_fact)
                         .await
                 }
@@ -293,15 +299,18 @@ async fn every_disposition_command_reports_a_lost_root_cas_as_a_replay() {
 
         let winner = match case {
             "public" => {
-                app.terminate_session(&session_id, "2026-09-19T00:00:02Z", fact.clone())
+                app.termination_commands
+                    .terminate_session(&session_id, "2026-09-19T00:00:02Z", fact.clone())
                     .await
             }
             "force" => {
-                app.force_terminate_session(&session_id, "2026-09-19T00:00:02Z", fact.clone())
+                app.termination_commands
+                    .force_terminate_session(&session_id, "2026-09-19T00:00:02Z", fact.clone())
                     .await
             }
             "release" => {
-                app.release_terminal_session(&session_id, "2026-09-19T00:00:02Z", fact.clone())
+                app.termination_commands
+                    .release_terminal_session(&session_id, "2026-09-19T00:00:02Z", fact.clone())
                     .await
             }
             _ => {

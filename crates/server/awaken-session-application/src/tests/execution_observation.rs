@@ -590,12 +590,13 @@ async fn native_run_claim_is_visible_before_the_first_commit_only_with_exact_adm
         ),
         "E2 no receipt"
     );
-    app.begin_activity_for_operation(
-        &id,
-        &awaken_session_execution_contract::session_run_activity_operation_id(&id, &run),
-    )
-    .await
-    .unwrap();
+    app.activities
+        .begin_activity_for_operation(
+            &id,
+            &awaken_session_execution_contract::session_run_activity_operation_id(&id, &run),
+        )
+        .await
+        .unwrap();
     let before = repository.get(&id).await.unwrap();
     let page = app
         .session_run_events_after(
@@ -728,6 +729,7 @@ async fn update_history_uses_validated_root_prefix_after_replay_and_noop_checks(
         .insert((id.to_string(), thread.0.clone()), foreign.clone());
     let before = repo.get(&id).await.unwrap();
     let error = app
+        .update_commands
         .update_session(&id, command(Some("prefix-update")))
         .await
         .unwrap_err();
@@ -747,6 +749,7 @@ async fn update_history_uses_validated_root_prefix_after_replay_and_noop_checks(
     let valid = recovery_snapshot(id.as_str(), Vec::new(), Vec::new(), Vec::new());
     runtime.set_recovery_snapshot(id.as_str(), &thread, valid.clone());
     let applied = app
+        .update_commands
         .update_session(&id, command(Some("prefix-update")))
         .await
         .unwrap();
@@ -767,7 +770,11 @@ async fn update_history_uses_validated_root_prefix_after_replay_and_noop_checks(
         .unwrap()
         .insert((id.to_string(), thread.0.clone()), foreign);
     for (rule, key) in [("U3", Some("prefix-update")), ("U4", None)] {
-        let outcome = app.update_session(&id, command(key)).await.unwrap();
+        let outcome = app
+            .update_commands
+            .update_session(&id, command(key))
+            .await
+            .unwrap();
         if key.is_some() {
             assert!(!outcome.command_applied, "{rule} exact receipt replay");
         }

@@ -889,7 +889,8 @@ async fn due_idle_environment_suspends_once_in_order() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    app.reconcile_environment_continuation(&SessionId::from("suspend"), 2_000)
+    app.continuations
+        .reconcile_environment_continuation(&SessionId::from("suspend"), 2_000)
         .await
         .unwrap();
     let settled = repo.get(&SessionId::from("suspend")).await.unwrap();
@@ -903,7 +904,8 @@ async fn due_idle_environment_suspends_once_in_order() {
         settled.environment,
         awaken_session_state_contract::SessionEnvironmentState::Hibernated { .. }
     ));
-    app.reconcile_environment_continuation(&SessionId::from("suspend"), 2_000)
+    app.continuations
+        .reconcile_environment_continuation(&SessionId::from("suspend"), 2_000)
         .await
         .unwrap();
     assert_eq!(runtime.quiesces.load(Ordering::SeqCst), 1);
@@ -1012,6 +1014,7 @@ async fn suspend_admission_reuses_the_closed_memory_evidence_decision() {
             Arc::new(RecordingEnvironmentSource::default()),
         );
         let result = app
+            .continuations
             .reconcile_environment_continuation(&SessionId::from(id), 2_000)
             .await;
         if should_suspend {
@@ -1059,7 +1062,8 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
     // This prevents an empty/partial process-local projection from becoming the
     // desired ownership authority, while H22 in the Runtime-host suite proves
     // the same exact Stage rebuilds a quiescence-created Removed tombstone.
-    app.reconcile_environment_continuation(&SessionId::from("suspend-with-mcp"), 2_000)
+    app.continuations
+        .reconcile_environment_continuation(&SessionId::from("suspend-with-mcp"), 2_000)
         .await
         .unwrap();
     assert_eq!(
@@ -1118,7 +1122,8 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
         "D2 no early publication"
     );
 
-    app.ensure_environment_resident(&SessionId::from("suspend-with-mcp"), 2_000)
+    app.continuations
+        .ensure_environment_resident(&SessionId::from("suspend-with-mcp"), 2_000)
         .await
         .unwrap();
     let staged =
@@ -1371,7 +1376,8 @@ async fn inexact_quiescence_receipts_leave_the_complete_root_unchanged() {
             Arc::new(RecordingEnvironmentSource::default()),
         );
         assert!(
-            app.reconcile_environment_continuation(&SessionId::from(&session_id), 2_000)
+            app.continuations
+                .reconcile_environment_continuation(&SessionId::from(&session_id), 2_000)
                 .await
                 .is_err(),
             "{rule}/E1"
@@ -1411,7 +1417,8 @@ async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     assert!(
-        app.reconcile_environment_continuation(&SessionId::from("checkpoint-artifact-auth"), 2_000)
+        app.continuations
+            .reconcile_environment_continuation(&SessionId::from("checkpoint-artifact-auth"), 2_000)
             .await
             .is_err(),
         "C1 fixture stops at ReadyToDispose"
@@ -1498,7 +1505,8 @@ async fn checkpoint_failure_retains_source_and_retries_from_committed_phase() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     assert!(
-        app.reconcile_environment_continuation(&SessionId::from("retry"), 2_000)
+        app.continuations
+            .reconcile_environment_continuation(&SessionId::from("retry"), 2_000)
             .await
             .is_err()
     );
@@ -1512,7 +1520,8 @@ async fn checkpoint_failure_retains_source_and_retries_from_committed_phase() {
     ));
     assert_eq!(pending.environment.binding(), Some("source-binding"));
     assert_eq!(runtime.disposals.load(Ordering::SeqCst), 0);
-    app.reconcile_environment_continuation(&SessionId::from("retry"), 3_000)
+    app.continuations
+        .reconcile_environment_continuation(&SessionId::from("retry"), 3_000)
         .await
         .unwrap();
     assert_eq!(runtime.quiesces.load(Ordering::SeqCst), 1);
@@ -1543,7 +1552,8 @@ async fn quiescence_failure_retains_resident_source_for_retry() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     assert!(
-        app.reconcile_environment_continuation(&SessionId::from("quiesce-retry"), 2_000)
+        app.continuations
+            .reconcile_environment_continuation(&SessionId::from("quiesce-retry"), 2_000)
             .await
             .is_err()
     );
@@ -1559,7 +1569,8 @@ async fn quiescence_failure_retains_resident_source_for_retry() {
     ));
     assert_eq!(runtime.checkpoints.load(Ordering::SeqCst), 0);
     assert_eq!(runtime.disposals.load(Ordering::SeqCst), 0);
-    app.reconcile_environment_continuation(&SessionId::from("quiesce-retry"), 2_000)
+    app.continuations
+        .reconcile_environment_continuation(&SessionId::from("quiesce-retry"), 2_000)
         .await
         .unwrap();
     assert_eq!(runtime.quiesces.load(Ordering::SeqCst), 2);
@@ -1591,7 +1602,8 @@ async fn disposal_failure_retries_without_recheckpointing() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     assert!(
-        app.reconcile_environment_continuation(&SessionId::from("dispose-retry"), 2_000)
+        app.continuations
+            .reconcile_environment_continuation(&SessionId::from("dispose-retry"), 2_000)
             .await
             .is_err()
     );
@@ -1624,7 +1636,8 @@ async fn disposal_failure_retries_without_recheckpointing() {
         )
         .await
         .unwrap();
-    app.reconcile_environment_continuation(&SessionId::from("dispose-retry"), 2_000)
+    app.continuations
+        .reconcile_environment_continuation(&SessionId::from("dispose-retry"), 2_000)
         .await
         .unwrap();
     assert_eq!(runtime.checkpoints.load(Ordering::SeqCst), 1);
@@ -1679,7 +1692,8 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
     );
 
     assert!(
-        app.reconcile_environment_continuation(&SessionId::from("prep-response-loss"), 2_000)
+        app.continuations
+            .reconcile_environment_continuation(&SessionId::from("prep-response-loss"), 2_000)
             .await
             .is_err(),
         "P1 stop after the suspend operation freezes A0",
@@ -1702,7 +1716,8 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
         .unwrap();
     repo.commit_then_conflict_once("environment-source-release-prepared");
     assert!(
-        app.reconcile_environment_continuation(&SessionId::from("prep-response-loss"), 2_000)
+        app.continuations
+            .reconcile_environment_continuation(&SessionId::from("prep-response-loss"), 2_000)
             .await
             .is_err(),
         "P1 aggregate commit succeeded but its response was lost",
@@ -1748,7 +1763,8 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
         )
         .await
         .unwrap();
-    app.reconcile_environment_continuation(&SessionId::from("prep-response-loss"), 2_000)
+    app.continuations
+        .reconcile_environment_continuation(&SessionId::from("prep-response-loss"), 2_000)
         .await
         .unwrap();
 
@@ -1786,7 +1802,8 @@ async fn preparation_failure_has_zero_physical_disposal_and_retries_before_dispo
         Arc::new(RecordingEnvironmentSource::default()),
     );
     assert!(
-        app.reconcile_environment_continuation(&SessionId::from("prepare-retry"), 2_000)
+        app.continuations
+            .reconcile_environment_continuation(&SessionId::from("prepare-retry"), 2_000)
             .await
             .is_err(),
         "C1",
@@ -1805,7 +1822,8 @@ async fn preparation_failure_has_zero_physical_disposal_and_retries_before_dispo
     assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "E1");
     assert_eq!(runtime.disposals.load(Ordering::SeqCst), 0, "E2");
 
-    app.reconcile_environment_continuation(&SessionId::from("prepare-retry"), 2_000)
+    app.continuations
+        .reconcile_environment_continuation(&SessionId::from("prepare-retry"), 2_000)
         .await
         .unwrap();
     assert_eq!(runtime.checkpoints.load(Ordering::SeqCst), 1, "E3");
@@ -1845,7 +1863,8 @@ async fn driving_ingress_restores_once_before_activity() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    app.ensure_environment_resident(&SessionId::from("restore"), 1_000)
+    app.continuations
+        .ensure_environment_resident(&SessionId::from("restore"), 1_000)
         .await
         .unwrap();
     let restored = repo.get(&SessionId::from("restore")).await.unwrap();
@@ -1877,7 +1896,8 @@ async fn driving_ingress_restores_once_before_activity() {
         [("agent".into(), "restore".into(), "restored-binding".into())],
         "R1/E2 exact Resident binding is adopted before handoff succeeds",
     );
-    app.ensure_environment_resident(&SessionId::from("restore"), 1_000)
+    app.continuations
+        .ensure_environment_resident(&SessionId::from("restore"), 1_000)
         .await
         .unwrap();
     assert_eq!(runtime.restores.load(Ordering::SeqCst), 1, "R2/E3");
@@ -1886,7 +1906,8 @@ async fn driving_ingress_restores_once_before_activity() {
         2,
         "R2/E3"
     );
-    app.begin_activity(&SessionId::from("restore"))
+    app.activities
+        .begin_activity(&SessionId::from("restore"))
         .await
         .unwrap();
     assert_eq!(runtime.restores.load(Ordering::SeqCst), 1, "R2/E3");
@@ -1923,7 +1944,8 @@ async fn restore_failure_retries_the_committed_restore_operation() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     assert!(
-        app.ensure_environment_resident(&SessionId::from("restore-retry"), 1_000)
+        app.continuations
+            .ensure_environment_resident(&SessionId::from("restore-retry"), 1_000)
             .await
             .is_err()
     );
@@ -1939,7 +1961,8 @@ async fn restore_failure_retries_the_committed_restore_operation() {
         0,
         "F1/E1 no projection before a Resident CAS",
     );
-    app.ensure_environment_resident(&SessionId::from("restore-retry"), 1_000)
+    app.continuations
+        .ensure_environment_resident(&SessionId::from("restore-retry"), 1_000)
         .await
         .unwrap();
     assert_eq!(runtime.restores.load(Ordering::SeqCst), 2, "F1 retry");
@@ -1982,7 +2005,8 @@ async fn resident_projection_failure_retries_without_restoring_again() {
     );
 
     assert!(
-        app.ensure_environment_resident(&SessionId::from("projection-retry"), 1_000)
+        app.continuations
+            .ensure_environment_resident(&SessionId::from("projection-retry"), 1_000)
             .await
             .is_err(),
         "F2/E2 projection failure is returned",
@@ -2010,7 +2034,8 @@ async fn resident_projection_failure_retries_without_restoring_again() {
         "F2/E2"
     );
 
-    app.ensure_environment_resident(&SessionId::from("projection-retry"), 1_000)
+    app.continuations
+        .ensure_environment_resident(&SessionId::from("projection-retry"), 1_000)
         .await
         .expect("F3/E3 Resident projection retry");
     assert_eq!(runtime.restores.load(Ordering::SeqCst), 1, "F3/E3");
@@ -2067,6 +2092,7 @@ async fn external_checkpoint_retention_never_invokes_the_coordinator_runtime() {
 
     assert!(
         resident_app
+            .continuations
             .reconcile_environment_continuation(&SessionId::from("external-resident"), 2_000)
             .await
             .is_err(),
@@ -2106,6 +2132,7 @@ async fn external_checkpoint_retention_never_invokes_the_coordinator_runtime() {
 
     assert!(
         hibernated_app
+            .continuations
             .ensure_environment_resident(&SessionId::from("external-hibernated"), 1_000)
             .await
             .is_err(),
@@ -2181,7 +2208,8 @@ async fn driving_ingress_during_upload_completes_suspend_then_restores() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    app.ensure_environment_resident(&SessionId::from("during-upload"), 2_000)
+    app.continuations
+        .ensure_environment_resident(&SessionId::from("during-upload"), 2_000)
         .await
         .unwrap();
     assert_eq!(runtime.quiesces.load(Ordering::SeqCst), 0);
@@ -2207,7 +2235,8 @@ async fn expired_checkpoint_is_deleted_then_rebuilt_from_frozen_environment() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    app.ensure_environment_resident(&SessionId::from("expired"), 1_000)
+    app.continuations
+        .ensure_environment_resident(&SessionId::from("expired"), 1_000)
         .await
         .unwrap();
     assert_eq!(runtime.deletes.load(Ordering::SeqCst), 1);
@@ -2240,7 +2269,8 @@ async fn expired_checkpoint_delete_failure_retains_reference_for_retry() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     assert!(
-        app.ensure_environment_resident(&SessionId::from("delete-retry"), 1_000)
+        app.continuations
+            .ensure_environment_resident(&SessionId::from("delete-retry"), 1_000)
             .await
             .is_err()
     );
@@ -2251,7 +2281,8 @@ async fn expired_checkpoint_delete_failure_retains_reference_for_retry() {
             .environment,
         awaken_session_state_contract::SessionEnvironmentState::Hibernated { .. }
     ));
-    app.ensure_environment_resident(&SessionId::from("delete-retry"), 1_000)
+    app.continuations
+        .ensure_environment_resident(&SessionId::from("delete-retry"), 1_000)
         .await
         .unwrap();
     assert_eq!(runtime.deletes.load(Ordering::SeqCst), 2);
@@ -2288,20 +2319,21 @@ async fn terminal_cleanup_delegates_checkpoint_to_the_one_runtime_effect() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    app.terminate_session(
-        "terminal",
-        "2026-08-11T00:00:00Z",
-        awaken_session_state_contract::ManagedLifecycleFact {
-            id: "terminal-archive".into(),
-            object_id: "terminal".into(),
-            workspace_id: Some("workspace".into()),
-            event_type: "session.archived".into(),
-            timestamp: 1,
-            runtime_interval: None,
-        },
-    )
-    .await
-    .unwrap();
+    app.termination_commands
+        .terminate_session(
+            "terminal",
+            "2026-08-11T00:00:00Z",
+            awaken_session_state_contract::ManagedLifecycleFact {
+                id: "terminal-archive".into(),
+                object_id: "terminal".into(),
+                workspace_id: Some("workspace".into()),
+                event_type: "session.archived".into(),
+                timestamp: 1,
+                runtime_interval: None,
+            },
+        )
+        .await
+        .unwrap();
     assert_eq!(
         runtime
             .terminal_checkpoint_projections
@@ -2421,7 +2453,8 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
         ("O2", "stale-upload", &stale_upload),
     ] {
         assert!(
-            app.reconcile_environment_continuation(&SessionId::from(id), 2_000)
+            app.continuations
+                .reconcile_environment_continuation(&SessionId::from(id), 2_000)
                 .await
                 .is_err(),
             "{rule} refused"
@@ -2433,7 +2466,8 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
         );
     }
     assert!(
-        app.ensure_environment_resident(&SessionId::from("stale-restore"), 1_000)
+        app.continuations
+            .ensure_environment_resident(&SessionId::from("stale-restore"), 1_000)
             .await
             .is_err(),
         "O3 refused"

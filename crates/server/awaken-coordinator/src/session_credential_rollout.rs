@@ -60,7 +60,7 @@ impl SessionCredentialRolloutAdoption {
     ) -> Self {
         Self {
             roots: sessions.queries(),
-            updates: sessions,
+            updates: sessions.update_commands(),
             publication,
         }
     }

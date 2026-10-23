@@ -18,7 +18,11 @@ use awaken_session_state_contract::{
 };
 use awaken_session_types::RunError;
 
-use super::{SessionApplication, SessionMutationError, SessionRecoveryCandidates};
+use std::sync::Arc;
+
+use awaken_session_execution_contract::RealizationEffects;
+
+use super::{SessionMutationError, SessionRecoveryCandidates};
 
 fn expected_mcp_generations(
     session: &PersistedSession,
@@ -94,8 +98,32 @@ impl From<SessionEnvironmentTransitionError> for SessionContinuationError {
     }
 }
 
-impl SessionApplication {
-    pub(super) async fn reconcile_environment_continuations_from(
+/// The Session Environment suspend/restore saga driven by recovery and by a
+/// driving ingress that needs a Resident Environment. It holds the CAS kernel,
+/// the Environment and realization-effect runtime roles and the realization
+/// component that reprojects a Resident Environment locally.
+pub struct SessionContinuations {
+    mutations: Arc<crate::SessionMutations>,
+    environment: Arc<dyn EnvironmentRuntime>,
+    realization_effects: Arc<dyn RealizationEffects>,
+    realizations: Arc<crate::SessionRealizations>,
+}
+
+impl SessionContinuations {
+    pub(crate) fn new(
+        mutations: Arc<crate::SessionMutations>,
+        runtime: &crate::SessionExecutor,
+        realizations: Arc<crate::SessionRealizations>,
+    ) -> Self {
+        Self {
+            mutations,
+            environment: runtime.environment.clone(),
+            realization_effects: runtime.realization_effects.clone(),
+            realizations,
+        }
+    }
+
+    pub(crate) async fn reconcile_environment_continuations_from(
         &self,
         candidates: &SessionRecoveryCandidates,
         now_unix_ms: u64,
@@ -153,12 +181,12 @@ impl SessionApplication {
                 advanced: false,
             });
         };
-        let environment = self.runtime().environment();
+        let environment = self.environment.as_ref();
         let reason = match instruction {
             _ if decision.next() == session.environment.step() => {
                 carry_out_effect(
                     environment,
-                    self.runtime().realization_effects(),
+                    self.realization_effects.as_ref(),
                     &owner_scope,
                     &mut session,
                     instruction,

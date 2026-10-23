@@ -297,8 +297,34 @@ pub(crate) struct SessionAssembly {
 
 impl SessionAssembly {
     pub(crate) fn assemble(self, kernel: SessionKernel) -> SessionApplication {
+        let foundation = self.foundation(&kernel);
+        let lease = self.lease_protocol(&kernel, &foundation);
+        let update_commands = Arc::new(crate::SessionUpdateCommands::new(
+            crate::update::SessionUpdateCollaborators {
+                mutations: kernel.mutations.clone(),
+                clock: kernel.clock.clone(),
+                credentials: foundation.credentials.clone(),
+                lifecycle: kernel.lifecycle.clone(),
+                realizations: lease.realizations.clone(),
+                activities: lease.activities.clone(),
+                executable_projections: foundation.executable_projections.clone(),
+                tool_configuration_compiler: self.tool_configuration_compiler.clone(),
+                runtime: self.runtime.clone(),
+            },
+        ));
+        let termination_commands = Arc::new(crate::SessionTerminationCommands::new(
+            kernel.mutations.clone(),
+            kernel.clock.clone(),
+            kernel.lifecycle.clone(),
+            lease.terminal_cleanups.clone(),
+            lease.activities.clone(),
+            &self.runtime,
+        ));
         let SessionKernel {
+            #[cfg(any(test, feature = "test-support"))]
             store,
+            #[cfg(not(any(test, feature = "test-support")))]
+                store: _,
             clock,
             mutations,
             lifecycle,
@@ -307,65 +333,22 @@ impl SessionAssembly {
             runtime_incarnation,
             event_batch_cutover_validation,
         } = kernel;
-        let credentials = Arc::new(crate::SessionCredentials::new(
-            mutations.clone(),
-            clock.clone(),
-            self.credential_source.clone(),
-            self.credential_material_ingress.clone(),
-        ));
-        let queries = Arc::new(crate::SessionQueries::new(
-            store.clone(),
-            &self.runtime,
-            self.profiles.clone(),
-        ));
-        let inputs = Arc::new(crate::SessionInputs::new(
-            store.clone(),
-            self.runtime.live_inbox.clone(),
-            self.resource_registry.as_ref().map(|registry| {
-                registry.clone() as Arc<dyn awaken_resource_contract::ResourceInventory>
-            }),
-        ));
-        let resource_effect_authorization = Arc::new(
-            crate::SessionResourceEffectAuthorization::new(mutations.clone(), clock.clone()),
-        );
-        let resource_references = Arc::new(crate::SessionResourceReferences::new(
-            mutations.clone(),
-            self.resource_references.clone(),
-            self.resource_files.clone(),
-        ));
-        let work_assignments = Arc::new(crate::SessionWorkAssignments::new(
-            mutations.repository().clone(),
-            self.environments.assignment.clone(),
-            self.environments.leases.clone(),
-            lifecycle.clone(),
-            clock.clone(),
-        ));
-        let repository_participants = Arc::new(crate::SessionRepositoryParticipants::new(
-            mutations.clone(),
-            resource_references.clone(),
-            credentials.clone(),
-            self.resource_registry.clone(),
-            self.resource_purge_scheduler.clone(),
-            clock.clone(),
-        ));
-        let executable_projections = crate::ExecutableProjections(self.refresh.clone());
-        let realizations = Arc::new(crate::SessionRealizations::new(
-            crate::realization::SessionRealizationCollaborators {
-                mutations: mutations.clone(),
-                clock: clock.clone(),
-                queries: queries.clone(),
-                credentials: credentials.clone(),
-                lifecycle: lifecycle.clone(),
-                resource_references: resource_references.clone(),
-                realization: self.runtime.realization.clone(),
-                mcp: self.mcp.clone(),
-                executable_projections: executable_projections.clone(),
-                execution_admission: execution_admission.clone(),
-                local_realization_owner: self.configuration.local_realization_owner.clone(),
-                runtime_incarnation: runtime_incarnation.clone(),
-                realization_retry_budget: self.configuration.realization_retry_budget,
-            },
-        ));
+        let Foundation {
+            credentials,
+            queries,
+            inputs,
+            resource_effect_authorization,
+            resource_references,
+            work_assignments,
+            repository_participants,
+            executable_projections,
+        } = foundation;
+        let LeaseProtocol {
+            realizations,
+            terminal_cleanups,
+            continuations,
+            activities,
+        } = lease;
         SessionApplication {
             clock,
             configuration: self.configuration.clone(),
@@ -388,6 +371,11 @@ impl SessionAssembly {
             environment_binding_sink,
             executable_projections,
             realizations,
+            terminal_cleanups,
+            continuations,
+            activities,
+            termination_commands,
+            update_commands,
             execution_admission,
             runtime_incarnation,
             event_batch_cutover_validation,
@@ -397,13 +385,137 @@ impl SessionAssembly {
             fixture_assembly: self,
         }
     }
+
+    /// Components every use case shares: the reads, credential and Resource
+    /// components over the one CAS kernel, and the Session Work projection.
+    fn foundation(&self, kernel: &SessionKernel) -> Foundation {
+        let credentials = Arc::new(crate::SessionCredentials::new(
+            kernel.mutations.clone(),
+            kernel.clock.clone(),
+            self.credential_source.clone(),
+            self.credential_material_ingress.clone(),
+        ));
+        let resource_references = Arc::new(crate::SessionResourceReferences::new(
+            kernel.mutations.clone(),
+            self.resource_references.clone(),
+            self.resource_files.clone(),
+        ));
+        Foundation {
+            queries: Arc::new(crate::SessionQueries::new(
+                kernel.store.clone(),
+                &self.runtime,
+                self.profiles.clone(),
+            )),
+            inputs: Arc::new(crate::SessionInputs::new(
+                kernel.store.clone(),
+                self.runtime.live_inbox.clone(),
+                self.resource_registry.as_ref().map(|registry| {
+                    registry.clone() as Arc<dyn awaken_resource_contract::ResourceInventory>
+                }),
+            )),
+            resource_effect_authorization: Arc::new(
+                crate::SessionResourceEffectAuthorization::new(
+                    kernel.mutations.clone(),
+                    kernel.clock.clone(),
+                ),
+            ),
+            work_assignments: Arc::new(crate::SessionWorkAssignments::new(
+                kernel.mutations.repository().clone(),
+                self.environments.assignment.clone(),
+                self.environments.leases.clone(),
+                kernel.lifecycle.clone(),
+                kernel.clock.clone(),
+            )),
+            repository_participants: Arc::new(crate::SessionRepositoryParticipants::new(
+                kernel.mutations.clone(),
+                resource_references.clone(),
+                credentials.clone(),
+                self.resource_registry.clone(),
+                self.resource_purge_scheduler.clone(),
+                kernel.clock.clone(),
+            )),
+            executable_projections: crate::ExecutableProjections(self.refresh.clone()),
+            credentials,
+            resource_references,
+        }
+    }
+
+    /// The realization lease protocol and what is built on it: terminal
+    /// cleanup, the Environment continuation saga and activity fencing.
+    fn lease_protocol(&self, kernel: &SessionKernel, foundation: &Foundation) -> LeaseProtocol {
+        let realizations = Arc::new(crate::SessionRealizations::new(
+            crate::realization::SessionRealizationCollaborators {
+                mutations: kernel.mutations.clone(),
+                clock: kernel.clock.clone(),
+                queries: foundation.queries.clone(),
+                credentials: foundation.credentials.clone(),
+                lifecycle: kernel.lifecycle.clone(),
+                resource_references: foundation.resource_references.clone(),
+                realization: self.runtime.realization.clone(),
+                mcp: self.mcp.clone(),
+                executable_projections: foundation.executable_projections.clone(),
+                execution_admission: kernel.execution_admission.clone(),
+                local_realization_owner: self.configuration.local_realization_owner.clone(),
+                runtime_incarnation: kernel.runtime_incarnation.clone(),
+                realization_retry_budget: self.configuration.realization_retry_budget,
+            },
+        ));
+        let terminal_cleanups = Arc::new(crate::SessionTerminalCleanups::new(
+            crate::terminal_cleanup::SessionTerminalCleanupCollaborators {
+                mutations: kernel.mutations.clone(),
+                clock: kernel.clock.clone(),
+                queries: foundation.queries.clone(),
+                lifecycle: kernel.lifecycle.clone(),
+                resource_references: foundation.resource_references.clone(),
+                repository_participants: foundation.repository_participants.clone(),
+                work_assignments: foundation.work_assignments.clone(),
+                realizations: realizations.clone(),
+                executable_projections: foundation.executable_projections.clone(),
+                execution_admission: kernel.execution_admission.clone(),
+                runtime: self.runtime.clone(),
+            },
+        ));
+        let continuations = Arc::new(crate::SessionContinuations::new(
+            kernel.mutations.clone(),
+            &self.runtime,
+            realizations.clone(),
+        ));
+        let activities = Arc::new(crate::SessionActivities::new(
+            kernel.mutations.clone(),
+            kernel.clock.clone(),
+            &self.runtime,
+            continuations.clone(),
+            &kernel.runtime_incarnation,
+        ));
+        LeaseProtocol {
+            realizations,
+            terminal_cleanups,
+            continuations,
+            activities,
+        }
+    }
 }
 
-/// Change one composition input of a fixture that has not been shared and
-/// rebuild every component from it over the same kernel. A component already
-/// handed out would keep the ports it was built with while the application
-/// moved on, so a shared fixture refuses before any change: each component
-/// must have exactly the holders a fresh assembly of the same inputs gives it.
+/// The components every use case shares.
+struct Foundation {
+    credentials: Arc<crate::SessionCredentials>,
+    queries: Arc<crate::SessionQueries>,
+    inputs: Arc<crate::SessionInputs>,
+    resource_effect_authorization: Arc<crate::SessionResourceEffectAuthorization>,
+    resource_references: Arc<crate::SessionResourceReferences>,
+    work_assignments: Arc<crate::SessionWorkAssignments>,
+    repository_participants: Arc<crate::SessionRepositoryParticipants>,
+    executable_projections: crate::ExecutableProjections,
+}
+
+/// The realization lease protocol and the components built directly on it.
+struct LeaseProtocol {
+    realizations: Arc<crate::SessionRealizations>,
+    terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
+    continuations: Arc<crate::SessionContinuations>,
+    activities: Arc<crate::SessionActivities>,
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn reassemble(
     application: &mut SessionApplication,
@@ -429,6 +541,11 @@ pub(crate) fn reassemble(
             Arc::strong_count(&application.work_assignments),
             Arc::strong_count(&application.repository_participants),
             Arc::strong_count(&application.realizations),
+            Arc::strong_count(&application.terminal_cleanups),
+            Arc::strong_count(&application.continuations),
+            Arc::strong_count(&application.activities),
+            Arc::strong_count(&application.termination_commands),
+            Arc::strong_count(&application.update_commands),
         ]
     };
     let unshared = application.fixture_assembly.clone().assemble(kernel());

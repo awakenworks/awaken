@@ -1625,6 +1625,7 @@ async fn an_open_stream_observes_another_replicas_durable_deletion_without_local
     // Keep the aggregate's real activity fence open before subscribing. An
     // already-idle Session may legitimately finish SSE before a later delete.
     a.session_application()
+        .activities()
         .begin_activity(&awaken_session_types::SessionId::from(&id))
         .await
         .expect("D4 admitted activity keeps the stream open");

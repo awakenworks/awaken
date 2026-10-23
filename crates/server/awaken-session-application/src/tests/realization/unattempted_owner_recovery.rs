@@ -62,6 +62,7 @@ async fn seed_expired_cleanup_affinity(
     runtime.fail_quiesce_once.store(true, Ordering::SeqCst);
     if witness {
         let _pending = app
+            .termination_commands
             .terminate_session_with_admission(
                 &SessionId::from(id),
                 "2026-10-10T00:00:00Z",
@@ -70,7 +71,8 @@ async fn seed_expired_cleanup_affinity(
             )
             .await;
     } else {
-        app.terminate_session(id, "2026-10-10T00:00:00Z", fact(id))
+        app.termination_commands
+            .terminate_session(id, "2026-10-10T00:00:00Z", fact(id))
             .await
             .unwrap();
     }
@@ -202,6 +204,7 @@ async fn idle_archive_projects_known_empty_materialization_without_borrowing_leg
         let before = repository.get(&SessionId::from(&id)).await.unwrap();
         assert_eq!(before.environment_materialization().is_some(), modern);
         let assignment = app
+            .terminal_cleanups
             .terminal_cleanup_assignment_from_snapshot("workspace", &before)
             .await
             .unwrap();
@@ -253,6 +256,7 @@ async fn expired_foreign_cleanup_affinity_requires_exact_no_create_and_pristine_
             let before = repository.get(&SessionId::from(&id)).await.unwrap();
             let effects_before = runtime.effective_ids.lock().unwrap().clone();
             let assignment = app
+                .terminal_cleanups
                 .claim_next_terminal_cleanup(target(incumbent_owner), None)
                 .await
                 .unwrap();
@@ -331,6 +335,7 @@ async fn no_create_affinity_claim_preserves_unavailable_authority_and_lost_cas_r
                 _ => unreachable!(),
             }
             let result = app
+                .terminal_cleanups
                 .claim_next_terminal_cleanup(target(incumbent_owner), None)
                 .await;
             let after = repository.get(&SessionId::from(&id)).await.unwrap();

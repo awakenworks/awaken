@@ -85,6 +85,7 @@ async fn indeterminate_root_projects_one_standard_error_across_warm_and_cold_rea
     let run = RunId("unconfirmed-model".into());
     let activity = warm
         .application
+        .activities()
         .begin_activity(&SessionId::from(&session.id))
         .await
         .unwrap();
@@ -569,6 +570,7 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
     let prior_run = RunId("prior-runtime-history".into());
     let activity = warm
         .application
+        .activities()
         .begin_activity(&SessionId::from(&session.id))
         .await
         .unwrap();
@@ -3412,6 +3414,7 @@ async fn running_dto_and_aggregate_event_publish_as_one_candidate() {
 
     state
         .application
+        .activities()
         .begin_activity(&SessionId::from(&session.id))
         .await
         .expect("O1/C1 commits aggregate Running");
@@ -4177,6 +4180,7 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
         .unwrap();
     let current = state
         .application
+        .activities()
         .begin_activity(&SessionId::from(&session.id))
         .await
         .expect("commit newer root");
@@ -4281,6 +4285,7 @@ async fn failed_committed_projection_does_not_poison_warm_recovery() {
         .unwrap();
     state
         .application
+        .activities()
         .begin_activity(&SessionId::from(&session.id))
         .await
         .expect("commit running Session activity");
@@ -4455,6 +4460,7 @@ async fn newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason() {
         .unwrap();
     let active = state
         .application
+        .activities()
         .begin_activity(&SessionId::from(&session.id))
         .await
         .expect("S1 opens the authoritative Session activity");
@@ -4622,6 +4628,7 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
         .unwrap();
     let active = warm
         .application
+        .activities()
         .begin_activity(&SessionId::from(&session.id))
         .await
         .expect("C2 opens the durable aggregate interval");
@@ -4959,6 +4966,7 @@ async fn first_interval_lineage_preserves_the_issued_legacy_lifecycle_prefix() {
 
     let active = state
         .application
+        .activities()
         .begin_activity(&SessionId::from(&session.id))
         .await
         .unwrap();
@@ -5123,6 +5131,7 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
                 .unwrap();
             let first_activity = warm
                 .application
+                .activities()
                 .begin_activity(&SessionId::from(&session.id))
                 .await
                 .unwrap();
@@ -5147,6 +5156,7 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
                 .unwrap();
             let overlapping_activity = warm
                 .application
+                .activities()
                 .begin_activity(&SessionId::from(&session.id))
                 .await
                 .unwrap();
@@ -5295,6 +5305,7 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
             .unwrap();
         let second_activity = warm
             .application
+            .activities()
             .begin_activity(&SessionId::from(&session_id))
             .await
             .unwrap();
@@ -5608,6 +5619,7 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
         .await
         .unwrap();
     warm.application
+        .activities()
         .begin_activity(&SessionId::from(&session.id))
         .await
         .unwrap();
@@ -6015,6 +6027,7 @@ async fn primary_reschedule_projects_one_complete_sequence_warm_and_after_restar
         .unwrap();
     let active = warm
         .application
+        .activities()
         .begin_activity(&SessionId::from(&session.id))
         .await
         .unwrap();
@@ -8251,6 +8264,7 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
     let call_id = "late-accepted-call";
     let root_activity = warm
         .application
+        .activities()
         .begin_activity(&SessionId::from(&session.id))
         .await
         .unwrap();
@@ -8325,6 +8339,7 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
         });
     let child_activity = warm
         .application
+        .activities()
         .begin_activity(&SessionId::from(&session.id))
         .await
         .unwrap();
@@ -12474,6 +12489,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                     .await;
                 let first = state
                     .application
+                    .activities()
                     .begin_activity(&SessionId::from(&session.id))
                     .await
                     .unwrap();
@@ -12560,6 +12576,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                 persist_batch_projection_anchors(&state, &session.id, &reply.batch_id, &[3]).await;
                 let second = state
                     .application
+                    .activities()
                     .begin_activity(&SessionId::from(&session.id))
                     .await
                     .unwrap();

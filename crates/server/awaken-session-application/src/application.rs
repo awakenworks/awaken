@@ -413,6 +413,11 @@ pub struct SessionApplication {
     /// admission boundaries. Query reads never drive it.
     executable_projections: ExecutableProjections,
     realizations: Arc<crate::SessionRealizations>,
+    terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
+    continuations: Arc<crate::SessionContinuations>,
+    activities: Arc<crate::SessionActivities>,
+    termination_commands: Arc<crate::SessionTerminationCommands>,
+    update_commands: Arc<crate::SessionUpdateCommands>,
     /// One complete set of immutable execution observations.
     execution_admission: Arc<SessionExecutionAdmission>,
     runtime_incarnation: String,
@@ -752,10 +757,6 @@ impl SessionApplication {
         &self.execution_admission
     }
 
-    pub(crate) fn worker_observation_source(&self) -> Option<&dyn WorkerIncarnationSource> {
-        self.execution_admission.workers.get().map(Arc::as_ref)
-    }
-
     /// Bind the one executable-projection reconciliation operation used by
     /// request and autonomous Session boundaries. Duplicate installation is an
     /// error instead of allowing two freshness authorities to overlap.
@@ -782,6 +783,49 @@ impl SessionApplication {
     #[must_use]
     pub fn realizations(&self) -> Arc<crate::SessionRealizations> {
         self.realizations.clone()
+    }
+
+    #[must_use]
+    pub fn terminal_cleanups(&self) -> Arc<crate::SessionTerminalCleanups> {
+        self.terminal_cleanups.clone()
+    }
+
+    #[must_use]
+    pub fn continuations(&self) -> Arc<crate::SessionContinuations> {
+        self.continuations.clone()
+    }
+
+    #[must_use]
+    pub fn activities(&self) -> Arc<crate::SessionActivities> {
+        self.activities.clone()
+    }
+
+    #[must_use]
+    pub fn termination_commands(&self) -> Arc<crate::SessionTerminationCommands> {
+        self.termination_commands.clone()
+    }
+
+    #[must_use]
+    pub fn update_commands(&self) -> Arc<crate::SessionUpdateCommands> {
+        self.update_commands.clone()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_credential_source(
+        &mut self,
+        source: Arc<dyn awaken_credential_contract::SessionCredentialSource>,
+    ) {
+        crate::construction::reassemble(self, |assembly| assembly.credential_source = Some(source));
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_credential_material_ingress(
+        &mut self,
+        ingress: Arc<dyn awaken_credential_contract::CredentialMaterialIngress>,
+    ) {
+        crate::construction::reassemble(self, |assembly| {
+            assembly.credential_material_ingress = Some(ingress)
+        });
     }
 
     #[cfg(any(test, feature = "test-support"))]
