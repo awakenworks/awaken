@@ -1,0 +1,897 @@
+[
+  {
+    "id": "T28",
+    "title": "物理副作用前的授权",
+    "owner": "各 effect executor 及当前 authority fence",
+    "entrypoint": "crates/worker/awaken-sandbox-container/src/tests.rs",
+    "change": "refine",
+    "why": "为每个副作用定义授权线性化点和不确定性边界，而非宣称任意时刻撤权可追溯取消已发出的请求。",
+    "kind": "behavior",
+    "cases": [
+      {
+        "id": "T28-C01",
+        "title": "过期和错误身份",
+        "scenario": "在真正 runtime/mount/process/credential 效果前置入过期 fence、错误 incarnation 或 epoch",
+        "oracles": [
+          "物理调用数为零",
+          "返回稳定 stale/expired 分类",
+          "不物化 mount 或材料"
+        ],
+        "substrate": "native-effect",
+        "negative_control": "只在最终 receipt 提交时检查授权不足",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L3"
+          ],
+          "required": [
+            "actual selected native executor/provider",
+            "barrier-controlled fault or child death",
+            "effect/cleanup observer"
+          ],
+          "scope": "实际启用模式；内核、引擎或物理恢复额外需要 L4"
+        },
+        "binding_ids": [
+          "B031"
+        ],
+        "evidence_state": "source_binding_only",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      },
+      {
+        "id": "T28-C02",
+        "title": "等待与替换窗口",
+        "scenario": "在授权后到效果前插入 barrier，撤权、换 owner 或关闭 admission，再放行",
+        "oracles": [
+          "在契约要求的最近 effect gate 再校验",
+          "旧缓存成功或未绑定 disposal 不能扩权"
+        ],
+        "substrate": "native-effect",
+        "negative_control": "把 barrier 移到效果之后的测试不能证明前置拒绝",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L3"
+          ],
+          "required": [
+            "actual selected native executor/provider",
+            "barrier-controlled fault or child death",
+            "effect/cleanup observer"
+          ],
+          "scope": "实际启用模式；内核、引擎或物理恢复额外需要 L4"
+        },
+        "binding_ids": [],
+        "evidence_state": "design_only",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      },
+      {
+        "id": "T28-C03",
+        "title": "已发出效果的未知结果",
+        "scenario": "请求已经外发后才撤权或断网，恢复器重连原身份",
+        "oracles": [
+          "记录并观察原操作，不能声称零效果",
+          "无观察能力则保留 unknown，不进行不安全重发"
+        ],
+        "substrate": "native-effect",
+        "negative_control": "把 RPC 失败等同效果未发生必须失败",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L3"
+          ],
+          "required": [
+            "actual selected native executor/provider",
+            "barrier-controlled fault or child death",
+            "effect/cleanup observer"
+          ],
+          "scope": "实际启用模式；内核、引擎或物理恢复额外需要 L4"
+        },
+        "binding_ids": [],
+        "evidence_state": "design_only",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      }
+    ],
+    "risk": "P0",
+    "related_suite_evidence_ids": [
+      "E03"
+    ],
+    "group_acceptance_state": "pending_full_clause_and_facet_qualification"
+  },
+  {
+    "id": "T29",
+    "title": "进程 文件 资源和产物",
+    "owner": "Native ProcessHandle、Sandbox 和 resource staging",
+    "entrypoint": "crates/worker/awaken-sandbox-memoryd/src/mounter.rs",
+    "change": "refine",
+    "why": "增加文件系统与 Windows 路径边界；生命周期、产物来源和数据责任分别观察。",
+    "kind": "behavior",
+    "cases": [
+      {
+        "id": "T29-C01",
+        "title": "原生进程树与 peer",
+        "scenario": "启动就绪子进程和后代，分别取消、timeout、restart/drop，保留无关 peer",
+        "oracles": [
+          "拥有的完整进程范围退出",
+          "peer 不受影响",
+          "资源/pipe/端口释放且可再次运行"
+        ],
+        "substrate": "windows-process",
+        "negative_control": "只检查进程 PID 已退出而后代活着必须失败",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L3"
+          ],
+          "required": [
+            "native Windows x86_64-pc-windows-msvc",
+            "actual owned child/descendant processes"
+          ],
+          "scope": "所选 Windows 模式；不含 Linux 或未启用执行器"
+        },
+        "binding_ids": [
+          "B023",
+          "B068"
+        ],
+        "evidence_state": "current_subset",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      },
+      {
+        "id": "T29-C02",
+        "title": "Copy 数据责任",
+        "scenario": "可写 Copy 更新、删除和冲突，teardown 中断后从 surviving files 恢复",
+        "oracles": [
+          "写回或冲突责任确立前不销毁源",
+          "只读不写回",
+          "恢复重复执行幂等"
+        ],
+        "substrate": "native-effect",
+        "negative_control": "清空目录后再尝试写回的负控必须失败",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L3"
+          ],
+          "required": [
+            "actual selected native executor/provider",
+            "barrier-controlled fault or child death",
+            "effect/cleanup observer"
+          ],
+          "scope": "实际启用模式；内核、引擎或物理恢复额外需要 L4"
+        },
+        "binding_ids": [
+          "B061",
+          "B005"
+        ],
+        "evidence_state": "current_subset",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      },
+      {
+        "id": "T29-C03",
+        "title": "产物来源与路径安全",
+        "scenario": "长路径/Unicode/相对路径、symlink/reparse point、共享祖先目录，重复收集原 Run 产物",
+        "oracles": [
+          "不逃出受控根或写祖先",
+          "来源绑定原 Run",
+          "材料确认完整后才清理",
+          "日志和 origin 不含凭据"
+        ],
+        "substrate": "native-effect",
+        "negative_control": "用字符串前缀检查代替真实路径边界应被负控检测",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L3"
+          ],
+          "required": [
+            "actual selected native executor/provider",
+            "barrier-controlled fault or child death",
+            "effect/cleanup observer"
+          ],
+          "scope": "实际启用模式；内核、引擎或物理恢复额外需要 L4"
+        },
+        "binding_ids": [
+          "B037",
+          "B087"
+        ],
+        "evidence_state": "current_subset",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      }
+    ],
+    "risk": "P0",
+    "related_suite_evidence_ids": [
+      "E04",
+      "E06"
+    ],
+    "group_acceptance_state": "pending_full_clause_and_facet_qualification"
+  },
+  {
+    "id": "T30",
+    "title": "Anthropic Managed Agents 兼容",
+    "owner": "Managed protocol 与受支持官方 SDK",
+    "entrypoint": "packages/managed-sdk-oracle/package.json",
+    "change": "refine",
+    "why": "拆分类型/oracle、SDK mock transport 和真实 Awaken 服务行为；外部托管服务属于单独部署资格。",
+    "kind": "behavior",
+    "cases": [
+      {
+        "id": "T30-C01",
+        "title": "锁定版本的 wire 契约",
+        "scenario": "按仓库锁定的 TS/Python current、oldest 及变更锚点检查 DTO、路径、分页、absent/null/enum/error",
+        "oracles": [
+          "各受支持版本形状和 capability selection 明确",
+          "升级 diff 可复核",
+          "不借内部重命名改变 wire"
+        ],
+        "substrate": "sdk-wire",
+        "negative_control": "仅 TypeScript 编译不能替代响应和请求行为",
+        "risk": "P1",
+        "profile": {
+          "tiers": [
+            "L1"
+          ],
+          "required": [
+            "pinned official TS/Python SDK, oracle, request/response witnesses"
+          ],
+          "scope": "wire/transport；mock fetch 不代表实际服务"
+        },
+        "binding_ids": [],
+        "evidence_state": "aggregate_subset_only",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "related_aggregate_evidence_ids": [
+          "E05"
+        ],
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      },
+      {
+        "id": "T30-C02",
+        "title": "SDK 到真实本地服务",
+        "scenario": "使用官方 TS 和 Python SDK 连接同一源码的真实 Awaken 服务，执行 Session/Environment/Memory 生命周期、分页和错误",
+        "oracles": [
+          "实际请求经路由/授权/application",
+          "返回原身份、版本和错误",
+          "两种 SDK 观察一致"
+        ],
+        "substrate": "service-e2e",
+        "negative_control": "拦截 fetch 返回 data:[] 的测试不能算真实服务 E2E",
+        "risk": "P1",
+        "profile": {
+          "tiers": [
+            "L3"
+          ],
+          "required": [
+            "real Awaken service/process boundary",
+            "actual client/transport",
+            "declared backend and fixture"
+          ],
+          "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
+        },
+        "binding_ids": [],
+        "evidence_state": "design_only",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "decision_table": {
+          "columns": [
+            "客户端",
+            "服务",
+            "必需操作"
+          ],
+          "rows": [
+            [
+              "锁定的 TS SDK",
+              "真实本地 Awaken 服务",
+              "Session 创建/输入/等待回复/结果/重放；Environment 创建/更新/归档；Memory 内容/history/redact"
+            ],
+            [
+              "锁定的 Python SDK",
+              "相同源码与 backend 的真实服务",
+              "相同操作及 absent/null、分页、错误和 capability selection"
+            ],
+            [
+              "上述每个支持版本锚点",
+              "明确兼容/拒绝边界",
+              "不支持的新操作有原 wire 语义，不假造能力"
+            ]
+          ]
+        },
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      },
+      {
+        "id": "T30-C03",
+        "title": "中断恢复行为",
+        "scenario": "客户端断流、响应丢失、服务重启后以原 ID/ticket/cursor 继续",
+        "oracles": [
+          "公开身份、原回执和断连策略保持",
+          "不重启已完成效果",
+          "适配器恢复语义相同"
+        ],
+        "substrate": "service-e2e",
+        "negative_control": "只做 hosted canary 的 happy path 不能替代本地可控故障注入",
+        "risk": "P1",
+        "profile": {
+          "tiers": [
+            "L3"
+          ],
+          "required": [
+            "real Awaken service/process boundary",
+            "actual client/transport",
+            "declared backend and fixture"
+          ],
+          "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
+        },
+        "binding_ids": [],
+        "evidence_state": "design_only",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      }
+    ],
+    "risk": "P1",
+    "related_suite_evidence_ids": [
+      "E05"
+    ],
+    "group_acceptance_state": "pending_full_clause_and_facet_qualification"
+  },
+  {
+    "id": "T31",
+    "title": "持久投影与公开身份",
+    "owner": "Managed committed projector",
+    "entrypoint": "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
+    "change": "retain",
+    "why": "区分组件级 active-active 与真实多进程，公开身份由持久坐标决定。",
+    "kind": "behavior",
+    "cases": [
+      {
+        "id": "T31-C01",
+        "title": "消息身份重建",
+        "scenario": "相同根 assistant 响应含 thinking/text，warm/cold/active-active 多次读取及分页",
+        "oracles": [
+          "同持久坐标得到相同公开 ID、ordinal 和 cursor",
+          "不会因缓存丢失重新编号"
+        ],
+        "substrate": "component",
+        "negative_control": "随机新 ID 或按每次读取索引编号必须失败",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L1"
+          ],
+          "required": [
+            "owned clocks/barriers, component public entrypoint"
+          ],
+          "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
+        },
+        "binding_ids": [
+          "B070"
+        ],
+        "evidence_state": "current_subset",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      },
+      {
+        "id": "T31-C02",
+        "title": "Outcome 投影",
+        "scenario": "重复、乱序或落后的投影候选，cold 重建及多 owner 观察",
+        "oracles": [
+          "前缀不倒退",
+          "durable outcome 稳定",
+          "live preview 不冒充最终事实"
+        ],
+        "substrate": "component",
+        "negative_control": "用文本预览生成 terminal outcome 的负控必须失败",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L1"
+          ],
+          "required": [
+            "owned clocks/barriers, component public entrypoint"
+          ],
+          "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
+        },
+        "binding_ids": [
+          "B024"
+        ],
+        "evidence_state": "current_subset",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      },
+      {
+        "id": "T31-C03",
+        "title": "真实多进程恢复",
+        "scenario": "两个服务实例共享真实 backend，一方投影中途退出，另一方接续并重建缓存",
+        "oracles": [
+          "公开 ID、内容顺序和 cursor 与重启前一致",
+          "不产生遗漏或重复终态"
+        ],
+        "substrate": "service-e2e",
+        "negative_control": "同一进程的两个内存对象不能替代多进程资格",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L3"
+          ],
+          "required": [
+            "real Awaken service/process boundary",
+            "actual client/transport",
+            "declared backend and fixture"
+          ],
+          "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
+        },
+        "binding_ids": [],
+        "evidence_state": "design_only",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      }
+    ],
+    "risk": "P0",
+    "related_suite_evidence_ids": [
+      "E01"
+    ],
+    "group_acceptance_state": "pending_full_clause_and_facet_qualification"
+  },
+  {
+    "id": "T32",
+    "title": "连接与恢复策略",
+    "owner": "Managed SSE/outbox 与 Run cancellation owner",
+    "entrypoint": "crates/server/awaken-coordinator/src/managed_lifecycle.rs",
+    "change": "refine",
+    "why": "断开连接不默认取消业务；分别验证部署明确选择的断连策略与显式取消。",
+    "kind": "behavior",
+    "cases": [
+      {
+        "id": "T32-C01",
+        "title": "断流策略",
+        "scenario": "Run 活跃时关闭 SSE/HTTP 连接，再查询原 Run 或显式取消",
+        "oracles": [
+          "按照已选 detach/cancel 策略处理",
+          "连接 owner 不夺取 Run owner",
+          "显式取消有独立回执"
+        ],
+        "substrate": "service-e2e",
+        "negative_control": "将 socket close 无条件映射为 Run terminal 必须失败",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L3"
+          ],
+          "required": [
+            "real Awaken service/process boundary",
+            "actual client/transport",
+            "declared backend and fixture"
+          ],
+          "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
+        },
+        "binding_ids": [],
+        "evidence_state": "design_only",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      },
+      {
+        "id": "T32-C02",
+        "title": "fanout 与重放",
+        "scenario": "打开 SSE，追加 outbox，重复 fanout，再用旧 cursor 重连",
+        "oracles": [
+          "新事实可见",
+          "精确重放幂等",
+          "同一事实不产生重复公共身份"
+        ],
+        "substrate": "component",
+        "negative_control": "通过单次直接读取而不经过 fanout 不能覆盖开放连接",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L1"
+          ],
+          "required": [
+            "owned clocks/barriers, component public entrypoint"
+          ],
+          "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
+        },
+        "binding_ids": [
+          "B043"
+        ],
+        "evidence_state": "source_binding_only",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      },
+      {
+        "id": "T32-C03",
+        "title": "分页与 preview 交错",
+        "scenario": "历史分页过程中追加 live preview、终态及服务重启",
+        "oracles": [
+          "无遗漏、重复、倒退或错误终态",
+          "cursor 继续同一持久前缀"
+        ],
+        "substrate": "service-e2e",
+        "negative_control": "只断流不恢复或只验证消息数不够",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L3"
+          ],
+          "required": [
+            "real Awaken service/process boundary",
+            "actual client/transport",
+            "declared backend and fixture"
+          ],
+          "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
+        },
+        "binding_ids": [],
+        "evidence_state": "design_only",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      }
+    ],
+    "risk": "P0",
+    "related_suite_evidence_ids": [
+      "E02"
+    ],
+    "group_acceptance_state": "pending_full_clause_and_facet_qualification"
+  },
+  {
+    "id": "T33",
+    "title": "错误分类与重试",
+    "owner": "应用错误和协议/执行适配",
+    "entrypoint": "crates/server/awaken-session-mcp/src/mcp/error.rs",
+    "change": "refine",
+    "why": "区分接纳失败、确定回滚、提交成功丢响应和副作用结果未知四类。",
+    "kind": "behavior",
+    "cases": [
+      {
+        "id": "T33-C01",
+        "title": "分类不依赖文案",
+        "scenario": "对 input/auth/conflict/unavailable/unknown effect 注入误导性 message",
+        "oracles": [
+          "分支只用类型/稳定 code",
+          "HTTP 与 Run 错误保留边界和可重试语义"
+        ],
+        "substrate": "component",
+        "negative_control": "改为 message.contains 判断的负控必须失败",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L1"
+          ],
+          "required": [
+            "owned clocks/barriers, component public entrypoint"
+          ],
+          "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
+        },
+        "binding_ids": [
+          "B040"
+        ],
+        "evidence_state": "source_binding_only",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      },
+      {
+        "id": "T33-C02",
+        "title": "重试原身份",
+        "scenario": "分别制造提交前失败、成功丢响应、效果未知，再重试",
+        "oracles": [
+          "确定未接纳可重新接纳",
+          "已提交回原回执",
+          "未知效果先观察原 operation"
+        ],
+        "substrate": "native-effect",
+        "negative_control": "对所有 5xx 无条件创建新 operation 的实现必须失败",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L3"
+          ],
+          "required": [
+            "actual selected native executor/provider",
+            "barrier-controlled fault or child death",
+            "effect/cleanup observer"
+          ],
+          "scope": "实际启用模式；内核、引擎或物理恢复额外需要 L4"
+        },
+        "binding_ids": [],
+        "evidence_state": "design_only",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      },
+      {
+        "id": "T33-C03",
+        "title": "跨适配器一致",
+        "scenario": "同一故障经本地、HTTP Worker、Native/ACP/MCP 入口传播",
+        "oracles": [
+          "保留原权威、uncertainty 和 retry hint",
+          "不在某个适配器静默降级成功"
+        ],
+        "substrate": "service-e2e",
+        "negative_control": "只测试 error enum 构造不验证投影链不能签收",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L3"
+          ],
+          "required": [
+            "real Awaken service/process boundary",
+            "actual client/transport",
+            "declared backend and fixture"
+          ],
+          "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
+        },
+        "binding_ids": [],
+        "evidence_state": "design_only",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      }
+    ],
+    "risk": "P0",
+    "related_suite_evidence_ids": [
+      "E03"
+    ],
+    "group_acceptance_state": "pending_full_clause_and_facet_qualification"
+  },
+  {
+    "id": "T34",
+    "title": "真实后端资格门禁",
+    "owner": "各持久化 adapter 的既有 conformance",
+    "entrypoint": "scripts/ci/pg_tests.sh",
+    "change": "reclassify",
+    "why": "这是适用于相关行为的轴，不再复制一组全部业务测试；组合按事务/状态机风险选择。",
+    "kind": "gate",
+    "cases": [
+      {
+        "id": "T34-C01",
+        "title": "同语义表",
+        "scenario": "对实际支持的 Volatile、文件 SQLite、PostgreSQL 运行同一行为表",
+        "oracles": [
+          "相同命令、CAS、receipt、历史、时钟和回滚语义",
+          "不由各后端自定义不同 oracle"
+        ],
+        "substrate": "all-backends",
+        "negative_control": "Volatile 通过不能证明 SQL 事务，in-memory SQLite 不能证明文件重启",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L1",
+            "L2"
+          ],
+          "required": [
+            "Volatile logical model",
+            "file SQLite for persistence clauses",
+            "live PostgreSQL for supported SQL clauses"
+          ],
+          "scope": "只覆盖该操作真实支持的 backend；不凭空要求 Volatile 持久性"
+        },
+        "binding_ids": [],
+        "evidence_state": "design_only",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      },
+      {
+        "id": "T34-C02",
+        "title": "durability 与取消",
+        "scenario": "真实连接、独立客户端、子进程死亡、取消和重连后执行原操作",
+        "oracles": [
+          "完整提交/回滚且连接可再用",
+          "fixture 必需时不可因不可用而跳过"
+        ],
+        "substrate": "sql-backends",
+        "negative_control": "catch 连接错误 return 绿色或只验证断言数量必须拒绝",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L2"
+          ],
+          "required": [
+            "file SQLite",
+            "live PostgreSQL",
+            "independent clients/processes where required"
+          ],
+          "scope": "需要持久性时真实文件和重开；仅 in-memory SQLite 不足"
+        },
+        "binding_ids": [],
+        "evidence_state": "design_only",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      },
+      {
+        "id": "T34-C03",
+        "title": "证明边界",
+        "scenario": "后端某条测试通过，但另一操作、迁移版本或 features 尚未运行",
+        "oracles": [
+          "逐条记录已执行切片和未验收切片",
+          "不以 suite 总数推断等价"
+        ],
+        "substrate": "static",
+        "negative_control": "同名 mock 后端、仅 cargo check 或未执行 ignored 用例不能晋级",
+        "risk": "P0",
+        "profile": {
+          "tiers": [
+            "L0"
+          ],
+          "required": [
+            "source/metadata/static negative controls"
+          ],
+          "scope": "静态守卫；不代表运行时效果"
+        },
+        "binding_ids": [],
+        "evidence_state": "design_only",
+        "acceptance_state": "pending",
+        "acceptance_scope": null,
+        "full_group_acceptance_implied": false,
+        "acceptance_requirements": [
+          "生产入口与合法状态转换可追溯",
+          "逐条 oracle 与适用 mode/backend/platform 有具名执行证明",
+          "负控/非法输入/故障注入按本场景实际执行并记录",
+          "T00/T34/T35/T36 对应公共门禁满足",
+          "原始源码、命令、日志和清理身份保留"
+        ]
+      }
+    ],
+    "risk": "P0",
+    "related_suite_evidence_ids": [
+      "E01",
+      "E02"
+    ],
+    "group_acceptance_state": "pending_full_clause_and_facet_qualification"
+  }
+]

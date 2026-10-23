@@ -1,0 +1,968 @@
+[
+  {
+    "id": "B001",
+    "name": "a_failed_mutation_publishes_no_invalidation",
+    "source_locations": [
+      {
+        "path": "crates/resources/awaken-resource-application/src/memory.rs",
+        "line": 673,
+        "file_sha256": "eaf79be7fe2bac61582b1876ad5a1a0308d449080aaad95023fbabd6ccd5ff28"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E02",
+        "case": "memory::tests::a_failed_mutation_publishes_no_invalidation",
+        "package": "awaken-resource-application",
+        "target": "lib",
+        "row": "awaken-resource-application-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "a613a6cdf3fcb5555b3dcd60fb122f25b03d891bf737dc758f7f4870bb619513",
+        "harness_sha256": "4c31476bdb3918f2313a6e312082be766e4f2c6cf3ba731c16b185214c46722f",
+        "source_head": "489252bc4f3b7e45854455f187b892a0af70f622",
+        "historical": true
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B002",
+    "name": "a_lease_is_live_exactly_until_its_expiry",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-work-store/tests/lease_book_properties.rs",
+        "line": 23,
+        "file_sha256": "af04a2b97a530a21851772852b2dfc88621218a83f32ecf16523c71961241c0f"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "a_lease_is_live_exactly_until_its_expiry",
+        "package": "awaken-work-store",
+        "target": "lease_book_properties",
+        "row": "awaken-work-store-lease_book_properties-execute",
+        "row_exit": 0,
+        "log_sha256": "cee7bed10afa265981930e35b42e86c33cf6dd446d57fd2793e8240233e957d1",
+        "harness_sha256": "fa437b7f58dc5fc1506bc2b52fc37549d0debdfa82cc0e77d7a525773a37483b",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B003",
+    "name": "a_mutation_publishes_an_invalidation_others_receive",
+    "source_locations": [
+      {
+        "path": "crates/resources/awaken-resource-application/src/memory.rs",
+        "line": 592,
+        "file_sha256": "eaf79be7fe2bac61582b1876ad5a1a0308d449080aaad95023fbabd6ccd5ff28"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E02",
+        "case": "memory::tests::a_mutation_publishes_an_invalidation_others_receive",
+        "package": "awaken-resource-application",
+        "target": "lib",
+        "row": "awaken-resource-application-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "a613a6cdf3fcb5555b3dcd60fb122f25b03d891bf737dc758f7f4870bb619513",
+        "harness_sha256": "4c31476bdb3918f2313a6e312082be766e4f2c6cf3ba731c16b185214c46722f",
+        "source_head": "489252bc4f3b7e45854455f187b892a0af70f622",
+        "historical": true
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B004",
+    "name": "a_physical_failure_releases_the_fence_and_remains_retryable",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-resource-reclaimer/src/lib.rs",
+        "line": 704,
+        "file_sha256": "016705e55c7a6c25c9f45f23f77510e8af00ee00c9ed393512bb6e30d70f4ce7"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E02",
+        "case": "tests::a_physical_failure_releases_the_fence_and_remains_retryable",
+        "package": "awaken-resource-reclaimer",
+        "target": "lib",
+        "row": "awaken-resource-reclaimer-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "c9a08e5e00272acd3dc989229343582953052f932db39540d5da3cb7744c12bc",
+        "harness_sha256": "1d1fc378e7f0d9a30c2b508d3dc0a97733ad7512c30f0000ea284fac2888aa84",
+        "source_head": "489252bc4f3b7e45854455f187b892a0af70f622",
+        "historical": true
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B005",
+    "name": "a_read_only_copy_mount_does_not_harvest",
+    "source_locations": [
+      {
+        "path": "crates/worker/awaken-sandbox-memoryd/src/mounter.rs",
+        "line": 639,
+        "file_sha256": "4ce8522c2a088112f2941d5038c9bd27d12095af16aecdc533199d77c2645544"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E06",
+        "case": "mounter::tests::a_read_only_copy_mount_does_not_harvest",
+        "package": "awaken-sandbox-memoryd",
+        "target": "lib",
+        "row": "all-features-execute",
+        "row_exit": 0,
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false,
+        "log_sha256": "f70916776a5e822a1f0eb105e7d2652907f51ecec18d7f133669b6420ef0a3d4",
+        "feature_variant": "all-features",
+        "compiled_binary_sha256": "146d8e0a48f9aadfefa8c07a6c68917364c66fc8f5119499eecd598d42d2a14e"
+      },
+      {
+        "evidence": "E06",
+        "case": "mounter::tests::a_read_only_copy_mount_does_not_harvest",
+        "package": "awaken-sandbox-memoryd",
+        "target": "lib",
+        "row": "no-default-features-execute",
+        "row_exit": 0,
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false,
+        "log_sha256": "80e087f6847d40b9e30d7a3c115340df5a3050cb5477531488472d01e585a74e",
+        "feature_variant": "no-default-features",
+        "compiled_binary_sha256": "0abba4191dc29ea1e21cf5045cf05542922a57aba519671c9ec0d1c181adf16f"
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B006",
+    "name": "active_resident_source_retirement_preserves_the_original_session",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/worker_retirement.rs",
+        "line": 128,
+        "file_sha256": "8ae897ce88650a906023a84f53dec2edeba13e95559c938fcb91a7ca18f2c1f5"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "tests::realization::worker_retirement::active_resident_source_retirement_preserves_the_original_session",
+        "package": "awaken-session-application",
+        "target": "lib",
+        "row": "awaken-session-application-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "b0eb2dbd76432e831d5d59efcc88de6d4646d9934d3cd614c2df49b5c8b9c364",
+        "harness_sha256": "86e1873c220bbb5c87a3f6d209bd2eb89e36122213b278d05d7b067138697614",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B007",
+    "name": "approval_timeout_preserves_ticket_and_rebuilt_runtime_can_resume_once",
+    "source_locations": [
+      {
+        "path": "crates/runtime/awaken-runtime/tests/sdk_api.rs",
+        "line": 336,
+        "file_sha256": "96c067237819b4032a37eff41bdfd9b945cf5a608f04b6a4d05568c0e7c361d8"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B008",
+    "name": "authored_packages_become_one_frozen_image_before_session_use",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-environment-image-build/src/application.rs",
+        "line": 738,
+        "file_sha256": "86a7f8262ad3d7b1fbd0d5583166206c3549c399b7f0de53a9a970595c9d4016"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "application::tests::authored_packages_become_one_frozen_image_before_session_use",
+        "package": "awaken-environment-image-build",
+        "target": "lib",
+        "row": "awaken-environment-image-build-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "29a4b30ee82332729d9811bb46c0293fc89f8fe488bcd8c716b77115d9de779f",
+        "harness_sha256": "69ea07848bdeb0369a844b719d66b672b0097ae06139b8271db6e147a4529240",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B009",
+    "name": "both_create_routes_finalize_resources_before_root_or_runtime_effects",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/tests/session_resources/creation_inputs.rs",
+        "line": 20,
+        "file_sha256": "4ca18475e99370bee26343396a179487168966f28ac35d05e673948726b2391c"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "creation_inputs::both_create_routes_finalize_resources_before_root_or_runtime_effects",
+        "package": "awaken-protocol-managed",
+        "target": "session_resources",
+        "row": "awaken-protocol-managed-session_resources-execute",
+        "row_exit": 0,
+        "log_sha256": "02add2f799b651fe0f96b2d7597a4f580e611fc50411cc29f79d91441a2a2705",
+        "harness_sha256": "57faa0a62d5fb9a6bd80ed612fd760cfaa546c27b28123b11baec31680deae36",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      },
+      {
+        "evidence": "E02",
+        "case": "creation_inputs::both_create_routes_finalize_resources_before_root_or_runtime_effects",
+        "package": "awaken-protocol-managed",
+        "target": "session_resources",
+        "row": "awaken-protocol-managed-session_resources-execute",
+        "row_exit": 0,
+        "log_sha256": "5b9bf27e0756b6ac5e8c0d44572501ee051479c667aa01ac230c1662297c39d3",
+        "harness_sha256": "57faa0a62d5fb9a6bd80ed612fd760cfaa546c27b28123b11baec31680deae36",
+        "source_head": "489252bc4f3b7e45854455f187b892a0af70f622",
+        "historical": true
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B010",
+    "name": "budget_settlement_keeps_failed_and_response_lost_cas_on_the_original_root",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/budget_settlement.rs",
+        "line": 17,
+        "file_sha256": "4c7b79a9c25c829a541a3a0f8a95f3830f51d143217d5adbb0e2e349e3fa5c5a"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "tests::budget_settlement::budget_settlement_keeps_failed_and_response_lost_cas_on_the_original_root",
+        "package": "awaken-session-application",
+        "target": "lib",
+        "row": "awaken-session-application-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "b0eb2dbd76432e831d5d59efcc88de6d4646d9934d3cd614c2df49b5c8b9c364",
+        "harness_sha256": "86e1873c220bbb5c87a3f6d209bd2eb89e36122213b278d05d7b067138697614",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B011",
+    "name": "builder_freezes_execution_services_and_mount_checks_reject_foreign_instances_without_reads",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/construction.rs",
+        "line": 285,
+        "file_sha256": "df6776d28167f3170a54caced2a62b543535d2602320ff8512ce89b997af232d"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "tests::construction::builder_freezes_execution_services_and_mount_checks_reject_foreign_instances_without_reads",
+        "package": "awaken-session-application",
+        "target": "lib",
+        "row": "awaken-session-application-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "b0eb2dbd76432e831d5d59efcc88de6d4646d9934d3cd614c2df49b5c8b9c364",
+        "harness_sha256": "86e1873c220bbb5c87a3f6d209bd2eb89e36122213b278d05d7b067138697614",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B012",
+    "name": "builder_rejects_invalid_configuration_before_observing_or_starting_services",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/construction.rs",
+        "line": 14,
+        "file_sha256": "df6776d28167f3170a54caced2a62b543535d2602320ff8512ce89b997af232d"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "tests::construction::builder_rejects_invalid_configuration_before_observing_or_starting_services",
+        "package": "awaken-session-application",
+        "target": "lib",
+        "row": "awaken-session-application-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "b0eb2dbd76432e831d5d59efcc88de6d4646d9934d3cd614c2df49b5c8b9c364",
+        "harness_sha256": "86e1873c220bbb5c87a3f6d209bd2eb89e36122213b278d05d7b067138697614",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B013",
+    "name": "cancelled_call_stops_ready_descendants_before_session_reuse",
+    "source_locations": [
+      {
+        "path": "crates/runtime/awaken-ext-builtin-tools/tests/hand/windows_process.rs",
+        "line": 105,
+        "file_sha256": "899cc23667538d31741439c3a38404c43f36c2588b938ee354f0e2ee38ed063b"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E04",
+        "case": "windows_process::cancelled_call_stops_ready_descendants_before_session_reuse",
+        "package": "awaken-ext-builtin-tools",
+        "target": "hand",
+        "row": "awaken-ext-builtin-tools-hand-execute",
+        "row_exit": 0,
+        "log_sha256": "68e565a3c7be709b0e1c2eb8f18d2bb709d6923ce9ffee9d7cff31fb7456adb1",
+        "harness_sha256": "33e99c05d9d8db0d2c5b7f489b800bbebf658cbec7b7b379fb0d319d76658d3c",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B014",
+    "name": "complete_generation_rejects_same_content_aba",
+    "source_locations": [
+      {
+        "path": "crates/resources/awaken-memory-store/tests/common/memory_repository.rs",
+        "line": 737,
+        "file_sha256": "a51e3740de247e800a8996c411e7037361fb2af89e2a8b74821b02ee044931a4"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B015",
+    "name": "complete_recovery_scan_reaches_page_two_and_purge_fails_closed",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/work_projection.rs",
+        "line": 74,
+        "file_sha256": "1f762036b4ce5aa00daff5bc71c0660978525b1519f88de0508b9b836447a977"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "tests::authority::work_projection::complete_recovery_scan_reaches_page_two_and_purge_fails_closed",
+        "package": "awaken-session-application",
+        "target": "lib",
+        "row": "awaken-session-application-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "b0eb2dbd76432e831d5d59efcc88de6d4646d9934d3cd614c2df49b5c8b9c364",
+        "harness_sha256": "86e1873c220bbb5c87a3f6d209bd2eb89e36122213b278d05d7b067138697614",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B016",
+    "name": "concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-environment-image-build/src/postgres.rs",
+        "line": 178,
+        "file_sha256": "cc49be9d7b53cf3485a44052ae8aa5a2afdd0f83f86e64e59fd7a125d626de8f"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority",
+        "package": "awaken-environment-image-build",
+        "target": "lib",
+        "row": "awaken-environment-image-build-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "29a4b30ee82332729d9811bb46c0293fc89f8fe488bcd8c716b77115d9de779f",
+        "harness_sha256": "69ea07848bdeb0369a844b719d66b672b0097ae06139b8271db6e147a4529240",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B017",
+    "name": "continuation_refuses_inconsistent_evidence_and_superseded_operation_leases",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/continuation.rs",
+        "line": 2332,
+        "file_sha256": "3ff58e93b4a88ccfd91feda39b9e5d2e65e4df3b7f44dd870a1a6cbcb565ad71"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "tests::continuation::continuation_refuses_inconsistent_evidence_and_superseded_operation_leases",
+        "package": "awaken-session-application",
+        "target": "lib",
+        "row": "awaken-session-application-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "b0eb2dbd76432e831d5d59efcc88de6d4646d9934d3cd614c2df49b5c8b9c364",
+        "harness_sha256": "86e1873c220bbb5c87a3f6d209bd2eb89e36122213b278d05d7b067138697614",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B018",
+    "name": "controlled_memory_bindings_retain_one_backend_and_original_bus",
+    "source_locations": [
+      {
+        "path": "crates/resources/awaken-resource-application/src/memory.rs",
+        "line": 716,
+        "file_sha256": "eaf79be7fe2bac61582b1876ad5a1a0308d449080aaad95023fbabd6ccd5ff28"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E02",
+        "case": "memory::tests::controlled_memory_bindings_retain_one_backend_and_original_bus",
+        "package": "awaken-resource-application",
+        "target": "lib",
+        "row": "awaken-resource-application-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "a613a6cdf3fcb5555b3dcd60fb122f25b03d891bf737dc758f7f4870bb619513",
+        "harness_sha256": "4c31476bdb3918f2313a6e312082be766e4f2c6cf3ba731c16b185214c46722f",
+        "source_head": "489252bc4f3b7e45854455f187b892a0af70f622",
+        "historical": true
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B019",
+    "name": "copy_inputs_use_the_one_atomic_snapshot_primitive",
+    "source_locations": [
+      {
+        "path": "crates/worker/awaken-sandbox-memoryd/src/copy.rs",
+        "line": 591,
+        "file_sha256": "cb63f1e8c9325d269ac941570471112cbea1e13ca4f158f7297a751d0317622f"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E06",
+        "case": "copy::tests::copy_inputs_use_the_one_atomic_snapshot_primitive",
+        "package": "awaken-sandbox-memoryd",
+        "target": "lib",
+        "row": "all-features-execute",
+        "row_exit": 0,
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false,
+        "log_sha256": "f70916776a5e822a1f0eb105e7d2652907f51ecec18d7f133669b6420ef0a3d4",
+        "feature_variant": "all-features",
+        "compiled_binary_sha256": "146d8e0a48f9aadfefa8c07a6c68917364c66fc8f5119499eecd598d42d2a14e"
+      },
+      {
+        "evidence": "E06",
+        "case": "copy::tests::copy_inputs_use_the_one_atomic_snapshot_primitive",
+        "package": "awaken-sandbox-memoryd",
+        "target": "lib",
+        "row": "no-default-features-execute",
+        "row_exit": 0,
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false,
+        "log_sha256": "80e087f6847d40b9e30d7a3c115340df5a3050cb5477531488472d01e585a74e",
+        "feature_variant": "no-default-features",
+        "compiled_binary_sha256": "0abba4191dc29ea1e21cf5045cf05542922a57aba519671c9ec0d1c181adf16f"
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B020",
+    "name": "copy_only_mount_realizes_copy_and_harvests_through_the_public_api",
+    "source_locations": [
+      {
+        "path": "crates/worker/awaken-sandbox-memoryd/src/mounter.rs",
+        "line": 741,
+        "file_sha256": "4ce8522c2a088112f2941d5038c9bd27d12095af16aecdc533199d77c2645544"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E06",
+        "case": "mounter::tests::copy_only_mount_realizes_copy_and_harvests_through_the_public_api",
+        "package": "awaken-sandbox-memoryd",
+        "target": "lib",
+        "row": "all-features-execute",
+        "row_exit": 0,
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false,
+        "log_sha256": "f70916776a5e822a1f0eb105e7d2652907f51ecec18d7f133669b6420ef0a3d4",
+        "feature_variant": "all-features",
+        "compiled_binary_sha256": "146d8e0a48f9aadfefa8c07a6c68917364c66fc8f5119499eecd598d42d2a14e"
+      },
+      {
+        "evidence": "E06",
+        "case": "mounter::tests::copy_only_mount_realizes_copy_and_harvests_through_the_public_api",
+        "package": "awaken-sandbox-memoryd",
+        "target": "lib",
+        "row": "no-default-features-execute",
+        "row_exit": 0,
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false,
+        "log_sha256": "80e087f6847d40b9e30d7a3c115340df5a3050cb5477531488472d01e585a74e",
+        "feature_variant": "no-default-features",
+        "compiled_binary_sha256": "0abba4191dc29ea1e21cf5045cf05542922a57aba519671c9ec0d1c181adf16f"
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B021",
+    "name": "corrupt_persisted_environment_is_never_silently_defaulted_or_panicked",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/src/lib.rs",
+        "line": 958,
+        "file_sha256": "baee1f3824d93f9d2c77b3ffa88ad0e69bdf0e61dfa0d5faead6c774c5dfdb3c"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "tests::corrupt_persisted_environment_is_never_silently_defaulted_or_panicked",
+        "package": "awaken-env-store",
+        "target": "lib",
+        "row": "awaken-env-store-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "ace4fd88deed09099dc9e6e426dc2e695fb2a114d85c6324036f58b8936ce42d",
+        "harness_sha256": "8087a8f33b1840ea949ac4e736da857158b490f24d68269e644699fa9266761c",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B022",
+    "name": "disposal_failure_retries_without_recheckpointing",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/continuation.rs",
+        "line": 1579,
+        "file_sha256": "3ff58e93b4a88ccfd91feda39b9e5d2e65e4df3b7f44dd870a1a6cbcb565ad71"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "tests::continuation::disposal_failure_retries_without_recheckpointing",
+        "package": "awaken-session-application",
+        "target": "lib",
+        "row": "awaken-session-application-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "b0eb2dbd76432e831d5d59efcc88de6d4646d9934d3cd614c2df49b5c8b9c364",
+        "harness_sha256": "86e1873c220bbb5c87a3f6d209bd2eb89e36122213b278d05d7b067138697614",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B023",
+    "name": "dropping_the_session_stops_ready_background_descendants",
+    "source_locations": [
+      {
+        "path": "crates/runtime/awaken-ext-builtin-tools/tests/hand/windows_process.rs",
+        "line": 234,
+        "file_sha256": "899cc23667538d31741439c3a38404c43f36c2588b938ee354f0e2ee38ed063b"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E04",
+        "case": "windows_process::dropping_the_session_stops_ready_background_descendants",
+        "package": "awaken-ext-builtin-tools",
+        "target": "hand",
+        "row": "awaken-ext-builtin-tools-hand-execute",
+        "row_exit": 0,
+        "log_sha256": "68e565a3c7be709b0e1c2eb8f18d2bb709d6923ce9ffee9d7cff31fb7456adb1",
+        "harness_sha256": "33e99c05d9d8db0d2c5b7f489b800bbebf658cbec7b7b379fb0d319d76658d3c",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B024",
+    "name": "durable_outcome_projector_is_warm_cold_restart_and_active_active_stable",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
+        "line": 11967,
+        "file_sha256": "11640504e0e22a8e267aba867a274dc87d1364b65294c60b6fa5cbdad0b27bc0"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "state::events::tests::durable_outcome_projector_is_warm_cold_restart_and_active_active_stable",
+        "package": "awaken-protocol-managed",
+        "target": "lib",
+        "row": "awaken-protocol-managed-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "dae4ce072b4dba09f2f02c78b3d40c380b2ac3ef8799cb7a975a2fda385d8336",
+        "harness_sha256": "37dec3cd7fb2c30aac57f488aa08226b5d3f7c6357665df34b1bc845c7a7dded",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      },
+      {
+        "evidence": "E02",
+        "case": "state::events::tests::durable_outcome_projector_is_warm_cold_restart_and_active_active_stable",
+        "package": "awaken-protocol-managed",
+        "target": "lib",
+        "row": "awaken-protocol-managed-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "6e935c5183b50839f187fd938ceb0043be259784edac7840b3cd6ea3416f31e7",
+        "harness_sha256": "37dec3cd7fb2c30aac57f488aa08226b5d3f7c6357665df34b1bc845c7a7dded",
+        "source_head": "489252bc4f3b7e45854455f187b892a0af70f622",
+        "historical": true
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B025",
+    "name": "durable_session_truth_owns_one_work_projection_path",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/work_projection.rs",
+        "line": 4,
+        "file_sha256": "1f762036b4ce5aa00daff5bc71c0660978525b1519f88de0508b9b836447a977"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "tests::authority::work_projection::durable_session_truth_owns_one_work_projection_path",
+        "package": "awaken-session-application",
+        "target": "lib",
+        "row": "awaken-session-application-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "b0eb2dbd76432e831d5d59efcc88de6d4646d9934d3cd614c2df49b5c8b9c364",
+        "harness_sha256": "86e1873c220bbb5c87a3f6d209bd2eb89e36122213b278d05d7b067138697614",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B026",
+    "name": "event_batch_idempotency_replays_the_root_receipt_across_restart",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/event_batches.rs",
+        "line": 1954,
+        "file_sha256": "d5a835661f961f443c7799c1c209856d0b0966397c62e5cbb9e727f2d8dc1cd4"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "tests::event_batches::event_batch_idempotency_replays_the_root_receipt_across_restart",
+        "package": "awaken-session-application",
+        "target": "lib",
+        "row": "awaken-session-application-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "b0eb2dbd76432e831d5d59efcc88de6d4646d9934d3cd614c2df49b5c8b9c364",
+        "harness_sha256": "86e1873c220bbb5c87a3f6d209bd2eb89e36122213b278d05d7b067138697614",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B027",
+    "name": "every_forwarded_mutation_keeps_the_author_the_caller_stated",
+    "source_locations": [
+      {
+        "path": "crates/resources/awaken-resource-application/src/memory.rs",
+        "line": 550,
+        "file_sha256": "eaf79be7fe2bac61582b1876ad5a1a0308d449080aaad95023fbabd6ccd5ff28"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E02",
+        "case": "memory::tests::every_forwarded_mutation_keeps_the_author_the_caller_stated",
+        "package": "awaken-resource-application",
+        "target": "lib",
+        "row": "awaken-resource-application-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "a613a6cdf3fcb5555b3dcd60fb122f25b03d891bf737dc758f7f4870bb619513",
+        "harness_sha256": "4c31476bdb3918f2313a6e312082be766e4f2c6cf3ba731c16b185214c46722f",
+        "source_head": "489252bc4f3b7e45854455f187b892a0af70f622",
+        "historical": true
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B028",
+    "name": "every_registry_adapter_obeys_the_registration_outbox_decision_table",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/src/lib.rs",
+        "line": 1194,
+        "file_sha256": "baee1f3824d93f9d2c77b3ffa88ad0e69bdf0e61dfa0d5faead6c774c5dfdb3c"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "tests::every_registry_adapter_obeys_the_registration_outbox_decision_table",
+        "package": "awaken-env-store",
+        "target": "lib",
+        "row": "awaken-env-store-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "ace4fd88deed09099dc9e6e426dc2e695fb2a114d85c6324036f58b8936ce42d",
+        "harness_sha256": "8087a8f33b1840ea949ac4e736da857158b490f24d68269e644699fa9266761c",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B029",
+    "name": "expired_checkpoint_delete_failure_retains_reference_for_retry",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/continuation.rs",
+        "line": 2228,
+        "file_sha256": "3ff58e93b4a88ccfd91feda39b9e5d2e65e4df3b7f44dd870a1a6cbcb565ad71"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "tests::continuation::expired_checkpoint_delete_failure_retains_reference_for_retry",
+        "package": "awaken-session-application",
+        "target": "lib",
+        "row": "awaken-session-application-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "b0eb2dbd76432e831d5d59efcc88de6d4646d9934d3cd614c2df49b5c8b9c364",
+        "harness_sha256": "86e1873c220bbb5c87a3f6d209bd2eb89e36122213b278d05d7b067138697614",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B030",
+    "name": "expired_claim_is_recovered_and_stale_owner_is_fenced",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-resource-reclaimer/src/lib.rs",
+        "line": 596,
+        "file_sha256": "016705e55c7a6c25c9f45f23f77510e8af00ee00c9ed393512bb6e30d70f4ce7"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E02",
+        "case": "tests::expired_claim_is_recovered_and_stale_owner_is_fenced",
+        "package": "awaken-resource-reclaimer",
+        "target": "lib",
+        "row": "awaken-resource-reclaimer-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "c9a08e5e00272acd3dc989229343582953052f932db39540d5da3cb7744c12bc",
+        "harness_sha256": "1d1fc378e7f0d9a30c2b508d3dc0a97733ad7512c30f0000ea284fac2888aa84",
+        "source_head": "489252bc4f3b7e45854455f187b892a0af70f622",
+        "historical": true
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B031",
+    "name": "expired_effect_fence_rejects_before_runtime_or_mount_materialization",
+    "source_locations": [
+      {
+        "path": "crates/worker/awaken-sandbox-container/src/tests.rs",
+        "line": 3975,
+        "file_sha256": "b03c7c1daad74fa19d72acdb5916b3ab080877e898f96b9ec3640ed7e9e33f69"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B032",
+    "name": "failed_dependency_observations_never_authorize_cleanup",
+    "source_locations": [
+      {
+        "path": "crates/resources/awaken-resource-application/src/reclamation.rs",
+        "line": 198,
+        "file_sha256": "b638aa7ad982b29974f1fc75fdcf5ef250dac5fdb07dbf03cd36c10d9b8a4fbd"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E02",
+        "case": "reclamation::tests::failed_dependency_observations_never_authorize_cleanup",
+        "package": "awaken-resource-application",
+        "target": "lib",
+        "row": "awaken-resource-application-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "a613a6cdf3fcb5555b3dcd60fb122f25b03d891bf737dc758f7f4870bb619513",
+        "harness_sha256": "4c31476bdb3918f2313a6e312082be766e4f2c6cf3ba731c16b185214c46722f",
+        "source_head": "489252bc4f3b7e45854455f187b892a0af70f622",
+        "historical": true
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B033",
+    "name": "failed_intent_insert_rolls_back_the_whole_create_transaction",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/src/lib.rs",
+        "line": 888,
+        "file_sha256": "baee1f3824d93f9d2c77b3ffa88ad0e69bdf0e61dfa0d5faead6c774c5dfdb3c"
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E01",
+        "case": "tests::failed_intent_insert_rolls_back_the_whole_create_transaction",
+        "package": "awaken-env-store",
+        "target": "lib",
+        "row": "awaken-env-store-lib-execute",
+        "row_exit": 0,
+        "log_sha256": "ace4fd88deed09099dc9e6e426dc2e695fb2a114d85c6324036f58b8936ce42d",
+        "harness_sha256": "8087a8f33b1840ea949ac4e736da857158b490f24d68269e644699fa9266761c",
+        "source_head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+        "historical": false
+      }
+    ],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  },
+  {
+    "id": "B034",
+    "name": "fuse_constructor_refuses_a_second_bus_before_any_listener_or_mount",
+    "source_locations": [
+      {
+        "path": "crates/worker/awaken-sandbox-memoryd/src/mounter.rs",
+        "line": 834,
+        "file_sha256": "4ce8522c2a088112f2941d5038c9bd27d12095af16aecdc533199d77c2645544"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "supports_subset_only",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "limitation": null
+  }
+]

@@ -1,0 +1,261 @@
+{
+  "schema_version": 1,
+  "title": "Session 执行与资源测试验收清单",
+  "baseline": {
+    "head": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+    "tree": "2dc06c1882b54d7792e10678c0626741a4ce84ff",
+    "origin_main": "8e600b62ac8d47a01ea6db48d7d00d11cd6a3ee6",
+    "date": "2026-10-22",
+    "runtime_sources_modified_by_this_calibration": false
+  },
+  "origin": {
+    "kind": "user supplied design attachment",
+    "title": "测试设计和执行清单",
+    "original_requirement_count": 37,
+    "author_identity_not_inferred": true,
+    "attachment_sha256": "8a24c6389c8493f215bd4dcf73ebc12bd93eee4397989696235deda1fc9e7be8"
+  },
+  "execution_authority": {
+    "canonical_suite": "scripts/ci/check-all.sh",
+    "canonical_features": ".config/rust-tests.toml",
+    "this_catalog_is_a_second_runner": false,
+    "automatic_selector_or_ci_integration_implemented": false
+  },
+  "counts": {
+    "requirements": 42,
+    "behavior_domains": 38,
+    "cross_cutting_gates": 4,
+    "scenarios": 127,
+    "fully_accepted_groups": 0,
+    "existing_assertion_scopes_verified": 5,
+    "fully_accepted_scenarios": 0,
+    "case_evidence_states": {
+      "design_only": 67,
+      "current_subset": 41,
+      "source_binding_only": 6,
+      "historical_subset": 12,
+      "aggregate_subset_only": 1
+    }
+  },
+  "scope_rules": {
+    "current_task": "Historical native Windows evidence calibration; no new Rust execution was performed by that calibration.",
+    "full_group_acceptance": "Every applicable case and selected backend/platform facet is qualified, or its non-applicability is justified by a tested capability refusal. All T00/T34/T35/T36 gates hold.",
+    "historical_reuse": "Retain original commit/tree/command/log; owner source unchanged alone is insufficient when runtime dependency/feature/config input changed. Record input closure and reviewed delta before inheriting current qualification.",
+    "negative_control": "Each scenario declares an invariant-breaking control. No new control/mutation execution is claimed by creating this catalog.",
+    "skip": "Skipped, ignored, fixture absent and unsupported modes are distinct from passed. A required missing fixture fails qualification.",
+    "aggregate_counts": "Suites overlap; do not sum evidence counts into coverage or progress.",
+    "formal_case_acceptance": "The old assertion-scope verification is not full acceptance of the expanded case. Its required facets, observable oracles, negative control and common gates must each be signed off. No new scenario is marked fully accepted by this document.",
+    "completeness_method": "For each affected production operation enumerate legal state edges, identities, writes/effects and responsibility transfer; map every applicable fault cut to an oracle and qualified facet. A fixed count of 127 scenarios is not a proof of exhaustive behavior coverage."
+  },
+  "substrates": {
+    "static": {
+      "tiers": [
+        "L0"
+      ],
+      "required": [
+        "source/metadata/static negative controls"
+      ],
+      "scope": "静态守卫；不代表运行时效果"
+    },
+    "component": {
+      "tiers": [
+        "L1"
+      ],
+      "required": [
+        "owned clocks/barriers, component public entrypoint"
+      ],
+      "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
+    },
+    "sdk": {
+      "tiers": [
+        "L1"
+      ],
+      "required": [
+        "independent consumer, declared minimal/default features"
+      ],
+      "scope": "SDK 本身与 API；不含服务端或物理 Provider"
+    },
+    "sdk-wire": {
+      "tiers": [
+        "L1"
+      ],
+      "required": [
+        "pinned official TS/Python SDK, oracle, request/response witnesses"
+      ],
+      "scope": "wire/transport；mock fetch 不代表实际服务"
+    },
+    "all-backends": {
+      "tiers": [
+        "L1",
+        "L2"
+      ],
+      "required": [
+        "Volatile logical model",
+        "file SQLite for persistence clauses",
+        "live PostgreSQL for supported SQL clauses"
+      ],
+      "scope": "只覆盖该操作真实支持的 backend；不凭空要求 Volatile 持久性"
+    },
+    "sql-backends": {
+      "tiers": [
+        "L2"
+      ],
+      "required": [
+        "file SQLite",
+        "live PostgreSQL",
+        "independent clients/processes where required"
+      ],
+      "scope": "需要持久性时真实文件和重开；仅 in-memory SQLite 不足"
+    },
+    "native-effect": {
+      "tiers": [
+        "L3"
+      ],
+      "required": [
+        "actual selected native executor/provider",
+        "barrier-controlled fault or child death",
+        "effect/cleanup observer"
+      ],
+      "scope": "实际启用模式；内核、引擎或物理恢复额外需要 L4"
+    },
+    "windows-process": {
+      "tiers": [
+        "L3"
+      ],
+      "required": [
+        "native Windows x86_64-pc-windows-msvc",
+        "actual owned child/descendant processes"
+      ],
+      "scope": "所选 Windows 模式；不含 Linux 或未启用执行器"
+    },
+    "service-e2e": {
+      "tiers": [
+        "L3"
+      ],
+      "required": [
+        "real Awaken service/process boundary",
+        "actual client/transport",
+        "declared backend and fixture"
+      ],
+      "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
+    },
+    "linux-fuse": {
+      "tiers": [
+        "L4"
+      ],
+      "required": [
+        "native Linux kernel/FUSE or applicable namespace/container substrate"
+      ],
+      "scope": "本次 Windows 任务不执行；只可未验收或有能力拒绝证明的不适用"
+    }
+  },
+  "split_note": "Split to respect the repository file-length limit. Concatenate each key's parts in listed order to reconstruct the original catalog.",
+  "parts": [
+    {
+      "key": "evidence_registry",
+      "file": "evidence-registry.json"
+    },
+    {
+      "key": "bindings",
+      "file": "bindings-1.json",
+      "range": [
+        0,
+        34
+      ]
+    },
+    {
+      "key": "bindings",
+      "file": "bindings-2.json",
+      "range": [
+        34,
+        68
+      ]
+    },
+    {
+      "key": "bindings",
+      "file": "bindings-3.json",
+      "range": [
+        68,
+        100
+      ]
+    },
+    {
+      "key": "groups",
+      "file": "groups-1.json",
+      "ids": [
+        "T00",
+        "T01",
+        "T02",
+        "T03",
+        "T04",
+        "T05",
+        "T06"
+      ]
+    },
+    {
+      "key": "groups",
+      "file": "groups-2.json",
+      "ids": [
+        "T07",
+        "T08",
+        "T09",
+        "T10",
+        "T11",
+        "T12",
+        "T13"
+      ]
+    },
+    {
+      "key": "groups",
+      "file": "groups-3.json",
+      "ids": [
+        "T14",
+        "T15",
+        "T16",
+        "T17",
+        "T18",
+        "T19",
+        "T20"
+      ]
+    },
+    {
+      "key": "groups",
+      "file": "groups-4.json",
+      "ids": [
+        "T21",
+        "T22",
+        "T23",
+        "T24",
+        "T25",
+        "T26",
+        "T27"
+      ]
+    },
+    {
+      "key": "groups",
+      "file": "groups-5.json",
+      "ids": [
+        "T28",
+        "T29",
+        "T30",
+        "T31",
+        "T32",
+        "T33",
+        "T34"
+      ]
+    },
+    {
+      "key": "groups",
+      "file": "groups-6.json",
+      "ids": [
+        "T35",
+        "T36",
+        "T37",
+        "T38",
+        "T39",
+        "T40",
+        "T41"
+      ]
+    }
+  ]
+}
