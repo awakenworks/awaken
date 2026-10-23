@@ -34,12 +34,15 @@ commands and their flags by `check_gate_arguments.py`).
   `python3 scripts/ci/install_receive_hooks.py --repository . --install` in the
   receiving repository, and verify with
   `python3 scripts/ci/install_receive_hooks.py --repository . --check`.
-  The installer preserves the old hook by content hash and installs the same
-  standalone main-linearity guard used by Lefthook. Receiving runs in `GIT_DIR`,
-  so it must not rely on finding a worktree's Lefthook configuration. The guard
+  The installer preserves the old hook by content hash and installs the
+  standalone main guard; it is the hook's only owner (Lefthook does not manage
+  `reference-transaction`), so it also guards worktrees checked out at older
+  commits. Receiving runs in `GIT_DIR`, so it must not rely on finding a
+  worktree's Lefthook configuration. The guard also refuses any change of main
+  outside `git config awaken.mainWriter` (the integration worktree). The guard
   works for bare repositories and shared linked worktrees, preserves stdin and
   incoming Git object visibility, and rejects rewinds, merges and deletion of
-  main. Re-check it after any hook reinstall; other hooks stay with Lefthook.
+  main. Re-install it after the guard changes; other hooks stay with Lefthook.
   This does not change `receive.denyCurrentBranch`, grant a history rewrite or
   replace CI. A checked-out receiving main must still satisfy Git's clean-tree
   requirements for an explicitly selected `updateInstead` receive mode.
