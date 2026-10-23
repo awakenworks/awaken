@@ -183,9 +183,29 @@ async fn registration_retention_is_exact_idempotent_and_rejects_deleting_pods() 
 #[tokio::test]
 async fn closed_idle_release_removes_only_the_original_uid_retention_metadata() {
     // I1 trusted closed/no-slot admission is supplied by Coordinator. I2 exact
-    // UID + finalizer -> one existing CAS remove, no DELETE/exit receipt. I3
+    // UID + finalizer + accepted deletion intent -> one existing CAS remove,
+    // no DELETE/exit receipt. I3
     // replacement UID -> no metadata mutation. This is not a physical ACK.
     let fixture = Fixture::new(Fault::None);
+    // I4 no accepted deletion intent -> keep the original Pod/evidence; no
+    // early replacement may invalidate the release owner's captured UID set.
+    fixture
+        .stopper()
+        .release_closed_idle_pod_evidence("worker", "uid-a")
+        .await
+        .unwrap();
+    assert_eq!(fixture.facts.lock().unwrap().released, 0, "I4");
+    fixture
+        .facts
+        .lock()
+        .unwrap()
+        .pod
+        .as_mut()
+        .unwrap()
+        .metadata
+        .deletion_timestamp = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+        "2026-10-23T00:00:00Z".parse().unwrap(),
+    ));
     fixture
         .stopper()
         .release_closed_idle_pod_evidence("worker", "uid-a")
@@ -203,6 +223,18 @@ async fn closed_idle_release_removes_only_the_original_uid_retention_metadata() 
         .unwrap()
         .metadata
         .uid = Some("replacement".into());
+    // I3 isolate the UID conjunct with deletion intent already present.
+    fixture
+        .facts
+        .lock()
+        .unwrap()
+        .pod
+        .as_mut()
+        .unwrap()
+        .metadata
+        .deletion_timestamp = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+        "2026-10-23T00:00:00Z".parse().unwrap(),
+    ));
     fixture
         .stopper()
         .release_closed_idle_pod_evidence("worker", "uid-a")

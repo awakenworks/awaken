@@ -111,10 +111,23 @@ impl PodProcessStopper {
     /// Drop retention metadata only after the trusted Coordinator has closed
     /// this incarnation and proved its Dispatch slots empty. No process binding
     /// or exit receipt is constructed, and a replacement UID is never touched.
+    /// Until the API accepts deletion intent, retain the original Pod set.
     pub async fn release_closed_idle_pod_evidence(
         &self,
         name: &str,
         uid: &str,
+    ) -> Result<(), RuntimeError> {
+        self.release_pod_evidence(name, uid, true).await
+    }
+
+    // One finalizer CAS for both existing release authorities: a durable exact
+    // process exit may release immediately; an unbound/closed-idle coordinate
+    // alone must wait for API-owned deletion intent. Neither issues DELETE.
+    async fn release_pod_evidence(
+        &self,
+        name: &str,
+        uid: &str,
+        require_deletion_intent: bool,
     ) -> Result<(), RuntimeError> {
         if uid.is_empty() {
             return Err(backend("idle evidence release requires an exact UID"));
@@ -128,6 +141,7 @@ impl PodProcessStopper {
             &|pod| {
                 if pod.metadata.uid.as_deref() != Some(uid)
                     || retention_finalizer(pod) != Some(WORKER_PROCESS_EVIDENCE_FINALIZER)
+                    || (require_deletion_intent && pod.metadata.deletion_timestamp.is_none())
                 {
                     Ok(ExactFinalizerAdmission::Complete)
                 } else {
@@ -233,7 +247,7 @@ impl PodProcessStopper {
         if binding.retention_finalizer != WORKER_PROCESS_EVIDENCE_FINALIZER {
             return Ok(());
         }
-        self.release_closed_idle_pod_evidence(&binding.name, &binding.uid)
+        self.release_pod_evidence(&binding.name, &binding.uid, false)
             .await
     }
 }
