@@ -21,8 +21,8 @@
       "reason": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock"
     },
     "awaken-session-application::SessionApplication": {
-      "files": 16,
-      "methods": 145,
+      "files": 15,
+      "methods": 135,
       "reason": "W21: one application service per use case, composed by a facade"
     },
     "awaken-session-executor::ExecutorComponents": {
@@ -379,7 +379,7 @@
     },
     "awaken-session-application": {
       "deps": 23,
-      "lines": 19834,
+      "lines": 19885,
       "reason": "W21 (plan 9.12): split by use case around one SessionMutations core; if it stays one aggregate after W21, record that review here"
     },
     "awaken-session-executor": {

@@ -44,14 +44,15 @@ fn only_the_exact_committed_unattempted_archive_receipt_projects_no_create() {
             .unwrap(),
             "W2 before admission"
         );
-        app.terminate_session_with_admission(
-            &SessionId::from(id),
-            "2026-10-10T00:00:00Z",
-            fact(id),
-            awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
-        )
-        .await
-        .unwrap();
+        app.termination_commands
+            .terminate_session_with_admission(
+                &SessionId::from(id),
+                "2026-10-10T00:00:00Z",
+                fact(id),
+                awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+            )
+            .await
+            .unwrap();
         let root = repo.get(&SessionId::from(id)).await.unwrap();
         assert!(
             crate::archive_intent::unattempted_profiled_archive_witness(
@@ -118,7 +119,8 @@ fn only_the_exact_committed_unattempted_archive_receipt_projects_no_create() {
         let mut idle = unattempted(ordinary);
         idle.execution = SessionExecutionState::Idle;
         create(repo.as_ref(), idle).await;
-        app.terminate_session(ordinary, "2026-10-10T00:00:00Z", fact(ordinary))
+        app.termination_commands
+            .terminate_session(ordinary, "2026-10-10T00:00:00Z", fact(ordinary))
             .await
             .unwrap();
         let ordinary_root = repo.get(&SessionId::from(ordinary)).await.unwrap();

@@ -49,7 +49,7 @@ impl SessionApplicationRoles {
             projection: application.queries(),
             events: application.clone(),
             profiled: application.clone(),
-            termination: application.clone(),
+            termination: application.termination_commands(),
             updates: application.clone(),
             resources: application.clone(),
             observation: application.clone(),

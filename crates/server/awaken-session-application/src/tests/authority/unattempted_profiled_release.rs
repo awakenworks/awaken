@@ -230,14 +230,15 @@ fn unattempted_profiled_release_checks_every_root_admission_cause() {
             create(repo.as_ref(), candidate).await;
             let before = repo.get(&SessionId::from(&id)).await.unwrap();
             assert!(
-                app.terminate_session_with_admission(
-                    &SessionId::from(&id),
-                    "2026-10-10T00:00:00Z",
-                    fact(&id),
-                    awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
-                )
-                .await
-                .is_err(),
+                app.termination_commands
+                    .terminate_session_with_admission(
+                        &SessionId::from(&id),
+                        "2026-10-10T00:00:00Z",
+                        fact(&id),
+                        awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+                    )
+                    .await
+                    .is_err(),
                 "U2 {cause}"
             );
             assert_eq!(
@@ -274,27 +275,30 @@ fn unattempted_profiled_release_retains_cleanup_and_absorbs_replay() {
         let id = "unattempted-cleanup";
         create(repo.as_ref(), unattempted(id)).await;
         assert!(
-            app.terminate_session(id, "2026-10-10T00:00:00Z", fact(id))
+            app.termination_commands
+                .terminate_session(id, "2026-10-10T00:00:00Z", fact(id))
                 .await
                 .is_err(),
             "U4 public archive"
         );
         assert!(
-            app.release_terminal_session(id, "2026-10-10T00:00:00Z", fact(id))
+            app.termination_commands
+                .release_terminal_session(id, "2026-10-10T00:00:00Z", fact(id))
                 .await
                 .is_err(),
             "U4 TerminalOnly"
         );
         runtime.fail_quiesce_once.store(true, Ordering::SeqCst);
         assert!(
-            app.terminate_session_with_admission(
-                &SessionId::from(id),
-                "2026-10-10T00:00:00Z",
-                fact(id),
-                awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
-            )
-            .await
-            .is_err(),
+            app.termination_commands
+                .terminate_session_with_admission(
+                    &SessionId::from(id),
+                    "2026-10-10T00:00:00Z",
+                    fact(id),
+                    awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+                )
+                .await
+                .is_err(),
             "U3 no premature success"
         );
         let pending = repo.get(&SessionId::from(id)).await.unwrap();
@@ -303,14 +307,15 @@ fn unattempted_profiled_release_retains_cleanup_and_absorbs_replay() {
             SessionDisposition::Archived { .. }
         ));
         assert!(!pending.verified_terminal_cleanup().unwrap().is_completed());
-        app.terminate_session_with_admission(
-            &SessionId::from(id),
-            "2026-10-10T00:00:00Z",
-            fact(id),
-            awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
-        )
-        .await
-        .unwrap();
+        app.termination_commands
+            .terminate_session_with_admission(
+                &SessionId::from(id),
+                "2026-10-10T00:00:00Z",
+                fact(id),
+                awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+            )
+            .await
+            .unwrap();
         let completed = repo.get(&SessionId::from(id)).await.unwrap();
         assert!(
             completed
@@ -327,14 +332,15 @@ fn unattempted_profiled_release_retains_cleanup_and_absorbs_replay() {
             "U1 terminal absorption"
         );
         let effects = runtime.effective_ids.lock().unwrap().len();
-        app.terminate_session_with_admission(
-            &SessionId::from(id),
-            "another-timestamp",
-            fact(id),
-            awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
-        )
-        .await
-        .unwrap();
+        app.termination_commands
+            .terminate_session_with_admission(
+                &SessionId::from(id),
+                "another-timestamp",
+                fact(id),
+                awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+            )
+            .await
+            .unwrap();
         assert_eq!(
             repo.get(&SessionId::from(id)).await.unwrap(),
             completed,
@@ -374,7 +380,7 @@ fn unattempted_profiled_release_and_activity_share_the_root_cas() {
         let session_id = SessionId::from(id);
         let (activity, release) = tokio::join!(
             app.activities.begin_activity(&session_id),
-            app.terminate_session_with_admission(
+            app.termination_commands.terminate_session_with_admission(
                 &session_id,
                 "2026-10-10T00:00:00Z",
                 fact(id),
@@ -514,7 +520,7 @@ fn failed_profiled_release_joins_current_run_activity_without_claiming_cleanup()
             let before = repo.get(&sid).await.unwrap();
             let (release, racing_activity) = if cause == "race" {
                 let (release, activity) = tokio::join!(
-                    app.terminate_session_with_admission(
+                    app.termination_commands.terminate_session_with_admission(
                         &sid,
                         "2026-10-14T00:00:00Z",
                         fact(&id),
@@ -526,13 +532,14 @@ fn failed_profiled_release_joins_current_run_activity_without_claiming_cleanup()
                 (release, Some(activity))
             } else {
                 (
-                    app.terminate_session_with_admission(
-                        &SessionId::from(&id),
-                        "2026-10-14T00:00:00Z",
-                        fact(&id),
-                        awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
-                    )
-                    .await,
+                    app.termination_commands
+                        .terminate_session_with_admission(
+                            &SessionId::from(&id),
+                            "2026-10-14T00:00:00Z",
+                            fact(&id),
+                            awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+                        )
+                        .await,
                     None,
                 )
             };
@@ -559,6 +566,7 @@ fn failed_profiled_release_joins_current_run_activity_without_claiming_cleanup()
                 );
                 assert!(
                     restarted
+                        .termination_commands
                         .terminate_session_with_admission(
                             &SessionId::from(&id),
                             "different-display-time",

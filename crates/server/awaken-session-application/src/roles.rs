@@ -604,26 +604,29 @@ impl ProfiledSessionCommands for SessionApplication {
 }
 
 #[async_trait]
-impl SessionTermination for SessionApplication {
+impl SessionTermination for crate::SessionTerminationCommands {
     async fn archive_session(
         &self,
         session_id: &str,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
-        SessionApplication::archive_session(self, session_id).await
+        crate::SessionTerminationCommands::archive_session(self, session_id).await
     }
 
     async fn release_profiled_session(
         &self,
         session_id: &str,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
-        SessionApplication::release_profiled_session_with_verified_cleanup(self, session_id).await
+        crate::SessionTerminationCommands::release_profiled_session_with_verified_cleanup(
+            self, session_id,
+        )
+        .await
     }
 
     async fn delete_session(
         self: Arc<Self>,
         command: SessionDeleteCommand,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
-        SessionApplication::delete_session(&self, command).await
+        crate::SessionTerminationCommands::delete_session(&self, command).await
     }
 
     async fn archive_with_repository_publication(
@@ -633,9 +636,9 @@ impl SessionTermination for SessionApplication {
         SessionArchiveWithRepositoryPublicationOutcome,
         SessionArchiveWithRepositoryPublicationError,
     > {
-        Box::pin(SessionApplication::archive_with_repository_publication(
-            self, command,
-        ))
+        Box::pin(
+            crate::SessionTerminationCommands::archive_with_repository_publication(self, command),
+        )
         .await
     }
 
@@ -644,7 +647,7 @@ impl SessionTermination for SessionApplication {
         session_id: &SessionId,
         thread_id: &str,
     ) -> Result<(), RunError> {
-        SessionApplication::archive_session_thread(self, session_id, thread_id).await
+        crate::SessionTerminationCommands::archive_session_thread(self, session_id, thread_id).await
     }
 }
 

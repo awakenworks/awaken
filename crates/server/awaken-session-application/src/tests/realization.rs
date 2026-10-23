@@ -1777,6 +1777,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
     );
 
     let pending_force = application
+        .termination_commands
         .force_terminate_session(
             "remote-cleanup",
             "2026-09-05T00:00:00Z",
@@ -1847,6 +1848,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
         "W3/E3"
     );
     let replay = application
+        .termination_commands
         .force_terminate_session(
             "remote-cleanup",
             "2026-09-05T00:00:00Z",

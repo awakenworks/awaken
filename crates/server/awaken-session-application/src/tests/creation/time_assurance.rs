@@ -328,6 +328,7 @@ async fn first_archive_time_is_durable_and_legacy_archive_stays_unknown() {
         runtime_interval: None,
     };
     timed_application(repo.clone(), 100)
+        .termination_commands
         .terminate_session(id, "2026-09-07T00:00:00Z", fact.clone())
         .await
         .unwrap();
@@ -351,6 +352,7 @@ async fn first_archive_time_is_durable_and_legacy_archive_stays_unknown() {
     let cold = cold_repo.get(&SessionId::from(id)).await.unwrap();
     assert_eq!(cold.archived_at_unix_ms(), Some(100), "A1 cold");
     timed_application(cold_repo.clone(), 900)
+        .termination_commands
         .terminate_session(id, "later-display", fact)
         .await
         .unwrap();
@@ -371,6 +373,7 @@ async fn first_archive_time_is_durable_and_legacy_archive_stays_unknown() {
         runtime_interval: None,
     };
     timed_application(cold_repo.clone(), 900)
+        .termination_commands
         .terminate_session(old_id, "later-display", old_fact)
         .await
         .unwrap();
@@ -412,8 +415,12 @@ async fn concurrent_archives_keep_only_the_winning_clock_sample() {
     let left_app = timed_application(repo.clone(), 100);
     let right_app = timed_application(repo.clone(), 200);
     let (left, right) = tokio::join!(
-        left_app.terminate_session(id, "2026-09-07T00:00:00Z", fact.clone()),
-        right_app.terminate_session(id, "2026-09-07T00:00:00Z", fact),
+        left_app
+            .termination_commands
+            .terminate_session(id, "2026-09-07T00:00:00Z", fact.clone()),
+        right_app
+            .termination_commands
+            .terminate_session(id, "2026-09-07T00:00:00Z", fact),
     );
     let left = left.unwrap();
     let right = right.unwrap();

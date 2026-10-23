@@ -801,20 +801,21 @@ async fn run_activity_fence_decision_table() {
             .begin_activity(&SessionId::from("activity-oldest-first"))
             .await
             .expect("A7 activity before terminal transition");
-        app.force_terminate_session(
-            "activity-oldest-first",
-            "2026-08-11T00:00:00Z",
-            awaken_session_state_contract::ManagedLifecycleFact {
-                id: "activity-terminal".into(),
-                object_id: "activity-oldest-first".into(),
-                workspace_id: Some("workspace".into()),
-                event_type: "session.status_terminated".into(),
-                timestamp: 1,
-                runtime_interval: None,
-            },
-        )
-        .await
-        .expect("A7 terminal transition");
+        app.termination_commands
+            .force_terminate_session(
+                "activity-oldest-first",
+                "2026-08-11T00:00:00Z",
+                awaken_session_state_contract::ManagedLifecycleFact {
+                    id: "activity-terminal".into(),
+                    object_id: "activity-oldest-first".into(),
+                    workspace_id: Some("workspace".into()),
+                    event_type: "session.status_terminated".into(),
+                    timestamp: 1,
+                    runtime_interval: None,
+                },
+            )
+            .await
+            .expect("A7 terminal transition");
         let terminated = repo
             .get(&SessionId::from("activity-oldest-first"))
             .await

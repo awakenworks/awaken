@@ -266,7 +266,7 @@ mod terminal;
 pub use terminal::{
     SessionArchiveWithRepositoryPublicationCommand, SessionArchiveWithRepositoryPublicationError,
     SessionArchiveWithRepositoryPublicationOutcome, SessionDispositionMutation,
-    SessionRepositoryPublicationSelector,
+    SessionRepositoryPublicationSelector, SessionTerminationCommands,
 };
 
 #[cfg(test)]

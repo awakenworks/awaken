@@ -2319,20 +2319,21 @@ async fn terminal_cleanup_delegates_checkpoint_to_the_one_runtime_effect() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    app.terminate_session(
-        "terminal",
-        "2026-08-11T00:00:00Z",
-        awaken_session_state_contract::ManagedLifecycleFact {
-            id: "terminal-archive".into(),
-            object_id: "terminal".into(),
-            workspace_id: Some("workspace".into()),
-            event_type: "session.archived".into(),
-            timestamp: 1,
-            runtime_interval: None,
-        },
-    )
-    .await
-    .unwrap();
+    app.termination_commands
+        .terminate_session(
+            "terminal",
+            "2026-08-11T00:00:00Z",
+            awaken_session_state_contract::ManagedLifecycleFact {
+                id: "terminal-archive".into(),
+                object_id: "terminal".into(),
+                workspace_id: Some("workspace".into()),
+                event_type: "session.archived".into(),
+                timestamp: 1,
+                runtime_interval: None,
+            },
+        )
+        .await
+        .unwrap();
     assert_eq!(
         runtime
             .terminal_checkpoint_projections

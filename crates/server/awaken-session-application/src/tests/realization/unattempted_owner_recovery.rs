@@ -62,6 +62,7 @@ async fn seed_expired_cleanup_affinity(
     runtime.fail_quiesce_once.store(true, Ordering::SeqCst);
     if witness {
         let _pending = app
+            .termination_commands
             .terminate_session_with_admission(
                 &SessionId::from(id),
                 "2026-10-10T00:00:00Z",
@@ -70,7 +71,8 @@ async fn seed_expired_cleanup_affinity(
             )
             .await;
     } else {
-        app.terminate_session(id, "2026-10-10T00:00:00Z", fact(id))
+        app.termination_commands
+            .terminate_session(id, "2026-10-10T00:00:00Z", fact(id))
             .await
             .unwrap();
     }
