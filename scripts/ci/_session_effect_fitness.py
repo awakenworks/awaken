@@ -35,6 +35,7 @@ from _session_effect_sources import (
     APPLICATION_LIFECYCLE,
     APPLICATION_WORK_DISPATCH,
     APPLICATION_RESOURCE_RECONCILIATION,
+    APPLICATION_RESOURCE_EFFECT_AUTHORIZATION,
     PROTOCOL_SESSIONS,
     SESSION_STORE,
     SQLITE_SESSION_STORE,
@@ -251,11 +252,40 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
     )
 
     errors.extend(_require_ordered_function(
-        sources, APPLICATION_RESOURCE_RECONCILIATION,
-        "require_current_live_terminal_generation",
-        ("current.expires_at_unix_ms", "self.clock.now_ms()"),
+        sources, APPLICATION_RESOURCE_EFFECT_AUTHORIZATION,
+        "require_live_root_lease",
+        ("current.expires_at_unix_ms", "now_ms"),
         "terminal generation consumes the installed application clock",
     ))
+
+    # The three read-only Worker Resource-effect roles have one owner: the
+    # authorization component over the canonical root. Deleting any root,
+    # lease, generation, domain or owner edge fails; so does a retained
+    # application implementation or a second live-lease gate.
+    for function, markers, ownership in (
+        ("authorize_resource_materialization_intent",
+         (".session_aggregate(intent.session_id())", "if session.is_terminal()",
+          "realization_lease_authorizes(", "self.clock.now_ms()",
+          ".retained_generation(intent.resource_revision())", "self.owner(intent.session_id())"),
+         "root-derived Resource materialization authorization"),
+        ("authorize_checkpoint_release_artifact_effect",
+         (".session_aggregate(session_id)", ".authorize_checkpoint_release_artifact_effect(operation)",
+          "self.owner(session_id)"),
+         "root-derived checkpoint Artifact authorization"),
+        ("authorize_terminal_memory_intent",
+         (".session_aggregate(session_id)", "require_live_root_lease(&session, self.clock.now_ms())?",
+          ".authorize_terminal_memory_intent(intent)", "self.owner(session_id)",
+          "SessionTerminalMemoryTarget::from_authorized_root("),
+         "root-derived terminal Memory authorization"),
+    ):
+        errors.extend(_require_ordered_function(
+            sources, APPLICATION_RESOURCE_EFFECT_AUTHORIZATION, function, markers, ownership,
+        ))
+        if _rust_function(sources.get(APPLICATION_PUBLICATION_CONTROL, ""), function) is not None:
+            errors.append(f"{APPLICATION_PUBLICATION_CONTROL}: {ownership} retains a retired application role")
+    for retired_owner in (APPLICATION_RESOURCE_RECONCILIATION, APPLICATION_CLEANUP):
+        if _rust_function(sources.get(retired_owner, ""), "require_current_live_terminal_generation") is not None:
+            errors.append(f"{retired_owner}: the terminal live-lease gate has a duplicate or retired owner")
 
     if _rust_function(sources.get(APPLICATION_RESOURCE_RECONCILIATION, ""),
                       "authorize_terminal_cleanup_effect_from_root") is not None:
@@ -269,7 +299,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             "authorize_terminal_cleanup_effect_from_root",
             (
                 ".get(&effect.command.session_id)",
-                "self.require_current_live_terminal_generation(&session)?",
+                "require_live_root_lease(&session, self.clock.now_ms())?",
                 ".owner(&effect.command.session_id)",
                 "terminal_restore_target_for_thread(",
                 ".authorize_terminal_cleanup_effect(effect)",
@@ -337,9 +367,9 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
         _require_ordered_function(
             sources,
             APPLICATION_PUBLICATION_CONTROL,
-            "record_terminal_repository_publication_rejection_after_refresh",
+            "record_terminal_repository_publication_rejection",
             (".record_terminal_repository_publication_rejection_from_root(",),
-            "extracted Session realization rejection forwarding",
+            "direct Session realization rejection forwarding",
         )
     )
     errors.extend(
@@ -801,7 +831,7 @@ def _migrated_effect_owner_mutation_selftest(sources: dict[str, str]) -> None:
         (APPLICATION_CLEANUP, "authorize_terminal_cleanup_effect_from_root",
          ".get(&effect.command.session_id)", "root-derived terminal preparation authorization", False, ""),
         (APPLICATION_CLEANUP, "authorize_terminal_cleanup_effect_from_root",
-         "self.require_current_live_terminal_generation(&session)?", "root-derived terminal preparation authorization", False, ""),
+         "require_live_root_lease(&session, self.clock.now_ms())?", "root-derived terminal preparation authorization", False, ""),
         (APPLICATION_CLEANUP, "authorize_terminal_cleanup_effect_from_root",
          ".authorize_terminal_cleanup_effect(effect)", "root-derived terminal preparation authorization", False, ""),
         (APPLICATION_CLEANUP, "authorize_terminal_cleanup_effect_from_root",
@@ -936,7 +966,7 @@ fn verify_for() {
     preparation_authorization = """
 fn authorize_terminal_cleanup_effect_from_root() {
     repository.get(&effect.command.session_id);
-    self.require_current_live_terminal_generation(&session)?;
+    require_live_root_lease(&session, self.clock.now_ms())?;
     repository.owner(&effect.command.session_id);
     terminal_restore_target_for_thread(&workspace_id, &session, &effect.command.thread_id);
     session.authorize_terminal_cleanup_effect(effect);
@@ -964,9 +994,6 @@ fn drive_local_terminal_cleanup() {
     canonical[APPLICATION_CLEANUP] += preparation_authorization
     canonical[APPLICATION_RESOURCE_RECONCILIATION] = """
 fn terminal_cleanup_projection() { session.terminal_cleanup_work_action(); }
-fn require_current_live_terminal_generation(&self, session: &PersistedSession) {
-    realization_lease_is_live_at(current.expires_at_unix_ms, self.clock.now_ms());
-}
 fn authorize_terminal_cleanup_disposal_from_root() {
     repository.get(&effect.command.session_id);
     repository.owner(&effect.command.session_id);
@@ -993,11 +1020,32 @@ fn record_terminal_repository_publication_effect_from_root() {
 }
 """
     canonical[APPLICATION_PUBLICATION_CONTROL] = """
-fn record_terminal_repository_publication_rejection_after_refresh() {
+async fn record_terminal_repository_publication_rejection() {
     self.record_terminal_repository_publication_rejection_from_root(session_id, lease, rejection);
 }
-async fn record_terminal_repository_publication_rejection() {
-    self.record_terminal_repository_publication_rejection_after_refresh(session_id, lease, rejection);
+"""
+    canonical[APPLICATION_RESOURCE_EFFECT_AUTHORIZATION] = """
+pub(crate) fn require_live_root_lease(session: &PersistedSession, now_ms: u64) {
+    realization_lease_is_live_at(current.expires_at_unix_ms, now_ms);
+}
+async fn authorize_resource_materialization_intent() {
+    self.mutations.session_aggregate(intent.session_id());
+    if session.is_terminal() {}
+    realization_lease_authorizes(current, intent.lease(), self.clock.now_ms());
+    session.resources.retained_generation(intent.resource_revision());
+    self.owner(intent.session_id());
+}
+async fn authorize_checkpoint_release_artifact_effect() {
+    self.mutations.session_aggregate(session_id);
+    session.authorize_checkpoint_release_artifact_effect(operation);
+    self.owner(session_id);
+}
+async fn authorize_terminal_memory_intent() {
+    self.mutations.session_aggregate(session_id);
+    require_live_root_lease(&session, self.clock.now_ms())?;
+    session.authorize_terminal_memory_intent(intent);
+    self.owner(session_id);
+    SessionTerminalMemoryTarget::from_authorized_root(workspace_id, intent);
 }
 """
     canonical[APPLICATION_EVENT_BATCHES] = "session.verified_terminal_cleanup();"
@@ -1153,6 +1201,32 @@ fn recover_terminal_receipts() {
     # owner graph; R2 any missing source -> reject instead of accepting stale
     # parent markers or a duplicate compatibility definition.
     assert session_effect_violations(canonical) == [], "canonical effect paths"
+    # Resource-effect authorization ownership. RA1 the canonical component
+    # passes above. RA2 an application role body retained in Control beside
+    # an intact component, RA3 a second live-lease gate in a retired owner and
+    # RA4 a component body missing one edge each fail on their own.
+    for function in (
+        "authorize_resource_materialization_intent",
+        "authorize_checkpoint_release_artifact_effect",
+        "authorize_terminal_memory_intent",
+    ):
+        retired = dict(canonical)
+        retired[APPLICATION_PUBLICATION_CONTROL] += f"\nasync fn {function}() {{}}\n"
+        assert any("retired application role" in error for error in session_effect_violations(retired)), function
+    for retired_owner in (APPLICATION_RESOURCE_RECONCILIATION, APPLICATION_CLEANUP):
+        duplicated = dict(canonical)
+        duplicated[retired_owner] += "\nfn require_current_live_terminal_generation() {}\n"
+        assert any("live-lease gate" in error for error in session_effect_violations(duplicated)), retired_owner
+    for marker in (
+        "self.owner(intent.session_id())",
+        ".authorize_checkpoint_release_artifact_effect(operation)",
+        "require_live_root_lease(&session, self.clock.now_ms())?",
+    ):
+        mutant = dict(canonical)
+        mutant[APPLICATION_RESOURCE_EFFECT_AUTHORIZATION] = mutant[
+            APPLICATION_RESOURCE_EFFECT_AUTHORIZATION
+        ].replace(marker, "", 1)
+        assert session_effect_violations(mutant), marker
     # Lifecycle L1 canonical owner and wake pass above; L2 missing wake and
     # L3 retired App or L4 absent new command owner fail closed. No legacy bridge.
     mutant = dict(canonical)
@@ -1217,8 +1291,8 @@ fn recover_terminal_receipts() {
     # Clock cause/effect rule: the full authority check stays present, but an
     # ambient sample would disagree with the installed Coordinator clock.
     clock_mutant = dict(canonical)
-    clock_mutant[APPLICATION_RESOURCE_RECONCILIATION] = clock_mutant[
-        APPLICATION_RESOURCE_RECONCILIATION
+    clock_mutant[APPLICATION_CLEANUP] = clock_mutant[
+        APPLICATION_CLEANUP
     ].replace("self.clock.now_ms()", "SystemClock.now_ms()", 1)
     assert session_effect_violations(clock_mutant), "ambient terminal clock rejected"
 

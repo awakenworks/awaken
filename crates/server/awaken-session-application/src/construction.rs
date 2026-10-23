@@ -264,6 +264,9 @@ impl SessionApplicationBuilder {
                 registry.clone() as Arc<dyn awaken_resource_contract::ResourceInventory>
             }),
         ));
+        let resource_effect_authorization = Arc::new(
+            crate::SessionResourceEffectAuthorization::new(mutations.clone(), clock.clone()),
+        );
         Ok(SessionApplication {
             clock,
             configuration,
@@ -282,6 +285,7 @@ impl SessionApplicationBuilder {
             lifecycle,
             queries,
             inputs,
+            resource_effect_authorization,
             environment_binding_sink,
             executable_projection_refresh: self.refresh,
             execution_admission: self.execution,

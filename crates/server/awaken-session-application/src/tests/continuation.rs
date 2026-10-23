@@ -1427,7 +1427,7 @@ async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
     };
     assert_eq!(
         awaken_session_realization_contract::SessionCheckpointArtifactControl::authorize_checkpoint_release_artifact_effect(
-            &app,
+            app.resource_effect_authorization().as_ref(),
             &SessionId::from("checkpoint-artifact-auth"),
             operation,
         )
@@ -1443,7 +1443,7 @@ async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
     stale = serde_json::from_value(wire).expect("stale operation fixture");
     assert_eq!(
         awaken_session_realization_contract::SessionCheckpointArtifactControl::authorize_checkpoint_release_artifact_effect(
-            &app,
+            app.resource_effect_authorization().as_ref(),
             &SessionId::from("checkpoint-artifact-auth"),
             &stale,
         )
@@ -1467,7 +1467,7 @@ async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
     );
     assert_eq!(
         awaken_session_realization_contract::SessionCheckpointArtifactControl::authorize_checkpoint_release_artifact_effect(
-            &resident_app,
+            resident_app.resource_effect_authorization().as_ref(),
             &SessionId::from("checkpoint-artifact-not-ready"),
             operation,
         )

@@ -390,6 +390,7 @@ pub struct SessionApplication {
     lifecycle: Arc<crate::SessionLifecycle>,
     queries: Arc<crate::SessionQueries>,
     inputs: Arc<crate::SessionInputs>,
+    resource_effect_authorization: Arc<crate::SessionResourceEffectAuthorization>,
     environment_binding_sink: Arc<dyn SessionEnvironmentBindingSink>,
     /// The one process-owned high-water reconciler, invoked at lifecycle
     /// admission boundaries. Query reads never drive it.
@@ -420,6 +421,12 @@ impl SessionApplication {
     #[must_use]
     pub fn credentials(&self) -> Arc<crate::SessionCredentials> {
         self.credentials.clone()
+    }
+
+    /// The independently held Worker Resource-effect authorization owner.
+    #[must_use]
+    pub fn resource_effect_authorization(&self) -> Arc<crate::SessionResourceEffectAuthorization> {
+        self.resource_effect_authorization.clone()
     }
 
     /// The independently held lifecycle command and signal owner.

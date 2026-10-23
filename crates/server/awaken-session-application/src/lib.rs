@@ -231,6 +231,9 @@ pub use awaken_session_realization_driver::{
 };
 pub use mcp::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
 pub use realization::{SessionReconciliation, SessionReconciliationFailure};
+mod resource_effect_authorization;
+pub use resource_effect_authorization::SessionResourceEffectAuthorization;
+pub(crate) use resource_effect_authorization::require_live_root_lease;
 pub use resource_reconciliation::{
     ReplaceSessionResourceManifest, SessionResourceManifestError, SessionResourceManifestOutcome,
     SessionResourcePurgeGuard,

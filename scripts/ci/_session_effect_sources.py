@@ -64,6 +64,9 @@ APPLICATION_WORK_DISPATCH = "crates/server/awaken-session-application/src/applic
 APPLICATION_RESOURCE_RECONCILIATION = (
     "crates/server/awaken-session-application/src/resource_reconciliation.rs"
 )
+APPLICATION_RESOURCE_EFFECT_AUTHORIZATION = (
+    "crates/server/awaken-session-application/src/resource_effect_authorization.rs"
+)
 PROTOCOL_SESSIONS = "crates/server/awaken-protocol-managed/src/state/sessions.rs"
 SESSION_STORE = "crates/stores/awaken-session-store/src/lib.rs"
 SQLITE_SESSION_STORE = "crates/stores/awaken-session-store/src/sqlite.rs"
@@ -240,9 +243,14 @@ REQUIRED = {
         "SessionTerminalCleanupPreparationAuthorization::try_new(",
     ),
     APPLICATION_PUBLICATION_CONTROL: (
-        "record_terminal_repository_publication_rejection_after_refresh",
         ".record_terminal_repository_publication_rejection_from_root(",
         "async fn record_terminal_repository_publication_rejection(",
+    ),
+    APPLICATION_RESOURCE_EFFECT_AUTHORIZATION: (
+        "fn require_live_root_lease(",
+        "async fn authorize_resource_materialization_intent(",
+        "async fn authorize_checkpoint_release_artifact_effect(",
+        "async fn authorize_terminal_memory_intent(",
     ),
     APPLICATION_EVENT_BATCHES: (".verified_terminal_cleanup()",),
     APPLICATION_RESOURCE_RECONCILIATION: (

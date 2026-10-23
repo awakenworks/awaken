@@ -846,7 +846,10 @@ fn bind_session_lifecycle_hooks(
     }
     if let Some(publisher) = host.artifact_fence.as_ref() {
         publisher
-            .install_session_control(session_application.clone())
+            .install_session_control(
+                session_application.clone(),
+                session_application.resource_effect_authorization(),
+            )
             .map_err(|error| format!("install terminal Artifact authority: {error}"))?;
     }
     Ok(())
