@@ -246,7 +246,8 @@ impl SessionApplication {
             |command| async move {
                 let lease =
                     awaken_session_realization_contract::SessionRealizationControl::renew_session_realization(
-                        self, command,
+                        self.realizations.as_ref(),
+                        command,
                     )
                     .await?;
                 Ok(lease)
@@ -334,19 +335,15 @@ impl SessionApplication {
                 // cleanup operation.
                 if session.cleanup().ensure_terminal_cleanup_fence() {
                     session = self
-                        .commit_resource_snapshot(
-                            owner_scope,
-                            session,
-                            "terminal-cleanup-fence",
-                            Vec::new(),
-                        )
+                        .resource_references
+                        .commit(owner_scope, session, "terminal-cleanup-fence", Vec::new())
                         .await
                         .map_err(mutation_failure)?;
                 }
                 // Work retirement belongs to the recoverable cleanup operation.
                 // Completed archive cleanup is absorbing: a replay must not issue a
                 // second retirement attempt through this or any other reconciler.
-                self.retire_terminal_work(&session).await?;
+                self.work_assignments.retire(&session).await?;
 
                 // Phase 2 joins cancellation and the committed logical Run fence,
                 // then freezes its complete prefix. Source I/O still requires
@@ -362,12 +359,8 @@ impl SessionApplication {
                 }
                 if intent_changed {
                     session = self
-                        .commit_resource_snapshot(
-                            owner_scope,
-                            session,
-                            "resource-release-intent",
-                            Vec::new(),
-                        )
+                        .resource_references
+                        .commit(owner_scope, session, "resource-release-intent", Vec::new())
                         .await
                         .map_err(mutation_failure)?;
                 }
@@ -387,7 +380,8 @@ impl SessionApplication {
                         // never replay a Runtime effect or revive its old
                         // per-thread acknowledgement path.
                         let (next_session, _repository_preparation) = self
-                            .prepare_terminal_repository_participants(owner_scope, session)
+                            .repository_participants
+                            .prepare_terminal(owner_scope, session)
                             .await?;
                         session = next_session;
                         session
@@ -397,7 +391,8 @@ impl SessionApplication {
                             )
                             .map_err(internal)?;
                         session = self
-                            .commit_resource_snapshot(
+                            .resource_references
+                            .commit(
                                 owner_scope,
                                 session,
                                 "resource-release-complete",

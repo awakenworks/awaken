@@ -32,6 +32,7 @@ async fn local_projection_failure_keeps_its_provider_hint_and_failure_budget_cla
         .build()
         .unwrap();
         let error = app
+            .realizations
             .realize_session(&SessionId::from(session_id.clone()))
             .await
             .unwrap_err();

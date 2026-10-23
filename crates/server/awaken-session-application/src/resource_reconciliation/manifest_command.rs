@@ -10,14 +10,14 @@
 //! the outcome; `resource_lowering` makes every identity and reuse decision.
 
 use crate::mutation::ROOT_CAS_ATTEMPTS;
+use crate::repository_participants::RepositoryRetirementCause;
 use awaken_agent_contract::stable_fingerprint;
 use awaken_session_state_contract::{IdempotencyRecord, SessionExecutionState};
 use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 
 use super::{
-    ReplaceSessionResourceManifest, RepositoryRetirementCause, SessionResourceManifestError,
-    SessionResourceManifestOutcome,
+    ReplaceSessionResourceManifest, SessionResourceManifestError, SessionResourceManifestOutcome,
 };
 use crate::mutation::repository_failure;
 use crate::resource_lowering::{ResourceLowering, live_file_binding_id, normalized_mount};
@@ -195,7 +195,8 @@ impl SessionApplication {
         let (session, command_applied, command_revision) = match command_record {
             Some(record) => {
                 let commit = self
-                    .commit_resource_snapshot_with_record(&owner_scope, session, record, Vec::new())
+                    .resource_references
+                    .commit_with_record(&owner_scope, session, record, Vec::new())
                     .await
                     .map_err(SessionResourceManifestError::mutation)?;
                 let applied = commit.transitioned();
@@ -212,7 +213,8 @@ impl SessionApplication {
             }
             None => {
                 let session = self
-                    .commit_resource_snapshot(
+                    .resource_references
+                    .commit(
                         &owner_scope,
                         session,
                         "resource-manifest-intent",
@@ -247,17 +249,19 @@ impl SessionApplication {
             .await
             .map_err(SessionResourceManifestError::mutation)?;
         let convergence = if outcome.session.resources.pending.is_none() {
-            self.reconcile_repository_retirements(
-                &owner_scope,
-                crate::mutation::aggregate_from_snapshot(outcome.session.clone())
-                    .map_err(repository_failure)
-                    .map_err(SessionResourceManifestError::mutation)?,
-                RepositoryRetirementCause::DetachedGeneration,
-            )
-            .await
-            .map(crate::SessionAggregate::into_snapshot)
+            self.repository_participants
+                .reconcile_retirements(
+                    &owner_scope,
+                    crate::mutation::aggregate_from_snapshot(outcome.session.clone())
+                        .map_err(repository_failure)
+                        .map_err(SessionResourceManifestError::mutation)?,
+                    RepositoryRetirementCause::DetachedGeneration,
+                )
+                .await
+                .map(crate::SessionAggregate::into_snapshot)
         } else if outcome.session.requires_external_environment_owner() {
-            self.dispatch_session_work(&outcome.session)
+            self.work_assignments
+                .dispatch(&outcome.session)
                 .await
                 .map(|_| outcome.session.clone())
                 .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))

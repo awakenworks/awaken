@@ -757,7 +757,10 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
     assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 1, "R1/E1");
 
     runtime.projection_failure.store(1, Ordering::SeqCst);
-    let failed_recovery = application.reconcile_session_realizations().await;
+    let failed_recovery = application
+        .realizations
+        .reconcile_session_realizations()
+        .await;
     assert!(failed_recovery.settled.is_empty(), "R2/E4");
     assert_eq!(failed_recovery.failures.len(), 1, "R2/E4");
     assert_eq!(
@@ -765,7 +768,10 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
         "R2/E4"
     );
 
-    let first = application.reconcile_session_realizations().await;
+    let first = application
+        .realizations
+        .reconcile_session_realizations()
+        .await;
     assert!(first.failures.is_empty(), "R3/E2: {:#?}", first.failures);
     assert_eq!(first.settled.len(), 1, "R3/E2");
     assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 3, "R3/E2");
@@ -779,7 +785,10 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
         "R3/E3"
     );
 
-    let replay = application.reconcile_session_realizations().await;
+    let replay = application
+        .realizations
+        .reconcile_session_realizations()
+        .await;
     assert!(replay.failures.is_empty(), "R4/E5");
     assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 4, "R4/E5");
 }
@@ -901,12 +910,14 @@ async fn root_rejection_compensates_only_applied_repository_participants() {
         application.set_resource_registry(catalog.clone());
 
         let first = application
-            .configure_session_repository(owned_repository_input(&session_id))
+            .repository_participants
+            .configure(owned_repository_input(&session_id))
             .await
             .expect("first participant");
         let configured = if replayed {
             application
-                .configure_session_repository(owned_repository_input(&session_id))
+                .repository_participants
+                .configure(owned_repository_input(&session_id))
                 .await
                 .expect("exact participant replay")
         } else {
@@ -1360,7 +1371,10 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
             .expect("valid fixture Session application");
             if failed_scan {
                 faulting.fail_recovery_scan_once();
-                let failed = application.reconcile_session_realizations().await;
+                let failed = application
+                    .realizations
+                    .reconcile_session_realizations()
+                    .await;
                 assert_eq!(failed.failures.len(), 1, "Q2/E3 exact failed scan");
                 assert_eq!(
                     serde_json::to_value(repository.get(&SessionId::from(&id)).await.unwrap())
@@ -1376,7 +1390,10 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 0, "Q2/E3");
                 assert_eq!(runtime.preparations.load(Ordering::SeqCst), 0, "Q2/E3");
             }
-            let recovery = application.reconcile_session_realizations().await;
+            let recovery = application
+                .realizations
+                .reconcile_session_realizations()
+                .await;
             assert!(
                 recovery.failures.is_empty(),
                 "Q3/E4: {:?}",
@@ -1424,7 +1441,10 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
             let ready_json = serde_json::to_value(&ready).unwrap();
             let ready_outbox =
                 serde_json::to_value(repository.pending_lifecycle().await.unwrap()).unwrap();
-            let repeated = application.reconcile_session_realizations().await;
+            let repeated = application
+                .realizations
+                .reconcile_session_realizations()
+                .await;
             assert!(repeated.failures.is_empty(), "Q4 repeated scan");
             let replay = application
                 .accept_session(make_command())

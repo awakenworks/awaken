@@ -2,12 +2,10 @@
 // @formal entrypoint model_route.session_override_reuses_only_exact_identity_and_resolves_every_mismatch
 // @formal entrypoint runtime.backend_owned_environment_is_materialized_only_by_the_claimed_worker
 // @formal entrypoint session_creation.selected_environment_is_frozen_in_baseline
-// @formal entrypoint session_creation.work_projection_is_disposable_repairable_and_non_authoritative
 // @formal entrypoint session_environment.owner_topology_is_exact_and_frozen
 // @formal entrypoint session_environment.terminal_fence_admits_only_inflight_binding_receipts
 // @formal entrypoint session_run.execution_requires_dispatch_work_and_realization_owner
 // @formal entrypoint session_time.root_observations_are_revision_bound_and_replay_stable
-// @formal entrypoint session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
 use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_session_application_contract::process_local_executable_projection_admission;
 use awaken_session_state_contract::{
@@ -66,6 +64,25 @@ mod environment_owner_kani_proof {
             SessionPlacementClass::new(frozen, kani::any()).requires_external_environment_owner(),
             registered
         );
+    }
+}
+
+/// The process's executable-projection refresh, or process-local admission
+/// when the authoritative catalogs live in this process. Every component that
+/// enters a lifecycle admission boundary shares this one selection.
+#[derive(Clone)]
+pub(crate) struct ExecutableProjections(
+    pub(crate) Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
+);
+
+impl ExecutableProjections {
+    pub(crate) async fn refresh(
+        &self,
+    ) -> Result<awaken_session_application_contract::ExecutableProjectionAdmission, String> {
+        match &self.0 {
+            Some(refresh) => refresh.refresh().await,
+            None => Ok(process_local_executable_projection_admission()),
+        }
     }
 }
 
@@ -376,14 +393,14 @@ pub struct SessionApplication {
     configuration: SessionApplicationConfiguration,
     runtime: crate::SessionExecutor,
     tool_configuration_compiler: Arc<dyn ToolConfigurationCompiler>,
-    mcp_realizer: Arc<dyn McpAttachmentRealizer>,
     credentials: Arc<crate::SessionCredentials>,
     environments: SessionEnvironments,
     model_publication_resolver:
         Option<Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>>,
     resource_registry: Option<Arc<dyn awaken_resource_contract::ResourceRegistry>>,
-    resource_purge_scheduler: Option<Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>>,
-    resource_references: Option<Arc<dyn awaken_resource_contract::ResourceReferenceIndex>>,
+    resource_references: Arc<crate::SessionResourceReferences>,
+    work_assignments: Arc<crate::SessionWorkAssignments>,
+    repository_participants: Arc<crate::SessionRepositoryParticipants>,
     resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
     managed_list_prices: Option<Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>>,
     mutations: Arc<crate::SessionMutations>,
@@ -394,18 +411,17 @@ pub struct SessionApplication {
     environment_binding_sink: Arc<dyn SessionEnvironmentBindingSink>,
     /// The one process-owned high-water reconciler, invoked at lifecycle
     /// admission boundaries. Query reads never drive it.
-    executable_projection_refresh:
-        Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
+    executable_projections: ExecutableProjections,
+    realizations: Arc<crate::SessionRealizations>,
     /// One complete set of immutable execution observations.
-    execution_admission: SessionExecutionAdmission,
-    /// Disposable keyset position for one bounded preparation-candidate page
-    /// per poll. The root and its CAS remain the scheduling authority.
-    session_preparation_cursors:
-        tokio::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<Option<SessionScanCursor>>>>>,
+    execution_admission: Arc<SessionExecutionAdmission>,
     runtime_incarnation: String,
     event_batch_cutover_validation: Arc<SessionEventBatchCutoverValidationSource>,
-    /// Process-local mutual exclusion for the co-located realization driver.
-    local_realization_locks: Arc<crate::realization::LocalRealizationLocks>,
+    /// The composition inputs a fixture may still change before sharing.
+    #[cfg(any(test, feature = "test-support"))]
+    store: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    #[cfg(any(test, feature = "test-support"))]
+    fixture_assembly: crate::construction::SessionAssembly,
 }
 
 static APPLICATION_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -472,25 +488,6 @@ impl SessionApplication {
             &layout.environment.idle_retention,
         )?;
         effects.validate_session_sandbox_layout(session_id, layout)
-    }
-
-    #[must_use]
-    pub(crate) fn mcp_realizer(&self) -> &dyn McpAttachmentRealizer {
-        self.mcp_realizer.as_ref()
-    }
-
-    #[must_use]
-    pub(crate) fn resource_registry(
-        &self,
-    ) -> Option<&dyn awaken_resource_contract::ResourceRegistry> {
-        self.resource_registry.as_deref()
-    }
-
-    #[must_use]
-    pub(crate) fn resource_purge_scheduler(
-        &self,
-    ) -> Option<&dyn awaken_resource_contract::ResourcePurgeScheduler> {
-        self.resource_purge_scheduler.as_deref()
     }
 
     #[must_use]
@@ -659,12 +656,6 @@ impl SessionApplication {
         self.inputs.clone()
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    fn fixture_queries(&mut self) -> &mut crate::SessionQueries {
-        Arc::get_mut(&mut self.queries)
-            .expect("fixture query ports must be configured before the service is shared")
-    }
-
     #[must_use]
     pub fn runtime_incarnation(&self) -> &str {
         &self.runtime_incarnation
@@ -675,13 +666,6 @@ impl SessionApplication {
     #[must_use]
     pub fn local_realization_owner(&self) -> &str {
         &self.configuration.local_realization_owner
-    }
-
-    /// Serialize this process's own realization drivers for one Session.
-    pub(crate) fn local_realization_locks(
-        &self,
-    ) -> &Arc<crate::realization::LocalRealizationLocks> {
-        &self.local_realization_locks
     }
 
     /// Resolve and validate the exact Environment snapshot frozen into a new Session.
@@ -740,24 +724,9 @@ impl SessionApplication {
         Ok(resolved)
     }
 
-    /// Project one durable Session into its Environment WorkQueue when its
-    /// frozen baseline requires external execution. This is the sole fast-path
-    /// and recovery implementation; callers never enqueue independently.
-    pub async fn dispatch_session_work(
-        &self,
-        session: &PersistedSession,
-    ) -> Result<bool, awaken_session_types::RunError> {
-        dispatch_session_work(self.environments.assignment.as_ref(), session).await
-    }
-
-    /// Restore every missing Session-to-WorkQueue projection from durable truth.
-    pub async fn reconcile_work_dispatches(&self) -> WorkDispatchReconciliation {
-        reconcile_work_dispatches(
-            self.mutations.repository().as_ref(),
-            self.environments.assignment.as_ref(),
-            self.clock.now_ms(),
-        )
-        .await
+    #[must_use]
+    pub fn work_assignments(&self) -> Arc<crate::SessionWorkAssignments> {
+        self.work_assignments.clone()
     }
 
     pub fn environment_binding_sink(&self) -> Arc<dyn SessionEnvironmentBindingSink> {
@@ -766,7 +735,8 @@ impl SessionApplication {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn replace_environment_source(&mut self, source: impl Into<SessionEnvironments>) {
-        self.environments = source.into();
+        let environments = source.into();
+        crate::construction::reassemble(self, |assembly| assembly.environments = environments);
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -774,7 +744,7 @@ impl SessionApplication {
         &mut self,
         provider: Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>,
     ) {
-        self.managed_list_prices = Some(provider);
+        crate::construction::reassemble(self, |assembly| assembly.prices = Some(provider));
     }
 
     /// The frozen dispatch, Worker roster and placement compiler for this process.
@@ -786,12 +756,6 @@ impl SessionApplication {
         self.execution_admission.workers.get().map(Arc::as_ref)
     }
 
-    pub(crate) fn session_preparation_placement(
-        &self,
-    ) -> Option<&dyn awaken_session_realization_contract::SessionPreparationPlacement> {
-        self.execution_admission.placement.get().map(Arc::as_ref)
-    }
-
     /// Bind the one executable-projection reconciliation operation used by
     /// request and autonomous Session boundaries. Duplicate installation is an
     /// error instead of allowing two freshness authorities to overlap.
@@ -800,10 +764,10 @@ impl SessionApplication {
         &mut self,
         refresh: Arc<awaken_session_application_contract::ExecutableProjectionRefresh>,
     ) -> Result<(), &'static str> {
-        if self.executable_projection_refresh.is_some() {
+        if self.fixture_assembly.refresh.is_some() {
             return Err("executable projection refresh is already installed");
         }
-        self.executable_projection_refresh = Some(refresh);
+        crate::construction::reassemble(self, |assembly| assembly.refresh = Some(refresh));
         Ok(())
     }
 
@@ -812,10 +776,12 @@ impl SessionApplication {
     pub async fn refresh_executable_projections(
         &self,
     ) -> Result<awaken_session_application_contract::ExecutableProjectionAdmission, String> {
-        match self.executable_projection_refresh.as_ref() {
-            Some(refresh) => refresh.refresh().await,
-            None => Ok(process_local_executable_projection_admission()),
-        }
+        self.executable_projections.refresh().await
+    }
+
+    #[must_use]
+    pub fn realizations(&self) -> Arc<crate::SessionRealizations> {
+        self.realizations.clone()
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -823,7 +789,9 @@ impl SessionApplication {
         &mut self,
         scheduler: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
     ) {
-        self.resource_purge_scheduler = Some(scheduler);
+        crate::construction::reassemble(self, |assembly| {
+            assembly.resource_purge_scheduler = Some(scheduler)
+        });
     }
 
     /// Install the Resource authorities used to publish the Session's durable
@@ -836,8 +804,10 @@ impl SessionApplication {
         references: Arc<dyn awaken_resource_contract::ResourceReferenceIndex>,
         files: Arc<dyn awaken_resource_contract::FileCatalog>,
     ) {
-        self.resource_references = Some(references);
-        self.resource_files = Some(files);
+        crate::construction::reassemble(self, |assembly| {
+            assembly.resource_references = Some(references);
+            assembly.resource_files = Some(files);
+        });
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -845,7 +815,7 @@ impl SessionApplication {
         &mut self,
         source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     ) {
-        self.fixture_queries().set_profiles(source);
+        crate::construction::reassemble(self, |assembly| assembly.profiles = Some(source));
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -853,7 +823,7 @@ impl SessionApplication {
         &mut self,
         resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
     ) {
-        self.model_publication_resolver = Some(resolver);
+        crate::construction::reassemble(self, |assembly| assembly.models = Some(resolver));
     }
 
     /// Resolve a Session override only when it differs from the immutable Agent
@@ -1046,196 +1016,16 @@ impl SessionApplication {
         &mut self,
         catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     ) {
-        // As with Queries, fixture ports must be configured before sharing;
-        // an already selected Inputs cannot diverge from Resource authority.
-        Arc::get_mut(&mut self.inputs)
-            .expect("fixture input ports must be configured before the service is shared")
-            .set_resource_inventory(catalog.clone());
-        self.resource_registry = Some(catalog);
+        crate::construction::reassemble(self, |assembly| {
+            assembly.resource_registry = Some(catalog)
+        });
     }
-}
-
-async fn dispatch_session_work(
-    assignments: &dyn awaken_session_application_contract::SessionWorkerAssignment,
-    session: &PersistedSession,
-) -> Result<bool, awaken_session_types::RunError> {
-    if session.is_terminal() {
-        // Keep the externally auditable terminal guard at the effect boundary.
-        // The shared plan below repeats the same immutable fact so recovery and
-        // create-time callers cannot acquire a second projection policy.
-        return Ok(false);
-    }
-    if !session.requires_work_projection() {
-        return Ok(false);
-    }
-    let Some(baseline) = session.frozen_baseline() else {
-        // The closed production decision above cannot admit this state. Keep
-        // the adapter fail-closed if the representation is ever extended.
-        return Ok(false);
-    };
-    // Terminal Work retirement belongs exclusively to the recoverable resource
-    // cleanup driver. A second reconciler would duplicate the external attempt
-    // and obscure its durable completion boundary.
-    assignments
-        .enqueue_session(&baseline.environment.environment_id, &session.session_id)
-        .await?;
-    Ok(true)
-}
-
-async fn reconcile_work_dispatches(
-    sessions: &dyn SessionRepository,
-    assignments: &dyn awaken_session_application_contract::SessionWorkerAssignment,
-    now_unix_ms: u64,
-) -> WorkDispatchReconciliation {
-    let mut report = WorkDispatchReconciliation::default();
-    let candidates = match scan_recovery_candidates(sessions, false, now_unix_ms).await {
-        Ok(candidates) => candidates,
-        Err(error) => {
-            report.failures.push(WorkDispatchFailure {
-                session_id: "<repository>".to_string(),
-                environment_id: String::new(),
-                message: error.to_string(),
-            });
-            return report;
-        }
-    };
-    report.pending = candidates.sessions.len();
-    report.quarantined = candidates.quarantined;
-    for candidate in candidates.sessions {
-        // The complete scan retains identities only. Reuse the ordinary fresh
-        // root read and dispatch policy before an external WorkQueue effect.
-        let session = match sessions.get(&candidate.session_id).await {
-            Ok(session) => session,
-            Err(SessionRepositoryError::NotFound) => continue,
-            Err(error) => {
-                report.failures.push(WorkDispatchFailure {
-                    session_id: candidate.session_id.to_string(),
-                    environment_id: String::new(),
-                    message: error.to_string(),
-                });
-                continue;
-            }
-        };
-        match dispatch_session_work(assignments, &session).await {
-            Ok(true) => report.settled += 1,
-            Ok(false) => {}
-            Err(error) => report.failures.push(WorkDispatchFailure {
-                session_id: session.session_id.to_string(),
-                environment_id: session.environment_id().to_string(),
-                message: error.to_string(),
-            }),
-        }
-    }
-    report
 }
 
 fn claim_once(fence: &AtomicBool) -> bool {
     !fence.swap(true, Ordering::AcqRel)
 }
 
-async fn self_hosted_work_environment(
-    application: &SessionApplication,
-    session_id: &awaken_session_types::SessionId,
-) -> Result<Option<(String, bool)>, awaken_session_types::RunError> {
-    let session = match application.session_repository().get(session_id).await {
-        Ok(session) => session,
-        Err(SessionRepositoryError::NotFound) => return Ok(None),
-        Err(error) => {
-            return Err(awaken_session_types::RunError::unavailable(
-                error.to_string(),
-            ));
-        }
-    };
-    Ok(session
-        .frozen_baseline()
-        .filter(|baseline| baseline.environment.self_hosted)
-        .map(|baseline| {
-            (
-                baseline.environment.environment_id.clone(),
-                session.is_terminal(),
-            )
-        }))
-}
-
-#[async_trait::async_trait]
-impl awaken_session_application_contract::SessionWorkerLeaseAuthority for SessionApplication {
-    fn request_lifecycle_reconciliation(&self) {
-        self.lifecycle.request_reconciliation();
-    }
-
-    async fn acquire_session_work(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        worker_owner: &str,
-        now_ms: u64,
-        acquisition: awaken_session_application_contract::SessionWorkAcquisition,
-    ) -> Result<
-        awaken_session_application_contract::SessionWorkOwnership,
-        awaken_session_types::RunError,
-    > {
-        use awaken_session_application_contract::SessionWorkOwnership;
-
-        let Some((environment_id, terminal)) =
-            self_hosted_work_environment(self, session_id).await?
-        else {
-            return Ok(SessionWorkOwnership::NotRequired);
-        };
-        let acquired = self
-            .environments
-            .leases
-            .acquire_session(&environment_id, session_id, worker_owner, now_ms)
-            .await?;
-        if !awaken_session_application_contract::session_work_revival_is_authorized(
-            acquisition,
-            terminal,
-            acquired.is_some(),
-        ) {
-            return Ok(acquired
-                .map(SessionWorkOwnership::Leased)
-                .unwrap_or(SessionWorkOwnership::Unowned));
-        }
-        // A predecessor may retire the stable Session Work item after a
-        // successor admission already attempted to wake it. The authenticated,
-        // claimed successor Run is itself a durable wake intent: revive through
-        // the one WorkQueue path and retry acquisition exactly once. Terminal
-        // Sessions are excluded above and can never be resurrected here.
-        self.environments
-            .assignment
-            .wake_session(&environment_id, session_id)
-            .await?;
-        Ok(self
-            .environments
-            .leases
-            .acquire_session(&environment_id, session_id, worker_owner, now_ms)
-            .await?
-            .map(SessionWorkOwnership::Leased)
-            .unwrap_or(SessionWorkOwnership::Unowned))
-    }
-
-    async fn release_session_work(
-        &self,
-        lease: &awaken_session_types::SessionWorkLease,
-    ) -> Result<bool, awaken_session_types::RunError> {
-        let Some((environment_id, _terminal)) =
-            self_hosted_work_environment(self, lease.session_id()).await?
-        else {
-            return Ok(true);
-        };
-        if lease.environment_id() != environment_id {
-            return Ok(false);
-        }
-        self.environments.leases.release_session(lease).await
-    }
-
-    async fn release_worker_session_work(
-        &self,
-        worker_owner: &str,
-    ) -> Result<usize, awaken_session_types::RunError> {
-        self.environments.leases.release_owner(worker_owner).await
-    }
-}
-
-/// Repository-backed implementation installed at the runtime materialization boundary.
 pub struct RepositoryEnvironmentBindingSink {
     repo: Arc<dyn SessionRepository>,
     clock: Arc<dyn awaken_time::WallClock>,

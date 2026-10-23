@@ -731,11 +731,13 @@ impl SessionApplication {
         }
 
         let realized = if persisted.requires_external_environment_owner() {
-            self.install_dispatch_projection(&owner_scope, &persisted)
+            self.realizations
+                .install_dispatch_projection(&owner_scope, &persisted)
                 .await
                 .map(|()| persisted.clone())
         } else {
-            self.realize_session_after_refresh(&awaken_session_types::SessionId::from(&session_id))
+            self.realizations
+                .realize_session_after_refresh(&awaken_session_types::SessionId::from(&session_id))
                 .await
         };
         persisted = match realized {
@@ -806,7 +808,7 @@ impl SessionApplication {
         // The aggregate is already the authoritative dispatch intent. An
         // ambiguous create failure here could induce a duplicate client create;
         // the canonical reconciler therefore retries this disposable projection.
-        if let Err(error) = self.dispatch_session_work(&persisted).await {
+        if let Err(error) = self.work_assignments.dispatch(&persisted).await {
             tracing::warn!(
                 session = %session_id,
                 error = ?error,

@@ -287,7 +287,8 @@ impl<'a> ResourceLowering<'a> {
         {
             let participant = self
                 .application
-                .configure_session_repository(SessionRepositoryResourceInput {
+                .repository_participants
+                .configure(SessionRepositoryResourceInput {
                     id: format!(
                         "managed:{}:repository:{}",
                         self.session_id,

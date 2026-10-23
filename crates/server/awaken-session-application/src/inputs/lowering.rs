@@ -37,7 +37,8 @@ impl SessionApplication {
             } = &request.target
             {
                 let configured = match self
-                    .configure_session_repository(crate::SessionRepositoryResourceInput {
+                    .repository_participants
+                    .configure(crate::SessionRepositoryResourceInput {
                         id: format!("managed:{session_id}:repository:{index}"),
                         workspace_id: owner_scope.to_string(),
                         name: format!("Session repository {index}"),
