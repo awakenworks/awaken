@@ -1053,6 +1053,37 @@ completion path or persistence mechanism is introduced. Its decision-table
 tests include rejected-to-isolated observations, pending reservation replay,
 terminal-guard restrictions and unchanged state on refusal.
 
+## Amendment 2026-10-23: complete unattempted bootstrap retirement and retry trust dependencies
+
+Reuse unchanged: Registry absence and complete Session occupancy reads, the
+original Create ledger's unattempted seal/first-binding CAS, the release owner's
+scale-to-zero operation, and the existing exact finalizer CAS. The Kubernetes
+bootstrap close seals first enrollment and Create before any Pod can be stopped.
+It releases only its Worker evidence finalizer when the API already records
+irreversible deletion intent for the exact original UID. It never requests
+DELETE. Before deletion intent, repeated close calls return the original seal
+anchor and keep the Pod and its evidence intact. This prevents an early DELETE
+from creating a replacement while the release still requires the original set.
+
+The sequence is owner observations -> original empty-ledger CAS -> snapshot
+stability and release-owned scale zero -> replay original close -> exact deleting
+Pod finalizer release -> observed zero -> normal fresh UID/image/Registry proof.
+The release replays the same close during its bounded zero wait after verifying
+the current zero target and scaling authority. If first binding wins, sealing
+refuses before any Pod write. If seal wins, late first binding and Create remain
+denied. A failed finalizer write retains the absorbing seal for retry; a
+replacement UID is untouched. Registered idle retirement keeps its existing
+conditional DELETE before this same finalizer-release owner. Neither path
+returns a process-exit, replay or Session-cleanup receipt. No controller, store,
+identity or replacement authority is added.
+
+The authentication owner also distinguishes unavailable TokenReview I/O from
+invalid credentials. Timeout/API failure yields its typed unavailable error and
+HTTP 503, consumed by the existing bounded-attempt Worker registration retry.
+Missing credentials and a completed negative/mismatched review remain HTTP 401.
+Neither case authenticates the request or runs a protected handler. No positive
+cache or fallback is introduced. Regression decision tables live with the tests.
+
 ## 2026-10-19 implementation: coordinate codec and physical authentication features
 
 The existing `awaken-worker-transport-security::kubernetes` owner keeps one

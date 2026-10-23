@@ -2,6 +2,7 @@
 // @formal evidence sandbox.k8s_process_observation_requires_complete_exit
 use super::*;
 use awaken_worker_contract::WorkerIncarnationSource;
+mod bootstrap;
 mod hand_recovery;
 mod live;
 use axum::{
@@ -13,7 +14,7 @@ use axum::{
 use serde_json::{Value, json};
 use std::sync::{
     Mutex,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 struct Facts {
@@ -22,6 +23,8 @@ struct Facts {
     reads: AtomicUsize,
     deletes: Mutex<Vec<Value>>,
     updates: Mutex<Vec<Value>>,
+    ledger: Mutex<Option<Value>>,
+    update_failure: AtomicBool,
 }
 
 fn manifest() -> awaken_dispatch::WorkerManifest {
@@ -142,6 +145,8 @@ fn fixture_with_client() -> (WorkerTransport, Arc<Facts>, kube::Client) {
         reads: AtomicUsize::new(0),
         deletes: Mutex::new(Vec::new()),
         updates: Mutex::new(Vec::new()),
+        ledger: Mutex::new(None),
+        update_failure: AtomicBool::new(false),
     });
     async fn review(State(facts): State<Arc<Facts>>, Json(body): Json<Value>) -> Json<Value> {
         assert_eq!(body["spec"]["token"], "fixture-token");
@@ -162,13 +167,31 @@ fn fixture_with_client() -> (WorkerTransport, Arc<Facts>, kube::Client) {
         let (status, body) = facts.pod.lock().unwrap().clone();
         (status, Json(body))
     }
-    async fn delete(State(facts): State<Arc<Facts>>, Json(body): Json<Value>) -> Json<Value> {
+    async fn delete(
+        State(facts): State<Arc<Facts>>,
+        Json(body): Json<Value>,
+    ) -> (StatusCode, Json<Value>) {
         facts.deletes.lock().unwrap().push(body);
         facts.pod.lock().unwrap().1["metadata"]["deletionTimestamp"] =
             json!("2026-09-09T00:01:00Z");
-        Json(json!({"kind":"Status","apiVersion":"v1","status":"Success"}))
+        (
+            StatusCode::OK,
+            Json(json!({"kind":"Status","apiVersion":"v1","status":"Success"})),
+        )
     }
-    async fn update(State(facts): State<Arc<Facts>>, Json(mut body): Json<Value>) -> Json<Value> {
+    async fn update(
+        State(facts): State<Arc<Facts>>,
+        Json(mut body): Json<Value>,
+    ) -> (StatusCode, Json<Value>) {
+        if facts.update_failure.load(Ordering::SeqCst) {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(
+                    json!({"kind":"Status","apiVersion":"v1","code":503,"reason":"ServiceUnavailable","message":"fixture"}),
+                ),
+            );
+        }
+
         let mut current = facts.pod.lock().unwrap();
         assert_eq!(body["metadata"]["uid"], current.1["metadata"]["uid"]);
         assert_eq!(
@@ -178,12 +201,69 @@ fn fixture_with_client() -> (WorkerTransport, Arc<Facts>, kube::Client) {
         facts.updates.lock().unwrap().push(body.clone());
         body["metadata"]["resourceVersion"] = json!("8");
         current.1 = body.clone();
+        (StatusCode::OK, Json(body))
+    }
+    async fn ledger_get(State(facts): State<Arc<Facts>>) -> (StatusCode, Json<Value>) {
+        match facts.ledger.lock().unwrap().clone() {
+            Some(value) => (StatusCode::OK, Json(value)),
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(
+                    json!({"kind":"Status","apiVersion":"v1","code":404,"reason":"NotFound","message":"fixture"}),
+                ),
+            ),
+        }
+    }
+    async fn ledger_create(
+        State(facts): State<Arc<Facts>>,
+        Json(mut body): Json<Value>,
+    ) -> (StatusCode, Json<Value>) {
+        let mut ledger = facts.ledger.lock().unwrap();
+        if ledger.is_some() {
+            return (
+                StatusCode::CONFLICT,
+                Json(
+                    json!({"kind":"Status","apiVersion":"v1","reason":"AlreadyExists","code":409,"message":"fixture"}),
+                ),
+            );
+        }
+        body["metadata"]["uid"] = json!("ledger-uid");
+        body["metadata"]["resourceVersion"] = json!("1");
+        *ledger = Some(body.clone());
+        (StatusCode::CREATED, Json(body))
+    }
+    async fn ledger_update(
+        State(facts): State<Arc<Facts>>,
+        Json(mut body): Json<Value>,
+    ) -> Json<Value> {
+        let mut ledger = facts.ledger.lock().unwrap();
+        let current = ledger.as_ref().unwrap();
+        assert_eq!(body["metadata"]["uid"], current["metadata"]["uid"]);
+        assert_eq!(
+            body["metadata"]["resourceVersion"],
+            current["metadata"]["resourceVersion"]
+        );
+        let version = current["metadata"]["resourceVersion"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        body["metadata"]["resourceVersion"] = json!((version + 1).to_string());
+        *ledger = Some(body.clone());
         Json(body)
     }
     // One actual kube Client over an in-process API transport. Only the exact
     // Pod stop is writable; unrelated provisioning has no route. Not k3d proof.
     let router = Router::new()
         .route("/apis/authentication.k8s.io/v1/tokenreviews", post(review))
+        .route(
+            "/api/v1/namespaces/create-control/configmaps",
+            post(ledger_create),
+        )
+        .route(
+            "/api/v1/namespaces/create-control/configmaps/{name}",
+            get(ledger_get).put(ledger_update),
+        )
         .route(
             "/api/v1/namespaces/workers/pods/worker-a",
             get(pod).put(update).delete(delete),

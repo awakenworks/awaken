@@ -56,12 +56,13 @@ pub(super) fn assemble(
         namespace,
         provider_id,
     ));
-    let stopper = PodProcessStopper::new(
+    let stopper = Arc::new(PodProcessStopper::new(
         PodProcessObserver::new(client, namespace).map_err(|error| error.to_string())?,
-    );
+    ));
     let binding_source = Arc::new(KubernetesWorkerBindings {
         observer,
         create_ledger: create_ledger.clone(),
+        stopper: stopper.clone(),
         namespace: namespace.to_owned(),
         provider_id: provider_id.to_owned(),
     });
@@ -82,6 +83,7 @@ pub(super) fn assemble(
 struct KubernetesWorkerBindings {
     observer: PodProcessObserver,
     create_ledger: Arc<K8sWorkerCreateLedger>,
+    stopper: Arc<PodProcessStopper>,
     namespace: String,
     provider_id: String,
 }
@@ -133,6 +135,16 @@ impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
             .await
             .map_err(|_| {
                 ApplicationError::unavailable("Worker bootstrap is bound, incomplete or changed")
+            })?;
+        // The original CAS excludes every first enrollment/Create. Preserve
+        // the captured Pod set until its existing controller accepts deletion
+        // after scale zero. The same finalizer owner then releases only this
+        // UID's evidence; this call never starts a replacement or returns exit.
+        self.stopper
+            .release_closed_idle_pod_evidence(pod.name(), pod.uid())
+            .await
+            .map_err(|_| {
+                ApplicationError::unavailable("sealed Worker bootstrap retirement unavailable")
             })?;
         Ok(anchor)
     }
@@ -279,7 +291,7 @@ impl WorkerRelayTargetObserver for KubernetesWorkerBindings {
 }
 
 struct KubernetesWorkerStops {
-    stopper: PodProcessStopper,
+    stopper: Arc<PodProcessStopper>,
     create_ledger: Arc<K8sWorkerCreateLedger>,
     namespace: String,
     provider_id: String,
