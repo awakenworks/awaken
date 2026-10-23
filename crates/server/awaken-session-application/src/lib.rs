@@ -246,9 +246,13 @@ pub use run_admission::{
     SessionProjectionRecoveryError, SessionRunApplication,
 };
 pub use runtime_commands::{
-    ConfiguredSessionRepository, SessionExecutionObservation, SessionModelRequestObservation,
-    SessionRepositoryOwner, SessionRepositoryResourceInput, SessionRunExecutionObservation,
+    SessionExecutionObservation, SessionModelRequestObservation, SessionRunExecutionObservation,
     SessionToolUseObservation,
+};
+mod repository_participants;
+pub use repository_participants::{
+    ConfiguredSessionRepository, SessionRepositoryOwner, SessionRepositoryParticipants,
+    SessionRepositoryResourceInput,
 };
 pub use work_assignments::SessionWorkAssignments;
 mod update;

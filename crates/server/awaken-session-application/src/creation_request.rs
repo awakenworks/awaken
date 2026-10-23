@@ -266,7 +266,8 @@ impl SessionApplication {
         failure_message: &str,
     ) {
         if !self
-            .abort_unadopted_session_repositories(configurations)
+            .repository_participants
+            .abort_unadopted(configurations)
             .await
         {
             tracing::warn!(

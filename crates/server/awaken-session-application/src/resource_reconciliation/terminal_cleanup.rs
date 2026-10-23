@@ -379,7 +379,8 @@ impl SessionApplication {
                         // never replay a Runtime effect or revive its old
                         // per-thread acknowledgement path.
                         let (next_session, _repository_preparation) = self
-                            .prepare_terminal_repository_participants(owner_scope, session)
+                            .repository_participants
+                            .prepare_terminal(owner_scope, session)
                             .await?;
                         session = next_session;
                         session

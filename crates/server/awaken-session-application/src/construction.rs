@@ -340,6 +340,14 @@ impl SessionAssembly {
             lifecycle.clone(),
             clock.clone(),
         ));
+        let repository_participants = Arc::new(crate::SessionRepositoryParticipants::new(
+            mutations.clone(),
+            resource_references.clone(),
+            credentials.clone(),
+            self.resource_registry.clone(),
+            self.resource_purge_scheduler.clone(),
+            clock.clone(),
+        ));
         SessionApplication {
             clock,
             configuration: self.configuration.clone(),
@@ -350,9 +358,9 @@ impl SessionAssembly {
             environments: self.environments.clone(),
             model_publication_resolver: self.models.clone(),
             resource_registry: self.resource_registry.clone(),
-            resource_purge_scheduler: self.resource_purge_scheduler.clone(),
             resource_references,
             work_assignments,
+            repository_participants,
             resource_files: self.resource_files.clone(),
             managed_list_prices: self.prices.clone(),
             mutations,
@@ -403,6 +411,7 @@ pub(crate) fn reassemble(
             Arc::strong_count(&application.resource_effect_authorization),
             Arc::strong_count(&application.resource_references),
             Arc::strong_count(&application.work_assignments),
+            Arc::strong_count(&application.repository_participants),
         ]
     };
     let unshared = application.fixture_assembly.clone().assemble(kernel());

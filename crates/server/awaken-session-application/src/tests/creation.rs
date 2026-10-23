@@ -901,12 +901,14 @@ async fn root_rejection_compensates_only_applied_repository_participants() {
         application.set_resource_registry(catalog.clone());
 
         let first = application
-            .configure_session_repository(owned_repository_input(&session_id))
+            .repository_participants
+            .configure(owned_repository_input(&session_id))
             .await
             .expect("first participant");
         let configured = if replayed {
             application
-                .configure_session_repository(owned_repository_input(&session_id))
+                .repository_participants
+                .configure(owned_repository_input(&session_id))
                 .await
                 .expect("exact participant replay")
         } else {

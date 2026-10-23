@@ -828,7 +828,8 @@ impl SessionApplication {
             let expected_credential = repository.repository.credential.clone();
             let binding_id = repository.binding_id;
             let configured = match self
-                .configure_session_repository(repository.repository)
+                .repository_participants
+                .configure(repository.repository)
                 .await
             {
                 Ok(configured) => configured,

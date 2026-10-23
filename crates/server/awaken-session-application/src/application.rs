@@ -380,9 +380,9 @@ pub struct SessionApplication {
     model_publication_resolver:
         Option<Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>>,
     resource_registry: Option<Arc<dyn awaken_resource_contract::ResourceRegistry>>,
-    resource_purge_scheduler: Option<Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>>,
     resource_references: Arc<crate::SessionResourceReferences>,
     work_assignments: Arc<crate::SessionWorkAssignments>,
+    repository_participants: Arc<crate::SessionRepositoryParticipants>,
     resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
     managed_list_prices: Option<Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>>,
     mutations: Arc<crate::SessionMutations>,
@@ -481,20 +481,6 @@ impl SessionApplication {
     #[must_use]
     pub(crate) fn mcp_realizer(&self) -> &dyn McpAttachmentRealizer {
         self.mcp_realizer.as_ref()
-    }
-
-    #[must_use]
-    pub(crate) fn resource_registry(
-        &self,
-    ) -> Option<&dyn awaken_resource_contract::ResourceRegistry> {
-        self.resource_registry.as_deref()
-    }
-
-    #[must_use]
-    pub(crate) fn resource_purge_scheduler(
-        &self,
-    ) -> Option<&dyn awaken_resource_contract::ResourcePurgeScheduler> {
-        self.resource_purge_scheduler.as_deref()
     }
 
     #[must_use]

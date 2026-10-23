@@ -406,7 +406,8 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
     );
     original.set_resource_registry(registry.clone());
     let registered = original
-        .configure_session_repository(repository_input(
+        .repository_participants
+        .configure(repository_input(
             "Repository",
             "https://example.test/source.git",
         ))
@@ -427,7 +428,8 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
     let mut restarted = application(sessions, Arc::new(RecordingEnvironmentSource::default()));
     restarted.set_resource_registry(registry.clone());
     let replayed = restarted
-        .configure_session_repository(repository_input(
+        .repository_participants
+        .configure(repository_input(
             "Repository",
             "https://example.test/source.git",
         ))
@@ -445,7 +447,8 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
     );
 
     let definition_mismatch = restarted
-        .configure_session_repository(repository_input(
+        .repository_participants
+        .configure(repository_input(
             "Different Repository",
             "https://example.test/source.git",
         ))
@@ -457,7 +460,8 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
         "R3/E3"
     );
     let config_mismatch = restarted
-        .configure_session_repository(repository_input(
+        .repository_participants
+        .configure(repository_input(
             "Repository",
             "https://example.test/other.git",
         ))
@@ -548,7 +552,7 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
         revision: 1,
     });
     assert!(
-        app.configure_session_repository(dual).await.is_err(),
+        app.repository_participants.configure(dual).await.is_err(),
         "S1/E1 dual credential admission"
     );
     assert_eq!(registry.registration_calls.load(Ordering::SeqCst), 0, "S1");
@@ -565,7 +569,10 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     let mut invalid = token_repository_input("repo-invalid", "Invalid");
     invalid.initial_commit = Some("0123456789abcdef".into());
     assert!(
-        app.configure_session_repository(invalid).await.is_err(),
+        app.repository_participants
+            .configure(invalid)
+            .await
+            .is_err(),
         "S2/E1 aggregate validation"
     );
     assert_eq!(registry.registration_calls.load(Ordering::SeqCst), 0, "S2");
@@ -581,7 +588,8 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
 
     registry.fail_next_registration();
     assert!(
-        app.configure_session_repository(token_repository_input("repo-register", "Register"))
+        app.repository_participants
+            .configure(token_repository_input("repo-register", "Register"))
             .await
             .is_err(),
         "S3/E2 register failure"
@@ -600,12 +608,13 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     ingress.fail_next();
     let retirements_before = ingress.retirements().len();
     assert!(
-        app.configure_session_repository(token_repository_input(
-            "repo-ingress-applied",
-            "Ingress Applied",
-        ))
-        .await
-        .is_err(),
+        app.repository_participants
+            .configure(token_repository_input(
+                "repo-ingress-applied",
+                "Ingress Applied",
+            ))
+            .await
+            .is_err(),
         "S4/E3 ingress failure"
     );
     assert_eq!(
@@ -653,7 +662,8 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     register_replayed_token_repository(inner.as_ref(), &replayed_ingress).await;
     ingress.fail_next();
     let retirements_before = ingress.retirements().len();
-    app.configure_session_repository(replayed_ingress)
+    app.repository_participants
+        .configure(replayed_ingress)
         .await
         .expect_err("S5 injected Vault failure");
     assert_eq!(
@@ -670,12 +680,13 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     let ingress_before_conflict = ingress.calls.load(Ordering::SeqCst);
     let retirements_before = ingress.retirements().len();
     assert!(
-        app.configure_session_repository(token_repository_input(
-            "repo-ingress-replayed",
-            "Conflicting Ingress",
-        ))
-        .await
-        .is_err(),
+        app.repository_participants
+            .configure(token_repository_input(
+                "repo-ingress-replayed",
+                "Conflicting Ingress",
+            ))
+            .await
+            .is_err(),
         "S6 conflicting replay"
     );
     assert_eq!(
@@ -696,12 +707,13 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
 
     let retirements_before = ingress.retirements().len();
     registry.fail_next_activation();
-    app.configure_session_repository(token_repository_input(
-        "repo-activate-aa",
-        "Activate Applied Applied",
-    ))
-    .await
-    .expect_err("S7 injected activation failure");
+    app.repository_participants
+        .configure(token_repository_input(
+            "repo-activate-aa",
+            "Activate Applied Applied",
+        ))
+        .await
+        .expect_err("S7 injected activation failure");
     assert_eq!(
         repository_state("repo-activate-aa").await,
         awaken_resource_contract::ResourceState::Deleted,
@@ -718,7 +730,8 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     ingress.seed_replayed_source(&applied_registry_replayed_vault.id);
     let retirements_before = ingress.retirements().len();
     registry.fail_next_activation();
-    app.configure_session_repository(applied_registry_replayed_vault)
+    app.repository_participants
+        .configure(applied_registry_replayed_vault)
         .await
         .expect_err("S8 injected activation failure");
     assert_eq!(
@@ -737,7 +750,8 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     register_replayed_token_repository(inner.as_ref(), &replayed_registry_applied_vault).await;
     let retirements_before = ingress.retirements().len();
     registry.fail_next_activation();
-    app.configure_session_repository(replayed_registry_applied_vault)
+    app.repository_participants
+        .configure(replayed_registry_applied_vault)
         .await
         .expect_err("S9 injected activation failure");
     assert_eq!(
@@ -757,7 +771,8 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     ingress.seed_replayed_source(&replayed_registry_replayed_vault.id);
     let retirements_before = ingress.retirements().len();
     registry.fail_next_activation();
-    app.configure_session_repository(replayed_registry_replayed_vault)
+    app.repository_participants
+        .configure(replayed_registry_replayed_vault)
         .await
         .expect_err("S10 injected activation failure");
     assert_eq!(
@@ -772,7 +787,8 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     );
 
     let succeeded = app
-        .configure_session_repository(token_repository_input(
+        .repository_participants
+        .configure(token_repository_input(
             "repo-activate-success",
             "Activate Success",
         ))
@@ -800,7 +816,8 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     let activations_before = registry.activation_calls.load(Ordering::SeqCst);
     let retirements_before = ingress.retirements().len();
     let replayed = app
-        .configure_session_repository(token_repository_input(
+        .repository_participants
+        .configure(token_repository_input(
             "repo-activate-success",
             "Activate Success",
         ))
