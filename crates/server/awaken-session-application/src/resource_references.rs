@@ -22,9 +22,10 @@ use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionAggregate,
 };
 
+use crate::credentials::internal;
 use crate::credentials::repository_preparation;
 use crate::mutation::repository_failure;
-use crate::resource_reconciliation::{internal, resource_targets};
+use crate::resource_reconciliation::resource_targets;
 use crate::{SessionMutationError, SessionMutations, SessionPreparationError, SnapshotCommit};
 
 pub struct SessionResourceReferences {

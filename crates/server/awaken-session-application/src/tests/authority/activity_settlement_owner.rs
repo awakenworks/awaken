@@ -40,7 +40,11 @@ async fn activity_settlement_owner_survives_app_drop_and_root_cas_faults() {
             Arc::new(NoopRuntime),
             SessionPersistence::new(repository, clock.clone()),
         ));
-        let active = app.begin_activity(&id).await.expect("L1/L2 real activity");
+        let active = app
+            .activities
+            .begin_activity(&id)
+            .await
+            .expect("L1/L2 real activity");
         let before = inner.get(&id).await.unwrap();
         let before_outbox = serde_json::to_value(inner.pending_lifecycle().await.unwrap()).unwrap();
         let original_interval = before

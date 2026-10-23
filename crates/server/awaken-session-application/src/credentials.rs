@@ -275,6 +275,10 @@ pub(crate) fn mutation_failure(error: SessionMutationError) -> SessionPreparatio
     }
 }
 
+pub(crate) fn internal(error: impl std::fmt::Display) -> SessionPreparationError {
+    SessionPreparationError::Rejected(RunError::internal(error.to_string()))
+}
+
 pub(crate) fn repository_preparation(
     error: awaken_session_state_contract::SessionRepositoryError,
 ) -> SessionPreparationError {
@@ -289,19 +293,6 @@ pub(crate) fn preflight_repository_credential_rotation(
         .resources()
         .replace_desired_repository_credential(input)
         .map_err(|_| SessionPreparationError::Conflict)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl crate::SessionApplication {
-    pub fn set_credential_source(&mut self, source: Arc<dyn SessionCredentialSource>) {
-        crate::construction::reassemble(self, |assembly| assembly.credential_source = Some(source));
-    }
-
-    pub fn set_credential_material_ingress(&mut self, ingress: Arc<dyn CredentialMaterialIngress>) {
-        crate::construction::reassemble(self, |assembly| {
-            assembly.credential_material_ingress = Some(ingress)
-        });
-    }
 }
 
 #[cfg(test)]

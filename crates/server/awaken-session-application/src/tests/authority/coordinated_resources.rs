@@ -159,6 +159,7 @@ async fn cold_child_report_projects_frozen_root_and_files_before_continuation() 
         let run = awaken_agent_contract::agent::run::Id("cold-child-run".into());
         // This is a new claimed child, not legacy evidence reconstructed later.
         let (_, epoch) = app
+            .activities
             .begin_activity_for_operation_with_policy(
                 &SessionId::from(&id),
                 "cold-child-report",

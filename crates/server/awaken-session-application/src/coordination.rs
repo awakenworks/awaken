@@ -77,6 +77,51 @@ async fn admit_fresh_agent_report(
 }
 
 impl SessionApplication {
+    /// Open the activity of a Run admitted for this Agent. An exact committed
+    /// receipt is recovery truth and is re-read before fresh admission policy,
+    /// so a response-loss repair recovers its original epoch even after the
+    /// Session reached a budget or terminal state.
+    pub(crate) async fn begin_admitted_activity_for_operation(
+        &self,
+        agent_id: &str,
+        session_id: &awaken_session_types::SessionId,
+        operation_id: &str,
+        source: (&ThreadId, &RunId),
+    ) -> Result<(awaken_session_state_contract::PersistedSession, u64), RunError> {
+        if operation_id.trim().is_empty() {
+            return Err(RunError::internal(
+                "Session activity operation identity is required",
+            ));
+        }
+        if let Some(committed) = self
+            .activities
+            .recover_activity_for_operation(session_id, operation_id, Some(source))
+            .await
+            .map_err(crate::SessionActivityError::run_error)?
+        {
+            return Ok(committed);
+        }
+        let owner_scope = self
+            .mutations
+            .owner(session_id)
+            .await
+            .map_err(crate::SessionActivityError::mutation)
+            .map_err(crate::SessionActivityError::run_error)?;
+        self.admit_run_session(&owner_scope, session_id.as_str(), agent_id)
+            .await?;
+        self.activities
+            .begin_activity_for_operation_with_policy(
+                session_id,
+                operation_id,
+                false,
+                None,
+                None,
+                Some(source),
+            )
+            .await
+            .map_err(crate::SessionActivityError::run_error)
+    }
+
     async fn recover_coordinated_admission(
         &self,
         session: &awaken_session_state_contract::PersistedSession,
@@ -378,7 +423,7 @@ impl SessionApplication {
                 awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
                     prior_epoch,
                 } => {
-                    let (_, epoch) = self
+                    let (_, epoch) = self.activities
                         .transfer_committed_activity_for_operation(
                             &session_id,
                             &operation_id,
@@ -584,6 +629,7 @@ impl SessionAgentCoordination for SessionApplication {
                 .await
                 .map(Some),
             SessionRunActivityAdmissionMode::RecoverOnly => self
+                .activities
                 .recover_activity_for_operation(
                     session_id,
                     &operation_id,
@@ -781,6 +827,7 @@ impl SessionAgentCoordination for SessionApplication {
             MAX_UNARCHIVED_AGENT_CHILD_THREADS,
         );
         let replayed = self
+            .activities
             .recover_activity_for_operation(
                 &admission.session_id,
                 &admission.operation_id,
@@ -812,6 +859,7 @@ impl SessionAgentCoordination for SessionApplication {
                 ))
             })?;
         let (_, activity_epoch) = self
+            .activities
             .begin_activity_for_operation_with_policy(
                 &admission.session_id,
                 &admission.operation_id,

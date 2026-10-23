@@ -346,31 +346,6 @@ impl SessionApplication {
             .await
     }
 
-    pub async fn archive_session_thread(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        thread_id: &str,
-    ) -> Result<(), RunError> {
-        let coordination_reads = self.runtime().coordination_reads();
-        let coordination = self.runtime().coordination();
-
-        let child = awaken_agent_contract::agent::thread::Id(thread_id.to_string());
-        let links = coordination_reads
-            .coordinated_threads(session_id, None)
-            .await?;
-        if !links
-            .iter()
-            .any(|link| link.session_id == session_id && link.thread_id == child)
-        {
-            return Err(RunError::bad_request(
-                "Agent Thread was not found in this Session",
-            ));
-        }
-        coordination
-            .archive_session_thread(session_id, thread_id)
-            .await
-    }
-
     pub async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
         let coordination_reads = self.runtime().coordination_reads();
 

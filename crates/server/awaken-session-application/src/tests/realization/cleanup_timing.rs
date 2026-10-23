@@ -31,7 +31,7 @@ async fn live_session_usage_projects_the_same_clock_that_opened_its_root_interva
         idle_since_unix_ms: None,
     };
     let mut session = SessionAggregate::try_from(session).expect("valid admission fixture");
-    SessionApplication::open_activity_on_snapshot(
+    crate::SessionActivities::open_activity_on_snapshot(
         &mut session,
         None,
         false,
@@ -180,6 +180,7 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
             reassign_existing_lease: false,
         };
         let assigned = app
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .unwrap();
@@ -195,7 +196,8 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
                 );
                 assert_eq!(after.revision, before.revision, "R6 zero root CAS");
                 assert!(
-                    app.claim_next_terminal_cleanup(target, Some(&id))
+                    app.terminal_cleanups
+                        .claim_next_terminal_cleanup(target, Some(&id))
                         .await
                         .unwrap()
                         .is_none(),

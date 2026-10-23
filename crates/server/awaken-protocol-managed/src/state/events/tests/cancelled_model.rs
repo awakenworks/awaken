@@ -65,6 +65,7 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
             let run = RunId("cancelled-model".into());
             let activity = warm
                 .application
+                .activities()
                 .begin_activity(&awaken_session_types::SessionId::from(&session.id))
                 .await
                 .unwrap();

@@ -3006,10 +3006,9 @@ async fn terminal_profiled_session_retires_its_marked_repository_definition() {
     let catalog = resource_registry().await;
     let repository = support::session_repository("open ephemeral Session store").await;
     let state = {
-        let session_fixture_runtime = AcceptingFake::default();
         let session_fixture_clock = awaken_time::system_clock();
         awaken_protocol_managed_testkit::managed_state_from_parts(
-            std::sync::Arc::new(session_fixture_runtime),
+            std::sync::Arc::new(AcceptingFake::default()),
             None,
             repository,
             awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
@@ -3075,6 +3074,7 @@ async fn terminal_profiled_session_retires_its_marked_repository_definition() {
         "P1/C2"
     );
     application
+        .termination_commands()
         .terminate_session(
             session_id,
             "2026-08-27T00:00:00Z",

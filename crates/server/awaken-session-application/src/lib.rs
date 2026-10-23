@@ -181,7 +181,7 @@ include!("application.rs");
 mod activity;
 mod inputs;
 mod lifecycle_outbox_relay;
-pub use activity::SessionActivityError;
+pub use activity::{SessionActivities, SessionActivityError};
 pub use inputs::{PreparedSessionInputs, SessionInputs};
 pub use lifecycle_outbox_relay::{
     LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL, LifecycleOutboxRelay, LifecycleOutboxReplay,
@@ -191,7 +191,7 @@ mod coordination;
 mod creation;
 mod creation_request;
 mod session_input;
-pub use continuation::SessionContinuationError;
+pub use continuation::{SessionContinuationError, SessionContinuations};
 pub use creation::{CreateSessionCommand, SessionCreateReceipt, SessionCreationError};
 pub use creation_request::{
     SessionBudgetRequest, SessionCreateProtocol, SessionCreateRequest, SessionCreateRequestError,
@@ -229,6 +229,8 @@ mod resource_effect_authorization;
 pub use resource_effect_authorization::SessionResourceEffectAuthorization;
 mod resource_references;
 pub use resource_references::SessionResourceReferences;
+mod terminal_cleanup;
+pub use terminal_cleanup::SessionTerminalCleanups;
 mod work_assignments;
 pub(crate) use resource_effect_authorization::require_live_root_lease;
 pub use resource_reconciliation::{
@@ -256,15 +258,15 @@ pub use repository_participants::{
 pub use work_assignments::SessionWorkAssignments;
 mod update;
 pub use update::{
-    SessionMcpUpdate, SessionMetadataUpdate, SessionUpdateCommand, SessionUpdateError,
-    SessionUpdateOutcome,
+    SessionMcpUpdate, SessionMetadataUpdate, SessionUpdateCommand, SessionUpdateCommands,
+    SessionUpdateError, SessionUpdateOutcome,
 };
 mod archive_intent;
 mod terminal;
 pub use terminal::{
     SessionArchiveWithRepositoryPublicationCommand, SessionArchiveWithRepositoryPublicationError,
     SessionArchiveWithRepositoryPublicationOutcome, SessionDispositionMutation,
-    SessionRepositoryPublicationSelector,
+    SessionRepositoryPublicationSelector, SessionTerminationCommands,
 };
 
 #[cfg(test)]
@@ -280,7 +282,6 @@ pub use awaken_session_application_contract::{
 pub type ResolvedSessionEnvironment =
     awaken_executable_environment_contract::ResolvedSessionEnvironment<EnvironmentSnapshot>;
 use awaken_executable_environment_contract::SessionEnvironmentProjectionSource;
-use awaken_worker_contract::WorkerIncarnationSource;
 
 /// Required Environment roles projected from one coherent application source.
 /// Construction is explicit and has no optional capability discovery.

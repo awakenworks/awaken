@@ -638,6 +638,7 @@ impl Timeline for RootTimeline {
                 let activity = self
                     .warm
                     .application
+                    .activities()
                     .begin_activity(&session)
                     .await
                     .unwrap();
@@ -675,6 +676,7 @@ impl Timeline for RootTimeline {
                     Step::Begin(_) | Step::ExternalInput(_) => Some(
                         self.warm
                             .application
+                            .activities()
                             .begin_activity(&session)
                             .await
                             .unwrap()
@@ -1568,7 +1570,12 @@ async fn closed_interval_usage_keeps_its_committed_value_when_clock_and_activity
         .unwrap();
     let session_id = SessionId::from(&session.id);
     let run = RunId("closed-interval".into());
-    let activity = warm.application.begin_activity(&session_id).await.unwrap();
+    let activity = warm
+        .application
+        .activities()
+        .begin_activity(&session_id)
+        .await
+        .unwrap();
     runtime.lifecycle.lock().unwrap().push(lifecycle(
         1,
         &session.id,
@@ -1610,7 +1617,11 @@ async fn closed_interval_usage_keeps_its_committed_value_when_clock_and_activity
     assert_eq!(usage.1["usage"]["active_seconds"], 3, "R1");
     for active in [false, true] {
         if active {
-            warm.application.begin_activity(&session_id).await.unwrap();
+            warm.application
+                .activities()
+                .begin_activity(&session_id)
+                .await
+                .unwrap();
             runtime.lifecycle.lock().unwrap().push(lifecycle(
                 3,
                 &session.id,
@@ -1828,6 +1839,7 @@ async fn root_terminal_defers_idle_until_the_session_activity_cas_settles() {
         .unwrap();
     let active = state
         .application
+        .activities()
         .begin_activity(&SessionId::from(&session.id))
         .await
         .expect("R1/C2 opens the authoritative Session activity");

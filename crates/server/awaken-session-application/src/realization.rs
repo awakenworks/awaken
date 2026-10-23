@@ -17,14 +17,12 @@ use awaken_session_realization_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
     SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
-    SessionRealizationDriveError, SessionRealizationLeaseReceipt, SessionTerminalCleanupAssignment,
-    terminal_cleanup_worker_requirements,
+    SessionRealizationDriveError,
 };
 use awaken_session_execution_contract::RealizationRuntime;
 use awaken_session_state_contract::{
     ManagedLifecycleFact, PersistedSession, SessionEnvironmentEvent, SessionEnvironmentFacts,
-    SessionEnvironmentState, SessionExecutionState, SessionRepositoryError,
-    session_has_terminal_no_create_evidence, transition_environment,
+    SessionEnvironmentState, SessionExecutionState, SessionRepositoryError, transition_environment,
 };
 use awaken_session_types::RunError;
 
@@ -39,11 +37,7 @@ pub(super) mod recovery_backoff;
 
 use publication::{draining_generations, publication_action, publication_generations};
 
-use authority::{
-    TerminalCleanupClaimConflict, TerminalCleanupClaimScope, TerminalCleanupRootClaim,
-    exact_generation_key, generation_set_authorizes, terminal_cleanup_worker_affinity_rejection,
-    verify_lease,
-};
+use authority::{exact_generation_key, generation_set_authorizes, verify_lease};
 use control::RefreshedSessionRealizationControl;
 pub(crate) use local_lock::LocalRealizationLocks;
 use recovery_backoff::SessionRecoveryTrigger;
@@ -64,7 +58,7 @@ fn initial_idle_fact(owner_scope: &str, session_id: &str, now_ms: u64) -> Manage
     }
 }
 
-fn unavailable(error: impl std::fmt::Display) -> SessionRealizationControlFailure {
+pub(crate) fn unavailable(error: impl std::fmt::Display) -> SessionRealizationControlFailure {
     SessionRealizationControlFailure::Unavailable(error.to_string())
 }
 
@@ -84,7 +78,7 @@ pub(crate) fn mutation_control(error: SessionMutationError) -> SessionRealizatio
     }
 }
 
-fn validate_realization_target(
+pub(crate) fn validate_realization_target(
     target: &awaken_session_realization_contract::SessionRealizationTarget,
     now_ms: u64,
 ) -> Result<(), SessionRealizationControlFailure> {
@@ -194,43 +188,6 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
 }
 
 impl SessionApplication {
-    /// Build the only terminal assignment projection from one already-read
-    /// Session root. Claim recovery and warm work polling share this adapter so
-    /// neither can select a lease or frozen projection independently.
-    pub(crate) async fn terminal_cleanup_assignment_from_snapshot(
-        &self,
-        owner_scope: &str,
-        session: &PersistedSession,
-    ) -> Result<SessionTerminalCleanupAssignment, SessionRealizationControlFailure> {
-        let lease = session
-            .realization
-            .clone()
-            .ok_or(SessionRealizationControlFailure::StaleOwnership)?;
-        // Terminal effects must retain both aggregate-authored generations.
-        // A Worker may have installed desired B before its receipt committed;
-        // projecting only active A regresses that slot to A -> A and strands
-        // cleanup. The terminal Host install stages A -> B without activating B.
-        let projection = self
-            .queries
-            .frozen_session_projection(owner_scope.to_string(), session, false)
-            .await
-            .map_err(unavailable)?;
-        Ok(SessionTerminalCleanupAssignment {
-            session_id: session.session_id.clone(),
-            projection,
-            environment_creation_not_attempted:
-                crate::archive_intent::unattempted_profiled_archive_witness(
-                    self.session_repository(),
-                    owner_scope,
-                    session,
-                )
-                .await
-                .map_err(repository_control)?
-                    || session_has_terminal_no_create_evidence(session),
-            authority: SessionRealizationLeaseReceipt::issued_at(lease, self.clock.now_ms())?,
-        })
-    }
-
     #[cfg(test)]
     pub(crate) async fn reconcile_pending_session_state(
         self: std::sync::Arc<Self>,
@@ -293,6 +250,7 @@ impl SessionApplication {
             );
         }
         let continuation_failure_count = self
+            .continuations
             .reconcile_environment_continuations_from(&candidates, self.clock.now_ms())
             .await;
         let continuations_elapsed = cycle_started.elapsed();

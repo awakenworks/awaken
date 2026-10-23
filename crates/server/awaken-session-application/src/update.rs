@@ -16,9 +16,9 @@ use awaken_session_state_contract::{IdempotencyRecord, PersistedSession, Session
 use awaken_session_state_contract::{SessionFieldUpdate, SessionUpdateChanges};
 use awaken_session_types::{RunError, SessionRevision};
 
-use super::{
-    McpAttachmentCandidate, SessionApplication, SessionMutationError, mutation::repository_failure,
-};
+use std::sync::Arc;
+
+use super::{McpAttachmentCandidate, SessionMutationError, mutation::repository_failure};
 
 /// Authority behind one MCP desired-set replacement. Public Managed authoring
 /// and server-owned credential lifecycle share the canonical MCP state machine,
@@ -318,7 +318,7 @@ async fn record_update_fact(
 }
 
 fn compile_update_tool_settings(
-    application: &SessionApplication,
+    compiler: &dyn awaken_tool_contract::ToolConfigurationCompiler,
     command: &SessionUpdateCommand,
     session: &awaken_session_state_contract::SessionAggregate,
 ) -> Result<SessionUpdateCommand, SessionUpdateError> {
@@ -329,7 +329,7 @@ fn compile_update_tool_settings(
         return Err(SessionUpdateError::Conflict);
     }
     let tools = crate::tool_compilation::compile_tool_settings(
-        application.tool_configuration_compiler.as_ref(),
+        compiler,
         command.tools.as_ref().unwrap_or(&session.tools).clone(),
     )
     .map_err(SessionUpdateError::Rejected)?;
@@ -339,7 +339,68 @@ fn compile_update_tool_settings(
     })
 }
 
-impl SessionApplication {
+/// The Session update command: title, metadata, budget, tool settings and
+/// the MCP attachment set, applied through the root CAS and then projected
+/// into the Runtime. It holds the CAS kernel, the clock, the credential and
+/// lifecycle components, the realization and activity components that project
+/// and resume after a commit, the executable-projection refresh, the tool
+/// compiler and the Environment, budget and committed-projection runtime roles.
+pub struct SessionUpdateCommands {
+    mutations: Arc<crate::SessionMutations>,
+    clock: Arc<dyn awaken_time::WallClock>,
+    credentials: Arc<crate::SessionCredentials>,
+    lifecycle: Arc<crate::SessionLifecycle>,
+    realizations: Arc<crate::SessionRealizations>,
+    activities: Arc<crate::SessionActivities>,
+    executable_projections: crate::ExecutableProjections,
+    tool_configuration_compiler: Arc<dyn awaken_tool_contract::ToolConfigurationCompiler>,
+    environment: Arc<dyn awaken_session_execution_contract::EnvironmentRuntime>,
+    budget: Arc<dyn awaken_session_execution_contract::BudgetRuntime>,
+    projection: Arc<dyn awaken_session_execution_contract::SessionProjectionSource>,
+}
+
+/// The collaborators one [`SessionUpdateCommands`] is built from.
+pub(crate) struct SessionUpdateCollaborators {
+    pub(crate) mutations: Arc<crate::SessionMutations>,
+    pub(crate) clock: Arc<dyn awaken_time::WallClock>,
+    pub(crate) credentials: Arc<crate::SessionCredentials>,
+    pub(crate) lifecycle: Arc<crate::SessionLifecycle>,
+    pub(crate) realizations: Arc<crate::SessionRealizations>,
+    pub(crate) activities: Arc<crate::SessionActivities>,
+    pub(crate) executable_projections: crate::ExecutableProjections,
+    pub(crate) tool_configuration_compiler:
+        Arc<dyn awaken_tool_contract::ToolConfigurationCompiler>,
+    pub(crate) runtime: crate::SessionExecutor,
+}
+
+impl SessionUpdateCommands {
+    pub(crate) fn new(collaborators: SessionUpdateCollaborators) -> Self {
+        let SessionUpdateCollaborators {
+            mutations,
+            clock,
+            credentials,
+            lifecycle,
+            realizations,
+            activities,
+            executable_projections,
+            tool_configuration_compiler,
+            runtime,
+        } = collaborators;
+        Self {
+            mutations,
+            clock,
+            credentials,
+            lifecycle,
+            realizations,
+            activities,
+            executable_projections,
+            tool_configuration_compiler,
+            environment: runtime.environment.clone(),
+            budget: runtime.budget.clone(),
+            projection: runtime.projection_handle(),
+        }
+    }
+
     #[must_use]
     pub fn update_operation_id(session_id: &str, idempotency_key: &str) -> String {
         stable_fingerprint(&(session_id, idempotency_key))
@@ -441,7 +502,8 @@ impl SessionApplication {
 
         if let Some(record) = &command_record
             && let Some(receipt) = self
-                .session_repository()
+                .mutations
+                .repository()
                 .idempotency_receipt(session_id, &record.key)
                 .await
                 .map_err(repository_failure)
@@ -452,7 +514,8 @@ impl SessionApplication {
             }
             let admission = if command.mcp_update.is_some() {
                 Some(
-                    self.refresh_executable_projections()
+                    self.executable_projections
+                        .refresh()
                         .await
                         .map_err(SessionUpdateError::Unavailable)?,
                 )
@@ -490,7 +553,8 @@ impl SessionApplication {
         }
 
         let persisted = self
-            .session_repository()
+            .mutations
+            .repository()
             .get(session_id)
             .await
             .map_err(repository_failure)
@@ -520,7 +584,8 @@ impl SessionApplication {
 
         let admission = if command.mcp_update.is_some() {
             Some(
-                self.refresh_executable_projections()
+                self.executable_projections
+                    .refresh()
                     .await
                     .map_err(SessionUpdateError::Unavailable)?,
             )
@@ -563,12 +628,12 @@ impl SessionApplication {
         mcp_in_request: bool,
         budget_in_request: bool,
     ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
-        let environment_runtime = self.runtime().environment();
+        let environment_runtime = self.environment.as_ref();
 
         if mcp_in_request
             && mcp_projection_requires_realization(
                 &outcome.session,
-                self.runtime_incarnation(),
+                self.realizations.runtime_incarnation(),
                 self.clock.now_ms(),
             )
         {
@@ -610,7 +675,7 @@ impl SessionApplication {
         &self,
         mut outcome: SessionUpdateOutcome,
     ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
-        let budget_runtime = self.runtime().budget();
+        let budget_runtime = self.budget.as_ref();
 
         use awaken_session_application_contract::{
             SessionBudgetResumeDelivery, SessionBudgetResumeDisposition,
@@ -639,6 +704,7 @@ impl SessionApplication {
                 ))
             );
             let (_, session_activity_epoch) = self
+                .activities
                 .transfer_committed_activity_for_operation(
                     &session_id,
                     &operation_id,
@@ -698,7 +764,8 @@ impl SessionApplication {
             }
         }
         outcome.session = self
-            .session_repository()
+            .mutations
+            .repository()
             .get(&session_id)
             .await
             .map_err(repository_failure)
@@ -728,7 +795,8 @@ impl SessionApplication {
         // compiled under the same command key.
         if let Some(record) = &command_record
             && let Some(receipt) = self
-                .session_repository()
+                .mutations
+                .repository()
                 .idempotency_receipt(session_id, &record.key)
                 .await
                 .map_err(repository_failure)
@@ -760,7 +828,11 @@ impl SessionApplication {
                 changes: SessionUpdateChanges::default(),
             });
         }
-        let command = &compile_update_tool_settings(self, command, &session)?;
+        let command = &compile_update_tool_settings(
+            self.tool_configuration_compiler.as_ref(),
+            command,
+            &session,
+        )?;
         let before = session.snapshot().clone();
         let mut mcp_changed = false;
         if let Some(mcp_update) = command.mcp_update.clone() {
@@ -820,13 +892,9 @@ impl SessionApplication {
             })?;
         }
 
-        let changes = record_update_fact(
-            self.runtime().projection(),
-            &mut session,
-            &before,
-            mcp_changed,
-        )
-        .await?;
+        let changes =
+            record_update_fact(self.projection.as_ref(), &mut session, &before, mcp_changed)
+                .await?;
         let mut command_applied = true;
         let mut command_revision = session.revision;
         if changes.title()

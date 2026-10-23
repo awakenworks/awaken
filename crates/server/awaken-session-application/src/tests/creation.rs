@@ -2108,6 +2108,7 @@ async fn assert_profiled_realization_and_environment_rules(
     {
         let before = repository.get(&realized.session_id).await.unwrap();
         let updated = available
+            .update_commands
             .update_session(
                 &realized.session_id,
                 SessionUpdateCommand {

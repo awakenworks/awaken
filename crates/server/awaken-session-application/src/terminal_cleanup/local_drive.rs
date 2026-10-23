@@ -16,10 +16,12 @@ use awaken_session_state_contract::{
 };
 use awaken_session_types::RunError;
 
-use super::{internal, repository_control};
+use super::SessionTerminalCleanups;
 use crate::SessionAggregate;
+use crate::credentials::internal;
 use crate::credentials::{mutation_failure, repository_preparation};
-use crate::{SessionApplication, SessionPreparationError, SessionTerminalCleanupDriveOutcome};
+use crate::realization::repository_control;
+use crate::{SessionPreparationError, SessionTerminalCleanupDriveOutcome};
 
 /// Compile all target identities and both durable fences from one atomic
 /// Runtime observation before the aggregate freezes its terminal target set.
@@ -168,7 +170,7 @@ pub(super) fn terminal_cleanup_authorization_failure(
 
 use awaken_session_realization_driver::supervise_session_terminal_cleanup_lease as supervise_local_terminal_cleanup_lease;
 
-impl SessionApplication {
+impl SessionTerminalCleanups {
     pub(crate) async fn authorize_terminal_cleanup_effect_from_root(
         &self,
         effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
@@ -177,7 +179,8 @@ impl SessionApplication {
         SessionRealizationControlFailure,
     > {
         let session = self
-            .session_repository()
+            .mutations
+            .repository()
             .get(&effect.command.session_id)
             .await
             .map_err(repository_control)?;
@@ -189,7 +192,8 @@ impl SessionApplication {
         // identity edge; no second lease record or timer authority is created.
         crate::require_live_root_lease(&session, self.clock.now_ms())?;
         let workspace_id = self
-            .session_repository()
+            .mutations
+            .repository()
             .owner(&effect.command.session_id)
             .await
             .map_err(repository_control)?;
@@ -208,8 +212,7 @@ impl SessionApplication {
             .authorize_terminal_cleanup_effect(effect)
             .map_err(terminal_cleanup_authorization_failure)?;
         let source_dispatch = self
-            .runtime()
-            .coordination_reads()
+            .coordination_reads
             .source_dispatch_observation(&session)
             .await
             .terminal_source_dispatch()?;
@@ -225,9 +228,9 @@ impl SessionApplication {
         &self,
         assignment: &SessionTerminalCleanupAssignment,
     ) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError> {
-        let realization_runtime = self.runtime().realization();
-        let effects = self.runtime().realization_effects();
-        let cleanup_runtime = self.runtime().terminal_cleanup();
+        let realization_runtime = self.realization.as_ref();
+        let effects = self.realization_effects.as_ref();
+        let cleanup_runtime = self.cleanup.as_ref();
 
         let session_id = assignment.session_id.as_str();
         supervise_local_terminal_cleanup_lease(
@@ -310,8 +313,8 @@ impl SessionApplication {
         >,
     > {
         let mutations = &self.mutations;
-        let coordination_runtime = self.runtime().coordination();
-        let cleanup_runtime = self.runtime().terminal_cleanup();
+        let coordination_runtime = self.coordination.as_ref();
+        let cleanup_runtime = self.cleanup.as_ref();
 
         Box::pin(async move {
             let mut session = match mutations

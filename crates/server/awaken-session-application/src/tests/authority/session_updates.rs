@@ -119,6 +119,7 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
     };
 
     let (committed, failure) = match app
+        .update_commands
         .update_session(&SessionId::from(session_id), command.clone())
         .await
     {
@@ -170,7 +171,7 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
 
     let receipt_key = format!(
         "managed:update-command:{session_id}:{}",
-        SessionApplication::update_operation_id(session_id, idempotency_key)
+        SessionUpdateCommands::update_operation_id(session_id, idempotency_key)
     );
     let receipt = repo
         .idempotency_receipt(&SessionId::from(session_id), &receipt_key)
@@ -195,6 +196,7 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
     assert_eq!(realizer.stage_calls.load(Ordering::SeqCst), 1, "M1/E2");
 
     let replayed = app
+        .update_commands
         .update_session(&SessionId::from(session_id), command)
         .await
         .expect("M2 exact replay repairs realization");

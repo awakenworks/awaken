@@ -114,6 +114,7 @@ async fn terminal_source_authorization_uses_current_dispatch_without_business_cl
         awaken_session_execution_contract::SessionExecutionRecoveryObservation::NotProven { .. }
     ));
     let work = application
+        .terminal_cleanups
         .terminal_cleanup_work(&SessionId::from(session_id), &lease)
         .await
         .unwrap()
@@ -126,6 +127,7 @@ async fn terminal_source_authorization_uses_current_dispatch_without_business_cl
         let live = source == Source::Settled;
         *runtime.source_observation.lock().unwrap() = source;
         let authorization = application
+            .terminal_cleanups
             .authorize_terminal_cleanup_effect(&effect)
             .await
             .unwrap();

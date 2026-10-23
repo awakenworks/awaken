@@ -1503,6 +1503,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     assert!(
         matches!(
             application
+                .termination_commands
                 .archive_with_repository_publication(foreign_scope)
                 .await,
             Err(SessionArchiveWithRepositoryPublicationError::NotFound)
@@ -1514,6 +1515,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     assert!(
         matches!(
             application
+                .termination_commands
                 .archive_with_repository_publication(unknown_binding)
                 .await,
             Err(SessionArchiveWithRepositoryPublicationError::Rejected(_))
@@ -1530,6 +1532,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     );
 
     let first = application
+        .termination_commands
         .archive_with_repository_publication(command.clone())
         .await
         .expect("R3 exact release");
@@ -1545,6 +1548,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
         "R3/E3"
     );
     let replay = application
+        .termination_commands
         .archive_with_repository_publication(command.clone())
         .await
         .expect("R4 response-loss replay");
@@ -1564,6 +1568,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     assert!(
         matches!(
             application
+                .termination_commands
                 .archive_with_repository_publication(conflicting)
                 .await,
             Err(SessionArchiveWithRepositoryPublicationError::Conflict)
@@ -1600,6 +1605,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     );
     let effects_before_foreign = runtime.terminal_effect_order.lock().unwrap().len();
     let foreign_outcome = guarded
+        .terminal_cleanups
         .release_terminal_resources("workspace", "profiled-foreign-outcome")
         .await;
     assert!(
@@ -1639,6 +1645,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
         Some("1111111111111111111111111111111111111111".into());
     let before_rejection = runtime.terminal_effect_order.lock().unwrap().len();
     let first_rejection = application
+        .termination_commands
         .archive_with_repository_publication(rejected.clone())
         .await;
     assert!(
@@ -1669,6 +1676,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     );
     let after_rejection = runtime.terminal_effect_order.lock().unwrap().len();
     let replay_rejection = application
+        .termination_commands
         .archive_with_repository_publication(rejected)
         .await;
     assert!(
@@ -1709,7 +1717,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     let before_closed = runtime.terminal_effect_order.lock().unwrap().len();
     assert!(
         matches!(
-            application.archive_with_repository_publication(closed_command.clone()).await,
+            application.termination_commands.archive_with_repository_publication(closed_command.clone()).await,
             Err(SessionArchiveWithRepositoryPublicationError::Rejected(ref error))
                 if error.code == "repository_publication_source_closed" && error.message.contains("unknown")
         ),
@@ -1762,7 +1770,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     let after_closed = runtime.terminal_effect_order.lock().unwrap().len();
     assert!(
         matches!(
-            application.archive_with_repository_publication(closed_command).await,
+            application.termination_commands.archive_with_repository_publication(closed_command).await,
             Err(SessionArchiveWithRepositoryPublicationError::Rejected(ref error))
                 if error.code == "repository_publication_source_closed"
         ),
@@ -1801,6 +1809,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     assert!(
         matches!(
             application
+                .termination_commands
                 .archive_with_repository_publication(unavailable.clone())
                 .await,
             Err(SessionArchiveWithRepositoryPublicationError::Pending(_))
@@ -1826,6 +1835,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
         "R8 exact command retained"
     );
     application
+        .termination_commands
         .archive_with_repository_publication(unavailable)
         .await
         .expect("R9 retry publishes and completes ordinary cleanup");
@@ -1861,7 +1871,7 @@ fn terminal_only_release_rejects_live_execution_and_preserves_failure_truth() {
             let before = repo.get(&SessionId::from(&id)).await.unwrap();
             assert!(
                 matches!(
-                    app.release_terminal_session(&id, "2026-09-07T00:00:00Z", fact(&id)).await,
+                    app.termination_commands.release_terminal_session(&id, "2026-09-07T00:00:00Z", fact(&id)).await,
                     Err(SessionPreparationError::Rejected(ref error))
                         if error.message == "terminal Session release requires already-terminal execution"
                 ),
@@ -1877,18 +1887,22 @@ fn terminal_only_release_rejects_live_execution_and_preserves_failure_truth() {
             let id = format!("terminal-release-{state}");
             create(repo.as_ref(), persisted(&id, false, state)).await;
             assert!(
-                app.begin_activity(&SessionId::from(&id)).await.is_err(),
+                app.activities
+                    .begin_activity(&SessionId::from(&id))
+                    .await
+                    .is_err(),
                 "T3 terminal absorption before archive"
             );
             assert!(
                 matches!(
-                    app.terminate_session(&id, "2026-09-07T00:00:00Z", fact(&id)).await,
+                    app.termination_commands.terminate_session(&id, "2026-09-07T00:00:00Z", fact(&id)).await,
                     Err(SessionPreparationError::Rejected(ref error))
                         if error.message == "only an idle Session may be archived"
                 ),
                 "T2 unchanged public archive: {state}"
             );
-            app.release_terminal_session(&id, "2026-09-07T00:00:00Z", fact(&id))
+            app.termination_commands
+                .release_terminal_session(&id, "2026-09-07T00:00:00Z", fact(&id))
                 .await
                 .expect("T3 terminal-only release");
             let completed = repo.get(&SessionId::from(&id)).await.unwrap();
@@ -1905,10 +1919,14 @@ fn terminal_only_release_rejects_live_execution_and_preserves_failure_truth() {
                 awaken_session_state_contract::SessionDisposition::Archived { .. }
             ));
             assert!(
-                app.begin_activity(&SessionId::from(&id)).await.is_err(),
+                app.activities
+                    .begin_activity(&SessionId::from(&id))
+                    .await
+                    .is_err(),
                 "T4 no reopening"
             );
-            app.release_terminal_session(&id, "another-timestamp", fact(&id))
+            app.termination_commands
+                .release_terminal_session(&id, "another-timestamp", fact(&id))
                 .await
                 .expect("T4 exact terminal replay");
             assert_eq!(
@@ -1934,7 +1952,7 @@ fn terminal_only_release_rejects_live_execution_and_preserves_failure_truth() {
         let before = repo.get(&SessionId::from(id)).await.unwrap();
         assert!(
             matches!(
-                app.release_terminal_session(id, "2026-09-07T00:00:00Z", fact(id)).await,
+                app.termination_commands.release_terminal_session(id, "2026-09-07T00:00:00Z", fact(id)).await,
                 Err(SessionPreparationError::Rejected(ref error))
                     if error.code == "session_event_batch_pending"
             ),
@@ -1977,7 +1995,8 @@ fn terminal_only_release_waits_for_cleanup_and_recovers_committed_failure() {
             runtime_interval: None,
         };
         assert!(
-            app.release_terminal_session(id, "2026-09-07T00:00:00Z", fact.clone())
+            app.termination_commands
+                .release_terminal_session(id, "2026-09-07T00:00:00Z", fact.clone())
                 .await
                 .is_err(),
             "T5 no premature release"
@@ -1989,7 +2008,8 @@ fn terminal_only_release_waits_for_cleanup_and_recovers_committed_failure() {
         ));
         assert_eq!(pending.execution, SessionExecutionState::ActivationFailed);
         assert!(!pending.verified_terminal_cleanup().unwrap().is_completed());
-        app.release_terminal_session(id, "2026-09-07T00:00:00Z", fact.clone())
+        app.termination_commands
+            .release_terminal_session(id, "2026-09-07T00:00:00Z", fact.clone())
             .await
             .expect("T6 retry existing cleanup");
         assert!(
@@ -2002,7 +2022,8 @@ fn terminal_only_release_waits_for_cleanup_and_recovers_committed_failure() {
         );
         let effects = runtime.effective_ids.lock().unwrap().len();
         assert!(effects > 0, "T6 actual fixture cleanup effects");
-        app.release_terminal_session(id, "2026-09-07T00:00:00Z", fact)
+        app.termination_commands
+            .release_terminal_session(id, "2026-09-07T00:00:00Z", fact)
             .await
             .expect("T6 absorbing replay");
         assert_eq!(runtime.effective_ids.lock().unwrap().len(), effects);
@@ -2097,8 +2118,16 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
 
     let archive_fact = fact("archive-race", "session.terminated");
     let (first, second) = tokio::join!(
-        app.terminate_session("archive-race", "2026-08-06T00:00:00Z", archive_fact.clone()),
-        app.terminate_session("archive-race", "2026-08-06T00:00:00Z", archive_fact)
+        app.termination_commands.terminate_session(
+            "archive-race",
+            "2026-08-06T00:00:00Z",
+            archive_fact.clone()
+        ),
+        app.termination_commands.terminate_session(
+            "archive-race",
+            "2026-08-06T00:00:00Z",
+            archive_fact
+        )
     );
     let first = first.expect("L1 first");
     let second = second.expect("L1 second");
@@ -2110,6 +2139,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     assert_eq!(archived.execution.as_str(), "terminated", "L1");
     let revision = archived.revision;
     let replay = app
+        .termination_commands
         .terminate_session(
             "archive-race",
             "another-timestamp",
@@ -2121,10 +2151,12 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     assert_eq!(replay.session.revision, revision, "L2");
 
     let root_running = app
+        .activities
         .begin_activity(&SessionId::from("archive-running"))
         .await
         .expect("L3 open root activity");
     let root_rejected = app
+        .termination_commands
         .terminate_session(
             "archive-running",
             "2026-08-06T00:00:00Z",
@@ -2152,6 +2184,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     // operation-scoped activity epoch is the authoritative aggregate evidence
     // that an admitted child/requires-action boundary is still active.
     let (child_running, child_epoch) = app
+        .activities
         .begin_activity_for_operation(
             &SessionId::from("archive-child-active"),
             "child-requires-action",
@@ -2159,6 +2192,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
         .await
         .expect("L4 open child activity");
     let child_rejected = app
+        .termination_commands
         .terminate_session(
             "archive-child-active",
             "2026-08-06T00:00:00Z",
@@ -2185,6 +2219,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
 
     repo.commit_running_activity_then_conflict_once("archive");
     let race_archive = app
+        .termination_commands
         .terminate_session(
             "archive-activity-race",
             "2026-08-06T00:00:00Z",
@@ -2211,11 +2246,13 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     );
 
     let forced_running = app
+        .activities
         .begin_activity(&SessionId::from("archive-force"))
         .await
         .expect("L6 open internal activity");
     assert!(forced_running.has_active_activities(), "L6 precondition");
     let forced = app
+        .termination_commands
         .force_terminate_session(
             "archive-force",
             "2026-08-06T00:00:00Z",
@@ -2227,12 +2264,15 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     assert!(forced.session.is_terminal(), "L6/E5");
     assert!(forced.session.active_activity_epochs.is_empty(), "L6/E5");
 
-    let deleted =
-        SessionApplication::delete_session(&app, SessionDeleteCommand::new("delete-live"))
-            .await
-            .expect("L7");
+    let deleted = crate::SessionTerminationCommands::delete_session(
+        &app.termination_commands,
+        SessionDeleteCommand::new("delete-live"),
+    )
+    .await
+    .expect("L7");
     let transition = deleted.clone();
-    app.release_terminal_resources(&transition.owner_scope, "delete-live")
+    app.terminal_cleanups
+        .release_terminal_resources(&transition.owner_scope, "delete-live")
         .await
         .expect("L7 reconciliation");
     assert!(transition.transitioned(), "L7");
@@ -2256,20 +2296,22 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
             .any(|session_id| session_id == "delete-live"),
         "L7 terminal truth retires its one Work projection"
     );
-    app.terminate_session(
-        "archive-work",
-        "2026-08-06T00:00:00Z",
-        fact("archive-work", "session.terminated"),
-    )
-    .await
-    .expect("L1 archive cleanup");
-    app.terminate_session(
-        "archive-work",
-        "2026-08-06T00:00:00Z",
-        fact("archive-work", "session.terminated"),
-    )
-    .await
-    .expect("L2 archive replay");
+    app.termination_commands
+        .terminate_session(
+            "archive-work",
+            "2026-08-06T00:00:00Z",
+            fact("archive-work", "session.terminated"),
+        )
+        .await
+        .expect("L1 archive cleanup");
+    app.termination_commands
+        .terminate_session(
+            "archive-work",
+            "2026-08-06T00:00:00Z",
+            fact("archive-work", "session.terminated"),
+        )
+        .await
+        .expect("L2 archive replay");
     assert_eq!(
         environments
             .retired
@@ -2346,6 +2388,7 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
     };
 
     let archive = app
+        .termination_commands
         .terminate_session(
             "batch-before-archive",
             "2026-08-24T00:00:00Z",
@@ -2353,6 +2396,7 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
         )
         .await;
     let force = app
+        .termination_commands
         .force_terminate_session(
             "batch-before-force",
             "2026-08-24T00:00:00Z",
@@ -2389,24 +2433,26 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
     }
 
     assert!(
-        app.terminate_session(
-            "batch-before-archive",
-            "2026-08-24T00:00:00Z",
-            fact("batch-before-archive"),
-        )
-        .await
-        .expect("B4 archive retry")
-        .transitioned()
+        app.termination_commands
+            .terminate_session(
+                "batch-before-archive",
+                "2026-08-24T00:00:00Z",
+                fact("batch-before-archive"),
+            )
+            .await
+            .expect("B4 archive retry")
+            .transitioned()
     );
     assert!(
-        app.force_terminate_session(
-            "batch-before-force",
-            "2026-08-24T00:00:00Z",
-            fact("batch-before-force"),
-        )
-        .await
-        .expect("B4 force retry")
-        .transitioned()
+        app.termination_commands
+            .force_terminate_session(
+                "batch-before-force",
+                "2026-08-24T00:00:00Z",
+                fact("batch-before-force"),
+            )
+            .await
+            .expect("B4 force retry")
+            .transitioned()
     );
     assert!(
         app.lifecycle
@@ -2449,6 +2495,7 @@ async fn deletion_fixture(
     create(repo.as_ref(), root).await;
     if initial == "archived-completed" {
         let completed = app
+            .terminal_cleanups
             .release_terminal_resources("workspace", session_id)
             .await
             .unwrap()
@@ -2548,7 +2595,8 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                         .fail_before_effect_once
                         .store(true, Ordering::SeqCst);
                     assert!(
-                        cold.release_terminal_resources("workspace", &session_id)
+                        cold.terminal_cleanups
+                            .release_terminal_resources("workspace", &session_id)
                             .await
                             .is_err(),
                         "D4 pre-effect failure"
@@ -2567,7 +2615,8 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                     // that happen to contain this Session's delete-* id.
                     repo.fail_once("session:delete:");
                     assert!(
-                        cold.release_terminal_resources("workspace", &session_id)
+                        cold.terminal_cleanups
+                            .release_terminal_resources("workspace", &session_id)
                             .await
                             .is_err(),
                         "D4 tombstone outage"
@@ -2614,7 +2663,8 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                 .0;
             let effect_calls = runtime.intents.lock().unwrap().len();
             assert!(
-                cold.release_terminal_resources("workspace", &session_id)
+                cold.terminal_cleanups
+                    .release_terminal_resources("workspace", &session_id)
                     .await
                     .unwrap()
                     .is_none()
@@ -2643,7 +2693,8 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                 .await;
             assert!(matches!(absent, Err(SessionPreparationError::NotFound)));
             assert!(
-                cold.release_terminal_resources("workspace", &session_id)
+                cold.terminal_cleanups
+                    .release_terminal_resources("workspace", &session_id)
                     .await
                     .unwrap()
                     .is_none()
@@ -2777,7 +2828,8 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                 }
                 if schedule == "after_tombstone" {
                     assert!(
-                        app.release_terminal_resources("workspace", session_id)
+                        app.terminal_cleanups
+                            .release_terminal_resources("workspace", session_id)
                             .await
                             .unwrap()
                             .is_none()
@@ -3042,6 +3094,7 @@ async fn recovered_scalar_activity_is_settled_or_superseded_without_parallel_tru
     assert!(recovered.begin_runtime_interval(1, 0), "A11 fixture");
     create(repo.as_ref(), recovered).await;
     let successor = app
+        .activities
         .begin_activity(&SessionId::from("activity-recovered-successor"))
         .await
         .expect("A11 successor");
@@ -3108,8 +3161,10 @@ async fn operation_activity_replay_uses_the_root_receipt_as_its_only_epoch_autho
 
     let joined_session = SessionId::from("activity-operation");
     let (left, right) = tokio::join!(
-        app.begin_activity_for_operation(&joined_session, "op-a"),
-        app.begin_activity_for_operation(&joined_session, "op-a")
+        app.activities
+            .begin_activity_for_operation(&joined_session, "op-a"),
+        app.activities
+            .begin_activity_for_operation(&joined_session, "op-a")
     );
     let (left_session, left_epoch) = left.expect("O1/O2 left");
     let (right_session, right_epoch) = right.expect("O1/O2 right");
@@ -3139,6 +3194,7 @@ async fn operation_activity_replay_uses_the_root_receipt_as_its_only_epoch_autho
         .expect("O3 settle");
     let settled_revision = settled.revision;
     let (replayed, replayed_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from("activity-operation"), "op-a")
         .await
         .expect("O3 exact replay");
@@ -3147,6 +3203,7 @@ async fn operation_activity_replay_uses_the_root_receipt_as_its_only_epoch_autho
     assert!(replayed.active_activity_epochs.is_empty(), "O3/E3");
 
     let (next, next_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from("activity-operation"), "op-b")
         .await
         .expect("O4 distinct operation");
@@ -3199,6 +3256,7 @@ async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_pa
         let child = ThreadId(format!("settlement-child-{rule}"));
         let run = RunId(format!("settlement-run-{rule}"));
         let (_, epoch) = app
+            .activities
             .begin_activity_for_operation_with_policy(
                 &SessionId::from(&session_id),
                 &format!("settlement-operation-{rule}"),
@@ -3943,7 +4001,8 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
 
     assert!(
         matches!(
-            app.begin_activity_for_operation(&SessionId::from("reached-valid-reply"), "new-run")
+            app.activities
+                .begin_activity_for_operation(&SessionId::from("reached-valid-reply"), "new-run")
                 .await,
             Err(SessionActivityError::BudgetReached)
         ),
@@ -4142,6 +4201,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     );
 
     let (_, awaiting_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from("boundary-awaiting"), "boundary-op")
         .await
         .expect("B1 activity");
@@ -4198,6 +4258,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     );
 
     let (_, running_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from("boundary-running"), "boundary-op")
         .await
         .expect("B3 activity");
@@ -4232,6 +4293,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     );
 
     let (_, interrupted_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from("boundary-interrupted"), "boundary-op")
         .await
         .expect("B4 activity");
@@ -4264,6 +4326,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     assert!(runtime.continuations.lock().unwrap().is_empty(), "B4/E4");
 
     let (_, failed_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from("boundary-failed"), "boundary-op")
         .await
         .expect("B5 activity");
@@ -4305,6 +4368,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     assert!(runtime.continuations.lock().unwrap().is_empty(), "B5/E5");
 
     let (_, unprojected_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from("boundary-unprojected"), "boundary-op")
         .await
         .expect("B6 activity");
@@ -4375,6 +4439,7 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
     );
 
     let (_, source_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from(session_id), "source-operation")
         .await
         .expect("R2 source activity");
@@ -4387,6 +4452,7 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
         .await
         .expect("R2 observer effect committed before queue settlement");
     let (_, successor_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from(session_id), "successor-operation")
         .await
         .expect("R2 successor activity");
@@ -4559,6 +4625,7 @@ async fn completed_child_without_a_committed_reply_settles_without_a_report_run(
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let (_, activity_epoch) = app
+        .activities
         .begin_activity_for_operation(
             &SessionId::from("completed-without-report"),
             "missing-report-operation",
@@ -5147,6 +5214,7 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
     };
 
     let (_, awaiting_epoch) = app
+        .activities
         .begin_activity_for_operation(&SessionId::from("boundary-budget-awaiting"), "awaiting-op")
         .await
         .expect("B1 activity");
@@ -5194,6 +5262,7 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
         )),
     ]);
     let (_, ended_epoch) = app
+        .activities
         .begin_activity_for_operation_with_policy(
             &SessionId::from("boundary-budget-ended"),
             "ended-op",
@@ -5346,6 +5415,7 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
         "b",
     );
     let (_, epoch_a) = app
+        .activities
         .begin_activity_for_operation_with_policy(
             &SessionId::from("concurrent-child-budget"),
             "child-a-op",
@@ -5357,6 +5427,7 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
         .await
         .expect("C1 child A activity");
     let (_, epoch_b) = app
+        .activities
         .begin_activity_for_operation_with_policy(
             &SessionId::from("concurrent-child-budget"),
             "child-b-op",
@@ -5455,6 +5526,7 @@ async fn update_admission_uses_only_durable_session_status() {
     };
 
     let updated = app
+        .update_commands
         .update_session(&SessionId::from("update-idle"), command("accepted"))
         .await
         .expect("U1");
@@ -5464,7 +5536,8 @@ async fn update_admission_uses_only_durable_session_status() {
         let before = repo.get(&SessionId::from(id)).await.expect(rule);
         assert!(
             matches!(
-                app.update_session(&SessionId::from(id), command("rejected"))
+                app.update_commands
+                    .update_session(&SessionId::from(id), command("rejected"))
                     .await,
                 Err(SessionUpdateError::NotIdle)
             ),
@@ -5541,12 +5614,13 @@ async fn profiled_update_authority_separates_public_agent_and_credential_lifecyc
         if_match: None,
     };
 
-    app.update_session(
-        &SessionId::from("update-managed-policy"),
-        command(Some(tools.clone()), None, None, "U1"),
-    )
-    .await
-    .expect("U1/E1");
+    app.update_commands
+        .update_session(
+            &SessionId::from("update-managed-policy"),
+            command(Some(tools.clone()), None, None, "U1"),
+        )
+        .await
+        .expect("U1/E1");
     assert_eq!(
         repo.get(&SessionId::from("update-managed-policy"))
             .await
@@ -5567,11 +5641,12 @@ async fn profiled_update_authority_separates_public_agent_and_credential_lifecyc
         .unwrap();
     assert!(
         matches!(
-            app.update_session(
-                &SessionId::from("update-frozen-policy"),
-                command(Some(tools.clone()), None, None, "U2")
-            )
-            .await,
+            app.update_commands
+                .update_session(
+                    &SessionId::from("update-frozen-policy"),
+                    command(Some(tools.clone()), None, None, "U2")
+                )
+                .await,
             Err(SessionUpdateError::Rejected(_))
         ),
         "U2/E2"
@@ -5590,16 +5665,17 @@ async fn profiled_update_authority_separates_public_agent_and_credential_lifecyc
         .unwrap();
     assert!(
         matches!(
-            app.update_session(
-                &SessionId::from("update-files-policy"),
-                command(
-                    None,
-                    Some(SessionMcpUpdate::PublicReplacement(Vec::new())),
-                    None,
-                    "U3"
+            app.update_commands
+                .update_session(
+                    &SessionId::from("update-files-policy"),
+                    command(
+                        None,
+                        Some(SessionMcpUpdate::PublicReplacement(Vec::new())),
+                        None,
+                        "U3"
+                    )
                 )
-            )
-            .await,
+                .await,
             Err(SessionUpdateError::Rejected(_))
         ),
         "U3/E2"
@@ -5612,42 +5688,45 @@ async fn profiled_update_authority_separates_public_agent_and_credential_lifecyc
         "U3/E2"
     );
 
-    app.update_session(
-        &SessionId::from("update-files-policy"),
-        command(
-            None,
-            Some(SessionMcpUpdate::CredentialLifecycle {
-                source_id: "vault-source".into(),
-                revoked: false,
-                candidates: Vec::new(),
-            }),
-            None,
-            "U4",
-        ),
-    )
-    .await
-    .expect("U4/E3");
+    app.update_commands
+        .update_session(
+            &SessionId::from("update-files-policy"),
+            command(
+                None,
+                Some(SessionMcpUpdate::CredentialLifecycle {
+                    source_id: "vault-source".into(),
+                    revoked: false,
+                    candidates: Vec::new(),
+                }),
+                None,
+                "U4",
+            ),
+        )
+        .await
+        .expect("U4/E3");
     assert!(
         matches!(
-            app.update_session(
-                &SessionId::from("update-files-policy"),
-                command(
-                    None,
-                    Some(SessionMcpUpdate::CredentialLifecycle {
-                        source_id: "vault-source".into(),
-                        revoked: false,
-                        candidates: Vec::new(),
-                    }),
-                    Some(SessionFieldUpdate::Replace("forbidden".into())),
-                    "U5"
+            app.update_commands
+                .update_session(
+                    &SessionId::from("update-files-policy"),
+                    command(
+                        None,
+                        Some(SessionMcpUpdate::CredentialLifecycle {
+                            source_id: "vault-source".into(),
+                            revoked: false,
+                            candidates: Vec::new(),
+                        }),
+                        Some(SessionFieldUpdate::Replace("forbidden".into())),
+                        "U5"
+                    )
                 )
-            )
-            .await,
+                .await,
             Err(SessionUpdateError::Rejected(_))
         ),
         "U5/E4"
     );
     let titled = app
+        .update_commands
         .update_session(
             &SessionId::from("update-frozen-policy"),
             command(
@@ -5730,13 +5809,15 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
 
     assert!(
         matches!(
-            app.update_session(&SessionId::from("budget-absent"), command(Some(3)))
+            app.update_commands
+                .update_session(&SessionId::from("budget-absent"), command(Some(3)))
                 .await,
             Err(SessionUpdateError::Rejected(_))
         ),
         "B1/E1"
     );
     let updated = app
+        .update_commands
         .update_session(&SessionId::from("budget-active"), command(Some(3)))
         .await
         .expect("B2");
@@ -5752,13 +5833,15 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
     );
     assert!(
         matches!(
-            app.update_session(&SessionId::from("budget-active"), command(Some(2)))
+            app.update_commands
+                .update_session(&SessionId::from("budget-active"), command(Some(2)))
                 .await,
             Err(SessionUpdateError::Rejected(_))
         ),
         "B3/E3"
     );
     let removed = app
+        .update_commands
         .update_session(&SessionId::from("budget-active"), command(None))
         .await
         .expect("B4");
@@ -5777,7 +5860,8 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
     );
     assert!(
         matches!(
-            app.update_session(&SessionId::from("budget-active"), command(Some(4)))
+            app.update_commands
+                .update_session(&SessionId::from("budget-active"), command(Some(4)))
                 .await,
             Err(SessionUpdateError::Rejected(_))
         ),
@@ -5900,6 +5984,7 @@ async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
 
     Box::pin(async {
         let raised = app
+            .update_commands
             .update_session(
                 &SessionId::from("resume-budget-root"),
                 command(Some(2), "raise-root"),
@@ -5908,6 +5993,7 @@ async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
             .expect("R1 raise resumes root");
         assert_eq!(raised.session.budget.max_list_cost_minor(), Some(2), "R1");
         let removed = app
+            .update_commands
             .update_session(
                 &SessionId::from("resume-budget-child"),
                 command(None, "remove-child"),
@@ -5953,8 +6039,11 @@ async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
         let concurrent = command(Some(2), "concurrent-exact");
         let session_id = SessionId::from("resume-budget-concurrent");
         let (left, right) = tokio::join!(
-            Box::pin(app.update_session(&session_id, concurrent.clone())),
-            Box::pin(app.update_session(&session_id, concurrent)),
+            Box::pin(
+                app.update_commands
+                    .update_session(&session_id, concurrent.clone())
+            ),
+            Box::pin(app.update_commands.update_session(&session_id, concurrent)),
         );
         left.expect("R3 left exact update");
         right.expect("R3 right exact update");
@@ -5991,12 +6080,13 @@ async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
 
     Box::pin(async {
         runtime.set_budget_resume_dispositions([SessionBudgetResumeDisposition::Stale]);
-        app.update_session(
-            &SessionId::from("resume-budget-stale"),
-            command(Some(2), "stale-raise"),
-        )
-        .await
-        .expect("R4 stale resume is a successful update");
+        app.update_commands
+            .update_session(
+                &SessionId::from("resume-budget-stale"),
+                command(Some(2), "stale-raise"),
+            )
+            .await
+            .expect("R4 stale resume is a successful update");
         let stale = repo
             .get(&SessionId::from("resume-budget-stale"))
             .await

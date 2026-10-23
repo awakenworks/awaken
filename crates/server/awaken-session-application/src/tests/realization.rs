@@ -339,6 +339,7 @@ async fn terminal_assignment_preserves_the_complete_retained_resource_transition
                 Arc::new(RecordingEnvironmentSource::default()),
             );
             let assignment = application
+                .terminal_cleanups
                 .terminal_cleanup_assignment_from_snapshot("workspace", &snapshot)
                 .await
                 .unwrap();
@@ -367,7 +368,7 @@ async fn terminal_assignment_preserves_the_complete_retained_resource_transition
             expired.realization.as_mut().unwrap().expires_at_unix_ms = 1;
             assert!(matches!(
                 application
-                    .terminal_cleanup_assignment_from_snapshot("workspace", &expired)
+                    .terminal_cleanups.terminal_cleanup_assignment_from_snapshot("workspace", &expired)
                     .await,
                 Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
             ));
@@ -1675,6 +1676,7 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup_case() {
         .expect("W2 durable truth");
     assert!(pending.terminal_cleanup.is_requested(), "W2/E2");
     let work = application
+        .terminal_cleanups
         .terminal_cleanup_work(
             &SessionId::from("worker-terminal"),
             &asserted_terminal_lease,
@@ -1692,7 +1694,7 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup_case() {
     crate::drive_session_terminal_cleanup(
         &SessionId::from("worker-terminal"),
         &asserted_terminal_lease,
-        &application,
+        application.terminal_cleanups.as_ref(),
         &NoopRuntime,
         &NoopRuntime,
         &NoopRuntime,
@@ -1775,6 +1777,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
     );
 
     let pending_force = application
+        .termination_commands
         .force_terminate_session(
             "remote-cleanup",
             "2026-09-05T00:00:00Z",
@@ -1802,6 +1805,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
     let mut admitted_lease = asserted_lease.clone();
     admitted_lease.expires_at_unix_ms = 0;
     let work = application
+        .terminal_cleanups
         .terminal_cleanup_work(&SessionId::from("remote-cleanup"), &admitted_lease)
         .await
         .expect("W1 exact lease")
@@ -1820,7 +1824,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
     assert!(
         matches!(
             application
-                .terminal_cleanup_work(&SessionId::from("remote-cleanup"), &stale)
+                .terminal_cleanups.terminal_cleanup_work(&SessionId::from("remote-cleanup"), &stale)
                 .await,
             Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
         ),
@@ -1831,7 +1835,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
     let outcome = crate::drive_session_terminal_cleanup(
         &SessionId::from("remote-cleanup"),
         &asserted_lease,
-        &application,
+        application.terminal_cleanups.as_ref(),
         &worker_runtime,
         &worker_runtime,
         &worker_runtime,
@@ -1844,6 +1848,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
         "W3/E3"
     );
     let replay = application
+        .termination_commands
         .force_terminate_session(
             "remote-cleanup",
             "2026-09-05T00:00:00Z",
@@ -1879,7 +1884,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
     crate::drive_session_terminal_cleanup(
         &SessionId::from("remote-cleanup"),
         &asserted_lease,
-        &application,
+        application.terminal_cleanups.as_ref(),
         &worker_runtime,
         &worker_runtime,
         &worker_runtime,
@@ -1984,12 +1989,14 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
         None,
     );
     application
+        .terminal_cleanups
         .release_terminal_resources("workspace", session_id)
         .await
         .expect("R1 terminal intent")
         .expect("R1 aggregate remains pending");
 
     let work = application
+        .terminal_cleanups
         .terminal_cleanup_work(&SessionId::from(session_id), &lease)
         .await
         .expect("R1 child work projection")
@@ -2010,6 +2017,7 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
     assert!(
         matches!(
             application
+                .terminal_cleanups
                 .authorize_terminal_cleanup_effect(&forged_effect)
                 .await,
             Err(awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(_))
@@ -2021,7 +2029,7 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
     let outcome = crate::drive_session_terminal_cleanup(
         &SessionId::from(session_id),
         &lease,
-        &application,
+        application.terminal_cleanups.as_ref(),
         &worker_runtime,
         &worker_runtime,
         &worker_runtime,
@@ -2200,7 +2208,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     assert!(
         matches!(
             application
-                .terminal_repository_publication_command(
+                .terminal_cleanups.terminal_repository_publication_command(
                     &cold_id,
                     &expired_cold_lease,
                 )
@@ -2211,6 +2219,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     );
 
     let child_work = application
+        .terminal_cleanups
         .terminal_cleanup_work(&child_id, &exact_lease)
         .await
         .expect("P1 exact lease")
@@ -2224,6 +2233,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     assert_eq!(child_commands[0].thread_id, "publication-child", "P1/E1");
     assert!(
         application
+            .terminal_cleanups
             .terminal_repository_publication_command(&child_id, &exact_lease,)
             .await
             .expect("P1 exact lease")
@@ -2237,7 +2247,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     crate::drive_session_terminal_cleanup(
         &child_id,
         &exact_lease,
-        &application,
+        application.terminal_cleanups.as_ref(),
         &child_worker,
         &child_worker,
         &child_worker,
@@ -2247,6 +2257,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     assert!(
         matches!(
             application
+                .terminal_cleanups
                 .terminal_cleanup_work(&child_id, &exact_lease)
                 .await
                 .unwrap()
@@ -2261,7 +2272,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     assert!(
         matches!(
             application
-                .terminal_repository_publication_command(
+                .terminal_cleanups.terminal_repository_publication_command(
                     &child_id,
                     &stale,
                 )
@@ -2289,6 +2300,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         .expect("install publication Worker observations");
     assert!(
         application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("P3a incompatible Worker is skipped")
@@ -2301,6 +2313,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     workers.replace(vec![terminal_cleanup_worker(&target, manifest.clone())]);
     assert!(
         application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("P3-old unresolved physical predecessor stays pending")
@@ -2358,6 +2371,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     workers.replace(vec![terminal_cleanup_worker(&target, without_credentials)]);
     assert!(
         application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("P3a exact Runtime still requires Repository credentials")
@@ -2371,6 +2385,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     );
     workers.replace(vec![terminal_cleanup_worker(&target, manifest)]);
     let assignment = application
+        .terminal_cleanups
         .claim_next_terminal_cleanup(target.clone(), None)
         .await
         .expect("P3 claim")
@@ -2390,6 +2405,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     assert!(
         matches!(
             application
+                .terminal_cleanups
                 .terminal_cleanup_work(&assignment.session_id, &assignment.authority.lease)
                 .await
                 .unwrap()
@@ -2404,6 +2420,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         ..assignment.authority.lease.clone()
     };
     let publication = application
+        .terminal_cleanups
         .terminal_repository_publication_command(&assignment.session_id, &expired_assertion)
         .await
         .expect("P3c expired assertion publication poll")
@@ -2434,6 +2451,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     assert!(
         matches!(
             application
+                .terminal_cleanups
                 .record_terminal_repository_publication_receipt(
                     &assignment.session_id,
                     &assignment.authority.lease,
@@ -2465,6 +2483,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         },
     );
     application
+        .terminal_cleanups
         .record_terminal_repository_publication_receipt(
             &assignment.session_id,
             &assignment.authority.lease,
@@ -2473,6 +2492,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         .await
         .expect("P5 exact receipt");
     application
+        .terminal_cleanups
         .record_terminal_repository_publication_receipt(
             &assignment.session_id,
             &assignment.authority.lease,
@@ -2492,6 +2512,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     );
     assert!(
         application
+            .terminal_cleanups
             .terminal_repository_publication_command(
                 &assignment.session_id,
                 &assignment.authority.lease
@@ -2502,6 +2523,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         "P5/E6"
     );
     let root_work = application
+        .terminal_cleanups
         .terminal_cleanup_work(&assignment.session_id, &assignment.authority.lease)
         .await
         .unwrap()
@@ -2525,7 +2547,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     crate::drive_session_terminal_cleanup(
         &assignment.session_id,
         &assignment.authority.lease,
-        &application,
+        application.terminal_cleanups.as_ref(),
         &root_worker,
         &root_worker,
         &root_worker,
@@ -2541,6 +2563,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         "P5/E6"
     );
     let rejected_assignment = application
+        .terminal_cleanups
         .claim_next_terminal_cleanup(target.clone(), None)
         .await
         .expect("P6 claim")
@@ -2550,6 +2573,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         "P6 exact Session"
     );
     let projection = application
+        .terminal_cleanups
         .terminal_repository_publication_command(
             &rejected_assignment.session_id,
             &rejected_assignment.authority.lease,
@@ -2563,6 +2587,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     )
     .unwrap();
     application
+        .terminal_cleanups
         .record_terminal_repository_publication_rejection(
             &rejected_assignment.session_id,
             &rejected_assignment.authority.lease,
@@ -2571,6 +2596,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         .await
         .expect("P6 exact rejection");
     application
+        .terminal_cleanups
         .record_terminal_repository_publication_rejection(
             &rejected_assignment.session_id,
             &rejected_assignment.authority.lease,
@@ -2580,6 +2606,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         .expect("P6 response-loss replay");
     assert!(
         application
+            .terminal_cleanups
             .terminal_repository_publication_command(
                 &rejected_assignment.session_id,
                 &rejected_assignment.authority.lease,
@@ -2590,6 +2617,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         "P6/E8 no second Git command"
     );
     let root_work = application
+        .terminal_cleanups
         .terminal_cleanup_work(
             &rejected_assignment.session_id,
             &rejected_assignment.authority.lease,
@@ -2611,7 +2639,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     crate::drive_session_terminal_cleanup(
         &rejected_assignment.session_id,
         &rejected_assignment.authority.lease,
-        &application,
+        application.terminal_cleanups.as_ref(),
         &rejected_worker,
         &rejected_worker,
         &rejected_worker,
@@ -2638,7 +2666,10 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     create(repo.as_ref(), invalid_source).await;
     assert!(
         matches!(
-            application.claim_next_terminal_cleanup(target, None).await,
+            application
+                .terminal_cleanups
+                .claim_next_terminal_cleanup(target, None)
+                .await,
             Err(awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(_))
         ),
         "P3b/E4 an Unmaterialized Session cannot acquire a publication lease"
@@ -2719,6 +2750,7 @@ async fn cold_terminal_cleanup_claim_pages_past_a_saturated_invalid_batch() {
         .expect("install the one Worker observation authority");
 
     let assignment = application
+        .terminal_cleanups
         .claim_next_terminal_cleanup(target, None)
         .await
         .expect("H2 typed pagination skips the saturated invalid page")
@@ -2741,6 +2773,7 @@ async fn cold_terminal_cleanup_claim_pages_past_a_saturated_invalid_batch() {
         "H2/E1 invalid rows remain mutation-free"
     );
     let replay = application
+        .terminal_cleanups
         .claim_next_terminal_cleanup(registry_race_target(), None)
         .await
         .expect("H3 a new sweep may retry the still-requested exact owner")
@@ -2749,6 +2782,7 @@ async fn cold_terminal_cleanup_claim_pages_past_a_saturated_invalid_batch() {
     assert_eq!(replay.authority.lease.epoch, 1, "H3 no second root CAS");
     assert!(
         application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(registry_race_target(), Some(&replay.session_id))
             .await
             .expect("H3 cursor skips the already-returned root")
@@ -2897,6 +2931,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         ("C3", "claim-e0-expired-current", 10),
     ] {
         let assignment = application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), after.as_ref())
             .await
             .expect(rule)
@@ -2919,6 +2954,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
     }
     assert!(
         application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), after.as_ref())
             .await
             .expect("C1+C5-C6")
@@ -2956,6 +2992,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         "C6/E2 foreign provider installation remains authoritative"
     );
     let invalid = application
+        .terminal_cleanups
         .claim_next_terminal_cleanup(
             awaken_session_realization_contract::SessionRealizationTarget {
                 reassign_existing_lease: true,
@@ -2995,6 +3032,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         .set_worker_observation_source(workers.clone())
         .expect("install the one Worker observation authority");
     let replayed = application
+        .terminal_cleanups
         .claim_next_terminal_cleanup(target, None)
         .await
         .expect("C8 ambiguous CAS replay")
@@ -3093,6 +3131,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         .expect("R1 Worker observation authority");
     assert!(
         r1_application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("R1 revoked Worker is a closed scan result")
@@ -3129,6 +3168,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
     assert!(
         matches!(
             r2_application
+                .terminal_cleanups
                 .claim_next_terminal_cleanup(target.clone(), None)
                 .await,
             Err(
@@ -3171,6 +3211,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         .expect("R0 Worker observation authority");
     assert!(
         r0_application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("R0 unresolved predecessor remains pending")
@@ -3213,6 +3254,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         .expect("R3 Worker observation authority");
     assert!(
         r3_application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("R3 revoked readback is compensated")
@@ -3265,6 +3307,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         .expect("R3b Worker observation authority");
     assert!(
         r3b_application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(target.clone(), None)
             .await
             .expect("R3b concurrent successor resolves the revoked claim")
@@ -3307,6 +3350,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         .expect("R3c Worker observation authority");
     assert!(
         r3c_application
+            .terminal_cleanups
             .claim_next_terminal_cleanup(registry_race_target(), None)
             .await
             .expect("R3c ambiguous win is compensated after retry revocation")
@@ -3384,6 +3428,7 @@ async fn local_terminal_cleanup_claim_reads_the_exact_root_beyond_the_recovery_b
         },
     );
     let assignment = application
+        .terminal_cleanups
         .claim_local_terminal_cleanup_assignment(&SessionId::from(target_id))
         .await
         .expect("X2 exact local assignment");
@@ -3394,6 +3439,7 @@ async fn local_terminal_cleanup_claim_reads_the_exact_root_beyond_the_recovery_b
         "X2/E1"
     );
     let replay = application
+        .terminal_cleanups
         .claim_local_terminal_cleanup_assignment(&SessionId::from(target_id))
         .await
         .expect("X3 exact replay");
@@ -3442,7 +3488,7 @@ async fn local_terminal_cleanup_claim_reads_the_exact_root_beyond_the_recovery_b
     assert!(
         matches!(
             replacement
-                .claim_local_terminal_cleanup_assignment(&SessionId::from(target_id))
+                .terminal_cleanups.claim_local_terminal_cleanup_assignment(&SessionId::from(target_id))
                 .await,
             Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
         ),
@@ -3513,6 +3559,7 @@ async fn terminal_cleanup_recovery_reuses_intent_and_skips_completed_effects() {
     );
 
     application
+        .terminal_cleanups
         .release_terminal_resources("workspace", "cleanup-recovery")
         .await
         .expect_err("R1 injected crash leaves cleanup pending");
@@ -3528,6 +3575,7 @@ async fn terminal_cleanup_recovery_reuses_intent_and_skips_completed_effects() {
     );
 
     let completed = application
+        .terminal_cleanups
         .release_terminal_resources("workspace", "cleanup-recovery")
         .await
         .expect("R2 recovery")
@@ -3548,6 +3596,7 @@ async fn terminal_cleanup_recovery_reuses_intent_and_skips_completed_effects() {
     assert_eq!(runtime.acknowledged_completed.lock().unwrap().len(), 1);
 
     application
+        .terminal_cleanups
         .release_terminal_resources("workspace", "cleanup-recovery")
         .await
         .expect("R3 completed replay");
@@ -3601,6 +3650,7 @@ async fn terminal_cleanup_rebases_after_competing_root_writer() {
     );
 
     let completed = application
+        .terminal_cleanups
         .release_terminal_resources("workspace", "cleanup-root-race")
         .await
         .expect("CAS loser resumes from the winning durable phase")
@@ -3650,6 +3700,7 @@ async fn terminal_cleanup_acknowledges_a_committed_completion_after_response_los
     );
 
     let completed = application
+        .terminal_cleanups
         .release_terminal_resources("workspace", "cleanup-completion-response-loss")
         .await
         .expect("A1 response-loss retry reads the committed completion")
@@ -3713,6 +3764,7 @@ async fn terminal_cleanup_stale_loser_accepts_the_winners_tombstone() {
     repo.tombstone_after_operation_once("resource-release-complete");
 
     let loser = application
+        .terminal_cleanups
         .release_terminal_resources(&transition.owner_scope, "cleanup-tombstone-race")
         .await
         .expect("T1/E2 concurrent winner is terminal success");
@@ -3769,6 +3821,7 @@ async fn terminal_cleanup_f0_through_f6_recover_from_durable_phase() {
 
     runtime.fail_quiesce_once.store(true, Ordering::SeqCst);
     application
+        .terminal_cleanups
         .release_terminal_resources("workspace", "cleanup-f0-f6")
         .await
         .expect_err("F1 crash before quiescence");
@@ -3781,6 +3834,7 @@ async fn terminal_cleanup_f0_through_f6_recover_from_durable_phase() {
 
     repo.fail_once("resource-release-intent");
     application
+        .terminal_cleanups
         .release_terminal_resources("workspace", "cleanup-f0-f6")
         .await
         .expect_err("F2 target-intent CAS outage after quiescence");
@@ -3795,6 +3849,7 @@ async fn terminal_cleanup_f0_through_f6_recover_from_durable_phase() {
         .fail_before_effect_once
         .store(true, Ordering::SeqCst);
     application
+        .terminal_cleanups
         .release_terminal_resources("workspace", "cleanup-f0-f6")
         .await
         .expect_err("F3 crash after target freeze before effect");
@@ -3808,6 +3863,7 @@ async fn terminal_cleanup_f0_through_f6_recover_from_durable_phase() {
 
     runtime.fail_once.store(true, Ordering::SeqCst);
     application
+        .terminal_cleanups
         .release_terminal_resources("workspace", "cleanup-f0-f6")
         .await
         .expect_err("F4 lost effect receipt");
@@ -3825,6 +3881,7 @@ async fn terminal_cleanup_f0_through_f6_recover_from_durable_phase() {
 
     repo.fail_once("terminal-cleanup-disposal");
     application
+        .terminal_cleanups
         .release_terminal_resources("workspace", "cleanup-f0-f6")
         .await
         .expect_err("F5 completion CAS outage");
@@ -3850,6 +3907,7 @@ async fn terminal_cleanup_f0_through_f6_recover_from_durable_phase() {
     let assignment_projections_after_f5 = runtime.terminal_assignments.lock().unwrap().len();
 
     let f6 = application
+        .terminal_cleanups
         .release_terminal_resources("workspace", "cleanup-f0-f6")
         .await
         .expect("F6 recovery")
@@ -3872,6 +3930,7 @@ async fn terminal_cleanup_f0_through_f6_recover_from_durable_phase() {
     assert_eq!(runtime.acknowledged_completed.lock().unwrap().len(), 1);
     let attempts = runtime.intents.lock().unwrap().len();
     application
+        .terminal_cleanups
         .release_terminal_resources("workspace", "cleanup-f0-f6")
         .await
         .expect("F6 response-loss replay");
@@ -3920,6 +3979,7 @@ async fn terminal_fence_quiesces_before_freezing_concurrent_child() {
         let application = application.clone();
         tokio::spawn(async move {
             application
+                .terminal_cleanups
                 .release_terminal_resources("workspace", "cleanup-concurrent-child")
                 .await
         })
@@ -4038,6 +4098,7 @@ async fn terminal_cleanup_restart_soak_preserves_authority_and_effect_identity()
             Arc::new(RecordingEnvironmentSource::default()),
         );
         let completed = application
+            .terminal_cleanups
             .release_terminal_resources("workspace", &session_id)
             .await
             .unwrap()
@@ -4062,6 +4123,7 @@ async fn terminal_cleanup_restart_soak_preserves_authority_and_effect_identity()
             Arc::new(RecordingEnvironmentSource::default()),
         );
         replay_application
+            .terminal_cleanups
             .release_terminal_resources("workspace", &session_id)
             .await
             .unwrap();

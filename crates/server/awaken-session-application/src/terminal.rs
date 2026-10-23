@@ -22,9 +22,11 @@ use awaken_session_state_contract::{
     session_archive_idempotency_record as archive_idempotency_record,
 };
 
+use std::sync::Arc;
+
 use super::{
-    SessionApplication, SessionDeleteCommand, SessionMutationError, SessionPreparationError,
-    SnapshotCommit, credentials::mutation_failure, mutation::repository_failure,
+    SessionDeleteCommand, SessionMutationError, SessionPreparationError, SnapshotCommit,
+    credentials::mutation_failure, mutation::repository_failure,
 };
 
 /// One durable disposition transition and whether *this* call committed it.
@@ -240,7 +242,44 @@ pub(crate) fn pending_event_batch_error() -> SessionPreparationError {
     ))
 }
 
-impl SessionApplication {
+/// Session termination commands: archive, release, terminate and delete, and
+/// the archive that publishes one Repository first. Each command commits the
+/// terminal disposition through the root CAS, then hands the Session to its
+/// one terminal cleanup. It holds the CAS kernel, the clock, the lifecycle
+/// signal, the terminal cleanup component, the activity component and the
+/// Thread and coordination roles a profiled release and a Thread archive read.
+pub struct SessionTerminationCommands {
+    mutations: Arc<crate::SessionMutations>,
+    clock: Arc<dyn awaken_time::WallClock>,
+    lifecycle: Arc<crate::SessionLifecycle>,
+    terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
+    activities: Arc<crate::SessionActivities>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
+    coordination: Arc<dyn awaken_session_execution_contract::CoordinationRuntime>,
+    coordination_reads: Arc<dyn awaken_session_execution_contract::SessionCoordinationReads>,
+}
+
+impl SessionTerminationCommands {
+    pub(crate) fn new(
+        mutations: Arc<crate::SessionMutations>,
+        clock: Arc<dyn awaken_time::WallClock>,
+        lifecycle: Arc<crate::SessionLifecycle>,
+        terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
+        activities: Arc<crate::SessionActivities>,
+        runtime: &crate::SessionExecutor,
+    ) -> Self {
+        Self {
+            mutations,
+            clock,
+            lifecycle,
+            terminal_cleanups,
+            activities,
+            thread_reads: runtime.thread_reads.clone(),
+            coordination: runtime.coordination.clone(),
+            coordination_reads: runtime.coordination_reads.clone(),
+        }
+    }
+
     fn resolve_repository_publication_intent(
         session: &PersistedSession,
         selector: &SessionRepositoryPublicationSelector,
@@ -393,6 +432,7 @@ impl SessionApplication {
         }
         self.lifecycle.request_reconciliation();
         let pending_reason = self
+            .terminal_cleanups
             .release_terminal_resources(&transition.owner_scope, command.session_id.as_str())
             .await
             .err()
@@ -555,13 +595,14 @@ impl SessionApplication {
         // only shortens convergence when the current projector is available.
         self.lifecycle.request_reconciliation();
         let cleanup = self
+            .terminal_cleanups
             .release_terminal_resources(&transition.owner_scope, session_id.as_str())
             .await;
         match (admission != ArchiveAdmission::IdleOnly, cleanup) {
             (true, Ok(Some(session))) => {
                 if !session
                     .verified_terminal_cleanup()
-                    .map_err(super::resource_reconciliation::internal)?
+                    .map_err(super::credentials::internal)?
                     .is_completed()
                 {
                     return Err(SessionPreparationError::Unavailable(
@@ -587,17 +628,17 @@ impl SessionApplication {
     /// owned and detached: the caller observes the committed delete fence and
     /// cannot cancel or join the external-effect lifecycle.
     pub async fn delete_session(
-        self: &std::sync::Arc<Self>,
+        &self,
         command: SessionDeleteCommand,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
         let transition = self.lifecycle.commit_delete_intent(command).await?;
         self.lifecycle.notify_fact();
         self.lifecycle.request_reconciliation();
-        let application = std::sync::Arc::clone(self);
+        let terminal_cleanups = self.terminal_cleanups.clone();
         let owner_scope = transition.owner_scope.clone();
         let session_id = transition.session.session_id.clone();
         tokio::spawn(async move {
-            if let Err(error) = application
+            if let Err(error) = terminal_cleanups
                 .release_terminal_resources(&owner_scope, session_id.as_str())
                 .await
             {
@@ -652,7 +693,8 @@ impl SessionApplication {
                 },
             );
             if let Some(receipt) = self
-                .session_repository()
+                .mutations
+                .repository()
                 .idempotency_receipt(session_id, &command_record.key)
                 .await
                 .map_err(repository_failure)
@@ -684,7 +726,7 @@ impl SessionApplication {
                 .validate_execution(&session)
                 .map_err(SessionPreparationError::Rejected)?;
             if admission == ArchiveAdmission::FailedProfiledExecution {
-                crate::run_events::validate_failed_profiled_execution(self, &session).await?;
+                self.validate_failed_profiled_execution(&session).await?;
             }
             let archive_time = self.clock.now_ms();
             session
@@ -711,6 +753,73 @@ impl SessionApplication {
             }
         }
         Err(SessionPreparationError::Conflict)
+    }
+
+    pub async fn archive_session_thread(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &str,
+    ) -> Result<(), RunError> {
+        let coordination_reads = self.coordination_reads.as_ref();
+        let coordination = self.coordination.as_ref();
+
+        let child = awaken_agent_contract::agent::thread::Id(thread_id.to_string());
+        let links = coordination_reads
+            .coordinated_threads(session_id, None)
+            .await?;
+        if !links
+            .iter()
+            .any(|link| link.session_id == session_id && link.thread_id == child)
+        {
+            return Err(RunError::bad_request(
+                "Agent Thread was not found in this Session",
+            ));
+        }
+        coordination
+            .archive_session_thread(session_id, thread_id)
+            .await
+    }
+
+    /// Join existing committed Thread and original activity evidence. This does not
+    /// prove that effects stopped: archive only fences future Session entry, while
+    /// the original cleanup/attempt owners retain every external obligation.
+    async fn validate_failed_profiled_execution(
+        &self,
+        session: &awaken_session_state_contract::PersistedSession,
+    ) -> Result<(), crate::SessionPreparationError> {
+        use awaken_lease_contract::fence::Epoch;
+        let refused = || {
+            SessionPreparationError::Rejected(RunError::bad_request(
+                "profiled release requires the exact failed or cancelled current Run activity",
+            ))
+        };
+        let snapshot = self
+            .thread_reads
+            .session_thread_recovery_snapshot(&session.session_id, session.session_id.as_str())
+            .await
+            .map_err(SessionPreparationError::Rejected)?
+            .ok_or_else(refused)?;
+        let run =
+            awaken_session_state_contract::failed_profiled_run_for_archive(session, &snapshot)
+                .ok_or_else(refused)?;
+        let operation = awaken_session_execution_contract::session_run_activity_operation_id(
+            &session.session_id,
+            &run.id,
+        );
+        let (observed, epoch) = self
+            .activities
+            .recover_activity_for_operation(
+                &session.session_id,
+                &operation,
+                Some((&run.thread_id, &run.id)),
+            )
+            .await
+            .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?
+            .ok_or_else(refused)?;
+        let epoch = Epoch::from_persisted(epoch).ok_or_else(refused)?;
+        awaken_session_state_contract::failed_profiled_activity_matches(session, &observed, epoch)
+            .then_some(())
+            .ok_or_else(refused)
     }
 }
 
