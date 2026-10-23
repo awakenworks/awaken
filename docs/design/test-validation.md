@@ -26,6 +26,8 @@ complete candidate qualification.
 
 ## Design a test before choosing its fixture
 
+The [Session execution and resource acceptance checklist](session-execution-test-acceptance.md) calibrates the earlier 37 requirement groups against source and retained execution witnesses. Its [machine-readable catalog](session-execution-test-acceptance/catalog.json) records scenarios, assertion scopes and pending facets; it is not a second executable suite manifest or a declaration that all groups passed.
+
 For a changed behavior, name the production entrypoint, invariant, legal state
 transitions, and observable refusal/commit effect. Reuse its existing owner and
 testkit rather than introducing another product contract to support a test.
