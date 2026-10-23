@@ -68,8 +68,6 @@ impl SessionObservations {
     ) -> Result<SessionExecutionObservation, crate::SessionProjectionRecoveryError> {
         let thread_reads = self.thread_reads.as_ref();
 
-        use awaken_agent_contract::audit::model_request::ModelRequestObservation as RuntimeModelRequestObservation;
-
         let recovered = self
             .queries
             .read_session_projection(session_id.as_str(), Some(workspace_id))
@@ -130,28 +128,12 @@ impl SessionObservations {
                                 }
                             }
                         }
-                        let model_requests = snapshot
-                            .events
-                            .iter()
-                            .filter(|event| event.run_id == run.id)
-                            .try_fold(Vec::new(), |mut observations, event| {
-                                if let Some(observation) =
-                                    RuntimeModelRequestObservation::from_record(event)?
-                                {
-                                    observations.push(SessionModelRequestObservation {
-                                        sequence: event.sequence,
-                                        is_error: observation.is_error,
-                                        retry_count: observation.retry_count,
-                                    });
-                                }
-                                Ok::<_, serde_json::Error>(observations)
-                            })
-                            .map_err(|error| {
-                                crate::SessionProjectionRecoveryError::Rejected(RunError::internal(
-                                    format!("decode committed model request observation: {error}"),
-                                ))
-                            })?;
+                        let model_requests = SessionModelRequestObservation::for_run(&snapshot.events, &run.id)
+                            .map_err(|error| crate::SessionProjectionRecoveryError::Rejected(RunError::internal(format!("decode committed model request observation: {error}"))))?;
+                        let model_operations = awaken_runtime_contract::model_inspection::recorded_model_operations(&snapshot.state, &run.id)
+                            .map_err(crate::SessionProjectionRecoveryError::Unavailable)?;
                         Ok(SessionRunExecutionObservation {
+                            model_operations,
                             run_id: run.id,
                             idempotency_key,
                             state: run.state,
@@ -188,6 +170,7 @@ impl SessionObservations {
             None
         };
         Ok(SessionExecutionObservation {
+            configuration: Some(self.queries.inspect_configuration(workspace_id, baseline)),
             artifact_capture,
             recovery: self
                 .coordination_reads

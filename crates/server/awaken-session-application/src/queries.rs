@@ -108,6 +108,26 @@ impl SessionQueries {
         })
     }
 
+    /// Project only this original baseline and exact snapshot; a missing pin
+    /// remains absent rather than falling through to today's current Agent.
+    pub(crate) fn inspect_configuration(
+        &self,
+        workspace: &str,
+        baseline: &awaken_session_configuration_contract::SessionBaseline,
+    ) -> awaken_session_configuration_contract::SessionConfigurationInspection {
+        let mut view =
+            awaken_session_configuration_contract::SessionConfigurationInspection::from_baseline(
+                baseline,
+            );
+        view.publication = baseline
+            .agent_revision
+            .and_then(|revision| {
+                self.executable_snapshot_at_revision(workspace, &baseline.agent_id, revision)
+            })
+            .map(awaken_session_configuration_contract::publication_inspection);
+        view
+    }
+
     /// Preserve the selected source's own delegate-availability implementation.
     pub(crate) fn unavailable_delegate(
         &self,

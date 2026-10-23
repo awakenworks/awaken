@@ -158,7 +158,7 @@ modules are implemented or driven only by the Execution and Committed Truth cont
 
 | Tier | Modules |
 |---|---|
-| Value | `resolved`, `snapshot` (with the private `snapshot_builder`, item 5), `resolution` (item 5), `agent_bindings`, `delegation`, `resilience` |
+| Value | `resolved`, `snapshot` (with the private `snapshot_builder`, item 5), `resolution` (item 5), `agent_bindings`, `delegation`, `resilience`, `model_inspection` (committed-prefix values only) |
 | SPI | `llm`, `plugin`, `execution`, `resume`, `pause`, `control`, `live_inbox`, `terminal`, `attempt_termination`, `compaction`, `boundary`, `metrics`, `runtime_context`, `resolver`, `activation`, `model_operation` |
 | Mixed (values + SPI traits) | `capture` (values; `ContentRedactor`), `permission` (policy values; `ToolPermissionPolicy`, `PermissionGrantObserver`, `ToolGateHook`), `data_subject` (SDK part per item 2: `DataSubjectId`, `Purpose` values; `CaptureSink`) |
 | Leaves | `capability` (item 3), `model_routing` (item 4), the governance part of `data_subject` (item 2: consent sources, resolvers, erasure, privacy export), the Platform part of `credential` (item 7) |
@@ -633,3 +633,40 @@ commit checks, final clean-source API/SemVer/package/artifact consumption,
 registry resolution, downstream migrations and the Native thirteen-group
 qualification remain distinct required evidence. This source/version decision
 neither publishes a registry artifact nor authorizes a push.
+
+
+## Amendment — 2026-10-23: inspect original Session configuration and model attempts
+
+With `include_inspection=true`, the existing execution-evidence read includes a safe configuration projection
+of the same frozen Session baseline and its exact published executable snapshot.
+Environment revision, network, packages, resource limits, plugin configuration,
+context policy and delegation limits retain their original owner; no inspection
+store or current-draft fallback is introduced. A missing publication pin or an
+unavailable historical snapshot is reported explicitly, never replaced by the
+current Agent. Secret environment values, inline mount bytes and credential
+capabilities are excluded. Plugin configuration uses the shared sensitive-field
+scrubber; typed credential bindings remain references only.
+
+Run model routes come from `ActiveModelOperation::recorded` over the same committed
+Thread snapshot already used for execution evidence. These are recorded attempts,
+including uncertain entry, rather than proof of a successful provider call. The
+Session's selected model is never relabeled as each Run's actual model.
+
+Reused unchanged: Session repository, immutable executable catalog, canonical
+model-operation decoder and capture policy. Modified: the existing read projection
+and Console inspector. New: only safe transient projection values. Reads are
+Workspace-fenced and perform no realization, dispatch, credential resolution or
+retry. Missing history stays absent; malformed committed operations fail the read.
+
+The content-capture endpoint reports today's policy decision, not a historical
+request receipt. Existing captured telemetry contains scrubbed message text but
+lacks a trustworthy Session/Run association and a complete provider request. The
+inspector must report final request content as unavailable instead of reconstructing
+it from today's draft, the conversation transcript or that policy decision.
+
+The [frozen Session baseline](0066-session-service-binding-and-realization.md)
+retains its original owner. `model_inspection` is Value language: its pure read
+accepts an already committed command prefix and exposes no engine handle,
+evidence-store port, allocator, mutation, reentry decision or execution permission.
+Session readers use this boundary instead of importing the engine SPI. The
+original decoder remains the only model-journal interpretation.

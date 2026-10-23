@@ -784,3 +784,18 @@ cover the exact role set, unique deterministic grants, foreign Workspace denial,
 publisher isolation, and authority-preserving migration. This amendment
 supersedes the earlier API-key-only description of the canonical ingress role,
 not the historical legacy profile or its migration source authority.
+
+
+### 2026-10-23 Console draft presentation scope
+
+The existing trusted Workspace-context read may expose `principal_scope_key`,
+an opaque digest of the authenticated principal reference and deployment identity
+mode. Explicit no-login mode has one local operator scope; an authenticated mode
+without a trusted principal returns no key. This value is presentation only,
+not a principal, credential, grant, resource, or authorization decision.
+
+Console may retain unsent text in this browser tab only under that returned actor
+scope plus the exact Workspace/Session coordinate. A missing scope disables draft
+retention. Actor changes remount the composer before restoring text. File bytes,
+credentials, and protocol request identities are excluded; normal Session read
+and command authorization remains unchanged.

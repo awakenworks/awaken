@@ -15,6 +15,7 @@ pub mod execution;
 pub mod live_inbox;
 pub mod llm;
 pub mod metrics;
+pub mod model_inspection;
 pub mod model_operation;
 mod model_routing;
 pub mod pause;

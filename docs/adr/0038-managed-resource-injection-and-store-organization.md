@@ -933,3 +933,37 @@ claim that a File appeared in the Session's historical catalog.
 - The port renames in [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md)'s
   header (`FileStore` → `File`, `SkillStore` → `SkillRegistry`) were not applied;
   ADR-0039's 2026-10-09 amendment withdraws them.
+
+
+### 2026-10-23 amendment: observe Session inputs before using them
+
+The existing Awaken Resource Manifest route also accepts `GET`. Its observation
+projects the same persisted Session root as the existing `PUT`: desired and
+applied Resource revisions, activation phase, desired input descriptors, and
+structurally available mutation classes. The frozen Session mutation policy and
+terminal disposition determine those classes; the normal PEP still authorizes
+every command. The observation grants no authority and performs no activation,
+credential resolution, or Resource mutation.
+
+Console shows preparing inputs until the observed applied revision reaches the
+desired revision. Upload completion alone is not evidence of activation. File
+selection, Memory selection, and Repository configuration retain their distinct
+contracts while using the existing Session command and reconciliation paths.
+The official Managed resource list keeps its existing SDK-compatible shape.
+
+
+The GET observation's `revision` is the Resource mutation watermark used for
+`If-Match`. Its `desired_revision` and `applied_revision` pair actual manifests
+through the existing `desired_generation`/`active_revision` laws. A rolled-back
+attempt advances the watermark but retains both old manifest generations;
+`unapplied_revision` reports that distinction without inventing a failure cause.
+The ordinary Managed list keeps its watermark ETag. Existing PUT receipts keep
+their wire shape; Console reads the observation after a write before declaring
+the new inputs usable.
+
+The same GET projects selected input identities, access ceilings, resource
+configuration versions and instructions, plus exact frozen Skill versions and
+bundle hashes. These fields come from the selected manifest, not current Agent
+drafts or mutable catalog defaults. The projection deliberately excludes
+Repository credential material and execution capabilities; configuration pins
+do not claim immutable Memory content or a Git branch head.
