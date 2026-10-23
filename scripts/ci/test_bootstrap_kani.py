@@ -3,12 +3,16 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
 import unittest
 import _strict_unittest as strict_unittest
 from unittest import mock
+from _native_shell import bash_executable
+from formal_sources import detached_git_environment
+from test_formal_run_evidence import nested_shell_function, run_shell_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -37,6 +41,8 @@ if name == "git":
         print(os.environ.get(prefix + "ACTUAL_REVISION", os.environ[prefix + "PINNED_REVISION"]))
     elif action == "ls-files":
         print("unexpected.rs" if os.environ.get(prefix + "UNTRACKED") else "")
+    elif action == "apply" and "--numstat" in args:
+        pass  # Real Git path/index behavior belongs to ActualPatchSourceTests.
     elif action == "apply" and "--check" not in args:
         (source / "applied").touch()
     elif action == "diff":
@@ -45,7 +51,10 @@ if name == "git":
         if "--quiet" in args:
             sys.exit(int((source / "applied").exists() or bool(os.environ.get(prefix + "DRIFT"))))
         if (source / "applied").exists():
-            sys.stdout.write(pathlib.Path(os.environ[prefix + "PATCH"]).read_text())
+            patch = pathlib.Path(os.environ[prefix + "PATCH"]).read_text()
+            if os.environ.get(prefix + "CONTEXT_SPACES"):
+                patch = "\n".join(" " if line == "" else line for line in patch.splitlines()) + "\n"
+            sys.stdout.write(patch)
         if os.environ.get(prefix + "DRIFT"):
             print("unreviewed change")
 elif name == "cmake":
@@ -68,6 +77,13 @@ elif name == "cbmc":
     print("[main.assertion.1] force typed pointer discovery: FAILURE" if negative else "VERIFICATION SUCCESSFUL")
     sys.exit(int(os.environ.get("NEGATIVE_EXIT" if negative else "POSITIVE_EXIT", "10" if negative else "0")))
 elif name == "cargo":
+    if args[:1] == ["test"]:
+        if (args != ["test", "--locked", "-p", "kani-driver", "artifact_profile", "--", "--nocapture"]
+                or os.environ.get("RUSTUP_TOOLCHAIN") != os.environ["PINNED_TOOLCHAIN"]):
+            print("driver artifact-profile qualification differs", file=sys.stderr)
+            sys.exit(32)
+        print(os.environ.get("DRIVER_TEST_OUTPUT", "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"))
+        sys.exit(int(os.environ.get("DRIVER_TEST_EXIT", "0")))
     if args[:1] in (["metadata"], ["kani"]):
         expected = os.environ.get("EXPECT_POST_BUILD_TOOLCHAIN")
         if expected is not None and os.environ.get("RUSTUP_TOOLCHAIN") != expected:
@@ -239,7 +255,8 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual((self.cache / "current").resolve(), self.patched)
             self.assertTrue(self.previous.is_dir())
         calls = self.calls.read_text().splitlines()
-        applied = [line for line in calls if " apply " in line and "--check" not in line]
+        applied = [line for line in calls if " apply " in line
+                   and "--check" not in line and "--numstat" not in line]
         self.assertEqual(len(applied), 2)
         builds = [i for i, line in enumerate(calls) if line == "cargo build-dev"]
         checks = [i for i, line in enumerate(calls) if line.startswith("kani ")]
@@ -247,6 +264,29 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(len(builds), 1, "qualified cache must never rebuild in place")
         self.assertTrue(all(builds[0] < check for check in checks))
         self.assertTrue(all("--target-dir" in calls[i] and "kani_wide_niche.rs" in calls[i] for i in checks))
+
+    def test_driver_profile_binding_and_renderer_are_required_before_publication(self):
+        # Causes D1 the real driver's artifact_profile tests pass; D2 they fail;
+        # D3 bootstrap omits/mis-selects that required test invocation. Effects:
+        # D1 permits later proof qualification; D2/D3 preserve old selection and
+        # publish no build receipt. The port models only process outcome; Rust
+        # unit tests in the reviewed patch own actual map and JSON behavior.
+        result = self.run_bootstrap(DRIVER_TEST_EXIT="23")
+        self.assertEqual(result.returncode, 23, result.stderr)
+        self.assertEqual((self.cache / "current").resolve(), self.previous)
+        self.assertFalse((self.patched / "target/awaken-kani-build.sha256").exists())
+        self.assertNotIn("kani ", self.calls.read_text())
+        self.assertIn("cargo test --locked -p kani-driver artifact_profile -- --nocapture", self.calls.read_text())
+
+    def test_driver_tests_cannot_qualify_an_empty_or_skipped_selection(self):
+        # D4 exit zero with absent/zero/ignored test execution cannot publish a
+        # build. All four actual binder/renderer cases must execute and pass.
+        for report in ("", "test result: ok. 0 passed; 0 failed; 0 ignored;",
+                       "test result: ok. 3 passed; 0 failed; 1 ignored;"):
+            with self.subTest(report=report):
+                self.assertNotEqual(self.run_bootstrap(DRIVER_TEST_OUTPUT=report).returncode, 0)
+                self.assertEqual((self.cache / "current").resolve(), self.previous)
+                self.assertFalse((self.patched / "target/awaken-kani-build.sha256").exists())
 
     def test_verbose_constructor_statistics_qualify_before_compiler_publication(self):
         # V1 complete constructor qualification => publish. V2 dropping verbose
@@ -357,6 +397,15 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("patch digest", result.stderr)
         self.assertFalse(self.calls.exists())
         self.assertEqual((self.cache / "current").resolve(), self.previous)
+
+    def test_empty_context_spelling_does_not_hide_source_changes(self):
+        # W1 Git's one-space empty context and W2 the reviewed empty spelling
+        # describe identical source -> same exact-patch admission. W3 a real
+        # extra source diff remains rejected. Only patch syntax is normalized;
+        # added/deleted source whitespace must never become an ignored axis.
+        self.assertEqual(self.run_bootstrap(CONTEXT_SPACES="1").returncode, 0, "W1")
+        self.assertEqual(self.run_bootstrap().returncode, 0, "W2")
+        self.assertNotEqual(self.verify(CONTEXT_SPACES="1", DRIFT="1").returncode, 0, "W3")
 
     def test_published_build_and_readonly_verification_reject_every_later_drift(self):
         # R6 published cache + repeat/failing regression -> never rebuild it.
@@ -688,6 +737,73 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(len(packages), 2, f"Q2 a new artifact needs its own package: {packages}")
         self.assertIn("cmake", self.calls.read_text(), "Q2 a changed artifact input must rebuild")
         self.assertTrue(any(first.glob("qualified-*.txt")), "Q2 the previous package is untouched")
+
+
+@unittest.skipIf(os.name == "nt", "POSIX tool-source admission is qualified in the Linux gate")
+class ActualPatchSourceTests(unittest.TestCase):
+    def test_reviewed_new_file_is_exactly_admitted_without_widening_source_gates(self):
+        # Real-Git decision table (the mock Git build port cannot own these):
+        # G1 clean base + reviewed tracked/new files -> apply, ITA new file,
+        #    no cached delta, exact complete source accepted.
+        # G2 replay -> same bytes accepted without reapplying.
+        # G3 arbitrary untracked, G4 staged source, G5 unreviewed ITA -> refuse.
+        # Both tool call sites execute this one production apply/verifier owner.
+        source = (ROOT / "scripts/ci/bootstrap_kani.sh").read_text()
+        indented = "\n".join("  " + line for line in source.splitlines())
+        functions = "\n".join(nested_shell_function(indented, name)
+                              for name in ("verify_source", "apply_reviewed_patch"))
+        self.assertIn('apply_reviewed_patch CBMC "$cbmc_source"', source)
+        self.assertIn('apply_reviewed_patch Kani "$source_dir"', source)
+        environment = detached_git_environment()
+        with tempfile.TemporaryDirectory(prefix="awaken-real-patch-") as directory:
+            outer = Path(directory)
+            repo = outer / "source"
+            repo.mkdir()
+
+            def git(*arguments, check=True):
+                return subprocess.run(["git", "-c", "core.hooksPath=/dev/null",
+                                       "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                                       "-c", "commit.gpgsign=false", *arguments],
+                                      cwd=repo, env=environment, capture_output=True, text=True, check=check)
+
+            git("init", "--quiet")
+            tracked = repo / "tracked.txt"
+            added = repo / "new source\tmodule.rs"
+            tracked.write_text("before\n")
+            git("add", "tracked.txt")
+            git("commit", "--quiet", "-m", "fixture base")
+            revision = git("rev-parse", "HEAD").stdout.strip()
+            tracked.write_text("after\n")
+            added.write_text("reviewed new source\n")
+            git("add", "--intent-to-add", added.name)
+            patch = outer / "reviewed.patch"
+            patch.write_text(git("diff", "--binary", "HEAD").stdout)
+            git("restore", "--source=HEAD", "--staged", "--worktree", "tracked.txt")
+            git("reset", "--quiet", "HEAD", "--", added.name)
+            added.unlink()
+
+            def apply():
+                script = ("set -euo pipefail\n" + functions + "\napply_reviewed_patch Kani "
+                          + " ".join(shlex.quote(str(v)) for v in (repo, revision, patch)) + "\n")
+                return run_shell_fixture([bash_executable(), "-c", script], env=environment,
+                                         capture_output=True, text=True)
+
+            result = apply()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(added.read_text(), "reviewed new source\n", "G1")
+            self.assertEqual(git("ls-files", "--others", "--exclude-standard").stdout, "", "G1")
+            self.assertEqual(git("diff", "--cached", "--quiet", check=False).returncode, 0, "G1 no --index")
+            self.assertEqual(apply().returncode, 0, "G2")
+            unexpected = repo / "unexpected.txt"
+            unexpected.write_text("foreign input\n")
+            self.assertNotEqual(apply().returncode, 0, "G3")
+            unexpected.unlink()
+            git("add", "tracked.txt")
+            self.assertNotEqual(apply().returncode, 0, "G4")
+            git("reset", "--quiet", "HEAD", "--", "tracked.txt")
+            unexpected.write_text("unreviewed indexed input\n")
+            git("add", "--intent-to-add", "unexpected.txt")
+            self.assertNotEqual(apply().returncode, 0, "G5")
 
 
 if __name__ == "__main__":

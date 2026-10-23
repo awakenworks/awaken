@@ -38,3 +38,309 @@ index 4b2c0b93d..b758b6583 100644
              visitor
          });
      eprintln!("====== Reachability Analysis Result =======");
+diff --git a/kani-driver/src/call_cbmc.rs b/kani-driver/src/call_cbmc.rs
+index 760e94723..e3dd3611c 100644
+--- a/kani-driver/src/call_cbmc.rs
++++ b/kani-driver/src/call_cbmc.rs
+@@ -26,6 +26,8 @@
+ use crate::session::KaniSession;
+ use crate::util::render_command;
+
++mod profile_binding;
++
+ /// CBMC version and system information
+ #[derive(Debug, Clone)]
+ pub struct CbmcInfo {
+@@ -358,6 +360,8 @@ pub fn cbmc_flags(
+
+         args.extend(self.args.cbmc_args.iter().cloned());
+
++        self.bind_profile_unwindset(file, &mut args)?;
++
+         args.push(file.to_owned().into_os_string());
+
+         // Make CBMC verbose by default to tell users about unwinding progress. This should be
+@@ -368,6 +372,36 @@ pub fn cbmc_flags(
+         Ok(args)
+     }
+
++    /// Bind semantic Rust names only after this exact harness has been linked.
++    /// The original profile still owns every bound; these queries own no proof
++    /// settings and never modify the GOTO or introduce another verifier.
++    fn bind_profile_unwindset(&self, file: &Path, args: &mut [OsString]) -> Result<()> {
++        if !profile_binding::needs_binding(args) {
++            return Ok(());
++        }
++        use kani_metadata::{ArtifactType, artifact::convert_type};
++        let names = std::fs::File::open(convert_type(
++            file,
++            ArtifactType::Goto,
++            ArtifactType::PrettyNameMap,
++        ))?;
++        let names = serde_json::from_reader(names)?;
++        let query = |flag: &str| -> Result<serde_json::Value> {
++            let mut command = std::process::Command::new("goto-instrument");
++            command.args([flag, "--json-ui"]).arg(file);
++            let output = self.run_piped(command)?.wait_with_output()?;
++            anyhow::ensure!(
++                output.status.success(),
++                "profile artifact query {flag} failed: {}",
++                output.status
++            );
++            Ok(serde_json::from_slice(&output.stdout)?)
++        };
++        let symbols = query("--show-symbol-table")?;
++        let loops = query("--show-loops")?;
++        profile_binding::bind(args, &names, &symbols, &loops)
++    }
++
+     /// Just the flags to CBMC that enable property checking of any sort.
+     pub fn cbmc_check_flags(&self) -> Vec<OsString> {
+         let mut args = Vec::new();
+diff --git a/kani-driver/src/call_cbmc/profile_binding.rs b/kani-driver/src/call_cbmc/profile_binding.rs
+new file mode 100644
+index 000000000..5281235a7
+--- /dev/null
++++ b/kani-driver/src/call_cbmc/profile_binding.rs
+@@ -0,0 +1,201 @@
++// Copyright Kani Contributors
++// SPDX-License-Identifier: Apache-2.0 OR MIT
++//! Resolve audited Rust v0 semantic prototypes against one linked harness.
++//! `@<v0 prototype>[.loop]:bound` preserves the original full function/type
++//! identity while ignoring build-specific crate disambiguators. Ordinary C
++//! symbols remain literal. There is no alternate profile or bound authority.
++
++use anyhow::{Context, Result, bail, ensure};
++use rustc_demangle::try_demangle;
++use serde_json::{Map, Value};
++use std::ffi::OsString;
++
++pub(super) fn needs_binding(args: &[OsString]) -> bool {
++    args.windows(2).any(|pair| {
++        pair[0] == "--unwindset"
++            && pair[1].to_str().is_some_and(|v| v.split(',').any(|s| s.starts_with('@')))
++    })
++}
++
++fn single_field<'a>(document: &'a Value, field: &str) -> Result<&'a Value> {
++    let rows = document.as_array().context("profile artifact JSON is not an array")?;
++    let mut values = rows.iter().filter_map(|row| row.get(field));
++    let value = values.next().with_context(|| format!("profile artifact has no {field}"))?;
++    ensure!(values.next().is_none(), "profile artifact repeats {field}");
++    Ok(value)
++}
++
++fn semantic_name(symbol: &str) -> Result<String> {
++    let name = try_demangle(symbol)
++        .map_err(|_| anyhow::anyhow!("invalid profile Rust symbol {symbol}"))?;
++    Ok(format!("{name:#}"))
++}
++
++fn resolve(
++    entry: &str,
++    names: &Map<String, Value>,
++    symbols: &Value,
++    loops: &Value,
++) -> Result<String> {
++    let Some(prototype) = entry.strip_prefix('@') else { return Ok(entry.to_owned()) };
++    let (id, bound) = prototype.rsplit_once(':').context("profile override has no bound")?;
++    ensure!(bound.parse::<u32>().is_ok_and(|n| n > 0), "profile bound must be positive");
++    let (function, loop_number) = match id.rsplit_once('.') {
++        Some((function, number))
++            if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) =>
++        {
++            (function, Some(number))
++        }
++        _ => (id, None),
++    };
++    let expected = semantic_name(function)?;
++    let matches: Vec<_> = names
++        .keys()
++        .filter(|name| semantic_name(name).is_ok_and(|actual| actual == expected))
++        .collect();
++    ensure!(
++        matches.len() == 1,
++        "profile symbol {expected} has {} matches in this harness",
++        matches.len()
++    );
++    let actual = matches[0];
++    let table = single_field(symbols, "symbolTable")?
++        .as_object()
++        .context("invalid profile symbol table")?;
++    let symbol =
++        table.get(actual).context("profile function is absent from linked symbol table")?;
++    ensure!(
++        symbol.get("type").and_then(|t| t.get("id")).and_then(Value::as_str) == Some("code"),
++        "profile symbol {expected} is not a function"
++    );
++    let selected = if let Some(number) = loop_number {
++        let id = format!("{actual}.{number}");
++        let available =
++            single_field(loops, "loops")?.as_array().context("invalid profile loop list")?;
++        ensure!(
++            available.iter().filter(|l| l.get("name").and_then(Value::as_str) == Some(&id)).count()
++                == 1,
++            "profile loop {id} is absent or ambiguous in this harness"
++        );
++        id
++    } else {
++        actual.to_owned()
++    };
++    Ok(format!("{selected}:{bound}"))
++}
++
++pub(super) fn bind(
++    args: &mut [OsString],
++    names: &Value,
++    symbols: &Value,
++    loops: &Value,
++) -> Result<()> {
++    let names = names.as_object().context("invalid profile pretty-name map")?;
++    for index in 0..args.len().saturating_sub(1) {
++        if args[index] != "--unwindset" {
++            continue;
++        }
++        let value = args[index + 1].to_str().context("profile unwindset is not UTF-8")?;
++        let resolved = value
++            .split(',')
++            .map(|entry| resolve(entry, names, symbols, loops))
++            .collect::<Result<Vec<_>>>()?;
++        args[index + 1] = resolved.join(",").into();
++    }
++    if args.iter().any(|arg| arg.to_str().is_some_and(|s| s.starts_with('@'))) {
++        bail!("unbound profile marker outside --unwindset");
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::json;
++
++    // These are the actual old-profile and failed-harness Rust v0 identities.
++    // Causes: C1 same full semantic function, different compiler disambiguator;
++    // C2 zero/multiple matches; C3 wrong function type or missing loop; C4 bad
++    // profile bound/prototype. Effects: E1 exact current ID with unchanged bound;
++    // E2 fail before CBMC. Decision rules B1=C1=>E1; B2..B7=C2/C3/C4=>E2.
++    // Package ownership remains in formal_kani_options.serialize's P2 cases.
++    const OLD: &str = "_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeNtNtNtCskVouFqCx3lG_21awaken_agent_contract5agent7content12ContentBlockEBM_";
++    const NEW: &str = "_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeNtNtNtCse2RmgB3TfrN_21awaken_agent_contract5agent7content12ContentBlockEBM_";
++
++    fn fixture(ids: &[&str], kind: &str, with_loop: bool) -> (Value, Value, Value) {
++        let names: Map<_, _> = ids.iter().map(|id| ((*id).into(), json!(
++            "std::ptr::drop_in_place::<awaken_agent_contract::agent::content::ContentBlock>"
++        ))).collect();
++        let table: Map<_, _> =
++            ids.iter().map(|id| ((*id).into(), json!({"type":{"id":kind}}))).collect();
++        let loops: Vec<_> =
++            ids.iter().filter(|_| with_loop).map(|id| json!({"name":format!("{id}.0")})).collect();
++        (Value::Object(names), json!([{"symbolTable":table}]), json!([{"loops":loops}]))
++    }
++
++    #[test]
++    fn artifact_profile_binds_both_real_disambiguators_and_preserves_literals() {
++        for actual in [OLD, NEW] {
++            let (names, symbols, loops) = fixture(&[actual], "code", true);
++            let mut args =
++                vec!["--unwindset".into(), format!("@{OLD}:1,@{OLD}.0:1,memcmp.0:2").into()];
++            assert!(needs_binding(&args));
++            bind(&mut args, &names, &symbols, &loops).expect("B1");
++            assert_eq!(args[1], OsString::from(format!("{actual}:1,{actual}.0:1,memcmp.0:2")));
++            assert!(!needs_binding(&args));
++        }
++    }
++
++    #[test]
++    fn artifact_profile_refuses_missing_ambiguous_kind_and_loop() {
++        for (rule, ids, kind, has_loop, suffix, error) in [
++            ("B2", vec![], "code", true, "", "0 matches"),
++            ("B3", vec![OLD, NEW], "code", true, "", "2 matches"),
++            ("B4", vec![NEW], "struct", true, "", "not a function"),
++            ("B5", vec![NEW], "code", false, ".0", "absent or ambiguous"),
++        ] {
++            let (names, symbols, loops) = fixture(&ids, kind, has_loop);
++            let mut args = vec!["--unwindset".into(), format!("@{OLD}{suffix}:1").into()];
++            assert!(
++                bind(&mut args, &names, &symbols, &loops).unwrap_err().to_string().contains(error),
++                "{rule}"
++            );
++        }
++        // B8 duplicate loop inventory is ambiguous even with one function.
++        let (names, symbols, _) = fixture(&[NEW], "code", true);
++        let duplicate =
++            json!([{"loops":[{"name":format!("{NEW}.0")},{"name":format!("{NEW}.0")}]}]);
++        let mut args = vec!["--unwindset".into(), format!("@{OLD}.0:1").into()];
++        assert!(bind(&mut args, &names, &symbols, &duplicate).is_err(), "B8");
++
++        // B9-B11: valid Rust symbols with the same drop_in_place basename but
++        // a foreign crate, different type, or different generic signature
++        // cannot match. These remain code-kind candidates with a live loop;
++        // neither an empty map nor a short-name comparison covers this rule.
++        let wrong_crate = NEW.replace("21awaken_agent_contract", "21awaken_other_contract");
++        let wrong_type = "_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeNtNtCsbpSFxJTBWlC_10serde_json5value5ValueEBK_";
++        let wrong_signature = "_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeINtNtCs5YUhLFlCshu_5alloc3vec3VecNtNtNtCse2RmgB3TfrN_21awaken_agent_contract5agent7content12ContentBlockEEB1j_";
++        for wrong in [wrong_crate.as_str(), wrong_type, wrong_signature] {
++            assert!(try_demangle(wrong).is_ok(), "valid wrong-signature fixture");
++            let (names, symbols, loops) = fixture(&[wrong], "code", true);
++            let mut args = vec!["--unwindset".into(), format!("@{OLD}:1").into()];
++            assert!(
++                bind(&mut args, &names, &symbols, &loops)
++                    .unwrap_err()
++                    .to_string()
++                    .contains("0 matches")
++            );
++        }
++    }
++
++    #[test]
++    fn artifact_profile_refuses_invalid_prototype_bound_and_artifact() {
++        let (names, symbols, loops) = fixture(&[NEW], "code", true);
++        for value in [format!("@{OLD}:0"), "@not_rust:1".into(), format!("@{OLD}:1,@missing:1")] {
++            let mut args = vec!["--unwindset".into(), value.into()];
++            assert!(bind(&mut args, &names, &symbols, &loops).is_err(), "B6");
++        }
++        let mut args = vec!["--unwindset".into(), format!("@{OLD}:1").into()];
++        assert!(bind(&mut args, &names, &json!([]), &loops).is_err(), "B7");
++    }
++}
+diff --git a/kani-driver/src/cbmc_property_renderer.rs b/kani-driver/src/cbmc_property_renderer.rs
+index 720ea03b7..4f0c42285 100644
+--- a/kani-driver/src/cbmc_property_renderer.rs
++++ b/kani-driver/src/cbmc_property_renderer.rs
+@@ -240,8 +240,33 @@ fn format_item_regular(item: &ParserItem) -> Option<String> {
+ }
+
+ /// Formats an item using the terse output format
+-fn format_item_terse(_item: &ParserItem) -> Option<String> {
+-    None
++fn format_item_terse(item: &ParserItem) -> Option<String> {
++    match item {
++        ParserItem::Message { message_text, message_type } if message_type == "ERROR" => {
++            Some(message_text.clone())
++        }
++        _ => None,
++    }
++}
++
++#[cfg(test)]
++mod artifact_profile_diagnostics {
++    use super::*;
++
++    #[test]
++    fn artifact_profile_json_errors_survive_the_real_terse_renderer() {
++        // D1 parsed backend ERROR -> retain its exact reason in terse output;
++        // D2 STATUS-MESSAGE -> remain terse. The input is CBMC's actual JSON
++        // shape and this calls the production formatter, not a fake Cargo port
++        // conditioned on --verbose. Neither outcome changes verification status.
++        for (kind, expected) in
++            [("ERROR", Some("Invalid User Input: unwindset".into())), ("STATUS-MESSAGE", None)]
++        {
++            let json = serde_json::json!({"messageType":kind,"messageText":"Invalid User Input: unwindset"});
++            let item: ParserItem = serde_json::from_value(json).unwrap();
++            assert_eq!(format_item_terse(&item), expected, "{kind}");
++        }
++    }
+ }
+
+ /// Formats a result item (i.e., the complete set of verification checks).

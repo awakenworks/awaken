@@ -380,10 +380,47 @@ class ProfileTests(unittest.TestCase):
                 with self.subTest(mutation=mutation), self.assertRaises(formal_plan.PlanError):
                     formal_plan.batches(root, "full")
 
+    def test_erasure_profiles_follow_their_actual_frame_callers(self):
+        # Scope decision table: E1 the successor preserves every field, list
+        # length and both ordered optional rows through check_successor's tuple
+        # frame; its real compiler and linked GOTO emit no SlicePartialEq
+        # equal_same_length. E2 selection/action clone and compare complete
+        # ErasureProgress rows, so their existing equality loop remains live.
+        # E1 -> retain the five live pins 3/3/4/3/3 without requesting a missing
+        # whole-vector function. E2 -> retain Eq4 and the existing complete argv
+        # (also pinned by P3 below). Both retain the same production inputs,
+        # globals 3/8, CaDiCaL, allocation/Drop and unwinding assertions. Missing
+        # requested symbols still fail in the original driver's B2/B5 tests;
+        # this profile scope rule never grants an allow-missing exception.
+        import formal_plan
+        from formal_kani_options import PROFILES
+        successor = "erasure-checkpoint-successor-v1"
+        selection = "erasure-progress-selection-v1"
+        loops = PROFILES[successor].loops
+        self.assertEqual([bound for _, bound in loops], [3, 3, 4, 3, 3], "E1 live bounds")
+        self.assertFalse(any("equal_same_length" in symbol for symbol, _ in loops), "E1")
+        equality = [(symbol, bound) for symbol, bound in PROFILES[selection].loops
+                    if "equal_same_length" in symbol]
+        self.assertEqual(len(equality), 1, "E2 retains exactly one whole-frame loop")
+        self.assertEqual(equality[0][1], 4, "E2 original bound")
+        planned = formal_plan.batches(Path(__file__).resolve().parents[2], "full")
+        members = {profile: sorted(name for batch in planned
+                                  if batch.selection.profile == profile for name in batch.names)
+                   for profile in (successor, selection)}
+        self.assertEqual(members[successor], [
+            "erasure_verification::erasure_checkpoint_successor_preserves_all_completed_targets",
+        ], "E1 only the tuple-frame caller")
+        self.assertEqual(members[selection], [
+            "erasure_verification::erasure_checkpoint_action_requires_all_targets_and_accountability",
+            "erasure_verification::erasure_progress_selects_exact_first_pending_target",
+        ], "E2 both whole-frame callers keep their original shared profile")
+
     def test_checked_profiles_bind_runtime_and_checker(self):
         # Cause/effect rules: P1 a known profile serializes one canonical argv
         # around the harness filter -- `-Z unstable-options`, its fixed solver,
-        # the filter, then its literal loop bounds; a solver-only profile is
+        # the filter, then its unchanged bounds. Rust prototypes are explicitly
+        # marked for per-harness semantic binding; C builtin identities stay
+        # literal. A solver-only profile is
         # the solver and the filter. P2 an unknown profile, or a
         # package-bound profile used from another package, is refused before
         # any Cargo call. P3 the pinned argv of every profile: a changed loop,
@@ -397,14 +434,14 @@ class ProfileTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         gate = (root / "scripts/ci/check_formal.sh").read_text()
         frozen = {
-            "resume-validator-empty-object-v1": "8d586e06db78f05e59c45c650907736c1dd597d6e8367ed9a4c5c8fb708aa382",
-            "erasure-progress-selection-v1": "4052ded580c29bca71f8cbd73a747fa1b9d85d43c709b8006fbaf5313652012d",
-            "erasure-checkpoint-successor-v1": "012c22d237f41cee1953bc1322707632f45f88c4981c0499b1f1b49645a95d91",
-            "fingerprint-fnv-hex-v1": "999182642c04b9eeb4fdff6a51aab78f91f31203383015d1e5c044481ce8e9c3",
-            "fingerprint-sha256-hex-v1": "f92d9f7a6e8af73cb22340453f27f9f73ca1ad3eba3ce2f6fdd056649064fdf0",
-            "activity-admission-height-v1": "efd7d74749d4fae65c9f888e0b7c94f074979a1b97b497b8497e7f8b084df65f",
-            "activity-terminal-height-v1": "656be82c5090279133b890987147325ce4c38eadde056584c279713b14284a53",
-            "retained-accepted-two-replay-v1": "761f6133478b066ef75c572cab15e8a5ba03b57f69be3fb672173fc3c4626a7e",
+            "resume-validator-empty-object-v1": "b529eb5a54c1c51037d60360cc9d0f13df0f818c8736d183ed8baf666462c447",
+            "erasure-progress-selection-v1": "95e06441f692e92fb485db8228dbf8c653dc1e76924ef0f28695a56430d523f8",
+            "erasure-checkpoint-successor-v1": "1ebe2d10bfcffb6af6c1546e5edab8d13b9d7991f4c703a1594e64bad8934727",
+            "fingerprint-fnv-hex-v1": "61a6161828525438e6dd18db14dac55645c7c551154a2b26dffe589cc63c1008",
+            "fingerprint-sha256-hex-v1": "f39b1b6dedee755b5ba0e62275de319573f5e980e914793aa39ad486b4774e91",
+            "activity-admission-height-v1": "b4d759da86c600035454aacc87da0c015e6e30ce471d529928db70891a144c3f",
+            "activity-terminal-height-v1": "3761fa5998786fe8be3f944b68da7dc07ea2372cdcec3b9f0404b15600060c14",
+            "retained-accepted-two-replay-v1": "cc4c0a0719d8dbcf68f25db66e1f76167e7dcf2d804432a6d5caa42ffbf39c47",
             "unwind-memcmp-2-v1": "7a47708ca2fa05ed3db19ffd5d390f8b60287aaff91947ce238a4c182a31530b",
             "unwind-memcmp-64-v1": "46eaff90bd3f7b0d469920c6345f769512f3c33ea4de6b29777ecd0f5e6e6588",
             "unwind-memcmp-65-v1": "d6e88e38c1eab25178f2325c4f55ed94596a4b02999dcdf40d05d8861d15c0d6",
@@ -422,8 +459,14 @@ class ProfileTests(unittest.TestCase):
                 argv = options.serialize(name, package, selection)
                 solver = ["--solver", profile.solver] if profile.solver else []
                 if profile.loops:
-                    self.assertEqual(argv, ["-Z", "unstable-options", *solver, *selection, "--cbmc-args",
-                                            "--unwindset", ",".join(f"{loop}:{bound}" for loop, bound in profile.loops)], "P1")
+                    wire = argv[argv.index("--unwindset") + 1].split(",")
+                    self.assertEqual(len(wire), len(profile.loops), "P1 no omitted or duplicated override")
+                    for encoded, (prototype, bound) in zip(wire, profile.loops, strict=True):
+                        identity, encoded_bound = encoded.rsplit(":", 1)
+                        self.assertEqual(encoded_bound, str(bound), "P1 preserve bounds")
+                        self.assertEqual(identity.removeprefix("@"), prototype, "P1 preserve full semantic prototype")
+                        self.assertEqual(identity.startswith("@"), prototype.startswith("_R"), "P1 only Rust identities bind")
+                    self.assertEqual(argv[:argv.index("--unwindset")], ["-Z", "unstable-options", *solver, *selection, "--cbmc-args"], "P1")
                 else:
                     self.assertEqual(argv, [*solver, *selection], "P1")
                 pinned = hashlib.sha256(json.dumps(options.serialize(name, package, []),
