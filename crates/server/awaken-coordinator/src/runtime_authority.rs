@@ -4,7 +4,7 @@
 // @formal reason: Coordinator-side runtime authority implementation.
 //! Coordinator-owned Runtime persistence adapters.
 //!
-//! This is the only Coordinator module that turns Runtime deployment configuration into
+//! This is the only Coordinator module that turns the Coordinator storage selection into
 //! concrete commit, dispatch, wake, and stream-checkpoint stores. The Runtime
 //! Host receives the resulting capability through `RuntimeAuthority` and never
 //! opens a database itself.
@@ -26,9 +26,9 @@ use awaken_agent_contract::thread::read::lifecycle::{
 use awaken_dispatch_erasure::{
     LocalCommit, LocalCommitAdapter, LocalCommitQueries, RuntimeAuthority, RuntimeAuthorityError,
 };
+use awaken_dispatch_execution::{CoordinatorStorage, DispatchBackend, StoreKind, Wake};
 use awaken_dispatch::AnyCoordinatorDispatch;
 use awaken_dispatch_contract::WakeSignal;
-use awaken_session_executor::{DeploymentConfig, DispatchBackend, StoreKind, Wake};
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_postgres::PostgresCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;
@@ -233,11 +233,11 @@ struct CommitAuthorityConfig {
     storage_dir: Option<PathBuf>,
 }
 
-impl From<&DeploymentConfig> for CommitAuthorityConfig {
-    fn from(deployment: &DeploymentConfig) -> Self {
+impl From<&CoordinatorStorage> for CommitAuthorityConfig {
+    fn from(storage: &CoordinatorStorage) -> Self {
         Self {
-            store: deployment.store,
-            storage_dir: deployment.storage_dir.clone(),
+            store: storage.store,
+            storage_dir: storage.storage_dir.clone(),
         }
     }
 }
@@ -245,18 +245,18 @@ impl From<&DeploymentConfig> for CommitAuthorityConfig {
 impl DurableRuntimeAuthority {
     #[cfg(any(test, feature = "test-support"))]
     pub async fn open(
-        deployment: &DeploymentConfig,
+        storage: &CoordinatorStorage,
         schema: SchemaAccess,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Arc<Self>, String> {
-        let postgres_pool = if deployment.dispatch_backend == DispatchBackend::Postgres
-            || deployment.store == StoreKind::Postgres
+        let postgres_pool = if storage.dispatch_backend == DispatchBackend::Postgres
+            || storage.store == StoreKind::Postgres
         {
             Some(
                 awaken_sql_storage::postgres_pool_options()
-                    .max_connections(deployment.postgres_max_connections.get())
+                    .max_connections(storage.postgres_max_connections.get())
                     .connect(required_database_url(
-                        deployment,
+                        storage,
                         "Postgres Runtime authority",
                     )?)
                     .await
@@ -265,20 +265,20 @@ impl DurableRuntimeAuthority {
         } else {
             None
         };
-        Self::open_with_postgres_pool(deployment, schema, postgres_pool, clock).await
+        Self::open_with_postgres_pool(storage, schema, postgres_pool, clock).await
     }
 
     /// Open every Runtime persistence adapter over the process's one
     /// process pool when Postgres is selected. SQLite callers pass no pool.
     pub async fn open_with_postgres_pool(
-        deployment: &DeploymentConfig,
+        storage: &CoordinatorStorage,
         schema: SchemaAccess,
         postgres_pool: Option<sqlx::PgPool>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Arc<Self>, String> {
         let (dispatch, wake) =
-            open_dispatch(deployment, schema, postgres_pool.clone(), clock.clone()).await?;
-        let postgres_commit = if deployment.store == StoreKind::Postgres {
+            open_dispatch(storage, schema, postgres_pool.clone(), clock.clone()).await?;
+        let postgres_commit = if storage.store == StoreKind::Postgres {
             let pool = postgres_pool.ok_or_else(|| {
                 "Postgres commit requires the process-owned Coordinator pool".to_owned()
             })?;
@@ -292,7 +292,7 @@ impl DurableRuntimeAuthority {
             None
         };
         Ok(Arc::new(Self {
-            commit: CommitAuthorityConfig::from(deployment),
+            commit: CommitAuthorityConfig::from(storage),
             clock,
             dispatch,
             wake,
@@ -317,13 +317,13 @@ fn thread_commit_path(store: StoreKind, root: &std::path::Path, thread: &str) ->
 }
 
 pub(crate) async fn migrate_with_pool(
-    deployment: &DeploymentConfig,
+    storage: &CoordinatorStorage,
     pool: sqlx::PgPool,
 ) -> Result<(), String> {
-    if deployment.dispatch_backend == DispatchBackend::Postgres {
+    if storage.dispatch_backend == DispatchBackend::Postgres {
         awaken_dispatch::with_postgres_dispatch_pool(pool.clone()).await?;
     }
-    if deployment.store == StoreKind::Postgres {
+    if storage.store == StoreKind::Postgres {
         PostgresCommitCoordinator::with_pool(pool)
             .await
             .map_err(|error| error.to_string())?;
@@ -333,24 +333,24 @@ pub(crate) async fn migrate_with_pool(
 
 #[cfg(any(test, feature = "test-support"))]
 fn required_database_url<'a>(
-    deployment: &'a DeploymentConfig,
+    storage: &'a CoordinatorStorage,
     component: &str,
 ) -> Result<&'a str, String> {
-    deployment
+    storage
         .database_url
         .as_deref()
         .ok_or_else(|| format!("{component} requires runtime.database_url"))
 }
 
 async fn open_dispatch(
-    deployment: &DeploymentConfig,
+    storage: &CoordinatorStorage,
     schema: SchemaAccess,
     postgres_pool: Option<sqlx::PgPool>,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<(Arc<AnyCoordinatorDispatch>, Option<Arc<dyn WakeSignal>>), String> {
-    match deployment.dispatch_backend {
+    match storage.dispatch_backend {
         DispatchBackend::Sqlite => {
-            let root = deployment.storage_dir.as_deref().ok_or_else(|| {
+            let root = storage.storage_dir.as_deref().ok_or_else(|| {
                 "Coordinator SQLite dispatch requires runtime.storage_dir; refusing volatile dispatch authority"
                     .to_owned()
             })?;
@@ -366,7 +366,7 @@ async fn open_dispatch(
             let pool = postgres_pool.ok_or_else(|| {
                 "Postgres dispatch requires the process-owned Coordinator pool".to_owned()
             })?;
-            match deployment.wake {
+            match storage.wake {
                 Wake::None => {
                     let store = match schema {
                         SchemaAccess::Migrate => {
@@ -383,21 +383,21 @@ async fn open_dispatch(
                         SchemaAccess::Migrate => {
                             awaken_dispatch::with_postgres_dispatch_pool_and_wake(
                                 pool,
-                                &deployment.wake_channel,
+                                &storage.wake_channel,
                             )
                             .await?
                         }
                         SchemaAccess::Verify => {
                             awaken_dispatch::with_existing_postgres_dispatch_pool_and_wake(
                                 pool,
-                                &deployment.wake_channel,
+                                &storage.wake_channel,
                             )
                             .await?
                         }
                     };
                     Ok((Arc::new(store), Some(wake)))
                 }
-                Wake::Nats => open_nats_dispatch(pool, deployment, schema).await,
+                Wake::Nats => open_nats_dispatch(pool, storage, schema).await,
             }
         }
     }
@@ -406,10 +406,10 @@ async fn open_dispatch(
 #[cfg(feature = "nats")]
 async fn open_nats_dispatch(
     pool: sqlx::PgPool,
-    deployment: &DeploymentConfig,
+    storage: &CoordinatorStorage,
     schema: SchemaAccess,
 ) -> Result<(Arc<AnyCoordinatorDispatch>, Option<Arc<dyn WakeSignal>>), String> {
-    let nats_url = deployment
+    let nats_url = storage
         .nats_url
         .as_deref()
         .ok_or_else(|| "NATS dispatch wake requires runtime.nats_url".to_owned())?;
@@ -420,7 +420,7 @@ async fn open_nats_dispatch(
         }
     };
     let wake: Arc<dyn WakeSignal> = Arc::new(
-        awaken_dispatch::NatsWakeSignal::connect(nats_url, deployment.wake_channel.clone())
+        awaken_dispatch::NatsWakeSignal::connect(nats_url, storage.wake_channel.clone())
             .await
             .map_err(|error| error.to_string())?,
     );
@@ -430,7 +430,7 @@ async fn open_nats_dispatch(
 #[cfg(not(feature = "nats"))]
 async fn open_nats_dispatch(
     _pool: sqlx::PgPool,
-    _deployment: &DeploymentConfig,
+    _storage: &CoordinatorStorage,
     _schema: SchemaAccess,
 ) -> Result<(Arc<AnyCoordinatorDispatch>, Option<Arc<dyn WakeSignal>>), String> {
     Err("NATS dispatch wake requested but awaken-coordinator was built without `nats`".to_owned())
@@ -688,8 +688,22 @@ impl LocalCommitQueries<PostgresCommitCoordinator> for PostgresQueries {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// The volatile selection every rule below starts from.
+    pub(crate) fn test_storage() -> CoordinatorStorage {
+        CoordinatorStorage {
+            storage_dir: None,
+            store: StoreKind::Sqlite,
+            dispatch_backend: DispatchBackend::Sqlite,
+            wake: Wake::None,
+            wake_channel: "awaken_dispatch_wake".to_owned(),
+            nats_url: None,
+            database_url: None,
+            postgres_max_connections: std::num::NonZeroU32::new(8).expect("non-zero"),
+        }
+    }
 
     #[test]
     fn postgres_local_commit_factory_keeps_the_query_policy_erased() {
@@ -758,7 +772,7 @@ mod tests {
         // still owns backend/pool/Clock/wake selection and every refusal below.
         // The canonical shared interface opens no store and adds no authority;
         // same-Thread, initialization and HostCommit tables keep their effects.
-        let missing = DeploymentConfig::ephemeral();
+        let missing = test_storage();
         let missing_error = match DurableRuntimeAuthority::open(
             &missing,
             SchemaAccess::Migrate,
@@ -772,7 +786,7 @@ mod tests {
         assert!(missing_error.contains("runtime.storage_dir"), "A1/E1");
 
         let root = tempfile::tempdir().expect("A2 storage root");
-        let mut durable = DeploymentConfig::ephemeral();
+        let mut durable = test_storage();
         durable.storage_dir = Some(root.path().to_path_buf());
         let authority = DurableRuntimeAuthority::open(
             &durable,
@@ -823,11 +837,11 @@ mod tests {
         // and path-selection decisions out of the existing Coordinator owner.
         for (backend, rule) in [(StoreKind::Sqlite, "H1"), (StoreKind::Fs, "H2")] {
             let root = tempfile::tempdir().expect("local authority root");
-            let mut deployment = DeploymentConfig::ephemeral();
-            deployment.storage_dir = Some(root.path().join("space 空间/nested"));
-            deployment.store = backend;
+            let mut storage = test_storage();
+            storage.storage_dir = Some(root.path().join("space 空间/nested"));
+            storage.store = backend;
             let authority = DurableRuntimeAuthority::open(
-                &deployment,
+                &storage,
                 SchemaAccess::Migrate,
                 awaken_time::system_clock(),
             )

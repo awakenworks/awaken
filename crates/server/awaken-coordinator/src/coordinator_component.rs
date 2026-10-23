@@ -24,7 +24,7 @@ use awaken_worker_transport_security::WorkerRequestAuthenticator;
 use axum::Router;
 
 use crate::application_access_store::ApplicationAccessStore;
-use crate::{ExecutorComponents, WorkerTransportBuildError};
+use crate::{ExecutionPorts, WorkerTransportBuildError};
 
 const APPLICATION_ACCESS_RETENTION_MS: u64 = 24 * 60 * 60 * 1_000;
 const APPLICATION_ACCESS_RETENTION_INTERVAL: std::time::Duration =
@@ -40,12 +40,13 @@ pub(crate) const APPLICATION_ACCESS_RETENTION_CAPACITY_PER_TICK: u32 =
 ///
 /// There is no Control ConfigService, authoring repository, Resource content
 /// database, or `WorkerNode` here. Local and distributed deployments adapt those
-/// boundaries before invoking this builder; the injected `ExecutorComponents` is the
-/// Coordinator's neutral Runtime port adapter.
+/// boundaries before invoking this builder; the injected [`ExecutionPorts`] are
+/// the Session executor as the Coordinator sees it, selected by the root that
+/// built the executor.
 pub struct CoordinatorDependencies {
     pub lifecycle_delivery: crate::PreparedManagedLifecycleDelivery,
     pub service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
-    pub host: Arc<ExecutorComponents>,
+    pub execution: ExecutionPorts,
     /// Canonical Session application shared by internal services and protocol
     /// projections. ManagedState may observe it but never owns its construction.
     pub session_application: Arc<SessionApplication>,
@@ -177,18 +178,19 @@ pub(crate) fn register_session_lifecycle(
     });
 }
 
-/// Drain the exact Runtime Host's detached auxiliary work through the process's
-/// one service lifecycle. Short slices let completed tasks be reaped while the
-/// lifecycle's outer shared deadline remains the sole shutdown timeout owner.
+/// Drain the executor's claimed Runs and their detached auxiliary work through
+/// the process's one service lifecycle. Short slices let completed tasks be
+/// reaped while the lifecycle's outer shared deadline remains the sole
+/// shutdown timeout owner.
 pub(crate) fn register_runtime_background_drain(
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
-    roles: awaken_session_executor::CoordinatorRoles,
+    dispatch_work: Arc<dyn awaken_dispatch_execution::ProcessDispatchLifecycle>,
 ) {
     service_lifecycle.spawn(
         "coordinator-runtime-background-drain",
         move |cancel| async move {
             cancel.cancelled().await;
-            while !roles.drain(RUNTIME_BACKGROUND_DRAIN_SLICE).await {
+            while !dispatch_work.drain(RUNTIME_BACKGROUND_DRAIN_SLICE).await {
                 tokio::task::yield_now().await;
             }
             Ok(())
@@ -196,15 +198,14 @@ pub(crate) fn register_runtime_background_drain(
     );
 }
 
-/// Start the existing Runtime/Dream services after application composition.
+/// Start the dispatch work and resume Dreams after application composition.
 pub(crate) async fn start_runtime_services(
-    roles: &awaken_session_executor::CoordinatorRoles,
+    dispatch_work: &dyn awaken_dispatch_execution::ProcessDispatchLifecycle,
     dreams: &Arc<awaken_dream_application::DreamApplication>,
 ) -> Result<(), CoordinatorBuildError> {
-    roles
-        .start_local_pool()
+    dispatch_work
+        .start()
         .map_err(|error| CoordinatorBuildError::DispatchPool(error.to_string()))?;
-    roles.start_terminal_reconciliation();
     dreams.resume_incomplete().await;
     Ok(())
 }
@@ -300,7 +301,7 @@ pub async fn build_coordinator_component(
     let CoordinatorDependencies {
         service_lifecycle,
         lifecycle_delivery,
-        host,
+        execution,
         session_application,
         managed_state,
         resource_registry,
@@ -347,7 +348,7 @@ pub async fn build_coordinator_component(
         crate::worker_observation_boundary::domain_router_with_authenticator(
             crate::worker_observation_boundary::DomainState {
                 directory: worker_directory.clone(),
-                host: host.clone(),
+                dispatch: execution.coordinator_dispatch.clone(),
                 environments: environments.clone(),
                 sessions: session_application.clone(),
                 relay_targets: worker_relay_targets.clone(),
@@ -360,7 +361,7 @@ pub async fn build_coordinator_component(
     });
     let (managed, data, application, worker_transport, dream_application) =
         crate::mount_with_managed_application_access_models_and_dreams(
-            host.clone(),
+            execution.clone(),
             managed_state.clone(),
             application_access.clone(),
             crate::ManagedApplicationServices {
@@ -390,6 +391,7 @@ pub async fn build_coordinator_component(
                 worker_clock: clock.clone(),
                 org_admission: Some(org_admission),
             },
+            default_workspace.clone(),
         )
         .await?;
     let managed = crate::with_local_workspace_scope(managed, default_workspace.clone());
@@ -422,7 +424,7 @@ pub async fn build_coordinator_component(
     start_coordinator_services(
         &service_lifecycle,
         lifecycle_delivery,
-        host,
+        execution.dispatch_lifecycle,
         session_application,
         deployment_application,
         dream_application,
@@ -472,17 +474,16 @@ fn management_router(
 async fn start_coordinator_services(
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     lifecycle_delivery: crate::PreparedManagedLifecycleDelivery,
-    host: Arc<ExecutorComponents>,
+    dispatch_work: Arc<dyn awaken_dispatch_execution::ProcessDispatchLifecycle>,
     session_application: Arc<SessionApplication>,
     deployment_application: Arc<DeploymentApplication>,
     dream_application: Arc<awaken_dream_application::DreamApplication>,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), CoordinatorBuildError> {
     lifecycle_delivery.start(service_lifecycle);
-    let roles = awaken_session_executor::CoordinatorRoles::of(&host);
-    start_runtime_services(&roles, &dream_application).await?;
+    start_runtime_services(dispatch_work.as_ref(), &dream_application).await?;
     register_session_lifecycle(service_lifecycle, session_application);
-    register_runtime_background_drain(service_lifecycle, roles);
+    register_runtime_background_drain(service_lifecycle, dispatch_work);
 
     // One timer drives the exact DeploymentApplication and DreamApplication mounted above;
     // no scheduler may reconstruct either aggregate beside this component.

@@ -136,9 +136,11 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Host-backed scenarios share one explicit test-support runtime authority.
         // AllInOne and split-Control modes assemble their own canonical authority;
         // installing this one as well would create a redundant, unused owner.
-        let runtime_authority =
-            awaken_coordinator::init_scenario_runtime(&deployment, awaken_time::system_clock())
-                .await?;
+        let runtime_authority = awaken_cli::scenario_runtime_authority(
+            &deployment.coordinator_storage(),
+            awaken_time::system_clock(),
+        )
+        .await?;
         awaken_scenario_host::install_scenario_runtime_authority(runtime_authority)?;
     }
     let mut scenario_lifecycle = None;

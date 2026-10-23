@@ -18,12 +18,12 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::RunState;
-use awaken_coordinator::ExecutorComponents;
 use awaken_provider_genai::GenaiExecutor;
 use awaken_resource_contract::{
     ConfigVersion, LiveResourceBindingVerifier, MemoryStoreConfigVersion, ResourceAccess,
     ResourceRegistryError,
 };
+use awaken_session_executor::ExecutorComponents;
 use awaken_session_executor::HostOutcomeDrive;
 
 async fn live_dependencies() -> Option<(awaken_session_executor::SessionExecutorBuilder, String)> {

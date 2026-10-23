@@ -14,21 +14,21 @@ dependency edge come back, so three rules hold it:
   ``awaken-dispatch`` (the Coordinator's dispatch adapter) and
   ``awaken-dispatch-http`` -- has no Worker-side implementation crate in its
   normal dependency closure.
-* D3 The Coordinator binary ``awaken-coordinator`` still links the Session
-  executor and the Sandbox providers directly. Each direct dependency through
-  which a Worker-side implementation enters its closure is listed in
-  ``COORDINATOR_WORKER_SIDE_ENTRIES``; the list only shrinks. A new entry is
-  refused, and a listed entry that no longer brings one in leaves the list in
-  the same commit.
+* D3 The Coordinator ``awaken-coordinator`` has neither the Session executor
+  (``awaken-session-executor``) nor any Worker-side implementation crate in
+  its normal dependency closure. It consumes the executor through the
+  execution ports a composition root selects; the root that is both
+  Coordinator and Worker links the executor and realization, the Coordinator
+  crate never does.
 
-Why this is the narrowest correct check: the section 3.3 constraint -- no
-Worker-side implementation anywhere in the Coordinator's closure -- is not yet
-true, because the Coordinator composes the executor (``awaken-session-executor``)
-and Sandbox providers itself until the executor split (plan v4 P4) and the
-Sandbox provider work (P6) remove them. D2 makes the constraint hard for the
-dispatch path this boundary owns, which is the edge slice E introduced
-(Coordinator -> run-ingress -> dispatch-execution -> realization); D3 ratchets
-the remaining entries toward zero instead of pretending they are gone.
+Why this is the correct check: the section 3.3 constraint -- no Worker-side
+implementation anywhere in the Coordinator's closure -- is a property of the
+dependency graph, which the compiler cannot see from inside one crate. D2
+holds it for the dispatch path this boundary owns, the edge slice E
+introduced (Coordinator -> run-ingress -> dispatch-execution ->
+realization); D3 holds it for the Coordinator itself. The executor is named
+explicitly because it is the Worker's execution engine even where it reaches
+the realization only through role traits.
 
 A Worker-side implementation crate is ``awaken-session-realization``,
 ``awaken-credential-materializer``, or an ``awaken-sandbox*`` crate that is
@@ -53,15 +53,8 @@ DISPATCH_PATH: tuple[str, ...] = (
 )
 COORDINATOR = "awaken-coordinator"
 
-# Direct Coordinator dependencies through which a Worker-side implementation
-# still enters its closure. Only shrinks: the executor split (plan v4 P4) and
-# the Sandbox provider work (P6) remove these.
-COORDINATOR_WORKER_SIDE_ENTRIES: frozenset[str] = frozenset(
-    {
-        "awaken-credential-materializer",
-        "awaken-session-executor",
-    }
-)
+# The Worker's execution engine: never in the Coordinator's closure (D3).
+SESSION_EXECUTOR = "awaken-session-executor"
 
 Specs = Mapping[str, _crate_dependency_fitness.CrateSpec]
 
@@ -89,29 +82,14 @@ def closure(specs: Specs, root: str) -> set[str]:
     return seen
 
 
-def worker_side_entries(specs: Specs, root: str) -> set[str]:
-    """Direct dependencies of ``root`` that are, or reach, a Worker-side implementation."""
-    return {
-        dependency
-        for dependency in specs[root].normal_deps
-        if dependency in specs
-        and (
-            is_worker_side(specs[dependency])
-            or any(is_worker_side(specs[reached]) for reached in closure(specs, dependency))
-        )
-    }
-
-
-def dispatch_boundary_errors(
-    specs: Specs, coordinator_entries: frozenset[str] = COORDINATOR_WORKER_SIDE_ENTRIES
-) -> list[str]:
+def dispatch_boundary_errors(specs: Specs) -> list[str]:
     """Violations of D1-D3.
 
     Cause/effect graph: C1 dispatch-execution names realization or an
     extension directly; C2 a dispatch-path crate reaches a Worker-side
-    implementation; C3 the Coordinator gains an entry; C4 a listed entry no
-    longer reaches one. E1 accept when none holds; E2 reject naming the crate
-    and the rule.
+    implementation; C3 the Coordinator reaches a Worker-side implementation
+    or the Session executor. E1 accept when none holds; E2 reject naming the
+    crate and the rule.
     """
     errors: list[str] = []
     if DISPATCH_EXECUTION in specs:
@@ -132,16 +110,16 @@ def dispatch_boundary_errors(
                 f"Worker-side implementation {', '.join(reached)} (D2)"
             )
     if COORDINATOR in specs:
-        entries = worker_side_entries(specs, COORDINATOR)
-        for entry in sorted(entries - coordinator_entries):
+        reached = sorted(
+            name
+            for name in closure(specs, COORDINATOR)
+            if name == SESSION_EXECUTOR or is_worker_side(specs[name])
+        )
+        if reached:
             errors.append(
-                f"dispatch-boundary: {COORDINATOR} gains Worker-side entry {entry}; the "
-                "Coordinator composes dispatch, not the Worker's executor or Sandbox (D3)"
-            )
-        for entry in sorted(coordinator_entries - entries):
-            errors.append(
-                f"dispatch-boundary: {entry} no longer brings a Worker-side implementation "
-                f"into {COORDINATOR}; remove it from COORDINATOR_WORKER_SIDE_ENTRIES (D3)"
+                f"dispatch-boundary: {COORDINATOR} reaches {', '.join(reached)}; the "
+                "Coordinator composes dispatch and consumes the executor through the "
+                "execution ports its composition root selects (D3)"
             )
     return errors
 
@@ -164,13 +142,14 @@ def selftest() -> None:
 
     | Rule | Graph                                                        | Effect |
     |---|---|---|
-    | B1 | dispatch-execution reaches only contracts; Coordinator entries = list | accept |
+    | B1 | dispatch-execution reaches only contracts; the Coordinator reaches neither the executor nor a Worker-side crate | accept |
     | B2 | dispatch-execution depends on awaken-session-realization     | reject D1 |
     | B3 | dispatch-execution depends on an awaken-ext-* crate          | reject D1 (and D2 only if Worker-side) |
     | B4 | run-ingress reaches a Worker-side Sandbox through a library  | reject D2 |
     | B5 | a Sandbox contract or a Control-plane Sandbox store reached  | accept (not Worker-side) |
-    | B6 | the Coordinator gains a new Worker-side entry                | reject D3 |
-    | B7 | a listed Coordinator entry no longer reaches one             | reject D3 (shrink the list) |
+    | B6 | the Coordinator depends on a Worker-side crate directly      | reject D3 |
+    | B7 | the Coordinator reaches the executor, through a library      | reject D3 |
+    | B8 | the Coordinator depends on the realization directly; its contract stays reachable | reject D3 naming only the realization |
     """
     base = [
         ("awaken-dispatch-execution", "shared", "infrastructure", {"awaken-dispatch-contract"}),
@@ -181,30 +160,36 @@ def selftest() -> None:
         ("awaken-sandbox-control", "worker", "contract", set()),
         ("awaken-sandbox-local", "worker", "infrastructure", {"awaken-sandbox-control"}),
         ("awaken-sandbox-policy-store", "control", "infrastructure", set()),
-        ("awaken-session-executor", "shared", "infrastructure", {"awaken-session-realization"}),
+        ("awaken-session-executor", "shared", "infrastructure", {"awaken-dispatch-contract"}),
         ("awaken-ext-memory", "runtime", "infrastructure", set()),
-        ("awaken-coordinator", "coordinator", "bootstrap", {"awaken-dispatch", "awaken-session-executor"}),
+        ("awaken-session-application", "shared", "application", {"awaken-dispatch-contract"}),
+        ("awaken-coordinator", "coordinator", "bootstrap", {"awaken-dispatch", "awaken-session-application"}),
     ]
-    listed = frozenset({"awaken-session-executor"})
 
     def with_edge(name: str, *added: str) -> dict[str, _crate_dependency_fitness.CrateSpec]:
         rows = [(n, c, l, set(d) | (set(added) if n == name else set())) for n, c, l, d in base]
         return _specs(rows)
 
-    assert dispatch_boundary_errors(_specs(base), listed) == [], "B1"
-    b2 = dispatch_boundary_errors(with_edge("awaken-dispatch-execution", "awaken-session-realization"), listed)
+    assert dispatch_boundary_errors(_specs(base)) == [], "B1"
+    b2 = dispatch_boundary_errors(with_edge("awaken-dispatch-execution", "awaken-session-realization"))
     assert any("(D1)" in error for error in b2) and any("(D2)" in error for error in b2), "B2"
-    b3 = dispatch_boundary_errors(with_edge("awaken-dispatch-execution", "awaken-ext-memory"), listed)
+    b3 = dispatch_boundary_errors(with_edge("awaken-dispatch-execution", "awaken-ext-memory"))
     assert [error for error in b3 if "(D1)" in error] and not [e for e in b3 if "(D2)" in e], "B3"
-    b4 = dispatch_boundary_errors(with_edge("awaken-dispatch", "awaken-sandbox-local"), listed)
+    b4 = dispatch_boundary_errors(with_edge("awaken-dispatch", "awaken-sandbox-local"))
     assert any("awaken-dispatch reaches Worker-side implementation awaken-sandbox-local" in e for e in b4), "B4"
     assert dispatch_boundary_errors(
-        with_edge("awaken-dispatch", "awaken-sandbox-control", "awaken-sandbox-policy-store"), listed
+        with_edge("awaken-dispatch", "awaken-sandbox-control", "awaken-sandbox-policy-store")
     ) == [], "B5"
-    b6 = dispatch_boundary_errors(with_edge("awaken-coordinator", "awaken-sandbox-local"), listed)
-    assert any("gains Worker-side entry awaken-sandbox-local" in e for e in b6), "B6"
-    b7 = dispatch_boundary_errors(_specs(base), listed | {"awaken-sandbox-local"})
-    assert any("awaken-sandbox-local no longer brings" in e for e in b7), "B7"
+    b6 = dispatch_boundary_errors(with_edge("awaken-coordinator", "awaken-sandbox-local"))
+    assert any("awaken-coordinator reaches awaken-sandbox-local" in e and "(D3)" in e for e in b6), "B6"
+    b7 = dispatch_boundary_errors(with_edge("awaken-session-application", "awaken-session-executor"))
+    assert any("awaken-coordinator reaches awaken-session-executor" in e for e in b7), "B7"
+    b8 = dispatch_boundary_errors(with_edge("awaken-coordinator", "awaken-session-realization"))
+    assert [e for e in b8 if "(D3)" in e] == [
+        "dispatch-boundary: awaken-coordinator reaches awaken-session-realization; the "
+        "Coordinator composes dispatch and consumes the executor through the "
+        "execution ports its composition root selects (D3)"
+    ], "B8"
 
 
 def check_all() -> list[str]:

@@ -10,7 +10,7 @@
 
 use super::runtime_authority::SchemaAccess;
 use super::worker_registry::WorkerDirectoryHandle;
-use awaken_session_executor::{DeploymentConfig, DispatchBackend, StoreKind};
+use awaken_dispatch_execution::{CoordinatorStorage, DispatchBackend, StoreKind};
 
 #[derive(Clone)]
 pub struct CoordinatorPersistence {
@@ -46,19 +46,19 @@ impl PostgresComponents {
     }
 }
 
-fn postgres_components(deployment: &DeploymentConfig) -> PostgresComponents {
+fn postgres_components(storage: &CoordinatorStorage) -> PostgresComponents {
     PostgresComponents {
-        dispatch: deployment.dispatch_backend == DispatchBackend::Postgres,
-        commit: deployment.store == StoreKind::Postgres,
+        dispatch: storage.dispatch_backend == DispatchBackend::Postgres,
+        commit: storage.store == StoreKind::Postgres,
     }
 }
 
-fn database_url(deployment: &DeploymentConfig) -> Result<Option<&str>, String> {
-    let components = postgres_components(deployment);
+fn database_url(storage: &CoordinatorStorage) -> Result<Option<&str>, String> {
+    let components = postgres_components(storage);
     if !components.dispatch && !components.commit {
         return Ok(None);
     }
-    deployment
+    storage
         .database_url
         .as_deref()
         .map(Some)
@@ -67,103 +67,82 @@ fn database_url(deployment: &DeploymentConfig) -> Result<Option<&str>, String> {
 
 /// Apply every configured Coordinator-owned Postgres bundle without starting
 /// runtime services or connecting a wake transport.
-pub async fn migrate_postgres_schema(deployment: &DeploymentConfig) -> Result<(), String> {
-    let Some(url) = database_url(deployment)? else {
+pub async fn migrate_postgres_schema(storage: &CoordinatorStorage) -> Result<(), String> {
+    let Some(url) = database_url(storage)? else {
         return Ok(());
     };
     let pool = awaken_sql_storage::postgres_pool_options()
-        .max_connections(deployment.postgres_max_connections.get())
+        .max_connections(storage.postgres_max_connections.get())
         .connect(url)
         .await
         .map_err(|error| error.to_string())?;
-    migrate_postgres_schema_with_pool(deployment, pool).await
+    migrate_postgres_schema_with_pool(storage, pool).await
 }
 
 /// Operational migration reuses the composition's one bounded pool. Scope SQL
 /// stays in the existing adapters and no wake/runtime global is initialized.
 pub async fn migrate_postgres_schema_with_pool(
-    deployment: &DeploymentConfig,
+    storage: &CoordinatorStorage,
     pool: sqlx::PgPool,
 ) -> Result<(), String> {
-    if database_url(deployment)?.is_none() {
+    if database_url(storage)?.is_none() {
         return Ok(());
     }
-    let components = postgres_components(deployment);
+    let components = postgres_components(storage);
     if components.dispatch {
         super::worker_registry::open_postgres_pool(pool.clone(), false).await?;
     }
-    super::runtime_authority::migrate_with_pool(deployment, pool).await
+    super::runtime_authority::migrate_with_pool(storage, pool).await
 }
 
-/// Initialize only the runtime backends selected by a scenario deployment.
+/// Open only the durable runtime authority a scenario storage selects,
+/// applying schemas first.
 ///
-/// Test-support scenario routers inject one explicit reference runtime authority
-/// and their own in-memory `WorkerDirectory`; opening and then discarding a
-/// production directory here would create a second authority and would
-/// incorrectly require SQLite storage for an intentionally ephemeral fixture.
-/// Production startup uses [`open`] or [`open_existing`] and therefore
-/// still receive the durable authorities returned by this module.
+/// Scenario compositions inject their own in-memory `WorkerDirectory`;
+/// opening and then discarding a production directory here would create a
+/// second authority. Production startup uses [`open`] or [`open_existing`]
+/// and therefore still receives the durable Worker registry with it.
 #[cfg(any(test, feature = "test-support"))]
-pub async fn init_scenario_runtime(
-    deployment: &DeploymentConfig,
+pub async fn open_durable_runtime_authority(
+    storage: &CoordinatorStorage,
     clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<std::sync::Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>, String> {
-    if deployment.storage_dir.is_none()
-        && deployment.database_url.is_none()
-        && deployment.store == awaken_session_executor::StoreKind::Sqlite
-        && deployment.dispatch_backend == awaken_session_executor::DispatchBackend::Sqlite
-    {
-        let dispatch = awaken_dispatch::AnyCoordinatorDispatch::from_durable_store(
-            awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
-            None,
-        );
-        return Ok(std::sync::Arc::new(
-            awaken_session_executor::EphemeralRuntimeAuthority::with_dispatch(
-                clock,
-                std::sync::Arc::new(dispatch),
-            ),
-        ));
-    }
-    super::runtime_authority::DurableRuntimeAuthority::open(
-        deployment,
-        super::runtime_authority::SchemaAccess::Migrate,
-        clock,
-    )
-    .await
-    .map(|authority| authority as std::sync::Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>)
+    super::runtime_authority::DurableRuntimeAuthority::open(storage, SchemaAccess::Migrate, clock)
+        .await
+        .map(|authority| authority as std::sync::Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>)
 }
 
 /// Open every Coordinator-owned runtime authority, applying schemas first.
 /// This Local-mode path returns the one WorkerDirectory instance that must be
 /// injected into every Worker-facing and observation-facing consumer.
 pub async fn open(
-    deployment: &DeploymentConfig,
+    storage: &CoordinatorStorage,
     clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<CoordinatorPersistence, String> {
-    open_with(deployment, SchemaAccess::Migrate, clock).await
+    open_with(storage, SchemaAccess::Migrate, clock).await
 }
 
 /// Open Coordinator-owned authorities after verifying externally-applied
 /// PostgreSQL ledgers. SQLite remains an explicitly durable single-node store.
 pub async fn open_existing(
-    deployment: &DeploymentConfig,
+    storage: &CoordinatorStorage,
     clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<CoordinatorPersistence, String> {
-    open_with(deployment, SchemaAccess::Verify, clock).await
+    open_with(storage, SchemaAccess::Verify, clock).await
 }
 
 async fn open_with(
-    deployment: &DeploymentConfig,
+    storage: &CoordinatorStorage,
     schema: SchemaAccess,
     clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<CoordinatorPersistence, String> {
-    let components = postgres_components(deployment);
-    let database_url = database_url(deployment)?;
+    let components = postgres_components(storage);
+    let database_url = database_url(storage)?;
     let postgres_pool = if components.requires_process_pool() {
         let url = database_url.expect("Postgres Coordinator components require database URL");
         Some(
             awaken_sql_storage::postgres_pool_options()
-                .max_connections(deployment.postgres_max_connections.get())
+                .max_connections(storage.postgres_max_connections.get())
                 .connect(url)
                 .await
                 .map_err(|error| {
@@ -175,7 +154,7 @@ async fn open_with(
     };
     let runtime_authority =
         super::runtime_authority::DurableRuntimeAuthority::open_with_postgres_pool(
-            deployment,
+            storage,
             schema,
             postgres_pool.clone(),
             clock,
@@ -202,7 +181,7 @@ async fn open_with(
         )
         .await?
     } else {
-        let storage_dir = deployment.storage_dir.as_deref().ok_or_else(|| {
+        let storage_dir = storage.storage_dir.as_deref().ok_or_else(|| {
             "Coordinator SQLite Worker registry requires runtime.storage_dir; refusing volatile Worker identity and generation state"
                 .to_owned()
         })?;
@@ -221,6 +200,8 @@ async fn open_with(
 mod tests {
     use super::*;
     use awaken_worker_registry::{WorkerManifest, WorkerRegistration};
+
+    use crate::runtime_authority::tests::test_storage;
 
     #[test]
     fn backend_selection_maps_to_one_coordinator_schema_manifest() {
@@ -241,76 +222,64 @@ mod tests {
         // | R2 | yes | no | E1 one | E0 none |
         // | R3 | no | yes | E1 one | E2 pair |
         // | R4 | yes | yes | E1 one | E2 pair |
-        let mut deployment = DeploymentConfig::ephemeral();
+        let mut storage = test_storage();
         assert_eq!(
-            postgres_components(&deployment),
+            postgres_components(&storage),
             PostgresComponents {
                 dispatch: false,
                 commit: false,
             },
             "R1"
         );
+        assert!(!postgres_components(&storage).requires_process_pool(), "R1");
         assert!(
-            !postgres_components(&deployment).requires_process_pool(),
-            "R1"
-        );
-        assert!(
-            !postgres_components(&deployment).exposes_committed_run_feeds(),
+            !postgres_components(&storage).exposes_committed_run_feeds(),
             "R1"
         );
 
-        deployment.dispatch_backend = DispatchBackend::Postgres;
+        storage.dispatch_backend = DispatchBackend::Postgres;
         assert_eq!(
-            postgres_components(&deployment),
+            postgres_components(&storage),
             PostgresComponents {
                 dispatch: true,
                 commit: false,
             },
             "R2"
         );
+        assert!(postgres_components(&storage).requires_process_pool(), "R2");
         assert!(
-            postgres_components(&deployment).requires_process_pool(),
-            "R2"
-        );
-        assert!(
-            !postgres_components(&deployment).exposes_committed_run_feeds(),
+            !postgres_components(&storage).exposes_committed_run_feeds(),
             "R2"
         );
 
-        deployment.dispatch_backend = DispatchBackend::Sqlite;
-        deployment.store = StoreKind::Postgres;
+        storage.dispatch_backend = DispatchBackend::Sqlite;
+        storage.store = StoreKind::Postgres;
         assert_eq!(
-            postgres_components(&deployment),
+            postgres_components(&storage),
             PostgresComponents {
                 dispatch: false,
                 commit: true,
             },
             "R3"
         );
+        assert!(postgres_components(&storage).requires_process_pool(), "R3");
         assert!(
-            postgres_components(&deployment).requires_process_pool(),
-            "R3"
-        );
-        assert!(
-            postgres_components(&deployment).exposes_committed_run_feeds(),
+            postgres_components(&storage).exposes_committed_run_feeds(),
             "R3"
         );
 
-        deployment.dispatch_backend = DispatchBackend::Postgres;
+        storage.dispatch_backend = DispatchBackend::Postgres;
         assert_eq!(
-            postgres_components(&deployment),
+            postgres_components(&storage),
             PostgresComponents {
                 dispatch: true,
                 commit: true,
             },
             "R4"
         );
+        assert!(postgres_components(&storage).requires_process_pool(), "R4");
         assert!(
-            postgres_components(&deployment).requires_process_pool(),
-            "R4"
-        );
-        assert!(
-            postgres_components(&deployment).exposes_committed_run_feeds(),
+            postgres_components(&storage).exposes_committed_run_feeds(),
             "R4"
         );
     }
@@ -319,28 +288,13 @@ mod tests {
     async fn sqlite_worker_authority_is_durable_and_missing_storage_fails_closed() {
         // Cause/effect graph: dispatch backend + storage coordinate + schema
         // mode -> one WorkerDirectory adapter -> persisted incarnation truth.
-        // Decision table: R0 scenario runtime init + SQLite + no storage -> one
-        // explicitly injected reference authority with its original atomic
-        // Session-continuation and operational-feed roles; R1 production
+        // Decision table (R0, the scenario reference authority, is owned by
+        // awaken-cli's scenario runtime selection): R1 production
         // open + SQLite + no storage_dir -> startup error; R2 production open +
         // writable storage_dir -> durable registry; R3 reopen same directory ->
         // exact identity/generation survives. Postgres migrate/verify rules are
         // covered by worker-registry conformance and migration-ledger tests.
-        let missing = DeploymentConfig::ephemeral();
-        let reference = init_scenario_runtime(&missing, awaken_time::system_clock())
-            .await
-            .expect("R0 scenario SQLite runtime needs no shared backend");
-        fn continuation(_: &dyn awaken_dispatch::SessionContinuationOutbox) {}
-        continuation(reference.dispatch_store().as_ref());
-        use awaken_dispatch::DispatchOperationalFeed as _;
-        assert!(
-            reference
-                .dispatch_store()
-                .events_after(awaken_dispatch::DispatchCursor(0), 1, None)
-                .await
-                .is_ok(),
-            "R0 exact operational feed survives erasure"
-        );
+        let missing = test_storage();
         let missing_error = match open(&missing, awaken_time::system_clock()).await {
             Ok(_) => panic!("R1 must reject volatile authority"),
             Err(error) => error,
@@ -348,7 +302,7 @@ mod tests {
         assert!(missing_error.contains("runtime.storage_dir"), "R1");
 
         let root = tempfile::tempdir().unwrap();
-        let mut durable = DeploymentConfig::ephemeral();
+        let mut durable = test_storage();
         durable.storage_dir = Some(root.path().to_path_buf());
         let directory = open(&durable, awaken_time::system_clock())
             .await

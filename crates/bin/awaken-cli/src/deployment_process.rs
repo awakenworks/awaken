@@ -90,17 +90,14 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         config::OperatingMode::Local => PostgresSchemaMode::Migrate,
         config::OperatingMode::Server => PostgresSchemaMode::Verify,
     };
+    let storage = deployment.runtime.coordinator_storage();
     let persistence = match deployment.mode {
         config::OperatingMode::Local => {
-            awaken_coordinator::open_coordinator_persistence(&deployment.runtime, clock.clone())
-                .await?
+            awaken_coordinator::open_coordinator_persistence(&storage, clock.clone()).await?
         }
         config::OperatingMode::Server => {
-            awaken_coordinator::open_existing_coordinator_persistence(
-                &deployment.runtime,
-                clock.clone(),
-            )
-            .await?
+            awaken_coordinator::open_existing_coordinator_persistence(&storage, clock.clone())
+                .await?
         }
     };
     let mut postgres_pools = crate::postgres_pools::ProcessPostgresPools::new(
@@ -334,8 +331,9 @@ pub(crate) async fn migrate_deployment_schema_prepared(
     if manifest.contains(&MigrationComponent::Coordinator) {
         executable_agent_registration::migrate(deployment, &mut postgres_pools).await?;
         executable_environment_registration::migrate(deployment, &mut postgres_pools).await?;
-        if deployment.runtime.dispatch_backend == awaken_session_executor::DispatchBackend::Postgres
-            || deployment.runtime.store == awaken_session_executor::StoreKind::Postgres
+        if deployment.runtime.dispatch_backend
+            == awaken_dispatch_execution::DispatchBackend::Postgres
+            || deployment.runtime.store == awaken_dispatch_execution::StoreKind::Postgres
         {
             let url = deployment
                 .runtime
@@ -344,7 +342,7 @@ pub(crate) async fn migrate_deployment_schema_prepared(
                 .ok_or("PostgreSQL Coordinator migration requires runtime.database_url")?;
             let pool = postgres_pools.get(url).await?;
             awaken_coordinator::migrate_postgres_coordinator_schema_with_pool(
-                &deployment.runtime,
+                &deployment.runtime.coordinator_storage(),
                 pool,
             )
             .await?;

@@ -19,6 +19,7 @@ pub mod console;
 mod console_assets;
 mod control;
 mod control_component;
+mod coordinator_execution;
 mod credential_probe;
 mod deployment_process;
 #[cfg(any(test, feature = "test-support"))]
@@ -39,6 +40,8 @@ mod process_startup;
 mod process_stores;
 mod process_surface;
 mod runtime_process_router;
+#[cfg(any(test, feature = "test-support"))]
+mod scenario_runtime;
 mod service;
 mod web_search_publication;
 mod worker_observation_wiring;
@@ -46,7 +49,10 @@ mod worker_transport;
 mod worker_transport_security;
 
 pub use a2a_attempt::a2a_attempt_executor;
+pub use coordinator_execution::{CoordinatorExecutionError, coordinator_execution};
 pub use memory::with_platform_memory_data_plane;
+#[cfg(any(test, feature = "test-support"))]
+pub use scenario_runtime::scenario_runtime_authority;
 pub use worker_transport::WorkerTransport;
 
 use std::sync::Arc;

@@ -72,8 +72,11 @@ async fn preparation_requires_private_cleanup_and_preserves_existing_output_on_r
             "stub",
         )
         .await;
-        let assembled =
-            crate::local_managed_state(dependencies, authorities.resource_registry()).await;
+        let assembled = awaken_scenario_host::local_managed_state(
+            dependencies,
+            authorities.resource_registry(),
+        )
+        .await;
         let snapshot = format!("mem_snapshot_reset-{row}");
         let result = format!("mem_result_reset-{row}");
         for (store, name) in std::iter::once(("dream-source", "caller source"))
@@ -108,7 +111,7 @@ async fn preparation_requires_private_cleanup_and_preserves_existing_output_on_r
         let before_result = content(&authorities, &result).await;
         let before_source = content(&authorities, "dream-source").await;
         let mut agent = BuiltInDreamAgent::new(
-            assembled.sessions.clone(),
+            assembled.state.sessions.clone(),
             &authorities,
             authorities.resource_registry(),
             resources.memory_stores(),
@@ -184,6 +187,7 @@ async fn preparation_requires_private_cleanup_and_preserves_existing_output_on_r
         );
         assert!(
             assembled
+                .state
                 .sessions
                 .queries()
                 .session_transcript("default", &format!("sesn_dream_{}", request.job_id))

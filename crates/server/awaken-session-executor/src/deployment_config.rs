@@ -15,41 +15,10 @@
 //! library reads it rather than process-global deployment configuration.
 
 use awaken_acp_contract::AcpWorkerProfile;
+use awaken_dispatch_execution::{CoordinatorStorage, DispatchBackend, StoreKind, Wake};
 use awaken_session_mcp::ContainerMcpRelayExposure;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
-
-/// The commit-store backend for a thread's committed truth.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StoreKind {
-    /// Per-thread SQLite databases under the storage dir (the default durable store).
-    Sqlite,
-    /// Per-thread filesystem append-log directories (`DeploymentConfig::store=Fs`).
-    Fs,
-    /// One shared Postgres coordinator keyed by thread (`DeploymentConfig::store=Postgres`).
-    Postgres,
-}
-
-/// The dispatch-queue backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DispatchBackend {
-    /// One local SQLite queue file (`dispatch.db`) under the storage dir, or an
-    /// in-memory queue when there is no dir. The default.
-    Sqlite,
-    /// One shared Postgres queue across the fleet (`DeploymentConfig::dispatch_backend=Postgres`).
-    Postgres,
-}
-
-/// The cross-node wake for the served dispatch pool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Wake {
-    /// In-process `LocalWakeSignal` + poll (no cross-node wake). The default.
-    None,
-    /// `pg_notify` on the Postgres store's own database.
-    PgNotify,
-    /// A NATS broker (requires the `nats` feature).
-    Nats,
-}
 
 /// The sandbox tier a worker realizes an ACP agent on (ADR-0041/0056). The default is
 /// the namespace (bubblewrap) tier; a container tier runs the agent inside a
@@ -701,6 +670,23 @@ impl DeploymentConfig {
             acp: None,
             container_image: None,
             disable_local_pool: false,
+        }
+    }
+
+    /// The storage the Coordinator opens its runtime authority over. Only the
+    /// persistence selection crosses; sandbox, ACP, capture and pool settings
+    /// stay with the executor.
+    #[must_use]
+    pub fn coordinator_storage(&self) -> CoordinatorStorage {
+        CoordinatorStorage {
+            storage_dir: self.storage_dir.clone(),
+            store: self.store,
+            dispatch_backend: self.dispatch_backend,
+            wake: self.wake,
+            wake_channel: self.wake_channel.clone(),
+            nats_url: self.nats_url.clone(),
+            database_url: self.database_url.clone(),
+            postgres_max_connections: self.postgres_max_connections,
         }
     }
 
