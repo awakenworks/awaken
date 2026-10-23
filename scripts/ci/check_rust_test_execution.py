@@ -24,6 +24,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 # The self-test copies the actual transitive CI script closure, including its
 # source/deadline owners and production entrypoints, rather than a fixed list.
+# Variables a rustup Cargo proxy injects into every child it starts.
+PROXY_INJECTED = ("CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "RUSTUP_TOOLCHAIN_SOURCE", "RUST_RECURSION_COUNT")
 INPUT_GLOBS = ("scripts/ci/**", "scripts/e2e/sandbox_capability_suite.sh")
 
 LISTED = re.compile(r"^(\S+): test$", re.MULTILINE)
@@ -361,6 +363,9 @@ if [ "$1" = awaken-ci-deadline ]; then
   sleep "${QUEUE_DELAY:-0}"
   [ "${ADMISSION_STATUS:-0}" = 0 ] || exit "$ADMISSION_STATUS"
   [ -z "${DEADLINE_COORDINATE:-}" ] || printf '%s\\n' "$$" > "$DEADLINE_COORDINATE"
+  # The host's real rustup proxy, when named, enters the job exactly as an
+  # admitted Cargo does: it injects its toolchain/home selection first.
+  [ -z "${RUSTUP_PROXY_CARGO:-}" ] || exec "$RUSTUP_PROXY_CARGO" "$@"
   entry=$(command -v "cargo-$1"); exec "$entry" "$@"
 fi
 case " $* " in *" --no-run "*)
@@ -476,6 +481,109 @@ esac
                 self.assertEqual(rust_test_plan.source_snapshot()[0], digest)
                 with self.assertRaisesRegex(ValueError, "tool identity changed"):
                     verify_preparation(directory/"build.json", arguments, digest)
+
+    @unittest.skipIf(os.name == "nt", "the Bash orchestration runs in the Linux gate")
+    def test_proxy_selected_toolchain_judges_the_same_context_outside_cargo(self) -> None:
+        # DT-PROXY row P1, end to end: preparation and execution run inside the
+        # host's real rustup Cargo proxy, which injects CARGO_HOME, RUSTUP_HOME
+        # and RUSTUP_TOOLCHAIN; the final validator runs outside it. All tests
+        # pass, so the shell must pass: the unchanged selection is one context.
+        rustup = shutil.which("rustup")
+        self.assertIsNotNone(rustup, "the Linux gate installs rustup")
+        proxy = Path(rustup).parent/"cargo"
+        self.assertTrue(proxy.is_file(), proxy)
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary); self.runner_fixture(fixture)
+            environment = self.cargo_fixture(fixture, '''
+case "$*" in
+  *--list*) echo 'critical: test'; exit 0 ;;
+esac
+echo 'test critical ... ok'
+echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
+''')
+            for name in PROXY_INJECTED:
+                environment.pop(name, None)
+            environment["RUSTUP_PROXY_CARGO"] = str(proxy)
+            result = subprocess.run(["bash", "-c", "source scripts/ci/_rust_test_execution.sh; "
+                                     "run_required_rust_tests -p critical --lib critical -- --exact"],
+                                    cwd=fixture, env=environment, capture_output=True, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            prepared = json.loads(next((fixture/"target/test-timings").glob("rust-execution.*/build.json")).read_text())
+            self.assertTrue({"CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN"} <= set(prepared["compile_context"]["environment"]))
+
+    @unittest.skipIf(os.name == "nt", "the POSIX proxy probe runs in the Linux gate")
+    def test_proxy_injected_selection_decision_table(self) -> None:
+        # DT-PROXY (_required_build_context): the build context is recorded by
+        # a probe that the host's real rustup Cargo proxy starts, and judged in
+        # this process, outside any proxy, as the final validator is.
+        # P1 caller leaves CARGO_HOME/RUSTUP_HOME/RUSTUP_TOOLCHAIN unset; proxy
+        #    injects homes and the file-selected toolchain             -> same
+        # P2 caller names the default homes explicitly at check         -> same
+        # P3 caller CARGO_HOME (P3a) / RUSTUP_HOME (P3b) differs at check -> changed
+        # P4 caller short override "<channel>" at build, unset at check -> same
+        # P5 caller selects another toolchain (a path) at check         -> changed
+        # P6 caller selection rustup cannot resolve at check            -> changed
+        # P7 no rustup on PATH: no proxy, literal values compared       -> same/changed
+        from _required_build_context import build_context
+        rustup = shutil.which("rustup")
+        self.assertIsNotNone(rustup, "the gate installs rustup")
+        proxy = Path(rustup).parent/"cargo"
+        arguments = ["-p", "critical", "--lib"]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)/"repo"; root.mkdir()
+            shutil.copy2(ROOT/"rust-toolchain.toml", root/"rust-toolchain.toml")
+            probe_directory = Path(temporary)/"probe"; probe_directory.mkdir()
+            probe = probe_directory/"awaken-context-probe.py"
+            probe.write_text(f"""import json, os, sys
+from pathlib import Path
+sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
+from _required_build_context import build_context
+print(json.dumps({{"context": build_context(Path.cwd(), {arguments!r}),
+                  "injected": {{name: os.environ.get(name) for name in {PROXY_INJECTED!r}}}}}))
+""", encoding="utf-8")
+            launcher = probe_directory/"cargo-awaken-context-probe"
+            launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{probe}" "$@"\n', encoding="utf-8")
+            launcher.chmod(0o755)
+            caller = {name: value for name, value in os.environ.items() if name.upper() not in PROXY_INJECTED}
+            caller["PATH"] = str(probe_directory) + os.pathsep + caller.get("PATH", "")
+            def proxied(**overrides):
+                completed = subprocess.run([str(proxy), "awaken-context-probe"], cwd=root, capture_output=True,
+                                           text=True, env={**caller, **overrides}, timeout=120)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                return json.loads(completed.stdout)
+            def judged(recorded, **overrides):
+                with mock.patch.dict(os.environ, {**caller, **overrides}, clear=True):
+                    try:
+                        build_context(root, arguments, recorded)
+                    except ValueError as error:
+                        return str(error)
+                    return "same"
+            build = proxied()
+            injected = build["injected"]
+            for name in ("CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN"):
+                self.assertTrue(injected[name], f"the proxy must inject {name}: {injected}")
+            changed = "Required build compilation environment/configuration changed"
+            self.assertEqual(judged(build["context"]), "same", "P1")
+            self.assertEqual(judged(build["context"], CARGO_HOME=injected["CARGO_HOME"],
+                                    RUSTUP_HOME=injected["RUSTUP_HOME"]), "same", "P2")
+            other = str(Path(temporary)/"other-home")
+            self.assertEqual(judged(build["context"], CARGO_HOME=other), changed, "P3a")
+            self.assertEqual(judged(build["context"], RUSTUP_HOME=other), changed, "P3b")
+            channel = (root/"rust-toolchain.toml").read_text(encoding="utf-8").split('channel = "')[1].split('"')[0]
+            short = proxied(RUSTUP_TOOLCHAIN=channel)
+            self.assertEqual(short["injected"]["RUSTUP_TOOLCHAIN"], injected["RUSTUP_TOOLCHAIN"])
+            self.assertEqual(judged(short["context"]), "same", "P4")
+            selected = str(Path(injected["RUSTUP_HOME"])/"toolchains"/injected["RUSTUP_TOOLCHAIN"])
+            self.assertEqual(judged(build["context"], RUSTUP_TOOLCHAIN=selected), changed, "P5")
+            self.assertEqual(judged(build["context"], RUSTUP_TOOLCHAIN="awaken-uninstalled-toolchain"), changed, "P6")
+            without = {name: value for name, value in caller.items() if name.upper() != "PATH"}
+            without["PATH"] = str(probe_directory)
+            with mock.patch.dict(os.environ, without, clear=True):
+                literal = build_context(root, arguments)
+            with mock.patch.dict(os.environ, {**without, "RUSTUP_TOOLCHAIN": channel}, clear=True):
+                self.assertRaisesRegex(ValueError, changed, build_context, root, arguments, literal)
+            with mock.patch.dict(os.environ, without, clear=True):
+                self.assertEqual(build_context(root, arguments, literal), literal, "P7")
 
     def test_prepare_initial_source_refusal_preserves_original_exit(self) -> None:
         import rust_test_plan
