@@ -20,19 +20,17 @@ use awaken_session_configuration_contract::resource::{
 use awaken_session_state_contract::{
     ActivationState, PersistedSession, SessionAggregate, SessionExecutionState,
 };
-use awaken_session_types::{RunError, SessionRevision};
+use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 
+use std::sync::Arc;
+
 use super::{
-    SessionApplication, SessionMutationError, SessionPreparationError, SessionReconciliation,
+    SessionMutationError, SessionPreparationError, SessionReconciliation,
     SessionReconciliationFailure, SessionRecoveryCandidates,
     credentials::{internal, mutation_failure, repository_preparation},
 };
 
-mod manifest_command;
-#[cfg(test)]
-pub(crate) use manifest_command::MEMORY_STORE_CREATE_ONLY;
-pub use manifest_command::{SessionResourceAttachment, SessionResourceManifestRequest};
 mod ordinary_reconciliation_gate;
 mod purge_guard;
 
@@ -125,82 +123,43 @@ fn repository_rotation_requires_original_live_resource_generation() {
     }
 }
 
-/// Protocol-neutral whole-manifest command. The interface owns request
-/// canonicalization; the Session application owns desired-state persistence,
-/// idempotency, and realization ordering.
-#[derive(Clone, Debug)]
-pub struct ReplaceSessionResourceManifest {
-    pub resources: ResolvedSessionResources,
-    /// Optimistic fence for the Resource sub-aggregate, not the Session root.
-    /// Runtime realization lease renewals advance the root revision without
-    /// changing this generation and therefore must not starve Resource writes.
-    pub expected_resource_revision: Option<u64>,
-    pub idempotency_key: Option<String>,
-    pub request_fingerprint: String,
+/// Durable Session Resource reconciliation: drive a committed desired Resource
+/// generation to active (or roll it back), retire detached Repository
+/// participants, and hand a terminal Session's Resources to terminal cleanup.
+/// It holds the CAS kernel, the clock, the credential pins, the Resource
+/// commit bracket, the Repository participants, terminal cleanup and the
+/// realization-effects role that prepares Resources in the Environment.
+pub struct SessionResourceReconciliation {
+    mutations: Arc<crate::SessionMutations>,
+    clock: Arc<dyn awaken_time::WallClock>,
+    credentials: Arc<crate::SessionCredentials>,
+    resource_references: Arc<crate::SessionResourceReferences>,
+    repository_participants: Arc<crate::SessionRepositoryParticipants>,
+    terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
+    realization_effects: Arc<dyn awaken_session_execution_contract::RealizationEffects>,
 }
 
-/// Durable command receipt plus the latest aggregate projection. The command
-/// revision is stable across replay even if realization advances the root CAS.
-#[derive(Clone, Debug)]
-pub struct SessionResourceManifestOutcome {
-    pub session: PersistedSession,
-    pub command_revision: SessionRevision,
-    pub command_applied: bool,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum SessionResourceManifestError {
-    #[error("Session was not found")]
-    NotFound,
-    #[error("Session is terminal")]
-    Terminal,
-    #[error("Session revision conflict")]
-    Conflict,
-    #[error("Session idempotency key was reused with another manifest")]
-    IdempotencyMismatch,
-    #[error("Session resource manifest was rejected: {0}")]
-    Rejected(#[source] RunError),
-    /// Desired truth already committed; a retry/reconciler may repair the
-    /// disposable Runtime projection without accepting another generation.
-    #[error("Session resource realization failed after commit: {source}")]
-    ProjectionAfterCommit {
-        outcome: Box<SessionResourceManifestOutcome>,
-        #[source]
-        source: SessionPreparationError,
-    },
-    #[error("Session resource persistence is unavailable: {0}")]
-    Unavailable(String),
-}
-
-impl SessionResourceManifestError {
-    pub(crate) fn mutation(error: SessionMutationError) -> Self {
-        match error {
-            SessionMutationError::NotFound => Self::NotFound,
-            SessionMutationError::Conflict => Self::Conflict,
-            SessionMutationError::IdempotencyMismatch => Self::IdempotencyMismatch,
-            SessionMutationError::Unavailable(message) => Self::Unavailable(message),
+impl SessionResourceReconciliation {
+    pub(crate) fn new(
+        mutations: Arc<crate::SessionMutations>,
+        clock: Arc<dyn awaken_time::WallClock>,
+        credentials: Arc<crate::SessionCredentials>,
+        resource_references: Arc<crate::SessionResourceReferences>,
+        repository_participants: Arc<crate::SessionRepositoryParticipants>,
+        terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
+        runtime: &crate::SessionExecutor,
+    ) -> Self {
+        Self {
+            mutations,
+            clock,
+            credentials,
+            resource_references,
+            repository_participants,
+            terminal_cleanups,
+            realization_effects: runtime.realization_effects.clone(),
         }
     }
-}
 
-async fn reconcile_terminal_resource_candidate(
-    application: &SessionApplication,
-    owner_scope: &str,
-    session: SessionAggregate,
-) -> Result<SessionAggregate, SessionPreparationError> {
-    match application
-        .terminal_cleanups
-        .release_terminal_resources(owner_scope, session.session_id.as_str())
-        .await?
-    {
-        Some(committed) => {
-            crate::mutation::aggregate_from_snapshot(committed).map_err(repository_preparation)
-        }
-        None => Ok(session),
-    }
-}
-
-impl SessionApplication {
     /// Settle the one canonical reconciliation attempt against its exact
     /// Resource generation. Root-only concurrent mutations are rebased; a
     /// competing Resource generation is never merged.
@@ -299,7 +258,7 @@ impl SessionApplication {
     /// Reconcile every local durable Resource projection requiring convergence.
     pub async fn reconcile_resource_activations(&self) -> SessionReconciliation {
         let candidates = match super::recovery_scan::recovery_candidates(
-            self.session_repository(),
+            self.mutations.repository().as_ref(),
             self.clock.as_ref(),
             true,
         )
@@ -318,7 +277,7 @@ impl SessionApplication {
         self.reconcile_resource_activations_from(&candidates).await
     }
 
-    pub(super) async fn reconcile_resource_activations_from(
+    pub(crate) async fn reconcile_resource_activations_from(
         &self,
         candidates: &SessionRecoveryCandidates,
     ) -> SessionReconciliation {
@@ -450,7 +409,7 @@ impl SessionApplication {
         owner_scope: &str,
         mut session: SessionAggregate,
     ) -> Result<SessionAggregate, SessionPreparationError> {
-        let effects_runtime = self.runtime().realization_effects();
+        let effects_runtime = self.realization_effects.as_ref();
 
         if !session.is_terminal() && session.requires_external_environment_owner() {
             return if session.resources.pending.is_none()
@@ -595,7 +554,25 @@ impl SessionApplication {
             };
         }
 
-        reconcile_terminal_resource_candidate(self, owner_scope, session).await
+        self.reconcile_terminal_resource_candidate(owner_scope, session)
+            .await
+    }
+
+    async fn reconcile_terminal_resource_candidate(
+        &self,
+        owner_scope: &str,
+        session: SessionAggregate,
+    ) -> Result<SessionAggregate, SessionPreparationError> {
+        match self
+            .terminal_cleanups
+            .release_terminal_resources(owner_scope, session.session_id.as_str())
+            .await?
+        {
+            Some(committed) => {
+                crate::mutation::aggregate_from_snapshot(committed).map_err(repository_preparation)
+            }
+            None => Ok(session),
+        }
     }
 }
 

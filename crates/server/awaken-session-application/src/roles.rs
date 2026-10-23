@@ -240,26 +240,26 @@ pub trait SessionEventBatches: Send + Sync {
 /// Consumer: the profiled Session create and Run edges.
 #[async_trait]
 pub trait ProfiledSessionCommands: Send + Sync {
-    /// See [`SessionApplication::accept_profiled_session`].
+    /// See [`crate::SessionCreationCommands::accept_profiled_session`].
     async fn accept_profiled_session(
         &self,
         command: CreateProfiledSessionCommand,
     ) -> Result<PersistedSession, SessionCreationError>;
 
-    /// See [`SessionApplication::admit_profiled_session_run`].
+    /// See [`crate::SessionRunAdmissions::admit_profiled_session_run`].
     async fn admit_profiled_session_run(
         &self,
         owner_scope: &str,
         command: AdmitSessionRun,
     ) -> Result<AdmittedSessionRun, SessionProjectionRecoveryError>;
 
-    /// See [`SessionApplication::activate_admitted_session_run`].
+    /// See [`crate::SessionRunAdmissions::activate_admitted_session_run`].
     async fn activate_admitted_session_run(
         &self,
         admitted: AdmittedSessionRun,
     ) -> Result<SessionRunActivation, RunError>;
 
-    /// See [`SessionApplication::session_run_events_after`].
+    /// See [`crate::SessionRunAdmissions::session_run_events_after`].
     async fn session_run_events_after(
         &self,
         owner_scope: &str,
@@ -269,7 +269,13 @@ pub trait ProfiledSessionCommands: Send + Sync {
         lifecycle_after: awaken_agent_contract::RunLifecycleCursor,
         limit: usize,
     ) -> Result<awaken_dispatch_contract::SessionRunEventPage, SessionProjectionRecoveryError>;
+}
 
+/// Reply to a pending tool request of a profiled Session's primary Run.
+///
+/// Consumer: the profiled Session Run reply edge.
+#[async_trait]
+pub trait ProfiledSessionReplies: Send + Sync {
     /// See [`SessionApplication::reply_profiled_session_run_for_owner`].
     async fn reply_profiled_session_run_for_owner(
         &self,
@@ -413,49 +419,6 @@ pub trait DeploymentSessionEnvironment: Send + Sync {
 }
 
 #[async_trait]
-impl SessionCreation for SessionApplication {
-    async fn refresh_executable_projections(
-        &self,
-    ) -> Result<ExecutableProjectionAdmission, String> {
-        SessionApplication::refresh_executable_projections(self).await
-    }
-
-    async fn create_requested_session(
-        &self,
-        request: SessionCreateRequest,
-        protocol: &dyn SessionCreateProtocol,
-    ) -> Result<PersistedSession, SessionCreateRequestError> {
-        SessionApplication::create_requested_session(self, request, protocol).await
-    }
-
-    async fn replay_session_create(
-        &self,
-        owner_scope: &str,
-        session_id: &SessionId,
-        idempotency: &IdempotencyRecord,
-    ) -> Result<Option<PersistedSession>, SessionCreationError> {
-        self.mutations
-            .replay_session_create(owner_scope, session_id, idempotency)
-            .await
-    }
-
-    async fn replay_accepted_session_create(
-        &self,
-        owner_scope: &str,
-        session_id: &SessionId,
-        idempotency: &IdempotencyRecord,
-    ) -> Result<Option<PersistedSession>, SessionCreationError> {
-        self.mutations
-            .replay_accepted_session_create(owner_scope, session_id, idempotency)
-            .await
-    }
-
-    fn runtime_incarnation(&self) -> &str {
-        SessionApplication::runtime_incarnation(self)
-    }
-}
-
-#[async_trait]
 impl SessionEventBatches for SessionApplication {
     async fn append_and_drive_session_event_batch_idempotent(
         &self,
@@ -541,59 +504,7 @@ impl SessionEventBatches for SessionApplication {
 }
 
 #[async_trait]
-impl ProfiledSessionCommands for SessionApplication {
-    async fn accept_profiled_session(
-        &self,
-        command: CreateProfiledSessionCommand,
-    ) -> Result<PersistedSession, SessionCreationError> {
-        SessionApplication::accept_profiled_session(self, command).await
-    }
-
-    async fn admit_profiled_session_run(
-        &self,
-        owner_scope: &str,
-        command: AdmitSessionRun,
-    ) -> Result<AdmittedSessionRun, SessionProjectionRecoveryError> {
-        Box::pin(SessionApplication::admit_profiled_session_run(
-            self,
-            owner_scope,
-            command,
-        ))
-        .await
-    }
-
-    async fn activate_admitted_session_run(
-        &self,
-        admitted: AdmittedSessionRun,
-    ) -> Result<SessionRunActivation, RunError> {
-        Box::pin(SessionApplication::activate_admitted_session_run(
-            self, admitted,
-        ))
-        .await
-    }
-
-    async fn session_run_events_after(
-        &self,
-        owner_scope: &str,
-        session_id: &SessionId,
-        run_id: &awaken_agent_contract::agent::run::Id,
-        dispatch_after: awaken_dispatch_contract::DispatchCursor,
-        lifecycle_after: awaken_agent_contract::RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<awaken_dispatch_contract::SessionRunEventPage, SessionProjectionRecoveryError>
-    {
-        SessionApplication::session_run_events_after(
-            self,
-            owner_scope,
-            session_id,
-            run_id,
-            dispatch_after,
-            lifecycle_after,
-            limit,
-        )
-        .await
-    }
-
+impl ProfiledSessionReplies for SessionApplication {
     async fn reply_profiled_session_run_for_owner(
         &self,
         owner_scope: &str,
@@ -666,14 +577,14 @@ impl SessionUpdates for crate::SessionUpdateCommands {
 }
 
 #[async_trait]
-impl SessionResourceCommands for SessionApplication {
+impl SessionResourceCommands for crate::SessionResourceManifests {
     async fn replace_session_resource_manifest(
         &self,
         session_id: &SessionId,
         request: SessionResourceManifestRequest,
     ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError> {
         Box::pin(
-            SessionApplication::replace_session_resource_manifest_request(
+            crate::SessionResourceManifests::replace_session_resource_manifest_request(
                 self, session_id, request,
             ),
         )
@@ -685,7 +596,7 @@ impl SessionResourceCommands for SessionApplication {
         session_id: &SessionId,
         request: crate::SessionInputRequest,
     ) -> Result<SessionResourceAttachment, SessionResourceManifestError> {
-        Box::pin(SessionApplication::attach_session_file(
+        Box::pin(crate::SessionResourceManifests::attach_session_file(
             self, session_id, request,
         ))
         .await
@@ -696,41 +607,10 @@ impl SessionResourceCommands for SessionApplication {
         session_id: &SessionId,
         binding_id: &awaken_resource_contract::BindingId,
     ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError> {
-        Box::pin(SessionApplication::detach_session_input(
+        Box::pin(crate::SessionResourceManifests::detach_session_input(
             self, session_id, binding_id,
         ))
         .await
-    }
-}
-
-#[async_trait]
-impl SessionObservation for SessionApplication {
-    async fn subscribe_session_thread_live(
-        &self,
-        session_id: &SessionId,
-        thread_id: &str,
-    ) -> Result<Option<Box<dyn SessionThreadLiveSubscription>>, RunError> {
-        let coordination_runtime = self.runtime().coordination();
-
-        coordination_runtime
-            .subscribe_session_thread_live(session_id, thread_id)
-            .await
-    }
-
-    async fn session_execution_observation(
-        &self,
-        workspace_id: &str,
-        session_id: &SessionId,
-    ) -> Result<SessionExecutionObservation, SessionProjectionRecoveryError> {
-        SessionApplication::session_execution_observation(self, workspace_id, session_id).await
-    }
-
-    async fn session_usage(
-        &self,
-        thread: &str,
-        observed_links: Option<&[CoordinatedThreadLink]>,
-    ) -> Result<SessionUsage, RunError> {
-        SessionApplication::session_usage(self, thread, observed_links).await
     }
 }
 

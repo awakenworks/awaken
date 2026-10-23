@@ -320,6 +320,63 @@ impl SessionAssembly {
             lease.activities.clone(),
             &self.runtime,
         ));
+        let resource_reconciliation = Arc::new(crate::SessionResourceReconciliation::new(
+            kernel.mutations.clone(),
+            kernel.clock.clone(),
+            foundation.credentials.clone(),
+            foundation.resource_references.clone(),
+            foundation.repository_participants.clone(),
+            lease.terminal_cleanups.clone(),
+            &self.runtime,
+        ));
+        let resource_manifests = Arc::new(crate::SessionResourceManifests::new(
+            crate::resource_manifests::SessionResourceManifestCollaborators {
+                mutations: kernel.mutations.clone(),
+                clock: kernel.clock.clone(),
+                resource_references: foundation.resource_references.clone(),
+                work_assignments: foundation.work_assignments.clone(),
+                repository_participants: foundation.repository_participants.clone(),
+                resource_reconciliation: resource_reconciliation.clone(),
+                resource_registry: self.resource_registry.clone(),
+                realization_effects: self.runtime.realization_effects.clone(),
+            },
+        ));
+        let creation_commands = Arc::new(crate::SessionCreationCommands::new(
+            crate::creation::SessionCreationCollaborators {
+                mutations: kernel.mutations.clone(),
+                clock: kernel.clock.clone(),
+                lifecycle: kernel.lifecycle.clone(),
+                queries: foundation.queries.clone(),
+                inputs: foundation.inputs.clone(),
+                credentials: foundation.credentials.clone(),
+                repository_participants: foundation.repository_participants.clone(),
+                work_assignments: foundation.work_assignments.clone(),
+                realizations: lease.realizations.clone(),
+                terminal_cleanups: lease.terminal_cleanups.clone(),
+                executable_projections: foundation.executable_projections.clone(),
+                tool_configuration_compiler: self.tool_configuration_compiler.clone(),
+                resource_registry: self.resource_registry.clone(),
+                environments: self.environments.clone(),
+                model_publication_resolver: self.models.clone(),
+                managed_list_prices: self.prices.clone(),
+                execution_placement: self.configuration.execution_placement,
+                runtime: self.runtime.clone(),
+            },
+        ));
+        let run_admissions = Arc::new(crate::SessionRunAdmissions::new(
+            crate::run_admission::SessionRunAdmissionCollaborators {
+                mutations: kernel.mutations.clone(),
+                queries: foundation.queries.clone(),
+                activities: lease.activities.clone(),
+                creation_commands: creation_commands.clone(),
+                resource_reconciliation: resource_reconciliation.clone(),
+                realizations: lease.realizations.clone(),
+                work_assignments: foundation.work_assignments.clone(),
+                executable_projections: foundation.executable_projections.clone(),
+                execution_admission: kernel.execution_admission.clone(),
+                runtime: self.runtime.clone(),
+            },
+        ));
         let SessionKernel {
             #[cfg(any(test, feature = "test-support"))]
             store,
@@ -335,10 +392,11 @@ impl SessionAssembly {
         } = kernel;
         let Foundation {
             credentials,
+            observations,
             queries,
             inputs,
             resource_effect_authorization,
-            resource_references,
+            resource_references: _,
             work_assignments,
             repository_participants,
             executable_projections,
@@ -353,16 +411,10 @@ impl SessionAssembly {
             clock,
             configuration: self.configuration.clone(),
             runtime: self.runtime.clone(),
-            tool_configuration_compiler: self.tool_configuration_compiler.clone(),
             credentials,
             environments: self.environments.clone(),
-            model_publication_resolver: self.models.clone(),
-            resource_registry: self.resource_registry.clone(),
-            resource_references,
             work_assignments,
             repository_participants,
-            resource_files: self.resource_files.clone(),
-            managed_list_prices: self.prices.clone(),
             mutations,
             lifecycle,
             queries,
@@ -376,6 +428,11 @@ impl SessionAssembly {
             activities,
             termination_commands,
             update_commands,
+            resource_reconciliation,
+            resource_manifests,
+            creation_commands,
+            run_admissions,
+            observations,
             execution_admission,
             runtime_incarnation,
             event_batch_cutover_validation,
@@ -400,12 +457,20 @@ impl SessionAssembly {
             self.resource_references.clone(),
             self.resource_files.clone(),
         ));
+        let queries = Arc::new(crate::SessionQueries::new(
+            kernel.store.clone(),
+            &self.runtime,
+            self.profiles.clone(),
+        ));
         Foundation {
-            queries: Arc::new(crate::SessionQueries::new(
-                kernel.store.clone(),
+            observations: Arc::new(crate::SessionObservations::new(
+                kernel.mutations.clone(),
+                kernel.clock.clone(),
+                queries.clone(),
+                self.resource_files.clone(),
                 &self.runtime,
-                self.profiles.clone(),
             )),
+            queries,
             inputs: Arc::new(crate::SessionInputs::new(
                 kernel.store.clone(),
                 self.runtime.live_inbox.clone(),
@@ -499,6 +564,7 @@ impl SessionAssembly {
 /// The components every use case shares.
 struct Foundation {
     credentials: Arc<crate::SessionCredentials>,
+    observations: Arc<crate::SessionObservations>,
     queries: Arc<crate::SessionQueries>,
     inputs: Arc<crate::SessionInputs>,
     resource_effect_authorization: Arc<crate::SessionResourceEffectAuthorization>,
@@ -537,7 +603,6 @@ pub(crate) fn reassemble(
             Arc::strong_count(&application.queries),
             Arc::strong_count(&application.inputs),
             Arc::strong_count(&application.resource_effect_authorization),
-            Arc::strong_count(&application.resource_references),
             Arc::strong_count(&application.work_assignments),
             Arc::strong_count(&application.repository_participants),
             Arc::strong_count(&application.realizations),
@@ -546,6 +611,11 @@ pub(crate) fn reassemble(
             Arc::strong_count(&application.activities),
             Arc::strong_count(&application.termination_commands),
             Arc::strong_count(&application.update_commands),
+            Arc::strong_count(&application.resource_reconciliation),
+            Arc::strong_count(&application.resource_manifests),
+            Arc::strong_count(&application.creation_commands),
+            Arc::strong_count(&application.run_admissions),
+            Arc::strong_count(&application.observations),
         ]
     };
     let unshared = application.fixture_assembly.clone().assemble(kernel());

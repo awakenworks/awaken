@@ -745,7 +745,14 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
     command.intent.control.environment.self_hosted = false;
     command.intent.control.resources = skill_resources("pending-skill");
 
-    assert!(application.create_session(command).await.is_err(), "R1/E1");
+    assert!(
+        application
+            .creation_commands
+            .create_session(command)
+            .await
+            .is_err(),
+        "R1/E1"
+    );
     let session_id = SessionId::from("worker-projection-recovery");
     let stranded = repository
         .get(&session_id)
@@ -827,6 +834,7 @@ async fn worker_checkpoint_retention_is_rejected_before_durable_creation() {
         super::continuation::checkpoint_release_retention();
 
     let error = app
+        .creation_commands
         .create_session(command)
         .await
         .expect_err("T1/E1 unsupported external continuation must fail before insert");
@@ -938,7 +946,7 @@ async fn root_rejection_compensates_only_applied_repository_participants() {
         command.repository_configurations = vec![configured.clone()];
         assert!(
             matches!(
-                application.create_session(command).await,
+                application.creation_commands.create_session(command).await,
                 Err(SessionCreationError::Conflict)
             ),
             "{rule}/E1"
@@ -954,77 +962,6 @@ async fn root_rejection_compensates_only_applied_repository_participants() {
             "{rule}/E2-E3"
         );
     }
-}
-
-#[tokio::test]
-async fn model_override_decision_reuses_only_an_equal_id_and_resolves_every_mismatch() {
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("test repository"),
-    );
-    let mut app = application(repository, Arc::new(RecordingEnvironmentSource::default()));
-    let publication = awaken_session_configuration_contract::SessionModelPublication {
-        primary: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-            awaken_runtime_contract::resolved::ModelBinding::new(
-                "override-account",
-                "override-upstream",
-                "genai",
-            ),
-        ),
-        candidates: Vec::new(),
-    };
-    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
-    app.set_model_publication_resolver(Arc::new(RecordingModelPublication {
-        publication: publication.clone(),
-        requests: requests.clone(),
-    }));
-
-    let reused = app
-        .resolve_session_model_override(
-            "workspace",
-            "published-model",
-            "published-model",
-            Default::default(),
-        )
-        .await
-        .expect("equal model id reuses the publication");
-    assert!(reused.publication.is_none());
-    assert!(requests.lock().expect("model requests").is_empty());
-
-    let resolved = app
-        .resolve_session_model_override(
-            "workspace",
-            "requested-model",
-            "published-model",
-            Default::default(),
-        )
-        .await
-        .expect("mismatched model id resolves a complete publication");
-    assert_eq!(resolved.publication.as_deref(), Some(&publication));
-    assert_eq!(
-        requests.lock().expect("model requests").as_slice(),
-        [("workspace".to_string(), "requested-model".to_string())]
-    );
-
-    let duplicate = publication.primary.clone();
-    app.set_model_publication_resolver(Arc::new(FixedModelPublication {
-        publication: awaken_session_configuration_contract::SessionModelPublication {
-            primary: duplicate.clone(),
-            candidates: vec![duplicate],
-        },
-    }));
-    let error = app
-        .resolve_session_model_override(
-            "workspace",
-            "malformed-model",
-            "published-model",
-            Default::default(),
-        )
-        .await
-        .expect_err("malformed resolver output must fail before persistence");
-    assert_eq!(error.kind, awaken_session_types::RunErrorKind::BadRequest);
-    assert!(error.message.contains("duplicate model candidate"));
 }
 
 #[tokio::test]
@@ -1049,6 +986,7 @@ async fn creation_driver_owns_finalize_realize_and_activation_order() {
     );
 
     let active = app
+        .creation_commands
         .create_session(creation_command("active"))
         .await
         .expect("R1");
@@ -1110,7 +1048,11 @@ async fn create_response_contains_a_fully_durable_initial_batch() {
         .expect("I1 valid plan"),
     );
 
-    let created = app.create_session(command).await.expect("I1 create");
+    let created = app
+        .creation_commands
+        .create_session(command)
+        .await
+        .expect("I1 create");
     assert_eq!(
         created.execution,
         awaken_session_state_contract::SessionExecutionState::Running,
@@ -1184,7 +1126,7 @@ async fn self_hosted_work_dispatch_is_durable_but_not_a_fabricated_readiness_ack
 
     let created = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        app.create_session(command),
+        app.creation_commands.create_session(command),
     )
     .await
     .expect("W1/E1 create does not invent a physical-ack barrier")
@@ -1279,6 +1221,7 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 .build()
                 .expect("valid fixture Session application");
                 let accepted = application
+                    .creation_commands
                     .accept_session(make_command())
                     .await
                     .expect("Q1 accept");
@@ -1447,6 +1390,7 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 .await;
             assert!(repeated.failures.is_empty(), "Q4 repeated scan");
             let replay = application
+                .creation_commands
                 .accept_session(make_command())
                 .await
                 .expect("Q4 exact replay");
@@ -1530,7 +1474,11 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     let mut first = creation_command("create-replay-effects");
     first.intent.control.runtime_placement = awaken_session_types::SessionRuntimePlacement::Worker;
     first.idempotency = Some(idempotency.clone());
-    let created = application.create_session(first).await.expect("R1/E1");
+    let created = application
+        .creation_commands
+        .create_session(first)
+        .await
+        .expect("R1/E1");
     let durable_before = repository
         .get(&created.session_id)
         .await
@@ -1549,7 +1497,11 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     replay.intent.control.runtime_placement = awaken_session_types::SessionRuntimePlacement::Worker;
     replay.title = Some("changed lowering must not replace durable truth".into());
     replay.idempotency = Some(idempotency);
-    let replayed = application.create_session(replay).await.expect("R2/E2");
+    let replayed = application
+        .creation_commands
+        .create_session(replay)
+        .await
+        .expect("R2/E2");
     assert_eq!(replayed, durable_before, "R2/E2");
     assert_eq!(
         repository.get(&replayed.session_id).await.unwrap().revision,
@@ -1601,7 +1553,10 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     });
     assert!(
         matches!(
-            application.create_session(terminal_replay).await,
+            application
+                .creation_commands
+                .create_session(terminal_replay)
+                .await,
             Err(SessionCreationError::Tombstoned)
         ),
         "R3/E4"
@@ -1622,6 +1577,7 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
         payload_hash: "stable-product-request".into(),
     });
     let accepted_failed = application
+        .creation_commands
         .accept_session(accepted_terminal_replay)
         .await
         .expect("R4/E5 accepted failed operation root");
@@ -1636,7 +1592,7 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     };
     assert!(matches!(
         crate::SessionCreation::replay_session_create(
-            &application,
+            application.creation_commands.as_ref(),
             "workspace",
             &accepted_failed.session_id,
             &original_receipt,
@@ -1646,7 +1602,7 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     ));
     assert_eq!(
         crate::SessionCreation::replay_accepted_session_create(
-            &application,
+            application.creation_commands.as_ref(),
             "workspace",
             &accepted_failed.session_id,
             &original_receipt,
@@ -1764,7 +1720,11 @@ async fn committed_create_conflicts_recover_only_through_the_exact_receipt() {
         let mut command = creation_command(session_id);
         command.idempotency = stable.clone();
 
-        let created = application.create_session(command).await.expect(rule);
+        let created = application
+            .creation_commands
+            .create_session(command)
+            .await
+            .expect(rule);
         let durable_after_create = durable
             .get(&SessionId::from(session_id))
             .await
@@ -1791,7 +1751,11 @@ async fn committed_create_conflicts_recover_only_through_the_exact_receipt() {
             let mut replay = creation_command(session_id);
             replay.idempotency = Some(stable.clone());
             assert_eq!(
-                application.create_session(replay).await.expect("R3/E3"),
+                application
+                    .creation_commands
+                    .create_session(replay)
+                    .await
+                    .expect("R3/E3"),
                 created,
                 "R3/E3"
             );
@@ -1814,7 +1778,7 @@ async fn committed_create_conflicts_recover_only_through_the_exact_receipt() {
             });
             assert!(
                 matches!(
-                    application.create_session(mismatch).await,
+                    application.creation_commands.create_session(mismatch).await,
                     Err(SessionCreationError::IdempotencyMismatch)
                 ),
                 "R4/E4"
@@ -1862,6 +1826,7 @@ async fn create_failure_cleanup_is_authorized_only_by_a_terminal_durable_root() 
         assert!(
             matches!(
                 application
+                    .creation_commands
                     .create_session(creation_command(&session_id))
                     .await,
                 Err(SessionCreationError::Rejected(_))
@@ -1913,7 +1878,10 @@ async fn creation_persists_only_a_complete_frozen_root_before_later_cas_failure(
     command.intent.control.runtime_placement =
         awaken_session_types::SessionRuntimePlacement::Worker;
 
-    assert!(app.create_session(command).await.is_err(), "A1/E1");
+    assert!(
+        app.creation_commands.create_session(command).await.is_err(),
+        "A1/E1"
+    );
     let committed = durable
         .get(&SessionId::from("atomic-create"))
         .await
@@ -1942,7 +1910,8 @@ async fn session_application_admits_new_and_existing_protocol_threads() {
     );
     let app = application(repository.clone(), Arc::new(AdmissionEnvironment));
 
-    app.admit_run_session("workspace", "thread", "assistant")
+    app.run_admissions
+        .admit_run_session("workspace", "thread", "assistant")
         .await
         .expect("A1");
     let created = repository
@@ -1952,10 +1921,12 @@ async fn session_application_admits_new_and_existing_protocol_threads() {
     assert!(created.frozen_baseline().is_some(), "A1/E1");
     assert_eq!(created.agent_id(), Some("assistant"), "A1/E1");
 
-    app.admit_run_session("workspace", "thread", "ignored")
+    app.run_admissions
+        .admit_run_session("workspace", "thread", "ignored")
         .await
         .expect("A2/E2");
     let error = app
+        .run_admissions
         .admit_run_session("other-workspace", "thread", "ignored")
         .await
         .expect_err("A3/E3");
@@ -2031,6 +2002,7 @@ async fn assert_profiled_realization_and_environment_rules(
     .unwrap();
     explicit_environment.application_origin = Some(origin.clone());
     let realized = available
+        .creation_commands
         .create_profiled_session(explicit_environment)
         .await
         .expect("P1");
@@ -2151,6 +2123,7 @@ async fn assert_profiled_realization_and_environment_rules(
         },
     );
     let denied = available
+        .creation_commands
         .create_profiled_session(blank)
         .await
         .expect("N7 created");
@@ -2206,6 +2179,7 @@ async fn assert_profiled_realization_and_environment_rules(
     substituted_environment.environment_id = Some("substitute-me".into());
     assert!(
         available
+            .creation_commands
             .create_profiled_session(substituted_environment)
             .await
             .is_err(),
@@ -2231,6 +2205,7 @@ async fn assert_profiled_publication_revision_rules(
     let mut historical_command = profiled_session_command("profiled-historical", None);
     historical_command.source_revision = Some(7);
     let historical = available
+        .creation_commands
         .create_profiled_session(historical_command)
         .await
         .expect("exact historical publication");
@@ -2284,6 +2259,7 @@ async fn assert_profiled_publication_revision_rules(
     missing_command.source_revision = Some(8);
     assert!(
         available
+            .creation_commands
             .create_profiled_session(missing_command)
             .await
             .is_err(),
@@ -2296,6 +2272,7 @@ async fn assert_profiled_publication_revision_rules(
     substituted_command.source_revision = Some(7);
     assert!(
         substituting
+            .creation_commands
             .create_profiled_session(substituted_command)
             .await
             .is_err(),
@@ -2325,6 +2302,7 @@ async fn assert_profiled_publication_revision_rules(
     profile_without_snapshot.source_revision = Some(9);
     assert!(
         worker
+            .creation_commands
             .create_profiled_session(profile_without_snapshot)
             .await
             .is_err(),
@@ -2367,6 +2345,7 @@ async fn assert_profiled_override_projection(
         profiled_session_command("profiled-override", Some("override-public-id"));
     override_command.source_revision = Some(7);
     let overridden = override_application
+        .creation_commands
         .create_profiled_session(override_command)
         .await
         .expect("O1 admitted override");
@@ -2406,6 +2385,7 @@ async fn assert_profiled_rejection_rules(
     available.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
 
     let mismatched = available
+        .creation_commands
         .create_profiled_session(profiled_session_command(
             "profiled-mismatch",
             Some("unpublished-model"),
@@ -2424,6 +2404,7 @@ async fn assert_profiled_rejection_rules(
     unavailable.set_config_source(Arc::new(ProfiledAgent { unavailable: true }));
     assert!(
         unavailable
+            .creation_commands
             .create_profiled_session(profiled_session_command("profiled-unavailable", None))
             .await
             .is_err(),
@@ -2451,6 +2432,7 @@ async fn assert_profiled_rejection_rules(
     });
     assert!(
         available
+            .creation_commands
             .create_profiled_session(conflicting)
             .await
             .is_err(),
@@ -2488,6 +2470,7 @@ async fn assert_profiled_direct_resource_rules() {
         "/workspace/direct-file",
     ));
     available
+        .creation_commands
         .create_profiled_session(valid)
         .await
         .expect("D2 valid direct File");
@@ -2530,6 +2513,7 @@ async fn assert_profiled_direct_resource_rules() {
     ));
     assert!(
         agent_collision
+            .creation_commands
             .create_profiled_session(collides_agent)
             .await
             .is_err(),
@@ -2598,6 +2582,7 @@ async fn assert_profiled_direct_resource_rules() {
         },
     }];
     repository_application
+        .creation_commands
         .create_profiled_session(projected_disjoint)
         .await
         .expect("D4 projected paths are disjoint");
@@ -2644,6 +2629,7 @@ async fn assert_profiled_direct_resource_rules() {
     ];
     assert!(
         repository_application
+            .creation_commands
             .create_profiled_session(overlaps)
             .await
             .is_err(),
@@ -2778,7 +2764,11 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
         command.idempotency = None;
         command
     };
-    let created = application.create_session(make()).await.unwrap();
+    let created = application
+        .creation_commands
+        .create_session(make())
+        .await
+        .unwrap();
     assert!(
         created.environment_materialization().unwrap().is_empty(),
         "T1 fresh fact atomic with root"
@@ -2786,7 +2776,11 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     assert_eq!(created.created_at_unix_ms, Some(1_800_000_000_123), "T1");
     clock.advance(10_000);
     assert_eq!(
-        application.create_session(make()).await.unwrap(),
+        application
+            .creation_commands
+            .create_session(make())
+            .await
+            .unwrap(),
         created,
         "T2"
     );
@@ -2844,7 +2838,11 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     .build()
     .expect("valid fixture Session application");
     assert_eq!(
-        new_reader.create_session(make()).await.unwrap(),
+        new_reader
+            .creation_commands
+            .create_session(make())
+            .await
+            .unwrap(),
         old_readback,
         "T6 exact old receipt replay"
     );
@@ -2922,6 +2920,7 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
 }
 
 mod execution_context;
+mod model_override;
 mod time_assurance;
 
 /// The Registry of an ephemeral Resources application, on the host clock: the

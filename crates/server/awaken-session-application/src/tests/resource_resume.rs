@@ -64,6 +64,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                 let carried = SessionResourceManifest::at_revision("workspace", 1, active.clone());
                 if replace {
                     let replaced = app
+                        .resource_manifests
                         .replace_session_resource_manifest(
                             &SessionId::from(id),
                             ReplaceSessionResourceManifest {
@@ -515,7 +516,10 @@ async fn restart_retries_the_exact_persisted_pending_resource_revision() {
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let report = application.reconcile_resource_activations().await;
+    let report = application
+        .resource_reconciliation
+        .reconcile_resource_activations()
+        .await;
     assert!(report.failures.is_empty(), "R2/E2-E4: {report:?}");
     assert_eq!(report.settled.len(), 1, "R2/E2-E4");
 
@@ -591,7 +595,10 @@ async fn terminal_resource_recovery_releases_without_ordinary_runtime_apply_case
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let report = application.reconcile_resource_activations().await;
+    let report = application
+        .resource_reconciliation
+        .reconcile_resource_activations()
+        .await;
     assert!(report.failures.is_empty(), "R2/E2-E4: {report:?}");
     assert_eq!(report.settled.len(), 1, "R2/E2-E4");
     assert_eq!(

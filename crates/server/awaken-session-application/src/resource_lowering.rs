@@ -29,7 +29,7 @@ use crate::session_resource::{
     ResolvedInput, ResolvedSessionResources, SessionInputAttachment, SessionInputResolver,
 };
 use crate::{
-    ConfiguredSessionRepository, SessionApplication, SessionInputRequest, SessionInputTarget,
+    ConfiguredSessionRepository, SessionInputRequest, SessionInputTarget,
     SessionRepositoryResourceInput,
 };
 
@@ -97,7 +97,9 @@ pub(crate) async fn resolve_session_inputs(
 /// configures is recorded before resolution, and [`Self::compensate`] retires
 /// exactly that prefix when the request fails before the root accepts it.
 pub(crate) struct ResourceLowering<'a> {
-    application: &'a SessionApplication,
+    registry: Option<&'a dyn awaken_resource_contract::ResourceRegistry>,
+    participants: &'a crate::SessionRepositoryParticipants,
+    effects: &'a dyn awaken_session_execution_contract::RealizationEffects,
     session_id: &'a str,
     owner_scope: &'a str,
     configured: Vec<ConfiguredSessionRepository>,
@@ -105,12 +107,16 @@ pub(crate) struct ResourceLowering<'a> {
 
 impl<'a> ResourceLowering<'a> {
     pub(crate) fn new(
-        application: &'a SessionApplication,
+        registry: Option<&'a dyn awaken_resource_contract::ResourceRegistry>,
+        participants: &'a crate::SessionRepositoryParticipants,
+        effects: &'a dyn awaken_session_execution_contract::RealizationEffects,
         session_id: &'a str,
         owner_scope: &'a str,
     ) -> Self {
         Self {
-            application,
+            registry,
+            participants,
+            effects,
             session_id,
             owner_scope,
             configured: Vec::new(),
@@ -125,9 +131,7 @@ impl<'a> ResourceLowering<'a> {
         agent_defaults: &[InputBinding],
     ) -> Result<Vec<SessionInputRequest>, RunError> {
         crate::session_input::normalize_session_input_mounts(
-            self.application
-                .resource_registry
-                .as_deref()
+            self.registry
                 .map(|registry| registry as &dyn awaken_resource_contract::ResourceInventory),
             self.owner_scope,
             requests,
@@ -140,14 +144,10 @@ impl<'a> ResourceLowering<'a> {
         &self,
         input: SessionInputAttachment,
     ) -> Result<ResolvedInput, RunError> {
-        let (mut resolved, _) = resolve_session_inputs(
-            self.application.resource_registry.as_deref(),
-            self.owner_scope,
-            &[],
-            &[input],
-        )
-        .await?
-        .into_parts();
+        let (mut resolved, _) =
+            resolve_session_inputs(self.registry, self.owner_scope, &[], &[input])
+                .await?
+                .into_parts();
         resolved
             .pop()
             .ok_or_else(|| RunError::internal("resolved resource manifest input is empty"))
@@ -164,7 +164,8 @@ impl<'a> ResourceLowering<'a> {
         let baseline = session
             .frozen_baseline()
             .ok_or_else(|| RunError::unavailable("Session creation intent was not consumed"))?;
-        self.application.validate_session_sandbox_layout(
+        crate::validate_session_sandbox_layout(
+            self.effects,
             session.session_id.as_str(),
             &awaken_session_configuration_contract::SessionSandboxLayout {
                 workspace_id: self.owner_scope.to_string(),
@@ -182,8 +183,8 @@ impl<'a> ResourceLowering<'a> {
     }
 
     pub(crate) async fn compensate(&self, failure_message: &str) {
-        self.application
-            .compensate_request_repositories(self.session_id, &self.configured, failure_message)
+        self.participants
+            .compensate(self.session_id, &self.configured, failure_message)
             .await;
     }
 
@@ -286,8 +287,7 @@ impl<'a> ResourceLowering<'a> {
         } = &input.target
         {
             let participant = self
-                .application
-                .repository_participants
+                .participants
                 .configure(SessionRepositoryResourceInput {
                     id: format!(
                         "managed:{}:repository:{}",

@@ -238,6 +238,7 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
     let id = SessionId::from("native-observed");
     let before = repository.get(&id).await.unwrap();
     let page = application
+        .run_admissions
         .session_run_events_after(
             "workspace",
             &id,
@@ -257,6 +258,7 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
     assert_eq!(page.lifecycle.events[0].cursor.0, 1_000);
     assert_eq!(page.lifecycle.next_cursor.0, 1_000, "E3");
     let replay = application
+        .run_admissions
         .session_run_events_after(
             "workspace",
             &id,
@@ -269,6 +271,7 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
         .unwrap();
     assert_eq!(replay, page, "R4");
     let next = application
+        .run_admissions
         .session_run_events_after(
             "workspace",
             &id,
@@ -284,6 +287,7 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
     assert_eq!(next.lifecycle.next_cursor.0, 2_000, "E3");
     let calls = feed.calls.load(Ordering::SeqCst);
     let empty = application
+        .run_admissions
         .session_run_events_after(
             "workspace",
             &id,
@@ -335,6 +339,7 @@ async fn native_run_observation_refuses_foreign_scope_missing_source_and_invalid
         let run = &run;
         async move {
             application
+                .run_admissions
                 .session_run_events_after(
                     scope,
                     &session,
@@ -577,15 +582,16 @@ async fn native_run_claim_is_visible_before_the_first_commit_only_with_exact_adm
         .unwrap();
     assert!(
         matches!(
-            app.session_run_events_after(
-                "workspace",
-                &id,
-                &run,
-                DispatchCursor(0),
-                awaken_agent_contract::RunLifecycleCursor(11),
-                2
-            )
-            .await,
+            app.run_admissions
+                .session_run_events_after(
+                    "workspace",
+                    &id,
+                    &run,
+                    DispatchCursor(0),
+                    awaken_agent_contract::RunLifecycleCursor(11),
+                    2
+                )
+                .await,
             Err(crate::SessionProjectionRecoveryError::NotFound)
         ),
         "E2 no receipt"
@@ -599,6 +605,7 @@ async fn native_run_claim_is_visible_before_the_first_commit_only_with_exact_adm
         .unwrap();
     let before = repository.get(&id).await.unwrap();
     let page = app
+        .run_admissions
         .session_run_events_after(
             "workspace",
             &id,
@@ -616,6 +623,7 @@ async fn native_run_claim_is_visible_before_the_first_commit_only_with_exact_adm
     assert!(page.lifecycle.events.is_empty());
     assert!(page.resume_ticket.is_none() && page.usage.is_none() && page.response.is_empty());
     let replay = app
+        .run_admissions
         .session_run_events_after(
             "workspace",
             &id,
@@ -629,15 +637,16 @@ async fn native_run_claim_is_visible_before_the_first_commit_only_with_exact_adm
     assert_eq!(page, replay, "E3 exact read replay");
     assert!(
         matches!(
-            app.session_run_events_after(
-                "workspace",
-                &id,
-                &RunId("foreign".into()),
-                DispatchCursor(0),
-                awaken_agent_contract::RunLifecycleCursor(11),
-                2
-            )
-            .await,
+            app.run_admissions
+                .session_run_events_after(
+                    "workspace",
+                    &id,
+                    &RunId("foreign".into()),
+                    DispatchCursor(0),
+                    awaken_agent_contract::RunLifecycleCursor(11),
+                    2
+                )
+                .await,
             Err(crate::SessionProjectionRecoveryError::NotFound)
         ),
         "E2 foreign Run"
@@ -1152,6 +1161,7 @@ async fn execution_observation_joins_only_same_snapshot_run_and_model_facts() {
         .expect("before projection");
 
     let observed = application
+        .observations
         .session_execution_observation("workspace", &SessionId::from("session-observed"))
         .await
         .expect("R1-R4 projection");
@@ -1296,6 +1306,7 @@ async fn execution_observation_fails_closed_on_scope_or_corrupt_committed_eviden
     assert!(
         matches!(
             application
+                .observations
                 .session_execution_observation("foreign", &SessionId::from("session-empty"))
                 .await,
             Err(SessionProjectionRecoveryError::NotFound)
@@ -1304,6 +1315,7 @@ async fn execution_observation_fails_closed_on_scope_or_corrupt_committed_eviden
     );
     assert!(
         application
+            .observations
             .session_execution_observation("workspace", &SessionId::from("session-empty"))
             .await
             .expect("R6")
@@ -1312,6 +1324,7 @@ async fn execution_observation_fails_closed_on_scope_or_corrupt_committed_eviden
         "R6"
     );
     let Err(SessionProjectionRecoveryError::Rejected(error)) = application
+        .observations
         .session_execution_observation("workspace", &SessionId::from("session-corrupt"))
         .await
     else {
@@ -1323,6 +1336,7 @@ async fn execution_observation_fails_closed_on_scope_or_corrupt_committed_eviden
         "R7"
     );
     let Err(SessionProjectionRecoveryError::Rejected(error)) = application
+        .observations
         .session_execution_observation("workspace", &SessionId::from("session-corrupt-tool"))
         .await
     else {

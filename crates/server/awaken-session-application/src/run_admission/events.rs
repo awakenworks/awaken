@@ -16,8 +16,8 @@ fn rejected_projection(error: impl std::fmt::Display) -> SessionProjectionRecove
     SessionProjectionRecoveryError::Rejected(RunError::internal(error.to_string()))
 }
 
-impl SessionApplication {
-    async fn require_profiled_run_owner(
+impl crate::SessionRunAdmissions {
+    pub(crate) async fn require_profiled_run_owner(
         &self,
         owner_scope: &str,
         session_id: &SessionId,
@@ -38,37 +38,6 @@ impl SessionApplication {
         Ok(())
     }
 
-    /// Authorize the native primary-Run reply, then delegate the exact command
-    /// to the existing Session activity/continuation/receipt owner.
-    pub async fn reply_profiled_session_run_for_owner(
-        &self,
-        owner_scope: &str,
-        command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<(), SessionProjectionRecoveryError> {
-        use awaken_session_execution_contract::{SessionAgentCoordination, SessionThreadTarget};
-        self.require_profiled_run_owner(owner_scope, &command.session_id)
-            .await?;
-        if command.target != SessionThreadTarget::Primary
-            || command
-                .expected_thread_version
-                .is_none_or(|version| version == 0)
-            || command
-                .tool_request_event_id
-                .as_ref()
-                .is_none_or(|id| id.trim().is_empty())
-            || command.accompanying_system.is_some()
-        {
-            return Err(SessionProjectionRecoveryError::Rejected(
-                RunError::bad_request(
-                    "native Run reply requires one primary Run, exact version and stable operation",
-                ),
-            ));
-        }
-        SessionAgentCoordination::reply_session_thread_tool(self, command)
-            .await
-            .map_err(SessionProjectionRecoveryError::Rejected)
-    }
-
     /// Observe a bounded native page after durable Session authorization.
     /// Dispatch and Thread are separate consistency boundaries: observe the
     /// delivery page first, then derive lifecycle/output/ticket from one exact
@@ -82,7 +51,7 @@ impl SessionApplication {
         lifecycle_after: RunLifecycleCursor,
         limit: usize,
     ) -> Result<SessionRunEventPage, SessionProjectionRecoveryError> {
-        let thread_reads = self.runtime().thread_reads();
+        let thread_reads = self.thread_reads.as_ref();
 
         self.require_profiled_run_owner(owner_scope, session_id)
             .await?;
@@ -190,5 +159,39 @@ impl SessionApplication {
             usage: (!usage.is_empty())
                 .then(|| serde_json::to_value(usage).expect("ThreadUsage serializes")),
         })
+    }
+}
+
+impl SessionApplication {
+    /// Authorize the native primary-Run reply, then delegate the exact command
+    /// to the existing Session activity/continuation/receipt owner.
+    pub async fn reply_profiled_session_run_for_owner(
+        &self,
+        owner_scope: &str,
+        command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
+    ) -> Result<(), SessionProjectionRecoveryError> {
+        use awaken_session_execution_contract::{SessionAgentCoordination, SessionThreadTarget};
+        self.run_admissions
+            .require_profiled_run_owner(owner_scope, &command.session_id)
+            .await?;
+        if command.target != SessionThreadTarget::Primary
+            || command
+                .expected_thread_version
+                .is_none_or(|version| version == 0)
+            || command
+                .tool_request_event_id
+                .as_ref()
+                .is_none_or(|id| id.trim().is_empty())
+            || command.accompanying_system.is_some()
+        {
+            return Err(SessionProjectionRecoveryError::Rejected(
+                RunError::bad_request(
+                    "native Run reply requires one primary Run, exact version and stable operation",
+                ),
+            ));
+        }
+        SessionAgentCoordination::reply_session_thread_tool(self, command)
+            .await
+            .map_err(SessionProjectionRecoveryError::Rejected)
     }
 }

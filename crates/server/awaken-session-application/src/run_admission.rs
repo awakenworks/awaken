@@ -11,19 +11,14 @@
 //! application policy, so it is configured here once for every public protocol.
 
 use crate::{SessionProjectionReads as _, SessionRootReads as _};
+
+mod events;
 use awaken_session_realization_contract::SessionRealizationDriveError;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
 use awaken_session_application_contract::{
     OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
-};
-use awaken_session_configuration_contract::mcp::McpAttachmentOrigin;
-use awaken_session_configuration_contract::{
-    ApplicationOriginBinding, ControlSessionCreationInputs, SessionContextSeed,
-    SessionCreationIntent, SessionMcpAuthoringContext, SessionNetworkPolicy,
-    SessionSystemPromptSelection, SessionToolConfiguration, SessionTrigger,
 };
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivityReceiptPlan, SessionRunDelivery,
@@ -33,56 +28,10 @@ use awaken_session_state_contract::SessionRepositoryError;
 use awaken_session_types::RunError;
 use awaken_session_types::SessionRevision;
 
-use crate::creation::SessionCreationCompletion;
 use crate::{
-    ConfiguredSessionRepository, CreateSessionCommand, McpAttachmentCandidate,
-    McpAttachmentCandidateTarget, SessionApplication, SessionCreationError, SessionMutationError,
-    SessionPreparationError, SessionRepositoryOwner, SessionRepositoryResourceInput,
-    session_repository_error,
+    CreateProfiledSessionCommand, SessionApplication, SessionCreationError, SessionMutationError,
+    SessionPreparationError, session_repository_error,
 };
-
-/// Protocol-independent request to create a Session from one published Agent
-/// profile. The Session application resolves Environment, MCP, Resources,
-/// credentials, tools, and immutable execution identity exactly once.
-pub struct CreateProfiledSessionCommand {
-    pub owner_scope: String,
-    pub session_id: String,
-    pub mutation_policy: crate::session_resource::SessionMutationPolicy,
-    pub application_origin: Option<ApplicationOriginBinding>,
-    pub agent_id: String,
-    /// Exact executable publication source revision. `None` selects the current
-    /// publication for ordinary interactive authoring.
-    pub source_revision: Option<u64>,
-    /// Exact Environment selected by the product at Session creation. The
-    /// Session application resolves and freezes it without mutating the
-    /// published Agent's authored defaults.
-    pub environment_id: Option<String>,
-    pub model: Option<String>,
-    pub mounts: Vec<awaken_provisioning_contract::MountRequirement>,
-    pub env: Vec<awaken_provisioning_contract::EnvVar>,
-    pub prompts: Vec<String>,
-    /// Session-local typed attachments supplied by the product. They join the
-    /// published Agent defaults inside this sole composer and therefore freeze
-    /// in the original root rather than through a post-create Manifest write.
-    pub resource_inputs: Vec<crate::session_resource::SessionInputAttachment>,
-    /// Explicit Session candidates supplied by the product adapter. Published
-    /// Agent candidates are joined and normalized inside the sole composer.
-    pub mcp_candidates: Vec<McpAttachmentCandidate>,
-    pub repositories: Vec<ProfiledSessionRepositoryInput>,
-    pub network_restriction: Option<SessionNetworkPolicy>,
-    pub title: Option<String>,
-    pub metadata: BTreeMap<String, String>,
-    pub tools: Option<SessionToolConfiguration>,
-    pub idempotency: Option<awaken_session_state_contract::IdempotencyRecord>,
-}
-
-/// One product-authored Repository binding joined into the original profiled
-/// Session root. `binding_id` is the caller's stable correlation identity;
-/// `repository.id` remains Open's Session-owned Registry identity.
-pub struct ProfiledSessionRepositoryInput {
-    pub binding_id: awaken_resource_contract::BindingId,
-    pub repository: SessionRepositoryResourceInput,
-}
 
 pub struct RecoveredSessionProjection {
     pub owner_scope: String,
@@ -109,7 +58,7 @@ fn mutation_error(error: SessionMutationError) -> RunError {
     }
 }
 
-fn preparation_error(error: SessionPreparationError) -> RunError {
+pub(crate) fn preparation_error(error: SessionPreparationError) -> RunError {
     match error {
         SessionPreparationError::Rejected(error) => error,
         SessionPreparationError::Unavailable(message) => RunError::unavailable(message),
@@ -145,63 +94,79 @@ fn creation_error(error: SessionCreationError) -> RunError {
     }
 }
 
-fn profiled_repository_attachment(
-    repository_id: awaken_resource_contract::RepositoryId,
-    mount_path: String,
-    binding_id: awaken_resource_contract::BindingId,
-) -> crate::session_resource::SessionInputAttachment {
-    crate::session_resource::SessionInputAttachment {
-        binding: awaken_resource_contract::InputBinding {
-            binding_id,
-            target: awaken_resource_contract::InputResourceId::Repository(repository_id),
-            mount_path,
-            access: awaken_resource_contract::ResourceAccess::ReadWrite,
-            instructions: None,
-        },
-        replaces: None,
-    }
+/// Session Run admission: reserve one Run against the durable Session root,
+/// open its activity, activate or observe it through the coordination runtime,
+/// and recover the Session's disposable Runtime projection before that. A
+/// first Run of an unknown Thread creates its default profiled Session.
+///
+/// It holds the CAS kernel and read component, the activity, creation,
+/// Resource reconciliation, realization and Work components a Run admission
+/// passes through, the executable-projection refresh, the execution
+/// observations, and the coordination and Thread runtime roles.
+pub struct SessionRunAdmissions {
+    mutations: Arc<crate::SessionMutations>,
+    queries: Arc<crate::SessionQueries>,
+    activities: Arc<crate::SessionActivities>,
+    creation_commands: Arc<crate::SessionCreationCommands>,
+    resource_reconciliation: Arc<crate::SessionResourceReconciliation>,
+    realizations: Arc<crate::SessionRealizations>,
+    work_assignments: Arc<crate::SessionWorkAssignments>,
+    executable_projections: crate::ExecutableProjections,
+    execution_admission: Arc<crate::SessionExecutionAdmission>,
+    coordination: Arc<dyn awaken_session_execution_contract::CoordinationRuntime>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
+    streaming_runs: Arc<dyn awaken_session_execution_contract::StreamingRunRuntime>,
 }
 
-fn preflight_profiled_resources(
-    owner_scope: &str,
-    session_id: &str,
-    mutation_policy: crate::session_resource::SessionMutationPolicy,
-    resource_inputs: &[crate::session_resource::SessionInputAttachment],
-    repositories: &[ProfiledSessionRepositoryInput],
-) -> Result<Vec<crate::session_resource::SessionInputAttachment>, RunError> {
-    let repository_owner = SessionRepositoryOwner::profiled(session_id);
-    for repository in repositories {
-        if repository.binding_id.as_str().trim().is_empty()
-            || repository.repository.workspace_id != owner_scope
-            || !repository_owner.owns_repository_id(&repository.repository.id)
-        {
-            return Err(RunError::bad_request(
-                "Profiled Session Repository binding is empty or outside its Session or Workspace",
-            ));
-        }
-        if !mutation_policy.admits_repository_credential_mutation()
-            && repository.repository.credential_material.is_some()
-        {
-            return Err(RunError::bad_request(
-                "profiled Session Repository credentials must be pre-existing Vault references",
-            ));
+/// The collaborators one [`SessionRunAdmissions`] is built from.
+pub(crate) struct SessionRunAdmissionCollaborators {
+    pub(crate) mutations: Arc<crate::SessionMutations>,
+    pub(crate) queries: Arc<crate::SessionQueries>,
+    pub(crate) activities: Arc<crate::SessionActivities>,
+    pub(crate) creation_commands: Arc<crate::SessionCreationCommands>,
+    pub(crate) resource_reconciliation: Arc<crate::SessionResourceReconciliation>,
+    pub(crate) realizations: Arc<crate::SessionRealizations>,
+    pub(crate) work_assignments: Arc<crate::SessionWorkAssignments>,
+    pub(crate) executable_projections: crate::ExecutableProjections,
+    pub(crate) execution_admission: Arc<crate::SessionExecutionAdmission>,
+    pub(crate) runtime: crate::SessionExecutor,
+}
+
+impl SessionRunAdmissions {
+    pub(crate) fn new(collaborators: SessionRunAdmissionCollaborators) -> Self {
+        let SessionRunAdmissionCollaborators {
+            mutations,
+            queries,
+            activities,
+            creation_commands,
+            resource_reconciliation,
+            realizations,
+            work_assignments,
+            executable_projections,
+            execution_admission,
+            runtime,
+        } = collaborators;
+        Self {
+            mutations,
+            queries,
+            activities,
+            creation_commands,
+            resource_reconciliation,
+            realizations,
+            work_assignments,
+            executable_projections,
+            execution_admission,
+            coordination: runtime.coordination.clone(),
+            thread_reads: runtime.thread_reads.clone(),
+            streaming_runs: runtime.streaming_runs.clone(),
         }
     }
 
-    let mut collision_preflight = resource_inputs.to_vec();
-    collision_preflight.extend(repositories.iter().map(|repository| {
-        profiled_repository_attachment(
-            awaken_resource_contract::RepositoryId::from(repository.repository.id.clone()),
-            repository.repository.mount_path.clone(),
-            repository.binding_id.clone(),
-        )
-    }));
-    crate::session_resource::SessionInputResolver::effective_bindings(&[], &collision_preflight)
-        .map_err(|error| RunError::bad_request(error.to_string()))?;
-    Ok(collision_preflight)
-}
+    /// Interrupt the Run currently executing on one Session Thread.
+    pub async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
+        self.streaming_runs.interrupt(thread).await
+    }
 
-impl SessionApplication {
     /// Reserve one stable Run, then commit or recover the exact Session activity
     /// receipt before activation. This is the sole durable Session Run admission
     /// boundary used by both public protocols and Event reconciliation.
@@ -271,7 +236,7 @@ impl SessionApplication {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<AdmittedSessionRun, RunError>> + Send + 'a>,
     > {
-        let coordination_runtime = self.runtime().coordination();
+        let coordination_runtime = self.coordination.as_ref();
 
         // Return a boxed future at the application boundary. The admission
         // graph is intentionally deep; boxing here prevents protocol and
@@ -382,7 +347,7 @@ impl SessionApplication {
         command: AdmitSessionRun,
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError> {
-        let coordination_runtime = self.runtime().coordination();
+        let coordination_runtime = self.coordination.as_ref();
 
         let input_message_ids = command.input_message_ids();
         let admitted = Box::pin(self.admit_session_run(command)).await?;
@@ -403,7 +368,7 @@ impl SessionApplication {
         command: AdmitSessionRun,
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError> {
-        let coordination_runtime = self.runtime().coordination();
+        let coordination_runtime = self.coordination.as_ref();
 
         let input_message_ids = command.input_message_ids();
         let admitted = Box::pin(self.admit_session_run_for_owner(owner_scope, command)).await?;
@@ -423,7 +388,7 @@ impl SessionApplication {
         &self,
         admitted: AdmittedSessionRun,
     ) -> Result<awaken_session_execution_contract::SessionRunActivation, RunError> {
-        let coordination_runtime = self.runtime().coordination();
+        let coordination_runtime = self.coordination.as_ref();
 
         match admitted {
             AdmittedSessionRun::Reserved(delivery)
@@ -460,7 +425,8 @@ impl SessionApplication {
             return Ok(Some(recovered));
         }
         let admission = self
-            .refresh_executable_projections()
+            .executable_projections
+            .refresh()
             .await
             .map_err(|error| {
                 SessionProjectionRecoveryError::Unavailable(format!(
@@ -474,9 +440,10 @@ impl SessionApplication {
         // credential, and Resource reconciliation graph in their poll stack.
         // The owned aggregate still crosses exactly one domain boundary; this
         // is execution-shape isolation, not another persistence abstraction.
-        let session = Box::pin(
-            admission.enter(|| self.reconcile_persisted_resources(&owner, recovered.session)),
-        )
+        let session = Box::pin(admission.enter(|| {
+            self.resource_reconciliation
+                .reconcile_persisted_resources(&owner, recovered.session)
+        }))
         .await
         .map_err(|error| SessionProjectionRecoveryError::Rejected(preparation_error(error)))?;
         let requires_external_realization = session.requires_external_environment_owner();
@@ -551,9 +518,8 @@ impl SessionApplication {
             .frozen_baseline()
             .filter(|baseline| baseline.environment.self_hosted)
         {
-            self.environments
-                .assignment
-                .wake_session(
+            self.work_assignments
+                .wake(
                     &baseline.environment.environment_id,
                     &recovered.session.session_id,
                 )
@@ -579,415 +545,37 @@ impl SessionApplication {
         Ok(recovered.session.revision)
     }
 
-    pub async fn create_profiled_session(
-        &self,
-        command: CreateProfiledSessionCommand,
-    ) -> Result<awaken_session_state_contract::PersistedSession, SessionCreationError> {
-        // Match the canonical Session-create boundary: the profiled authoring
-        // graph is intentionally deep, so keep its state machine behind one
-        // heap indirection instead of embedding it in every caller's Tokio
-        // worker stack under the full workspace feature graph.
-        Box::pin(self.create_profiled_session_with_completion(
-            command,
-            SessionCreationCompletion::AwaitRealization,
-        ))
-        .await
-    }
-
-    /// Accept one product-authored Session at the durable-root boundary. The
-    /// original root remains the operation and lifecycle authority; the sole
-    /// supervisor realizes it asynchronously and replays never repeat effects.
-    pub async fn accept_profiled_session(
-        &self,
-        command: CreateProfiledSessionCommand,
-    ) -> Result<awaken_session_state_contract::PersistedSession, SessionCreationError> {
-        Box::pin(self.create_profiled_session_with_completion(
-            command,
-            SessionCreationCompletion::AcceptDurableRoot,
-        ))
-        .await
-    }
-
-    async fn create_profiled_session_with_completion(
-        &self,
-        command: CreateProfiledSessionCommand,
-        completion: SessionCreationCompletion,
-    ) -> Result<awaken_session_state_contract::PersistedSession, SessionCreationError> {
-        let queries = &self.queries;
-        let CreateProfiledSessionCommand {
-            owner_scope,
-            session_id,
-            mutation_policy,
-            application_origin,
-            agent_id,
-            source_revision,
-            environment_id: requested_environment_id,
-            model: requested_model,
-            mounts,
-            env,
-            prompts,
-            resource_inputs,
-            mut mcp_candidates,
-            repositories,
-            network_restriction,
-            title,
-            metadata,
-            tools: requested_tools,
-            idempotency,
-        } = command;
-        SessionContextSeed::admit_authored_prompts(&prompts)
-            .map_err(|error| RunError::bad_request(error.to_string()))?;
-        let context_seed =
-            SessionContextSeed::from_metadata(SessionTrigger::Interactive {}, &metadata, None)
-                .map_err(|error| RunError::bad_request(error.to_string()))?;
-        let mut prompts = prompts;
-        prompts.push(context_seed.encode());
-        // Authored Repository paths and ownership are pure command facts. Reject
-        // them before refreshing catalogs or opening any model, Environment,
-        // MCP, Skill, File, Vault, Registry, Runtime, or Git dependency.
-        let collision_preflight = preflight_profiled_resources(
-            &owner_scope,
-            &session_id,
-            mutation_policy,
-            &resource_inputs,
-            &repositories,
-        )?;
-        let admission = self
-            .refresh_executable_projections()
-            .await
-            .map_err(|error| {
-                RunError::unavailable_classified(
-                    "executable_projection_refresh_failed",
-                    format!("Executable projections could not be refreshed: {error}"),
-                )
-            })?;
-        let profile = admission
-            .enter(|| queries.selected_session_profile(&owner_scope, &agent_id, source_revision));
-        if let (Some(requested), Some(resolved)) = (source_revision, profile.as_ref())
-            && !awaken_executable_agent_contract::requested_profile_revision_matches(
-                resolved.source_revision,
-                requested,
-            )
-        {
-            return Err(RunError::bad_request(format!(
-                "agent_version_mismatch: agent `{agent_id}` returned version {} for requested version {requested}",
-                resolved.source_revision
-            )).into());
-        }
-        if let Some(revision) = source_revision
-            && profile.is_none()
-        {
-            return Err(RunError::bad_request(format!(
-                "agent_version_unavailable: agent `{agent_id}` has no executable publication at version {revision}"
-            )).into());
-        }
-        if source_revision.is_none() && queries.agent_unavailable(&owner_scope, &agent_id) {
-            return Err(RunError::bad_request(format!(
-                "agent_unavailable: agent `{agent_id}` cannot start a new session"
-            ))
-            .into());
-        }
-        let agent_resources = profile
-            .as_ref()
-            .map(|profile| profile.resources.as_slice())
-            .unwrap_or_default();
-        let effective_bindings = crate::session_resource::SessionInputResolver::effective_bindings(
-            agent_resources,
-            &collision_preflight,
-        )
-        .map_err(|error| RunError::bad_request(error.to_string()))?;
-        // Model-override cause/effect rules: R1 absent -> inherit the Agent
-        // publication; R2 equal -> reuse it; R3 different + resolvable -> freeze
-        // the complete replacement route; R4 different + invalid/unavailable ->
-        // fail before persistence or external realization.
-        let published_model = profile
-            .as_ref()
-            .and_then(|profile| profile.model.clone())
-            .unwrap_or_else(|| self.model());
-        let model_override = match requested_model.as_deref() {
-            Some(requested) => Some(
-                self.resolve_session_model_override(
-                    &owner_scope,
-                    requested,
-                    &published_model,
-                    Default::default(),
-                )
-                .await?,
-            ),
-            None => None,
-        };
-        let model = requested_model.clone().unwrap_or(published_model);
-        let execution_model_ref = model_override
-            .as_ref()
-            .and_then(|model_override| model_override.publication.as_ref())
-            .map(|publication| publication.primary.binding().identity().1.to_owned())
-            .or_else(|| {
-                profile
-                    .as_ref()
-                    .and_then(|profile| profile.execution_model_ref.clone())
-            })
-            .unwrap_or_else(|| model.clone());
-        let published_backend_ref = model_override
-            .as_ref()
-            .and_then(|model_override| model_override.publication.as_ref())
-            .map(|publication| publication.primary.binding().identity().2.to_owned())
-            .or_else(|| {
-                profile
-                    .as_ref()
-                    .map(|profile| profile.backend_ref.trim())
-                    .filter(|backend| !backend.is_empty())
-                    .map(str::to_owned)
-            });
-        let capabilities = queries.capabilities_for(&session_id)?;
-        let capability_tools = SessionToolConfiguration::from_capabilities(&capabilities);
-        let inherited_tools =
-            crate::tool_compilation::inherit_profile_tools(capability_tools, profile.as_ref());
-        let tools = requested_tools.unwrap_or(inherited_tools);
-        let skills = profile
-            .as_ref()
-            .map(|profile| profile.skills.clone())
-            .unwrap_or_default();
-        self.validate_session_skill_total(&owner_scope, &agent_id, profile.as_ref(), &skills)?;
-        mcp_candidates.extend(
-            profile
-                .as_ref()
-                .into_iter()
-                .flat_map(|profile| &profile.mcp_servers)
-                .map(|server| {
-                    let published_credential = match (
-                        server.credential_source_id.as_ref(),
-                        server.credential_revision,
-                    ) {
-                        (None, None) => Ok(None),
-                        (Some(id), Some(revision)) if !id.trim().is_empty() && revision > 0 => {
-                            Ok(Some((id.clone(), revision)))
-                        }
-                        _ => Err(RunError::bad_request(
-                            "published MCP credential pin is incomplete",
-                        )),
-                    }?;
-                    Ok(McpAttachmentCandidate {
-                        name: server.name.clone(),
-                        target: McpAttachmentCandidateTarget::Normalized(server.target.clone()),
-                        prompts_as_skills: server.prompts_as_skills,
-                        published_credential,
-                        origin: McpAttachmentOrigin::Agent,
-                    })
-                })
-                .collect::<Result<Vec<_>, RunError>>()?,
-        );
-        let (mcp_candidates, mcp_targets) =
-            crate::SessionCredentials::normalize_mcp_candidate_targets(mcp_candidates)?;
-        let mut environment = self
-            .resolve_session_environment(
-                requested_environment_id.as_deref(),
-                profile
-                    .as_ref()
-                    .and_then(|profile| profile.environment.as_ref()),
-                published_backend_ref.as_deref(),
-                &mcp_targets,
-            )
-            .await?
-            .snapshot;
-        if let Some(restriction) = network_restriction {
-            environment.network = environment.network.safe_intersection(&restriction);
-        }
-        // The same pure provider-effective Runtime gate used by Managed create,
-        // live manifests, and the final root CAS runs before Profiled
-        // Repository/Vault configuration or Skill/File materialization.
-        self.validate_session_sandbox_layout(
-            &session_id,
-            &awaken_session_configuration_contract::SessionSandboxLayout {
-                workspace_id: owner_scope.clone(),
-                agent_id: agent_id.clone(),
-                agent_revision: profile.as_ref().map(|profile| profile.source_revision),
-                runtime_placement: self.runtime_placement(),
-                model_override: model_override.clone(),
-                runtime: published_backend_ref.clone(),
-                mounts: mounts.clone(),
-                env: env.clone(),
-                environment: environment.clone(),
-                resources: effective_bindings,
-            },
-        )?;
-        let initial_mcp = self
-            .credentials
-            .normalize_mcp_drafts(
-                &owner_scope,
-                mcp_candidates,
-                &[],
-                &environment.credential_realization.mcp_holder,
-            )
-            .await?;
-        let resolved_skills = if skills.is_empty() {
-            None
-        } else {
-            Some(self.resolve_session_skills(&owner_scope, &skills).await?)
-        };
-        let mut repository_attachments = resource_inputs;
-        repository_attachments.reserve(repositories.len());
-        let mut expected_repository_credentials = BTreeMap::new();
-        let mut repository_configurations = Vec::<ConfiguredSessionRepository>::new();
-        for repository in repositories {
-            let mount_path = repository.repository.mount_path.clone();
-            let expected_credential = repository.repository.credential.clone();
-            let binding_id = repository.binding_id;
-            let configured = match self
-                .repository_participants
-                .configure(repository.repository)
-                .await
-            {
-                Ok(configured) => configured,
-                Err(first) => {
-                    self.compensate_request_repositories(
-    &session_id,
-    &repository_configurations,
-    "Profiled Session Repository compensation remains pending after configuration failure",
-)
-.await;
-                    return Err(first.into());
-                }
-            };
-            let repository_id = configured.repository_id.clone();
-            expected_repository_credentials.insert(repository_id.clone(), expected_credential);
-            repository_attachments.push(profiled_repository_attachment(
-                repository_id,
-                mount_path,
-                binding_id,
-            ));
-            repository_configurations.push(configured);
-        }
-        let resources = match self
-            .finalize_creation_inputs(
-                &owner_scope,
-                agent_resources,
-                &repository_attachments,
-                resolved_skills,
-                &environment.credential_realization.resource_holder,
-                |error| SessionCreationError::from(preparation_error(error)),
-            )
-            .await
-        {
-            Ok(resources) => resources,
-            Err((first, stage)) => {
-                self.compensate_request_repositories(
-                    &session_id,
-                    &repository_configurations,
-                    &format!(
-                        "Profiled Session Repository compensation remains pending after {stage}"
-                    ),
-                )
-                .await;
-                return Err(first);
-            }
-        };
-        for input in resources.inputs() {
-            let crate::session_resource::ResolvedInputSource::Repository {
-                repository_id,
-                credential,
-                ..
-            } = &input.source
-            else {
-                continue;
-            };
-            let Some(expected) = expected_repository_credentials.get(repository_id) else {
-                continue;
-            };
-            if credential.as_deref().map(|pin| &pin.access.credential) != expected.as_ref() {
-                let first = RunError::bad_request(format!(
-                    "repository `{repository_id}` credential revision changed before Session admission"
-                ));
-                self.compensate_request_repositories(
-    &session_id,
-    &repository_configurations,
-    "Profiled Session Repository compensation remains pending after credential drift",
-)
-.await;
-                return Err(first.into());
-            }
-        }
-        let intent = SessionCreationIntent {
-            control: ControlSessionCreationInputs {
-                mutation_policy,
-                application_origin,
-                environment,
-                runtime_placement: self.runtime_placement(),
-                agent_id,
-                agent_revision: profile.as_ref().map(|profile| profile.source_revision),
-                model,
-                execution_model_ref,
-                model_override,
-                system_prompt: SessionSystemPromptSelection::Inherit,
-                runtime: published_backend_ref,
-                mcp_authoring: SessionMcpAuthoringContext::default(),
-                delegate_ids: profile
-                    .as_ref()
-                    .map(|profile| {
-                        profile
-                            .delegates
-                            .iter()
-                            .map(|delegate| delegate.agent_id.clone())
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                toolsets: tools.toolsets.clone(),
-                mounts,
-                env,
-                prompts,
-                transcript_prefix: None,
-                resources,
-                initial_mcp,
-            },
-        };
-        self.create_session_with_completion(
-            CreateSessionCommand {
-                initial_agent_configuration: None,
-                owner_scope,
-                session_id,
-                intent,
-                title,
-                metadata,
-                tools,
-                budget: awaken_session_budget_contract::SessionBudgetState::Absent,
-                repository_configurations,
-                idempotency,
-                initial_events: None,
-            },
-            completion,
-        )
-        .await
-    }
-
     async fn create_default_run_session(
         &self,
         workspace_id: &str,
         thread_id: &str,
         agent_id: &str,
     ) -> Result<SessionRevision, RunApplicationError> {
-        self.create_profiled_session(CreateProfiledSessionCommand {
-            owner_scope: workspace_id.to_string(),
-            session_id: thread_id.to_string(),
-            mutation_policy: crate::session_resource::SessionMutationPolicy::Managed,
-            application_origin: None,
-            agent_id: agent_id.to_string(),
-            source_revision: None,
-            environment_id: None,
-            model: None,
-            mounts: Vec::new(),
-            env: Vec::new(),
-            prompts: Vec::new(),
-            resource_inputs: Vec::new(),
-            mcp_candidates: Vec::new(),
-            repositories: Vec::new(),
-            network_restriction: None,
-            title: None,
-            metadata: Default::default(),
-            tools: None,
-            idempotency: None,
-        })
-        .await
-        .map_err(creation_error)
-        .map(|session| session.revision)
+        self.creation_commands
+            .create_profiled_session(CreateProfiledSessionCommand {
+                owner_scope: workspace_id.to_string(),
+                session_id: thread_id.to_string(),
+                mutation_policy: crate::session_resource::SessionMutationPolicy::Managed,
+                application_origin: None,
+                agent_id: agent_id.to_string(),
+                source_revision: None,
+                environment_id: None,
+                model: None,
+                mounts: Vec::new(),
+                env: Vec::new(),
+                prompts: Vec::new(),
+                resource_inputs: Vec::new(),
+                mcp_candidates: Vec::new(),
+                repositories: Vec::new(),
+                network_restriction: None,
+                title: None,
+                metadata: Default::default(),
+                tools: None,
+                idempotency: None,
+            })
+            .await
+            .map_err(creation_error)
+            .map(|session| session.revision)
     }
 
     pub async fn admit_run_session(
@@ -1026,6 +614,63 @@ impl SessionApplication {
             }
             Err(error) => Err(session_repository_error(error)),
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::ProfiledSessionCommands for SessionRunAdmissions {
+    async fn accept_profiled_session(
+        &self,
+        command: CreateProfiledSessionCommand,
+    ) -> Result<awaken_session_state_contract::PersistedSession, SessionCreationError> {
+        self.creation_commands
+            .accept_profiled_session(command)
+            .await
+    }
+
+    async fn admit_profiled_session_run(
+        &self,
+        owner_scope: &str,
+        command: AdmitSessionRun,
+    ) -> Result<AdmittedSessionRun, SessionProjectionRecoveryError> {
+        Box::pin(SessionRunAdmissions::admit_profiled_session_run(
+            self,
+            owner_scope,
+            command,
+        ))
+        .await
+    }
+
+    async fn activate_admitted_session_run(
+        &self,
+        admitted: AdmittedSessionRun,
+    ) -> Result<awaken_session_execution_contract::SessionRunActivation, RunError> {
+        Box::pin(SessionRunAdmissions::activate_admitted_session_run(
+            self, admitted,
+        ))
+        .await
+    }
+
+    async fn session_run_events_after(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_types::SessionId,
+        run_id: &awaken_agent_contract::agent::run::Id,
+        dispatch_after: awaken_dispatch_contract::DispatchCursor,
+        lifecycle_after: awaken_agent_contract::RunLifecycleCursor,
+        limit: usize,
+    ) -> Result<awaken_dispatch_contract::SessionRunEventPage, SessionProjectionRecoveryError>
+    {
+        SessionRunAdmissions::session_run_events_after(
+            self,
+            owner_scope,
+            session_id,
+            run_id,
+            dispatch_after,
+            lifecycle_after,
+            limit,
+        )
+        .await
     }
 }
 
@@ -1106,10 +751,11 @@ impl SessionRunApplication {
         command: AdmitSessionRun,
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunApplicationError> {
-        Box::pin(
-            self.sessions
-                .run_admitted_session_for_owner(owner_scope, command, sink),
-        )
+        Box::pin(self.sessions.run_admissions.run_admitted_session_for_owner(
+            owner_scope,
+            command,
+            sink,
+        ))
         .await
     }
 }
@@ -1321,10 +967,12 @@ impl awaken_session_application_contract::SessionRunBackgroundApplication
         let owner_scope = (self.workspace)(thread)?;
         let admitted = Box::pin(
             self.sessions
+                .run_admissions
                 .admit_session_run_for_owner(&owner_scope, command),
         )
         .await?;
         self.sessions
+            .run_admissions
             .activate_admitted_session_run(admitted)
             .await?;
         Ok(run_id)
