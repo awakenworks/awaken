@@ -230,3 +230,81 @@ fn project_continuation_observation(
         )),
     }
 }
+
+#[test]
+fn known_incompatibility_precedes_a_malformed_pod_effect_epoch() {
+    // P1 decision table: C1 known continuation mismatch / Live; C2 the same
+    // real Pod has valid name/UID/resourceVersion and a complete fence whose
+    // epoch alone is malformed; C3 each of the four closed purposes.
+    // R1 mismatch -> exact original Incompatible before codec access.
+    // R2 Live -> the actual codec's invalid-epoch Backend, never incompatibility.
+    // The original stamp owner constructs all five fields, so an incomplete
+    // fence or missing identity cannot make the control pass accidentally.
+    // This fixed bad-epoch fixture covers the pure helper's ordering, not
+    // arbitrary Unicode parsing or the outer async/API call chain; the
+    // original real HTTP P1 table remains its composition evidence.
+    use SandboxObservationPurpose::{Recovery, TerminalCleanup, WorkerRetirement};
+    use k8s_openapi::api::core::v1::Pod;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+
+    let mut pod = Pod {
+        metadata: ObjectMeta {
+            name: Some("source".into()),
+            uid: Some("pod".into()),
+            resource_version: Some("1".into()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let fence = pc::SandboxEffectFence::new("e", "o", "r", 1, 2).unwrap();
+    super::pod_evidence::stamp_effect_fence(&mut pod, &fence);
+    pod.metadata.annotations.as_mut().unwrap().insert(
+        super::pod_evidence::SANDBOX_EFFECT_EPOCH_ANNOTATION.into(),
+        "bad".into(),
+    );
+    for purpose in [
+        Recovery,
+        TerminalCleanup,
+        WorkerRetirement {
+            source_prepared: false,
+        },
+        WorkerRetirement {
+            source_prepared: true,
+        },
+    ] {
+        let expectation = ContainerObservationExpectation {
+            purpose,
+            container_id: "source",
+            adoption_fingerprint: None,
+            realization_fingerprint: None,
+            runtime_handle: None,
+            effect_fence: Some(&fence),
+            retained_attempt: None,
+        };
+        match project_continuation_observation(
+            ContinuationObservationDisposition::Incompatible,
+            expectation,
+            Some("pod"),
+            Some(&pod),
+        )
+        .unwrap()
+        {
+            pc::SandboxObservation::Incompatible { reason } => assert_eq!(
+                reason, "Kubernetes Sandbox continuation state differs from its durable handle",
+                "R1 {purpose:?}",
+            ),
+            other => panic!("R1 known mismatch must retain its original classification: {other:?}"),
+        }
+        match project_continuation_observation(
+            ContinuationObservationDisposition::Live,
+            expectation,
+            Some("pod"),
+            Some(&pod),
+        ) {
+            Err(RuntimeError::Backend(detail)) => {
+                assert_eq!(detail, "invalid Sandbox effect epoch", "R2 {purpose:?}")
+            }
+            other => panic!("R2 Live must retain the actual invalid-epoch codec error: {other:?}"),
+        }
+    }
+}
