@@ -1171,8 +1171,6 @@ pub async fn replace_resource_manifest(
     Ok((response_headers, Json(manifest)))
 }
 
-const PROFILED_SESSION_CREATE_RECEIPT_PREFIX: &str = "profiled:create";
-
 fn historical_profiled_repository_binding_id(
     session_id: &str,
     repository_id: &awaken_resource_contract::RepositoryId,
@@ -1205,13 +1203,8 @@ pub async fn create_profiled_session(
         ))));
     }
     let request_fingerprint = awaken_agent_contract::stable_fingerprint(&body);
-    let idempotency = awaken_session_state_contract::IdempotencyRecord {
-        key: format!(
-            "{PROFILED_SESSION_CREATE_RECEIPT_PREFIX}:{}",
-            body.session_id
-        ),
-        payload_hash: request_fingerprint,
-    };
+    let idempotency = awaken_session_application::SessionCreateReceipt::Profiled
+        .record(&body.session_id, request_fingerprint);
     if let Some(existing) = state
         .replay_accepted_session_with_receipt(&body.session_id, &owner_scope, &idempotency)
         .await

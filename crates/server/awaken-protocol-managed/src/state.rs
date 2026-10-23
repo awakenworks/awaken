@@ -26,11 +26,11 @@ use crate::types::{
 };
 #[cfg(test)]
 use awaken_session_repository_contract::SessionRepository;
+use awaken_session_state_contract::PersistedSession;
 #[cfg(test)]
 use awaken_session_state_contract::SessionDisposition;
-use awaken_session_state_contract::{
-    ManagedLifecycleFact, PersistedSession, SessionExecutionState,
-};
+#[cfg(test)]
+use awaken_session_state_contract::{ManagedLifecycleFact, SessionExecutionState};
 
 mod application;
 pub(crate) use application::agent_mcp_candidate;
@@ -78,8 +78,8 @@ use awaken_session_types::RunError;
 pub use constants::COMMITTED_PREFIX_READ_CONFLICT;
 pub(crate) use constants::LEGACY_UNRECORDED_AT;
 pub(crate) use helpers::{
-    durable_inbound_event_id, is_transient_event_id, lifecycle_fact, rubric_text,
-    session_thread_usage_value, session_usage_value,
+    durable_inbound_event_id, is_transient_event_id, rubric_text, session_thread_usage_value,
+    session_usage_value,
 };
 pub(crate) use resource::{resolved_resource_dto, resource_binding_id};
 use session_record::{

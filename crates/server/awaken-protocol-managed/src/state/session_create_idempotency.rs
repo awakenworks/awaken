@@ -111,11 +111,9 @@ impl ManagedState {
         let owner_scope = owner_scope.to_owned();
         let session_id = managed_session_id_from_idempotency(&owner_scope, idempotency_key);
         let request_fingerprint = request_fingerprint(&req, &session_id)?;
-        let idempotency = awaken_session_state_contract::IdempotencyRecord {
-            key: format!("managed:session-create:{session_id}"),
-            payload_hash: request_fingerprint,
-        };
-        if let Some(persisted) = self
+        let idempotency = awaken_session_application::SessionCreateReceipt::ClientRequest
+            .record(&session_id, request_fingerprint);
+        if self
             .roles
             .creation
             .replay_session_create(
@@ -125,8 +123,9 @@ impl ManagedState {
             )
             .await
             .map_err(Self::map_create_replay_error)?
+            .is_some()
         {
-            return self.project_replayed_session(&session_id, persisted).await;
+            return self.project_replayed_session(&session_id).await;
         }
         Box::pin(self.create_session_with_identity(
             req,

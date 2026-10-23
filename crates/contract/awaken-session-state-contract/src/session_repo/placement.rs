@@ -122,6 +122,22 @@ pub const fn session_work_projection_required(
     }
 }
 
+/// The budget-pause law: the shared cap admits no model request and nothing
+/// executes.
+const fn budget_paused(
+    budget_admits_model_request: bool,
+    execution: SessionExecutionState,
+) -> bool {
+    !budget_admits_model_request && matches!(execution, SessionExecutionState::Idle)
+}
+
+/// The shared budget cap is reached while no execution is in flight: the
+/// Session is paused by its budget, so a pure interrupt has nothing to stop.
+#[must_use]
+pub fn session_is_budget_paused(session: &PersistedSession) -> bool {
+    budget_paused(session.budget.can_admit_model_request(), session.execution)
+}
+
 impl PersistedSession {
     /// The frozen placement class; `None` while the baseline is still being
     /// prepared.
@@ -160,6 +176,33 @@ impl PersistedSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn budget_pause_requires_a_reached_cap_and_idle_execution() {
+        // Cause/effect graph: C1 the shared budget admits no model request;
+        // C2 execution is Idle. E1 paused only when C1 and C2 hold.
+        // | Rule | C1 | C2 | Paused |
+        // |---|---|---|---|
+        // | B1 | yes | yes | yes |
+        // | B2 | yes | no (every other state) | no |
+        // | B3 | no | any | no |
+        for execution in [
+            SessionExecutionState::Preparing,
+            SessionExecutionState::Activating,
+            SessionExecutionState::ActivationFailed,
+            SessionExecutionState::Running,
+            SessionExecutionState::Rescheduling,
+            SessionExecutionState::Idle,
+            SessionExecutionState::Terminated,
+        ] {
+            assert_eq!(
+                budget_paused(false, execution),
+                execution == SessionExecutionState::Idle,
+                "B1/B2 {execution:?}"
+            );
+            assert!(!budget_paused(true, execution), "B3 {execution:?}");
+        }
+    }
 
     #[test]
     fn placement_class_answers_every_consumer_from_the_same_frozen_pair() {

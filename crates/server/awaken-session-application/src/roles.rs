@@ -38,8 +38,7 @@ use awaken_session_execution_contract::{
     SessionThreadLiveSubscription,
 };
 use awaken_session_state_contract::{
-    DeletedSessionEventAdmissions, IdempotencyRecord, ManagedLifecycleFact, PersistedSession,
-    SessionRepositoryError,
+    DeletedSessionEventAdmissions, IdempotencyRecord, PersistedSession, SessionRepositoryError,
 };
 use awaken_session_types::RunError;
 use awaken_session_types::SessionId;
@@ -247,12 +246,12 @@ pub trait ProfiledSessionCommands: Send + Sync {
         command: CreateProfiledSessionCommand,
     ) -> Result<PersistedSession, SessionCreationError>;
 
-    /// See [`SessionApplication::admit_session_run_for_owner`].
-    async fn admit_session_run_for_owner(
+    /// See [`SessionApplication::admit_profiled_session_run`].
+    async fn admit_profiled_session_run(
         &self,
         owner_scope: &str,
         command: AdmitSessionRun,
-    ) -> Result<AdmittedSessionRun, RunError>;
+    ) -> Result<AdmittedSessionRun, SessionProjectionRecoveryError>;
 
     /// See [`SessionApplication::activate_admitted_session_run`].
     async fn activate_admitted_session_run(
@@ -285,28 +284,16 @@ pub trait ProfiledSessionCommands: Send + Sync {
 /// archive commands.
 #[async_trait]
 pub trait SessionTermination: Send + Sync {
-    /// See [`SessionApplication::terminate_session`].
-    async fn terminate_session(
+    /// See [`SessionApplication::archive_session`].
+    async fn archive_session(
         &self,
         session_id: &str,
-        archived_at: &str,
-        fact: ManagedLifecycleFact,
     ) -> Result<SessionDispositionMutation, SessionPreparationError>;
 
-    /// See [`SessionApplication::release_terminal_session`].
-    async fn release_terminal_session(
-        &self,
-        session_id: &str,
-        archived_at: &str,
-        fact: ManagedLifecycleFact,
-    ) -> Result<SessionDispositionMutation, SessionPreparationError>;
-
-    /// Release a Frozen preparation or exact failed primary execution through the shared archive kernel.
+    /// See [`SessionApplication::release_profiled_session_with_verified_cleanup`].
     async fn release_profiled_session(
         &self,
         session_id: &str,
-        archived_at: &str,
-        fact: ManagedLifecycleFact,
     ) -> Result<SessionDispositionMutation, SessionPreparationError>;
 
     /// See [`SessionApplication::delete_session`]. The detached cleanup it
@@ -562,12 +549,12 @@ impl ProfiledSessionCommands for SessionApplication {
         SessionApplication::accept_profiled_session(self, command).await
     }
 
-    async fn admit_session_run_for_owner(
+    async fn admit_profiled_session_run(
         &self,
         owner_scope: &str,
         command: AdmitSessionRun,
-    ) -> Result<AdmittedSessionRun, RunError> {
-        Box::pin(SessionApplication::admit_session_run_for_owner(
+    ) -> Result<AdmittedSessionRun, SessionProjectionRecoveryError> {
+        Box::pin(SessionApplication::admit_profiled_session_run(
             self,
             owner_scope,
             command,
@@ -618,37 +605,18 @@ impl ProfiledSessionCommands for SessionApplication {
 
 #[async_trait]
 impl SessionTermination for SessionApplication {
-    async fn terminate_session(
+    async fn archive_session(
         &self,
         session_id: &str,
-        archived_at: &str,
-        fact: ManagedLifecycleFact,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
-        SessionApplication::terminate_session(self, session_id, archived_at, fact).await
-    }
-
-    async fn release_terminal_session(
-        &self,
-        session_id: &str,
-        archived_at: &str,
-        fact: ManagedLifecycleFact,
-    ) -> Result<SessionDispositionMutation, SessionPreparationError> {
-        SessionApplication::release_terminal_session(self, session_id, archived_at, fact).await
+        SessionApplication::archive_session(self, session_id).await
     }
 
     async fn release_profiled_session(
         &self,
         session_id: &str,
-        archived_at: &str,
-        fact: ManagedLifecycleFact,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
-        self.terminate_session_with_admission(
-            &awaken_session_types::SessionId::from(session_id),
-            archived_at,
-            fact,
-            awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
-        )
-        .await
+        SessionApplication::release_profiled_session_with_verified_cleanup(self, session_id).await
     }
 
     async fn delete_session(

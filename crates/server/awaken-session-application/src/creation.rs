@@ -393,6 +393,35 @@ pub(super) fn validated_create_replay(
     }
 }
 
+/// The durable create receipt a protocol replays and creates under. The
+/// command identity (Session id and request fingerprint) is the protocol's;
+/// the receipt key spelling is persisted and owned here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionCreateReceipt {
+    /// A client create retried under an owner-scoped idempotency key.
+    ClientRequest,
+    /// The one Session a durable DeploymentRun owns.
+    DeploymentRun,
+    /// A product-authored profiled Session.
+    Profiled,
+}
+
+impl SessionCreateReceipt {
+    /// The receipt record for one Session id and its request fingerprint.
+    #[must_use]
+    pub fn record(self, session_id: &str, request_fingerprint: String) -> IdempotencyRecord {
+        let key = match self {
+            Self::ClientRequest => format!("managed:session-create:{session_id}"),
+            Self::DeploymentRun => format!("managed:deployment-session:{session_id}"),
+            Self::Profiled => format!("profiled:create:{session_id}"),
+        };
+        IdempotencyRecord {
+            key,
+            payload_hash: request_fingerprint,
+        }
+    }
+}
+
 /// Protocol-neutral command accepted by the one durable Session creation driver.
 pub struct CreateSessionCommand {
     pub owner_scope: String,
