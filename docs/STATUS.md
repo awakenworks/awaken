@@ -39,31 +39,24 @@ consistent vocabulary. This affects the documentation layers differently:
 
 ## Architecture Execution
 
-Reviewed 2026-10-21 against runtime source `c38b32f3e7` and the separately
-committed review-record guard `f867ba8673`. This table tracks design properties
-and remaining acceptance work. A landed implementation or an earlier slice's
-passing tests does not qualify the final combined revision. Line, dependency,
-method and package counts are diagnostic observations, not completion quotas.
+Reviewed 2026-10-24 against `234159cbdd`. This is the single progress record for
+the crate-boundary program (plan v4); design decisions stay in their ADRs and
+code. Line, dependency and method counts are diagnostics, not completion quotas.
+`main` moves only from the integration worktree (`git config awaken.mainWriter`),
+enforced by the standalone `reference-transaction` guard
+(`scripts/ci/install_receive_hooks.py`).
 
-| Slice | Landed implementation and authoritative owner | Remaining acceptance or implementation |
+| Slice | Done (owner) | Remaining |
 |---|---|---|
-| P0 main integration | Protected fast-forward integration and the original reference-transaction guard | Keep each incoming slice isolated, normally committed and verified before integration; retain unrelated work |
-| P1–P3 Realization and Dispatch | Typed Realization errors and disposition, Dispatch/Execution separation, private peer components and lifecycle-held access ([ADR-0089](adr/0089-session-realization-single-owner.md), [ADR-0091](adr/0091-architecture-rules.md)) | Final combination must pass the original boundary, error-path and concurrency checks; historical slice results do not qualify this revision |
-| P4 Executor | The former shared Host implementations have been replaced by caller-facing components and typed role sets ([runtime interface owner](design/runtime-interface-boundaries.md)) | Independent Coordinator product target/features dependency closure, deployment configuration and remaining assembly responsibilities still need closure. Retained readers must preserve exact commit selection and release Session state; replacing non-owning references with ownership is not an acceptance shortcut |
-| P5 Session state and recovery | Session aggregate owns execution and Environment decisions; the realization driver owns terminal recovery ([ADR-0090](adr/0090-session-state-model.md), [transition owner](design/session-environment-transition.md)) | Final-source proof/test execution and original-resource physical cleanup evidence remain distinct acceptance work |
-| P6 Sandbox | One SandboxProvider and an independent Kubernetes adapter ([provider boundary](design/sandbox-provider-contract.md)). `4f6a5983d6` consolidates Pod metadata GET/replace/409 handling with exact identity checks; its package suite and original whole live gate, including required PVC execution and cleanup, passed before normal local integration | The final combined revision still needs its original full gate. The historical diagnostic run and intermittent terminal-status failure remain separate evidence; the accepted correction is qualified on its own source |
-| P7 application and protocol | Credentials, Lifecycle, Queries and Inputs are real use-case components over the sole Mutations CAS kernel ([Session capabilities](design/session-aggregate-and-dispatch-capabilities.md)). Skill succession (`e45451bd98`), shared Resource CAS/replay repair (`9c4333d4e2`) and direct Environment application routing (`c38b32f3e7`) passed their original affected checks and normal local integration; the original Resource default-stack cases now pass | Create, Resources and remaining update/continuation orchestration are unfinished. Flow consumers have been migrated from current main in an isolated candidate; exact Native pin/lock/source-closure update and actual consumer qualification are pending. Local source results do not qualify publication or deployment |
-| Contract convergence | [ADR-0091](adr/0091-architecture-rules.md) retains distinct Dream, provider SPI and Container transport owners | Package the four Core Session state/event/budget/repository sources after their application callers stabilize; do not revive withdrawn merges or pursue a package-count quota |
-| SDK and downstream delivery | Local SDK API, SemVer, package and artifact-consumer qualification exists at `ceb2a66686` ([SDK release boundary](adr/0086-runtime-sdk-public-surface.md)) | Bind final-source qualification to the completed code; registry publication and actual paired Flow/Cloud consumption remain separate from local artifact tests |
-| D10 process and final qualification | The sole baseline writer now requires a complete new review record; historical review text is retained ([ADR-0091](adr/0091-architecture-rules.md)). This page retains document-readiness and catalog navigation | Finish owned worktree lifecycle reconciliation, measure non-regressing coverage and obtain one complete same-revision full gate under [ADR-0080](adr/0080-full-gate-freshness-and-declared-tool-environment.md). No such final combined record is claimed here |
-
-Continue by qualifying the matching Flow consumers of direct Environment and
-Memory application composition, using the original source-closure and full-gate
-owners. Then narrow the remaining application and composition responsibilities
-and migrate their actual consumers together. The final clean
-revision must run the original full gate and coverage comparison. Native OS,
-real Provider, original-session cleanup and published/downstream acceptance each
-retain their own evidence boundary; a local fixture cannot substitute for them.
+| P0 Linear main | Fast-forward only, no merge commits, one writer ([ADR-0091](adr/0091-architecture-rules.md)) | — |
+| P1–P3 Realization | Closed `RealizationError` with one disposition; Conflict / unknown Internal retry within the dispatch attempt budget; Pending waits only until the provider's provisioning deadline; private peer components with lifecycle-held access ([ADR-0089](adr/0089-session-realization-single-owner.md)) | — |
+| P4 Executor | `SharedHost`/`ManagedHost` replaced by caller-role components; `awaken-coordinator` consumes the executor only through `ExecutionPorts`; D3 in `_dispatch_boundary_fitness.py` is a hard rule; poisoned locks are typed errors (`_poisoned_lock_fitness`) | The awaken-cli binary still serves as both the Coordinator and the co-located root, so a Coordinator-only process links the executor; the terminal reconciler holds an `Arc` cycle |
+| P5 Session state | The aggregate decides every Environment transition; the realization driver alone orchestrates terminal recovery ([ADR-0090](adr/0090-session-state-model.md), [transition](design/session-environment-transition.md)) | — |
+| P6 Sandbox | One `SandboxProvider`; independent Kubernetes adapter; k3d container e2e and the distributed suite (11 stages, incl. successor source retention) pass ([provider boundary](design/sandbox-provider-contract.md)) | — |
+| P7 Application and protocol | Protocol crates only translate (`_protocol_translation_fitness.py`, 0 violations). Credentials, Lifecycle, Queries, Inputs and Resource-effect authorization are use-case components over the `SessionMutations` CAS kernel ([Session capabilities](design/session-aggregate-and-dispatch-capabilities.md)) | W21: Create, Resources, update, continuation and termination are still `impl SessionApplication`. W15 renames: run-ingress → dispatch, executor `slot` identifiers |
+| Contract convergence | Distinct Dream, provider SPI and Container transport owners retained ([ADR-0091](adr/0091-architecture-rules.md)) | Package the Core Session state/event/budget/repository sources once their callers settle (32 contract crates) |
+| Formal | Kani profiles bind loops by Rust symbol per harness artifact, so pins survive dependency changes | Kubernetes Pod values do not finish in CBMC; such properties use exhaustive native tables |
+| Downstream | Local SDK API/SemVer qualification ([ADR-0086](adr/0086-runtime-sdk-public-surface.md)) | awaken-cloud must follow the `awaken-runtime-host` → `awaken-session-executor` and coming run-ingress → dispatch renames |
 
 ## Document Readiness
 
