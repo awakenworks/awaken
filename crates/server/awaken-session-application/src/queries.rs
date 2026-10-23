@@ -180,11 +180,6 @@ impl SessionQueries {
             .as_ref()
             .is_some_and(|source| source.agent_unavailable_in(workspace_id, agent_id))
     }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn set_profiles(&mut self, profiles: Arc<dyn ExecutableAgentProfileSource>) {
-        self.profiles = Some(profiles);
-    }
 }
 
 #[async_trait::async_trait]

@@ -139,14 +139,6 @@ impl SessionInputs {
         })
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn set_resource_inventory(
-        &mut self,
-        inventory: Arc<dyn awaken_resource_contract::ResourceInventory>,
-    ) {
-        self.inventory = Some(inventory);
-    }
-
     async fn require_live_inbox_owner(
         &self,
         workspace_id: &str,

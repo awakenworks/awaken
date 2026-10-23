@@ -60,7 +60,7 @@ APPLICATION_EVENT_BATCHES = (
 )
 APPLICATION_TERMINAL = "crates/server/awaken-session-application/src/terminal.rs"
 APPLICATION_LIFECYCLE = "crates/server/awaken-session-application/src/lifecycle.rs"
-APPLICATION_WORK_DISPATCH = "crates/server/awaken-session-application/src/application.rs"
+APPLICATION_WORK_DISPATCH = "crates/server/awaken-session-application/src/work_assignments.rs"
 APPLICATION_RESOURCE_RECONCILIATION = (
     "crates/server/awaken-session-application/src/resource_reconciliation.rs"
 )
@@ -233,7 +233,7 @@ REQUIRED = {
     APPLICATION_CLEANUP: (
         "drive_session_terminal_cleanup(",
         ".commit_delete_tombstone(owner_scope, &session)",
-        ".retire_terminal_work(&session)",
+        ".work_assignments.retire(&session)",
         ".ensure_terminal_cleanup_fence()",
         ".quiesce_terminal_delegations(session_id)",
         ".freeze_terminal_cleanup_targets(",

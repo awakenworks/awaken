@@ -64,7 +64,8 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
     references.fail_replace.store(true, Ordering::SeqCst);
     assert!(
         application
-            .commit_resource_snapshot(
+            .resource_references
+            .commit(
                 "workspace",
                 awaken_session_state_contract::SessionAggregate::try_from(rejected)
                     .expect("valid test snapshot"),
@@ -108,7 +109,8 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
         .unwrap();
     assert!(matches!(
         application
-            .commit_resource_snapshot(
+            .resource_references
+            .commit(
                 "workspace",
                 awaken_session_state_contract::SessionAggregate::try_from(stale)
                     .expect("valid test snapshot"),
@@ -138,7 +140,8 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
         )
         .unwrap();
     application
-        .commit_resource_snapshot(
+        .resource_references
+        .commit(
             "workspace",
             awaken_session_state_contract::SessionAggregate::try_from(accepted)
                 .expect("valid test snapshot"),
@@ -191,17 +194,14 @@ async fn reference_bracket_rejection_rules(explicit: bool) {
         let attempt = tokio::spawn(async move {
             if explicit {
                 subject
-                    .commit_resource_snapshot_with_record(
-                        "workspace",
-                        candidate,
-                        record,
-                        Vec::new(),
-                    )
+                    .resource_references
+                    .commit_with_record("workspace", candidate, record, Vec::new())
                     .await
                     .map(crate::SnapshotCommit::into_session)
             } else {
                 subject
-                    .commit_resource_snapshot("workspace", candidate, &operation, Vec::new())
+                    .resource_references
+                    .commit("workspace", candidate, &operation, Vec::new())
                     .await
                     .map(crate::SessionAggregate::into_snapshot)
             }
@@ -290,7 +290,7 @@ async fn reference_bracket_rejection_rules(explicit: bool) {
             "{rule} repair outcome/{explicit}"
         );
         references.fail_replace.store(false, Ordering::SeqCst);
-        app.repair_resource_references("workspace", &id).await;
+        app.resource_references.repair("workspace", &id).await;
         assert_eq!(
             ids(),
             BTreeSet::from(["old".to_string()]),
@@ -327,12 +327,8 @@ async fn reference_bracket_success_rules(explicit: bool) {
     let record = crate::mutation::compile_session_snapshot_idempotency(&candidate, operation);
     let first = if explicit {
         let commit = app
-            .commit_resource_snapshot_with_record(
-                "workspace",
-                candidate.clone(),
-                record.clone(),
-                Vec::new(),
-            )
+            .resource_references
+            .commit_with_record("workspace", candidate.clone(), record.clone(), Vec::new())
             .await
             .unwrap();
         assert!(commit.transitioned(), "R7 explicit Applied");
@@ -343,7 +339,8 @@ async fn reference_bracket_success_rules(explicit: bool) {
         );
         commit.into_session()
     } else {
-        app.commit_resource_snapshot("workspace", candidate.clone(), operation, Vec::new())
+        app.resource_references
+            .commit("workspace", candidate.clone(), operation, Vec::new())
             .await
             .unwrap()
             .into_snapshot()
@@ -389,12 +386,8 @@ async fn reference_bracket_success_rules(explicit: bool) {
     );
     let replay = if explicit {
         let commit = app
-            .commit_resource_snapshot_with_record(
-                "workspace",
-                candidate,
-                record.clone(),
-                Vec::new(),
-            )
+            .resource_references
+            .commit_with_record("workspace", candidate, record.clone(), Vec::new())
             .await
             .unwrap();
         assert!(!commit.transitioned(), "R8 actual Replayed");
@@ -410,7 +403,8 @@ async fn reference_bracket_success_rules(explicit: bool) {
         );
         commit.into_session()
     } else {
-        app.commit_resource_snapshot("workspace", candidate, operation, Vec::new())
+        app.resource_references
+            .commit("workspace", candidate, operation, Vec::new())
             .await
             .unwrap()
             .into_snapshot()
@@ -463,7 +457,8 @@ async fn reference_bracket_success_rules(explicit: bool) {
         "R10 Resource generation remains stable; root CAS revision will advance"
     );
     let later = app
-        .commit_resource_snapshot("workspace", later, "reference-later-targets", Vec::new())
+        .resource_references
+        .commit("workspace", later, "reference-later-targets", Vec::new())
         .await
         .unwrap()
         .into_snapshot();
@@ -502,7 +497,8 @@ async fn reference_bracket_success_rules(explicit: bool) {
         let task = tokio::spawn(async move {
             if explicit {
                 subject
-                    .commit_resource_snapshot_with_record(
+                    .resource_references
+                    .commit_with_record(
                         "workspace",
                         target_replay_candidate,
                         original_record,
@@ -520,12 +516,8 @@ async fn reference_bracket_success_rules(explicit: bool) {
                     })
             } else {
                 subject
-                    .commit_resource_snapshot(
-                        "workspace",
-                        target_replay_candidate,
-                        operation,
-                        Vec::new(),
-                    )
+                    .resource_references
+                    .commit("workspace", target_replay_candidate, operation, Vec::new())
                     .await
                     .map(crate::SessionAggregate::into_snapshot)
             }
@@ -633,7 +625,7 @@ async fn reference_bracket_success_rules(explicit: bool) {
                 "R13 current durable Session still blocks reclamation after repair failure"
             );
             references.fail_replace.store(false, Ordering::SeqCst);
-            app.repair_resource_references("workspace", &id).await;
+            app.resource_references.repair("workspace", &id).await;
             assert_eq!(
                 references
                     .records

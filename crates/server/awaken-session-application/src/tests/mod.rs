@@ -33,6 +33,7 @@ use {
 };
 
 use super::*;
+use crate::work_assignments::reconcile_work_dispatches;
 use awaken_session_repository_contract::SessionRepositoryReads;
 
 /// Execute the canonical complete-projection effects for a Session Application

@@ -806,7 +806,7 @@ impl SessionApplication {
         // The aggregate is already the authoritative dispatch intent. An
         // ambiguous create failure here could induce a duplicate client create;
         // the canonical reconciler therefore retries this disposable projection.
-        if let Err(error) = self.dispatch_session_work(&persisted).await {
+        if let Err(error) = self.work_assignments.dispatch(&persisted).await {
             tracing::warn!(
                 session = %session_id,
                 error = ?error,

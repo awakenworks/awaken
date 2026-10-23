@@ -46,6 +46,68 @@ fn claim_terminal_cleanup_candidate(
     Ok(claim)
 }
 
+/// Apply one validated activation to the candidate root: commit the prepared
+/// Resource generation, activate every realizing MCP generation, refresh the
+/// projection leases and begin obsolete drains. Returns whether the root
+/// changed and must be committed; the aggregate decides each transition.
+fn apply_activation(
+    session: &mut SessionAggregate,
+    expected: Vec<StageMcpAttachment>,
+    prepared_pending_resources: bool,
+    prepared_legacy_resources: bool,
+) -> Result<bool, SessionRealizationControlFailure> {
+    let needs_activation_commit = prepared_pending_resources
+        || prepared_legacy_resources
+        || session
+            .mcp
+            .attachments
+            .iter()
+            .any(|attachment| attachment.state == McpAttachmentState::Realizing);
+    if !needs_activation_commit {
+        return Ok(false);
+    }
+    if prepared_pending_resources {
+        session.resources().commit().map_err(unavailable)?;
+    }
+    if prepared_legacy_resources {
+        session.resources().adopt_legacy_active();
+    }
+    for request in expected {
+        let attachment = session
+            .mcp
+            .attachments
+            .iter()
+            .find(|attachment| &attachment.generation == request.generation.generation())
+            .ok_or(SessionRealizationControlFailure::NotReady)?;
+        if attachment.state == McpAttachmentState::Realizing {
+            session
+                .mcp()
+                .activate(request.generation.generation(), &request.realization_id)
+                .map_err(unavailable)?;
+        }
+    }
+    // Durable authority advances without rewriting the completed physical
+    // receipt. Runtime publication uses that exact receipt under its live
+    // same-generation Session lease, so continual heartbeats cannot starve
+    // the Stage -> Publish -> Complete transition.
+    session
+        .assignment()
+        .refresh_projection_leases()
+        .map_err(unavailable)?;
+    session.mcp().begin_obsolete_drains().map_err(unavailable)?;
+    // Initial creation remains non-visible until publication acknowledgement.
+    // A hot mutation belongs to an already-idle Session, so keep that lifecycle
+    // status while its new generation is unacknowledged; a failed replacement
+    // must not turn the established Session into a failed create.
+    if !session.execution.admits_activity() {
+        session
+            .lifecycle()
+            .transition_execution(SessionExecutionState::Activating)
+            .map_err(unavailable)?;
+    }
+    Ok(true)
+}
+
 enum TerminalCleanupWorkerRevalidation {
     Admitted,
     Ineligible,
@@ -611,55 +673,15 @@ impl SessionApplication {
         } else {
             false
         };
-        let needs_activation_commit = prepared_pending_resources
-            || prepared_legacy_resources
-            || session
-                .mcp
-                .attachments
-                .iter()
-                .any(|attachment| attachment.state == McpAttachmentState::Realizing);
-        if needs_activation_commit {
-            if prepared_pending_resources {
-                session.resources().commit().map_err(unavailable)?;
-            }
-            if prepared_legacy_resources {
-                session.resources().adopt_legacy_active();
-            }
-            for request in expected {
-                let attachment = session
-                    .mcp
-                    .attachments
-                    .iter()
-                    .find(|attachment| &attachment.generation == request.generation.generation())
-                    .ok_or(SessionRealizationControlFailure::NotReady)?;
-                if attachment.state == McpAttachmentState::Realizing {
-                    session
-                        .mcp()
-                        .activate(request.generation.generation(), &request.realization_id)
-                        .map_err(unavailable)?;
-                }
-            }
-            // Durable authority advances without rewriting the completed physical
-            // receipt. Runtime publication uses that exact receipt under its live
-            // same-generation Session lease, so continual heartbeats cannot starve
-            // the Stage -> Publish -> Complete transition.
-            session
-                .assignment()
-                .refresh_projection_leases()
-                .map_err(unavailable)?;
-            session.mcp().begin_obsolete_drains().map_err(unavailable)?;
-            // Initial creation remains non-visible until publication acknowledgement.
-            // A hot mutation belongs to an already-idle Session, so keep that lifecycle
-            // status while its new generation is unacknowledged; a failed replacement
-            // must not turn the established Session into a failed create.
-            if !session.execution.admits_activity() {
-                session
-                    .lifecycle()
-                    .transition_execution(SessionExecutionState::Activating)
-                    .map_err(unavailable)?;
-            }
+        if apply_activation(
+            &mut session,
+            expected,
+            prepared_pending_resources,
+            prepared_legacy_resources,
+        )? {
             session = self
-                .commit_resource_snapshot(
+                .resource_references
+                .commit(
                     &owner_scope,
                     session,
                     "activate-session-realization",

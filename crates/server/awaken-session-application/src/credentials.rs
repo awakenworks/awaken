@@ -294,15 +294,13 @@ pub(crate) fn preflight_repository_credential_rotation(
 #[cfg(any(test, feature = "test-support"))]
 impl crate::SessionApplication {
     pub fn set_credential_source(&mut self, source: Arc<dyn SessionCredentialSource>) {
-        Arc::get_mut(&mut self.credentials)
-            .expect("credential fixtures must finish before the service is shared")
-            .credential_source = Some(source);
+        crate::construction::reassemble(self, |assembly| assembly.credential_source = Some(source));
     }
 
     pub fn set_credential_material_ingress(&mut self, ingress: Arc<dyn CredentialMaterialIngress>) {
-        Arc::get_mut(&mut self.credentials)
-            .expect("credential fixtures must finish before the service is shared")
-            .credential_material_ingress = Some(ingress);
+        crate::construction::reassemble(self, |assembly| {
+            assembly.credential_material_ingress = Some(ingress)
+        });
     }
 }
 

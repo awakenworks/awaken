@@ -2897,30 +2897,33 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
     let app = application(repo, environments.clone());
 
     assert_eq!(
-        app.acquire_session_work(
-            &SessionId::from("missing"),
-            "owner",
-            1,
-            SessionWorkAcquisition::RealizationRenewal,
-        )
-        .await
-        .expect("W1"),
+        app.work_assignments
+            .acquire_session_work(
+                &SessionId::from("missing"),
+                "owner",
+                1,
+                SessionWorkAcquisition::RealizationRenewal,
+            )
+            .await
+            .expect("W1"),
         SessionWorkOwnership::NotRequired,
         "W1"
     );
     assert_eq!(
-        app.acquire_session_work(
-            &SessionId::from("cloud-work"),
-            "owner",
-            1,
-            SessionWorkAcquisition::RealizationRenewal,
-        )
-        .await
-        .expect("W2"),
+        app.work_assignments
+            .acquire_session_work(
+                &SessionId::from("cloud-work"),
+                "owner",
+                1,
+                SessionWorkAcquisition::RealizationRenewal,
+            )
+            .await
+            .expect("W2"),
         SessionWorkOwnership::NotRequired,
         "W2"
     );
     let SessionWorkOwnership::Leased(lease) = app
+        .work_assignments
         .acquire_session_work(
             &SessionId::from("self-work"),
             "owner",
@@ -2938,14 +2941,15 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
         "W3"
     );
     assert_eq!(
-        app.acquire_session_work(
-            &SessionId::from("terminal-work"),
-            "owner",
-            1,
-            SessionWorkAcquisition::ClaimedRun,
-        )
-        .await
-        .expect("W4"),
+        app.work_assignments
+            .acquire_session_work(
+                &SessionId::from("terminal-work"),
+                "owner",
+                1,
+                SessionWorkAcquisition::ClaimedRun,
+            )
+            .await
+            .expect("W4"),
         SessionWorkOwnership::Unowned,
         "W4"
     );
@@ -2958,14 +2962,15 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
         "W4"
     );
     assert_eq!(
-        app.acquire_session_work(
-            &SessionId::from("renewal-work"),
-            "renewal-owner",
-            2,
-            SessionWorkAcquisition::RealizationRenewal,
-        )
-        .await
-        .expect("W5"),
+        app.work_assignments
+            .acquire_session_work(
+                &SessionId::from("renewal-work"),
+                "renewal-owner",
+                2,
+                SessionWorkAcquisition::RealizationRenewal,
+            )
+            .await
+            .expect("W5"),
         SessionWorkOwnership::Unowned,
         "W5"
     );

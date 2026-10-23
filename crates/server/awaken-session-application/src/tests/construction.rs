@@ -200,7 +200,8 @@ async fn builder_enabled_retention_propagates_authority_failure_instead_of_silen
             .unwrap();
         let initial_revision = candidate.revision;
         let result = app
-            .commit_resource_snapshot("workspace", candidate, "builder-retention", Vec::new())
+            .resource_references
+            .commit("workspace", candidate, "builder-retention", Vec::new())
             .await;
         assert_eq!(result.is_err(), enabled);
         if enabled {
@@ -214,7 +215,8 @@ async fn builder_enabled_retention_propagates_authority_failure_instead_of_silen
                 "retention failure blocks root CAS"
             );
             references.fail_replace.store(false, Ordering::SeqCst);
-            app.commit_resource_snapshot("workspace", retained, "builder-retention", Vec::new())
+            app.resource_references
+                .commit("workspace", retained, "builder-retention", Vec::new())
                 .await
                 .unwrap();
         }

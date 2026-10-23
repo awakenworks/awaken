@@ -11,7 +11,7 @@ impl ManagedState {
     /// projection. Product composition runs it in the lifecycle supervisor.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn reconcile_work_dispatches(&self) -> usize {
-        let report = self.application.reconcile_work_dispatches().await;
+        let report = self.application.work_assignments().reconcile().await;
         for failure in report.failures {
             tracing::warn!(
                 session = %failure.session_id,

@@ -195,7 +195,8 @@ impl SessionApplication {
         let (session, command_applied, command_revision) = match command_record {
             Some(record) => {
                 let commit = self
-                    .commit_resource_snapshot_with_record(&owner_scope, session, record, Vec::new())
+                    .resource_references
+                    .commit_with_record(&owner_scope, session, record, Vec::new())
                     .await
                     .map_err(SessionResourceManifestError::mutation)?;
                 let applied = commit.transitioned();
@@ -212,7 +213,8 @@ impl SessionApplication {
             }
             None => {
                 let session = self
-                    .commit_resource_snapshot(
+                    .resource_references
+                    .commit(
                         &owner_scope,
                         session,
                         "resource-manifest-intent",
@@ -257,7 +259,8 @@ impl SessionApplication {
             .await
             .map(crate::SessionAggregate::into_snapshot)
         } else if outcome.session.requires_external_environment_owner() {
-            self.dispatch_session_work(&outcome.session)
+            self.work_assignments
+                .dispatch(&outcome.session)
                 .await
                 .map(|_| outcome.session.clone())
                 .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))

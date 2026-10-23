@@ -6,7 +6,6 @@
 // @formal entrypoint session_resources.repository_rotation_requires_original_live_generation
 // @formal entrypoint session_resources.restart_retries_same_pending_revision
 // @formal entrypoint session_resources.terminal_session_never_reactivates
-// awaken-allow(file-limit-ceiling): 1582
 //! Durable Session Resource recovery and terminal reclamation.
 
 use crate::credentials::preflight_repository_credential_rotation;
@@ -14,15 +13,13 @@ use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_credential_contract::{
     CredentialMaterialInput, CredentialMaterialRetirementCommand, CredentialMaterialRotationCommand,
 };
-use awaken_resource_contract::{ResourceReference, ResourceReferenceKind, ResourceReferenceRecord};
 use awaken_session_configuration_contract::resource::{
     ResolvedInput, ResolvedInputSource, ResolvedSessionResources, SessionRealizationLease,
 };
 use awaken_session_realization_contract::SessionRealizationControlFailure;
 use awaken_session_state_contract::{
-    ActivationState, IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionAggregate,
-    SessionExecutionState, SessionMutation, SessionMutationPayload, SessionMutationResult,
-    SessionTombstone,
+    ActivationState, PersistedSession, SessionAggregate, SessionExecutionState, SessionMutation,
+    SessionMutationPayload, SessionMutationResult, SessionTombstone,
 };
 use awaken_session_types::{RunError, SessionRevision};
 use awaken_time::WallClockExt as _;
@@ -32,7 +29,6 @@ use super::{
     SessionParticipantProvenance, SessionPreparationError, SessionReconciliation,
     SessionReconciliationFailure, SessionRecoveryCandidates, SessionRepositoryOwner,
     credentials::{mutation_failure, repository_preparation},
-    mutation::repository_failure,
     realization::{mutation_control, repository_control},
 };
 
@@ -42,14 +38,12 @@ pub(crate) use manifest_command::MEMORY_STORE_CREATE_ONLY;
 pub use manifest_command::{SessionResourceAttachment, SessionResourceManifestRequest};
 mod ordinary_reconciliation_gate;
 mod purge_guard;
-#[cfg(test)]
-mod reference_tests;
 mod repository_reference;
 mod terminal_cleanup;
 
 use ordinary_reconciliation_gate::ordinary_resource_reconciliation_allowed;
 pub use purge_guard::SessionResourcePurgeGuard;
-use purge_guard::resource_targets;
+pub(crate) use purge_guard::resource_targets;
 use repository_reference::{
     session_resources_reference_repository, session_resources_reference_repository_generation,
 };
@@ -502,7 +496,8 @@ impl SessionApplication {
             .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
             if changed {
                 match self
-                    .commit_resource_snapshot(
+                    .resource_references
+                    .commit(
                         &owner_scope,
                         session,
                         "terminal-repository-publication-worker-outcome",
@@ -610,7 +605,8 @@ impl SessionApplication {
                 return Ok(());
             }
             match self
-                .commit_resource_snapshot(
+                .resource_references
+                .commit(
                     &owner_scope,
                     session,
                     "terminal-cleanup-preparation",
@@ -665,7 +661,8 @@ impl SessionApplication {
                 return Ok(());
             }
             match self
-                .commit_resource_snapshot(
+                .resource_references
+                .commit(
                     &owner_scope,
                     session,
                     "terminal-cleanup-disposal",
@@ -685,140 +682,6 @@ impl SessionApplication {
             }
         }
         Err(SessionRealizationControlFailure::Conflict)
-    }
-
-    async fn synchronize_resource_references(
-        &self,
-        owner_scope: &str,
-        session: &PersistedSession,
-    ) -> Result<(), SessionPreparationError> {
-        let (Some(references), Some(files)) = (&self.resource_references, &self.resource_files)
-        else {
-            return Ok(());
-        };
-        let resource_pins = session.resources.resource_references();
-        let targets = resource_targets(files.as_ref(), owner_scope, &resource_pins)
-            .await
-            .map_err(internal)?;
-        let records = targets
-            .into_iter()
-            .map(|target| ResourceReferenceRecord {
-                target,
-                reference: ResourceReference {
-                    kind: ResourceReferenceKind::SessionBinding,
-                    reference_id: session.session_id.to_string(),
-                },
-            })
-            .collect();
-        references
-            .replace_references(
-                ResourceReferenceKind::SessionBinding,
-                session.session_id.as_str(),
-                records,
-            )
-            .await
-            .map_err(internal)
-    }
-
-    /// Publish the candidate's complete retention set before its root CAS. A
-    /// CAS failure repairs the projection from repository truth. This ordering
-    /// makes additions fail closed against reclamation; removals remain safe
-    /// because [`SessionResourcePurgeGuard`] still observes the pre-CAS aggregate.
-    pub(crate) async fn commit_resource_snapshot(
-        &self,
-        owner_scope: &str,
-        candidate: SessionAggregate,
-        operation: &str,
-        lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<SessionAggregate, SessionMutationError> {
-        let idempotency =
-            crate::mutation::compile_session_snapshot_idempotency(&candidate, operation);
-        // Keep the complete aggregate-owning Resource bracket on the heap.
-        // Its references and root CAS are polled inline by this same caller;
-        // no task or cancellation owner is detached.
-        let commit = Box::pin(self.commit_resource_snapshot_with_record(
-            owner_scope,
-            candidate,
-            idempotency,
-            lifecycle_facts,
-        ))
-        .await?;
-        crate::mutation::aggregate_from_snapshot(commit.into_session()).map_err(repository_failure)
-    }
-
-    async fn commit_resource_snapshot_with_record(
-        &self,
-        owner_scope: &str,
-        candidate: SessionAggregate,
-        idempotency: IdempotencyRecord,
-        lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<crate::SnapshotCommit, SessionMutationError> {
-        let session_id = candidate.session_id.clone();
-        self.synchronize_resource_references(owner_scope, &candidate)
-            .await
-            .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
-        match self
-            .mutations
-            .commit_session_snapshot_with_record(
-                owner_scope,
-                candidate,
-                idempotency,
-                lifecycle_facts,
-            )
-            .await
-        {
-            Ok(commit) => {
-                if !commit.transitioned() {
-                    // The exact receipt may reload a newer Resource manifest.
-                    // Restore its projection after publishing our stale candidate,
-                    // without turning an accepted replay into another failure.
-                    self.repair_resource_references(owner_scope, &session_id)
-                        .await;
-                }
-                Ok(commit)
-            }
-            Err(error) => {
-                self.repair_resource_references(owner_scope, &session_id)
-                    .await;
-                Err(error)
-            }
-        }
-    }
-
-    pub(crate) async fn repair_resource_references(
-        &self,
-        owner_scope: &str,
-        session_id: &awaken_session_types::SessionId,
-    ) {
-        let authoritative = self.mutations.session_aggregate(session_id).await;
-        let repair = match authoritative {
-            Ok(session) => {
-                self.synchronize_resource_references(owner_scope, &session)
-                    .await
-            }
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
-                match &self.resource_references {
-                    Some(references) => references
-                        .replace_references(
-                            ResourceReferenceKind::SessionBinding,
-                            session_id.as_str(),
-                            Vec::new(),
-                        )
-                        .await
-                        .map_err(internal),
-                    None => Ok(()),
-                }
-            }
-            Err(error) => Err(repository_preparation(error)),
-        };
-        if let Err(error) = repair {
-            tracing::warn!(
-                session_id = session_id.as_str(),
-                workspace_id = owner_scope,
-                error = %error,
-                "Session Resource reference repair remains pending"
-            );
-        }
     }
 
     /// Settle the one canonical reconciliation attempt against its exact
@@ -864,7 +727,8 @@ impl SessionApplication {
                 }
             };
             match self
-                .commit_resource_snapshot(owner_scope, current, operation, Vec::new())
+                .resource_references
+                .commit(owner_scope, current, operation, Vec::new())
                 .await
             {
                 Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
@@ -892,7 +756,8 @@ impl SessionApplication {
             let mut candidate = session.clone();
             candidate.resources().start_attempt().map_err(internal)?;
             match self
-                .commit_resource_snapshot(
+                .resource_references
+                .commit(
                     owner_scope,
                     candidate,
                     "resource-reconcile-attempt",
@@ -1024,7 +889,8 @@ impl SessionApplication {
                 };
                 let session_id = session.session_id.clone();
                 if let Err(error) = self
-                    .synchronize_resource_references(owner_scope, &session)
+                    .resource_references
+                    .synchronize(owner_scope, &session)
                     .await
                 {
                     result.failures.push(SessionReconciliationFailure {
@@ -1051,7 +917,8 @@ impl SessionApplication {
                         // missing aggregate is then the authoritative successful
                         // outcome, not a retryable reconciliation failure. Repair
                         // the disposable reference projection from that truth.
-                        self.repair_resource_references(owner_scope, &session_id)
+                        self.resource_references
+                            .repair(owner_scope, &session_id)
                             .await;
                     }
                     Err(error) => result.failures.push(SessionReconciliationFailure {
@@ -1237,12 +1104,8 @@ impl SessionApplication {
             if session.resources.activations.is_empty() {
                 session.resources().adopt_legacy_active();
                 session = self
-                    .commit_resource_snapshot(
-                        owner_scope,
-                        session,
-                        "resource-adopt-legacy",
-                        Vec::new(),
-                    )
+                    .resource_references
+                    .commit(owner_scope, session, "resource-adopt-legacy", Vec::new())
                     .await
                     .map_err(mutation_failure)?;
             }
@@ -1299,7 +1162,8 @@ impl SessionApplication {
                     .resources()
                     .complete_repository_retirement(&retirement);
                 session = self
-                    .commit_resource_snapshot(
+                    .resource_references
+                    .commit(
                         owner_scope,
                         candidate,
                         "repository-retirement-cancelled",
@@ -1350,7 +1214,8 @@ impl SessionApplication {
                 ));
             }
             match self
-                .commit_resource_snapshot(
+                .resource_references
+                .commit(
                     owner_scope,
                     candidate,
                     "repository-retirement-complete",
@@ -1400,7 +1265,8 @@ impl SessionApplication {
     > {
         if session.resources().ensure_terminal_repository_retirements() {
             session = self
-                .commit_resource_snapshot(
+                .resource_references
+                .commit(
                     owner_scope,
                     session,
                     "terminal-repository-retirement-plan",

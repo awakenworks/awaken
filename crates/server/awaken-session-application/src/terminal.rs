@@ -435,31 +435,6 @@ impl SessionApplication {
         })
     }
 
-    pub(crate) async fn retire_terminal_work(
-        &self,
-        session: &PersistedSession,
-    ) -> Result<(), SessionPreparationError> {
-        let Some(baseline) = session
-            .frozen_baseline()
-            .filter(|baseline| baseline.environment.self_hosted)
-        else {
-            return Ok(());
-        };
-        self.environments
-            .assignment
-            .retire_session(&baseline.environment.environment_id, &session.session_id)
-            .await
-            .map(|_| ())
-            .map_err(|error| {
-                SessionPreparationError::Rejected(
-                    awaken_session_types::RunError::unavailable_classified(
-                        "session_work_retire_failed",
-                        format!("Session Work could not be retired: {error}"),
-                    ),
-                )
-            })
-    }
-
     /// Archive one publicly idle Session and release every remaining Resource
     /// exactly once. The idle check and archive transition share the root CAS;
     /// protocol adapters must not race a separate status read against this

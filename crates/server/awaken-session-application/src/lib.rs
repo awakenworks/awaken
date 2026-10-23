@@ -45,7 +45,6 @@ mod tool_compilation;
 pub use construction::{SessionApplicationBuilder, SessionCredentialAuthorities, SessionResources};
 
 mod recovery_scan;
-use recovery_scan::scan_recovery_candidates;
 pub use recovery_scan::{WorkerRealizationObservation, WorkerRealizationRead};
 
 /// Single Session-application projection from repository policy into the Run
@@ -229,6 +228,9 @@ pub use mcp::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
 pub use realization::{SessionReconciliation, SessionReconciliationFailure};
 mod resource_effect_authorization;
 pub use resource_effect_authorization::SessionResourceEffectAuthorization;
+mod resource_references;
+pub use resource_references::SessionResourceReferences;
+mod work_assignments;
 pub(crate) use resource_effect_authorization::require_live_root_lease;
 pub use resource_reconciliation::{
     ReplaceSessionResourceManifest, SessionResourceAttachment, SessionResourceManifestError,
@@ -248,6 +250,7 @@ pub use runtime_commands::{
     SessionRepositoryOwner, SessionRepositoryResourceInput, SessionRunExecutionObservation,
     SessionToolUseObservation,
 };
+pub use work_assignments::SessionWorkAssignments;
 mod update;
 pub use update::{
     SessionMcpUpdate, SessionMetadataUpdate, SessionUpdateCommand, SessionUpdateError,

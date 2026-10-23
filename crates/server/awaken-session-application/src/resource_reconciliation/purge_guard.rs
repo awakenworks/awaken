@@ -19,7 +19,7 @@ use awaken_session_configuration_contract::resource::ResolvedInputSource;
 use awaken_session_repository_contract::SessionRepository;
 use awaken_session_state_contract::SessionResourceReferences;
 
-pub(super) async fn resource_targets(
+pub(crate) async fn resource_targets(
     files: &dyn FileCatalog,
     workspace: &str,
     resources: &SessionResourceReferences,

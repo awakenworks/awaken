@@ -653,7 +653,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
         errors.append(
             f"{APPLICATION_CLEANUP}: terminal cleanup bypasses its durable intent/receipt port"
         )
-    if application.count(".retire_terminal_work(") != 1:
+    if application.count(".work_assignments.retire(") != 1:
         errors.append(
             f"{APPLICATION_CLEANUP}: Work retirement must have one cleanup-driver call site"
         )
@@ -662,7 +662,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             f"{APPLICATION_CLEANUP}: Delete tombstone must have one finalization path"
         )
     terminal = sources.get(APPLICATION_TERMINAL, "")
-    if ".retire_terminal_work(" in terminal:
+    if ".work_assignments.retire(" in terminal:
         errors.append(
             f"{APPLICATION_TERMINAL}: terminal edge bypasses the shared cleanup driver"
         )
@@ -981,7 +981,7 @@ fn release_terminal_resources_once() {
     session.verified_terminal_cleanup();
     session.ensure_terminal_cleanup_fence();
     "terminal-cleanup-fence";
-    self.retire_terminal_work(&session);
+    self.work_assignments.retire(&session);
     self.runtime().quiesce_terminal_delegations(session_id);
     session.freeze_terminal_cleanup_targets(thread_ids, watermark, cursor);
     self.drive_local_terminal_cleanup(&assignment);

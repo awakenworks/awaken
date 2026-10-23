@@ -484,7 +484,8 @@ impl SessionApplication {
                 .map_err(|error| {
                     SessionProjectionRecoveryError::Rejected(realization_error(error))
                 })?;
-            self.dispatch_session_work(&session)
+            self.work_assignments
+                .dispatch(&session)
                 .await
                 .map_err(|error| {
                     SessionProjectionRecoveryError::Rejected(RunError::unavailable_classified(
