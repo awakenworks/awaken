@@ -4,8 +4,8 @@
 //! routing policy: the topology chooses the resolver's construction once.
 use super::*;
 use awaken_dispatch_execution::session_execution::{
-    ClaimedRunPreparation, ClaimedRunWorkers, ClaimedSessionInstallation, CommitBoundaryWorkers,
-    ObservedProjection, SessionInstallation, ThreadCommitBoundary, execution_error,
+    ClaimedRunPreparation, ClaimedRunWorkers, ClaimedSessionInstallation, ObservedProjection,
+    SessionInstallation, execution_error,
 };
 use awaken_dispatch_execution::session_worker_resolver::{
     ClaimedExecution, CommittedTerminalScan, ProjectionAuthority, claim_outcome,
@@ -13,9 +13,7 @@ use awaken_dispatch_execution::session_worker_resolver::{
 };
 use awaken_dispatch_execution::{AdmissionError, DispatchWorker, Error};
 use awaken_dispatch_contract::{Claimed, RunClaim, RunDispatch};
-use awaken_runtime_contract::{
-    ExecutableAgentSnapshot, RuntimeRunContext, StaticPublishedAgentSnapshots,
-};
+use awaken_runtime_contract::{ExecutableAgentSnapshot, StaticPublishedAgentSnapshots};
 use awaken_session_realization::peers::EnvironmentPeer as _;
 use awaken_session_realization::realization_error::RealizationError;
 use awaken_session_realization::worker_projection::SessionProjectionExecution;
@@ -41,7 +39,9 @@ pub(crate) fn session_worker_resolver(
             )
         })?;
     let clock = run_assembly.realization_executor.clock().clone();
-    let assembly = Arc::new(ClaimedRunAssembly::new(run_assembly.clone()));
+    let commits = Arc::new(super::boundary_run::CommitBoundaryAssembly::new(
+        run_assembly,
+    ));
     let terminal_state = dispatch.terminal_reconciliation().clone();
     let topology = dispatch.topology();
     // Only a Coordinator-owned durable authority holds committed truth; it
@@ -59,11 +59,12 @@ pub(crate) fn session_worker_resolver(
         return Ok(SessionWorkerResolver::coordinator(
             queue,
             clock,
-            assembly,
+            commits,
             terminal_state,
             terminals,
         ));
     }
+    let assembly = Arc::new(ClaimedRunAssembly::new(run_assembly.clone()));
     let projection = run_assembly
         .capabilities
         .worker
@@ -86,7 +87,7 @@ pub(crate) fn session_worker_resolver(
     Ok(SessionWorkerResolver::worker(
         queue,
         clock,
-        assembly,
+        commits,
         terminal_state,
         execution,
         terminals,
@@ -404,61 +405,6 @@ impl ClaimedRunWorkers for ClaimedRunAssembly {
             claimed,
             session_thread,
             publications,
-        )
-        .await
-    }
-}
-
-#[async_trait::async_trait]
-impl CommitBoundaryWorkers for ClaimedRunAssembly {
-    async fn open_commit(&self, thread: &ThreadId) -> Result<Box<dyn ThreadCommitBoundary>, Error> {
-        let host = self.assembly.clone();
-        let commit = host
-            .authority
-            .open_commit(&thread.0)
-            .await
-            .map_err(|error| execution_error(error.to_string()))?;
-        Ok(Box::new(OpenedThreadCommit {
-            host,
-            commit: Arc::new(commit),
-        }))
-    }
-
-    fn recovery_source(
-        &self,
-    ) -> Result<Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>, Error>
-    {
-        Ok(self.assembly.thread_reads.clone())
-    }
-}
-
-/// One opened Thread commit boundary, held only for one resolve or terminal
-/// candidate. It contains no cache, mutation, or new authority.
-struct OpenedThreadCommit {
-    host: Arc<crate::RunAssembly>,
-    commit: Arc<crate::store::HostCommit>,
-}
-
-#[async_trait::async_trait]
-impl ThreadCommitBoundary for OpenedThreadCommit {
-    fn committed(
-        &self,
-    ) -> &dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView {
-        self.commit.as_ref()
-    }
-
-    async fn boundary_worker(
-        &self,
-        claimed: &Claimed,
-        context: Option<RuntimeRunContext>,
-        install_cancellation_executor: bool,
-    ) -> Result<DispatchWorker<AnyDispatchStore>, Error> {
-        super::boundary_run::construct_boundary_worker(
-            self.host.as_ref(),
-            claimed,
-            self.commit.clone(),
-            context,
-            install_cancellation_executor,
         )
         .await
     }

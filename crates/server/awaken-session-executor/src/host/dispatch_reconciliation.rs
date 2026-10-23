@@ -994,6 +994,10 @@ mod tests {
     /// the original atomic claim is still the empty-slot delivery authority.
     #[tokio::test]
     async fn host_reconciles_only_exact_committed_terminals_without_opening_sessions() {
+        // Commit-factory split coverage: no local pool + exact Ended versus
+        // Awaiting must still use one environment-free commit source. Together
+        // with the adjacent replacement-authority and exhausted-claim cases,
+        // this preserves terminal-only repair without a claimed-Run assembler.
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
 
         let mut local_pool =
@@ -1362,6 +1366,9 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_recovery_opens_the_parent_partition_for_a_logical_child() {
+        // Commit-factory split coverage: the opened reader remains the physical
+        // parent partition even though the repaired Run names a logical child;
+        // changing the port bundle must not select a new child commit store.
         // Constraint/Invariant: the authoritative inputs and ownership boundaries
         // documented here remain the only decision source; no parallel path is admitted.
         // Decision rule: execute every reachable cause partition documented here and
