@@ -80,6 +80,10 @@ enforced by the standalone `reference-transaction` guard
 | `design/session-branch-prefixes.md` | Ready | Defines immutable cross-Session transcript prefixes without copied target history or parallel branch state |
 | `design/runtime-scenario-validation.md` | Ready | Owns runtime GWT scenario ids, scenario text, executable-test mapping, and scenario test organization |
 | `design/test-validation.md` | Ready | Explains test design, risk and execution tiers, affected selection, cache/concurrency limits, coverage interpretation, and environment qualification |
+| `design/session-execution-test-acceptance.md` | Design ready; qualification pending | Calibrates the supplied 37 requirements into traceable behavior scenarios and shared gates with source-bound witnesses; no full-group execution acceptance is claimed |
+| `design/session-execution-test-acceptance-cases-1.md` | Design ready; qualification pending | Concrete scenarios for the acceptance checklist, split by requirement range; same qualification status as the overview |
+| `design/session-execution-test-acceptance-cases-2.md` | Design ready; qualification pending | Concrete scenarios for the acceptance checklist, split by requirement range; same qualification status as the overview |
+| `design/session-execution-test-acceptance-cases-3.md` | Design ready; qualification pending | Concrete scenarios for the acceptance checklist, split by requirement range; same qualification status as the overview |
 | `design/runtime-interface-boundaries.md` | Runtime-owned | Makes runtime role traits, activation/context/snapshot split, external publication-registration roles, executable snapshot contract, plugin contributions, tool decisions, and simple-design checks explicit |
 | `design/neutral-waist.md` | Runtime-owned | Runtime execution ports and extension points |
 | `design/tool-and-capability.md` | Runtime-owned | Capability segmentation, neutral ToolExecutor port, builtin-tools placement, unified delegation tool, and permission boundary |
@@ -139,6 +143,10 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/session-environment-transition.md` | Design narrative | Not required | n/a |
 | `design/runtime-scenario-validation.md` | Coverage map | Not required | n/a |
 | `design/test-validation.md` | Meta / introspection | Not required | n/a |
+| `design/session-execution-test-acceptance.md` | Coverage map | Not required | n/a |
+| `design/session-execution-test-acceptance-cases-1.md` | Coverage map | Not required | n/a |
+| `design/session-execution-test-acceptance-cases-2.md` | Coverage map | Not required | n/a |
+| `design/session-execution-test-acceptance-cases-3.md` | Coverage map | Not required | n/a |
 | `design/runtime-interface-boundaries.md` | Role owner | Required | self |
 | `design/neutral-waist.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/tool-and-capability.md` | Role owner | Required | self |
