@@ -145,6 +145,8 @@ T00 是追溯门禁，T34 是后端资格，T35 是平台和执行器资格，T3
 | 静态门禁 | T00-C01、T00-C02、T00-C03、T34-C03、T36-C01、T36-C02、T36-C03 | `current_clause_complete` | E11、E12、E15 |
 | 组件 | T01-C01、T14-C01 | `current_clause_complete` | E13 |
 | 组件 | T06-C01、T07-C01、T11-C02、T12-C01、T13-C03、T15-C01、T27-C01、T27-C02、T41-C01 | `product_gap` | E13（已成立部分）；E14 为复现测试的预期失败 |
+| SQL、全后端与原生效果 | T05-C01、T11-C03、T18-C01、T26-C03、T25-C03、T24-C02、T20-C03、T34-C01、T34-C02、T07-C03、T28-C03、T28-C02 | `current_clause_complete` | E16（T26-C03 另有 E18） |
+| SQL、全后端与原生效果 | T04-C03、T17-C01、T17-C02、T17-C03、T12-C03、T33-C02、T38-C03、T23-C03、T08-C02、T08-C03、T09-C02、T10-C03、T38-C02、T06-C02、T15-C02、T16-C01、T10-C02 | `product_gap` | E16（已成立部分）；E17 为复现测试的预期失败 |
 
 #### 静态门禁
 
@@ -173,6 +175,31 @@ T01-C01 在本批修复了一个小缺口：Secret Broker 原先只安装到当�
 | T27-C01 | 启用 checkpoint 时构造阶段不检查 Provider 的 restore 能力 | awaken-worker（S） |
 | T27-C02 | `rebind_retained` 只比较 handle 值，相同 handle 的另一 Provider 实例可绑定外来 Environment | session-environment（M） |
 | T41-C01 | registration supervisor 日志输出原始错误（含凭据 URL），没有稳定 code、领域身份与恢复方向 | awaken-control（S） |
+
+#### SQL、全后端与原生效果
+
+文件 SQLite 用同一文件上的独立句柄并重开；PostgreSQL 用本任务启动的 16.15 实例，每个客户端独立连接池，且以 `AWAKEN_TEST_REQUIRE_POSTGRES=1` 要求 fixture，缺失即失败而非跳过（各 PG 用例另有 `*_fixture_admission` 子进程契约）。进程崩溃用真实子进程终止；外部效果用本机回环服务计数。E16 为 95 个非忽略用例的规范工作区 nextest 执行，全部通过；E17 以 `--run-ignored only` 执行 24 个产品缺口复现测试，全部按预期失败；E18 为“普通 Memory writer 没有 purge 能力”的 compile_fail doctest。
+
+Work 租约的四个缺口在 Volatile、文件 SQLite、PostgreSQL 上表现一致，属于共同产品缺口而非后端语义分歧。T34-C01 在 Session、Work、Environment 三个共享套件上按同一行为表执行文件 SQLite（每条规则一个新文件并重开）与 PostgreSQL 独立连接池重开，并以“丢 CAS / 由当前 root 重建回执 / 内存假文件”变异证明套件会失败；Volatile Session store 不存在，Session 只能以内存 SQLite 对照。
+
+产品缺口（复现测试被忽略，不计证据）：
+
+| 场景 | 缺口 | 所有者范围与规模 |
+| --- | --- | --- |
+| T04-C03、T17-C01 | 没有持久的准备 intent；root 失败或崩溃后只有原调用者能找回已准备的参与者 | session creation intent 存储（L） |
+| T17-C02 | 补偿失败只记日志，没有持久的待处理责任 | repository participant 补偿与恢复（M） |
+| T17-C03 | 补偿先检查后退役，没有针对并发 adopt 的 fence | repository participant 条件退役（M） |
+| T12-C03 | 仅 interrupt 的预算暂停 no-op 只在协议 parser 中 | session-application event batch 接纳（S） |
+| T33-C02 | 未接纳与结果未知都表现为 Unavailable | run admission 错误分类（M） |
+| T38-C03 | 磁盘满归入通用 Rejected；Dream 把 AtCapacity 映射为 internal_error；连接卡死时接纳最长等待 24h | store-sqlite/coordinator（M）、Dream（S）、sqlite-pool（S–M） |
+| T23-C03 | Dream 在克隆完成前登记 Active 快照；清理错误被吞掉 | coordinator Dream（M、S） |
+| T08-C02、T08-C03、T09-C02 | Work ack/heartbeat/stop 只核对 owner；ack 不查过期；重试 ack 改写时间、重试 stop 返回 412；Work 与 Dispatch epoch 都是裸 u64 | work-store 与 run-ingress 契约（S–M） |
+| T10-C03 | 无恢复证据的适配器返回未分类内部错误 | run-executor-a2a（S） |
+| T38-C02 | DispatchPool 关闭没有期限；LiveInbox 无界 | run-ingress、runtime live inbox（S–M、M） |
+| T06-C02 | 锁等待前只采样一次租约时钟；物理读取不带 fence | resource-worker-http、resource-application（S、M） |
+| T15-C02 | 等待机密读取后不再校验所有权 | credential-materializer（S） |
+| T16-C01 | 窗口内铸造的 PlatformRelay 路由没有清理所有者；sandbox-stdio 分支未覆盖 | credential-materializer、session-mcp（M） |
+| T10-C02 | LocalProcess 在 Windows 没有 Job Object，leader 退出即视为 stopped | local-process、protocol-acp（L） |
 
 本节新增的绑定从 B101 起登记在 `bindings-4.json` 及后续分片，每条带断言行、覆盖的 oracle 编号与反向控制标记；下文“现有测试绑定索引”只列基线时的 100 个绑定。
 
