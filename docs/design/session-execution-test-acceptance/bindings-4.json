@@ -1,0 +1,816 @@
+[
+  {
+    "name": "test_out_of_bound_dependency_into_host_mcp_environment_memory_is_refused",
+    "source_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 74,
+        "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 76
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 83
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 87
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E11",
+        "case": "BoundaryGateTests.test_out_of_bound_dependency_into_host_mcp_environment_memory_is_refused",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "9540e98c4bf16297e27b10d9bf6790418518f549",
+        "historical": false,
+        "log_sha256": "725c3edd3f283e445bdaf0115a3291ce6159380673c5858e47b413969973547d"
+      },
+      {
+        "evidence": "E15",
+        "case": "BoundaryGateTests.test_out_of_bound_dependency_into_host_mcp_environment_memory_is_refused",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "c8cea07b322c728a32f734690369ab4d90830677",
+        "historical": false,
+        "log_sha256": "db1e4ab9b33de3d493ee1cc961874f99fdeb35af3f14c12e9837322c6861a6ae"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T00-C01": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Executes the production guard on real workspace/ledger input, proves the unmodified input is accepted, then injects the named counter-example and requires the guard's own refusal.",
+    "limitation": "The dependency guard admits some cross-context infrastructure edges by its own table (e.g. memory-store -> session-executor); only edges its rules forbid are proven refused.",
+    "id": "B101"
+  },
+  {
+    "name": "test_alias_or_moved_wrapper_cannot_hide_a_wide_object",
+    "source_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 101,
+        "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 119
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 122
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E11",
+        "case": "BoundaryGateTests.test_alias_or_moved_wrapper_cannot_hide_a_wide_object",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "9540e98c4bf16297e27b10d9bf6790418518f549",
+        "historical": false,
+        "log_sha256": "725c3edd3f283e445bdaf0115a3291ce6159380673c5858e47b413969973547d"
+      },
+      {
+        "evidence": "E15",
+        "case": "BoundaryGateTests.test_alias_or_moved_wrapper_cannot_hide_a_wide_object",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "c8cea07b322c728a32f734690369ab4d90830677",
+        "historical": false,
+        "log_sha256": "db1e4ab9b33de3d493ee1cc961874f99fdeb35af3f14c12e9837322c6861a6ae"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T00-C01": {
+        "oracles": [
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Executes the production guard on real workspace/ledger input, proves the unmodified input is accepted, then injects the named counter-example and requires the guard's own refusal.",
+    "limitation": null,
+    "id": "B102"
+  },
+  {
+    "name": "test_state_owner_write_through_a_wrapper_module_is_refused",
+    "source_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 124,
+        "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 129
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 136
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E11",
+        "case": "BoundaryGateTests.test_state_owner_write_through_a_wrapper_module_is_refused",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "9540e98c4bf16297e27b10d9bf6790418518f549",
+        "historical": false,
+        "log_sha256": "725c3edd3f283e445bdaf0115a3291ce6159380673c5858e47b413969973547d"
+      },
+      {
+        "evidence": "E15",
+        "case": "BoundaryGateTests.test_state_owner_write_through_a_wrapper_module_is_refused",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "c8cea07b322c728a32f734690369ab4d90830677",
+        "historical": false,
+        "log_sha256": "db1e4ab9b33de3d493ee1cc961874f99fdeb35af3f14c12e9837322c6861a6ae"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T00-C01": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Executes the production guard on real workspace/ledger input, proves the unmodified input is accepted, then injects the named counter-example and requires the guard's own refusal.",
+    "limitation": null,
+    "id": "B103"
+  },
+  {
+    "name": "test_every_group_owner_entrypoint_is_traceable_and_a_move_is_refused",
+    "source_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 138,
+        "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 140
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 147
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E11",
+        "case": "BoundaryGateTests.test_every_group_owner_entrypoint_is_traceable_and_a_move_is_refused",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "9540e98c4bf16297e27b10d9bf6790418518f549",
+        "historical": false,
+        "log_sha256": "725c3edd3f283e445bdaf0115a3291ce6159380673c5858e47b413969973547d"
+      },
+      {
+        "evidence": "E15",
+        "case": "BoundaryGateTests.test_every_group_owner_entrypoint_is_traceable_and_a_move_is_refused",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "c8cea07b322c728a32f734690369ab4d90830677",
+        "historical": false,
+        "log_sha256": "db1e4ab9b33de3d493ee1cc961874f99fdeb35af3f14c12e9837322c6861a6ae"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T00-C01": {
+        "oracles": [
+          0
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Executes the production guard on real workspace/ledger input, proves the unmodified input is accepted, then injects the named counter-example and requires the guard's own refusal.",
+    "limitation": null,
+    "id": "B104"
+  },
+  {
+    "name": "test_shared_contract_change_selects_every_real_reverse_dependant",
+    "source_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 153,
+        "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 157
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 158
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 161
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E11",
+        "case": "ImpactSelectionTests.test_shared_contract_change_selects_every_real_reverse_dependant",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "9540e98c4bf16297e27b10d9bf6790418518f549",
+        "historical": false,
+        "log_sha256": "725c3edd3f283e445bdaf0115a3291ce6159380673c5858e47b413969973547d"
+      },
+      {
+        "evidence": "E15",
+        "case": "ImpactSelectionTests.test_shared_contract_change_selects_every_real_reverse_dependant",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "c8cea07b322c728a32f734690369ab4d90830677",
+        "historical": false,
+        "log_sha256": "db1e4ab9b33de3d493ee1cc961874f99fdeb35af3f14c12e9837322c6861a6ae"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T00-C03": {
+        "oracles": [
+          0
+        ],
+        "negative_control": false
+      },
+      "T36-C01": {
+        "oracles": [
+          0
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Executes the production guard on real workspace/ledger input, proves the unmodified input is accepted, then injects the named counter-example and requires the guard's own refusal.",
+    "limitation": "Selection proves Cargo reverse dependants; required L2/L3 tier expansion is owned by the gate scripts.",
+    "id": "B105"
+  },
+  {
+    "name": "test_crate_only_selection_is_detected_as_too_narrow",
+    "source_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 163,
+        "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 171
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 172
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 173
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E11",
+        "case": "ImpactSelectionTests.test_crate_only_selection_is_detected_as_too_narrow",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "9540e98c4bf16297e27b10d9bf6790418518f549",
+        "historical": false,
+        "log_sha256": "725c3edd3f283e445bdaf0115a3291ce6159380673c5858e47b413969973547d"
+      },
+      {
+        "evidence": "E15",
+        "case": "ImpactSelectionTests.test_crate_only_selection_is_detected_as_too_narrow",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "c8cea07b322c728a32f734690369ab4d90830677",
+        "historical": false,
+        "log_sha256": "db1e4ab9b33de3d493ee1cc961874f99fdeb35af3f14c12e9837322c6861a6ae"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T36-C01": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Executes the production guard on real workspace/ledger input, proves the unmodified input is accepted, then injects the named counter-example and requires the guard's own refusal.",
+    "limitation": null,
+    "id": "B106"
+  },
+  {
+    "name": "test_unknown_or_global_input_widens_and_never_selects_zero",
+    "source_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 175,
+        "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 183
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 184
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 188
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E11",
+        "case": "ImpactSelectionTests.test_unknown_or_global_input_widens_and_never_selects_zero",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "9540e98c4bf16297e27b10d9bf6790418518f549",
+        "historical": false,
+        "log_sha256": "725c3edd3f283e445bdaf0115a3291ce6159380673c5858e47b413969973547d"
+      },
+      {
+        "evidence": "E15",
+        "case": "ImpactSelectionTests.test_unknown_or_global_input_widens_and_never_selects_zero",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "c8cea07b322c728a32f734690369ab4d90830677",
+        "historical": false,
+        "log_sha256": "db1e4ab9b33de3d493ee1cc961874f99fdeb35af3f14c12e9837322c6861a6ae"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T00-C03": {
+        "oracles": [
+          1
+        ],
+        "negative_control": true
+      },
+      "T36-C01": {
+        "oracles": [
+          1,
+          2
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Executes the production guard on real workspace/ledger input, proves the unmodified input is accepted, then injects the named counter-example and requires the guard's own refusal.",
+    "limitation": null,
+    "id": "B107"
+  },
+  {
+    "name": "test_each_misalignment_is_refused_for_its_own_reason",
+    "source_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 207,
+        "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 209
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 221
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E11",
+        "case": "ListedExecutedTests.test_each_misalignment_is_refused_for_its_own_reason",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "9540e98c4bf16297e27b10d9bf6790418518f549",
+        "historical": false,
+        "log_sha256": "725c3edd3f283e445bdaf0115a3291ce6159380673c5858e47b413969973547d"
+      },
+      {
+        "evidence": "E15",
+        "case": "ListedExecutedTests.test_each_misalignment_is_refused_for_its_own_reason",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "c8cea07b322c728a32f734690369ab4d90830677",
+        "historical": false,
+        "log_sha256": "db1e4ab9b33de3d493ee1cc961874f99fdeb35af3f14c12e9837322c6861a6ae"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T36-C02": {
+        "oracles": [
+          0,
+          1,
+          2
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Executes the production guard on real workspace/ledger input, proves the unmodified input is accepted, then injects the named counter-example and requires the guard's own refusal.",
+    "limitation": null,
+    "id": "B108"
+  },
+  {
+    "name": "test_count_only_validator_accepts_what_name_alignment_refuses",
+    "source_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 223,
+        "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 225
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 227
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 229
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E11",
+        "case": "ListedExecutedTests.test_count_only_validator_accepts_what_name_alignment_refuses",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "9540e98c4bf16297e27b10d9bf6790418518f549",
+        "historical": false,
+        "log_sha256": "725c3edd3f283e445bdaf0115a3291ce6159380673c5858e47b413969973547d"
+      },
+      {
+        "evidence": "E15",
+        "case": "ListedExecutedTests.test_count_only_validator_accepts_what_name_alignment_refuses",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "c8cea07b322c728a32f734690369ab4d90830677",
+        "historical": false,
+        "log_sha256": "db1e4ab9b33de3d493ee1cc961874f99fdeb35af3f14c12e9837322c6861a6ae"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T36-C02": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      },
+      "T34-C03": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Executes the production guard on real workspace/ledger input, proves the unmodified input is accepted, then injects the named counter-example and requires the guard's own refusal.",
+    "limitation": null,
+    "id": "B109"
+  },
+  {
+    "name": "test_name_only_or_zero_assertion_binding_cannot_sign_off",
+    "source_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 248,
+        "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 245
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E11",
+        "case": "EvidenceValidityTests.test_name_only_or_zero_assertion_binding_cannot_sign_off",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "9540e98c4bf16297e27b10d9bf6790418518f549",
+        "historical": false,
+        "log_sha256": "725c3edd3f283e445bdaf0115a3291ce6159380673c5858e47b413969973547d"
+      },
+      {
+        "evidence": "E15",
+        "case": "EvidenceValidityTests.test_name_only_or_zero_assertion_binding_cannot_sign_off",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "c8cea07b322c728a32f734690369ab4d90830677",
+        "historical": false,
+        "log_sha256": "db1e4ab9b33de3d493ee1cc961874f99fdeb35af3f14c12e9837322c6861a6ae"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T00-C02": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Executes the production guard on real workspace/ledger input, proves the unmodified input is accepted, then injects the named counter-example and requires the guard's own refusal.",
+    "limitation": null,
+    "id": "B110"
+  },
+  {
+    "name": "test_unrun_slice_or_compile_only_run_cannot_be_promoted",
+    "source_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 265,
+        "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 245
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E11",
+        "case": "EvidenceValidityTests.test_unrun_slice_or_compile_only_run_cannot_be_promoted",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "9540e98c4bf16297e27b10d9bf6790418518f549",
+        "historical": false,
+        "log_sha256": "725c3edd3f283e445bdaf0115a3291ce6159380673c5858e47b413969973547d"
+      },
+      {
+        "evidence": "E15",
+        "case": "EvidenceValidityTests.test_unrun_slice_or_compile_only_run_cannot_be_promoted",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "c8cea07b322c728a32f734690369ab4d90830677",
+        "historical": false,
+        "log_sha256": "db1e4ab9b33de3d493ee1cc961874f99fdeb35af3f14c12e9837322c6861a6ae"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T34-C03": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      },
+      "T36-C03": {
+        "oracles": [
+          2
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Executes the production guard on real workspace/ledger input, proves the unmodified input is accepted, then injects the named counter-example and requires the guard's own refusal.",
+    "limitation": "Same-name mock backends are refused only through the per-name receipt alignment, not a backend identity rule.",
+    "id": "B111"
+  },
+  {
+    "name": "test_historical_receipt_relabelled_as_current_is_refused",
+    "source_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 286,
+        "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 245
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E11",
+        "case": "EvidenceValidityTests.test_historical_receipt_relabelled_as_current_is_refused",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "9540e98c4bf16297e27b10d9bf6790418518f549",
+        "historical": false,
+        "log_sha256": "725c3edd3f283e445bdaf0115a3291ce6159380673c5858e47b413969973547d"
+      },
+      {
+        "evidence": "E15",
+        "case": "EvidenceValidityTests.test_historical_receipt_relabelled_as_current_is_refused",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "c8cea07b322c728a32f734690369ab4d90830677",
+        "historical": false,
+        "log_sha256": "db1e4ab9b33de3d493ee1cc961874f99fdeb35af3f14c12e9837322c6861a6ae"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T36-C03": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Executes the production guard on real workspace/ledger input, proves the unmodified input is accepted, then injects the named counter-example and requires the guard's own refusal.",
+    "limitation": null,
+    "id": "B112"
+  },
+  {
+    "name": "test_committed_ledger_satisfies_every_rule",
+    "source_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 307,
+        "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 310
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 311
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E11",
+        "case": "EvidenceValidityTests.test_committed_ledger_satisfies_every_rule",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "9540e98c4bf16297e27b10d9bf6790418518f549",
+        "historical": false,
+        "log_sha256": "725c3edd3f283e445bdaf0115a3291ce6159380673c5858e47b413969973547d"
+      },
+      {
+        "evidence": "E15",
+        "case": "EvidenceValidityTests.test_committed_ledger_satisfies_every_rule",
+        "package": "scripts/ci",
+        "target": "test_session_acceptance.py",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "c8cea07b322c728a32f734690369ab4d90830677",
+        "historical": false,
+        "log_sha256": "db1e4ab9b33de3d493ee1cc961874f99fdeb35af3f14c12e9837322c6861a6ae"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T00-C02": {
+        "oracles": [
+          0
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Executes the production guard on real workspace/ledger input, proves the unmodified input is accepted, then injects the named counter-example and requires the guard's own refusal.",
+    "limitation": "Ran against the ledger before this batch's own entries were appended; the appended ledger is re-validated by check_session_acceptance.py in check-docs.sh.",
+    "id": "B113"
+  },
+  {
+    "name": "test_mutations_at_each_sequence_fence_stop_or_reject_execution",
+    "source_locations": [
+      {
+        "path": "scripts/ci/check_rust_test_execution.py",
+        "line": 1039,
+        "file_sha256": "3152420a7f06986a8a78cef43c42c3e40a0ab20fd9cd079cc7e42fdb7ffcd282"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "scripts/ci/check_rust_test_execution.py",
+        "line": 1069
+      },
+      {
+        "path": "scripts/ci/check_rust_test_execution.py",
+        "line": 1070
+      },
+      {
+        "path": "scripts/ci/check_rust_test_execution.py",
+        "line": 1071
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E12",
+        "case": "ExecutionTests.test_mutations_at_each_sequence_fence_stop_or_reject_execution",
+        "package": "scripts/ci",
+        "target": "check_rust_test_execution.py --self-test",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "9540e98c4bf16297e27b10d9bf6790418518f549",
+        "historical": false,
+        "log_sha256": "eb8ff3997e94927b3a78aa30040120382bfa270194e3bfc29f96dd8ebbf1c86b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T36-C02": {
+        "oracles": [
+          3
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Existing self-test: edits a tracked file at each execution fence and requires stop/reject with source_unchanged=false; re-executed natively for this batch.",
+    "limitation": null,
+    "id": "B114"
+  }
+]

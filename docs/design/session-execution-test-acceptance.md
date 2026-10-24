@@ -122,6 +122,40 @@ T00 是追溯门禁，T34 是后端资格，T35 是平台和执行器资格，T3
 - [T28–T41](session-execution-test-acceptance-cases-3.md)
 
 
+## Source and execution evidence
+
+本节记录原 `design_only` 场景的补测批次。场景的条款、判定规则和基线仍以上文和[机器可读清单](session-execution-test-acceptance/catalog.json)为准；这里只说明每批新增的测试、执行证据、产品缺口和平台待验原因，不改变基线，也不据此把任何组或场景记为已验收。
+
+### 新增证据状态与守卫
+
+[台账守卫](../../scripts/ci/check_session_acceptance.py)由 [check-docs.sh](../../scripts/ci/check-docs.sh) 执行，拒绝以下情况：计数与场景不符；绑定的文件或函数不存在；条款绑定没有指向断言行；见证被跳过、仅编译或不在 receipt 的已执行列表中；见证与 receipt 的源码身份不一致；历史证据未经输入审查即被继承；已登记证据被改写；`current_clause_complete` 场景有未绑定的 oracle、反向控制或切片；公共门禁未闭合时声明验收；产品缺口没有原因、后续事项或被忽略的复现测试。每条拒绝由守卫自测对变异台账实际执行。
+
+| 状态 | 含义 |
+| --- | --- |
+| `current_clause_complete` | 每条 oracle 和反向控制都有当前提交本机执行通过的具名断言绑定，并列出已执行和未验收切片；不等于场景验收 |
+| `product_gap` | 产品尚不满足某条 oracle；复现测试按正确行为断言并以 `#[ignore = "product gap: …"]` 忽略，不计为执行证据；已成立的 oracle 仍可另有执行绑定 |
+| `platform_pending` | 只能在当前授权范围外的平台验证（例如 Linux 内核 FUSE），写明原因；不报告通过 |
+
+`acceptance_state` 均保持 `pending`：验收要求包含 T35 平台门禁，Linux 与 FUSE 不在本次授权范围内，公共门禁无法闭合。
+
+### 批次
+
+| 批次 | 场景 | 状态 | 证据 |
+| --- | --- | --- | --- |
+| 静态门禁 | T00-C01、T00-C02、T00-C03、T34-C03、T36-C01、T36-C02、T36-C03 | `current_clause_complete` | E11、E12、E15 |
+
+#### 静态门禁
+
+[门禁测试](../../scripts/ci/test_session_acceptance.py)以真实工作区和台账为输入，先证明未修改的输入被接受，再注入一个反例并要求生产守卫按自己的规则拒绝：越界依赖进入 Host/MCP/Environment/Memory、通过改名或移动文件的再导出暴露宽对象、在所有者外直接写 Session 状态、移动组入口、共享契约变更的真实反向依赖、只按文件所在 crate 选取的变异规划器、未知或全局输入、按名称和次数对齐的执行验证与只比较总数的变异验证器，以及台账的名称、断言、跳过、仅编译、改写历史 receipt 等规则。T36-C02 的“源码不变”条款绑定既有的执行围栏自测。
+
+已知限制：依赖守卫按自身表格允许部分跨上下文基础设施依赖（例如 memory-store 到 session-executor），本批只证明其规则禁止的边会被拒绝；影响选择只证明 Cargo 反向依赖，L2/L3 层级扩展由各门禁脚本负责。
+
+E11 是 13 个门禁测试在本机 Windows 的执行，E15 是 rebase 到 `f3ae320728` 后的同一组复跑；E12 是 Rust 必需执行验证器自测（27 例通过，10 例为 POSIX/Linux 专属固件而跳过，未绑定）。原始 receipt 和日志在 `target/session-acceptance-evidence/`，哈希登记在证据注册表。
+
+本节新增的绑定从 B101 起登记在 `bindings-4.json` 及后续分片，每条带断言行、覆盖的 oracle 编号与反向控制标记；下文“现有测试绑定索引”只列基线时的 100 个绑定。
+
+
+
 ### Recording and retrieval
 
 The existing recorder and source/assertion binder own execution packets and

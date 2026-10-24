@@ -900,9 +900,10 @@
     "name": "resource_reference_projection_fails_closed_and_repairs_cas_losers",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/resource_reconciliation/reference_tests.rs",
-        "line": 43,
-        "file_sha256": "ce8fc82906e847e1816db89aaf599848176aeec9f54c90d4e7a0bf70fd32e846"
+        "path": "crates/server/awaken-session-application/src/resource_references/tests.rs",
+        "line": 48,
+        "file_sha256": "ce8fc82906e847e1816db89aaf599848176aeec9f54c90d4e7a0bf70fd32e846",
+        "relocated_from": "crates/server/awaken-session-application/src/resource_reconciliation/reference_tests.rs:43"
       }
     ],
     "execution_witnesses": [

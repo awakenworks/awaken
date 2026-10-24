@@ -17,7 +17,7 @@
 - 必须断言：唯一状态所有者、调用角色、事务和恢复入口可追溯；移动文件或别名不会隐藏对宽对象的访问。
 - 反向控制：故意加入越界依赖或通过包装恢复宽对象，守卫或审查必须拒绝。
 - 层级与基质：L0；source/metadata/static negative controls。静态守卫；不代表运行时效果。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`test_out_of_bound_dependency_into_host_mcp_environment_memory_is_refused`、`test_alias_or_moved_wrapper_cannot_hide_a_wide_object`、`test_state_owner_write_through_a_wrapper_module_is_refused`、`test_every_group_owner_entrypoint_is_traceable_and_a_move_is_refused`；当前提交本机 Windows L0 执行（E11；rebase 到 origin/main 后复跑 E15），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ### T00-C02 需求到断言
 
@@ -25,7 +25,7 @@
 - 必须断言：每个验收条款绑定具体断言和适用切片；仅命中测试索引不得标记已验收。
 - 反向控制：只有测试名称、零断言或仅构造对象的绑定不能签收。
 - 层级与基质：L0；source/metadata/static negative controls。静态守卫；不代表运行时效果。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`test_name_only_or_zero_assertion_binding_cannot_sign_off`、`test_committed_ledger_satisfies_every_rule`；当前提交本机 Windows L0 执行（E11；rebase 到 origin/main 后复跑 E15），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ### T00-C03 变更影响
 
@@ -33,7 +33,7 @@
 - 必须断言：列出所有受影响调用方及资格变化；未知归属扩大或拒绝选取。
 - 反向控制：新增未映射文件不能得到空测试通过。
 - 层级与基质：L0；source/metadata/static negative controls。静态守卫；不代表运行时效果。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`test_shared_contract_change_selects_every_real_reverse_dependant`、`test_unknown_or_global_input_widens_and_never_selects_zero`；当前提交本机 Windows L0 执行（E11；rebase 到 origin/main 后复跑 E15），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ## T01 构造与关闭
 
