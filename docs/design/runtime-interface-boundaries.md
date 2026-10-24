@@ -68,6 +68,62 @@ the existing `McpSessions` remains the MCP lifecycle owner. The public
 `EnvironmentRuntime` port and Anthropic Managed Agents wire behavior retain their
 existing request, receipt, error and event shapes.
 
+## Coordinator-only Composition
+
+Plan v4 section 3.3 requires that a Coordinator-only deployment link no
+Worker-side implementation. The Coordinator component (`awaken-coordinator`)
+already holds this: it consumes the executor only through
+[`ExecutionPorts`](../../crates/server/awaken-coordinator/src/execution_ports.rs),
+and rule D3 of `scripts/ci/_dispatch_boundary_fitness.py` refuses any executor
+or Worker-side crate in its closure. The Coordinator *binary* does not hold it
+yet: `awaken-coordinator` is a target of `awaken-cli`, which is also the
+AllInOne root, and the Coordinator role builds the full Session executor
+(`SessionExecutorBuilder::for_coordinator`) because the Coordinator-side Session
+execution still lives there. Rule D4 checks the closure of the package that
+declares the binary and holds the remaining Worker-side crates as reviewed
+transitions in `scripts/ci/coordinator_binary_closure_baseline.json`; a new
+reach is refused and each transition is removed with `--tighten` when its crate
+leaves the closure.
+
+### Composition mechanism
+
+| Option | Closure of a Coordinator-only build | Single-process mode | Decision |
+|---|---|---|---|
+| Another `[[bin]]` target of `awaken-cli` | Unchanged: Cargo resolves dependencies per package, so every target of `awaken-cli` links the executor | Kept | Rejected |
+| A feature of `awaken-cli` that excludes the executor (default-on co-located feature) | Only for a build that disables it: features are additive and unified per build, so a workspace build or any dependant that keeps the default links the executor into the same `awaken-coordinator` binary | Kept | Rejected: the property would hold per build invocation, not per dependency graph |
+| A Coordinator process package that declares `awaken-coordinator` over an executor-free process startup; `awaken-cli` keeps `awaken` and composes the same startup with the executor and the co-located Worker | Static: the package's normal closure, which D4 checks however it is built | Kept: `awaken-cli` adds the executor to the same startup | Chosen |
+
+### Where each Coordinator need belongs
+
+Each row is something the Coordinator-only process uses from the executor
+today, measured on the `RegisteredWorker` placement with no local pool.
+
+| Coordinator need | Executor owner today | Reaches Worker-side code on that path | Destination |
+|---|---|---|---|
+| Run admission and delivery (`RunApplication`, `DurableRunOperations`, `SessionRuntime`, `StreamingRunRuntime`) | `SessionRuns` over `RunAssembly::ctx_for` | Yes: the dispatch envelope is built from a Session context assembled over the realization executor | A Coordinator-side Session execution crate that builds the envelope from the frozen projection and the publication closure; attempt execution stays in the executor |
+| Frozen projection installation and realization lease renewal (`RealizationRuntime`) | `RunAssembly`, `InstalledSessions`, `SessionRealizations` | Yes: the realization registry | Projection facts: the Session application, which owns the frozen projection; lease and physical realization: the Worker, reached through dispatch |
+| Environment, terminal-cleanup and realization effects (`EnvironmentRuntime`, `TerminalCleanupRuntime`, `RealizationEffects`) | `RunAssembly`, `RealizationExecutor` | Yes | The Worker only (realization and its driver); the Coordinator issues them as dispatched preparation and cleanup work. The Session application reaches these roles through one `SessionExecutor` for every placement today, so this needs placement-typed role sets in the application |
+| Provider-effective Sandbox layout validation | `RealizationExecutor` over `with_session_environment_observation_from_deployment` | Yes: the Sandbox adapters | Provider capabilities as data in the provisioning contract, registered by Workers or derived from the Deployment |
+| Committed Thread reads and the Worker recovery source (`ThreadReadRuntime`) | `ThreadReads` | Partly: its lifecycle-held cleanup reads | Committed reads: the Coordinator-side crate over the runtime authority; lifecycle-held cleanup reads stay with the Worker |
+| Claimed commit ingest (`ClaimedOperationCoordinatorResolver`) | `commit_ingest::session_commit_owner` | No, but it lives in the executor with `HostCommit` and `SessionAuthority` | The Coordinator-side crate, together with `HostCommit` and `SessionAuthority` |
+| Completion relay, Worker stream sink, Thread event hub | `CompletionRegistry`, `ThreadEventHub` | No | The Coordinator-side crate |
+| Terminal Memory settlement observer | `MemoryDispatchSettlementObserver` | No | The Coordinator-side crate, beside committed reads |
+| Worker File content | `ResourcePorts::file_content_source` (the root's own Resource application value) | No | Selected by the root from the Resource application |
+| Content capture policy | `ContentCaptureCapability` (Deployment ceiling and Control policy sources) | No | Composed by the root from the same two values |
+| Coordination reads, child-Run coordination binding, dispatch observation | `ChildRunCoordination` | Child-Run launch: yes | Coordination reads: the Coordinator-side crate; child-Run launch: the executor |
+| Budgets and Outcomes (`BudgetRuntime`, `OutcomeRuntime`) | `BudgetAccounting`, `Outcomes` | Outcomes launch grader Runs | The Coordinator-side crate, over Run admission |
+| Thread Workspace and Agent projection registry (`CapabilityRuntime`) | `RunCapabilities` | No | The Coordinator-side crate; tool, MCP, ACP and credential capability assembly stays in the executor |
+| Committed-terminal reconciliation resolver | `CommitBoundaryAssembly` | Carries `RunCapabilities` for remote cancellation | The Coordinator-side crate; `ProcessDispatch` stays in dispatch-execution |
+| Deployment configuration (`DeploymentConfig`, `SandboxSettings`, `SessionExecutionProcess`) | `deployment_config` | No, but every role's configuration links the executor through it | Topology and storage: dispatch-execution (`ExecutionTopology`, `CoordinatorStorage`); Sandbox settings: the execution composition; process selection: the executor |
+| Process startup (configuration, stores, identity, listeners, drain) | `awaken-cli` library | Links `awaken-worker`, `awaken-execution-composition` and the Sandbox adapters | The Coordinator process package; `awaken-cli` adds the executor and the co-located Worker |
+
+The order that removes D4's transitions: split the Deployment configuration;
+move commit ingest, committed reads, completion, the event hub and the
+projection registry into the Coordinator-side crate; build Run admission from
+the frozen projection; give the Session application placement-typed role sets
+(with the Session application work); publish provider capabilities as data;
+then declare `awaken-coordinator` in the Coordinator process package.
+
 ## Embedded Runtime SDK Boundary
 
 The SDK boundary is the existing `awaken-runtime` crate. It has no dependency on
