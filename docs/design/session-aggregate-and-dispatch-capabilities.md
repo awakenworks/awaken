@@ -264,6 +264,22 @@ and no bundle trait combines them. Composition hands each Worker transport the
 one role it calls: terminal preparation and Repository publication stay with
 the application's terminal cleanup, Resource effects go to the component.
 
+Every remaining Session use case is a component that holds its collaborators,
+is constructed once by `SessionApplicationBuilder` and implements only the
+roles its callers use: Work assignments and Worker occupancy, Repository
+participants, realizations, terminal cleanups, continuations, activities,
+creation, update, termination, Resource reconciliation and manifests, Run
+admission, observations, Agent coordination, Event batches, Outcome
+reconciliation and recovery (the recovery cycle plus the one lifecycle
+supervisor). `SessionApplication` stays as a thin composition product: it
+implements no role and makes no decision. It holds the one constructed
+component set and gives each composition root (Coordinator ports, the CLI
+co-located root, the scenario host, Managed state) the component that serves
+the role it needs. It stays because those roots must share one CAS kernel,
+one lifecycle wake and one supervisor fence. Removing it would copy the
+assembly graph into every root. Fixture setters re-assemble the components
+from the retained inputs and refuse once a component has been shared.
+
 Protocol adapters translate only (plan D7). Resource commands take lowered
 `SessionInputRequest`s: complete-manifest replacement, live File attachment
 and input detachment allocate bindings, reuse equal sources, configure and
