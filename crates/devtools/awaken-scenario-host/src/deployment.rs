@@ -379,7 +379,7 @@ pub(crate) async fn runtime_resource_host_with_deployment(
             awaken_execution_composition::with_session_environment_from_deployment(
                 dependencies,
                 &deployment,
-                Some(awaken_worker::relay_hand_executor_factory()),
+                Some(awaken_tool_relay::relay_hand_executor_factory()),
                 &awaken_execution_composition::ContainerTierPolicy::default(),
             )
             .await

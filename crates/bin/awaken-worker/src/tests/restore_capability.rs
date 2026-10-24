@@ -152,7 +152,7 @@ fn builder(provider: Arc<CountingRestoreProvider>, with_store: bool) -> WorkerNo
         awaken_time::system_clock(),
     )
     .with_session_container_provider("hosted", provider)
-    .with_hand_executor_factory(crate::relay_hand_executor_factory())
+    .with_hand_executor_factory(awaken_tool_relay::relay_hand_executor_factory())
     .with_standard_manifest(Default::default());
     if with_store {
         builder.with_environment_checkpoint_store(Arc::new(UnusedCheckpointStore))

@@ -1127,7 +1127,7 @@ fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
             awaken_time::system_clock(),
         )
         .with_session_container_provider("hosted", Arc::new(CheckpointContainerProvider))
-        .with_hand_executor_factory(crate::relay_hand_executor_factory())
+        .with_hand_executor_factory(awaken_tool_relay::relay_hand_executor_factory())
         .with_standard_manifest(Default::default())
     };
     assert_eq!(
@@ -1164,7 +1164,7 @@ fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
             cache_volume_initializer: None,
         },
     )
-    .with_hand_executor_factory(crate::relay_hand_executor_factory())
+    .with_hand_executor_factory(awaken_tool_relay::relay_hand_executor_factory())
     .with_environment_checkpoint_store(Arc::new(UnusedCheckpointStore))
     .with_standard_manifest(Default::default())
     .build()

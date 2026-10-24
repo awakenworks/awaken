@@ -17,11 +17,13 @@
 //! `awaken-connection-plan` (ADR-0045) chooses how the two ends meet.
 
 mod executor;
+mod hand_executor;
 mod ledger;
 mod serve;
 pub mod wire;
 
 pub use executor::RemoteToolExecutor;
+pub use hand_executor::relay_hand_executor_factory;
 #[cfg(any(test, feature = "test-support"))]
 pub use ledger::InMemoryOperationLedger;
 pub use ledger::{

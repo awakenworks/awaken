@@ -14,7 +14,7 @@ pub(super) async fn prepare(
     credentials: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
 ) -> Result<SessionExecutorBuilder, String> {
     let host = if placement == SessionExecutionPlacement::LocalWorker {
-        let hand_factory = awaken_worker::relay_hand_executor_factory();
+        let hand_factory = awaken_tool_relay::relay_hand_executor_factory();
         let containers = awaken_execution_composition::ContainerTierPolicy::default();
         let host = match namespace_hand_path {
             Some(path) => {

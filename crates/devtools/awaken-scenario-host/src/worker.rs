@@ -67,7 +67,7 @@ fn echo_worker_builder(
         // Local is an explicit TrustedHost profile. Its Native capability must
         // have the same Hand factory as the production standalone Worker;
         // manifest construction alone does not exercise runtime preparation.
-        .with_hand_executor_factory(awaken_worker::relay_hand_executor_factory())
+        .with_hand_executor_factory(awaken_tool_relay::relay_hand_executor_factory())
         .with_inference_materializer(materializer)
         // Reuse the production anonymous A2A adapter. The standard Worker
         // manifest derives `a2a-runtime` from this installed implementation, so

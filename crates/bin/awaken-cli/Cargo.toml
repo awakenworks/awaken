@@ -88,6 +88,8 @@ awaken-worker-transport-security.workspace = true
 awaken-worker-contract.workspace = true
 awaken-dispatch-http.workspace = true
 awaken-local-process.workspace = true
+# The Hand executor factory the co-located Session execution binds Hand channels with.
+awaken-tool-relay.workspace = true
 awaken-fs-durability.workspace = true
 uuid = { version = "1", features = ["v7"] }
 awaken-sandbox-policy-store = { workspace = true }

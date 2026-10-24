@@ -186,7 +186,7 @@ fn configured_worker_builder(
             ),
         ))
         .with_remote_attempt_executor(crate::a2a_attempt_executor(Some(credentials.clone())))
-        .with_hand_executor_factory(awaken_worker::relay_hand_executor_factory())
+        .with_hand_executor_factory(awaken_tool_relay::relay_hand_executor_factory())
         .with_credential_materializer(credentials)
         .with_graceful_drain(std::time::Duration::from_secs(worker.drain_grace_secs))
         .with_credential_observation_window(

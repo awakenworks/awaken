@@ -25,6 +25,8 @@ awaken-fs-durability.workspace = true
 # brain/hand use site — not a re-derived local bound. Pure marker, no kernel/
 # store/model, so G33 holds.
 awaken-agent-channel.workspace = true
+# The Hand executor port this relay implements for Session environments.
+awaken-session-environment-contract.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

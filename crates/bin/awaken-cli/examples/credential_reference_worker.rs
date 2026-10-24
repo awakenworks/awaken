@@ -247,7 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .with_standard_manifest_config(
                 awaken_worker::StandardManifestConfig::default().with_max_concurrent(3),
             )
-            .with_hand_executor_factory(awaken_worker::relay_hand_executor_factory())
+            .with_hand_executor_factory(awaken_tool_relay::relay_hand_executor_factory())
             .with_inference_materializer(materializer.clone())
             .with_credential_materializer(credentials)
             .with_worker_local_credential_resolver(materializer)
@@ -284,7 +284,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .with_standard_manifest_config(
                     awaken_worker::StandardManifestConfig::default().with_max_concurrent(3),
                 )
-                .with_hand_executor_factory(awaken_worker::relay_hand_executor_factory())
+                .with_hand_executor_factory(awaken_tool_relay::relay_hand_executor_factory())
                 .with_remote_session_resource_support()
                 .with_inference_materializer(materializer.clone())
                 .with_credential_materializer(credentials)
