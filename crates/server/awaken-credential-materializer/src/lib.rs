@@ -16,15 +16,11 @@ use awaken_credential_contract::CredentialEnvelopeValidation;
 mod inference_executor;
 pub use inference_executor::InferenceExecutorMaterializer;
 
-#[cfg(feature = "brokered")]
-pub mod brokered_inference;
 mod credential_artifact;
 mod http_credential;
 mod inference;
 mod platform_egress;
 mod platform_relay;
-pub mod recipient_envelope;
-mod refresh;
 mod secret_broker;
 
 #[cfg(test)]
@@ -36,28 +32,25 @@ impl awaken_runtime_contract::llm::DeltaSink for NoopDeltaSink {
     async fn on_text(&self, _: &str) {}
 }
 
+/// The Provider executor factory awaken-cloud imports from this path; its
+/// owner is `awaken-inference-endpoint`.
+pub use awaken_inference_endpoint::executor_from_materialized_endpoint_for_provider;
 pub use http_credential::materialized_http_credential;
-pub use inference::{
-    CredentialInferenceMaterializer, ResolvedExecutorError, executor_from_materialized_endpoint,
-    executor_from_materialized_endpoint_for_provider,
-};
+pub use inference::CredentialInferenceMaterializer;
 pub use platform_egress::{
     MediatedMcpRoute, PlatformMcpEgressProvisioner, PlatformMcpEgressRequest,
 };
-pub use refresh::CredentialRefreshFactory;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::Mutex;
 
 mod admission;
-mod ambient_environment;
 #[cfg(all(test, feature = "authority"))]
 mod attempt_delivery_tests;
 mod claimed_materialization;
 mod material_capabilities;
 use admission::{ExpectedProviderTarget, admit_exact_adapter};
-pub use ambient_environment::{AmbientApiKeyEnvironmentError, reject_ambient_api_key_environment};
 use awaken_time::WallClockExt as _;
 
 #[cfg(all(test, feature = "authority"))]

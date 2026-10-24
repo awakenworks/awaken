@@ -632,7 +632,7 @@ DIRECT_TRANSPORT_EXEMPTIONS = {
         "streams MCP server-sent events off a live `Response` body and mirrors "
         "arbitrary server headers; a JSON request/reply pair cannot express it"
     ),
-    "awaken-credential-materializer": (
+    "awaken-inference-endpoint": (
         "re-signs and replays one prepared `RequestBuilder` after a credential "
         "rotation, so the retry seam is the request builder itself"
     ),

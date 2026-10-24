@@ -615,7 +615,6 @@ dependencies = [
  "awaken-config-service",
  "awaken-config-store",
  "awaken-credential-contract",
- "awaken-credential-materializer",
  "awaken-credential-store",
  "awaken-credential-vault",
  "awaken-data-governance-contract",
@@ -629,6 +628,7 @@ dependencies = [
  "awaken-executable-agent-contract",
  "awaken-executable-environment-contract",
  "awaken-ext-builtin-tools",
+ "awaken-ext-mcp",
  "awaken-iam-contract",
  "awaken-iam-core",
  "awaken-iam-host",
@@ -857,6 +857,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-credential-envelope"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-credential-contract",
+ "awaken-time",
+ "base64 0.22.1",
+ "chacha20poly1305",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-credential-materializer"
 version = "1.0.0"
 dependencies = [
@@ -864,18 +880,15 @@ dependencies = [
  "awaken-acp-contract",
  "awaken-agent-contract",
  "awaken-credential-contract",
+ "awaken-credential-envelope",
  "awaken-credential-vault",
- "awaken-ext-builtin-tools",
- "awaken-outbound-http",
+ "awaken-inference-endpoint",
  "awaken-provider-genai",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
  "awaken-time",
- "awaken-tool-contract",
  "awaken-worker-contract",
  "base64 0.22.1",
- "chacha20poly1305",
- "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
@@ -1008,6 +1021,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-session-environment-contract",
  "awaken-tool-contract",
+ "thiserror",
  "uuid",
 ]
 
@@ -1784,6 +1798,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-inference-endpoint"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-ext-builtin-tools",
+ "awaken-outbound-http",
+ "awaken-provider-genai",
+ "awaken-runtime-contract",
+ "awaken-tool-contract",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-installation-workspace"
 version = "1.0.0"
 dependencies = [
@@ -2036,6 +2068,7 @@ dependencies = [
  "awaken-coordinator",
  "awaken-coordinator-client",
  "awaken-credential-contract",
+ "awaken-credential-envelope",
  "awaken-credential-materializer",
  "awaken-credential-store",
  "awaken-credential-vault",
@@ -2067,6 +2100,7 @@ dependencies = [
  "awaken-iam-client",
  "awaken-iam-contract",
  "awaken-iam-core",
+ "awaken-inference-endpoint",
  "awaken-installation-workspace",
  "awaken-lease-testkit",
  "awaken-local-process",
@@ -2108,7 +2142,6 @@ dependencies = [
  "awaken-session-execution-contract",
  "awaken-session-executor",
  "awaken-session-executor-testkit",
- "awaken-session-mcp",
  "awaken-session-realization-contract",
  "awaken-session-repository-contract",
  "awaken-session-state-contract",
@@ -2967,6 +3000,7 @@ dependencies = [
  "awaken-iam-host",
  "awaken-iam-preset",
  "awaken-iam-server",
+ "awaken-inference-endpoint",
  "awaken-installation-workspace",
  "awaken-model-catalog",
  "awaken-model-catalog-store",
@@ -2990,7 +3024,6 @@ dependencies = [
  "awaken-session-configuration-contract",
  "awaken-session-executor",
  "awaken-session-executor-testkit",
- "awaken-session-mcp",
  "awaken-session-realization-contract",
  "awaken-session-repository-contract",
  "awaken-session-store",
@@ -3838,6 +3871,7 @@ dependencies = [
  "awaken-container-contract",
  "awaken-coordinator-client",
  "awaken-credential-contract",
+ "awaken-credential-envelope",
  "awaken-credential-materializer",
  "awaken-deployment-config",
  "awaken-dispatch-erasure",

@@ -25,12 +25,14 @@
 
 mod coordinator_storage;
 mod execution_topology;
+mod process_environment;
 
 pub use coordinator_storage::{CoordinatorStorage, DispatchBackend, StoreKind, Wake};
 pub use execution_topology::{
     DEFAULT_DISPATCH_POLL_INTERVAL, DispatchPoolSizing, ExecutionTopology, LeaseOwnerId,
     LocalExecution, QueueDepthSource, RunIngress,
 };
+pub use process_environment::{AmbientApiKeyEnvironmentError, reject_ambient_api_key_environment};
 
 use awaken_acp_contract::AcpWorkerProfile;
 use awaken_session_environment_contract::ContainerMcpRelayExposure;

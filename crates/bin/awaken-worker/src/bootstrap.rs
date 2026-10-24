@@ -307,23 +307,20 @@ impl WorkerDaemonConfig {
         // credential envelopes and the Host it builds (dispatch pool, recovery,
         // children) share it.
         let clock = awaken_time::system_clock();
-        let resolver: Arc<dyn awaken_credential_contract::CredentialMaterialResolver> = match &self
-            .worker
-            .credential_envelope_keys_file
-        {
-            Some(path) => Arc::new(
-                awaken_credential_materializer::recipient_envelope::RecipientKeyEnvelope::open(
-                    path,
+        let resolver: Arc<dyn awaken_credential_contract::CredentialMaterialResolver> =
+            match &self.worker.credential_envelope_keys_file {
+                Some(path) => Arc::new(
+                    awaken_credential_envelope::RecipientKeyEnvelope::open(path, clock.clone())
+                        .map_err(|error| {
+                            format!("Worker credential envelope configuration: {error}")
+                        })?,
+                ),
+                None => Arc::new(crate::WorkerCredentialFileResolver::new(
+                    &self.worker.credential_material_root,
+                    &self.worker.credential_trust_domain,
                     clock.clone(),
-                )
-                .map_err(|error| format!("Worker credential envelope configuration: {error}"))?,
-            ),
-            None => Arc::new(crate::WorkerCredentialFileResolver::new(
-                &self.worker.credential_material_root,
-                &self.worker.credential_trust_domain,
-                clock.clone(),
-            )),
-        };
+                )),
+            };
         let credentials =
             awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
                 resolver,

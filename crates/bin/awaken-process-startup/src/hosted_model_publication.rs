@@ -29,7 +29,7 @@ pub(super) fn brokered_inference_client(
     cloud_api_base_url: Option<&str>,
     execution_workspace: &str,
     client_instance_id: &str,
-) -> Option<Arc<awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient>> {
+) -> Option<Arc<awaken_inference_endpoint::brokered_inference::HttpBrokeredInferenceClient>> {
     if !cloud_models_enabled {
         return None;
     }
@@ -56,7 +56,7 @@ pub(super) fn brokered_inference_client(
     let base_url =
         cloud_api_base_url.expect("Awaken Cloud identity requires a Cloud inference API URL");
     Some(Arc::new(
-        awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient::new(
+        awaken_inference_endpoint::brokered_inference::HttpBrokeredInferenceClient::new(
             base_url,
             token_source,
             execution_workspace,

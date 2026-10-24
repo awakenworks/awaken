@@ -43,6 +43,8 @@ awaken-resource-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
+# The MCP client the live credential probe connects through.
+awaken-ext-mcp.workspace = true
 awaken-agent-config.workspace = true
 awaken-config-store = { workspace = true }
 awaken-config-resolver = { workspace = true }
@@ -50,7 +52,6 @@ awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres"] 
 awaken-model-catalog.workspace = true
 awaken-model-catalog-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-credential-vault = { workspace = true, features = ["oauth-command"] }
-awaken-credential-materializer.workspace = true
 awaken-credential-store = { workspace = true, features = ["sqlite", "sealed-aead", "postgres"] }
 awaken-credential-contract.workspace = true
 awaken-data-subject-application.workspace = true

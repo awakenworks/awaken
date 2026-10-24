@@ -11,10 +11,9 @@ bounded_context = "execution"
 layer = "infrastructure"
 authority = "credential-materializer"
 separation = "isolation"
-isolates = ["reqwest"]
+isolates = ["awaken-provider-genai"]
 
 [dependencies]
-awaken-tool-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-acp-contract.workspace = true
 awaken-credential-contract.workspace = true
@@ -22,30 +21,24 @@ awaken-time.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-provider-genai.workspace = true
-awaken-ext-builtin-tools = { workspace = true, optional = true }
+# Provider executors for the endpoints this crate materializes, and the
+# brokered grant transport its `brokered` feature routes through.
+awaken-inference-endpoint.workspace = true
 awaken-worker-contract.workspace = true
 async-trait.workspace = true
 base64 = "0.22"
-chacha20poly1305 = "0.10"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-awaken-outbound-http = { workspace = true, optional = true }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
-tokio = { workspace = true, features = ["time"], optional = true }
 uuid = { version = "1", features = ["v4"] }
 
 [features]
 default = ["authority"]
 authority = []
-brokered = [
-    "dep:awaken-ext-builtin-tools",
-    "dep:awaken-outbound-http",
-    "dep:reqwest",
-    "dep:tokio",
-]
+brokered = ["awaken-inference-endpoint/brokered"]
 
 [dev-dependencies]
+awaken-credential-envelope.workspace = true
 tempfile = "3"
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt", "macros", "time"] }

@@ -8,12 +8,18 @@
 // @formal reason: liveness remain outside that proof.
 //! Self-hosted recipient-key transport for the existing Credential envelope.
 //!
+//! Control issues envelopes through it and the Worker resolves them, so it is
+//! its own crate: neither side links the other, and the Control and
+//! Coordinator processes link no Worker-side credential realization.
+//!
 //! This adapter owns no Vault, credential selection, queue, or material store.
 //! Operators project separate recipient keys into Control and the authorized
 //! execution boundary. Ciphertext travels in the existing opaque envelope ref.
 //! The key document is reread at issuance/use; removed keys never fall back to
 //! another key or a local Vault. Live credential revocation remains the existing
 //! Credential rollout/attempt fence, independently of transport-key revocation.
+
+#![warn(unreachable_pub)]
 
 use awaken_credential_contract::CredentialAccessAdmission;
 use awaken_credential_contract::CredentialEnvelopeValidation;

@@ -39,6 +39,10 @@ ISOLATED_DEPENDENCIES: dict[str, str] = {
     # Execution last-mile adapter: links provider SDK, crypto and optional HTTP,
     # while the realization library remains independent of the Runtime engine/Host.
     "awaken-credential-materializer": "concrete credential/provider materialization",
+    # The provider SDK (genai and its pinned HTTP client): only the crates that
+    # turn a materialized endpoint into an executor link it.
+    "awaken-provider-genai": "provider SDK",
+    "chacha20poly1305": "AEAD cipher",
     "sqlx": "database driver",
     "axum": "HTTP server",
     "reqwest": "HTTP client",

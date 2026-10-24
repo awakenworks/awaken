@@ -646,7 +646,9 @@ impl BrokeredInferenceClient for HttpBrokeredInferenceClient {
     }
 }
 
-pub(crate) struct BrokeredCandidateExecutor {
+/// One brokered candidate as an [`LlmExecutor`]: each request leases an
+/// exact grant, runs on the returned Gateway endpoint and closes the grant.
+pub struct BrokeredCandidateExecutor {
     client: Arc<dyn BrokeredInferenceClient>,
     provider: String,
     model: String,
@@ -659,7 +661,7 @@ pub(crate) struct BrokeredCandidateExecutor {
 }
 
 impl BrokeredCandidateExecutor {
-    pub(crate) fn new(
+    pub fn new(
         client: Arc<dyn BrokeredInferenceClient>,
         provider_ref: &str,
         model: &str,
