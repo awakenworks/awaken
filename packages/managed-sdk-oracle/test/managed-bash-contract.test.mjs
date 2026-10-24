@@ -10,9 +10,11 @@ import { resolveSdkPackage } from '../src/package-source.mjs';
 import { MANAGED_HELPER_PACKAGES } from './support/managed-helper-packages.mjs';
 
 if (process.platform === 'win32') {
-  test('all configured official Bash helper contracts execute on the configured WSL runtime', (t) => {
-    const distribution = process.env.AWAKEN_TEST_WSL_DISTRO;
-    assert.ok(distribution, 'set AWAKEN_TEST_WSL_DISTRO to a Linux distribution with Node.js >=22');
+  const distribution = process.env.AWAKEN_TEST_WSL_DISTRO;
+  // Without a selected WSL runtime the Bash contracts are reported as skipped, not passed.
+  const skip = !distribution
+    && 'Bash helper contracts need AWAKEN_TEST_WSL_DISTRO (WSL Linux, Node.js >=22); not executed';
+  test('all configured official Bash helper contracts execute on the configured WSL runtime', { skip }, (t) => {
     const wsl = (...args) => {
       const result = spawnSync('wsl.exe', ['--distribution', distribution, '--exec', ...args], {
         encoding: 'utf8', windowsHide: true, timeout: 120_000,

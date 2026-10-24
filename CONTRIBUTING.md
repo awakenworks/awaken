@@ -65,8 +65,8 @@ entry points under the same shell, and read repository sources as UTF-8.
 The official Managed SDK's Bash helpers require `/bin/bash`. On Windows,
 install Node.js 22 or newer in a WSL Linux distribution and select it for the
 SDK test gate with `$env:AWAKEN_TEST_WSL_DISTRO = 'your-distribution'`.
-The gate runs all four Bash helper contracts there and fails if that runtime
-is unavailable. Other SDK tests, including filesystem confinement and private
+The gate runs all four Bash helper contracts there and fails if any of them
+fails; without a selected runtime the test is reported as skipped, not passed. Other SDK tests, including filesystem confinement and private
 recovery-file permissions, still execute in native Windows Node.js.
 
 ## The four entry points

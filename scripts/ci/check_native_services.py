@@ -146,6 +146,7 @@ def worker(args: argparse.Namespace) -> int:
     service=None
     recovery_objects=None
     code=0
+    complete=False
     try:
         if args.service=="nats":
             service=NatsService(args.nats_bin,root/"nats",out,owner)
@@ -213,31 +214,34 @@ def worker(args: argparse.Namespace) -> int:
         if working_subject()[0]!=digest:
             raise RuntimeError("source changed during native service verification")
         record["source_unchanged"]=True
-    except Exception as error:
-        code=code or 1
+        complete=True
+    except BaseException as error:
+        code=code or (130 if isinstance(error,KeyboardInterrupt) else error.code if isinstance(error,SystemExit) and isinstance(error.code,int) and error.code else 1)
         record["error"]=str(error)
+        record["error_kind"]=type(error).__name__
     finally:
         try:
             if recovery_objects is not None: record["recovery_object_cleanup"]=recovery_objects.close()
-        except Exception as error:
+        except BaseException as error:
             code=code or 1
             record["recovery_object_cleanup_error"]=str(error)
         try:
             if service is not None: record["cleanup"]=service.close()
-        except Exception as error:
+        except BaseException as error:
             code=code or 1
             record["cleanup_error"]=str(error)
+        code=code or int(not complete)
         record.update(status="passed" if code==0 else "failed",exit_code=code)
         try:
             save()
-        except Exception as error:
+        except BaseException as error:
             code=code or 1
             record.update(status="failed",exit_code=code,recording_error=str(error))
             # A bounded best-effort FAILED record may preserve diagnostics after
             # a transient write fault. It never converts that fault into pass.
             try:
                 save()
-            except Exception:
+            except BaseException:
                 pass
             print("native service terminal evidence could not be written",file=sys.stderr)
     print(json.dumps({k:record[k] for k in ("status","service","platform","exit_code")}))
