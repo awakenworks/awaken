@@ -365,7 +365,6 @@ async fn new_run_cannot_bypass_the_budget_wait() {
 }
 
 #[tokio::test]
-#[ignore = "product gap: budget resume forwards every discovered ticket without filtering to Pause(BudgetReached) (update.rs resume_budget_pauses)"]
 async fn raised_budget_resumes_only_budget_reached_tickets() {
     let id = "t13-budget-ticket-filter";
     let session_id = SessionId::from(id);

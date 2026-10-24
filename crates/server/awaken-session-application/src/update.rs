@@ -678,7 +678,7 @@ impl SessionUpdateCommands {
         let budget_runtime = self.budget.as_ref();
 
         use awaken_session_application_contract::{
-            SessionBudgetResumeDelivery, SessionBudgetResumeDisposition,
+            SessionBudgetResumeDelivery, SessionBudgetResumeDisposition, SessionBudgetResumeTicket,
         };
 
         let session_id = outcome.session.session_id.clone();
@@ -690,7 +690,10 @@ impl SessionUpdateCommands {
                 source,
             })?;
 
-        for pause in tickets {
+        for pause in tickets
+            .into_iter()
+            .filter(SessionBudgetResumeTicket::awaits_budget)
+        {
             let ticket = pause.ticket;
             let operation_id = format!(
                 "budget-resume:{}",
