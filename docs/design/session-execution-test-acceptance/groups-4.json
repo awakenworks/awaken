@@ -916,8 +916,11 @@
           ],
           "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B145",
+          "B146"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -927,7 +930,23 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, L1 component, in-memory SQLite / fakes, nextest"
+          ],
+          "unaccepted": [
+            "L2 real adapters and process crash are separate scenarios",
+            "T35 platform gate open"
+          ]
+        },
+        "product_gap": {
+          "reason": "启用 checkpoint 格式与存储时，构造阶段不检查 Provider 的 restore 能力，不支持恢复的 Provider 也能构造成功",
+          "follow_up": "awaken-worker 构造校验 restoration()（S；会改变 tests.rs 中现有 R2/R3 预期）",
+          "reproducers": [
+            "restore_enabled_worker_with_unsupported_restoration_is_refused_at_construction"
+          ]
+        }
       },
       {
         "id": "T27-C02",
@@ -949,8 +968,11 @@
           ],
           "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B147",
+          "B148"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -960,7 +982,23 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, L1 component, in-memory SQLite / fakes, nextest"
+          ],
+          "unaccepted": [
+            "L2 real adapters and process crash are separate scenarios",
+            "T35 platform gate open"
+          ]
+        },
+        "product_gap": {
+          "reason": "rebind_retained 只比较 SandboxHandle 值，相同 handle 的另一 Provider 实例可绑定外来 Environment",
+          "follow_up": "session-environment：引入实例绑定的来源身份（M）",
+          "reproducers": [
+            "foreign_instance_with_equal_handle_cannot_rebind_another_providers_environment"
+          ]
+        }
       },
       {
         "id": "T27-C03",

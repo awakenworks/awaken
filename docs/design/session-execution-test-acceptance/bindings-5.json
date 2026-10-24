@@ -1,0 +1,869 @@
+[
+  {
+    "name": "failed_activity_cas_releases_its_reservation_before_reporting_failure",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "line": 340,
+        "file_sha256": "834630cbaf76b2e4da0bf5594ee6751a8976dad70b9515533129c95dc6be5bd2"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T07-C01": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: a failed activity CAS keeps its reservation and repair later admits the Run the caller saw fail",
+    "limitation": "Not execution evidence. Follow-up: run admission reservation release on CAS failure (M)",
+    "id": "B123"
+  },
+  {
+    "name": "forged_reply_coordinates_are_rejected_with_zero_facts_and_zero_drive",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 111,
+        "file_sha256": "90e4940a216718d5c35df258b5ccfd1c339bd08f08eaf8d9be43b0975ef5a043"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 127
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 128
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 129
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-protocol-managed state::events::tests::reply_coordinates::forged_reply_coordinates_are_rejected_with_zero_facts_and_zero_drive",
+        "package": "awaken-protocol-managed",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T11-C02": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B124"
+  },
+  {
+    "name": "reply_id_of_one_session_is_rejected_by_another_session",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 272,
+        "file_sha256": "90e4940a216718d5c35df258b5ccfd1c339bd08f08eaf8d9be43b0975ef5a043"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 282
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 283
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 284
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-protocol-managed state::events::tests::reply_coordinates::reply_id_of_one_session_is_rejected_by_another_session",
+        "package": "awaken-protocol-managed",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T11-C02": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B125"
+  },
+  {
+    "name": "ambiguous_legacy_reply_id_is_rejected_with_zero_facts_and_zero_drive",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 311,
+        "file_sha256": "90e4940a216718d5c35df258b5ccfd1c339bd08f08eaf8d9be43b0975ef5a043"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 329
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 344
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 364
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-protocol-managed state::events::tests::reply_coordinates::ambiguous_legacy_reply_id_is_rejected_with_zero_facts_and_zero_drive",
+        "package": "awaken-protocol-managed",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T11-C02": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B126"
+  },
+  {
+    "name": "application_append_rejects_forged_reply_coordinates",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 425,
+        "file_sha256": "90e4940a216718d5c35df258b5ccfd1c339bd08f08eaf8d9be43b0975ef5a043"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T11-C02": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: the application append retains a ToolReply with forged Run/target coordinates",
+    "limitation": "Not execution evidence. Follow-up: session-application ticket check on append (M)",
+    "id": "B127"
+  },
+  {
+    "name": "application_append_rejects_version_less_new_reply",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 442,
+        "file_sha256": "90e4940a216718d5c35df258b5ccfd1c339bd08f08eaf8d9be43b0975ef5a043"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T11-C02": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: a new reply without thread version is accepted and the executor fence skips the version check",
+    "limitation": "Not execution evidence. Follow-up: session-application admission plus session-executor fence (S-M)",
+    "id": "B128"
+  },
+  {
+    "name": "invalid_batches_are_classified_and_have_zero_effect",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "line": 179,
+        "file_sha256": "01a923ba4c5ed7b16d891c1dbb29f6311ad491e9643aaf0c75ce7236495f9021"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "line": 183
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "line": 251
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "line": 273
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-session-application tests::event_batches::admission_boundaries::invalid_batches_are_classified_and_have_zero_effect",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T12-C01": {
+        "oracles": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": "Classification is asserted on the stable message text because every compile error shares code invalid_request.",
+    "id": "B129"
+  },
+  {
+    "name": "grammar_valid_payloads_still_fail_business_admission",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "line": 323,
+        "file_sha256": "01a923ba4c5ed7b16d891c1dbb29f6311ad491e9643aaf0c75ce7236495f9021"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "line": 347
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "line": 354
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-session-application tests::event_batches::admission_boundaries::grammar_valid_payloads_still_fail_business_admission",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T12-C01": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B130"
+  },
+  {
+    "name": "ghost_and_archived_child_interrupt_targets_have_zero_effect",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 80,
+        "file_sha256": "9b68f73f9419eba5b49fdd04fa7ef05a96506ed88d14146fdb7ba97356d5f04b"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 99
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 104
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 114
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-protocol-managed state::events::tests::admission_boundaries::ghost_and_archived_child_interrupt_targets_have_zero_effect",
+        "package": "awaken-protocol-managed",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T12-C01": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B131"
+  },
+  {
+    "name": "ordinary_batch_of_51_entries_is_one_batch_and_file_documents_cap_at_100",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 208,
+        "file_sha256": "9b68f73f9419eba5b49fdd04fa7ef05a96506ed88d14146fdb7ba97356d5f04b"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 218
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 219
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 221
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-protocol-managed state::events::tests::admission_boundaries::ordinary_batch_of_51_entries_is_one_batch_and_file_documents_cap_at_100",
+        "package": "awaken-protocol-managed",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T12-C01": {
+        "oracles": [
+          0,
+          1,
+          3
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B132"
+  },
+  {
+    "name": "budget_paused_interrupt_only_batch_is_a_legal_no_op",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 286,
+        "file_sha256": "9b68f73f9419eba5b49fdd04fa7ef05a96506ed88d14146fdb7ba97356d5f04b"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 294
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 319
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 320
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-protocol-managed state::events::tests::admission_boundaries::budget_paused_interrupt_only_batch_is_a_legal_no_op",
+        "package": "awaken-protocol-managed",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T12-C01": {
+        "oracles": [
+          2
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B133"
+  },
+  {
+    "name": "admission_error_precedence_follows_the_entry_table",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 351,
+        "file_sha256": "9b68f73f9419eba5b49fdd04fa7ef05a96506ed88d14146fdb7ba97356d5f04b"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 369
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 393
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 411
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-protocol-managed state::events::tests::admission_boundaries::admission_error_precedence_follows_the_entry_table",
+        "package": "awaken-protocol-managed",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T12-C01": {
+        "oracles": [
+          3
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B134"
+  },
+  {
+    "name": "compile_rejections_carry_distinct_stable_codes",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "line": 362,
+        "file_sha256": "01a923ba4c5ed7b16d891c1dbb29f6311ad491e9643aaf0c75ce7236495f9021"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T12-C01": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: every compile rejection maps to code invalid_request",
+    "limitation": "Not execution evidence. Follow-up: session-application event-batch error codes (S)",
+    "id": "B135"
+  },
+  {
+    "name": "interrupt_of_unknown_child_target_is_rejected_without_effect",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "line": 394,
+        "file_sha256": "01a923ba4c5ed7b16d891c1dbb29f6311ad491e9643aaf0c75ce7236495f9021"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T12-C01": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: the aggregate entrypoint accepts an Interrupt aimed at an unknown child",
+    "limitation": "Not execution evidence. Follow-up: session-application topology check in aggregate admission (M)",
+    "id": "B136"
+  },
+  {
+    "name": "raised_budget_resumes_only_the_original_run_once_with_stable_identity",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
+        "line": 159,
+        "file_sha256": "4d23d4dd68d155c0997208473837a8011a0e6b907034b52ac4d37e006e3b5214"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
+        "line": 170
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
+        "line": 180
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
+        "line": 184
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-session-application tests::authority::budget_resume::raised_budget_resumes_only_the_original_run_once_with_stable_identity",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T13-C03": {
+        "oracles": [
+          0,
+          1,
+          2
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B137"
+  },
+  {
+    "name": "new_run_cannot_bypass_the_budget_wait",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
+        "line": 321,
+        "file_sha256": "4d23d4dd68d155c0997208473837a8011a0e6b907034b52ac4d37e006e3b5214"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
+        "line": 344
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
+        "line": 349
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
+        "line": 350
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-session-application tests::authority::budget_resume::new_run_cannot_bypass_the_budget_wait",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T13-C03": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B138"
+  },
+  {
+    "name": "raised_budget_resumes_only_budget_reached_tickets",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
+        "line": 369,
+        "file_sha256": "4d23d4dd68d155c0997208473837a8011a0e6b907034b52ac4d37e006e3b5214"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T13-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: budget resume forwards every resume ticket without filtering to BudgetReached",
+    "limitation": "Not execution evidence. Follow-up: session-application update resume_budget_pauses (S)",
+    "id": "B139"
+  },
+  {
+    "name": "budget_rejected_bypass_run_is_not_admitted_by_repair_after_raise",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
+        "line": 407,
+        "file_sha256": "4d23d4dd68d155c0997208473837a8011a0e6b907034b52ac4d37e006e3b5214"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T13-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: a budget-rejected bypass Run keeps its reservation and repair admits it after the raise",
+    "limitation": "Not execution evidence. Follow-up: run admission reservation release (M)",
+    "id": "B140"
+  },
+  {
+    "name": "failed_second_input_or_stale_version_keeps_the_original_manifest",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/partial_preparation.rs",
+        "line": 136,
+        "file_sha256": "89bbdfec2c65123e0d6cef7bf218bcd4f9a5e61004fcb54d88a9943b6c4e2806"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/partial_preparation.rs",
+        "line": 140
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/partial_preparation.rs",
+        "line": 151
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/partial_preparation.rs",
+        "line": 155
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-session-application tests::realization::partial_preparation::failed_second_input_or_stale_version_keeps_the_original_manifest",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T14-C01": {
+        "oracles": [
+          0,
+          1,
+          2
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B141"
+  },
+  {
+    "name": "error_only_oracle_cannot_accept_partial_or_forgotten_preparation",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/partial_preparation.rs",
+        "line": 235,
+        "file_sha256": "89bbdfec2c65123e0d6cef7bf218bcd4f9a5e61004fcb54d88a9943b6c4e2806"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/partial_preparation.rs",
+        "line": 246
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/partial_preparation.rs",
+        "line": 248
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/partial_preparation.rs",
+        "line": 261
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-session-application tests::realization::partial_preparation::error_only_oracle_cannot_accept_partial_or_forgotten_preparation",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T14-C01": {
+        "oracles": [
+          0,
+          1,
+          2
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B142"
+  },
+  {
+    "name": "binding_matrix_rejects_each_dimension_before_plaintext_with_stable_class",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/binding_matrix.rs",
+        "line": 360,
+        "file_sha256": "211ee5fa3624ab84fb8693c0296c9c43e3039648d79a7a6e7c280d1e574153ee"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/binding_matrix.rs",
+        "line": 367
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/binding_matrix.rs",
+        "line": 368
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/binding_matrix.rs",
+        "line": 373
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-credential-materializer tests::binding_matrix::binding_matrix_rejects_each_dimension_before_plaintext_with_stable_class",
+        "package": "awaken-credential-materializer",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T15-C01": {
+        "oracles": [
+          0,
+          1,
+          2
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B143"
+  },
+  {
+    "name": "binding_matrix_holder_dimension_has_its_recipient_classification",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/binding_matrix.rs",
+        "line": 484,
+        "file_sha256": "211ee5fa3624ab84fb8693c0296c9c43e3039648d79a7a6e7c280d1e574153ee"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T15-C01": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: the public resolve maps HolderNotAllowed to retryable Unavailable",
+    "limitation": "Not execution evidence. Follow-up: credential-materializer public error mapping (S)",
+    "id": "B144"
+  }
+]

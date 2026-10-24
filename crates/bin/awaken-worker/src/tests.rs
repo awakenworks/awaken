@@ -2007,3 +2007,5 @@ fn resource_capability_follows_the_canonical_registered_remote_projection() {
         "R2"
     );
 }
+
+mod restore_capability;

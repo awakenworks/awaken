@@ -13,6 +13,7 @@ use awaken_session_repository_contract::{LifecycleOutbox as _, SessionRepository
 use awaken_session_execution_contract::ThreadReadRuntime as _;
 use awaken_session_types::SessionId;
 mod activation_failure_time;
+mod admission_boundaries;
 mod lifecycle_runtime;
 use lifecycle_runtime::LifecycleRuntime;
 mod budget_reach;
@@ -24,6 +25,7 @@ mod pagination;
 mod prefix_monotonicity;
 mod refresh_failure;
 mod replica_switch;
+mod reply_coordinates;
 mod timeline_scenarios;
 mod tool_occurrences;
 mod warm_cold_equivalence;

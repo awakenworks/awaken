@@ -49,7 +49,7 @@
 - 必须断言：最终 Provider 使用同一 Broker、Memory mounter 和时钟；不因配置调用顺序丢失能力。
 - 反向控制：移除最终绑定步骤或保留旧 Provider，测试必须失败。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`every_installation_order_lands_the_same_broker_mounter_and_clock_on_the_final_provider`、`installation_oracle_detects_a_removed_final_binding_or_a_kept_old_provider`；当前提交本机 Windows L1 执行（E13），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 | 调用顺序 | 选中实例 | 预期能力 |
 | --- | --- | --- |
@@ -223,7 +223,7 @@
 - 必须断言：在未获准的数据读取/物理效果前拒绝；错误响应不泄露另一个租户的存在性。
 - 反向控制：只在 HTTP 层校验而内部入口可绕过必须失败。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`foreign_owner_is_rejected_before_reads_or_effects_and_matches_missing`、`http_only_owner_validation_is_detected_by_the_matrix`（E13 本机 Windows 执行通过，覆盖已成立的 oracle 与反向控制）；产品缺口复现 `owner_less_event_append_refuses_without_owner_proof`、`foreign_run_admission_is_indistinguishable_from_missing`（忽略，不计证据）：部分内部入口（event batch 追加等）不带所有者参数，可绕过 HTTP 校验；run admission 对未知 id 创建、对外来 id 报未找到，泄露存在性。完整场景：待验收。
 
 ### T06-C02 等待后撤权
 
@@ -255,7 +255,7 @@
 - 必须断言：未激活不调用模型/工具；未接纳 reserve 有明确释放责任。
 - 反向控制：用成功返回码代替模型/工具计数不能签收。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`paused_or_failed_activity_cas_executes_nothing_and_leaves_a_repairable_reservation`、`return_code_alone_cannot_sign_off_zero_execution`（E13 本机 Windows 执行通过，覆盖已成立的 oracle 与反向控制）；产品缺口复现 `failed_activity_cas_releases_its_reservation_before_reporting_failure`（忽略，不计证据）：activity CAS 失败后返回错误但不释放 reserve，修复路径 RecoverOrAdmit 之后会接纳调用方已见失败的 Run。完整场景：待验收。
 
 ### T07-C02 丢响应重放
 
@@ -391,7 +391,7 @@
 - 必须断言：只接受确切原坐标且不扩张权限；拒绝时零驱动和零事实追加。
 - 反向控制：只校验公开 ID 的前缀不能通过。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`forged_reply_coordinates_are_rejected_with_zero_facts_and_zero_drive`、`reply_id_of_one_session_is_rejected_by_another_session`、`ambiguous_legacy_reply_id_is_rejected_with_zero_facts_and_zero_drive`（E13 本机 Windows 执行通过，覆盖已成立的 oracle 与反向控制）；产品缺口复现 `application_append_rejects_forged_reply_coordinates`、`application_append_rejects_version_less_new_reply`（忽略，不计证据）：协议入口按确切坐标拒绝，但 application 追加入口不校验 ticket 坐标，且无版本的新回复被接受、执行器 fence 跳过版本检查。完整场景：待验收。
 
 ### T11-C03 并发消费
 
@@ -415,7 +415,7 @@
 - 必须断言：稳定分类；非法目标零效果；合法 no-op 不追加事实；错误优先级遵循入口表。
 - 反向控制：仅验证 JSON grammar 不得替代业务接纳。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`invalid_batches_are_classified_and_have_zero_effect`、`grammar_valid_payloads_still_fail_business_admission`、`ghost_and_archived_child_interrupt_targets_have_zero_effect`、`ordinary_batch_of_51_entries_is_one_batch_and_file_documents_cap_at_100`、`budget_paused_interrupt_only_batch_is_a_legal_no_op`、`admission_error_precedence_follows_the_entry_table`（E13 本机 Windows 执行通过，覆盖已成立的 oracle 与反向控制）；产品缺口复现 `compile_rejections_carry_distinct_stable_codes`、`interrupt_of_unknown_child_target_is_rejected_without_effect`（忽略，不计证据）：所有编译类拒绝共用 invalid_request，分类只能靠文案；aggregate 入口接受指向未知 child 的 Interrupt（协议入口会拒绝）。完整场景：待验收。
 
 ### T12-C02 批次原回执
 
@@ -463,4 +463,4 @@
 - 必须断言：只恢复允许的原 Run；无重复已结算步骤；边界值和消息身份稳定。
 - 反向控制：通过新建 Run 绕过预算等待必须失败。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`raised_budget_resumes_only_the_original_run_once_with_stable_identity`、`new_run_cannot_bypass_the_budget_wait`（E13 本机 Windows 执行通过，覆盖已成立的 oracle 与反向控制）；产品缺口复现 `raised_budget_resumes_only_budget_reached_tickets`、`budget_rejected_bypass_run_is_not_admitted_by_repair_after_raise`（忽略，不计证据）：提高额度后恢复会转发所有 ticket，不只 BudgetReached；被预算拒绝的绕过 Run 保留 reserve，提额后修复路径会接纳它。完整场景：待验收。

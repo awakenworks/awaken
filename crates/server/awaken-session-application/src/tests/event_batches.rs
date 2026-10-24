@@ -5843,6 +5843,7 @@ mod outcome_reconciliation;
 
 mod resumed_dispatch;
 
+mod admission_boundaries;
 mod frozen_projection;
 
 #[test]

@@ -11,6 +11,7 @@ use application_fixture::{
     application, application_with_configuration, application_with_persistence,
     application_with_runtime, configured_admission_application, configured_application,
 };
+mod effect_counting_runtime;
 mod observation_refinement;
 mod observed_commit;
 mod recording_cleanup_terminal;

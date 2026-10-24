@@ -85,6 +85,9 @@ pub struct EnvironmentProviders {
     /// stores only the neutral contract; the outer server process selects
     /// the FUSE/copy adapter with the Host's dependencies.
     pub memory_mounter: Option<Arc<dyn awaken_provisioning_contract::MemoryMounter>>,
+    /// The credential-file broker selected so far. Like the Memory mounter it
+    /// is handed to every Session provider selected or relocated later.
+    pub secret_broker: Option<Arc<dyn awaken_provisioning_contract::SecretBroker>>,
     /// Whether `trusted_host` Environments may be realized on this process.
     pub trusted_host: TrustedHostPolicy,
     /// The warm capacity this process keeps per Session shape.
@@ -117,6 +120,7 @@ impl EnvironmentProviders {
             backend_owned_session_provider: None,
             session_provider_explicit: false,
             memory_mounter: None,
+            secret_broker: None,
             trusted_host,
             warm_pool,
             runs_local_dispatch_pool: false,

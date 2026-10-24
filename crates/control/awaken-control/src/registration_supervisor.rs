@@ -204,6 +204,9 @@ fn retry_delay(config: RegistrationSupervisorConfig, failures: u32) -> Duration 
 }
 
 #[cfg(test)]
+mod diagnostics_tests;
+
+#[cfg(test)]
 mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};

@@ -812,5 +812,341 @@
     "review": "Existing self-test: edits a tracked file at each execution fence and requires stop/reject with source_unchanged=false; re-executed natively for this batch.",
     "limitation": null,
     "id": "B114"
+  },
+  {
+    "name": "every_installation_order_lands_the_same_broker_mounter_and_clock_on_the_final_provider",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
+        "line": 361,
+        "file_sha256": "fa7384e5c69aba9a9ea0436f442313eb3a235cfe629278ac83bfc588b716bbca"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
+        "line": 382
+      },
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
+        "line": 383
+      },
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
+        "line": 397
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-session-executor host::tests::environment_installation_order::every_installation_order_lands_the_same_broker_mounter_and_clock_on_the_final_provider",
+        "package": "awaken-session-executor",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T01-C01": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B115"
+  },
+  {
+    "name": "installation_oracle_detects_a_removed_final_binding_or_a_kept_old_provider",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
+        "line": 472,
+        "file_sha256": "fa7384e5c69aba9a9ea0436f442313eb3a235cfe629278ac83bfc588b716bbca"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
+        "line": 488
+      },
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
+        "line": 504
+      },
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
+        "line": 523
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-session-executor host::tests::environment_installation_order::installation_oracle_detects_a_removed_final_binding_or_a_kept_old_provider",
+        "package": "awaken-session-executor",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T01-C01": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": "The pre-fix path is replayed inside the test (mutant N3); production was fixed in this batch to store and re-install the broker on every later provider selection and relocation.",
+    "id": "B116"
+  },
+  {
+    "name": "foreign_owner_is_rejected_before_reads_or_effects_and_matches_missing",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "line": 415,
+        "file_sha256": "235739383aff81d57fcfb0548b115341621260be1beb55b42077bac165e6e1b8"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "line": 418
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "line": 420
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "line": 424
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-session-application tests::authority::ownership_rejection::foreign_owner_is_rejected_before_reads_or_effects_and_matches_missing",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T06-C01": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B117"
+  },
+  {
+    "name": "http_only_owner_validation_is_detected_by_the_matrix",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "line": 435,
+        "file_sha256": "235739383aff81d57fcfb0548b115341621260be1beb55b42077bac165e6e1b8"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "line": 445
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "line": 449
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-session-application tests::authority::ownership_rejection::http_only_owner_validation_is_detected_by_the_matrix",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T06-C01": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B118"
+  },
+  {
+    "name": "owner_less_event_append_refuses_without_owner_proof",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "line": 488,
+        "file_sha256": "235739383aff81d57fcfb0548b115341621260be1beb55b42077bac165e6e1b8"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T06-C01": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: append_session_event_batch_idempotent takes no owner",
+    "limitation": "Not execution evidence. Follow-up: session-application event-batch API owner parameter (M)",
+    "id": "B119"
+  },
+  {
+    "name": "foreign_run_admission_is_indistinguishable_from_missing",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "line": 457,
+        "file_sha256": "235739383aff81d57fcfb0548b115341621260be1beb55b42077bac165e6e1b8"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T06-C01": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: run admission creates a Session for a missing id but answers not-found for a foreign id",
+    "limitation": "Not execution evidence. Follow-up: run admission existence-neutral refusal (M)",
+    "id": "B120"
+  },
+  {
+    "name": "paused_or_failed_activity_cas_executes_nothing_and_leaves_a_repairable_reservation",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "line": 127,
+        "file_sha256": "834630cbaf76b2e4da0bf5594ee6751a8976dad70b9515533129c95dc6be5bd2"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "line": 150
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "line": 152
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "line": 153
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-session-application tests::run_admission::pre_activation::paused_or_failed_activity_cas_executes_nothing_and_leaves_a_repairable_reservation",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T07-C01": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B121"
+  },
+  {
+    "name": "return_code_alone_cannot_sign_off_zero_execution",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "line": 298,
+        "file_sha256": "834630cbaf76b2e4da0bf5594ee6751a8976dad70b9515533129c95dc6be5bd2"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "line": 315
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "line": 316
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "line": 328
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E13",
+        "case": "awaken-session-application tests::run_admission::pre_activation::return_code_alone_cannot_sign_off_zero_execution",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+        "historical": false,
+        "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T07-C01": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint with recording collaborators; asserts persisted state and effect counters, not only the returned error; the negative control is executed in-test as a mutant or injected fault and must be detected.",
+    "limitation": null,
+    "id": "B122"
   }
 ]
