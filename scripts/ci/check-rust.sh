@@ -324,6 +324,8 @@ scoped_step "coordinator-production" "keep fixture-only Coordinator dependencies
   "awaken-coordinator" cargo clippy -p awaken-coordinator --lib "${locked[@]}" -- -D warnings
 scoped_step "cli-production" "keep fixture-only CLI helpers out of its ordinary product graph" \
   "awaken-cli" cargo clippy -p awaken-cli --lib "${locked[@]}" -- -D warnings
+scoped_step "process-startup-production" "keep fixture-only startup helpers out of its ordinary product graph" \
+  "awaken-process-startup" cargo clippy -p awaken-process-startup --lib "${locked[@]}" -- -D warnings
 
 # The fuzz crate is a separate workspace, so `cargo check --workspace` never compiles it.
 # It is why three crates keep reviewed public API snapshots (ADR-0081, 2026-09-28);

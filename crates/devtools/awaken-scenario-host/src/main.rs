@@ -49,8 +49,10 @@ impl awaken_session_budget_contract::ManagedListPriceProvider for ScenarioListPr
     }
 }
 
-fn management_scenario_adapters(rate_limit_transition: bool) -> awaken_cli::ManagedServiceAdapters {
-    let adapters = awaken_cli::ManagedServiceAdapters::default()
+fn management_scenario_adapters(
+    rate_limit_transition: bool,
+) -> awaken_process_startup::ManagedServiceAdapters {
+    let adapters = awaken_process_startup::ManagedServiceAdapters::default()
         .with_list_price_provider(Arc::new(ScenarioListPriceProvider))
         .with_tunnel_application(Arc::new(
             awaken_protocol_managed_testkit::EmptyManagedTunnelApplication,
@@ -69,7 +71,7 @@ fn management_scenario_adapters(rate_limit_transition: bool) -> awaken_cli::Mana
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    awaken_cli::block_on_service(async_main)
+    awaken_process_startup::block_on_service(async_main)
 }
 
 async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -136,7 +138,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Host-backed scenarios share one explicit test-support runtime authority.
         // AllInOne and split-Control modes assemble their own canonical authority;
         // installing this one as well would create a redundant, unused owner.
-        let runtime_authority = awaken_cli::scenario_runtime_authority(
+        let runtime_authority = awaken_process_startup::scenario_runtime_authority(
             &deployment.coordinator_storage(),
             awaken_time::system_clock(),
         )
@@ -167,7 +169,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 std::sync::Arc::new(awaken_scenario_host::McpToolModel),
                 "management",
             );
-            awaken_cli::build_all_in_one_router_with_scenario_model(
+            awaken_process_startup::build_all_in_one_router_with_scenario_model(
                 model,
                 model_ref,
                 management_scenario_adapters(mode == "management-rate-limit"),
@@ -175,10 +177,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .await
         }
         Ok("management-agents") => {
-            awaken_cli::build_all_in_one_router_with_scenario_model(
+            awaken_process_startup::build_all_in_one_router_with_scenario_model(
                 std::sync::Arc::new(awaken_scenario_host::RegistryDelegatingModel),
                 "management-agents".to_string(),
-                awaken_cli::ManagedServiceAdapters::default(),
+                awaken_process_startup::ManagedServiceAdapters::default(),
             )
             .await
         }
@@ -186,10 +188,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // publish explicit Agent policy while a deterministic probe model drives
         // the tool call. This reuses AllInOne; it owns no parallel Host/store.
         Ok("management-probe") => {
-            awaken_cli::build_all_in_one_router_with_scenario_model(
+            awaken_process_startup::build_all_in_one_router_with_scenario_model(
                 std::sync::Arc::new(awaken_scenario_host::ProbeModel),
                 "management-probe".to_string(),
-                awaken_cli::ManagedServiceAdapters::default(),
+                awaken_process_startup::ManagedServiceAdapters::default(),
             )
             .await
         }
@@ -199,16 +201,16 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Production model supply for provider/BYOK/brokered e2e: no
         // deterministic Host executor is installed, so publications resolve from
         // the authored catalog and execute through the real materializer.
-        Ok("management-providers") => awaken_cli::build_all_in_one_router().await,
+        Ok("management-providers") => awaken_process_startup::build_all_in_one_router().await,
         Ok("distributed-provider") => awaken_scenario_host::build_distributed_provider_router(),
         // The production management deployment (durable stores + config plane +
         // resource PEP) with only its deterministic fallback model replaced. Used
         // by the Skill pin/restart e2e; resource repositories remain auth-agnostic.
         Ok("management-skills") => {
-            awaken_cli::build_all_in_one_router_with_scenario_model(
+            awaken_process_startup::build_all_in_one_router_with_scenario_model(
                 std::sync::Arc::new(awaken_scenario_host::SkillDrivingModel),
                 "management-skills".to_string(),
-                awaken_cli::ManagedServiceAdapters::default(),
+                awaken_process_startup::ManagedServiceAdapters::default(),
             )
             .await
         }
@@ -267,13 +269,13 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Brain admin surface (ADR-0022 D7): the connection-count metric that KEDA
     // autoscales on, plus /admin/drain + /readyz for graceful, stream-preserving
     // scale-in. Wraps the served router so the in-flight counter sees every request.
-    let ctrl = awaken_cli::DrainController::new();
+    let ctrl = awaken_process_startup::DrainController::new();
     // Register the connection-load gauge on the global OTel meter so `/metrics`
     // exposes `awaken_brain_active_streams` (the KEDA autoscale signal), matching the
     // production `awaken` binary. Held for the process lifetime so the callback stays
     // live — without this the drain/metrics e2e see the gauge missing.
-    let _active_streams_gauge = awaken_cli::register_active_streams_gauge(ctrl.clone());
-    let app = awaken_cli::with_process_admin(app, ctrl);
+    let _active_streams_gauge = awaken_process_startup::register_active_streams_gauge(ctrl.clone());
+    let app = awaken_process_startup::with_process_admin(app, ctrl);
     // Root every request span in the ingress middleware (extracts the inbound
     // `traceparent`); the whole direct request→inference path nests under it.
     let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));

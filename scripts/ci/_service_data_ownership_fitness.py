@@ -20,10 +20,10 @@ from _coordinator_authority_fitness import LOCAL_COMMIT_ADAPTER_SOURCE
 
 WORKER_SOURCE = "crates/bin/awaken-worker/src"
 CONTROL_SOURCE = "crates/control/awaken-control/src"
-CLI_SOURCE = "crates/bin/awaken-cli/src"
-CLI_LIB_SOURCE = "crates/bin/awaken-cli/src/lib.rs"
+CLI_SOURCE = "crates/bin/awaken-process-startup/src"
+CLI_LIB_SOURCE = "crates/bin/awaken-process-startup/src/lib.rs"
 COORDINATOR_COMPONENT = "crates/server/awaken-coordinator/src/coordinator_component.rs"
-SERVICE_BOUNDARY = "crates/bin/awaken-cli/src/config/service_boundary.rs"
+SERVICE_BOUNDARY = "crates/bin/awaken-process-startup/src/config/service_boundary.rs"
 RESOURCE_AUTHORITIES = "crates/resources/awaken-resource-application/src/authorities.rs"
 RESOURCE_CONTRACT = "crates/contract/awaken-resource-contract/src/lib.rs"
 RESOURCE_PERSISTENCE = "crates/resources/awaken-resource-persistence/src/lib.rs"
@@ -33,7 +33,7 @@ RUNTIME_HOST_BUILD = "crates/server/awaken-session-executor/src/host/build.rs"
 # so the construction surface is build.rs plus these two places.
 RUNTIME_HOST_DEPENDENCIES = "crates/server/awaken-session-executor/src/host/dependencies"
 RUNTIME_HOST_CAPABILITIES = "crates/server/awaken-session-executor/src/host/capability"
-PROCESS_STORES = "crates/bin/awaken-cli/src/process_stores.rs"
+PROCESS_STORES = "crates/bin/awaken-process-startup/src/process_stores.rs"
 RUNTIME_HOST_MANIFEST = "crates/server/awaken-session-executor/Cargo.toml"
 COORDINATOR_MANIFEST = "crates/server/awaken-coordinator/Cargo.toml"
 PROTOCOL_MANAGED_MANIFEST = "crates/server/awaken-protocol-managed/Cargo.toml"
@@ -93,7 +93,7 @@ EXECUTABLE_AGENT_CONTRACT_SOURCE = (
 )
 EXECUTABLE_AGENT_CATALOG_SOURCE = "crates/server/awaken-executable-agent-catalog/src/lib.rs"
 PROTOCOL_MODEL_SOURCE = "crates/server/awaken-protocol-managed/src/control/models.rs"
-RUNTIME_PROCESS_ROUTER = "crates/bin/awaken-cli/src/runtime_process_router.rs"
+RUNTIME_PROCESS_ROUTER = "crates/bin/awaken-process-startup/src/runtime_process_router.rs"
 CREDENTIAL_INFERENCE_SOURCE = (
     "crates/server/awaken-credential-materializer/src/inference.rs"
 )

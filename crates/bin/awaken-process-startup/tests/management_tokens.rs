@@ -12,7 +12,7 @@
 //! scoped (404 unknown id); and the bootstrap token can be rotated away —
 //! revoke it with a freshly minted admin token and only the successor works.
 
-use awaken_cli::{
+use awaken_process_startup::{
     BOOTSTRAP_WORKSPACE, TokenSpec,
     build_secured_all_in_one_router as build_isolated_secured_all_in_one_router,
 };
@@ -29,7 +29,7 @@ static TEST_RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::O
 
 struct SharedSecuredDeployment {
     app: axum::Router,
-    iam: std::sync::Arc<awaken_cli::ManagementAuthz>,
+    iam: std::sync::Arc<awaken_process_startup::ManagementAuthz>,
     admin_token: String,
     _directory: tempfile::TempDir,
 }
@@ -53,7 +53,10 @@ fn run_local_deployment(future: impl std::future::Future<Output = ()>) {
 async fn shared_secured_all_in_one_router(
     token_handoff_dir: &std::path::Path,
     key: &[u8; 32],
-) -> (axum::Router, std::sync::Arc<awaken_cli::ManagementAuthz>) {
+) -> (
+    axum::Router,
+    std::sync::Arc<awaken_process_startup::ManagementAuthz>,
+) {
     let deployment = SHARED_SECURED_DEPLOYMENT
         .get_or_init(|| async {
             let directory = tempfile::tempdir().expect("shared deployment directory");
@@ -68,7 +71,7 @@ async fn shared_secured_all_in_one_router(
         })
         .await;
     std::fs::write(
-        token_handoff_dir.join(awaken_cli::ADMIN_TOKEN_FILE),
+        token_handoff_dir.join(awaken_process_startup::ADMIN_TOKEN_FILE),
         &deployment.admin_token,
     )
     .expect("copy shared admin-token handoff");
@@ -128,7 +131,7 @@ async fn call(
 }
 
 fn admin_token(dir: &std::path::Path) -> String {
-    std::fs::read_to_string(dir.join(awaken_cli::ADMIN_TOKEN_FILE))
+    std::fs::read_to_string(dir.join(awaken_process_startup::ADMIN_TOKEN_FILE))
         .expect("bootstrap admin-token file")
 }
 

@@ -7,6 +7,7 @@
 //! Canonical process lifecycle shared by the product launcher and thin service binaries.
 
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use crate::config::{ConfigOverrides, ResolvedDeployment, Role};
 use crate::console::{DatabaseMigrateArgs, ServiceArgs, ServiceBinaryCommand};
@@ -74,7 +75,21 @@ pub async fn run_service_binary(role: ServiceRole) -> ExitCode {
 /// Run the exact Control, Coordinator, or AllInOne startup selected by the
 /// caller. Role-specific binaries and `awaken <role>` both terminate here.
 pub async fn run_service(args: ServiceArgs, role: ServiceRole) -> Result<(), String> {
-    run_service_with_adapters(args, role, None).await
+    if role == ServiceRole::AllInOne {
+        return Err(
+            "the AllInOne service co-locates a Worker; start it with the `awaken` launcher"
+                .to_owned(),
+        );
+    }
+    run_service_with_adapters(args, role, None, None).await
+}
+
+/// Run the canonical AllInOne service with the Worker it co-locates.
+pub async fn run_all_in_one(
+    args: ServiceArgs,
+    colocated: Arc<dyn crate::ColocatedWorkerPreparation>,
+) -> Result<(), String> {
+    run_service_with_adapters(args, ServiceRole::AllInOne, None, Some(colocated)).await
 }
 
 /// Run the canonical AllInOne service with product-supplied infrastructure
@@ -84,11 +99,13 @@ pub async fn run_all_in_one_with_services(
     args: ServiceArgs,
     managed_services: crate::ManagedServiceAdapters,
     coordinator_services: crate::CoordinatorServiceAdapters,
+    colocated: Arc<dyn crate::ColocatedWorkerPreparation>,
 ) -> Result<(), String> {
     run_service_with_adapters(
         args,
         ServiceRole::AllInOne,
         Some((managed_services, coordinator_services)),
+        Some(colocated),
     )
     .await
 }
@@ -100,6 +117,7 @@ async fn run_service_with_adapters(
         crate::ManagedServiceAdapters,
         crate::CoordinatorServiceAdapters,
     )>,
+    colocated: Option<Arc<dyn crate::ColocatedWorkerPreparation>>,
 ) -> Result<(), String> {
     awaken_credential_materializer::reject_ambient_api_key_environment()
         .map_err(|error| error.to_string())?;
@@ -164,6 +182,7 @@ async fn run_service_with_adapters(
     let local_worker = prepare_configured_local_worker(
         &mut deployment,
         role,
+        colocated.as_deref(),
         seal_key.as_ref(),
         installations.platform_workspace_before_write()?,
         process_clock.clone(),
@@ -196,10 +215,11 @@ async fn run_service_with_adapters(
 async fn prepare_configured_local_worker(
     deployment: &mut ResolvedDeployment,
     role: ServiceRole,
+    colocated: Option<&dyn crate::ColocatedWorkerPreparation>,
     seal_key: Option<&[u8; 32]>,
     workspace: Option<String>,
-    clock: std::sync::Arc<dyn awaken_time::WallClock>,
-) -> Result<Option<crate::PreparedLocalWorker>, String> {
+    clock: Arc<dyn awaken_time::WallClock>,
+) -> Result<Option<Arc<dyn crate::ColocatedWorker>>, String> {
     if !deployment.run_local_pool
         || !awaken_service_lifecycle::startup_requires(
             role.startup_role(),
@@ -208,14 +228,18 @@ async fn prepare_configured_local_worker(
     {
         return Ok(None);
     }
-    crate::acp_local_credentials::prepare_local_worker_with_workspace(
-        deployment,
-        seal_key.expect("AllInOne owns Control seal key"),
-        workspace,
-        clock,
-    )
-    .await
-    .map(Some)
+    let colocated = colocated
+        .ok_or("the AllInOne local claim pool requires the launcher's co-located Worker")?;
+    let (prepared_deployment, worker) = colocated
+        .prepare(
+            deployment.clone(),
+            *seal_key.expect("AllInOne owns Control seal key"),
+            workspace,
+            clock,
+        )
+        .await?;
+    *deployment = prepared_deployment;
+    Ok(Some(worker))
 }
 
 /// Serve a caller-configured Control process through Awaken's canonical public,
@@ -357,7 +381,7 @@ async fn serve_resolved(
     deployment: ResolvedDeployment,
     seal_key: Option<[u8; 32]>,
     role: ServiceRole,
-    prepared_worker: Option<crate::PreparedLocalWorker>,
+    prepared_worker: Option<Arc<dyn crate::ColocatedWorker>>,
     all_in_one_services: Option<(
         crate::ManagedServiceAdapters,
         crate::CoordinatorServiceAdapters,
@@ -427,14 +451,13 @@ async fn serve_prepared_process(
     deployment: ResolvedDeployment,
     role: ServiceRole,
     process: crate::PreparedProcess,
-    prepared_worker: Option<crate::PreparedLocalWorker>,
+    prepared_worker: Option<Arc<dyn crate::ColocatedWorker>>,
 ) -> Result<(), String> {
     let controller = configured_process_admin_controller(&process);
     let process_clock = process.clock.clone();
     let local_setup = process.local_setup;
     let service_lifecycle = process.service_lifecycle;
-    let prepared_worker =
-        prepared_worker.map(|prepared| prepared.with_admin_tools(process.admin_tools.clone()));
+    let admin_tools = process.admin_tools.clone();
     let public_app = process.public_router.layer(axum::middleware::from_fn(
         awaken_protocol_managed::enforce_managed_beta,
     ));
@@ -501,14 +524,12 @@ async fn serve_prepared_process(
         // Validate the reusable composition before advertising readiness. The
         // supervisor constructs a fresh incarnation from this same secret-safe
         // composition whenever registry authority is lost.
+        let upstream = worker_url
+            .clone()
+            .expect("AllInOne binds its private Worker surface");
+        let clock = process_clock.clone();
         prepared
-            .build_worker(
-                worker_url
-                    .clone()
-                    .expect("AllInOne always binds its private Worker surface"),
-                &deployment,
-                process_clock.clone(),
-            )
+            .validate(upstream, &deployment, &admin_tools, clock)
             .await?;
     }
     if role == ServiceRole::AllInOne {
@@ -605,6 +626,7 @@ async fn serve_prepared_process(
     let worker = tokio::spawn(async move {
         supervise_local_worker(
             prepared_worker,
+            admin_tools,
             worker_url,
             worker_deployment,
             worker_shutdown_rx,
@@ -778,37 +800,29 @@ fn local_worker_restart_delay(attempt: u32) -> std::time::Duration {
 }
 
 async fn supervise_local_worker(
-    prepared: crate::PreparedLocalWorker,
+    prepared: Arc<dyn crate::ColocatedWorker>,
+    admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
     upstream: String,
     deployment: ResolvedDeployment,
     mut shutdown: tokio::sync::watch::Receiver<Option<awaken_worker_contract::WorkerShutdown>>,
-    clock: std::sync::Arc<dyn awaken_time::WallClock>,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), String> {
     let mut restart_attempt = 0_u32;
     loop {
         if shutdown.borrow().is_some() {
             return Ok(());
         }
-        let worker = prepared
-            .build_worker(upstream.clone(), &deployment, clock.clone())
+        let result = prepared
+            .run_incarnation(
+                upstream.clone(),
+                &deployment,
+                &admin_tools,
+                clock.clone(),
+                shutdown.clone(),
+            )
             .await?;
-        let mut run_shutdown = shutdown.clone();
-        let result = worker
-            .run_until(async move {
-                loop {
-                    if let Some(mode) = *run_shutdown.borrow() {
-                        return Ok(mode);
-                    }
-                    run_shutdown.changed().await.map_err(|_| {
-                        Box::new(std::io::Error::other(
-                            "AllInOne Worker shutdown owner dropped",
-                        )) as Box<dyn std::error::Error + Send + Sync>
-                    })?;
-                }
-            })
-            .await;
         if shutdown.borrow().is_some() {
-            return result.map_err(|error| error.to_string());
+            return result;
         }
 
         // A distributed Worker must terminate its incarnation on authority loss.
@@ -973,6 +987,23 @@ mod tests {
         (exists, snapshot)
     }
 
+    /// The real AllInOne entry with a co-located Worker whose preparation the
+    /// continuity fence must precede: reaching it fails with its own error.
+    struct UnreachableColocatedWorker;
+
+    #[async_trait::async_trait(?Send)]
+    impl crate::ColocatedWorkerPreparation for UnreachableColocatedWorker {
+        async fn prepare(
+            &self,
+            _: ResolvedDeployment,
+            _: [u8; 32],
+            _: Option<String>,
+            _: Arc<dyn awaken_time::WallClock>,
+        ) -> Result<(ResolvedDeployment, Arc<dyn crate::ColocatedWorker>), String> {
+            Err("the continuity fence did not precede co-located Worker preparation".into())
+        }
+    }
+
     fn write_continuity_config(
         root: &std::path::Path,
         name: &str,
@@ -996,12 +1027,12 @@ mod tests {
         rule: &str,
     ) {
         let before = snapshot_tree(data_dir);
-        let runtime_error = run_service(
+        let runtime_error = run_all_in_one(
             ServiceArgs {
                 config_path: Some(config.to_path_buf()),
                 ..Default::default()
             },
-            ServiceRole::AllInOne,
+            Arc::new(UnreachableColocatedWorker),
         )
         .await
         .expect_err("invalid continuity must stop the real service entry");
@@ -1094,7 +1125,8 @@ mod tests {
     #[tokio::test]
     async fn disabled_or_split_worker_startup_has_no_local_effects() {
         // Cause/effect rules: W1 AllInOne + disabled => no preparation;
-        // W2 Control/Coordinator + either flag => no preparation (role wins).
+        // W2 Control/Coordinator + either flag => no preparation (role wins);
+        // W4 AllInOne + enabled + no co-located Worker supplied => refused.
         // Effects: no data files, ACP observations, configuration mutation, or
         // Worker returned to the registration/restart lifecycle. No seal key or
         // Workspace is supplied: reaching preparation would fail. W3 enabled
@@ -1119,6 +1151,7 @@ mod tests {
                         role,
                         None,
                         None,
+                        None,
                         awaken_time::system_clock(),
                     )
                     .await
@@ -1131,6 +1164,26 @@ mod tests {
                 assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
             }
         }
+        // W4: an enabled AllInOne pool whose launcher supplied no co-located
+        // Worker is refused before any preparation effect; only the `awaken`
+        // launcher, which links the Worker, may start that process.
+        let root = tempfile::tempdir().unwrap();
+        let mut deployment = crate::config::local_test_deployment(root.path().into());
+        deployment.run_local_pool = true;
+        let refused = prepare_configured_local_worker(
+            &mut deployment,
+            ServiceRole::AllInOne,
+            None,
+            None,
+            None,
+            awaken_time::system_clock(),
+        )
+        .await
+        .err()
+        .expect("W4 refuses without the co-located Worker");
+        assert!(refused.contains("co-located Worker"), "W4 {refused}");
+        assert!(deployment.local_acp_observations.is_empty(), "W4");
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0, "W4");
     }
 
     #[tokio::test]

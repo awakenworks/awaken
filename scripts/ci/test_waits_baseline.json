@@ -1,7 +1,7 @@
 {
   "baseline": {
     "sleep-then-assert": {
-      "crates/bin/awaken-cli/tests/sqlite_process_store_contract.rs": 1,
+      "crates/bin/awaken-process-startup/tests/sqlite_process_store_contract.rs": 1,
       "crates/bin/awaken-sandbox/tests/linux_scoped/provider.rs": 1,
       "crates/bin/awaken-worker/tests/worker_node_lifecycle.rs": 4,
       "crates/runtime/awaken-ext-mcp/src/plugin.rs": 1,
@@ -50,7 +50,7 @@
       "web/e2e/state-machine-real.spec.ts": 1
     },
     "private-wait-loop": {
-      "crates/bin/awaken-cli/tests/resource_scheduling.rs": 1,
+      "crates/bin/awaken-process-startup/tests/resource_scheduling.rs": 1,
       "crates/bin/awaken-sandbox/src/hand.rs": 1,
       "crates/bin/awaken-sandbox/tests/hand_role.rs": 1,
       "crates/bin/awaken-worker/tests/support/mod.rs": 2,

@@ -64,7 +64,7 @@ async fn app() -> Router {
     };
     AUTHORITY_INSTALLED
         .get_or_init(|| async {
-            let authority = awaken_cli::scenario_runtime_authority(
+            let authority = awaken_process_startup::scenario_runtime_authority(
                 &deployment.coordinator_storage(),
                 awaken_time::system_clock(),
             )

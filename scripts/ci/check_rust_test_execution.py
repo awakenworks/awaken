@@ -1292,8 +1292,8 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 
     @unittest.skipIf(os.name == "nt", "systemd substrate qualification belongs to Linux")
     def test_sandbox_entrypoint_requires_the_current_systemd_case(self) -> None:
-        # S1 exact CLI case executes => this substrate passes. S2 empty/renamed
-        # selection, S3 the former Coordinator owner, S4 ignored/skipped/failed
+        # S1 exact process-startup case executes => this substrate passes. S2 empty/renamed
+        # selection, S3 the former CLI owner, S4 ignored/skipped/failed
         # execution, S5 missing live-fixture opt-in => this substrate fails.
         # Run the actual entrypoint and source/list/run/deadline owners. Other
         # substrate adapters are deliberately absent, so the complete suite
@@ -1307,7 +1307,7 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
                 entrypoint = fixture / "scripts/e2e/sandbox_capability_suite.sh"
                 if case in ("former-owner", "missing-env"):
                     text = entrypoint.read_text(encoding="utf-8")
-                    old, new = (("-p awaken-cli", "-p awaken-coordinator") if case == "former-owner"
+                    old, new = (("-p awaken-process-startup", "-p awaken-cli") if case == "former-owner"
                                 else ("AWAKEN_SYSTEMD_WORKER_E2E=1 run", "run"))
                     self.assertIn(old, text)
                     entrypoint.write_text(text.replace(old, new, 1), encoding="utf-8")
@@ -1315,7 +1315,7 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 printf '%s\n' "$*" >> "$CARGO_TARGET_DIR/calls"
 [[ "$*" == *live_systemd_unit_stop_survives_adapter_reopen* ]] || exit 0
 selection="$SELECTED"
-[[ " $* " == *" -p awaken-cli "* && "$CASE" != empty ]] || selection=''
+[[ " $* " == *" -p awaken-process-startup "* && "$CASE" != empty ]] || selection=''
 [[ "$CASE" != renamed ]] || selection=renamed_systemd_case
 case "$*" in
   *--list*)
@@ -1356,8 +1356,8 @@ fi
                 self.assertEqual(f"FAIL: {label}" in output, case != "passing", output)
                 calls = (fixture / "target/calls").read_text().splitlines()
                 if case == "passing":
-                    self.assertIn(f"test --locked -p awaken-cli --lib {selected} -- --exact --list", calls)
-                    self.assertIn(f"test --locked -p awaken-cli --lib {selected} -- --exact --show-output", calls)
+                    self.assertIn(f"test --locked -p awaken-process-startup --lib {selected} -- --exact --list", calls)
+                    self.assertIn(f"test --locked -p awaken-process-startup --lib {selected} -- --exact --show-output", calls)
                 elif case in ("empty", "former-owner"):
                     self.assertIn("required selection is empty", output)
                 elif case == "renamed":

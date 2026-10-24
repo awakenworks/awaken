@@ -1,5 +1,5 @@
 // @formal surface exclude=test_only
-// @formal owner crates/bin/awaken-cli/src/runtime_process_router.rs
+// @formal owner crates/bin/awaken-process-startup/src/runtime_process_router.rs
 // @formal reason: Route-inventory oracle included only under cfg(test); it probes the assembled
 // @formal reason: process with TRACE and owns no production authorization decision.
 //! Route inventory of the assembled runtime process.

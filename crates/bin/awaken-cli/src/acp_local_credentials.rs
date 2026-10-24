@@ -10,7 +10,7 @@ use awaken_time::WallClock;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-pub use awaken_acp_application::AcpLocalCredentialResolver;
+use awaken_acp_application::AcpLocalCredentialResolver;
 use awaken_acp_application::{
     AcpCapabilityNegotiator, AcpDiscovery, AcpHostDiscovery, AcpHostObservation,
     AcpWrapperInstaller, LocalAcpPreparation, prepare_host_acp_with,
@@ -39,18 +39,17 @@ pub struct PreparedLocalWorker {
 /// discovery enriches its manifest when applicable; Native and A2A execution use
 /// the same WorkerNode when no local ACP CLI exists.
 pub async fn prepare_local_worker(
-    deployment: &mut crate::config::ResolvedDeployment,
+    deployment: &mut awaken_process_startup::config::ResolvedDeployment,
     seal_key: &[u8; 32],
     clock: Arc<dyn WallClock>,
 ) -> Result<PreparedLocalWorker, String> {
-    let installations =
-        crate::installation_binding::verify_deployment_installations(deployment).await?;
+    let installations = awaken_process_startup::verify_deployment_installations(deployment).await?;
     let workspace = installations.platform_workspace_before_write()?;
     prepare_local_worker_with_workspace(deployment, seal_key, workspace, clock).await
 }
 
 pub(crate) async fn prepare_local_worker_with_workspace(
-    deployment: &mut crate::config::ResolvedDeployment,
+    deployment: &mut awaken_process_startup::config::ResolvedDeployment,
     seal_key: &[u8; 32],
     workspace: Option<String>,
     clock: Arc<dyn WallClock>,
@@ -79,11 +78,15 @@ pub(crate) async fn prepare_local_worker_with_workspace(
     Ok(worker)
 }
 
-fn uses_trusted_local_identity(deployment: &crate::config::ResolvedDeployment) -> bool {
-    deployment.mode == crate::config::OperatingMode::Local
+fn uses_trusted_local_identity(
+    deployment: &awaken_process_startup::config::ResolvedDeployment,
+) -> bool {
+    deployment.mode == awaken_process_startup::config::OperatingMode::Local
 }
 
-fn uses_host_acp_discovery(deployment: &crate::config::ResolvedDeployment) -> bool {
+fn uses_host_acp_discovery(
+    deployment: &awaken_process_startup::config::ResolvedDeployment,
+) -> bool {
     uses_trusted_local_identity(deployment)
         && deployment
             .configured_acp_clis
@@ -100,18 +103,17 @@ fn uses_host_acp_discovery(deployment: &crate::config::ResolvedDeployment) -> bo
 /// locators idempotently, and configure the one liveness resolver. Server mode
 /// deliberately does none of this.
 pub async fn prepare_local_acp(
-    deployment: &mut crate::config::ResolvedDeployment,
+    deployment: &mut awaken_process_startup::config::ResolvedDeployment,
     seal_key: &[u8; 32],
     clock: Arc<dyn WallClock>,
 ) -> Result<Option<PreparedLocalAcp>, String> {
-    let installations =
-        crate::installation_binding::verify_deployment_installations(deployment).await?;
+    let installations = awaken_process_startup::verify_deployment_installations(deployment).await?;
     let workspace = installations.platform_workspace_before_write()?;
     prepare_local_acp_with_workspace(deployment, seal_key, workspace, clock).await
 }
 
 async fn prepare_local_acp_with_workspace(
-    deployment: &mut crate::config::ResolvedDeployment,
+    deployment: &mut awaken_process_startup::config::ResolvedDeployment,
     seal_key: &[u8; 32],
     workspace: Option<String>,
     clock: Arc<dyn WallClock>,
@@ -145,7 +147,7 @@ async fn prepare_local_acp_with_workspace(
 
 fn configured_worker_upstream(
     upstream: impl Into<String>,
-    deployment: &crate::config::ResolvedDeployment,
+    deployment: &awaken_process_startup::config::ResolvedDeployment,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<awaken_worker_transport_security::WorkerUpstream, String> {
     awaken_worker::worker_upstream(
@@ -158,7 +160,7 @@ fn configured_worker_upstream(
 
 fn configured_worker_builder(
     upstream: impl Into<String>,
-    deployment: &crate::config::ResolvedDeployment,
+    deployment: &awaken_process_startup::config::ResolvedDeployment,
     credentials: awaken_credential_materializer::PinnedCredentialMaterializer,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<awaken_worker::WorkerNodeBuilder, String> {
@@ -185,7 +187,9 @@ fn configured_worker_builder(
                 credentials.clone(),
             ),
         ))
-        .with_remote_attempt_executor(crate::a2a_attempt_executor(Some(credentials.clone())))
+        .with_remote_attempt_executor(awaken_process_startup::a2a_attempt_executor(Some(
+            credentials.clone(),
+        )))
         .with_hand_executor_factory(awaken_tool_relay::relay_hand_executor_factory())
         .with_credential_materializer(credentials)
         .with_graceful_drain(std::time::Duration::from_secs(worker.drain_grace_secs))
@@ -203,7 +207,7 @@ fn configured_worker_builder(
 }
 
 async fn prepare_local_acp_with(
-    deployment: &mut crate::config::ResolvedDeployment,
+    deployment: &mut awaken_process_startup::config::ResolvedDeployment,
     discovery: Arc<dyn AcpDiscovery>,
     installer: Arc<dyn AcpWrapperInstaller>,
     negotiator: Arc<dyn AcpCapabilityNegotiator>,
@@ -260,7 +264,7 @@ impl PreparedLocalAcp {
     pub async fn build_worker(
         self,
         upstream: impl Into<String>,
-        deployment: &crate::config::ResolvedDeployment,
+        deployment: &awaken_process_startup::config::ResolvedDeployment,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<awaken_worker::WorkerNode, String> {
         let resolver = self.resolver;
@@ -297,7 +301,7 @@ impl PreparedLocalWorker {
     pub async fn build_worker(
         &self,
         upstream: impl Into<String>,
-        deployment: &crate::config::ResolvedDeployment,
+        deployment: &awaken_process_startup::config::ResolvedDeployment,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<awaken_worker::WorkerNode, String> {
         let credentials = awaken_credential_materializer::PinnedCredentialMaterializer::new(
@@ -413,7 +417,10 @@ mod tests {
         // projection fails before a WorkerNode can start. Decision rules W1-W3
         // cover each posture at the single WorkerUpstream construction boundary.
         let directory = tempfile::tempdir().unwrap();
-        let mut deployment = crate::config::local_test_deployment(directory.path().into());
+        let mut deployment = awaken_process_startup::config::local_test_deployment_at(
+            directory.path().into(),
+            awaken_time::system_clock(),
+        );
         let unsigned = configured_worker_upstream(
             "http://coordinator",
             &deployment,
@@ -586,7 +593,10 @@ mod tests {
             b"SQLite format 3\0truncated",
         )
         .unwrap();
-        let mut deployment = crate::config::local_test_deployment(directory.path().into());
+        let mut deployment = awaken_process_startup::config::local_test_deployment_at(
+            directory.path().into(),
+            awaken_time::system_clock(),
+        );
         deployment.expected_platform_workspace_id = Some("workspace_expected".into());
         let snapshot = || {
             std::fs::read_dir(directory.path())
@@ -917,7 +927,10 @@ mod tests {
         // Decision table: W1 C1&&!C2 -> E1+E2+E3+E4. The C1+C2 row is owned by the
         // startup-discovery test below and adds exact ACP observations to this base.
         let directory = tempfile::tempdir().unwrap();
-        let mut deployment = crate::config::local_test_deployment(directory.path().into());
+        let mut deployment = awaken_process_startup::config::local_test_deployment_at(
+            directory.path().into(),
+            awaken_time::system_clock(),
+        );
         deployment.runtime.disable_local_pool = true;
         deployment.run_local_pool = false;
         let prepared = PreparedLocalWorker {
@@ -978,7 +991,10 @@ mod tests {
         // P3 missing rows       -> diagnostics only, no route or binding
         // P4 explicitly unselected detected row -> diagnostic only, no acquisition
         let directory = tempfile::tempdir().unwrap();
-        let mut deployment = crate::config::local_test_deployment(directory.path().into());
+        let mut deployment = awaken_process_startup::config::local_test_deployment_at(
+            directory.path().into(),
+            awaken_time::system_clock(),
+        );
         deployment.configured_acp_clis = Some(vec!["codex".to_string()]);
         deployment.runtime.acp = Some(
             awaken_acp_contract::AcpWorkerProfile::new(
@@ -1133,7 +1149,10 @@ mod tests {
         // I3 Local + Docker   -> discovery; Provider retains Docker
         // I4 Server + Workdir -> no personal identity startup
         let directory = tempfile::tempdir().unwrap();
-        let mut deployment = crate::config::local_test_deployment(directory.path().into());
+        let mut deployment = awaken_process_startup::config::local_test_deployment_at(
+            directory.path().into(),
+            awaken_time::system_clock(),
+        );
         deployment.runtime.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
         assert!(uses_trusted_local_identity(&deployment), "I1");
 
@@ -1143,7 +1162,7 @@ mod tests {
         assert!(uses_trusted_local_identity(&deployment), "I3");
 
         deployment.runtime.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
-        deployment.mode = crate::config::OperatingMode::Server;
+        deployment.mode = awaken_process_startup::config::OperatingMode::Server;
         assert!(!uses_trusted_local_identity(&deployment), "I4");
     }
 
@@ -1197,7 +1216,10 @@ mod tests {
         // F1 install succeeds -> route/binding (covered by startup test above)
         // F2 install fails    -> diagnostic only, no executable route
         let directory = tempfile::tempdir().unwrap();
-        let mut deployment = crate::config::local_test_deployment(directory.path().into());
+        let mut deployment = awaken_process_startup::config::local_test_deployment_at(
+            directory.path().into(),
+            awaken_time::system_clock(),
+        );
         let observations = awaken_run_executor_acp::known_acp_clis()
             .iter()
             .map(|cli| {
@@ -1282,6 +1304,8 @@ mod tests {
         assert!(text.contains("codex") && text.contains("login_required"));
     }
 }
+
+#[cfg(test)]
 #[test]
 fn host_discovery_is_limited_to_host_backed_sandbox_tiers() {
     // Cause/effect table: D1 Local/Namespace + default or nonempty ACP list
@@ -1290,7 +1314,10 @@ fn host_discovery_is_limited_to_host_backed_sandbox_tiers() {
     // list. An empty selection must not invoke discover_all before filtering:
     // some installed CLI launchers bootstrap packages even for --version.
     let directory = tempfile::tempdir().unwrap();
-    let mut deployment = crate::config::local_test_deployment(directory.path().into());
+    let mut deployment = awaken_process_startup::config::local_test_deployment_at(
+        directory.path().into(),
+        awaken_time::system_clock(),
+    );
     for tier in [
         awaken_deployment_config::SandboxTier::Local,
         awaken_deployment_config::SandboxTier::Namespace,
