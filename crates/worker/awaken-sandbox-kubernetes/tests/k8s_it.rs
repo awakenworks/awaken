@@ -836,6 +836,16 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
     .await
     .expect("KTR1 wait for retained marker write");
     assert_eq!(marker.code, Some(0), "KTR1 retained marker write");
+    let term_handler = pc::Sandbox::spawn(
+        first_environment.as_ref(),
+        pc::Command::new(k8s_common::AWAIT_PID1_CATCHES_TERM),
+    )
+    .await
+    .expect("KTR1 observe the keepalive as PID 1")
+    .wait()
+    .await
+    .expect("KTR1 wait for the PID 1 observation");
+    assert_eq!(term_handler.code, Some(0), "KTR1 PID 1 catches TERM");
     let terminator = pc::Sandbox::spawn(
         first_environment.as_ref(),
         pc::Command::new(["sh", "-c", "kill -TERM 1"]),
@@ -984,6 +994,18 @@ async fn terminal_control_pod_is_cleaned_without_reopening_live_control() {
         .sandbox_control_incarnation
         .clone();
     assert!(recorded_control.is_some(), "KC1 exact control identity");
+    // Create returns before the projection gate hands PID 1 to the keepalive;
+    // a TERM sent to the gate is discarded. Observe the handler first.
+    let term_handler = pc::Sandbox::spawn(
+        original.as_ref(),
+        pc::Command::new(k8s_common::AWAIT_PID1_CATCHES_TERM),
+    )
+    .await
+    .expect("KC1 observe the keepalive as PID 1")
+    .wait()
+    .await
+    .expect("KC1 wait for the PID 1 observation");
+    assert_eq!(term_handler.code, Some(0), "KC1 PID 1 catches TERM");
     let process = pc::Sandbox::spawn(
         original.as_ref(),
         pc::Command::new(["sh", "-c", "kill -TERM 1"]),
@@ -1999,7 +2021,20 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
     // latter would leave a legitimate unobserved-exec quiescence debt when
     // PID 1 dies before its status frame. KPV6 tests the independent Rebuild
     // DELETE versus terminal-cleanup race, while the exec-status unit rows
-    // retain the fail-closed unknown-status outcome.
+    // retain the fail-closed unknown-status outcome. The fault must reach the
+    // keepalive, not the projection gate that still holds PID 1 right after
+    // create and discards TERM.
+    let term_handler = fault_runtime
+        .spawn(
+            awaken_sandbox_container::AdmittedExec::unrecorded(&pod_name),
+            pc::MaterializedCommand::new(k8s_common::AWAIT_PID1_CATCHES_TERM),
+        )
+        .await
+        .expect("KPV6 observe the keepalive as PID 1")
+        .wait()
+        .await
+        .expect("KPV6 wait for the PID 1 observation");
+    assert_eq!(term_handler.code, Some(0), "KPV6 PID 1 catches TERM");
     let terminator = fault_runtime
         .spawn(
             awaken_sandbox_container::AdmittedExec::unrecorded(&pod_name),
