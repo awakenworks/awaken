@@ -630,5 +630,53 @@
     "log_sha256": "78e390958169982e48ceecd986134c09f33e8fe07efbdb2070a8265d31727d59",
     "historical": false,
     "entry_sha256": "95d1c34c3426a23769c7fa23a62db56fbf10bedc5af580a1a84d6ccc9e341aab"
+  },
+  {
+    "id": "E40",
+    "receipt": "target/session-acceptance-evidence/E40/receipt.json",
+    "receipt_sha256": "4d96a11c17f0175539aeaba03371599560ec5d3f8ac4bd24d704538514ca50c9",
+    "source": {
+      "head": "ee1dbae1e65f7ddff997ad0f4b9ceb52d0eb8cce",
+      "dirty_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "Component L1 product-gap fixes re-executed on native Windows (nextest, package-scoped) at the fix commits rebased on origin/main ca7893f6df",
+    "argv": [
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--no-fail-fast",
+      "-p",
+      "awaken-session-application",
+      "-p",
+      "awaken-protocol-managed",
+      "-p",
+      "awaken-worker",
+      "-p",
+      "awaken-credential-materializer",
+      "-p",
+      "awaken-control",
+      "-p",
+      "awaken-session-environment",
+      "-E",
+      "(package(=awaken-session-application) & test(/pre_activation|budget_resume|ownership_rejection|admission_boundaries/)) | (package(=awaken-protocol-managed) & test(/reply_coordinates|admission_boundaries/)) | (package(=awaken-worker) & test(/restore_capability/)) | (package(=awaken-credential-materializer) & test(/binding_matrix/)) | (package(=awaken-control) & test(/diagnostics_tests/)) | (package(=awaken-session-environment) & test(/foreign_instance/))"
+    ],
+    "environment_names": [
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "CARGO_TARGET_DIR",
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 325.0,
+    "executed_count": 28,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "614dd007ed3753951cabf770d532f57641bdbc29ef35bc8efd5135f1349a1545",
+    "historical": false,
+    "entry_sha256": "fb15b3bfbaa7ae347887052309dc361c3f7caec89bca55f5a75c4b41a37036c4"
   }
 ]

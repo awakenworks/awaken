@@ -54,8 +54,8 @@
           ]
         },
         "product_gap": {
-          "reason": "activity CAS 失败后返回错误但不释放 reserve，修复路径 RecoverOrAdmit 之后会接纳调用方已见失败的 Run",
-          "follow_up": "session-application run admission：失败时释放或标记 reserve（M）",
+          "reason": "activity CAS 失败后返回错误但不释放 reserve，修复路径 RecoverOrAdmit 之后会接纳调用方已见失败的 Run。需设计决定：失败的 Session store 无法写入释放标记，释放需在 CoordinationRuntime/dispatch store 新增 reserve 释放端口；而 Unavailable 当前语义可重试，Z3 已证明同一操作重试会复用该 reserve，两者须先由 ADR 裁定",
+          "follow_up": "session-execution-contract + runtime dispatch：裁定 CAS 失败是否为确定性拒绝；若是，新增 reserve 释放端口并在失败时调用（M）",
           "reproducers": [
             "failed_activity_cas_releases_its_reservation_before_reporting_failure"
           ]
@@ -724,11 +724,10 @@
           ]
         },
         "product_gap": {
-          "reason": "协议入口按确切坐标拒绝，但 application 追加入口不校验 ticket 坐标，且无版本的新回复被接受、执行器 fence 跳过版本检查",
-          "follow_up": "session-application 追加入口校验已提交 ticket，执行器 fence 拒绝缺版本的新回复（S–M）",
+          "reason": "协议入口按确切坐标拒绝，但 application 追加入口不校验 ticket 坐标（伪造 Run/Thread 坐标仍被保留）。缺版本的新回复现已在编译阶段以 event_tool_reply_coordinate_invalid 拒绝",
+          "follow_up": "session-application 追加入口按已提交 ticket 校验 Run/Thread/correlation 坐标；需同时为 event_batches 测试替身提供已提交 ticket（M）",
           "reproducers": [
-            "application_append_rejects_forged_reply_coordinates",
-            "application_append_rejects_version_less_new_reply"
+            "application_append_rejects_forged_reply_coordinates"
           ]
         }
       },
@@ -827,7 +826,7 @@
           "B135",
           "B136"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -845,14 +844,6 @@
           "unaccepted": [
             "L2 real adapters and process crash are separate scenarios",
             "T35 platform gate open"
-          ]
-        },
-        "product_gap": {
-          "reason": "所有编译类拒绝共用 invalid_request，分类只能靠文案；aggregate 入口接受指向未知 child 的 Interrupt（协议入口会拒绝）",
-          "follow_up": "session-application：分配稳定错误码，并把线程拓扑校验放进 aggregate 接纳（S + M）",
-          "reproducers": [
-            "compile_rejections_carry_distinct_stable_codes",
-            "interrupt_of_unknown_child_target_is_rejected_without_effect"
           ]
         }
       },
@@ -1082,10 +1073,9 @@
           ]
         },
         "product_gap": {
-          "reason": "提高额度后恢复会转发所有 ticket，不只 BudgetReached；被预算拒绝的绕过 Run 保留 reserve，提额后修复路径会接纳它",
-          "follow_up": "session-application：按 BudgetReached 过滤恢复 ticket（S），拒绝时释放 reserve（M）",
+          "reason": "被预算拒绝的绕过 Run 保留 reserve，提额后修复路径会接纳它。需与 T07-C01 相同的 reserve 释放端口设计决定；恢复 ticket 现已按 BudgetReached 过滤",
+          "follow_up": "随 T07-C01 的 reserve 释放端口一起处理：预算拒绝时释放 reserve（M）",
           "reproducers": [
-            "raised_budget_resumes_only_budget_reached_tickets",
             "budget_rejected_bypass_run_is_not_admitted_by_repair_after_raise"
           ]
         }

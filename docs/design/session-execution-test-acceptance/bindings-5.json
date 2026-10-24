@@ -481,21 +481,45 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 442,
-        "file_sha256": "90e4940a216718d5c35df258b5ccfd1c339bd08f08eaf8d9be43b0975ef5a043"
+        "line": 441,
+        "file_sha256": "479424ef96fc6177b3472c9a878a09b236629b0b46b402c598cb8003286a1783"
       }
     ],
-    "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "execution_witnesses": [
+      {
+        "evidence": "E40",
+        "case": "awaken-protocol-managed state::events::tests::reply_coordinates::application_append_rejects_version_less_new_reply",
+        "package": "awaken-protocol-managed",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "ee1dbae1e65f7ddff997ad0f4b9ceb52d0eb8cce",
+        "historical": false,
+        "log_sha256": "614dd007ed3753951cabf770d532f57641bdbc29ef35bc8efd5135f1349a1545"
+      }
+    ],
+    "relation": "covers_case_clauses",
     "covers": {
       "T11-C02": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: a new reply without thread version is accepted and the executor fence skips the version check",
-    "limitation": "Not execution evidence. Follow-up: session-application admission plus session-executor fence (S-M)",
-    "id": "B128"
+    "review": "Builds the exact admitted reply, strips its Thread version and Awaiting commit at the application boundary, and asserts the append is refused with zero facts and zero drive.",
+    "limitation": null,
+    "id": "B128",
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 448
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 452
+      }
+    ]
   },
   {
     "name": "invalid_batches_are_classified_and_have_zero_effect",

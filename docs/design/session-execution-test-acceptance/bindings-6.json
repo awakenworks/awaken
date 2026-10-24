@@ -203,42 +203,90 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
-        "line": 362,
-        "file_sha256": "01a923ba4c5ed7b16d891c1dbb29f6311ad491e9643aaf0c75ce7236495f9021"
+        "line": 361,
+        "file_sha256": "3cf576e93784d161622a05fec6c3ca68608f370d457cb5e8609c0fa9c5272d40"
       }
     ],
-    "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "execution_witnesses": [
+      {
+        "evidence": "E40",
+        "case": "awaken-session-application tests::event_batches::admission_boundaries::compile_rejections_carry_distinct_stable_codes",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "ee1dbae1e65f7ddff997ad0f4b9ceb52d0eb8cce",
+        "historical": false,
+        "log_sha256": "614dd007ed3753951cabf770d532f57641bdbc29ef35bc8efd5135f1349a1545"
+      }
+    ],
+    "relation": "covers_case_clauses",
     "covers": {
       "T12-C01": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: every compile rejection maps to code invalid_request",
-    "limitation": "Not execution evidence. Follow-up: session-application event-batch error codes (S)",
-    "id": "B135"
+    "review": "Runs each compile-class rejection through the production root-CAS admission and asserts a distinct stable code per class that is never the generic invalid_request.",
+    "limitation": null,
+    "id": "B135",
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "line": 380
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "line": 385
+      }
+    ]
   },
   {
     "name": "interrupt_of_unknown_child_target_is_rejected_without_effect",
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
-        "line": 394,
-        "file_sha256": "01a923ba4c5ed7b16d891c1dbb29f6311ad491e9643aaf0c75ce7236495f9021"
+        "line": 392,
+        "file_sha256": "3cf576e93784d161622a05fec6c3ca68608f370d457cb5e8609c0fa9c5272d40"
       }
     ],
-    "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "execution_witnesses": [
+      {
+        "evidence": "E40",
+        "case": "awaken-session-application tests::event_batches::admission_boundaries::interrupt_of_unknown_child_target_is_rejected_without_effect",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "ee1dbae1e65f7ddff997ad0f4b9ceb52d0eb8cce",
+        "historical": false,
+        "log_sha256": "614dd007ed3753951cabf770d532f57641bdbc29ef35bc8efd5135f1349a1545"
+      }
+    ],
+    "relation": "covers_case_clauses",
     "covers": {
       "T12-C01": {
-        "oracles": [],
+        "oracles": [
+          1
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: the aggregate entrypoint accepts an Interrupt aimed at an unknown child",
-    "limitation": "Not execution evidence. Follow-up: session-application topology check in aggregate admission (M)",
-    "id": "B136"
+    "review": "Appends an Interrupt naming an unlinked Child thread through the aggregate entrypoint and asserts refusal with a byte-equal root.",
+    "limitation": null,
+    "id": "B136",
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "line": 414
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "line": 418
+      }
+    ]
   },
   {
     "name": "raised_budget_resumes_only_the_original_run_once_with_stable_identity",
@@ -345,21 +393,45 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 369,
-        "file_sha256": "4d23d4dd68d155c0997208473837a8011a0e6b907034b52ac4d37e006e3b5214"
+        "line": 368,
+        "file_sha256": "829bf259a89df842c720387b89039e36ccde69932c4cc4619f333933da0fc559"
       }
     ],
-    "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "execution_witnesses": [
+      {
+        "evidence": "E40",
+        "case": "awaken-session-application tests::authority::budget_resume::raised_budget_resumes_only_budget_reached_tickets",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "ee1dbae1e65f7ddff997ad0f4b9ceb52d0eb8cce",
+        "historical": false,
+        "log_sha256": "614dd007ed3753951cabf770d532f57641bdbc29ef35bc8efd5135f1349a1545"
+      }
+    ],
+    "relation": "covers_case_clauses",
     "covers": {
       "T13-C03": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: budget resume forwards every resume ticket without filtering to BudgetReached",
-    "limitation": "Not execution evidence. Follow-up: session-application update resume_budget_pauses (S)",
-    "id": "B139"
+    "review": "Raises the budget with one BudgetReached and one Manual pause ticket and asserts only the BudgetReached Run is resumed.",
+    "limitation": null,
+    "id": "B139",
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
+        "line": 389
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
+        "line": 397
+      }
+    ]
   },
   {
     "name": "budget_rejected_bypass_run_is_not_admitted_by_repair_after_raise",
@@ -540,21 +612,49 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/binding_matrix.rs",
-        "line": 484,
-        "file_sha256": "211ee5fa3624ab84fb8693c0296c9c43e3039648d79a7a6e7c280d1e574153ee"
+        "line": 483,
+        "file_sha256": "b8aeafba5c0cd566f57b6b8e7416f376b0f821c356087e9794335a92b24e9cb4"
       }
     ],
-    "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "execution_witnesses": [
+      {
+        "evidence": "E40",
+        "case": "awaken-credential-materializer tests::binding_matrix::binding_matrix_holder_dimension_has_its_recipient_classification",
+        "package": "awaken-credential-materializer",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "ee1dbae1e65f7ddff997ad0f4b9ceb52d0eb8cce",
+        "historical": false,
+        "log_sha256": "614dd007ed3753951cabf770d532f57641bdbc29ef35bc8efd5135f1349a1545"
+      }
+    ],
+    "relation": "covers_case_clauses",
     "covers": {
       "T15-C01": {
-        "oracles": [],
+        "oracles": [
+          1
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: the public resolve maps HolderNotAllowed to retryable Unavailable",
-    "limitation": "Not execution evidence. Follow-up: credential-materializer public error mapping (S)",
-    "id": "B144"
+    "review": "Runs the holder-dimension cell through the public resolve entrypoint and asserts RecipientMismatch with zero plaintext reads.",
+    "limitation": null,
+    "id": "B144",
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/binding_matrix.rs",
+        "line": 489
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/binding_matrix.rs",
+        "line": 492
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/binding_matrix.rs",
+        "line": 493
+      }
+    ]
   },
   {
     "name": "restore_capability_pairing_and_ordinary_mode_hold_and_late_option_discovery_is_detected",
