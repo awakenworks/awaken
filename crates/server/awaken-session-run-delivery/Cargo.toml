@@ -1,0 +1,34 @@
+[package]
+name = "awaken-session-run-delivery"
+description = "How a Coordinator delivers a Session's Runs to their Workers and observes them settle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "shared"
+product = "platform"
+bounded_context = "execution"
+layer = "application"
+authority = "session-run-delivery"
+separation = "sole-in-layer"
+
+# The Coordinator half of Run delivery that needs no execution machinery. It
+# links no Session realization, Sandbox or credential realization, so the
+# Coordinator process composes it without the Worker-side executor.
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-dispatch-contract.workspace = true
+awaken-session-execution-contract.workspace = true
+awaken-session-types.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+awaken-store-inmem.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
+
+[lints]
+workspace = true

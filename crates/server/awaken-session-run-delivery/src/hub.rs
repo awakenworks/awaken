@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 
-use crate::session_execution_error::ExecutorLock;
+use crate::DeliveryLock;
 use std::sync::Mutex;
 
 use awaken_agent_contract::agent::message::Message;
@@ -71,11 +71,11 @@ impl ThreadEventHub {
     /// |---|---|---|---|
     /// | H1 | healthy  | a receiver of later events   | delivered to attached receivers |
     /// | H2 | poisoned | refused (`session_executor_lock_poisoned`) | dropped and reported |
-    fn sender(&self, thread_key: &str) -> Result<broadcast::Sender<ThreadEvent>, ExecutorLock> {
+    fn sender(&self, thread_key: &str) -> Result<broadcast::Sender<ThreadEvent>, DeliveryLock> {
         Ok(self
             .channels
             .lock()
-            .map_err(|_| ExecutorLock::ThreadEventHub)?
+            .map_err(|_| DeliveryLock::ThreadEventHub)?
             .entry(thread_key.to_string())
             .or_insert_with(|| broadcast::channel(HUB_CAPACITY).0)
             .clone())
@@ -87,7 +87,7 @@ impl ThreadEventHub {
     pub fn subscribe(
         &self,
         thread_key: &str,
-    ) -> Result<broadcast::Receiver<ThreadEvent>, ExecutorLock> {
+    ) -> Result<broadcast::Receiver<ThreadEvent>, DeliveryLock> {
         Ok(self.sender(thread_key)?.subscribe())
     }
 
@@ -98,7 +98,7 @@ impl ThreadEventHub {
                 let _ = sender.send(event);
             }
             Err(error) => tracing::error!(
-                code = crate::session_execution_error::EXECUTOR_LOCK_POISONED_CODE,
+                code = crate::LOCK_POISONED_CODE,
                 %error,
                 "live Thread event dropped"
             ),
@@ -108,12 +108,12 @@ impl ThreadEventHub {
     /// Open the neutral Session-contract view over this same channel. This is a
     /// wrapper, not a second fan-out path: committed/launch observations are
     /// skipped and only `ThreadEvent::Live` crosses the port.
-    pub(crate) fn live_subscription(
+    pub fn live_subscription(
         &self,
         thread_key: &str,
     ) -> Result<
         Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>,
-        ExecutorLock,
+        DeliveryLock,
     > {
         Ok(Box::new(HubLiveSubscription {
             receiver: self.subscribe(thread_key)?,
@@ -162,15 +162,15 @@ mod tests {
     fn a_poisoned_channel_map_refuses_subscribers_and_drops_publications() {
         // Row H2 of `ThreadEventHub::sender`.
         let hub = ThreadEventHub::new();
-        crate::session_execution_error::poison_for_test(&hub.channels);
+        crate::poison_for_test(&hub.channels);
         assert!(
-            matches!(hub.subscribe("t1"), Err(ExecutorLock::ThreadEventHub)),
+            matches!(hub.subscribe("t1"), Err(DeliveryLock::ThreadEventHub)),
             "H2 subscribe"
         );
         assert!(
             matches!(
                 hub.live_subscription("t1"),
-                Err(ExecutorLock::ThreadEventHub)
+                Err(DeliveryLock::ThreadEventHub)
             ),
             "H2 live subscription"
         );

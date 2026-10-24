@@ -111,15 +111,17 @@ pub use awaken_dispatch_contract::{
     SessionRunReservationResolutionRequest, SettleRequest, StreamEventRequest,
     StreamObservationRequest, WorkerIdentityRequest,
 };
-pub use awaken_dispatch_contract::{ClaimedStreamPublisher, SessionContinuationOutbox};
+pub use awaken_dispatch_contract::{
+    ClaimedStreamPublisher, CompletionSink, SessionContinuationOutbox,
+};
 pub use awaken_dispatch_execution::{AnyDispatchStore, Dispatch};
 pub use awaken_dispatch_execution::{
-    ClaimedCommitCoordinator, ClaimedModelRequestGateFactory, ClaimedRunCommit, CompletionSink,
-    ControlDispatch, DEFAULT_LEASE_MS, DispatchPool, DispatchReconciler, DispatchService,
-    DispatchServiceConfig, DispatchWorker, FencedStreamCheckpointStore, GuardedRunCommit,
-    InferenceMaterializerFn, LiveRunControlError, LiveRunControlService, LocalWakeSignal,
-    PoolDrainFence, RecoveryProjection, RecoveryProjectionError, TerminalReconciliationScan,
-    WorkerResolver, claim_bound_ownership_verifier, publish_dispatch_hint,
+    ClaimedCommitCoordinator, ClaimedModelRequestGateFactory, ClaimedRunCommit, ControlDispatch,
+    DEFAULT_LEASE_MS, DispatchPool, DispatchReconciler, DispatchService, DispatchServiceConfig,
+    DispatchWorker, FencedStreamCheckpointStore, GuardedRunCommit, InferenceMaterializerFn,
+    LiveRunControlError, LiveRunControlService, LocalWakeSignal, PoolDrainFence,
+    RecoveryProjection, RecoveryProjectionError, TerminalReconciliationScan, WorkerResolver,
+    claim_bound_ownership_verifier, publish_dispatch_hint,
 };
 pub use dispatch::{
     AttemptAcknowledgementRecord, AttemptAdmission, AttemptClosureEvent, AttemptClosurePage,

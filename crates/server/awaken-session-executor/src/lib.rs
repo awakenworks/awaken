@@ -55,7 +55,6 @@ mod session_effects;
 #[cfg(test)]
 mod environment_effects;
 mod host;
-mod hub;
 mod inference_routing;
 mod installed_session;
 mod judge;
@@ -137,7 +136,6 @@ pub use crate::host::{
     SessionApplicationBindingError, SessionApplicationBindings, SessionExecutionDependencies,
     SessionExecutionProcess, SessionExecutorBuilder, TrustedHostPolicy, WarmPool,
 };
-pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
 use awaken_credential_contract::CredentialRefreshFactory;
 use awaken_credential_materializer::PinnedCredentialMaterializer;
@@ -147,6 +145,7 @@ pub(crate) use awaken_deployment_config::{
 use awaken_resource_contract::FileContentSource;
 #[cfg(test)]
 use awaken_resource_contract::RepositoryBindingVerifier;
+pub(crate) use awaken_session_run_delivery::{ThreadEvent, ThreadEventHub};
 pub(crate) use managed_input_projection::session_system_message;
 #[cfg(test)]
 pub(crate) use managed_input_projection::user_message;

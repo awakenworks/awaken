@@ -3026,6 +3026,7 @@ dependencies = [
  "awaken-session-executor-testkit",
  "awaken-session-realization-contract",
  "awaken-session-repository-contract",
+ "awaken-session-run-delivery",
  "awaken-session-store",
  "awaken-session-types",
  "awaken-tenancy",
@@ -3327,6 +3328,7 @@ dependencies = [
  "awaken-session-realization-contract",
  "awaken-session-realization-driver",
  "awaken-session-repository-contract",
+ "awaken-session-run-delivery",
  "awaken-session-state-contract",
  "awaken-session-store",
  "awaken-session-types",
@@ -3514,6 +3516,21 @@ dependencies = [
  "awaken-session-state-contract",
  "awaken-session-types",
  "tokio",
+]
+
+[[package]]
+name = "awaken-session-run-delivery"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-dispatch-contract",
+ "awaken-session-execution-contract",
+ "awaken-session-types",
+ "awaken-store-inmem",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

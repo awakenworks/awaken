@@ -204,6 +204,7 @@ awaken-dispatch = { path = "crates/server/awaken-dispatch", default-features = f
 awaken-dispatch-testkit = { path = "crates/server/awaken-dispatch-testkit" }
 awaken-worker-transport-security = { path = "crates/server/awaken-worker-transport-security" }
 awaken-session-executor = { path = "crates/server/awaken-session-executor", default-features = false }
+awaken-session-run-delivery = { path = "crates/server/awaken-session-run-delivery" }
 awaken-dispatch-http = { path = "crates/server/awaken-dispatch-http" }
 awaken-resource-worker-http = { path = "crates/resources/awaken-resource-worker-http" }
 awaken-coordinator-client = { path = "crates/server/awaken-coordinator-client" }

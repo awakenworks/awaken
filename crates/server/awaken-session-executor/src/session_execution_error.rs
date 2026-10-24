@@ -184,10 +184,6 @@ pub enum ExecutorLock {
     ToolAdmission,
     #[error("Skill catalog cache lock poisoned")]
     SkillCatalogCache,
-    #[error("foreground completion registry lock poisoned")]
-    CompletionRegistry,
-    #[error("Thread event hub lock poisoned")]
-    ThreadEventHub,
     #[error("captured Memory writes lock poisoned")]
     CapturedMemoryWrites,
 }
@@ -202,8 +198,9 @@ pub(crate) fn poison_for_test<T>(lock: &std::sync::Mutex<T>) {
     assert!(lock.is_poisoned());
 }
 
-/// Stable code of every [`ExecutorLock`] refusal.
-pub const EXECUTOR_LOCK_POISONED_CODE: &str = "session_executor_lock_poisoned";
+/// Stable code of every [`ExecutorLock`] refusal: the one code the delivery
+/// locks share.
+pub const EXECUTOR_LOCK_POISONED_CODE: &str = awaken_session_run_delivery::LOCK_POISONED_CODE;
 
 impl From<ExecutorLock> for SessionExecutionError {
     fn from(error: ExecutorLock) -> Self {
@@ -214,6 +211,22 @@ impl From<ExecutorLock> for SessionExecutionError {
 impl From<ExecutorLock> for RunError {
     fn from(error: ExecutorLock) -> Self {
         to_run_error(SessionExecutionError::from(error))
+    }
+}
+
+/// A poisoned completion relay or Thread event hub is the same retryable
+/// refusal as a poisoned executor lock.
+impl From<awaken_session_run_delivery::DeliveryLock> for SessionExecutionError {
+    fn from(error: awaken_session_run_delivery::DeliveryLock) -> Self {
+        Self::unavailable_classified(EXECUTOR_LOCK_POISONED_CODE, error.to_string())
+    }
+}
+
+/// A foreground completion signal that closed before committed truth settled
+/// is the executor's internal failure.
+impl From<awaken_session_run_delivery::CompletionSignalClosed> for SessionExecutionError {
+    fn from(error: awaken_session_run_delivery::CompletionSignalClosed) -> Self {
+        Self::internal(error.to_string())
     }
 }
 
@@ -243,8 +256,6 @@ mod tests {
         for lock in [
             ExecutorLock::ToolAdmission,
             ExecutorLock::SkillCatalogCache,
-            ExecutorLock::CompletionRegistry,
-            ExecutorLock::ThreadEventHub,
             ExecutorLock::CapturedMemoryWrites,
         ] {
             let host = SessionExecutionError::from(lock);

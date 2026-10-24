@@ -25,11 +25,11 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunRecoverySource};
+use awaken_dispatch_contract::CompletionSink;
 #[cfg(test)]
 use awaken_dispatch_contract::RunDispatch;
 use awaken_dispatch_contract::{Inbox, PendingInput};
 use awaken_dispatch_erasure::AnyDispatchStore;
-use awaken_dispatch_execution::CompletionSink;
 #[cfg(test)]
 use awaken_dispatch_execution::WorkerResolver;
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
@@ -47,8 +47,8 @@ use awaken_tool_contract::tool::ToolOutput;
 use awaken_ext_compact::CompactConfig;
 
 use crate::background::BackgroundRuns;
-use crate::hub::{ThreadEvent, ThreadEventHub};
 use crate::store::HostCommit;
+use crate::{ThreadEvent, ThreadEventHub};
 use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
 
 /// Test fixtures mint process-unique temp roots from this sequence.
@@ -113,7 +113,8 @@ mod types;
 mod worker_resolver;
 
 pub(crate) use awaken_dispatch_execution::session_worker_resolver::SessionWorkerResolver;
-pub(crate) use completion::CompletionRegistry;
+pub(crate) use awaken_session_run_delivery::CompletionRegistry;
+pub(crate) use completion::SettlementWakeup;
 pub(crate) use foreground_run::{ForegroundRun, ForegroundRunPoisoned, ForegroundRunRecord};
 pub(crate) use run_control::{
     DurableRunCancellation, LiveAttemptControl, SelectedAttemptInterruption,
@@ -155,6 +156,9 @@ pub struct ExecutorComponents {
     /// Injected into the pool as its `CompletionSink` and into each local Session
     /// worker as its `StreamSink`.
     pub(crate) completion: Arc<CompletionRegistry>,
+    /// The process's one settlement sink: the completion relay, then the
+    /// Session application's committed-progress wakeup.
+    pub(crate) settlement: Arc<SettlementWakeup>,
     /// This process's dispatch: topology, pool, terminal reconciliation, hint.
     pub(crate) dispatch: Arc<awaken_dispatch_execution::ProcessDispatch>,
     /// The realization executor and the sandbox providers it realizes through.

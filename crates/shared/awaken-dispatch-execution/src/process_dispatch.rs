@@ -31,10 +31,11 @@ use awaken_time::WallClock;
 
 use crate::session_reconciliation::TerminalReconciliationState;
 use crate::{
-    AdmissionError, CompletionSink, DEFAULT_LEASE_MS, DispatchHint, DispatchPool,
-    DispatchReconciler, Error, PoolDrainFence, WorkerResolver,
+    AdmissionError, DEFAULT_LEASE_MS, DispatchHint, DispatchPool, DispatchReconciler, Error,
+    PoolDrainFence, WorkerResolver,
 };
 use awaken_deployment_config::{DispatchPoolSizing, ExecutionTopology};
+use awaken_dispatch_contract::CompletionSink;
 
 /// The dispatch pool, terminal reconciliation and wake hint of one process.
 /// Consumers: the Session Run component (submission, cancellation and resume
