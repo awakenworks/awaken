@@ -480,7 +480,6 @@ async fn binding_matrix_rejects_each_dimension_before_plaintext_with_stable_clas
 }
 
 #[tokio::test]
-#[ignore = "product gap: public resolve_for_workspace* maps HolderNotAllowed admission to retryable Unavailable instead of RecipientMismatch"]
 async fn binding_matrix_holder_dimension_has_its_recipient_classification() {
     let fixture = fixture().await;
     let (baseline, _, rejections, _) = cells(&fixture);

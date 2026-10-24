@@ -455,7 +455,7 @@ impl PinnedCredentialMaterializer {
             &self.realization_capabilities(selected_holder.clone(), realization),
             self.clock.now_ms(),
         )
-        .map_err(|_| CredentialMaterialError::Unavailable)?;
+        .map_err(admission_material_error)?;
         self.resolve_validated(
             access,
             selected_holder,
@@ -484,7 +484,7 @@ impl PinnedCredentialMaterializer {
             &self.realization_capabilities(selected_holder.clone(), realization),
             self.clock.now_ms(),
         )
-        .map_err(|_| CredentialMaterialError::Unavailable)?;
+        .map_err(admission_material_error)?;
         self.resolve_validated(
             access,
             selected_holder,
@@ -495,6 +495,23 @@ impl PinnedCredentialMaterializer {
             }),
         )
         .await
+    }
+}
+
+/// Keep binding refusals from the public admission step in the same class
+/// `resolve_validated` reports for them. Only capability gaps of this
+/// installation stay `Unavailable`.
+fn admission_material_error(
+    error: awaken_credential_contract::CredentialAdmissionError,
+) -> CredentialMaterialError {
+    use awaken_credential_contract::CredentialAdmissionError as Admission;
+    match error {
+        Admission::HolderNotAllowed | Admission::EnvelopeRecipientMismatch => {
+            CredentialMaterialError::RecipientMismatch
+        }
+        Admission::CredentialRevisionMismatch => CredentialMaterialError::RevisionMismatch,
+        Admission::EnvelopeExpired => CredentialMaterialError::EnvelopeExpired,
+        _ => CredentialMaterialError::Unavailable,
     }
 }
 
