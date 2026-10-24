@@ -674,7 +674,7 @@ late-original race test proves same-name exclusion, not a whole product retry.
 The signed Worker-side Create client is assembled by the existing
 `awaken-worker` process composition root, which already owns both its
 `WorkerUpstream` and selected Sandbox provider. The Platform
-`awaken-coordinator-client` retains its neutral Worker control clients and no
+`awaken-worker-runtime` retains its neutral Worker control clients and no
 longer depends on the concrete Sandbox adapter across bounded contexts. The
 same client, endpoint, Registry identity and provider ticket ledger remain
 authoritative; this placement change adds no recovery or cleanup owner.

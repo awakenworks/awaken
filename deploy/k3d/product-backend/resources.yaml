@@ -118,7 +118,7 @@ roleRef:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: awaken-coordinator-client
+  name: awaken-worker-runtime
 subjects:
   - kind: ServiceAccount
     name: awaken-worker

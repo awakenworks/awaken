@@ -22,6 +22,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
+use awaken_coordinator_client::HttpDispatchQueue;
 use awaken_dispatch::{
     AttemptAdmission, ClaimedStreamPublisher, DispatchError, DispatchOutcome, MemoryDispatchStore,
     RunClaim, RunDispatch, SettleOutcome, StreamObservationRequest, SubmitOptions, WorkerIdentity,
@@ -34,7 +35,6 @@ use awaken_runtime_contract::resolved::{
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_coordinator_client::HttpDispatchQueue;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;

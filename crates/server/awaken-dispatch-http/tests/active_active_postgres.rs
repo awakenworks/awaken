@@ -22,6 +22,8 @@ use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitOperationId, commit_payload_hash,
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_coordinator_client::HttpDispatchQueue;
+use awaken_coordinator_client::RemoteClaimedRunCommit;
 use awaken_dispatch::ClaimedCommitService;
 use awaken_dispatch::{
     ClaimedCommitCommand, ClaimedRunCommit, DispatchOutcome, PostgresDispatchStore,
@@ -40,8 +42,6 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_postgres::PostgresCommitCoordinator;
-use awaken_coordinator_client::HttpDispatchQueue;
-use awaken_coordinator_client::RemoteClaimedRunCommit;
 use awaken_worker_transport_security::{FixedWorkerLeasePolicy, HeaderWorkerAuthenticator};
 use axum::extract::{Request, State};
 use axum::middleware::Next;
