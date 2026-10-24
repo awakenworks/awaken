@@ -104,7 +104,7 @@ async fn original_joined_empty_runs_the_provider_terminal_protocol_but_never_ado
     );
     let id = runtime.realization_runtime_id(&spec.scope).unwrap();
     let mut original = runtime.pod_for_effect(&id, &plan, Some(&create));
-    crate::package_realization::stamp_sandbox_release_annotations(
+    awaken_package_image::package_realization::stamp_sandbox_release_annotations(
         &mut original,
         &spec.scope,
         &plan.image,
@@ -401,7 +401,7 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
         });
         let id = source.realization_runtime_id(&spec.scope).unwrap();
         let mut pod = source.pod_for_effect(&id, &plan, Some(&create));
-        crate::package_realization::stamp_sandbox_release_annotations(
+        awaken_package_image::package_realization::stamp_sandbox_release_annotations(
             &mut pod,
             &spec.scope,
             &plan.image,

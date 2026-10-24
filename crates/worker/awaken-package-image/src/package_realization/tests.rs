@@ -8,8 +8,8 @@ use k8s_openapi::api::core::v1::{
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference};
 
 use super::*;
-use crate::package_image::K8sPackageImageProvisioner;
-use crate::stamp_realization;
+use crate::K8sPackageImageProvisioner;
+use awaken_worker_fleet_kubernetes::object_realization::stamp_realization;
 
 const NAMESPACE: &str = "awaken-system";
 const SESSION_ID: &str = "session-proof";
@@ -71,7 +71,7 @@ fn test_builder_with_pull_secrets(image_pull_secrets: Vec<String>) -> K8sPackage
     let client = awaken_outbound_http::kubernetes_control_client(config).unwrap();
     K8sPackageImageProvisioner::new(client, NAMESPACE, REGISTRY, image_pull_secrets, true)
         .unwrap()
-        .with_forward_proxy(awaken_sandbox_container::ForwardProxy {
+        .with_forward_proxy(awaken_container_contract::ForwardProxy {
             url: "http://proxy.internal:8080".into(),
         })
         .unwrap()
@@ -214,10 +214,12 @@ fn successful_job_pod(
 fn running_sandbox(image: &str) -> Pod {
     let mut pod = Pod {
         metadata: ObjectMeta {
-            name: Some(crate::pod_name(&crate::k8s_runtime_id(SESSION_ID).unwrap())),
+            name: Some(awaken_worker_fleet_kubernetes::managed_names::pod_name(
+                &awaken_worker_fleet_kubernetes::managed_names::k8s_runtime_id(SESSION_ID).unwrap(),
+            )),
             namespace: Some(NAMESPACE.into()),
             labels: Some(BTreeMap::from([(
-                awaken_sandbox_container::engine::MANAGED_SANDBOX_LABEL.into(),
+                awaken_container_contract::MANAGED_SANDBOX_LABEL.into(),
                 "1".into(),
             )])),
             ..Default::default()

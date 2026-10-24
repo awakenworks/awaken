@@ -4,7 +4,6 @@
 // @formal reason: progress is qualified by adapter tests, not by a new completion state.
 //! One original projected-object projection shared by creation and cleanup.
 
-use super::names::{configmap_name, credential_secret_name};
 use super::pod_projection::{
     build_configmap, build_credential_secret, content_binds, credential_binds, credential_key,
 };
@@ -23,6 +22,7 @@ use awaken_sandbox_container::{BindPlan, ContainerPlan, ContainerRealizationCont
 use awaken_sandbox_container::{
     KubernetesProjectedKind as Kind, KubernetesProjectedObject, KubernetesProjectedParticipants,
 };
+use awaken_worker_fleet_kubernetes::managed_names::{configmap_name, credential_secret_name};
 use awaken_worker_fleet_kubernetes::{api_not_found, backend};
 use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};

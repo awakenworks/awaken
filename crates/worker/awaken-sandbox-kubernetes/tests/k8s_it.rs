@@ -742,9 +742,8 @@ async fn create_fails_closed_on_a_pids_limit_k8s_cannot_enforce() {
                 .annotations
                 .as_ref()
                 .and_then(|annotations| {
-                    annotations.get(
-                        awaken_sandbox_kubernetes::package_realization::SANDBOX_SCOPE_ANNOTATION,
-                    )
+                    annotations
+                        .get(awaken_package_image::package_realization::SANDBOX_SCOPE_ANNOTATION)
                 })
                 .is_some_and(|observed| observed == &scope)
         });
@@ -1352,7 +1351,7 @@ async fn missing_handle_reconstructs_a_live_original_pod_and_claim_for_terminal_
      * durable CAS. This row qualifies real API defaulting and cleanup but its
      * in-memory join is not a product Worker-exit receipt. */
     use awaken_container_contract::RuntimeError;
-    use awaken_sandbox_kubernetes::K8sCreateTransport;
+    use awaken_worker_fleet_kubernetes::K8sCreateTransport;
     use awaken_worker_fleet_kubernetes::WorkerCreateLedgerState;
 
     const GROUP: &str = "live-joined-pair";

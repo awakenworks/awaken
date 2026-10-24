@@ -25,12 +25,14 @@ use crate::package_realization::{
     package_image_check_name, stamp_package_config_map, verified_package_build_result,
     verified_package_image_check_result, verify_exact_package_config_map, verify_exact_package_job,
 };
-use crate::{
-    K8sCreateTransport, backend, brokered_client, create_or_verify_exact, sandbox_network_labels,
-    stamp_realization,
-};
+use awaken_container_contract::ForwardProxy;
 use awaken_container_contract::PackageImageProvisioner;
-use awaken_sandbox_container::ForwardProxy;
+use awaken_worker_fleet_kubernetes::object_realization::{
+    create_or_verify_exact, stamp_realization,
+};
+use awaken_worker_fleet_kubernetes::{
+    K8sCreateTransport, backend, brokered_client, sandbox_network_labels,
+};
 
 pub(crate) const DEFAULT_K8S_BUILDKIT_IMAGE: &str = "moby/buildkit:v0.30.0-rootless";
 // A cold desktop/multimedia image installs hundreds of Debian packages. On a
@@ -338,7 +340,7 @@ impl K8sPackageImageProvisioner {
         packages: &awaken_environment_contract::PackageRequirements,
     ) -> Result<(ConfigMap, Job, String), RuntimeError> {
         let (containerfile, fingerprint) =
-            awaken_sandbox_container::engine::package_image_recipe(base_image, "", packages)?;
+            awaken_container_contract::package_image_recipe(base_image, "", packages)?;
         let name = package_build_name(&fingerprint)?;
         let destination = format!("{}/awaken-packages:{fingerprint}", self.registry);
         let registry_host = self
@@ -691,7 +693,7 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
         .await?;
         let deadline = awaken_time::mono::MonoDeadline::after(image_check_client_timeout());
         loop {
-            let observed = crate::get_optional(&jobs, &name).await?;
+            let observed = awaken_worker_fleet_kubernetes::get_optional(&jobs, &name).await?;
             let status = match image_check_observation(observed.clone()) {
                 ImageCheckObservation::Present(status) => status,
                 ImageCheckObservation::Missing => {
@@ -753,7 +755,8 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                         || exact_owner_pod_count(observed_job, &listed.items),
                         Vec::len,
                     );
-                    let refreshed = crate::get_optional(&jobs, &name).await?;
+                    let refreshed =
+                        awaken_worker_fleet_kubernetes::get_optional(&jobs, &name).await?;
                     match job_pod_snapshot_disposition(
                         same_job_incarnation(observed_job, refreshed.as_ref()),
                         exact_pod_count,
@@ -818,7 +821,7 @@ impl PackageImageProvisioner for K8sPackageImageProvisioner {
         jobs.list(&ListParams::default().limit(1))
             .await
             .map(|_| ())
-            .map_err(crate::backend)
+            .map_err(awaken_worker_fleet_kubernetes::backend)
     }
 
     async fn package_base_image_identity(&self, reference: &str) -> Result<String, RuntimeError> {
@@ -888,7 +891,8 @@ impl PackageImageProvisioner for K8sPackageImageProvisioner {
             .as_deref()
             .ok_or_else(|| backend("package ConfigMap has no name"))?;
         let configs: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.namespace);
-        let Some(config) = crate::get_optional(&configs, name).await? else {
+        let Some(config) = awaken_worker_fleet_kubernetes::get_optional(&configs, name).await?
+        else {
             return Ok(false);
         };
         verify_exact_package_config_map(&desired_config, &config)?;
@@ -901,6 +905,7 @@ impl PackageImageProvisioner for K8sPackageImageProvisioner {
 
 #[cfg(test)]
 mod tests {
+    use awaken_container_contract::ForwardProxy;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
@@ -934,7 +939,7 @@ mod tests {
             true,
         )
         .unwrap()
-        .with_forward_proxy(awaken_sandbox_container::ForwardProxy {
+        .with_forward_proxy(awaken_container_contract::ForwardProxy {
             url: "http://proxy.internal:8080".into(),
         })
         .unwrap()
@@ -1212,7 +1217,10 @@ mod tests {
                 let reason = if timed_out { "timed out" } else { "failed" };
                 assert_eq!(
                     error.to_string(),
-                    super::backend(format!("BuildKit Job `{name}` {reason}")).to_string(),
+                    awaken_worker_fleet_kubernetes::backend(format!(
+                        "BuildKit Job `{name}` {reason}"
+                    ))
+                    .to_string(),
                     "{reason}/{row}: original build outcome, not cleanup success"
                 );
                 if row == "response-loss" {
@@ -1819,5 +1827,197 @@ mod tests {
     fn a_cold_desktop_package_build_outlives_the_observed_ten_minute_failure() {
         const { assert!(super::PACKAGE_BUILD_TIMEOUT_SECS >= 30 * 60) };
         const { assert!(super::PACKAGE_BUILD_TIMEOUT_SECS > IMAGE_CHECK_TIMEOUT_SECS) };
+    }
+
+    #[tokio::test]
+    async fn package_builder_job_is_rootless_bounded_and_registry_backed() {
+        // Cause/effect decision table: R1 exact base/packages + shared Registry
+        // produce one deterministic ConfigMap/Job destination; R2 insecure local
+        // Registry emits an explicit BuildKit host policy; R3 the Job is rootless,
+        // tokenless, no-retry, bounded, admits RootlessKit's subordinate mount
+        // namespace through unconfined seccomp and AppArmor, and gives rootless
+        // BuildKit a COS-compatible state volume; R4 output uses the termination
+        // digest contract; R5 unsafe Registry prefixes fail before entering
+        // BuildKit configuration; R6 ring+aws-lc feature unification => select
+        // ring before constructing the lazy kube client.
+        let config = kube::Config::new("http://127.0.0.1:1/".parse().unwrap());
+        let client = awaken_outbound_http::kubernetes_control_client(config).unwrap();
+        let builder = K8sPackageImageProvisioner::new(
+            client.clone(),
+            "awaken-system",
+            "registry.local:5000/environments",
+            vec!["registry-auth".into()],
+            true,
+        )
+        .unwrap()
+        .with_buildkit_image("registry.local:5000/system/buildkit:v0.30.0-rootless")
+        .unwrap()
+        .with_forward_proxy(ForwardProxy {
+            url: "http://proxy.internal:8080".into(),
+        })
+        .unwrap();
+        let packages = awaken_environment_contract::PackageRequirements {
+            managers: [("npm".into(), vec!["@playwright/mcp@latest".into()])]
+                .into_iter()
+                .collect(),
+            resolution_id: Some("env-browser:3".into()),
+        };
+        let (config, job, destination) = builder
+            .build_objects("registry.local/base@sha256:exact", &packages)
+            .unwrap();
+        assert!(
+            destination.starts_with("registry.local:5000/environments/awaken-packages:"),
+            "R1"
+        );
+        let data = config.data.unwrap();
+        assert!(data["Dockerfile"].contains("@playwright/mcp@latest"), "R1");
+        assert!(data["buildkitd.toml"].contains("http = true"), "R2");
+        let spec = job.spec.unwrap();
+        assert_eq!(spec.backoff_limit, Some(0), "R3");
+        assert!(
+            (30 * 60..60 * 60).contains(&spec.active_deadline_seconds.unwrap()),
+            "R3 cold package builds stay bounded below the Coordinator run ceiling"
+        );
+        let pod = spec.template.spec.unwrap();
+        assert_eq!(pod.automount_service_account_token, Some(false), "R3");
+        assert_eq!(
+            pod.image_pull_secrets.as_ref().unwrap()[0].name,
+            "registry-auth",
+            "R3"
+        );
+        assert!(
+            pod.volumes
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|volume| volume.name == "registry-auth"),
+            "R3 private Registry auth"
+        );
+        let buildkit = &pod.containers[0];
+        assert!(
+            pod.volumes
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|volume| { volume.name == "buildkit-state" && volume.empty_dir.is_some() }),
+            "R3 rootless BuildKit state must use an emptyDir on Google COS"
+        );
+        assert!(
+            buildkit
+                .volume_mounts
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|mount| {
+                    mount.name == "buildkit-state"
+                        && mount.mount_path == "/home/user/.local/share/buildkit"
+                }),
+            "R3 rootless BuildKit state must use the official writable path"
+        );
+        let security_context = buildkit.security_context.as_ref().unwrap();
+        assert_eq!(
+            buildkit.image.as_deref(),
+            Some("registry.local:5000/system/buildkit:v0.30.0-rootless"),
+            "R3 the operator-selected mirror must be the only BuildKit pull reference"
+        );
+        assert_eq!(security_context.run_as_user, Some(1000), "R3");
+        assert_eq!(
+            security_context.allow_privilege_escalation,
+            Some(true),
+            "R3 rootless newuidmap/newgidmap helpers require setuid execution"
+        );
+        assert_eq!(
+            security_context
+                .app_armor_profile
+                .as_ref()
+                .map(|profile| profile.type_.as_str()),
+            Some("Unconfined"),
+            "R3 GKE AppArmor must not reject RootlessKit mount propagation"
+        );
+        assert!(
+            buildkit.args.as_ref().unwrap()[0].contains("/dev/termination-log"),
+            "R4"
+        );
+        let environment = buildkit.env.as_ref().unwrap();
+        for name in [
+            "FORWARD_PROXY",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "http_proxy",
+            "https_proxy",
+        ] {
+            assert!(
+                environment.iter().any(|variable| {
+                    variable.name == name
+                        && variable.value.as_deref() == Some("http://proxy.internal:8080")
+                }),
+                "R6 BuildKit and package-manager egress must inherit {name}"
+            );
+        }
+        assert!(
+            environment.iter().any(|variable| {
+                variable.name == "NO_PROXY"
+                    && variable
+                        .value
+                        .as_deref()
+                        .is_some_and(|value| value.contains("registry.local:5000"))
+            }),
+            "R6 the package Registry must bypass the external proxy"
+        );
+        assert!(
+            buildkit.args.as_ref().unwrap()[0].contains("build-arg:HTTP_PROXY"),
+            "R6 predefined proxy args must reach package-manager RUN steps"
+        );
+        assert!(
+            buildkit.args.as_ref().unwrap()[0].contains(
+                "mkdir -p /tmp/workspace\ncp /input/Dockerfile /tmp/workspace/Dockerfile"
+            ),
+            "R6 rootless BuildKit must use a writable workspace"
+        );
+        assert!(
+            K8sPackageImageProvisioner::new(
+                client,
+                "awaken-system",
+                "registry.local/environments\n[registry.\"attacker\"]",
+                Vec::new(),
+                true,
+            )
+            .is_err(),
+            "R5"
+        );
+        assert!(
+            K8sPackageImageProvisioner::new(
+                awaken_outbound_http::kubernetes_control_client(kube::Config::new(
+                    "http://127.0.0.1:1/".parse().unwrap()
+                ))
+                .unwrap(),
+                "awaken-system",
+                "registry.local/environments",
+                Vec::new(),
+                true,
+            )
+            .unwrap()
+            .with_buildkit_image("registry.local/bad image")
+            .is_err(),
+            "R7 an invalid mirrored builder reference must fail before a Kubernetes write"
+        );
+        assert!(
+            K8sPackageImageProvisioner::new(
+                awaken_outbound_http::kubernetes_control_client(kube::Config::new(
+                    "http://127.0.0.1:1/".parse().unwrap()
+                ))
+                .unwrap(),
+                "awaken-system",
+                "registry.local/environments",
+                Vec::new(),
+                true,
+            )
+            .unwrap()
+            .with_forward_proxy(ForwardProxy {
+                url: "file:///tmp/not-a-proxy".into(),
+            })
+            .is_err(),
+            "R9 an invalid package-build proxy must fail before a Kubernetes write"
+        );
     }
 }

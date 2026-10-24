@@ -4,6 +4,7 @@
 // @formal surface obligation=external.container_and_kernel_isolation
 // @formal reason: Projects network policy into a fail-closed direct-deny or capability-authenticated
 // @formal reason: allowlist boundary.
+use awaken_container_contract::ForwardProxy;
 use awaken_provisioning_contract as pc;
 use base64::Engine as _;
 use serde::Serialize;
@@ -46,16 +47,6 @@ impl Default for EgressRealizationIdentity {
             ephemeral_capability: false,
         }
     }
-}
-
-/// An optional conventional forward proxy for unrestricted container traffic.
-///
-/// This is a connectivity preference, not a security boundary: arbitrary
-/// workload code can remove proxy environment variables and dial directly.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ForwardProxy {
-    /// The forward-proxy URL cooperative clients use (e.g. `http://proxy:8888`).
-    pub url: String,
 }
 
 /// Deployment-owned no-bypass proxy configuration.

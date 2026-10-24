@@ -1,0 +1,341 @@
+//! Immutable container-image package recipes.
+//!
+//! This module is the single owner of translating neutral package requirements
+//! into image build input. Every engine that builds package images executes the
+//! returned recipe; none implements a second manager-command mapping.
+
+use crate::RuntimeError;
+
+const PACKAGE_RECIPE_VERSION: &str = "4";
+
+fn requirement_is_pinned(manager: &str, package: &str) -> bool {
+    match manager {
+        "apt" => package.contains('='),
+        "cargo" | "go" => package
+            .rsplit_once('@')
+            .is_some_and(|(name, version)| !name.is_empty() && !version.is_empty()),
+        "gem" => package
+            .rsplit_once(':')
+            .is_some_and(|(name, version)| !name.is_empty() && !version.is_empty()),
+        "npm" => package
+            .rfind('@')
+            .is_some_and(|index| index > 0 && index + 1 < package.len()),
+        "pip" => package.contains("=="),
+        _ => false,
+    }
+}
+
+fn has_unpinned_requirement(
+    requirements: &awaken_environment_contract::PackageRequirements,
+) -> bool {
+    requirements.managers.iter().any(|(manager, packages)| {
+        packages
+            .iter()
+            .any(|package| !requirement_is_pinned(manager, package))
+    })
+}
+
+/// Render the immutable derived-image build consumed by package-capable
+/// container runtimes. Every package is an argv element in Dockerfile JSON form;
+/// no protocol string is interpolated into a shell command.
+pub fn package_containerfile(
+    base_image: &str,
+    requirements: &awaken_environment_contract::PackageRequirements,
+) -> Result<String, RuntimeError> {
+    package_containerfile_for_user(base_image, "", requirements)
+}
+
+fn package_containerfile_for_user(
+    base_image: &str,
+    base_user: &str,
+    requirements: &awaken_environment_contract::PackageRequirements,
+) -> Result<String, RuntimeError> {
+    if base_image.is_empty()
+        || base_image
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+    {
+        return Err(RuntimeError::Backend(
+            "package base image must be a non-empty OCI reference".into(),
+        ));
+    }
+    if !base_user.is_empty()
+        && !base_user
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
+    {
+        return Err(RuntimeError::Backend(
+            "package base image has an unsupported OCI user".into(),
+        ));
+    }
+    let mut steps = Vec::<Vec<String>>::new();
+    for (manager, packages) in &requirements.managers {
+        if packages.is_empty() {
+            continue;
+        }
+        for package in packages {
+            if !awaken_environment_contract::PackageRequirements::requirement_is_valid(package) {
+                return Err(RuntimeError::Backend(format!(
+                    "invalid {manager} package requirement"
+                )));
+            }
+        }
+        match manager.as_str() {
+            "apt" => {
+                let mut argv = vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "set -e; apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update; apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends \"$@\"; rm -rf /var/lib/apt/lists/*".into(),
+                    "awaken-packages".into(),
+                ];
+                argv.extend(packages.clone());
+                steps.push(argv);
+            }
+            "cargo" => {
+                let mut argv = vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "set -e; for package do cargo install --root /usr/local \"$package\"; done; rm -rf /root/.cargo/registry /root/.cargo/git".into(),
+                    "awaken-packages".into(),
+                ];
+                argv.extend(packages.clone());
+                steps.push(argv);
+            }
+            "gem" => {
+                let mut argv = vec!["gem".into(), "install".into(), "--no-document".into()];
+                argv.extend(packages.clone());
+                steps.push(argv);
+            }
+            "go" => {
+                let mut argv = vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "set -e; for package do GOBIN=/usr/local/bin go install \"$package\"; done; rm -rf /root/go".into(),
+                    "awaken-packages".into(),
+                ];
+                argv.extend(packages.clone());
+                steps.push(argv);
+            }
+            "npm" => {
+                let mut argv = vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "set -e; npm install --global --no-audit --no-fund \"$@\"; npm cache clean --force".into(),
+                    "awaken-packages".into(),
+                ];
+                argv.extend(packages.clone());
+                steps.push(argv);
+            }
+            "pip" => {
+                let mut argv = vec!["pip".into(), "install".into(), "--no-cache-dir".into()];
+                argv.extend(packages.clone());
+                steps.push(argv);
+            }
+            _ => {
+                return Err(RuntimeError::Backend(format!(
+                    "unsupported package manager `{manager}`"
+                )));
+            }
+        }
+    }
+    let mut dockerfile = format!("FROM {base_image}\nUSER 0\n");
+    for argv in steps {
+        let argv = std::iter::once("/usr/bin/env".to_string())
+            .chain(argv)
+            .collect::<Vec<_>>();
+        dockerfile.push_str("RUN ");
+        dockerfile.push_str(
+            &serde_json::to_string(&argv)
+                .map_err(|error| RuntimeError::Backend(error.to_string()))?,
+        );
+        dockerfile.push('\n');
+    }
+    if !base_user.is_empty() && base_user != "0" && base_user != "root" {
+        dockerfile.push_str(&format!("USER {base_user}\n"));
+    }
+    Ok(dockerfile)
+}
+
+/// Return the immutable build recipe and its content address. The exact local
+/// base-image identity is part of the recipe, so moving a mutable tag invalidates
+/// the cache even when the Environment package lists stay unchanged.
+pub fn package_image_recipe(
+    base_identity: &str,
+    base_user: &str,
+    requirements: &awaken_environment_contract::PackageRequirements,
+) -> Result<(String, String), RuntimeError> {
+    let mut containerfile = package_containerfile_for_user(base_identity, base_user, requirements)?;
+    let resolution = if has_unpinned_requirement(requirements) {
+        Some(
+            requirements
+                .resolution_id
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    RuntimeError::Backend(
+                        "unpinned package requirements need a frozen Environment resolution id"
+                            .into(),
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
+    let identity = format!(
+        "recipe={PACKAGE_RECIPE_VERSION}\nresolution={}\n{containerfile}",
+        resolution.unwrap_or("pinned")
+    );
+    let fingerprint = blake3::hash(identity.as_bytes()).to_hex().to_string();
+    containerfile.push_str(&format!(
+        "LABEL org.awaken.package-recipe={PACKAGE_RECIPE_VERSION} \\\n      org.awaken.package-key={fingerprint}\n"
+    ));
+    Ok((containerfile, fingerprint))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Package-build cause graph: validated manager/package inputs become JSON
+    /// exec-form build steps in official manager order; invalid manager/options
+    /// fail before a runtime build. No package string becomes shell syntax.
+    ///
+    /// | Rule | Manager | Package | Result |
+    /// |---|---|---|---|
+    /// | B1 | supported | exact version | deterministic JSON RUN |
+    /// | B2 | supported | shell punctuation | one argv string, never shell |
+    /// | B3 | supported | leading option | reject |
+    /// | B4 | unknown | any | reject |
+    #[test]
+    fn containerfile_follows_the_build_decision_table() {
+        let requirements = awaken_environment_contract::PackageRequirements {
+            managers: [
+                ("npm".into(), vec!["tsx@4.0.0".into()]),
+                ("pip".into(), vec!["httpx==0.28.0;touch /tmp/pwn".into()]),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let file = package_containerfile("registry.test/base@sha256:abc", &requirements).unwrap();
+        assert!(
+            file.starts_with("FROM registry.test/base@sha256:abc\nUSER 0\n"),
+            "B1"
+        );
+        assert!(
+            file.contains(r#"npm install --global --no-audit --no-fund \"$@\"; npm cache clean --force","awaken-packages","tsx@4.0.0"]"#),
+            "B1: {file}"
+        );
+        assert!(
+            file.contains(r#"["/usr/bin/env","pip","install","--no-cache-dir","httpx==0.28.0;touch /tmp/pwn"]"#),
+            "B2 remains one JSON argv element: {file}"
+        );
+        assert!(!file.contains("RUN pip install"), "B2 no shell form");
+
+        for (rule, manager, package) in [("B3", "pip", "--index-url"), ("B4", "docker", "image")] {
+            let requirements = awaken_environment_contract::PackageRequirements {
+                managers: [(manager.into(), vec![package.into()])]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            };
+            assert!(
+                package_containerfile("base:1", &requirements).is_err(),
+                "{rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn image_fingerprint_keys_on_exact_base_identity_and_package_contents() {
+        let requirements = awaken_environment_contract::PackageRequirements {
+            managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let (recipe, first) =
+            package_image_recipe("sha256:base-a", "10001", &requirements).unwrap();
+        assert!(recipe.contains("USER 10001\n"));
+        assert!(recipe.contains("org.awaken.package-recipe=4"));
+        let (_, identical) = package_image_recipe("sha256:base-a", "10001", &requirements).unwrap();
+        assert_eq!(identical, first, "identical inputs reuse one image key");
+
+        let (_, moved_base) =
+            package_image_recipe("sha256:base-b", "10001", &requirements).unwrap();
+        assert_ne!(
+            moved_base, first,
+            "a mutable base tag moving invalidates the key"
+        );
+
+        let changed = awaken_environment_contract::PackageRequirements {
+            managers: [("pip".into(), vec!["httpx==0.29.0".into()])]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let (_, changed_packages) =
+            package_image_recipe("sha256:base-a", "10001", &changed).unwrap();
+        assert_ne!(
+            changed_packages, first,
+            "a package or version change invalidates the key"
+        );
+
+        let (_, changed_user) =
+            package_image_recipe("sha256:base-a", "agent", &requirements).unwrap();
+        assert_ne!(
+            changed_user, first,
+            "the restored runtime identity is part of the image key"
+        );
+        assert!(
+            package_image_recipe("sha256:base-a", "root\nRUN false", &requirements).is_err(),
+            "an untrusted image user cannot inject another build instruction"
+        );
+    }
+
+    #[test]
+    fn apt_builds_retry_transient_index_and_archive_failures() {
+        let requirements = awaken_environment_contract::PackageRequirements {
+            managers: [("apt".into(), vec!["curl=8.14.1-2".into()])]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+
+        let file = package_containerfile("base:1", &requirements).unwrap();
+        assert_eq!(
+            file.matches("Acquire::Retries=5").count(),
+            2,
+            "both index refresh and archive installation must tolerate transient egress failures: {file}"
+        );
+        assert_eq!(file.matches("Acquire::http::Timeout=30").count(), 2);
+        assert_eq!(file.matches("Acquire::https::Timeout=30").count(), 2);
+    }
+
+    #[test]
+    fn unpinned_requirements_are_scoped_to_one_frozen_environment_resolution() {
+        let mut requirements = awaken_environment_contract::PackageRequirements {
+            managers: [("pip".into(), vec!["httpx".into()])].into_iter().collect(),
+            resolution_id: Some("environment-revision-1".into()),
+        };
+        let (_, first) = package_image_recipe("sha256:base-a", "10001", &requirements).unwrap();
+        let (_, same) = package_image_recipe("sha256:base-a", "10001", &requirements).unwrap();
+        assert_eq!(
+            same, first,
+            "one Environment snapshot reuses its resolution"
+        );
+
+        requirements.resolution_id = Some("environment-revision-2".into());
+        let (_, updated) = package_image_recipe("sha256:base-a", "10001", &requirements).unwrap();
+        assert_ne!(
+            updated, first,
+            "a new Environment snapshot resolves latest again"
+        );
+
+        requirements.resolution_id = None;
+        assert!(
+            package_image_recipe("sha256:base-a", "10001", &requirements).is_err(),
+            "an unpinned requirement without a frozen lifecycle must fail closed"
+        );
+    }
+}

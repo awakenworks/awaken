@@ -15,8 +15,8 @@ use super::{
     REALIZATION_DIGEST_ANNOTATION, RELEASE_ANNOTATION_VALUE_BUDGET, RESOLVED_IMAGE_ANNOTATION,
     SANDBOX_SCOPE_ANNOTATION,
 };
-use crate::api_defaults::normalize_pod_spec;
 use awaken_container_contract::RuntimeError;
+use awaken_worker_fleet_kubernetes::api_defaults::normalize_pod_spec;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::batch::v1::JobSpec;
 use k8s_openapi::api::core::v1::ConfigMap;
@@ -351,11 +351,7 @@ pub(crate) fn verify_exact_package_job(desired: &Job, observed: &Job) -> Result<
     Ok(())
 }
 
-pub(crate) fn stamp_sandbox_release_annotations(
-    pod: &mut Pod,
-    scope: &str,
-    resolved_image: &str,
-) -> bool {
+pub fn stamp_sandbox_release_annotations(pod: &mut Pod, scope: &str, resolved_image: &str) -> bool {
     if scope
         .len()
         .checked_add(resolved_image.len())

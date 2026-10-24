@@ -693,7 +693,7 @@ impl DockerRuntime {
             .and_then(|config| config.user)
             .unwrap_or_default();
         let (dockerfile, fingerprint) =
-            crate::packages::package_image_recipe(&base_identity, &base_user, packages)?;
+            awaken_container_contract::package_image_recipe(&base_identity, &base_user, packages)?;
         let repository = self.package_registry.as_ref().map_or_else(
             || "awaken-packages".to_string(),
             |registry| format!("{registry}/awaken-packages"),

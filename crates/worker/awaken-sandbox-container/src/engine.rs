@@ -12,7 +12,6 @@ pub use crate::cache_volume::PVC_BIND_REF_PREFIX;
 pub use crate::exec_attempts::{exec_pid_file, exec_pid_file_prelude};
 pub use crate::fresh_create_attempt;
 pub use crate::live_inputs::manages_live_input;
-pub use crate::packages::package_image_recipe;
 pub use crate::process_env::environment_keepalive_command;
 pub use crate::recovery::{source_mount_paths, terminal_handle};
 pub use crate::restore_target::{
@@ -21,9 +20,9 @@ pub use crate::restore_target::{
 };
 pub use crate::runtime::{
     CONTAINER_HARDENING_REVISION, ExistingRealization, ExistingRealizationDecision,
-    ExistingRealizationPhase, ExistingRealizationRecovery, MANAGED_SANDBOX_LABEL,
-    PhysicalIncarnation, RUNTIME_OWNER_LABEL, RebuildContinuityEvidence, SANDBOX_ATTEMPT_LABEL,
-    SANDBOX_EXECUTION_ID, container_adoption_fingerprint, container_effect_fence_from_values,
+    ExistingRealizationPhase, ExistingRealizationRecovery, PhysicalIncarnation,
+    RUNTIME_OWNER_LABEL, RebuildContinuityEvidence, SANDBOX_ATTEMPT_LABEL, SANDBOX_EXECUTION_ID,
+    container_adoption_fingerprint, container_effect_fence_from_values,
     container_realization_fingerprint, existing_realization_decision, legacy_unfenced_fingerprint,
     runtime_owner_id, sandbox_observation, sandbox_observation_identity, sandbox_scope_identity,
     validate_runtime_effect_fence,

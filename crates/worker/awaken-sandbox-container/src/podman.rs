@@ -397,7 +397,7 @@ impl PodmanRuntime {
             return Err(backend("podman returned an empty base-image identity"));
         }
         let (containerfile, fingerprint) =
-            crate::packages::package_image_recipe(base_identity, base_user, packages)?;
+            awaken_container_contract::package_image_recipe(base_identity, base_user, packages)?;
         let image = self.package_registry.as_ref().map_or_else(
             || format!("localhost/awaken-packages:{fingerprint}"),
             |registry| format!("{registry}/awaken-packages:{fingerprint}"),

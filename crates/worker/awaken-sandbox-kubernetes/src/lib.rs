@@ -60,12 +60,13 @@ use awaken_sandbox_container::{
     ContainerRealizationNamespace,
 };
 
+#[cfg(test)]
+mod brokered_create_tests;
 mod channel;
 mod checkpoint;
 mod client;
 mod continuation;
 mod continuation_observation;
-mod create_transport;
 mod creation;
 mod existing_realization;
 mod guarded_claim;
@@ -73,13 +74,8 @@ mod image_warmup;
 mod lifecycle;
 mod live_inputs;
 mod memory;
-mod names;
 mod network_policy;
 mod observation;
-mod package_image;
-/// Versioned, typed, read-only package-realization evidence shared by the sole
-/// Kubernetes emitter and pinned composing consumers.
-pub mod package_realization;
 mod participants;
 mod pod_evidence;
 mod pod_projection;
@@ -94,9 +90,11 @@ mod restore;
 mod runtime_contract;
 mod sandbox_control;
 mod terminal_evidence;
+pub(crate) use awaken_worker_fleet_kubernetes::managed_names::k8s_runtime_id;
 pub(crate) use awaken_worker_fleet_kubernetes::managed_names::{
     continuation_claim_for_pod, pod_name,
 };
+pub(crate) use awaken_worker_fleet_kubernetes::sandbox_network_labels;
 use awaken_worker_fleet_kubernetes::{PodProcessObserver, api_defaults, api_not_found};
 pub(crate) use awaken_worker_fleet_kubernetes::{backend, get_optional};
 #[cfg(test)]
@@ -107,7 +105,6 @@ use continuation_observation::{
     ContinuationObservationDisposition, ContinuationObservationEvidence,
     continuation_claim_observation_required, continuation_observation_disposition,
 };
-pub(crate) use names::k8s_runtime_id;
 use pod_evidence::{
     SANDBOX_ADOPTION_ANNOTATION, SANDBOX_ATTEMPT_ANNOTATION, SANDBOX_REALIZATION_ANNOTATION,
     observed_pod, observed_pod_incarnation, observed_pod_phase, pod_effect_fence,
@@ -130,7 +127,6 @@ pub use pod_projection::{
 use pod_projection::{build_pod_with_continuation, content_binds};
 #[cfg(test)]
 use pod_security::pod_resources;
-pub(crate) use pod_security::sandbox_network_labels;
 use pod_security::{
     admit_network, egress_label, hardened_security_context, unenforceable_k8s_limit,
 };
@@ -138,12 +134,10 @@ use pod_security::{
 use process::{K8sExecProcess, K8sExecState, k8s_exec_argv, k8s_live_file_result};
 #[cfg(test)]
 use process::{k8s_exit_status, signal_effect_is_complete};
+pub(crate) use realization::stamp_realization;
 use realization::{PodReadiness, create_or_verify, pod_readiness, stamp_pod_realization};
-pub(crate) use realization::{create_or_verify_exact, stamp_realization};
 
-pub use create_transport::K8sCreateTransport;
-pub(crate) use create_transport::brokered_client;
-pub use package_image::K8sPackageImageProvisioner;
+pub(crate) use awaken_worker_fleet_kubernetes::{K8sCreateTransport, brokered_client};
 pub use repository_gateway::K8sRepositoryGatewayTrust;
 
 #[cfg(test)]
@@ -517,7 +511,7 @@ impl K8sRuntime {
         );
         let labels = pod.metadata.labels.get_or_insert_with(Default::default);
         labels.insert(
-            awaken_sandbox_container::engine::MANAGED_SANDBOX_LABEL.to_string(),
+            awaken_container_contract::MANAGED_SANDBOX_LABEL.to_string(),
             "1".to_string(),
         );
         labels.insert(

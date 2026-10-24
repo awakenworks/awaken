@@ -84,7 +84,7 @@ use awaken_provisioning_contract::{
 pub use cgroup::CgroupCaps;
 pub use egress::{
     AllowlistCapability, AllowlistProxy, EgressError, EgressRealization, EgressRealizationIdentity,
-    ForwardProxy, NetworkMode, egress_plan, egress_plan_with_allowlist, normalize_hostname,
+    NetworkMode, egress_plan, egress_plan_with_allowlist, normalize_hostname,
 };
 pub use exec_attempts::AdmittedExec;
 use exec_attempts::ExecAttempts;
@@ -97,7 +97,6 @@ pub use handle::{
     SandboxControlIncarnation, container_adoption_layout, container_physical_incarnation,
     validate_container_closed_observation,
 };
-pub use packages::package_containerfile;
 #[cfg(any(test, feature = "podman"))]
 pub(crate) use podman_plan::podman_create_argv;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
@@ -1151,7 +1150,7 @@ pub fn container_plan(
     spec: &pc::SandboxSpec,
     default_image: &str,
     command: &[String],
-    forward_proxy: Option<&ForwardProxy>,
+    forward_proxy: Option<&awaken_container_contract::ForwardProxy>,
 ) -> Result<ContainerPlan, EgressError> {
     container_plan_with_allowlist(spec, default_image, command, forward_proxy, None, None)
 }
@@ -1160,7 +1159,7 @@ pub fn container_plan_with_allowlist(
     spec: &pc::SandboxSpec,
     default_image: &str,
     command: &[String],
-    forward_proxy: Option<&ForwardProxy>,
+    forward_proxy: Option<&awaken_container_contract::ForwardProxy>,
     allowlist_proxy: Option<&AllowlistProxy>,
     clock: Option<&Arc<dyn awaken_time::WallClock>>,
 ) -> Result<ContainerPlan, EgressError> {
