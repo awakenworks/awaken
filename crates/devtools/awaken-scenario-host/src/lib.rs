@@ -80,6 +80,7 @@ use serde::Deserialize;
 
 // This Scenario platform depends on each authoritative owner directly.
 pub use awaken_config_service::ConfigService;
+pub use awaken_control::ExtMcpProbe;
 pub use awaken_control::{capabilities_router, config_router};
 pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_protocol_managed::{
@@ -89,7 +90,6 @@ pub use awaken_session_executor::{
     ExecutorComponents, HostResume, SessionExecutorBuilder, ThreadEvent, ThreadEventHub,
     advertised_tools,
 };
-pub use awaken_session_mcp::ExtMcpProbe;
 
 /// One tool-free ACP stand-in that can act as either Outcome Worker or Judge.
 /// Its prompt classification makes the Worker/Grader backend matrix observable

@@ -61,12 +61,12 @@ pub use worker_transport::WorkerTransport;
 use std::sync::Arc;
 
 use awaken_config_service::ManagementAuditPlane;
+use awaken_control::ExtMcpProbe;
 use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::LlmExecutor;
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_executor::ExecutorComponents;
 use awaken_session_executor::SessionExecutorBuilder;
-use awaken_session_mcp::ExtMcpProbe;
 use axum::Router;
 #[cfg(any(test, feature = "test-support"))]
 use exact_host_model::ExactHostModelPublicationResolver;

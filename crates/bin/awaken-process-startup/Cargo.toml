@@ -51,8 +51,6 @@ awaken-coordinator = { workspace = true }
 # The service layer: ExecutorComponents / ConfigService / ConfigPlane and the
 # durable session repositories the startup opens.
 awaken-session-executor.workspace = true
-# The live MCP credential probe and the container MCP relay exposure value.
-awaken-session-mcp.workspace = true
 # The container Hand residency the runtime settings select.
 awaken-session-environment-contract.workspace = true
 # The installation platform Workspace marker this startup reads or publishes.
