@@ -22,10 +22,10 @@ use awaken_runtime_contract::execution::{Error as ExecError, Result as ExecResul
 
 use crate::Error;
 use crate::dispatch::{DispatchSummary, PendingInput, SubmitOptions};
+use awaken_dispatch_contract::RunDispatch;
 use awaken_dispatch_execution::{
     DispatchService, DispatchServiceConfig, DispatchWorker, LiveRunControlService,
 };
-use awaken_run_ingress_contract::RunDispatch;
 use awaken_time::WallClock;
 
 /// Feature-gated synchronous harness over one Worker and its committed reader.
@@ -40,7 +40,7 @@ pub struct DispatchTestHarness<S> {
     clock: Arc<dyn WallClock>,
 }
 
-impl<S: ControlDispatch + awaken_run_ingress_contract::DispatchReads + 'static>
+impl<S: ControlDispatch + awaken_dispatch_contract::DispatchReads + 'static>
     DispatchTestHarness<S>
 {
     /// Install the session-selected attempt executor before the first claim.
@@ -415,7 +415,7 @@ impl<S: ControlDispatch + awaken_run_ingress_contract::DispatchReads + 'static>
     }
 }
 
-impl<S: ControlDispatch + awaken_run_ingress_contract::DispatchReads + 'static>
+impl<S: ControlDispatch + awaken_dispatch_contract::DispatchReads + 'static>
     DispatchTestHarness<S>
 {
     /// Persist or signal cancellation through the durable control authority.

@@ -67,7 +67,7 @@ impl Outbox for MemoryDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::SessionContinuationOutbox for MemoryDispatchStore {
+impl awaken_dispatch_contract::SessionContinuationOutbox for MemoryDispatchStore {
     async fn stage_session_resume(
         &self,
         input: PendingInput,

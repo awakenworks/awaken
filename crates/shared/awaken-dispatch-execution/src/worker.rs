@@ -26,11 +26,11 @@
 //! DispatchQueue aggregate free of run-outcome truth.
 
 use crate::control_dispatch::LocalWorkerDispatch;
-use awaken_dispatch_erasure::{AnyDispatchStore, Dispatch, DispatchBinding, DispatchTopology};
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport, DispatchClaimOwnership,
     DispatchCommitAuthority, DispatchExecution,
 };
+use awaken_dispatch_erasure::{AnyDispatchStore, Dispatch, DispatchBinding, DispatchTopology};
 use std::sync::Arc;
 
 use awaken_agent_contract::ThreadCommit;
@@ -614,7 +614,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     fn execution_context_with(
         &self,
         claim: &RunClaim,
-        execution_scope: Option<&awaken_run_ingress_contract::ExecutionScopeRef>,
+        execution_scope: Option<&awaken_dispatch_contract::ExecutionScopeRef>,
         model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
         credential_bindings: &[AttemptCredentialBinding],
         credential_deliveries: &[AttemptCredentialDelivery],
@@ -760,7 +760,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// fencing, recovery, and settlement path as every other dispatch.
     pub async fn start_run(
         &self,
-        request: awaken_run_ingress_contract::RunDispatch,
+        request: awaken_dispatch_contract::RunDispatch,
         clock: Arc<dyn WallClock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let unclaimed_request = request.clone();
@@ -950,10 +950,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         .admit_session_run_activity(&claimed.request, &claim, mode)
                         .await
                 }
-                Some(_) => Err(awaken_run_ingress_contract::DispatchSettlementError(
+                Some(_) => Err(awaken_dispatch_contract::DispatchSettlementError(
                     "Session Run reservation claim is stale".to_string(),
                 )),
-                None => Err(awaken_run_ingress_contract::DispatchSettlementError(
+                None => Err(awaken_dispatch_contract::DispatchSettlementError(
                     "Session Run activity admission observer is not installed".to_string(),
                 )),
             };
@@ -1060,12 +1060,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // claim binding and receipt boundary as ordinary execution. Provider,
         // advisor, MCP and sandbox credentials remain outside terminal control.
         if claimed.cancellation_requested {
-            awaken_run_ingress_contract::verify_claim_credential_bindings(
+            awaken_dispatch_contract::verify_claim_credential_bindings(
                 &claimed.request,
                 &self.local_credential_capabilities,
                 claimed.lease.epoch(),
                 now_ms,
-                awaken_run_ingress_contract::ClaimCredentialOperation::Cancel,
+                awaken_dispatch_contract::ClaimCredentialOperation::Cancel,
                 &claimed.credential_bindings,
             )
             .map_err(|error| {
@@ -1160,7 +1160,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // capability evidence. A stale, substituted, widened, or reordered
         // wire projection cannot reach model materialization. The compiler is
         // the same authority used inside each queue claim transaction.
-        awaken_run_ingress_contract::verify_attempt_credential_bindings(
+        awaken_dispatch_contract::verify_attempt_credential_bindings(
             &claimed.request,
             &self.local_credential_capabilities,
             claimed.lease.epoch(),
@@ -1821,7 +1821,7 @@ impl ExecutionAuthority {
         &self,
         claim: &RunClaim,
         required: bool,
-    ) -> Result<Option<awaken_run_ingress_contract::CommitEpochGuard>, Error> {
+    ) -> Result<Option<awaken_dispatch_contract::CommitEpochGuard>, Error> {
         if !required {
             return Ok(None);
         }
@@ -1834,7 +1834,7 @@ impl ExecutionAuthority {
 
 #[cfg(test)]
 mod tests {
-    use awaken_run_ingress_contract::DispatchClaims;
-    use awaken_run_ingress_contract::DispatchEnqueue;
+    use awaken_dispatch_contract::DispatchClaims;
+    use awaken_dispatch_contract::DispatchEnqueue;
     include!("worker/tests.rs");
 }

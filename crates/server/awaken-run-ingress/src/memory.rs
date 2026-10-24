@@ -64,7 +64,7 @@ use crate::dispatch::{
 use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalFeed, DispatchPage, LeaseLossReason,
 };
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     CancelTransition, CommitEpochAdmission, DispatchTransition, DispatchTransitionError,
     GuardedTransition, PhysicalAttemptSlot, PhysicalAttemptTransition, ReleasedAttempt,
     RelinquishTransition, RunDispatch, classify_commit_epoch_admission,
@@ -833,7 +833,7 @@ fn release_claim(
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchCommitAuthority for MemoryDispatchStore {
+impl awaken_dispatch_contract::DispatchCommitAuthority for MemoryDispatchStore {
     async fn worker_owns_run(
         &self,
         identity: &crate::WorkerIdentity,
@@ -868,7 +868,7 @@ impl awaken_run_ingress_contract::DispatchCommitAuthority for MemoryDispatchStor
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchClaims for MemoryDispatchStore {
+impl awaken_dispatch_contract::DispatchClaims for MemoryDispatchStore {
     async fn resolve_claimed_session_run_reservation(
         &self,
         claim: &RunClaim,
@@ -1167,7 +1167,7 @@ impl awaken_run_ingress_contract::DispatchClaims for MemoryDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchEnqueue for MemoryDispatchStore {
+impl awaken_dispatch_contract::DispatchEnqueue for MemoryDispatchStore {
     async fn enqueue_with(
         &self,
         request: RunDispatch,
@@ -1179,7 +1179,7 @@ impl awaken_run_ingress_contract::DispatchEnqueue for MemoryDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchClaimOwnership for MemoryDispatchStore {
+impl awaken_dispatch_contract::DispatchClaimOwnership for MemoryDispatchStore {
     /// The store's own clock decides liveness, exactly as it does for every
     /// other deadline this backend judges. This used to ride the trait default
     /// on a caller-supplied `now_ms`; the caller no longer has a say in when
@@ -1194,7 +1194,7 @@ impl awaken_run_ingress_contract::DispatchClaimOwnership for MemoryDispatchStore
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchSettlement for MemoryDispatchStore {
+impl awaken_dispatch_contract::DispatchSettlement for MemoryDispatchStore {
     async fn settle(
         &self,
         run_id: &RunId,
@@ -1207,7 +1207,7 @@ impl awaken_run_ingress_contract::DispatchSettlement for MemoryDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchMaintenance for MemoryDispatchStore {
+impl awaken_dispatch_contract::DispatchMaintenance for MemoryDispatchStore {
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
@@ -1283,7 +1283,7 @@ impl awaken_run_ingress_contract::DispatchMaintenance for MemoryDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchReads for MemoryDispatchStore {
+impl awaken_dispatch_contract::DispatchReads for MemoryDispatchStore {
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
         let state = lock(&self.state)?;
         Ok(state
@@ -1325,7 +1325,7 @@ impl awaken_run_ingress_contract::DispatchReads for MemoryDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchAdministration for MemoryDispatchStore {
+impl awaken_dispatch_contract::DispatchAdministration for MemoryDispatchStore {
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let mut state = lock(&self.state)?;
         match state.rows.get_mut(run_id) {
@@ -1393,7 +1393,7 @@ impl awaken_run_ingress_contract::DispatchAdministration for MemoryDispatchStore
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchAttemptControl for MemoryDispatchStore {
+impl awaken_dispatch_contract::DispatchAttemptControl for MemoryDispatchStore {
     async fn finish_attempt_closure(
         &self,
         record: &crate::AttemptClosureRecord,
@@ -1409,7 +1409,7 @@ impl awaken_run_ingress_contract::DispatchAttemptControl for MemoryDispatchStore
         &self,
         claim: &RunClaim,
         binding: Option<&AttemptExecutionBinding>,
-        guard: awaken_run_ingress_contract::WorkerIncarnationGuard,
+        guard: awaken_dispatch_contract::WorkerIncarnationGuard,
         handoff: bool,
     ) -> Result<AttemptAdmission, DispatchError> {
         crate::application::admit_with_incarnation_guard(self, claim, binding, guard, handoff).await
@@ -1417,7 +1417,7 @@ impl awaken_run_ingress_contract::DispatchAttemptControl for MemoryDispatchStore
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchControlReads for MemoryDispatchStore {
+impl awaken_dispatch_contract::DispatchControlReads for MemoryDispatchStore {
     async fn current_credential_binding(
         &self,
         claim: &RunClaim,
@@ -1508,12 +1508,12 @@ impl awaken_run_ingress_contract::DispatchControlReads for MemoryDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::SessionRunAdmissionReads for MemoryDispatchStore {
+impl awaken_dispatch_contract::SessionRunAdmissionReads for MemoryDispatchStore {
     async fn observe_session_run_admission(
         &self,
         run_id: &RunId,
-    ) -> Result<awaken_run_ingress_contract::SessionRunAdmissionObservation, DispatchError> {
-        use awaken_run_ingress_contract::SessionRunAdmissionObservation;
+    ) -> Result<awaken_dispatch_contract::SessionRunAdmissionObservation, DispatchError> {
+        use awaken_dispatch_contract::SessionRunAdmissionObservation;
         let state = lock(&self.state)?;
         let (live, completed) = stored_run_evidence(&state, run_id);
         if let Some(row) = live {
@@ -1535,7 +1535,7 @@ impl awaken_run_ingress_contract::SessionRunAdmissionReads for MemoryDispatchSto
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::SessionRunReservations for MemoryDispatchStore {
+impl awaken_dispatch_contract::SessionRunReservations for MemoryDispatchStore {
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
@@ -1655,7 +1655,7 @@ impl awaken_run_ingress_contract::SessionRunReservations for MemoryDispatchStore
 }
 
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::SessionReservationAuthority for MemoryDispatchStore {
+impl awaken_dispatch_contract::SessionReservationAuthority for MemoryDispatchStore {
     async fn lock_session_run_reservation_epoch(
         &self,
         claim: &RunClaim,
@@ -1666,7 +1666,7 @@ impl awaken_run_ingress_contract::SessionReservationAuthority for MemoryDispatch
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchControlClaims for MemoryDispatchStore {
+impl awaken_dispatch_contract::DispatchControlClaims for MemoryDispatchStore {
     async fn claim_placed(
         &self,
         requester: &WorkerSnapshot,
@@ -1778,10 +1778,10 @@ impl DispatchOperationalFeed for MemoryDispatchStore {
     }
 }
 
-use awaken_run_ingress_contract::DispatchCommitAuthority as _;
+use awaken_dispatch_contract::DispatchCommitAuthority as _;
 
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchAttemptRecordReads for MemoryDispatchStore {
+impl awaken_dispatch_contract::DispatchAttemptRecordReads for MemoryDispatchStore {
     async fn attempt_admissions_after(
         &self,
         cursor: DispatchCursor,
@@ -1817,7 +1817,7 @@ impl awaken_run_ingress_contract::DispatchAttemptRecordReads for MemoryDispatchS
 mod admission_observation_tests {
     use super::MemoryDispatchStore;
     use awaken_agent_contract::agent::run::Id as RunId;
-    use awaken_run_ingress_contract::{DispatchError, SessionRunAdmissionReads};
+    use awaken_dispatch_contract::{DispatchError, SessionRunAdmissionReads};
 
     #[tokio::test]
     async fn admission_observation_propagates_poison_without_false_absence() {

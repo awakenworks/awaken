@@ -1,6 +1,6 @@
 //! Explicit role fixtures for local/remote scheduler composition.
 use super::*;
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport, ClaimedRunCommit,
     ContinuationAdmission, DispatchCursor, DispatchError, DispatchOperationalFeed, DispatchPage,
     PendingInput, RunClaim, RunDispatch, SessionContinuationOutbox, SettleOutcome,
@@ -88,7 +88,7 @@ impl ClaimedRunCommit for FlakyDispatchStore {
     }
     async fn commit_operation(
         &self,
-        _: awaken_run_ingress_contract::ClaimedCommitCommand,
+        _: awaken_dispatch_contract::ClaimedCommitCommand,
     ) -> Result<
         awaken_agent_contract::thread::commit::operation::CommitReceipt,
         awaken_agent_contract::thread::commit::coordinator::Error,

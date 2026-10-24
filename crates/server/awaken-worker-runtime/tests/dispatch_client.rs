@@ -22,11 +22,11 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
+use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
 use awaken_run_ingress::{
     AttemptAdmission, ClaimedStreamPublisher, DispatchError, DispatchOutcome, MemoryDispatchStore,
     RunClaim, RunDispatch, SettleOutcome, StreamObservationRequest, SubmitOptions, WorkerIdentity,
 };
-use awaken_run_ingress_contract::ClaimedCheckpointTransport as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
@@ -1185,7 +1185,7 @@ async fn server_local_write_verbs_fail_closed() {
     fn worker_only(_: &dyn awaken_dispatch_execution::RemoteDispatch) {}
     worker_only(&queue);
     assert!(
-        awaken_run_ingress_contract::InboxRead::list(&queue, &ThreadId("thread-1".into()))
+        awaken_dispatch_contract::InboxRead::list(&queue, &ThreadId("thread-1".into()))
             .await
             .unwrap()
             .is_empty()
@@ -1207,7 +1207,7 @@ async fn maintenance_verbs_fail_closed_except_the_legitimate_inbox_list_readback
         awaken_run_ingress::DispatchTopology::Remote { .. }
     ));
     assert!(
-        awaken_run_ingress_contract::InboxRead::list(
+        awaken_dispatch_contract::InboxRead::list(
             remote.queue().as_ref(),
             &ThreadId("thread-1".into())
         )
@@ -1249,7 +1249,7 @@ async fn any_dispatch_store_exposes_the_control_rung_only_when_its_inner_handle_
 
 struct SelectionOnlyCommit;
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::ClaimedRunCommit for SelectionOnlyCommit {
+impl awaken_dispatch_contract::ClaimedRunCommit for SelectionOnlyCommit {
     async fn commit(
         &self,
         _: &RunClaim,
@@ -1262,7 +1262,7 @@ impl awaken_run_ingress_contract::ClaimedRunCommit for SelectionOnlyCommit {
     }
     async fn commit_operation(
         &self,
-        _: awaken_run_ingress_contract::ClaimedCommitCommand,
+        _: awaken_dispatch_contract::ClaimedCommitCommand,
     ) -> Result<
         awaken_agent_contract::thread::commit::operation::CommitReceipt,
         awaken_agent_contract::thread::commit::coordinator::Error,
@@ -1278,12 +1278,10 @@ fn any_dispatch_store_preserves_the_claimed_recovery_transport() {
         "http://127.0.0.1:1",
         WorkerIdentity::new("worker-local", "boot-local", 1),
     ));
-    let checkpoints: Arc<dyn awaken_run_ingress_contract::ClaimedCheckpointTransport> =
+    let checkpoints: Arc<dyn awaken_dispatch_contract::ClaimedCheckpointTransport> = owner.clone();
+    let credentials: Arc<dyn awaken_dispatch_contract::ClaimedCredentialDeliveryTransport> =
         owner.clone();
-    let credentials: Arc<dyn awaken_run_ingress_contract::ClaimedCredentialDeliveryTransport> =
-        owner.clone();
-    let commit: Arc<dyn awaken_run_ingress_contract::ClaimedRunCommit> =
-        Arc::new(SelectionOnlyCommit);
+    let commit: Arc<dyn awaken_dispatch_contract::ClaimedRunCommit> = Arc::new(SelectionOnlyCommit);
     let binding = awaken_run_ingress::DispatchBinding::remote(owner, commit.clone());
     let awaken_run_ingress::DispatchTopology::Remote {
         checkpoints: selected,
@@ -1299,7 +1297,7 @@ fn any_dispatch_store_preserves_the_claimed_recovery_transport() {
     assert!(Arc::ptr_eq(&binding.queue(), &binding.clone().queue()));
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _,
     DispatchSettlement as _, SessionRunReservations as _,
 };

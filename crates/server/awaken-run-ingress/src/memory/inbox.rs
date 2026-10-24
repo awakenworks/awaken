@@ -74,7 +74,7 @@ impl Inbox for MemoryDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::InboxRead for MemoryDispatchStore {
+impl awaken_dispatch_contract::InboxRead for MemoryDispatchStore {
     async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
         let state = lock(&self.state)?;
         Ok(state
@@ -92,7 +92,7 @@ impl awaken_run_ingress_contract::InboxRead for MemoryDispatchStore {
 #[cfg(test)]
 mod revision_tests {
     use super::*;
-    use awaken_run_ingress_contract::InboxRead;
+    use awaken_dispatch_contract::InboxRead;
 
     #[tokio::test]
     async fn exhausted_pending_edit_preserves_result_revision_and_retractability() {

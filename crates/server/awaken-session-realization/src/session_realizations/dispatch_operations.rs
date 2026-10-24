@@ -8,7 +8,7 @@
 
 use super::{SessionRealizationAccess, SessionRealizations};
 use crate::realization_error::RealizationError;
-use awaken_run_ingress_contract::RunClaim;
+use awaken_dispatch_contract::RunClaim;
 use awaken_session_configuration_contract::SessionRuntimeProjection;
 use awaken_session_configuration_contract::resource::{
     SessionRealizationLease, SessionResourceManifest,

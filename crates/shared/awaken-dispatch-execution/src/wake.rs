@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use awaken_run_ingress_contract::{DispatchError, WakeSignal};
+use awaken_dispatch_contract::{DispatchError, WakeSignal};
 
 /// Notifications are latency hints, never durable admission or stop evidence.
 /// One budget at the calling boundary prevents an unavailable transport from
@@ -87,7 +87,7 @@ impl DispatchHint {
 /// ```
 /// ```
 /// use awaken_dispatch_execution::LocalWakeSignal;
-/// use awaken_run_ingress_contract::WakeSignal;
+/// use awaken_dispatch_contract::WakeSignal;
 /// fn same_port<T: WakeSignal>() {}
 /// same_port::<LocalWakeSignal>();
 /// ```

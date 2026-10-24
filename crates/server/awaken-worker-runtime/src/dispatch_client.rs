@@ -26,7 +26,7 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_agent_contract::stream::sink::Error as StreamError;
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     AttemptAdmission, AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest,
     ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest, Claimed,
     ClaimedCredentialDeliveryTransport, CredentialDeliveryRefreshRequest,
@@ -37,7 +37,7 @@ use awaken_run_ingress_contract::{
     SettleRequest, StreamEventRequest, StreamObservationRequest, SubmitOptions,
 };
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     ClaimedStreamPublisher, WorkerIdentity, WorkerSnapshot,
     worker_credential_realization_capabilities,
 };
@@ -89,7 +89,7 @@ struct RelinquishCommand<'a> {
 }
 
 fn reject_worker_supplied_execution_binding(
-    binding: Option<&awaken_run_ingress_contract::dispatch::AttemptExecutionBinding>,
+    binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
 ) -> Result<(), DispatchError> {
     if binding.is_some() {
         return Err(DispatchError::Rejected("execution domain binding requires a trusted Coordinator provider; Worker JSON cannot establish it".into()));
@@ -109,7 +109,7 @@ fn installed_worker_credential_capabilities(
 /// Local authority is rejected by the type checker before any request.
 /// ```compile_fail,E0599
 /// use awaken_worker_runtime::HttpDispatchQueue;
-/// use awaken_run_ingress_contract::DispatchAdministration;
+/// use awaken_dispatch_contract::DispatchAdministration;
 /// use awaken_agent_contract::agent::run::Id;
 /// async fn cancel_peer(worker: &HttpDispatchQueue) {
 ///     worker.cancel(&Id("no-such-run".into())).await;
@@ -117,55 +117,55 @@ fn installed_worker_credential_capabilities(
 /// ```
 /// ```compile_fail
 /// use awaken_worker_runtime::HttpDispatchQueue;
-/// use awaken_run_ingress_contract::DispatchAdministration;
+/// use awaken_dispatch_contract::DispatchAdministration;
 /// fn required<T: DispatchAdministration>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
 /// ```compile_fail
 /// use awaken_worker_runtime::HttpDispatchQueue;
-/// use awaken_run_ingress_contract::Inbox;
+/// use awaken_dispatch_contract::Inbox;
 /// fn required<T: Inbox>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
 /// ```compile_fail
 /// use awaken_worker_runtime::HttpDispatchQueue;
-/// use awaken_run_ingress_contract::Outbox;
+/// use awaken_dispatch_contract::Outbox;
 /// fn required<T: Outbox>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
 /// ```compile_fail
 /// use awaken_worker_runtime::HttpDispatchQueue;
-/// use awaken_run_ingress_contract::DispatchMaintenance;
+/// use awaken_dispatch_contract::DispatchMaintenance;
 /// fn required<T: DispatchMaintenance>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
 /// ```compile_fail
 /// use awaken_worker_runtime::HttpDispatchQueue;
-/// use awaken_run_ingress_contract::DispatchReads;
+/// use awaken_dispatch_contract::DispatchReads;
 /// fn required<T: DispatchReads>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
 /// ```compile_fail
 /// use awaken_worker_runtime::HttpDispatchQueue;
-/// use awaken_run_ingress_contract::DispatchCommitAuthority;
+/// use awaken_dispatch_contract::DispatchCommitAuthority;
 /// fn required<T: DispatchCommitAuthority>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
 /// ```compile_fail
 /// use awaken_worker_runtime::HttpDispatchQueue;
-/// use awaken_run_ingress_contract::DispatchControlReads;
+/// use awaken_dispatch_contract::DispatchControlReads;
 /// fn required<T: DispatchControlReads>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
 /// ```compile_fail
 /// use awaken_worker_runtime::HttpDispatchQueue;
-/// use awaken_run_ingress_contract::DispatchControlClaims;
+/// use awaken_dispatch_contract::DispatchControlClaims;
 /// fn required<T: DispatchControlClaims>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
 /// ```compile_fail
 /// use awaken_worker_runtime::HttpDispatchQueue;
-/// use awaken_run_ingress_contract::SessionReservationAuthority;
+/// use awaken_dispatch_contract::SessionReservationAuthority;
 /// fn required<T: SessionReservationAuthority>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
@@ -404,7 +404,7 @@ impl ClaimedCredentialDeliveryTransport for HttpDispatchQueue {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchClaims for HttpDispatchQueue {
+impl awaken_dispatch_contract::DispatchClaims for HttpDispatchQueue {
     async fn resolve_claimed_session_run_reservation(
         &self,
         claim: &RunClaim,
@@ -625,7 +625,7 @@ impl awaken_run_ingress_contract::DispatchClaims for HttpDispatchQueue {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchClaimOwnership for HttpDispatchQueue {
+impl awaken_dispatch_contract::DispatchClaimOwnership for HttpDispatchQueue {
     async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError> {
         let value = self
             .post(
@@ -646,7 +646,7 @@ impl awaken_run_ingress_contract::DispatchClaimOwnership for HttpDispatchQueue {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchExecution for HttpDispatchQueue {
+impl awaken_dispatch_contract::DispatchExecution for HttpDispatchQueue {
     async fn record_credential_realization(
         &self,
         claim: &RunClaim,
@@ -725,7 +725,7 @@ impl awaken_run_ingress_contract::DispatchExecution for HttpDispatchQueue {
     async fn begin_attempt(
         &self,
         claim: &RunClaim,
-        binding: Option<&awaken_run_ingress_contract::dispatch::AttemptExecutionBinding>,
+        binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         reject_worker_supplied_execution_binding(binding)?;
         let value = self.attempt_command(claim, "begin", None).await?;
@@ -741,7 +741,7 @@ impl awaken_run_ingress_contract::DispatchExecution for HttpDispatchQueue {
     async fn handoff_attempt(
         &self,
         claim: &RunClaim,
-        binding: Option<&awaken_run_ingress_contract::dispatch::AttemptExecutionBinding>,
+        binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         reject_worker_supplied_execution_binding(binding)?;
         let value = self.attempt_command(claim, "handoff", None).await?;
@@ -768,7 +768,7 @@ impl awaken_run_ingress_contract::DispatchExecution for HttpDispatchQueue {
     async fn finish_attempt(
         &self,
         claim: &RunClaim,
-        cause: Option<awaken_run_ingress_contract::AttemptReturnCause>,
+        cause: Option<awaken_dispatch_contract::AttemptReturnCause>,
     ) -> Result<SettleOutcome, DispatchError> {
         let value = self.attempt_command(claim, "finish", cause).await?;
         Ok(
@@ -830,7 +830,7 @@ impl awaken_run_ingress_contract::DispatchExecution for HttpDispatchQueue {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchEnqueue for HttpDispatchQueue {
+impl awaken_dispatch_contract::DispatchEnqueue for HttpDispatchQueue {
     async fn enqueue_with(
         &self,
         request: RunDispatch,
@@ -850,7 +850,7 @@ impl awaken_run_ingress_contract::DispatchEnqueue for HttpDispatchQueue {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchSettlement for HttpDispatchQueue {
+impl awaken_dispatch_contract::DispatchSettlement for HttpDispatchQueue {
     async fn settle(
         &self,
         run_id: &RunId,
@@ -883,7 +883,7 @@ impl awaken_run_ingress_contract::DispatchSettlement for HttpDispatchQueue {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::ClaimedCheckpointTransport for HttpDispatchQueue {
+impl awaken_dispatch_contract::ClaimedCheckpointTransport for HttpDispatchQueue {
     async fn load_stream_checkpoint(
         &self,
         claim: &RunClaim,
@@ -977,7 +977,7 @@ impl awaken_run_ingress_contract::ClaimedCheckpointTransport for HttpDispatchQue
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::InboxRead for HttpDispatchQueue {
+impl awaken_dispatch_contract::InboxRead for HttpDispatchQueue {
     // The one legitimate read no-op (NOT fail-closed): the worker's own drive calls
     // `Inbox::list` to drain a thread's unbound input, but a db-less worker already
     // receives its run's pending input in `Claimed.pending`, and the unbound-inbox
@@ -994,7 +994,7 @@ impl HttpDispatchQueue {
         &self,
         claim: &RunClaim,
         action: &str,
-        return_cause: Option<awaken_run_ingress_contract::AttemptReturnCause>,
+        return_cause: Option<awaken_dispatch_contract::AttemptReturnCause>,
     ) -> Result<serde_json::Value, DispatchError> {
         self.post_idempotent(
             &format!("/v1/worker/dispatch/attempt/{action}"),

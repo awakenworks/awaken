@@ -5,14 +5,14 @@
 use crate::AdmissionError;
 use crate::model_capability::model_realization_capability;
 use awaken_agent_contract::credential::CredentialMaterialSource;
-use awaken_run_ingress_contract::PlacementRequirements;
+use awaken_dispatch_contract::PlacementRequirements;
 use awaken_runtime_contract::RunActivation;
 use awaken_session_realization_contract::requires_local_environment;
 use std::collections::BTreeSet;
 
 pub fn worker_local_credentials(
     models: &awaken_runtime_contract::resolved::ResolvedSpec,
-) -> BTreeSet<awaken_run_ingress_contract::WorkerCredentialRevision> {
+) -> BTreeSet<awaken_dispatch_contract::WorkerCredentialRevision> {
     std::iter::once(&models.model_binding)
         .chain(models.model_candidates.iter())
         .filter_map(|candidate| match candidate.provisioning() {
@@ -37,29 +37,27 @@ pub fn worker_local_credentials(
 
 fn worker_acp_capabilities(
     models: &awaken_runtime_contract::resolved::ResolvedSpec,
-) -> BTreeSet<awaken_run_ingress_contract::WorkerAcpCapabilityRequirement> {
+) -> BTreeSet<awaken_dispatch_contract::WorkerAcpCapabilityRequirement> {
     std::iter::once(&models.model_binding)
         .chain(models.model_candidates.iter())
         .filter_map(|candidate| match candidate.provisioning() {
             awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { acp, .. }
                 if !acp.capability_fingerprint.trim().is_empty() =>
             {
-                Some(
-                    awaken_run_ingress_contract::WorkerAcpCapabilityRequirement {
-                        backend_ref: candidate.binding().identity().2.to_owned(),
-                        fingerprint: acp.capability_fingerprint.clone(),
-                    },
-                )
+                Some(awaken_dispatch_contract::WorkerAcpCapabilityRequirement {
+                    backend_ref: candidate.binding().identity().2.to_owned(),
+                    fingerprint: acp.capability_fingerprint.clone(),
+                })
             }
             awaken_runtime_contract::resolved::ModelProvisioning::Provider {
                 acp: Some(acp),
                 ..
-            } if !acp.capability_fingerprint.trim().is_empty() => Some(
-                awaken_run_ingress_contract::WorkerAcpCapabilityRequirement {
+            } if !acp.capability_fingerprint.trim().is_empty() => {
+                Some(awaken_dispatch_contract::WorkerAcpCapabilityRequirement {
                     backend_ref: candidate.binding().identity().2.to_owned(),
                     fingerprint: acp.capability_fingerprint.clone(),
-                },
-            ),
+                })
+            }
             _ => None,
         })
         .collect()
@@ -276,7 +274,7 @@ fn apply_session_physical_placement(
         };
         if requires_trusted_host {
             placement.sandbox_backend =
-                Some(awaken_run_ingress_contract::TRUSTED_HOST_SANDBOX_BACKEND.to_string());
+                Some(awaken_dispatch_contract::TRUSTED_HOST_SANDBOX_BACKEND.to_string());
         }
         if let Some(environment) = environment {
             placement.resources =
@@ -291,11 +289,11 @@ fn apply_session_physical_placement(
         }
         placement
             .required_capabilities
-            .insert(awaken_run_ingress_contract::SESSION_RESOURCES_CAPABILITY.to_string());
+            .insert(awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY.to_string());
         if resource_facts.has_credentialed_repository() {
             placement
                 .required_capabilities
-                .insert(awaken_run_ingress_contract::REPOSITORY_CREDENTIALS_CAPABILITY.to_string());
+                .insert(awaken_dispatch_contract::REPOSITORY_CREDENTIALS_CAPABILITY.to_string());
         }
     }
 }
@@ -418,7 +416,7 @@ mod preparation_tests {
             assert!(
                 required
                     .required_capabilities
-                    .contains(awaken_run_ingress_contract::SESSION_RESOURCES_CAPABILITY,),
+                    .contains(awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY,),
                 "P1/E4"
             );
         }
@@ -428,7 +426,7 @@ mod preparation_tests {
         let trusted = session_preparation_placement(&environment, &resources, true);
         assert_eq!(
             trusted.sandbox_backend.as_deref(),
-            Some(awaken_run_ingress_contract::TRUSTED_HOST_SANDBOX_BACKEND),
+            Some(awaken_dispatch_contract::TRUSTED_HOST_SANDBOX_BACKEND),
             "P2/E2"
         );
         assert!(trusted.sandbox.process_tree_supervision, "P2/E2");

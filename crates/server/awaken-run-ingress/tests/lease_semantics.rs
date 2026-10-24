@@ -1867,7 +1867,7 @@ async fn native_cancelled_external_future_does_not_acknowledge_physical_return()
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchExecution as _,
     DispatchReads as _, DispatchSettlement as _,
 };

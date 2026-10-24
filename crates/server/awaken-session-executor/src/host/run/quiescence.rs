@@ -16,18 +16,18 @@ enum TerminalDispatchAction {
 /// Every already-activated row still follows the canonical cancellation claim
 /// and physical-quiescence path.
 const fn terminal_dispatch_action(
-    state: awaken_run_ingress_contract::DispatchState,
+    state: awaken_dispatch_contract::DispatchState,
 ) -> TerminalDispatchAction {
     match state {
-        awaken_run_ingress_contract::DispatchState::Reserved
-        | awaken_run_ingress_contract::DispatchState::ReservationLeased => {
+        awaken_dispatch_contract::DispatchState::Reserved
+        | awaken_dispatch_contract::DispatchState::ReservationLeased => {
             TerminalDispatchAction::CancelAndRejectReservation
         }
-        awaken_run_ingress_contract::DispatchState::Pending
-        | awaken_run_ingress_contract::DispatchState::Leased
-        | awaken_run_ingress_contract::DispatchState::Awaiting
-        | awaken_run_ingress_contract::DispatchState::DeadLetter => TerminalDispatchAction::Cancel,
-        awaken_run_ingress_contract::DispatchState::Superseded => TerminalDispatchAction::Ignore,
+        awaken_dispatch_contract::DispatchState::Pending
+        | awaken_dispatch_contract::DispatchState::Leased
+        | awaken_dispatch_contract::DispatchState::Awaiting
+        | awaken_dispatch_contract::DispatchState::DeadLetter => TerminalDispatchAction::Cancel,
+        awaken_dispatch_contract::DispatchState::Superseded => TerminalDispatchAction::Ignore,
     }
 }
 
@@ -146,7 +146,7 @@ impl crate::SessionRuns {
                         .list_dispatches()
                         .await
                         .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
-                    let active_here = |dispatch: &awaken_run_ingress_contract::DispatchSummary| {
+                    let active_here = |dispatch: &awaken_dispatch_contract::DispatchSummary| {
                         (dispatch.thread_id == thread_id
                             || dispatch.session_thread_id.as_ref() == Some(&thread_id))
                             && dispatch.state.remains_unsettled()
@@ -247,30 +247,30 @@ fn terminal_quiescence_rejects_only_unstarted_reservations() {
     // can neither delete activated work as a reservation nor wait on the normal
     // reservation TTL after Session terminal truth is already durable.
     let state = match kani::any::<u8>() % 7 {
-        0 => awaken_run_ingress_contract::DispatchState::Reserved,
-        1 => awaken_run_ingress_contract::DispatchState::ReservationLeased,
-        2 => awaken_run_ingress_contract::DispatchState::Pending,
-        3 => awaken_run_ingress_contract::DispatchState::Leased,
-        4 => awaken_run_ingress_contract::DispatchState::Awaiting,
-        5 => awaken_run_ingress_contract::DispatchState::DeadLetter,
-        _ => awaken_run_ingress_contract::DispatchState::Superseded,
+        0 => awaken_dispatch_contract::DispatchState::Reserved,
+        1 => awaken_dispatch_contract::DispatchState::ReservationLeased,
+        2 => awaken_dispatch_contract::DispatchState::Pending,
+        3 => awaken_dispatch_contract::DispatchState::Leased,
+        4 => awaken_dispatch_contract::DispatchState::Awaiting,
+        5 => awaken_dispatch_contract::DispatchState::DeadLetter,
+        _ => awaken_dispatch_contract::DispatchState::Superseded,
     };
     let action = terminal_dispatch_action(state);
     assert_eq!(
         action == TerminalDispatchAction::CancelAndRejectReservation,
         matches!(
             state,
-            awaken_run_ingress_contract::DispatchState::Reserved
-                | awaken_run_ingress_contract::DispatchState::ReservationLeased
+            awaken_dispatch_contract::DispatchState::Reserved
+                | awaken_dispatch_contract::DispatchState::ReservationLeased
         )
     );
     assert_eq!(
         action == TerminalDispatchAction::Ignore,
-        state == awaken_run_ingress_contract::DispatchState::Superseded
+        state == awaken_dispatch_contract::DispatchState::Superseded
     );
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchControlReads as _, DispatchReads as _, SessionRunReservations as _,
 };
 
@@ -280,7 +280,7 @@ mod terminal_scope_tests {
     use awaken_agent_contract::agent::run::EndCause;
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
-    use awaken_run_ingress_contract::{
+    use awaken_dispatch_contract::{
         DispatchClaims as _, DispatchEnqueue as _, DispatchExecution as _,
     };
 
@@ -336,7 +336,7 @@ mod terminal_scope_tests {
                         // This physical binding was admitted by a registered
                         // remote Worker using the current protocol, not v0.
                         .with_placement(
-                            awaken_run_ingress_contract::PlacementRequirements::remote_required(),
+                            awaken_dispatch_contract::PlacementRequirements::remote_required(),
                         ),
                 )
                 .await
@@ -349,8 +349,8 @@ mod terminal_scope_tests {
                 .await
                 .unwrap()
                 .unwrap();
-            let claim = awaken_run_ingress_contract::RunClaim::from(&claimed.lease);
-            let binding = awaken_run_ingress_contract::dispatch::AttemptExecutionBinding::new(
+            let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
+            let binding = awaken_dispatch_contract::dispatch::AttemptExecutionBinding::new(
                 worker,
                 "fixture-provider",
                 "original-unclassified-execution",

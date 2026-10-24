@@ -105,7 +105,7 @@ struct InMemorySession {
 struct InMemoryRun {
     context: bool,
     session_dispatch: bool,
-    claim: Option<awaken_run_ingress_contract::RunClaim>,
+    claim: Option<awaken_dispatch_contract::RunClaim>,
 }
 
 impl crate::session_realizations::SessionRunQuery for InMemoryRun {
@@ -121,7 +121,7 @@ impl crate::session_realizations::SessionRunQuery for InMemoryRun {
         self.session_dispatch
     }
 
-    fn dispatch_claim(&self) -> Option<&awaken_run_ingress_contract::RunClaim> {
+    fn dispatch_claim(&self) -> Option<&awaken_dispatch_contract::RunClaim> {
         self.claim.as_ref()
     }
 
@@ -133,7 +133,7 @@ impl crate::session_realizations::SessionRunQuery for InMemoryRun {
         self.session_dispatch = true;
     }
 
-    fn install_dispatch_claim(&mut self, claim: awaken_run_ingress_contract::RunClaim) {
+    fn install_dispatch_claim(&mut self, claim: awaken_dispatch_contract::RunClaim) {
         self.claim = Some(claim);
     }
 }

@@ -328,10 +328,10 @@ fn terminal_effects(
 /// The same dispatch instance this process uses, narrowed to execution binding.
 fn dispatch_execution(
     authority: &dyn crate::SessionAuthority,
-) -> Option<Arc<dyn awaken_run_ingress_contract::DispatchExecution>> {
+) -> Option<Arc<dyn awaken_dispatch_contract::DispatchExecution>> {
     authority
         .dispatch_binding()
-        .map(|binding| binding.queue() as Arc<dyn awaken_run_ingress_contract::DispatchExecution>)
+        .map(|binding| binding.queue() as Arc<dyn awaken_dispatch_contract::DispatchExecution>)
 }
 
 /// The process dispatch and the Session Run component that submits, cancels
@@ -647,8 +647,8 @@ mod startup_tests {
                 },
                 process(),
                 crate::UpstreamAuthority::default(),
-                awaken_run_ingress_contract::RegisteredCapacity::of(
-                    &awaken_run_ingress_contract::WorkerManifest::default()
+                awaken_dispatch_contract::RegisteredCapacity::of(
+                    &awaken_dispatch_contract::WorkerManifest::default()
                 )
                 .unwrap(),
             )
@@ -667,8 +667,8 @@ mod startup_tests {
             },
             process(),
             crate::host::test_upstream_authority(),
-            awaken_run_ingress_contract::RegisteredCapacity::of(
-                &awaken_run_ingress_contract::WorkerManifest::default(),
+            awaken_dispatch_contract::RegisteredCapacity::of(
+                &awaken_dispatch_contract::WorkerManifest::default(),
             )
             .unwrap(),
         )
@@ -743,8 +743,8 @@ mod startup_tests {
             },
             process(),
             crate::host::test_upstream_authority(),
-            awaken_run_ingress_contract::RegisteredCapacity::of(
-                &awaken_run_ingress_contract::WorkerManifest::default(),
+            awaken_dispatch_contract::RegisteredCapacity::of(
+                &awaken_dispatch_contract::WorkerManifest::default(),
             )
             .unwrap(),
         )

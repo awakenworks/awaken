@@ -34,7 +34,7 @@ impl ResourceStaging {
         &self,
         workspace: &str,
         bindings: &[ResolvedSkillBinding],
-        claim: Option<&awaken_run_ingress_contract::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
     ) -> Result<Vec<SkillVersion>, SkillStoreError> {
         let realization = if self.fetches_resources_upstream {
@@ -102,7 +102,7 @@ impl ResourceStaging {
         &self,
         thread: &str,
         desired: &session_resource::SessionResourceManifest,
-        claim: Option<&awaken_run_ingress_contract::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
         effect_key: &str,
     ) -> Result<CompiledEffectiveInputs, RunError> {
@@ -147,7 +147,7 @@ impl ResourceStaging {
         &self,
         thread: &str,
         desired: &session_resource::SessionResourceManifest,
-        claim: Option<&awaken_run_ingress_contract::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
         effect_key: String,
     ) -> Result<(), RunError> {
@@ -240,7 +240,7 @@ impl ResourceStaging {
         &self,
         workspace: &str,
         input: &session_resource::ResolvedInput,
-        claim: Option<&awaken_run_ingress_contract::RunClaim>,
+        claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
         environment: Option<&environment_projection::FrozenEnvironmentInputs>,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
@@ -408,7 +408,7 @@ impl ResourceStaging {
                     }
                     (true, Some(claim), None) => Some(
                         awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
-                            awaken_run_ingress_contract::RunClaim,
+                            awaken_dispatch_contract::RunClaim,
                         >::encode(
                             self.memory_reference_encoder.as_deref().ok_or_else(|| {
                                 RunError::internal(

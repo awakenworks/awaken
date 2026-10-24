@@ -20,7 +20,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use tokio_util::sync::CancellationToken;
 
 use crate::claimed_stream::{ClaimBoundStreamSink, LocalClaimedStreamPublisher};
-use awaken_run_ingress_contract::{ClaimedStreamPublisher, RunClaim};
+use awaken_dispatch_contract::{ClaimedStreamPublisher, RunClaim};
 
 /// Materializes the activation's admission-pinned inference access. A worker
 /// receives the complete activation and opaque access value; it neither selects a
@@ -38,7 +38,7 @@ pub type ClaimedModelRequestGateFactory =
     Arc<dyn Fn(&RunClaim) -> Arc<dyn ModelRequestGate> + Send + Sync>;
 
 // The serializable durable-run instruction moved to the dispatch contract
-// (ADR-0039 2.1); re-exported so `awaken_run_ingress_contract::RunDispatch` is stable.
+// (ADR-0039 2.1); re-exported so `awaken_dispatch_contract::RunDispatch` is stable.
 
 /// Worker-owned live wiring. The durable host holds one of these and rebuilds a
 /// [`RuntimeRunContext`] for every execute/resume attempt, binding the run to the

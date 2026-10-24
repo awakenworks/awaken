@@ -24,7 +24,7 @@ const fn canonical_session_projection_is_installed(
 /// The frozen projection a claimed dispatch carries. Bytes that do not decode
 /// cannot decode on a retry either, so this is an absorbing resolution failure.
 fn decode_dispatched_projection(
-    envelope: &awaken_run_ingress_contract::SessionRuntimeEnvelope,
+    envelope: &awaken_dispatch_contract::SessionRuntimeEnvelope,
     run_id: &awaken_agent_contract::agent::run::Id,
 ) -> Result<SessionRuntimeProjection, Error> {
     envelope
@@ -118,7 +118,7 @@ impl SessionWorkerResolver {
     async fn install_claimed_dispatch(
         &self,
         execution: &ClaimedExecution,
-        claimed: &awaken_run_ingress_contract::Claimed,
+        claimed: &awaken_dispatch_contract::Claimed,
     ) -> Result<
         (
             bool,
@@ -177,7 +177,7 @@ impl SessionWorkerResolver {
                 .into(),
             ));
         }
-        let claim = awaken_run_ingress_contract::RunClaim::from(&claimed.lease);
+        let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
         // A failed/NotReady resolve must not publish an attempt claim into the
         // shared Session projection: lifecycle recovery is independently owned
         // by its realization lease. Once the complete projection is installed,
@@ -220,7 +220,7 @@ impl SessionWorkerResolver {
     /// Keep physical admission before MCP effects and before root/child plugins.
     async fn prepare_claimed_environment(
         execution: &ClaimedExecution,
-        claimed: &awaken_run_ingress_contract::Claimed,
+        claimed: &awaken_dispatch_contract::Claimed,
         canonical_session_realization: bool,
         dispatched_mcp_stages: Option<
             &[awaken_session_configuration_contract::mcp::StageMcpAttachment],
@@ -279,7 +279,7 @@ impl SessionWorkerResolver {
     /// An Environment-free Worker at the claim's commit boundary.
     async fn boundary_worker(
         &self,
-        claimed: &awaken_run_ingress_contract::Claimed,
+        claimed: &awaken_dispatch_contract::Claimed,
         install_cancellation_executor: bool,
     ) -> Result<DispatchWorker<AnyDispatchStore>, Error> {
         self.commits
@@ -324,7 +324,7 @@ impl WorkerResolver<AnyDispatchStore> for SessionWorkerResolver {
 
     async fn worker_for_claimed(
         &self,
-        claimed: &awaken_run_ingress_contract::Claimed,
+        claimed: &awaken_dispatch_contract::Claimed,
     ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
         let execution = self.execution()?;
         // Reservation repair owns no executable Run yet. It needs only the
@@ -446,7 +446,7 @@ impl WorkerResolver<AnyDispatchStore> for SessionWorkerResolver {
 
     async fn settle_claimed_resolution_failure(
         &self,
-        claimed: &awaken_run_ingress_contract::Claimed,
+        claimed: &awaken_dispatch_contract::Claimed,
         error: Error,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         self.boundary_worker(claimed, false)
@@ -457,7 +457,7 @@ impl WorkerResolver<AnyDispatchStore> for SessionWorkerResolver {
 
     async fn worker_for_retry_exhausted(
         &self,
-        claimed: &awaken_run_ingress_contract::Claimed,
+        claimed: &awaken_dispatch_contract::Claimed,
     ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
         Ok(Arc::new(self.boundary_worker(claimed, false).await?))
     }
@@ -474,7 +474,7 @@ impl WorkerResolver<AnyDispatchStore> for SessionWorkerResolver {
     }
 }
 
-use awaken_run_ingress_contract::DispatchExecution as _;
+use awaken_dispatch_contract::DispatchExecution as _;
 
 #[cfg(test)]
 mod canonical_projection_tests {

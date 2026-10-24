@@ -11,8 +11,8 @@ mod tests {
         AdoptionModel, ToggleBindingSink, committed_environment, deferred_environment,
         eager_environment, managed_test_host, test_activation, with_empty_session_resources,
     };
-    use awaken_run_ingress_contract::DispatchClaims;
-    use awaken_run_ingress_contract::DispatchEnqueue;
+    use awaken_dispatch_contract::DispatchClaims;
+    use awaken_dispatch_contract::DispatchEnqueue;
     use std::sync::{Arc, Mutex};
 
     /// Ordinary cold-worker cause/effect table: C1 a real Queue claim has no
@@ -52,7 +52,7 @@ mod tests {
 
         let eager_environment = eager_environment();
         let eager_activation = test_activation("cold-legacy", "run-legacy");
-        let eager_runtime = awaken_run_ingress_contract::SessionRuntimeEnvelope::new(
+        let eager_runtime = awaken_dispatch_contract::SessionRuntimeEnvelope::new(
             awaken_session_configuration_contract::SessionRuntimeProjection {
                 environment: eager_environment,
                 tools: Some(Default::default()),
@@ -63,7 +63,7 @@ mod tests {
         );
         store
             .enqueue(with_empty_session_resources(
-                awaken_run_ingress_contract::RunDispatch::new(eager_activation)
+                awaken_dispatch_contract::RunDispatch::new(eager_activation)
                     .with_session_runtime(eager_runtime),
                 host.run_assembly.local_workspace(),
             ))
@@ -91,7 +91,7 @@ mod tests {
 
         let deferred_environment = deferred_environment();
         let deferred_activation = test_activation("cold-deferred", "run-deferred");
-        let runtime = awaken_run_ingress_contract::SessionRuntimeEnvelope::new(
+        let runtime = awaken_dispatch_contract::SessionRuntimeEnvelope::new(
             awaken_session_configuration_contract::SessionRuntimeProjection {
                 environment: deferred_environment,
                 tools: Some(Default::default()),
@@ -102,7 +102,7 @@ mod tests {
         );
         store
             .enqueue(with_empty_session_resources(
-                awaken_run_ingress_contract::RunDispatch::new(deferred_activation)
+                awaken_dispatch_contract::RunDispatch::new(deferred_activation)
                     .with_session_runtime(runtime),
                 host.run_assembly.local_workspace(),
             ))
@@ -145,7 +145,7 @@ mod tests {
                     && claimed.request.session_resources.is_some(),
                 "C1/C2 ordinary authority with complete carried Runtime/Resources"
             );
-            let claim = awaken_run_ingress_contract::RunClaim::from(&claimed.lease);
+            let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
             assert!(
                 host.run_assembly
                     .installed_sessions
@@ -525,7 +525,7 @@ mod tests {
     {
         async fn resume_frozen(
             &self,
-            _claim: &awaken_run_ingress_contract::RunClaim,
+            _claim: &awaken_dispatch_contract::RunClaim,
             _session_id: &str,
             _session_work_authority: Option<
                 &awaken_session_application_contract::SessionWorkAuthorityReceipt,

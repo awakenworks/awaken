@@ -377,6 +377,6 @@ async fn concurrent_incompatible_front_claim_throughput() {
     }
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _,
 };

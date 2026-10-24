@@ -62,7 +62,7 @@ async fn postgres_operational_feed_waits_for_the_complete_committed_prefix() {
     // R3 C3 rollback -> [B], preserving the real sparse sequence identity.
     // Fault injection uses actual independent PostgreSQL transactions in an
     // isolated schema; the observation is the production events_after port.
-    use awaken_run_ingress_contract::{DispatchCursor, DispatchOperation, DispatchOperationalFeed};
+    use awaken_dispatch_contract::{DispatchCursor, DispatchOperation, DispatchOperationalFeed};
     // The new scoped admission view uses the SAME original prefix barrier:
     // even an unresolved foreign lower allocation must settle before the
     // selected higher original cursor can become an observation checkpoint.
@@ -2282,7 +2282,7 @@ async fn thread_locks_follow_the_resolved_dispatch_relation_not_a_search_path_pr
     alias.close().await;
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaimOwnership as _, DispatchClaims as _, DispatchControlClaims as _,
     DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _, InboxRead as _,
 };

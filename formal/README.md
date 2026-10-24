@@ -58,7 +58,7 @@ The named harnesses in the strict gate invoke production pure functions directly
 - `awaken-session-realization-contract`: Session realization reuses one exact live
   owner/incarnation; restart or authorized reassignment advances the epoch exactly
   once, and exhaustion fails closed.
-- `awaken-run-ingress-contract`
+- `awaken-dispatch-contract`
   - distinct parent-Session affinity retains the child's own Run/Thread; claim
     advances one exact lease epoch and preserves the frozen dispatch; the physical
     slot admits exact authority. Memory, SQLite, and PostgreSQL share these reducers.
@@ -116,7 +116,7 @@ The named harnesses in the strict gate invoke production pure functions directly
     complete selected request.
   - Environment credential custody selects ACP, installed hosted Cloud, or
     self-hosted Native profile from the exact complete input relation.
-- `awaken-run-ingress-contract`
+- `awaken-dispatch-contract`
   - a Worker replaces a frozen Session Resource manifest exactly when it is a
     non-replay, same-Workspace generation with a strictly greater revision;
     stale, conflicting, and cross-Workspace generations are rejected.

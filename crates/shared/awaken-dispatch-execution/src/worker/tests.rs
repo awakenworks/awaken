@@ -475,7 +475,7 @@ fn remote_projection_is_the_single_awaiting_resume_reader() {
     // Runtime resume must share one reader Arc. Decision rule: P1-P3 cover
     // local ownership and both remote ticket partitions.
     let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
-    let identity = awaken_run_ingress_contract::WorkerIdentity::new("worker", "boot", 1);
+    let identity = awaken_dispatch_contract::WorkerIdentity::new("worker", "boot", 1);
     let binding = awaken_dispatch_erasure::DispatchBinding::remote(
         Arc::new(awaken_worker_runtime::HttpDispatchQueue::new(
             "http://127.0.0.1:9",
@@ -732,7 +732,7 @@ async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
         .expect("R1 parent admission")
         .expect("R1 parent claim");
     let parent_claim = RunClaim::from(&parent.lease);
-    let dispatch: Arc<dyn awaken_run_ingress_contract::DispatchCommitAuthority> = store.clone();
+    let dispatch: Arc<dyn awaken_dispatch_contract::DispatchCommitAuthority> = store.clone();
     let parent_checkpoint: Arc<dyn StreamCheckpointStore> = Arc::new(
         FencedStreamCheckpointStore::new(None, dispatch, parent_claim),
     );
@@ -929,7 +929,7 @@ fn remote_constructors_install_one_required_snapshot_target() {
     // cache shared by snapshot installation, dispatch selection and Runtime.
     // A provisional committed reader cannot bypass the required remote load.
     for combined in [false, true] {
-        let identity = awaken_run_ingress_contract::WorkerIdentity::new("worker", "boot", 1);
+        let identity = awaken_dispatch_contract::WorkerIdentity::new("worker", "boot", 1);
         let binding = awaken_dispatch_erasure::DispatchBinding::remote(
             Arc::new(awaken_worker_runtime::HttpDispatchQueue::new(
                 "http://127.0.0.1:9",

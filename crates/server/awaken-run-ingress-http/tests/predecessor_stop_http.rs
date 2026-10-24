@@ -2207,7 +2207,7 @@ fn postgres_configuration_contract() {
     ]);
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchExecution as _,
 };
 

@@ -871,7 +871,7 @@ impl awaken_session_realization_contract::ClaimedSessionRealizationControl
 {
     async fn resume_frozen(
         &self,
-        _claim: &awaken_run_ingress_contract::RunClaim,
+        _claim: &awaken_dispatch_contract::RunClaim,
         _session_id: &str,
         _session_work_authority: Option<
             &awaken_session_application_contract::SessionWorkAuthorityReceipt,
@@ -918,10 +918,10 @@ impl ExecutorComponents {
 pub(crate) struct SelectedOnly;
 
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::ClaimedRunCommit for SelectedOnly {
+impl awaken_dispatch_contract::ClaimedRunCommit for SelectedOnly {
     async fn commit(
         &self,
-        _claim: &awaken_run_ingress_contract::RunClaim,
+        _claim: &awaken_dispatch_contract::RunClaim,
         _commit: awaken_agent_contract::thread::commit::staged::ThreadCommit,
     ) -> Result<
         awaken_agent_contract::thread::commit::staged::CommitRecord,
@@ -931,7 +931,7 @@ impl awaken_run_ingress_contract::ClaimedRunCommit for SelectedOnly {
     }
     async fn commit_operation(
         &self,
-        _: awaken_run_ingress_contract::ClaimedCommitCommand,
+        _: awaken_dispatch_contract::ClaimedCommitCommand,
     ) -> Result<
         awaken_agent_contract::thread::commit::operation::CommitReceipt,
         awaken_agent_contract::thread::commit::coordinator::Error,
@@ -941,10 +941,10 @@ impl awaken_run_ingress_contract::ClaimedRunCommit for SelectedOnly {
 }
 
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::ClaimedStreamPublisher for SelectedOnly {
+impl awaken_dispatch_contract::ClaimedStreamPublisher for SelectedOnly {
     async fn publish(
         &self,
-        _claim: &awaken_run_ingress_contract::RunClaim,
+        _claim: &awaken_dispatch_contract::RunClaim,
         _event: awaken_agent_contract::stream::event::Event,
     ) -> Result<(), awaken_agent_contract::stream::sink::Error> {
         unreachable!("port selection never publishes")
@@ -970,7 +970,7 @@ pub(crate) fn test_upstream_authority() -> crate::UpstreamAuthority {
         .with_dispatch_binding(awaken_dispatch_erasure::DispatchBinding::remote(
             Arc::new(awaken_worker_runtime::HttpDispatchQueue::new(
                 "http://127.0.0.1:9",
-                awaken_run_ingress_contract::WorkerIdentity::new("fixture", "fixture-boot", 1),
+                awaken_dispatch_contract::WorkerIdentity::new("fixture", "fixture-boot", 1),
             )),
             ports.clone(),
         ))

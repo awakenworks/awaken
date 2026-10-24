@@ -53,7 +53,7 @@ use crate::service::{
 };
 use crate::wake::{LocalWakeSignal, publish_dispatch_hint};
 use crate::worker::{DispatchWorker, renew_claim_while_active};
-use awaken_run_ingress_contract::{RunDispatch, WakeSignal};
+use awaken_dispatch_contract::{RunDispatch, WakeSignal};
 use awaken_time::WallClock;
 use awaken_time::WallClockExt;
 
@@ -194,7 +194,7 @@ pub struct DispatchPool<S> {
     admission: Arc<PoolAdmission>,
 }
 
-fn spawn_observed_depth<S: awaken_run_ingress_contract::DispatchControlReads + ?Sized + 'static>(
+fn spawn_observed_depth<S: awaken_dispatch_contract::DispatchControlReads + ?Sized + 'static>(
     store: Arc<S>,
     shutdown: CancellationToken,
     enabled: bool,
@@ -756,7 +756,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     /// Durably deliver pending input and nudge the pool to resume the run.
     pub async fn deliver(&self, input: PendingInput) -> Result<(), Error>
     where
-        S: awaken_run_ingress_contract::Inbox,
+        S: awaken_dispatch_contract::Inbox,
     {
         self.store.append(input).await?;
         publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
@@ -766,7 +766,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     /// Stage a cross-thread delivery and nudge the pool to relay it.
     pub async fn send(&self, input: PendingInput) -> Result<(), Error>
     where
-        S: awaken_run_ingress_contract::Outbox,
+        S: awaken_dispatch_contract::Outbox,
     {
         self.store.stage(input).await?;
         publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
@@ -787,7 +787,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     /// authoritative across process replacement.
     pub async fn cancel(&self, run_id: &RunId) -> Result<bool, Error>
     where
-        S: awaken_run_ingress_contract::DispatchAdministration,
+        S: awaken_dispatch_contract::DispatchAdministration,
     {
         if self.store.cancel(run_id).await?.is_none() {
             return Ok(false);
@@ -1355,7 +1355,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
 /// Return one claim whose attempt could not settle, as its failure class
 /// decides: a deferral keeps the retry budget, a failed attempt spends one
 /// attempt and the one that exhausts it is terminalized like a crash.
-async fn release_failed_claim<S: awaken_run_ingress_contract::DispatchExecution + 'static>(
+async fn release_failed_claim<S: awaken_dispatch_contract::DispatchExecution + 'static>(
     store: &S,
     claim: &crate::RunClaim,
     retry_after_ms: u64,
@@ -1382,9 +1382,7 @@ async fn release_failed_claim<S: awaken_run_ingress_contract::DispatchExecution 
     }
 }
 
-pub(crate) async fn defer_failed_claim<
-    S: awaken_run_ingress_contract::DispatchExecution + 'static,
->(
+pub(crate) async fn defer_failed_claim<S: awaken_dispatch_contract::DispatchExecution + 'static>(
     store: &S,
     claim: &crate::RunClaim,
     retry_after_ms: u64,

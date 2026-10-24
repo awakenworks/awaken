@@ -225,7 +225,7 @@ impl ProcessDispatch {
     /// maintenance loop retains Worker evidence with.
     pub fn bind_worker_evidence(
         &self,
-        directory: Arc<dyn awaken_run_ingress_contract::WorkerDirectory>,
+        directory: Arc<dyn awaken_dispatch_contract::WorkerDirectory>,
         source: Arc<dyn crate::WorkerTerminalReconciliation>,
     ) -> Result<(), AdmissionError> {
         self.terminal_reconciliation
@@ -244,12 +244,12 @@ impl ProcessDispatch {
     pub async fn publish_staged(
         &self,
         owner: &AnyCoordinatorDispatch,
-    ) -> Result<(), awaken_run_ingress_contract::DispatchError> {
+    ) -> Result<(), awaken_dispatch_contract::DispatchError> {
         if self.pool.get().is_some() {
             self.hint.publish().await;
             return Ok(());
         }
-        awaken_run_ingress_contract::Outbox::relay(owner).await?;
+        awaken_dispatch_contract::Outbox::relay(owner).await?;
         Ok(())
     }
 
@@ -341,7 +341,7 @@ impl awaken_session_realization_contract::SessionPreparationPlacement for Proces
         &self,
         session: &awaken_session_state_contract::PersistedSession,
     ) -> Result<
-        awaken_run_ingress_contract::PlacementRequirements,
+        awaken_dispatch_contract::PlacementRequirements,
         awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         crate::placement::session_preparation_requirements(session)

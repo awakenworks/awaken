@@ -17,7 +17,7 @@ isolates = ["async-nats", "sqlx"]
 awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-run-ingress-contract = { workspace = true }
+awaken-dispatch-contract = { workspace = true }
 awaken-dispatch-execution.workspace = true
 awaken-session-runtime-contract.workspace = true
 awaken-session-types.workspace = true

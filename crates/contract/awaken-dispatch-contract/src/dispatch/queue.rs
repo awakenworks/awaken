@@ -491,7 +491,7 @@ pub trait DispatchMaintenance: Send + Sync {
 /// This role grants neither reservation mutation nor recovery admission.
 ///
 /// ```compile_fail,E0599
-/// use awaken_run_ingress_contract::{RunDispatch, SessionRunAdmissionReads};
+/// use awaken_dispatch_contract::{RunDispatch, SessionRunAdmissionReads};
 /// async fn mutate(reader: &dyn SessionRunAdmissionReads, request: RunDispatch) {
 ///     reader.reserve_session_run(request, 1).await;
 /// }

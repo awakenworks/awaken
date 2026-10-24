@@ -728,7 +728,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
             .installed_sessions
             .install_run(thread, |run| {
                 run.session_dispatch = true;
-                run.dispatch_claim = Some(awaken_run_ingress_contract::RunClaim::from(&old.lease));
+                run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim::from(&old.lease));
             });
         let effect = host
             .realization_executor
@@ -813,7 +813,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                 .installed_sessions
                 .install_run(thread, |run| {
                     run.dispatch_claim =
-                        Some(awaken_run_ingress_contract::RunClaim::from(&current.lease));
+                        Some(awaken_dispatch_contract::RunClaim::from(&current.lease));
                 });
             let published = host
                 .realization_executor
@@ -1383,4 +1383,4 @@ fn foreign_generation(
     )
 }
 
-use awaken_run_ingress_contract::DispatchClaims as _;
+use awaken_dispatch_contract::DispatchClaims as _;

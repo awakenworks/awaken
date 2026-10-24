@@ -1043,7 +1043,7 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
         },
         replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
     };
-    let request = awaken_run_ingress_contract::RunDispatch::new(activation)
+    let request = awaken_dispatch_contract::RunDispatch::new(activation)
         .for_session(session.clone())
         .with_session_command_fingerprint(command.command_fingerprint());
     assert_eq!(
@@ -1051,7 +1051,7 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
             .reserve_session_run(request, 30_000)
             .await
             .expect("T1/C1 reserve"),
-        awaken_run_ingress_contract::SessionRunReservationOutcome::Reserved,
+        awaken_dispatch_contract::SessionRunReservationOutcome::Reserved,
         "T1/C1"
     );
 
@@ -1091,10 +1091,10 @@ async fn terminal_physical_claim_fixture(
     Arc<awaken_lease_testkit::ManualClock>,
     ThreadId,
     RunId,
-    awaken_run_ingress_contract::RunClaim,
+    awaken_dispatch_contract::RunClaim,
 ) {
+    use awaken_dispatch_contract::RunClaim;
     use awaken_run_ingress::RunDispatch;
-    use awaken_run_ingress_contract::RunClaim;
 
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
@@ -1135,7 +1135,7 @@ fn terminal_quiescence_and_thread_archive_share_the_exact_unsettled_states() {
     // states prohibit quiescence, while DeadLetter and Superseded do not.
     // Rules S1=Reserved/ReservationLeased/Pending/Leased/Awaiting=>true;
     // S2=DeadLetter/Superseded=>false. Both callers use the same predicate.
-    use awaken_run_ingress_contract::DispatchState as S;
+    use awaken_dispatch_contract::DispatchState as S;
     for (state, expected) in [
         (S::Reserved, true),
         (S::ReservationLeased, true),
@@ -1331,7 +1331,7 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
     let child_run = RunId("cold-terminal-child-run".into());
     dispatch
         .enqueue(
-            awaken_run_ingress_contract::RunDispatch::new(
+            awaken_dispatch_contract::RunDispatch::new(
                 crate::host::worker_resolver::test_support::test_activation(&child.0, &child_run.0),
             )
             .for_session(parent.clone()),
@@ -1442,7 +1442,7 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
     );
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaimOwnership as _, DispatchClaims as _, DispatchControlReads as _,
     DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _, DispatchSettlement as _,
     SessionRunReservations as _,

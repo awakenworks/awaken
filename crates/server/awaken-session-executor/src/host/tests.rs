@@ -2679,7 +2679,7 @@ fn install_test_renewal_authority(
         .insert(session_id.into(), lease);
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchEnqueue as _, DispatchSettlement as _, InboxRead as _,
 };
 

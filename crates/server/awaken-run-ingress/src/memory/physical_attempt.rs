@@ -29,15 +29,14 @@ impl MemoryDispatchStore {
                 && peer.request.thread_id() == row.request.thread_id()
                 && peer.active_attempt.is_some()
         });
-        let current = awaken_run_ingress_contract::attempt_epoch_is_open(
-            claim.epoch,
-            row.retired_attempt_epoch,
-        ) && row.state == DispatchState::Leased
-            && row.lease_epoch == claim.epoch
-            && row.lease.as_ref().is_some_and(|lease| {
-                lease.owner() == claim.owner
-                    && !crate::clock::deadline_has_passed(Some(lease.expires_ms()), now_ms)
-            });
+        let current =
+            awaken_dispatch_contract::attempt_epoch_is_open(claim.epoch, row.retired_attempt_epoch)
+                && row.state == DispatchState::Leased
+                && row.lease_epoch == claim.epoch
+                && row.lease.as_ref().is_some_and(|lease| {
+                    lease.owner() == claim.owner
+                        && !crate::clock::deadline_has_passed(Some(lease.expires_ms()), now_ms)
+                });
         let slot = match row.active_attempt.as_ref() {
             None => PhysicalAttemptSlot::Empty,
             Some(active) if active == claim => PhysicalAttemptSlot::ExactClaim,
@@ -207,7 +206,7 @@ impl MemoryDispatchStore {
 // This existing Execution role belongs with the physical-attempt transaction
 // owner; no duplicate port implementation or return policy remains in parent.
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchExecution for MemoryDispatchStore {
+impl awaken_dispatch_contract::DispatchExecution for MemoryDispatchStore {
     async fn record_credential_realization(
         &self,
         claim: &RunClaim,
@@ -303,7 +302,7 @@ impl awaken_run_ingress_contract::DispatchExecution for MemoryDispatchStore {
     async fn begin_attempt(
         &self,
         claim: &RunClaim,
-        _binding: Option<&awaken_run_ingress_contract::dispatch::AttemptExecutionBinding>,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         let now_ms = self.clock.now_ms();
         self.admit_physical_attempt(claim, now_ms, false, _binding)
@@ -313,7 +312,7 @@ impl awaken_run_ingress_contract::DispatchExecution for MemoryDispatchStore {
     async fn handoff_attempt(
         &self,
         claim: &RunClaim,
-        _binding: Option<&awaken_run_ingress_contract::dispatch::AttemptExecutionBinding>,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         let now_ms = self.clock.now_ms();
         self.admit_physical_attempt(claim, now_ms, true, _binding)
@@ -327,7 +326,7 @@ impl awaken_run_ingress_contract::DispatchExecution for MemoryDispatchStore {
     async fn finish_attempt(
         &self,
         claim: &RunClaim,
-        cause: Option<awaken_run_ingress_contract::AttemptReturnCause>,
+        cause: Option<awaken_dispatch_contract::AttemptReturnCause>,
     ) -> Result<SettleOutcome, DispatchError> {
         self.finish_physical_attempt_with(claim, crate::dispatch::AttemptFinish::Ordinary(cause))
             .await

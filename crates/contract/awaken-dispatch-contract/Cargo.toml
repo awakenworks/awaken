@@ -1,5 +1,5 @@
 [package]
-name = "awaken-run-ingress-contract"
+name = "awaken-dispatch-contract"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

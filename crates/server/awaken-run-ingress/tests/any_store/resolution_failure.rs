@@ -182,4 +182,4 @@ async fn exercise_failure<C>(
     assert_eq!(follower.request.run_id().0, "follower");
 }
 
-use awaken_run_ingress_contract::{DispatchClaims as _, DispatchEnqueue as _};
+use awaken_dispatch_contract::{DispatchClaims as _, DispatchEnqueue as _};

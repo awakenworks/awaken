@@ -10,9 +10,9 @@ use awaken_agent_contract::agent::{
     run::Id as RunId,
     thread::Id as ThreadId,
 };
+use awaken_dispatch_contract::PendingInput;
 use awaken_dispatch_execution::durable_control::DurableRunControl;
 use awaken_dispatch_execution::{AdmissionError, LiveRunControlError};
-use awaken_run_ingress_contract::PendingInput;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::control::LiveCommand;
 use awaken_runtime_contract::resume::ResumeResult;
@@ -438,15 +438,15 @@ mod tests {
 #[cfg(test)]
 mod durable_cancellation_tests {
     use super::*;
-    use awaken_run_ingress_contract::DispatchEnqueue as _;
+    use awaken_dispatch_contract::DispatchEnqueue as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
     struct CountingWake(AtomicUsize);
 
     #[async_trait::async_trait]
-    impl awaken_run_ingress_contract::WakeSignal for CountingWake {
-        async fn publish(&self) -> Result<(), awaken_run_ingress_contract::DispatchError> {
+    impl awaken_dispatch_contract::WakeSignal for CountingWake {
+        async fn publish(&self) -> Result<(), awaken_dispatch_contract::DispatchError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -484,7 +484,7 @@ mod durable_cancellation_tests {
             let run = format!("cancel-{rule}-{claimer}-{has_owner}-{queued}");
             if queued && has_owner {
                 owner
-                    .enqueue(awaken_run_ingress_contract::RunDispatch::new(
+                    .enqueue(awaken_dispatch_contract::RunDispatch::new(
                         crate::host::test_activation("cancel-session", &run),
                     ))
                     .await

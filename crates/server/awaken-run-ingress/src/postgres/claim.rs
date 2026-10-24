@@ -681,7 +681,7 @@ async fn claim_exact_transaction_with_mode(
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchControlClaims for PostgresDispatchStore {
+impl awaken_dispatch_contract::DispatchControlClaims for PostgresDispatchStore {
     async fn claim_placed(
         &self,
         requester: &WorkerSnapshot,

@@ -93,7 +93,7 @@ impl PostgresDispatchStore {
                 .try_get("retired_attempt_epoch")
                 .map_err(store_error)?,
         )?;
-        let live = awaken_run_ingress_contract::attempt_epoch_is_open(claim.epoch, retired_epoch)
+        let live = awaken_dispatch_contract::attempt_epoch_is_open(claim.epoch, retired_epoch)
             && status == "running"
             && owner.as_deref() == Some(&claim.owner)
             && persisted_epoch == claim.epoch
@@ -168,7 +168,7 @@ impl PostgresDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchCommitAuthority for PostgresDispatchStore {
+impl awaken_dispatch_contract::DispatchCommitAuthority for PostgresDispatchStore {
     async fn worker_owns_run(
         &self,
         identity: &crate::WorkerIdentity,
@@ -187,7 +187,7 @@ impl awaken_run_ingress_contract::DispatchCommitAuthority for PostgresDispatchSt
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchClaims for PostgresDispatchStore {
+impl awaken_dispatch_contract::DispatchClaims for PostgresDispatchStore {
     async fn resolve_claimed_session_run_reservation(
         &self,
         claim: &RunClaim,
@@ -230,8 +230,7 @@ impl awaken_run_ingress_contract::DispatchClaims for PostgresDispatchStore {
                 session_activity_epoch,
             } => {
                 request.session_activity_epoch = Some(session_activity_epoch);
-                let awaken_run_ingress_contract::GuardedTransition::Applied(next) = transition
-                else {
+                let awaken_dispatch_contract::GuardedTransition::Applied(next) = transition else {
                     unreachable!("the exact recovery claim is admitted by the kernel")
                 };
                 sqlx::query(&format!(
@@ -252,8 +251,7 @@ impl awaken_run_ingress_contract::DispatchClaims for PostgresDispatchStore {
                 .rows_affected()
             }
             SessionRunReservationResolution::Retry { reservation_ttl_ms } => {
-                let awaken_run_ingress_contract::GuardedTransition::Applied(next) = transition
-                else {
+                let awaken_dispatch_contract::GuardedTransition::Applied(next) = transition else {
                     unreachable!("the exact recovery claim is admitted by the kernel")
                 };
                 let store_now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
@@ -279,7 +277,7 @@ impl awaken_run_ingress_contract::DispatchClaims for PostgresDispatchStore {
             SessionRunReservationResolution::Rejected => {
                 assert!(matches!(
                     transition,
-                    awaken_run_ingress_contract::GuardedTransition::Removed
+                    awaken_dispatch_contract::GuardedTransition::Removed
                 ));
                 let changed = sqlx::query(&format!(
                     "DELETE FROM {p}_dispatch WHERE run_id = $1 \
@@ -560,7 +558,7 @@ impl awaken_run_ingress_contract::DispatchClaims for PostgresDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchEnqueue for PostgresDispatchStore {
+impl awaken_dispatch_contract::DispatchEnqueue for PostgresDispatchStore {
     async fn enqueue_with(
         &self,
         request: RunDispatch,
@@ -586,7 +584,7 @@ impl awaken_run_ingress_contract::DispatchEnqueue for PostgresDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchClaimOwnership for PostgresDispatchStore {
+impl awaken_dispatch_contract::DispatchClaimOwnership for PostgresDispatchStore {
     async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError> {
         let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
         sqlx::query_scalar(&format!(
@@ -605,7 +603,7 @@ impl awaken_run_ingress_contract::DispatchClaimOwnership for PostgresDispatchSto
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchExecution for PostgresDispatchStore {
+impl awaken_dispatch_contract::DispatchExecution for PostgresDispatchStore {
     async fn renew_lease(
         &self,
         claim: &RunClaim,
@@ -765,7 +763,7 @@ impl awaken_run_ingress_contract::DispatchExecution for PostgresDispatchStore {
     async fn begin_attempt(
         &self,
         claim: &RunClaim,
-        _binding: Option<&awaken_run_ingress_contract::dispatch::AttemptExecutionBinding>,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         self.admit_physical_attempt(claim, false, _binding).await
     }
@@ -773,7 +771,7 @@ impl awaken_run_ingress_contract::DispatchExecution for PostgresDispatchStore {
     async fn handoff_attempt(
         &self,
         claim: &RunClaim,
-        _binding: Option<&awaken_run_ingress_contract::dispatch::AttemptExecutionBinding>,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         self.admit_physical_attempt(claim, true, _binding).await
     }
@@ -784,7 +782,7 @@ impl awaken_run_ingress_contract::DispatchExecution for PostgresDispatchStore {
     async fn finish_attempt(
         &self,
         claim: &RunClaim,
-        cause: Option<awaken_run_ingress_contract::AttemptReturnCause>,
+        cause: Option<awaken_dispatch_contract::AttemptReturnCause>,
     ) -> Result<SettleOutcome, DispatchError> {
         self.finish_physical_attempt_with(claim, crate::dispatch::AttemptFinish::Ordinary(cause))
             .await
@@ -795,7 +793,7 @@ impl awaken_run_ingress_contract::DispatchExecution for PostgresDispatchStore {
             &self.pool,
             claim,
             None,
-            awaken_run_ingress_contract::ReleasedAttempt::Unspent,
+            awaken_dispatch_contract::ReleasedAttempt::Unspent,
         )
         .await
     }
@@ -809,7 +807,7 @@ impl awaken_run_ingress_contract::DispatchExecution for PostgresDispatchStore {
             &self.pool,
             claim,
             Some(retry_after_ms),
-            awaken_run_ingress_contract::ReleasedAttempt::Unspent,
+            awaken_dispatch_contract::ReleasedAttempt::Unspent,
         )
         .await
     }
@@ -824,14 +822,14 @@ impl awaken_run_ingress_contract::DispatchExecution for PostgresDispatchStore {
             &self.pool,
             claim,
             Some(retry_after_ms),
-            awaken_run_ingress_contract::ReleasedAttempt::Failed { max_attempts },
+            awaken_dispatch_contract::ReleasedAttempt::Failed { max_attempts },
         )
         .await
     }
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchSettlement for PostgresDispatchStore {
+impl awaken_dispatch_contract::DispatchSettlement for PostgresDispatchStore {
     async fn settle(
         &self,
         run_id: &RunId,
@@ -864,7 +862,7 @@ impl awaken_run_ingress_contract::DispatchSettlement for PostgresDispatchStore {
         let attempt_owner: Option<String> = authority
             .try_get("active_attempt_owner")
             .map_err(store_error)?;
-        let slot = awaken_run_ingress_contract::PhysicalAttemptSlot::from_facts(
+        let slot = awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
             attempt_owner.is_some(),
             active_attempt.is_some(),
             false,
@@ -985,7 +983,7 @@ impl awaken_run_ingress_contract::DispatchSettlement for PostgresDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchMaintenance for PostgresDispatchStore {
+impl awaken_dispatch_contract::DispatchMaintenance for PostgresDispatchStore {
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
@@ -1046,7 +1044,7 @@ impl awaken_run_ingress_contract::DispatchMaintenance for PostgresDispatchStore 
                 epoch,
                 cancellation_requested != 0,
             )?;
-            let awaken_run_ingress_contract::GuardedTransition::Applied(next) =
+            let awaken_dispatch_contract::GuardedTransition::Applied(next) =
                 current.exhaust_retries(claim_epoch, true)
             else {
                 continue;
@@ -1148,7 +1146,7 @@ impl PostgresDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchReads for PostgresDispatchStore {
+impl awaken_dispatch_contract::DispatchReads for PostgresDispatchStore {
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
         self.run_ids_by_status("dead_letter").await
     }
@@ -1163,7 +1161,7 @@ impl awaken_run_ingress_contract::DispatchReads for PostgresDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchAdministration for PostgresDispatchStore {
+impl awaken_dispatch_contract::DispatchAdministration for PostgresDispatchStore {
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(store_error)?;
@@ -1242,7 +1240,7 @@ impl awaken_run_ingress_contract::DispatchAdministration for PostgresDispatchSto
             previous_epoch,
             cancellation_requested != 0,
         )?;
-        let awaken_run_ingress_contract::CancelTransition::Applied {
+        let awaken_dispatch_contract::CancelTransition::Applied {
             state: next,
             revoked_lease,
             clear_retry_deadline,
@@ -1297,7 +1295,7 @@ impl awaken_run_ingress_contract::DispatchAdministration for PostgresDispatchSto
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchAttemptControl for PostgresDispatchStore {
+impl awaken_dispatch_contract::DispatchAttemptControl for PostgresDispatchStore {
     async fn finish_attempt_closure(
         &self,
         record: &crate::AttemptClosureRecord,
@@ -1313,7 +1311,7 @@ impl awaken_run_ingress_contract::DispatchAttemptControl for PostgresDispatchSto
         &self,
         claim: &RunClaim,
         binding: Option<&AttemptExecutionBinding>,
-        mut guard: awaken_run_ingress_contract::WorkerIncarnationGuard,
+        mut guard: awaken_dispatch_contract::WorkerIncarnationGuard,
         handoff: bool,
     ) -> Result<AttemptAdmission, DispatchError> {
         let snapshot = guard.snapshot().clone();
@@ -1340,7 +1338,7 @@ impl awaken_run_ingress_contract::DispatchAttemptControl for PostgresDispatchSto
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchControlReads for PostgresDispatchStore {
+impl awaken_dispatch_contract::DispatchControlReads for PostgresDispatchStore {
     async fn current_credential_binding(
         &self,
         claim: &RunClaim,
@@ -1497,12 +1495,12 @@ impl awaken_run_ingress_contract::DispatchControlReads for PostgresDispatchStore
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::SessionRunAdmissionReads for PostgresDispatchStore {
+impl awaken_dispatch_contract::SessionRunAdmissionReads for PostgresDispatchStore {
     async fn observe_session_run_admission(
         &self,
         run_id: &RunId,
-    ) -> Result<awaken_run_ingress_contract::SessionRunAdmissionObservation, DispatchError> {
-        use awaken_run_ingress_contract::SessionRunAdmissionObservation;
+    ) -> Result<awaken_dispatch_contract::SessionRunAdmissionObservation, DispatchError> {
+        use awaken_dispatch_contract::SessionRunAdmissionObservation;
         let mut connection = self.pool.acquire().await.map_err(store_error)?;
         let row = load_run_identity_evidence(&mut connection, NS, run_id).await?;
         if let Some(request) = decode_live_identity(&row)? {
@@ -1523,7 +1521,7 @@ impl awaken_run_ingress_contract::SessionRunAdmissionReads for PostgresDispatchS
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::SessionRunReservations for PostgresDispatchStore {
+impl awaken_dispatch_contract::SessionRunReservations for PostgresDispatchStore {
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
@@ -1682,7 +1680,7 @@ impl awaken_run_ingress_contract::SessionRunReservations for PostgresDispatchSto
                     cancellation_requested != 0,
                 )?
                 .reject_reservation(),
-                awaken_run_ingress_contract::GuardedTransition::Removed
+                awaken_dispatch_contract::GuardedTransition::Removed
             )
         } else {
             false
@@ -1730,7 +1728,7 @@ impl awaken_run_ingress_contract::SessionRunReservations for PostgresDispatchSto
 }
 
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::SessionReservationAuthority for PostgresDispatchStore {
+impl awaken_dispatch_contract::SessionReservationAuthority for PostgresDispatchStore {
     async fn lock_session_run_reservation_epoch(
         &self,
         claim: &RunClaim,

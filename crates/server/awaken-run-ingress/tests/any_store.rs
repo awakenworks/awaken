@@ -871,7 +871,7 @@ async fn any_postgres_connect_and_claim() {
     );
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchControlClaims as _, DispatchEnqueue as _, DispatchExecution as _,
     DispatchSettlement as _,
 };

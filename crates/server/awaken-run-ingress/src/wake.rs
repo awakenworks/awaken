@@ -6,9 +6,9 @@
 #[cfg(feature = "durable")]
 use async_trait::async_trait;
 #[cfg(feature = "durable")]
-use awaken_run_ingress_contract::DispatchError;
+use awaken_dispatch_contract::DispatchError;
 #[cfg(feature = "durable")]
-use awaken_run_ingress_contract::WakeSignal;
+use awaken_dispatch_contract::WakeSignal;
 #[cfg(feature = "durable")]
 use std::sync::Arc;
 #[cfg(feature = "durable")]

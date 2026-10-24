@@ -16,9 +16,9 @@
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_dispatch_contract::RunDispatch;
+use awaken_dispatch_contract::dispatch::{DispatchOutcome, RunClaim, SettleOutcome};
 use awaken_run_ingress::MemoryDispatchStore;
-use awaken_run_ingress_contract::RunDispatch;
-use awaken_run_ingress_contract::dispatch::{DispatchOutcome, RunClaim, SettleOutcome};
 use awaken_run_ingress_testkit::{ConformanceClock, ManualStoreClock};
 use awaken_runtime_contract::activation::RunActivation;
 

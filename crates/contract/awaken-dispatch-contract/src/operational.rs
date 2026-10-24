@@ -1,5 +1,5 @@
 // @formal surface exclude=read_model_contract
-// @formal owner crates/contract/awaken-run-ingress-contract/src/operational.rs
+// @formal owner crates/contract/awaken-dispatch-contract/src/operational.rs
 // @formal reason: Serializable operational-feed events, cursor DTOs, and a read-only feed port; it does
 // @formal reason: not issue or mutate dispatch authority.
 //! Durable operational facts emitted by the dispatch aggregate.

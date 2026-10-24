@@ -991,7 +991,7 @@ fn now_nanos() -> u128 {
         .unwrap_or(0)
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchReads as _,
     DispatchSettlement as _, InboxRead as _,
 };

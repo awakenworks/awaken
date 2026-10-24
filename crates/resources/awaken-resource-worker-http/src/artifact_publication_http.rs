@@ -3,11 +3,11 @@
 
 use std::sync::Arc;
 
+use awaken_dispatch_contract::{DispatchCommitAuthority, RunClaim};
 use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
     ArtifactRecovery, FileApplicationService, MAX_MANAGED_FILE_SIZE_BYTES, ResourcePurgeError,
 };
-use awaken_run_ingress_contract::{DispatchCommitAuthority, RunClaim};
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_state_contract::{SessionEnvironmentOperation, SessionTerminalCleanupEffect};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
@@ -612,7 +612,7 @@ async fn authorize_artifact_effect(
     workspace_id: &str,
     session_id: &str,
     idempotency_scope: Option<&str>,
-) -> Result<Option<awaken_run_ingress_contract::CommitEpochGuard>, StatusCode> {
+) -> Result<Option<awaken_dispatch_contract::CommitEpochGuard>, StatusCode> {
     let mut run_guard = None;
     match fence {
         ResourceOperationFence::SessionMaterialization(_)
@@ -1117,7 +1117,7 @@ mod tests {
         }
     }
 
-    use awaken_run_ingress_contract::RunClaim;
+    use awaken_dispatch_contract::RunClaim;
     use awaken_worker_contract::WorkerIdentity;
 
     fn metadata(path: &str) -> ArtifactPublicationRequest {

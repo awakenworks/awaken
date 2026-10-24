@@ -8,11 +8,9 @@
 use super::*;
 use crate::session_execution_error::ExecutorLock;
 #[cfg(test)]
-use awaken_dispatch_execution::placement::remote_worker_placement;
+use awaken_dispatch_contract::{HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY};
 #[cfg(test)]
-use awaken_run_ingress_contract::{
-    HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
-};
+use awaken_dispatch_execution::placement::remote_worker_placement;
 use std::collections::HashMap;
 
 impl crate::SessionRuns {
@@ -67,26 +65,26 @@ impl crate::SessionRuns {
             .await
             .map_err(|error| SessionExecutionError::unavailable(error.to_string()))?;
         let projected = match outcome {
-            awaken_run_ingress_contract::SessionRunReservationActivation::Activated => {
+            awaken_dispatch_contract::SessionRunReservationActivation::Activated => {
                 awaken_session_runtime_contract::SessionRunActivation::Activated
             }
-            awaken_run_ingress_contract::SessionRunReservationActivation::AlreadyActivated {
+            awaken_dispatch_contract::SessionRunReservationActivation::AlreadyActivated {
                 session_activity_epoch,
             } => awaken_session_runtime_contract::SessionRunActivation::AlreadyActivated {
                 session_activity_epoch,
             },
-            awaken_run_ingress_contract::SessionRunReservationActivation::RecoveryClaimed => {
+            awaken_dispatch_contract::SessionRunReservationActivation::RecoveryClaimed => {
                 awaken_session_runtime_contract::SessionRunActivation::RecoveryClaimed
             }
-            awaken_run_ingress_contract::SessionRunReservationActivation::Completed => {
+            awaken_dispatch_contract::SessionRunReservationActivation::Completed => {
                 awaken_session_runtime_contract::SessionRunActivation::Completed
             }
-            awaken_run_ingress_contract::SessionRunReservationActivation::MissingOrRejected => {
+            awaken_dispatch_contract::SessionRunReservationActivation::MissingOrRejected => {
                 return Err(SessionExecutionError::bad_request(
                     "Session User Run reservation is missing or rejected",
                 ));
             }
-            awaken_run_ingress_contract::SessionRunReservationActivation::Conflict => {
+            awaken_dispatch_contract::SessionRunReservationActivation::Conflict => {
                 return Err(SessionExecutionError::bad_request(
                     "Session User Run reservation activation conflicts with durable truth",
                 ));
@@ -618,4 +616,4 @@ impl StreamSink for CompletionRegistry {
 #[cfg(test)]
 mod completion_tests;
 
-use awaken_run_ingress_contract::{DispatchEnqueue as _, SessionRunReservations as _};
+use awaken_dispatch_contract::{DispatchEnqueue as _, SessionRunReservations as _};

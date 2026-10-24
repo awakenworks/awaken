@@ -249,9 +249,9 @@ async fn managed_claim_projection_loss_never_enters_ordinary_mcp_staging() {
     };
     queue
         .enqueue(
-            awaken_run_ingress_contract::RunDispatch::new(activation)
+            awaken_dispatch_contract::RunDispatch::new(activation)
                 .for_session(awaken_agent_contract::agent::thread::Id(session.into()))
-                .with_session_runtime(awaken_run_ingress_contract::SessionRuntimeEnvelope::new(
+                .with_session_runtime(awaken_dispatch_contract::SessionRuntimeEnvelope::new(
                     envelope.encode().unwrap(),
                 ))
                 .with_execution_scope(awaken_tenancy::ExecutionScopeRef(

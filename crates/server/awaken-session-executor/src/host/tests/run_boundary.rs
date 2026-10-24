@@ -250,7 +250,7 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
             .installed_sessions
             .install_run("worker-stop", |run| {
                 run.context = Some(ctx.clone());
-                run.dispatch_claim = Some(awaken_run_ingress_contract::RunClaim {
+                run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
                     run_id,
                     owner: "worker-old".into(),
                     epoch: 1,
@@ -273,7 +273,7 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
         .run_assembly
         .installed_sessions
         .install_run("worker-stop", |run| {
-            run.dispatch_claim = Some(awaken_run_ingress_contract::RunClaim {
+            run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
                 run_id: unregistered.clone(),
                 owner: "worker-old".into(),
                 epoch: 1,
@@ -1132,7 +1132,7 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
     assert_eq!(rows.len(), 1, "E1 exact row");
     assert_eq!(
         rows[0].state,
-        awaken_run_ingress_contract::DispatchState::Pending,
+        awaken_dispatch_contract::DispatchState::Pending,
         "E1 dead letter reuses the same runnable row"
     );
     assert!(rows[0].cancellation_requested, "E2 durable cancellation");
@@ -1563,7 +1563,7 @@ async fn run_capture_level_is_the_shared_decision_for_every_cause() {
     assert_eq!(rows, 3 * 6 * 4);
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchEnqueue as _, DispatchMaintenance as _, DispatchReads as _,
     DispatchSettlement as _,
 };

@@ -15,7 +15,7 @@ pub async fn realize_session(
     control: &dyn awaken_session_realization_contract::SessionRealizationControl,
     session_id: &awaken_session_types::SessionId,
     directive: awaken_session_realization_contract::SessionRealizationDirective,
-    claim: Option<&awaken_run_ingress_contract::RunClaim>,
+    claim: Option<&awaken_dispatch_contract::RunClaim>,
     published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     rebuild_unavailable_environment: bool,
 ) -> Result<(), awaken_session_realization_contract::SessionRealizationDriveError> {
@@ -53,11 +53,11 @@ pub async fn drive_session_realization(
     control: &dyn awaken_session_realization_contract::SessionRealizationControl,
     session_id: &awaken_session_types::SessionId,
     directive: awaken_session_realization_contract::SessionRealizationDirective,
-    claimed: Option<&awaken_run_ingress_contract::Claimed>,
+    claimed: Option<&awaken_dispatch_contract::Claimed>,
     request_started: awaken_lease_contract::authority::AuthorityProofStarted,
     realization: &awaken_session_realization_contract::SessionRealizationPermit,
 ) -> Result<(), awaken_session_realization_contract::SessionRealizationDriveError> {
-    let claim = claimed.map(|claimed| awaken_run_ingress_contract::RunClaim::from(&claimed.lease));
+    let claim = claimed.map(|claimed| awaken_dispatch_contract::RunClaim::from(&claimed.lease));
     let synchronizer = WorkerProjectionSynchronizer::for_claimed(
         host,
         session_id.as_str(),

@@ -6,10 +6,10 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::{ContentBlock, DocumentSource, ImageSource};
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
+use awaken_dispatch_contract::DispatchCommitAuthority;
 use awaken_resource_contract::{
     FileContentSource, FileContentSourceError, FileReadPurpose, ResolvedFileContent, content_id,
 };
-use awaken_run_ingress_contract::DispatchCommitAuthority;
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
@@ -419,7 +419,7 @@ async fn read_file_content(
 
 async fn model_content_file_is_authorized(
     service: &WorkerFileContentService,
-    dispatch: &awaken_run_ingress_contract::RunDispatch,
+    dispatch: &awaken_dispatch_contract::RunDispatch,
     thread_id: &str,
     file_id: &str,
 ) -> bool {
@@ -473,7 +473,7 @@ fn blocks_reference_file(blocks: &[ContentBlock], file_id: &str) -> bool {
 // Session query owns the root predicate; the caller retains its Run guard.
 async fn observe_session_file(
     service: &WorkerFileContentService,
-    dispatch: &awaken_run_ingress_contract::RunDispatch,
+    dispatch: &awaken_dispatch_contract::RunDispatch,
     request: &FileContentRequest,
     now_ms: u64,
 ) -> bool {
@@ -505,7 +505,7 @@ mod tests {
         // and File id => lossless request; F2 any unknown field => reject before
         // claim/resource checks. Rules W1 F1+!F2=>decode; W2 F1+F2=>fail closed.
         let request = FileContentRequest {
-            authority: ResourceOperationFence::Run(awaken_run_ingress_contract::RunClaim {
+            authority: ResourceOperationFence::Run(awaken_dispatch_contract::RunClaim {
                 run_id: awaken_agent_contract::agent::run::Id("run-file".into()),
                 owner: "worker-file".into(),
                 epoch: 4,

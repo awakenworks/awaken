@@ -432,9 +432,9 @@ pub(super) fn remove_local_environment_root(host: &crate::host::ExecutorComponen
 }
 
 pub(crate) fn with_empty_session_resources(
-    request: awaken_run_ingress_contract::RunDispatch,
+    request: awaken_dispatch_contract::RunDispatch,
     workspace_id: &str,
-) -> awaken_run_ingress_contract::RunDispatch {
+) -> awaken_dispatch_contract::RunDispatch {
     let manifest = crate::session_resource::SessionResourceManifest::new(
         workspace_id,
         crate::session_resource::ResolvedSessionResources::default(),
@@ -633,18 +633,18 @@ impl awaken_session_runtime_contract::SessionEnvironmentBindingSink for Blocking
 
 pub(crate) async fn claim(
     store: &Arc<
-        impl awaken_run_ingress_contract::DispatchEnqueue + awaken_run_ingress_contract::DispatchClaims,
+        impl awaken_dispatch_contract::DispatchEnqueue + awaken_dispatch_contract::DispatchClaims,
     >,
     thread: &str,
     run: &str,
     owner: &str,
     now: u64,
     clock: &awaken_lease_testkit::ManualClock,
-) -> awaken_run_ingress_contract::Claimed {
+) -> awaken_dispatch_contract::Claimed {
     store
-        .enqueue(awaken_run_ingress_contract::RunDispatch::new(
-            test_activation(thread, run),
-        ))
+        .enqueue(awaken_dispatch_contract::RunDispatch::new(test_activation(
+            thread, run,
+        )))
         .await
         .expect("enqueue deferred run");
     clock.set(now);

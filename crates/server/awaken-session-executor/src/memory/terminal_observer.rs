@@ -83,7 +83,7 @@ impl MemoryTerminalObservers {
     }
     pub(crate) async fn for_dispatch(
         &self,
-        dispatch: &awaken_run_ingress_contract::RunDispatch,
+        dispatch: &awaken_dispatch_contract::RunDispatch,
         commit: Arc<crate::store::HostCommit>,
     ) -> Result<Option<Arc<dyn RunTerminalObserver>>, crate::SessionExecutionError> {
         let manifest =

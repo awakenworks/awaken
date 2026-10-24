@@ -857,7 +857,7 @@ async fn provider_wait_cannot_refresh_stale_authority_or_downgrade_failure() {
     }
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchAdministration as _, DispatchClaims as _, DispatchControlReads as _,
     DispatchEnqueue as _, DispatchExecution as _,
 };

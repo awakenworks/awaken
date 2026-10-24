@@ -6,7 +6,7 @@ use crate::placement::{
     self_hosted_holder_for_boundary, worker_local_credentials,
 };
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_run_ingress_contract::RunDispatch;
+use awaken_dispatch_contract::RunDispatch;
 use awaken_runtime_contract::RunActivation;
 
 /// One correlated read of the installed inputs a dispatch envelope carries.
@@ -233,7 +233,7 @@ impl<'a> DispatchPreparation<'a> {
                 projection.dispatch().map_err(AdmissionError::from)?;
             session_mcp_credentials = Some(requirements);
             request = request
-                .with_session_runtime(awaken_run_ingress_contract::SessionRuntimeEnvelope::new(
+                .with_session_runtime(awaken_dispatch_contract::SessionRuntimeEnvelope::new(
                     projection_json,
                 ))
                 .with_preferred_environment_shape(preferred_shape);

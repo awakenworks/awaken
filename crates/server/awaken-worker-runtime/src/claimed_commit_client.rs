@@ -8,7 +8,7 @@ use std::sync::Arc;
 use awaken_agent_contract::thread::commit::coordinator::Error as CommitError;
 use awaken_agent_contract::thread::commit::operation::CommitReceipt;
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     ClaimedCommitCommand, ClaimedCommitRequest, ClaimedRunCommit, RunClaim, WorkerIdentity,
 };
 use awaken_worker_transport_security::{WORKER_ID_HEADER, WorkerRequestAuthorizer, WorkerUpstream};

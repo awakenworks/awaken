@@ -24,7 +24,7 @@ use crate::Error;
 use crate::dispatch::PendingInput;
 use crate::wake::{LocalWakeSignal, publish_dispatch_hint};
 use crate::worker::DispatchWorker;
-use awaken_run_ingress_contract::{RunDispatch, WakeSignal};
+use awaken_dispatch_contract::{RunDispatch, WakeSignal};
 use awaken_time::WallClock;
 use awaken_time::WallClockExt;
 
@@ -35,7 +35,7 @@ use awaken_time::WallClockExt;
 pub(crate) const QUEUE_DEPTH_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
 
 pub(crate) fn spawn_dispatch_depth_sampler<
-    S: awaken_run_ingress_contract::DispatchControlReads + ?Sized + 'static,
+    S: awaken_dispatch_contract::DispatchControlReads + ?Sized + 'static,
 >(
     store: Arc<S>,
     report: Arc<dyn Fn(u64) + Send + Sync>,
@@ -272,7 +272,7 @@ impl<S: Dispatch + 'static> DispatchService<S> {
     /// Durably deliver pending input and nudge the daemon to resume the run.
     pub async fn deliver(&self, input: PendingInput) -> Result<(), Error>
     where
-        S: awaken_run_ingress_contract::Inbox,
+        S: awaken_dispatch_contract::Inbox,
     {
         self.worker.store().append(input).await?;
         publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
@@ -282,7 +282,7 @@ impl<S: Dispatch + 'static> DispatchService<S> {
     /// Stage a cross-thread delivery and nudge the daemon to relay it (M3b).
     pub async fn send(&self, input: PendingInput) -> Result<(), Error>
     where
-        S: awaken_run_ingress_contract::Outbox,
+        S: awaken_dispatch_contract::Outbox,
     {
         self.worker.store().stage(input).await?;
         publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;

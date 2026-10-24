@@ -96,7 +96,7 @@ impl Inbox for SqliteDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::InboxRead for SqliteDispatchStore {
+impl awaken_dispatch_contract::InboxRead for SqliteDispatchStore {
     async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
         let thread = thread_id.clone();
         let (_authority, mut conn) = self.with_conn().await?;
@@ -147,7 +147,7 @@ impl awaken_run_ingress_contract::InboxRead for SqliteDispatchStore {
 #[cfg(test)]
 mod inbox_revision_tests {
     use super::*;
-    use awaken_run_ingress_contract::InboxRead;
+    use awaken_dispatch_contract::InboxRead;
 
     #[tokio::test]
     async fn sqlite_pending_edit_never_promotes_exhausted_integer_to_real() {
@@ -222,7 +222,7 @@ mod inbox_revision_tests {
     }
 }
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchAttemptRecordReads for SqliteDispatchStore {
+impl awaken_dispatch_contract::DispatchAttemptRecordReads for SqliteDispatchStore {
     async fn attempt_admissions_after(
         &self,
         cursor: DispatchCursor,
@@ -360,7 +360,7 @@ impl Outbox for SqliteDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::SessionContinuationOutbox for SqliteDispatchStore {
+impl awaken_dispatch_contract::SessionContinuationOutbox for SqliteDispatchStore {
     async fn stage_session_resume(
         &self,
         input: PendingInput,

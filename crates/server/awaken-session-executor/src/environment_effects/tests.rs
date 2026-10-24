@@ -1,7 +1,7 @@
 //! Realizer effects continue with only their selected roles after the Host is gone.
 use super::*;
-use awaken_run_ingress_contract::dispatch::AttemptExecutionBinding;
-use awaken_run_ingress_contract::*;
+use awaken_dispatch_contract::dispatch::AttemptExecutionBinding;
+use awaken_dispatch_contract::*;
 use awaken_session_runtime_contract::SessionEnvironmentBindingSink;
 use awaken_session_state_contract::{SessionEnvironmentReceipt, SessionEnvironmentState};
 use std::sync::{

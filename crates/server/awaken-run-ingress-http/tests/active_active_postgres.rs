@@ -22,6 +22,7 @@ use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitOperationId, commit_payload_hash,
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
 use awaken_run_ingress::ClaimedCommitService;
 use awaken_run_ingress::{
     ClaimedCommitCommand, ClaimedRunCommit, DispatchOutcome, PostgresDispatchStore,
@@ -29,7 +30,6 @@ use awaken_run_ingress::{
     WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource,
     WorkerRegistration, WorkerSnapshot, WorkerState,
 };
-use awaken_run_ingress_contract::ClaimedCheckpointTransport as _;
 use awaken_run_ingress_http::{
     WorkerDispatchService, dispatch_transport_router_with_service,
     registered_worker_transport_router_with_services,
@@ -89,7 +89,7 @@ impl WorkerDirectory for ConfiguredWorkerDirectory {
     async fn lock_incarnation(
         &self,
         _identity: &WorkerIdentity,
-    ) -> Result<Option<awaken_run_ingress_contract::WorkerIncarnationGuard>, RegistryError> {
+    ) -> Result<Option<awaken_dispatch_contract::WorkerIncarnationGuard>, RegistryError> {
         Err(RegistryError::Persistence(
             "fixture forbids physical admission".into(),
         ))
@@ -610,6 +610,6 @@ fn postgres_configuration_contract() {
     ]);
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchEnqueue as _, DispatchSettlement as _,
 };

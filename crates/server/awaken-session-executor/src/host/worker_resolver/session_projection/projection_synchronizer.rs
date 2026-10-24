@@ -8,7 +8,7 @@ mod tests {
     use crate::host::worker_resolver::test_support::{
         AdoptionModel, eager_environment, empty_frozen_projection_for_snapshot, test_activation,
     };
-    use awaken_run_ingress_contract::{
+    use awaken_dispatch_contract::{
         DispatchClaimOwnership, DispatchClaims, DispatchEnqueue, DispatchExecution,
     };
     use awaken_sandbox_local::FilesystemHandleCodec as _;
@@ -714,9 +714,10 @@ mod tests {
             .map(|binding| binding.queue())
             .unwrap();
         dispatch
-            .enqueue(awaken_run_ingress_contract::RunDispatch::new(
-                test_activation(thread, "run-claimed-ready-durable"),
-            ))
+            .enqueue(awaken_dispatch_contract::RunDispatch::new(test_activation(
+                thread,
+                "run-claimed-ready-durable",
+            )))
             .await
             .unwrap();
         let claimed = dispatch
@@ -724,7 +725,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let claim = awaken_run_ingress_contract::RunClaim::from(&claimed.lease);
+        let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
         let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: claim.owner.clone(),
             runtime_incarnation: "worker-a/boot-2".into(),
@@ -1339,9 +1340,10 @@ mod tests {
             .map(|binding| binding.queue())
             .unwrap();
         dispatch
-            .enqueue(awaken_run_ingress_contract::RunDispatch::new(
-                test_activation(thread, "run-claimed-ready-v1"),
-            ))
+            .enqueue(awaken_dispatch_contract::RunDispatch::new(test_activation(
+                thread,
+                "run-claimed-ready-v1",
+            )))
             .await
             .unwrap();
         let claimed = dispatch
@@ -1349,7 +1351,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let claim = awaken_run_ingress_contract::RunClaim::from(&claimed.lease);
+        let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
         assert!(dispatch.claim_is_current(&claim).await.unwrap(), "CR1 C1");
         assert!(
             dispatch
@@ -1504,7 +1506,7 @@ mod tests {
             &clock,
         )
         .await;
-        let claim = awaken_run_ingress_contract::RunClaim::from(&claimed.lease);
+        let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
         assert!(store.claim_is_current(&claim).await.unwrap(), "OR1 C1");
         assert!(
             store
@@ -1658,7 +1660,7 @@ mod tests {
             &remote_snapshot,
         );
         remote_projection.agent_publication = Some(remote_snapshot.clone());
-        let claim = awaken_run_ingress_contract::RunClaim {
+        let claim = awaken_dispatch_contract::RunClaim {
             run_id: RunId("run-remote-a2a-owner-conflict".into()),
             owner: "worker-a".into(),
             epoch: 2,

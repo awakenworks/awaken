@@ -205,7 +205,7 @@ impl ClosedAttemptExecution {
                 "complete closure requires a durably closed entry and provider evidence",
             ));
         }
-        let record = awaken_run_ingress_contract::AttemptClosureRecord::try_new(
+        let record = awaken_dispatch_contract::AttemptClosureRecord::try_new(
             self.attempt.clone(),
             kind,
             evidence_ref,
@@ -217,14 +217,14 @@ impl ClosedAttemptExecution {
     }
 }
 
-pub use awaken_run_ingress_contract::AttemptClosureKind;
+pub use awaken_dispatch_contract::AttemptClosureKind;
 
 /// Subject-bound assertion from the trusted stop source, never deserialized
 /// from Worker/user JSON. Covers this physical attempt only, not Session cleanup,
 /// business outcome, side-effect replay safety, or a successor's authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedAttemptStop {
-    record: awaken_run_ingress_contract::AttemptClosureRecord,
+    record: awaken_dispatch_contract::AttemptClosureRecord,
 }
 
 impl ObservedAttemptStop {
@@ -241,7 +241,7 @@ impl ObservedAttemptStop {
 
     /// Retained data from this private trusted observation; never a grant
     /// reconstructed from Worker/user JSON.
-    pub fn record(&self) -> &awaken_run_ingress_contract::AttemptClosureRecord {
+    pub fn record(&self) -> &awaken_dispatch_contract::AttemptClosureRecord {
         &self.record
     }
 }
@@ -1018,7 +1018,7 @@ pub(crate) async fn admit_with_incarnation_guard(
     dispatch: &dyn DispatchExecution,
     claim: &crate::RunClaim,
     binding: Option<&crate::AttemptExecutionBinding>,
-    guard: awaken_run_ingress_contract::WorkerIncarnationGuard,
+    guard: awaken_dispatch_contract::WorkerIncarnationGuard,
     handoff: bool,
 ) -> Result<crate::AttemptAdmission, crate::DispatchError> {
     let snapshot = guard.snapshot();
@@ -1055,7 +1055,7 @@ pub(crate) async fn admit_with_incarnation_guard(
     admission
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchAttemptControl, DispatchClaimOwnership, DispatchCommitAuthority, DispatchControlReads,
     DispatchExecution, DispatchReads,
 };

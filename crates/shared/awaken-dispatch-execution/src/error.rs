@@ -1,6 +1,6 @@
 //! Attempt and process-drain failures reported by the one dispatch executor.
 
-use awaken_run_ingress_contract::DispatchError;
+use awaken_dispatch_contract::DispatchError;
 
 /// A durable-ingress failure: either the dispatch store rejected an operation or
 /// a runtime attempt failed. Kept as two arms so a queue-storage failure never

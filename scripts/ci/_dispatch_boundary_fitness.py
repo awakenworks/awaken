@@ -279,17 +279,17 @@ def selftest() -> None:
     | B14 | the Coordinator crate depends on a Worker composition root | reject D3 |
     """
     base = [
-        ("awaken-dispatch-execution", "shared", "infrastructure", {"awaken-run-ingress-contract"}),
-        ("awaken-run-ingress-contract", "shared", "contract", set()),
+        ("awaken-dispatch-execution", "shared", "infrastructure", {"awaken-dispatch-contract"}),
+        ("awaken-dispatch-contract", "shared", "contract", set()),
         ("awaken-run-ingress", "coordinator", "infrastructure", {"awaken-dispatch-execution"}),
         ("awaken-run-ingress-http", "coordinator", "interface", {"awaken-run-ingress"}),
         ("awaken-session-realization", "shared", "infrastructure", {"awaken-sandbox-control"}),
         ("awaken-sandbox-control", "worker", "contract", set()),
         ("awaken-sandbox-local", "worker", "infrastructure", {"awaken-sandbox-control"}),
         ("awaken-sandbox-policy-store", "control", "infrastructure", set()),
-        ("awaken-session-executor", "shared", "infrastructure", {"awaken-run-ingress-contract"}),
+        ("awaken-session-executor", "shared", "infrastructure", {"awaken-dispatch-contract"}),
         ("awaken-ext-memory", "runtime", "infrastructure", set()),
-        ("awaken-session-application", "shared", "application", {"awaken-run-ingress-contract"}),
+        ("awaken-session-application", "shared", "application", {"awaken-dispatch-contract"}),
         ("awaken-coordinator", "coordinator", "bootstrap", {"awaken-run-ingress", "awaken-session-application"}),
         ("awaken-worker", "worker", "bootstrap", {"awaken-session-executor"}),
     ]

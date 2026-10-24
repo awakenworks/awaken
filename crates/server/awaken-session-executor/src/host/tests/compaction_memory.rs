@@ -1722,4 +1722,4 @@ async fn run_end_fires_background_memory_extraction() {
     assert_eq!(saved, "user likes rust");
 }
 
-use awaken_run_ingress_contract::{DispatchClaims as _, DispatchEnqueue as _};
+use awaken_dispatch_contract::{DispatchClaims as _, DispatchEnqueue as _};

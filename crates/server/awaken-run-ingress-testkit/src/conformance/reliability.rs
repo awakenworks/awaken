@@ -623,7 +623,7 @@ async fn occupied_recovery_does_not_starve_other_threads(
                     selector: u8,
                     now: u64,
                     clock: &dyn ConformanceClock,
-                ) -> awaken_run_ingress_contract::Claimed {
+                ) -> awaken_dispatch_contract::Claimed {
                     clock.set(now);
                     match selector {
                         0 => {

@@ -3,12 +3,12 @@ use super::*;
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchAttemptControl for FlakyDispatchStore {
+impl awaken_dispatch_contract::DispatchAttemptControl for FlakyDispatchStore {
     async fn admit_attempt_guarded(
         &self,
         claim: &awaken_run_ingress::RunClaim,
         binding: Option<&awaken_run_ingress::AttemptExecutionBinding>,
-        guard: awaken_run_ingress_contract::WorkerIncarnationGuard,
+        guard: awaken_dispatch_contract::WorkerIncarnationGuard,
         handoff: bool,
     ) -> Result<awaken_run_ingress::AttemptAdmission, awaken_run_ingress::DispatchError> {
         self.inner
@@ -26,7 +26,7 @@ impl awaken_run_ingress_contract::DispatchAttemptControl for FlakyDispatchStore 
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchControlReads for FlakyDispatchStore {
+impl awaken_dispatch_contract::DispatchControlReads for FlakyDispatchStore {
     async fn current_credential_binding(
         &self,
         claim: &awaken_run_ingress::RunClaim,
@@ -124,12 +124,12 @@ impl awaken_run_ingress_contract::DispatchControlReads for FlakyDispatchStore {
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::SessionRunAdmissionReads for FlakyDispatchStore {
+impl awaken_dispatch_contract::SessionRunAdmissionReads for FlakyDispatchStore {
     async fn observe_session_run_admission(
         &self,
         run_id: &RunId,
     ) -> Result<
-        awaken_run_ingress_contract::SessionRunAdmissionObservation,
+        awaken_dispatch_contract::SessionRunAdmissionObservation,
         awaken_run_ingress::DispatchError,
     > {
         self.inner.observe_session_run_admission(run_id).await
@@ -138,7 +138,7 @@ impl awaken_run_ingress_contract::SessionRunAdmissionReads for FlakyDispatchStor
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::SessionRunReservations for FlakyDispatchStore {
+impl awaken_dispatch_contract::SessionRunReservations for FlakyDispatchStore {
     async fn reserve_session_run(
         &self,
         request: awaken_run_ingress::RunDispatch,
@@ -182,7 +182,7 @@ impl awaken_run_ingress_contract::SessionRunReservations for FlakyDispatchStore 
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::SessionReservationAuthority for FlakyDispatchStore {
+impl awaken_dispatch_contract::SessionReservationAuthority for FlakyDispatchStore {
     async fn lock_session_run_reservation_epoch(
         &self,
         claim: &awaken_run_ingress::RunClaim,
@@ -194,7 +194,7 @@ impl awaken_run_ingress_contract::SessionReservationAuthority for FlakyDispatchS
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchControlClaims for FlakyDispatchStore {
+impl awaken_dispatch_contract::DispatchControlClaims for FlakyDispatchStore {
     async fn claim_placed(
         &self,
         requester: &awaken_run_ingress::WorkerSnapshot,
@@ -219,11 +219,11 @@ impl awaken_run_ingress_contract::DispatchControlClaims for FlakyDispatchStore {
     }
 }
 
-use awaken_run_ingress_contract::DispatchReads as _;
+use awaken_dispatch_contract::DispatchReads as _;
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchAttemptRecordReads for FlakyDispatchStore {
+impl awaken_dispatch_contract::DispatchAttemptRecordReads for FlakyDispatchStore {
     async fn attempt_admissions_after(
         &self,
         cursor: awaken_run_ingress::DispatchCursor,

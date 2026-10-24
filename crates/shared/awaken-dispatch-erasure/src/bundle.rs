@@ -1,7 +1,7 @@
 // @formal surface requirement=dispatch.durable_ingress.claim_and_delivery
 // @formal reason: Required roles are statically bound from one owner; composition adds no second queue or lifecycle law.
 //! Owned dispatch role bundles. Leaf ports remain in the contract.
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport, DispatchAdministration,
     DispatchAttemptControl, DispatchClaimOwnership, DispatchClaims, DispatchCommitAuthority,
     DispatchControlClaims, DispatchControlReads, DispatchEnqueue, DispatchExecution,

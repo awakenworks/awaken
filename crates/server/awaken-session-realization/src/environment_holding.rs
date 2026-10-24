@@ -20,7 +20,7 @@ pub struct EnvironmentHolding {
         Option<std::sync::Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>>,
     >,
     /// The same dispatch instance used by this process, narrowed to execution binding.
-    dispatch_execution: Option<std::sync::Arc<dyn awaken_run_ingress_contract::DispatchExecution>>,
+    dispatch_execution: Option<std::sync::Arc<dyn awaken_dispatch_contract::DispatchExecution>>,
     /// Frozen publication selection over the installed Sessions.
     publication: crate::session_publication::SessionPublicationSelection,
     /// The Session-owned, BackendOwned and housekeeping sandbox providers.
@@ -39,9 +39,7 @@ impl EnvironmentHolding {
         environment_binding_sink: Option<
             std::sync::Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>,
         >,
-        dispatch_execution: Option<
-            std::sync::Arc<dyn awaken_run_ingress_contract::DispatchExecution>,
-        >,
+        dispatch_execution: Option<std::sync::Arc<dyn awaken_dispatch_contract::DispatchExecution>>,
         publication: crate::session_publication::SessionPublicationSelection,
     ) -> Self {
         providers.runs_local_dispatch_pool = runs_local_dispatch_pool;
@@ -70,9 +68,7 @@ impl EnvironmentHolding {
     #[cfg(any(test, feature = "test-support"))]
     pub fn replace_dispatch_execution(
         &mut self,
-        dispatch_execution: Option<
-            std::sync::Arc<dyn awaken_run_ingress_contract::DispatchExecution>,
-        >,
+        dispatch_execution: Option<std::sync::Arc<dyn awaken_dispatch_contract::DispatchExecution>>,
     ) {
         self.dispatch_execution = dispatch_execution;
     }

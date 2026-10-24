@@ -5,7 +5,7 @@ use crate::inbox_mutation::{
     PendingInputMutation, PendingInputMutationPlan, plan_pending_input_mutation,
 };
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchAttemptRecordReads for PostgresDispatchStore {
+impl awaken_dispatch_contract::DispatchAttemptRecordReads for PostgresDispatchStore {
     async fn attempt_admissions_after(
         &self,
         cursor: DispatchCursor,
@@ -151,7 +151,7 @@ impl Inbox for PostgresDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::InboxRead for PostgresDispatchStore {
+impl awaken_dispatch_contract::InboxRead for PostgresDispatchStore {
     async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
         let p = NS;
         let rows = sqlx::query(&format!(
@@ -266,7 +266,7 @@ impl Outbox for PostgresDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::SessionContinuationOutbox for PostgresDispatchStore {
+impl awaken_dispatch_contract::SessionContinuationOutbox for PostgresDispatchStore {
     async fn stage_session_resume(
         &self,
         input: PendingInput,

@@ -146,9 +146,9 @@ mod tests {
     use crate::host::worker_resolver::test_support::{
         AdoptionModel, eager_environment, empty_frozen_projection_for_snapshot, test_activation,
     };
+    use awaken_dispatch_contract::DispatchClaims;
+    use awaken_dispatch_contract::DispatchEnqueue;
     use awaken_run_ingress::WorkerResolver as _;
-    use awaken_run_ingress_contract::DispatchClaims;
-    use awaken_run_ingress_contract::DispatchEnqueue;
     use awaken_runtime_contract::resolved::ModelBinding;
 
     #[tokio::test]
@@ -209,7 +209,7 @@ mod tests {
             .unwrap();
         // C4 requires real parent authority while preserving the child-only
         // publication closure; never instantiate the parent's auxiliary plugins.
-        let request = awaken_run_ingress_contract::RunDispatch::new(test_activation(
+        let request = awaken_dispatch_contract::RunDispatch::new(test_activation(
             child_thread,
             "run-cold-physical-child",
         ))

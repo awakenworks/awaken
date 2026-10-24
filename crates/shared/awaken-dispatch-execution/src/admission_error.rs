@@ -9,7 +9,7 @@
 
 use std::borrow::Cow;
 
-use awaken_run_ingress_contract::DispatchError;
+use awaken_dispatch_contract::DispatchError;
 use awaken_session_realization_contract::SessionRealizationControlDisposition;
 use awaken_session_types::RunError;
 

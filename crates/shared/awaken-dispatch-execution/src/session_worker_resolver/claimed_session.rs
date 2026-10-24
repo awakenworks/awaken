@@ -14,7 +14,7 @@ use super::{
 /// Session projection authority is independent from the Run's admission shape.
 /// Outcome Runs retain OrdinaryRoot identity, but the Coordinator's subordinate
 /// Work receipt still requires the same frozen Session realization before effects.
-pub fn has_session_projection_authority(claimed: &awaken_run_ingress_contract::Claimed) -> bool {
+pub fn has_session_projection_authority(claimed: &awaken_dispatch_contract::Claimed) -> bool {
     claimed.request.session_thread_id.is_some() || claimed.session_work_authority.is_some()
 }
 
@@ -68,7 +68,7 @@ async fn install_dispatched_resources(
     installation: &dyn crate::session_execution::ClaimedSessionInstallation,
     session: &str,
     manifest: &awaken_session_configuration_contract::resource::SessionResourceManifest,
-    claim: &awaken_run_ingress_contract::RunClaim,
+    claim: &awaken_dispatch_contract::RunClaim,
 ) -> Result<(), crate::Error> {
     installation
         .install_dispatched_resources(session, manifest, claim)
@@ -83,13 +83,13 @@ impl SessionWorkerResolver {
     pub(super) async fn install_claimed_session_projection(
         &self,
         execution: &ClaimedExecution,
-        claimed: &awaken_run_ingress_contract::Claimed,
+        claimed: &awaken_dispatch_contract::Claimed,
         thread_id: &awaken_agent_contract::agent::thread::Id,
         dispatched_resources: Option<
             &awaken_session_configuration_contract::resource::SessionResourceManifest,
         >,
     ) -> Result<(), crate::Error> {
-        let claim = awaken_run_ingress_contract::RunClaim::from(&claimed.lease);
+        let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
         let installation = execution.installation.as_ref();
         // Read the prior exact claim/lease during the original atomic admission;
         // never relabel a predecessor before Control has accepted this claim.
@@ -147,7 +147,7 @@ impl SessionWorkerResolver {
         // admitted Work/Run owner may advance its realization lease. Serializing
         // before the first Control mutation prevents a later entrant from fencing a
         // slow earlier effect between directive creation and installation.
-        let dispatch: Arc<dyn awaken_run_ingress_contract::DispatchClaimOwnership> =
+        let dispatch: Arc<dyn awaken_dispatch_contract::DispatchClaimOwnership> =
             self.queue.clone();
         let ownership = crate::claim_bound_ownership_verifier(dispatch, claim.clone());
         ownership.verify_current().await.map_err(|error| {

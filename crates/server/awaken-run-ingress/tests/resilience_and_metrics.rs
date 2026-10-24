@@ -612,6 +612,6 @@ async fn a_stale_settlement_increments_the_fenced_metric() {
     assert_eq!(metrics.in_flight.load(Ordering::SeqCst), 0);
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchReads as _,
 };

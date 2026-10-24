@@ -10,7 +10,7 @@ use super::test_support::{
 use super::*;
 use crate::host::dispatch_execution::adopt_bound_sandbox;
 use crate::host::tests::ManagedSessionRootFixture;
-use awaken_run_ingress_contract as ingress;
+use awaken_dispatch_contract as ingress;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
 use awaken_session_realization::peers::EnvironmentPeer as _;
@@ -2610,6 +2610,6 @@ fn active_manifest(
         .unwrap()
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchEnqueue as _, DispatchSettlement as _, SessionRunReservations as _,
 };

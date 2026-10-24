@@ -23,7 +23,7 @@ use awaken_session_realization::peers::EnvironmentPeer as _;
 use std::sync::Arc;
 
 use crate::resource_staging::ResourcePreparation;
-use awaken_run_ingress_contract::RunClaim;
+use awaken_dispatch_contract::RunClaim;
 use awaken_session_realization_contract::CanonicalSessionProjection;
 use awaken_session_realization_contract::{
     FrozenSessionProjection, ObservedSessionRealizationLease,

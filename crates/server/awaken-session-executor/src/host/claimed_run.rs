@@ -5,7 +5,7 @@ use super::*;
 use awaken_dispatch_execution::{DispatchWorker, Error};
 pub(super) async fn construct_claimed_child(
     host: &crate::RunAssembly,
-    claimed: &awaken_run_ingress_contract::Claimed,
+    claimed: &awaken_dispatch_contract::Claimed,
     session_thread_id: &awaken_agent_contract::agent::thread::Id,
     publication_source: Arc<awaken_runtime_contract::StaticPublishedAgentSnapshots>,
 ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {

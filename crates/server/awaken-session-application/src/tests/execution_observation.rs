@@ -76,23 +76,23 @@ fn profiled_observed_session(id: &str) -> PersistedSession {
 }
 
 struct ObservedDispatchFeed {
-    events: Vec<awaken_run_ingress_contract::DispatchOperationalEvent>,
+    events: Vec<awaken_dispatch_contract::DispatchOperationalEvent>,
     calls: std::sync::atomic::AtomicUsize,
     unavailable: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchOperationalFeed for ObservedDispatchFeed {
+impl awaken_dispatch_contract::DispatchOperationalFeed for ObservedDispatchFeed {
     async fn events_after(
         &self,
-        after: awaken_run_ingress_contract::DispatchCursor,
+        after: awaken_dispatch_contract::DispatchCursor,
         limit: usize,
         run: Option<&RunId>,
-    ) -> Result<awaken_run_ingress_contract::DispatchPage, awaken_run_ingress_contract::DispatchError>
+    ) -> Result<awaken_dispatch_contract::DispatchPage, awaken_dispatch_contract::DispatchError>
     {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.unavailable.load(Ordering::SeqCst) {
-            return Err(awaken_run_ingress_contract::DispatchError::Unavailable(
+            return Err(awaken_dispatch_contract::DispatchError::Unavailable(
                 "test source outage".into(),
             ));
         }
@@ -105,7 +105,7 @@ impl awaken_run_ingress_contract::DispatchOperationalFeed for ObservedDispatchFe
             .cloned()
             .collect::<Vec<_>>();
         let next_cursor = events.last().map_or(after, |event| event.cursor);
-        Ok(awaken_run_ingress_contract::DispatchPage {
+        Ok(awaken_dispatch_contract::DispatchPage {
             events,
             next_cursor,
         })
@@ -125,7 +125,7 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
     // to the Flow consumer and must wait for that Done fact.
     // R1=C1+C2+C3+limit1 => E1/E2/E3/E6; R2=R1+next => E4;
     // R3=R1+limit0 => E5/E6; R4=exact replay => byte-identical page.
-    use awaken_run_ingress_contract::{
+    use awaken_dispatch_contract::{
         DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOutcome, RunClaim,
     };
     let repository = Arc::new(
@@ -315,7 +315,7 @@ async fn native_run_observation_refuses_foreign_scope_missing_source_and_invalid
     // R4 limit>1024 => Rejected before feed; R5 exact source outage => Unavailable;
     // R6 unknown Run => NotFound, never reuse the latest Run. These cover scope,
     // mode, dependency, input and membership causes; all leave root unchanged.
-    use awaken_run_ingress_contract::DispatchCursor;
+    use awaken_dispatch_contract::DispatchCursor;
     let repository = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
@@ -545,7 +545,7 @@ async fn native_run_claim_is_visible_before_the_first_commit_only_with_exact_adm
     // unchanged lifecycle cursor and no ticket/output/usage; E2 !C2 or C4 is
     // NotFound; E3 read/replay performs no Session write. This tests the existing
     // receipt owner; native reservation/admission tests own receipt creation.
-    use awaken_run_ingress_contract::{
+    use awaken_dispatch_contract::{
         DispatchCursor, DispatchOperation, DispatchOperationalEvent, RunClaim,
     };
     let repository = Arc::new(

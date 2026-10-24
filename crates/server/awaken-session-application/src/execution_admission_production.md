@@ -12,7 +12,7 @@ fn change(app: &SessionApplication, other: Arc<dyn WorkerIncarnationSource>) {
 ```compile_fail,E0599
 use std::sync::Arc;
 use awaken_session_application::SessionApplication;
-use awaken_run_ingress_contract::DispatchOperationalFeed;
+use awaken_dispatch_contract::DispatchOperationalFeed;
 fn change(app: &SessionApplication, other: Arc<dyn DispatchOperationalFeed>) {
     app.set_dispatch_observation_source(other);
 }

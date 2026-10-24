@@ -8,13 +8,13 @@
 // @formal entrypoint session_run.reservation_precedes_activity
 // @formal entrypoint worker.retry_preserves_pinned_binding
 // @formal evidence run_ingress.a_deadline_passes_once_it_is_reached
-//! The dispatch ports now live in `awaken-run-ingress-contract` (ADR-0039 2.1),
+//! The dispatch ports now live in `awaken-dispatch-contract` (ADR-0039 2.1),
 //! re-exported here so the host's internal `crate::dispatch::*` paths and existing
 //! consumers are unchanged.
 
-pub use awaken_run_ingress_contract::dispatch::*;
+pub use awaken_dispatch_contract::dispatch::*;
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
-use awaken_run_ingress_contract::{PhysicalAttemptSlot, PhysicalAttemptTransition};
+use awaken_dispatch_contract::{PhysicalAttemptSlot, PhysicalAttemptTransition};
 
 /// Compile entry inventory from the same locked dispatch row as admission.
 /// This retains the original identity and adds no execution/closure authority.
@@ -23,8 +23,8 @@ pub(crate) fn physical_admission_operation(
     claim: &RunClaim,
     binding: Option<&AttemptExecutionBinding>,
     request: &RunDispatch,
-) -> awaken_run_ingress_contract::DispatchOperation {
-    awaken_run_ingress_contract::DispatchOperation::AttemptAdmitted {
+) -> awaken_dispatch_contract::DispatchOperation {
+    awaken_dispatch_contract::DispatchOperation::AttemptAdmitted {
         attempt: PhysicalAttempt {
             claim: claim.clone(),
             binding: binding.cloned(),
@@ -42,19 +42,19 @@ pub(crate) fn physical_admission_operation(
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub(crate) enum StoredDispatchOperation {
-    Diagnostic(awaken_run_ingress_contract::DispatchOperation),
+    Diagnostic(awaken_dispatch_contract::DispatchOperation),
     PhysicalFact(AttemptPhysicalFact),
 }
 
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
-impl From<&awaken_run_ingress_contract::DispatchOperation> for StoredDispatchOperation {
-    fn from(operation: &awaken_run_ingress_contract::DispatchOperation) -> Self {
+impl From<&awaken_dispatch_contract::DispatchOperation> for StoredDispatchOperation {
+    fn from(operation: &awaken_dispatch_contract::DispatchOperation) -> Self {
         Self::Diagnostic(operation.clone())
     }
 }
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
-impl From<awaken_run_ingress_contract::DispatchOperation> for StoredDispatchOperation {
-    fn from(operation: awaken_run_ingress_contract::DispatchOperation) -> Self {
+impl From<awaken_dispatch_contract::DispatchOperation> for StoredDispatchOperation {
+    fn from(operation: awaken_dispatch_contract::DispatchOperation) -> Self {
         Self::Diagnostic(operation)
     }
 }
@@ -70,7 +70,7 @@ impl StoredDispatchOperation {
     #[cfg(any(feature = "durable", test))]
     pub(crate) fn decode(encoded: &str) -> Result<Self, DispatchError> {
         let operation: Self = serde_json::from_str(encoded).map_err(DispatchError::unavailable)?;
-        if let Self::Diagnostic(awaken_run_ingress_contract::DispatchOperation::AttemptAdmitted {
+        if let Self::Diagnostic(awaken_dispatch_contract::DispatchOperation::AttemptAdmitted {
             attempt,
         }) = &operation
         {
@@ -98,7 +98,7 @@ impl StoredDispatchOperation {
             (Self::Diagnostic(_), OperationReadPurpose::Diagnostics)
             | (Self::PhysicalFact(_), OperationReadPurpose::AttemptClosure) => true,
             (
-                Self::Diagnostic(awaken_run_ingress_contract::DispatchOperation::AttemptAdmitted {
+                Self::Diagnostic(awaken_dispatch_contract::DispatchOperation::AttemptAdmitted {
                     attempt,
                 }),
                 OperationReadPurpose::Admissions {
@@ -159,15 +159,15 @@ pub(crate) fn validate_admission_scope(
 
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 pub(crate) fn diagnostic_page(
-    cursor: awaken_run_ingress_contract::DispatchCursor,
+    cursor: awaken_dispatch_contract::DispatchCursor,
     stored: Vec<StoredDispatchEvent>,
-) -> awaken_run_ingress_contract::DispatchPage {
+) -> awaken_dispatch_contract::DispatchPage {
     let events = stored
         .into_iter()
         .filter_map(StoredDispatchEvent::diagnostic)
         .collect::<Vec<_>>();
     let next_cursor = events.last().map_or(cursor, |event| event.cursor);
-    awaken_run_ingress_contract::DispatchPage {
+    awaken_dispatch_contract::DispatchPage {
         events,
         next_cursor,
     }
@@ -178,7 +178,7 @@ pub(crate) fn diagnostic_page(
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StoredDispatchEvent {
-    pub(crate) cursor: awaken_run_ingress_contract::DispatchCursor,
+    pub(crate) cursor: awaken_dispatch_contract::DispatchCursor,
     pub(crate) recorded_at_ms: Option<u64>,
     pub(crate) operation: StoredDispatchOperation,
 }
@@ -195,7 +195,7 @@ impl StoredDispatchEvent {
         encoded: &str,
     ) -> Result<Self, DispatchError> {
         let cursor =
-            awaken_run_ingress_contract::DispatchCursor(u64::try_from(sequence).map_err(|_| {
+            awaken_dispatch_contract::DispatchCursor(u64::try_from(sequence).map_err(|_| {
                 DispatchError::Rejected("persisted dispatch operation sequence is negative".into())
             })?);
         let operation = StoredDispatchOperation::decode(encoded)?;
@@ -214,12 +214,10 @@ impl StoredDispatchEvent {
         })
     }
 
-    pub(crate) fn diagnostic(
-        self,
-    ) -> Option<awaken_run_ingress_contract::DispatchOperationalEvent> {
+    pub(crate) fn diagnostic(self) -> Option<awaken_dispatch_contract::DispatchOperationalEvent> {
         match self.operation {
             StoredDispatchOperation::Diagnostic(operation) => {
-                Some(awaken_run_ingress_contract::DispatchOperationalEvent {
+                Some(awaken_dispatch_contract::DispatchOperationalEvent {
                     cursor: self.cursor,
                     recorded_at_ms: self.recorded_at_ms,
                     operation,
@@ -379,13 +377,13 @@ pub(crate) fn no_running_peer(prefix: &str) -> String {
 
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 pub(crate) fn verify_physical_attempt_binding(
-    transition: awaken_run_ingress_contract::PhysicalAttemptTransition,
+    transition: awaken_dispatch_contract::PhysicalAttemptTransition,
     claim: &RunClaim,
     assignment: Option<&crate::WorkerAssignment>,
     requested: Option<&AttemptExecutionBinding>,
     stored: Option<&AttemptExecutionBinding>,
 ) -> Result<(), DispatchError> {
-    use awaken_run_ingress_contract::PhysicalAttemptTransition as T;
+    use awaken_dispatch_contract::PhysicalAttemptTransition as T;
     if !matches!(transition, T::Install | T::Replace | T::Stutter) {
         return Ok(());
     }
@@ -417,7 +415,7 @@ pub(crate) fn observed_physical_attempt_is_present(
     binding_present: bool,
     closing: bool,
 ) -> Result<bool, DispatchError> {
-    use awaken_run_ingress_contract::PhysicalAttemptSlot;
+    use awaken_dispatch_contract::PhysicalAttemptSlot;
     match PhysicalAttemptSlot::from_facts(owner_present, epoch_present, false, false) {
         PhysicalAttemptSlot::Empty if !binding_present && !closing => Ok(false),
         PhysicalAttemptSlot::Empty | PhysicalAttemptSlot::Corrupt => {
@@ -481,18 +479,18 @@ pub(crate) fn decode_physical_attempt(
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 pub(crate) fn decide_physical_attempt_admission(
     current: bool,
-    slot: awaken_run_ingress_contract::PhysicalAttemptSlot,
+    slot: awaken_dispatch_contract::PhysicalAttemptSlot,
     handoff: bool,
     thread_peer_occupied: bool,
     closing: bool,
 ) -> Result<
     (
-        awaken_run_ingress_contract::PhysicalAttemptTransition,
+        awaken_dispatch_contract::PhysicalAttemptTransition,
         AttemptAdmission,
     ),
     DispatchError,
 > {
-    use awaken_run_ingress_contract::{
+    use awaken_dispatch_contract::{
         PhysicalAttemptTransition as T, begin_physical_attempt, handoff_physical_attempt,
     };
     let transition = if handoff {
@@ -517,17 +515,17 @@ pub(crate) fn decide_physical_attempt_admission(
 /// commit authority. Read failures must be returned before calling this helper.
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 pub(crate) fn decide_physical_attempt_finish(
-    slot: awaken_run_ingress_contract::PhysicalAttemptSlot,
+    slot: awaken_dispatch_contract::PhysicalAttemptSlot,
     closing: bool,
     closure_evidence: bool,
 ) -> Result<
     (
-        awaken_run_ingress_contract::PhysicalAttemptTransition,
+        awaken_dispatch_contract::PhysicalAttemptTransition,
         SettleOutcome,
     ),
     DispatchError,
 > {
-    use awaken_run_ingress_contract::{PhysicalAttemptTransition as T, finish_physical_attempt};
+    use awaken_dispatch_contract::{PhysicalAttemptTransition as T, finish_physical_attempt};
     let transition = finish_physical_attempt(slot, closing, closure_evidence);
     let outcome = match transition {
         T::Clear | T::Stutter => SettleOutcome::Applied,
@@ -547,13 +545,13 @@ fn corrupt_physical_attempt() -> DispatchError {
 
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 pub(crate) fn decide_physical_attempt_close(
-    slot: awaken_run_ingress_contract::PhysicalAttemptSlot,
+    slot: awaken_dispatch_contract::PhysicalAttemptSlot,
 ) -> Result<SettleOutcome, DispatchError> {
-    if slot == awaken_run_ingress_contract::PhysicalAttemptSlot::Corrupt {
+    if slot == awaken_dispatch_contract::PhysicalAttemptSlot::Corrupt {
         return Err(corrupt_physical_attempt());
     }
     Ok(
-        if awaken_run_ingress_contract::can_close_physical_attempt(slot) {
+        if awaken_dispatch_contract::can_close_physical_attempt(slot) {
             SettleOutcome::Applied
         } else {
             SettleOutcome::Fenced
@@ -564,7 +562,7 @@ pub(crate) fn decide_physical_attempt_close(
 #[cfg(test)]
 mod physical_attempt_tests {
     use super::*;
-    use awaken_run_ingress_contract::{PhysicalAttemptSlot as S, PhysicalAttemptTransition as T};
+    use awaken_dispatch_contract::{PhysicalAttemptSlot as S, PhysicalAttemptTransition as T};
 
     #[test]
     fn every_backend_uses_the_same_admission_and_finish_result_policy() {
@@ -673,7 +671,7 @@ mod physical_attempt_tests {
 }
 
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
-use awaken_run_ingress_contract::{DispatchAdmissionShape, DispatchIdentityScope, RunDispatch};
+use awaken_dispatch_contract::{DispatchAdmissionShape, DispatchIdentityScope, RunDispatch};
 
 /// Backend-neutral shape read while locking one claimed dispatch epoch. SQLite
 /// stores the request as JSON text and PostgreSQL decodes it through `Json<T>`,
@@ -982,7 +980,7 @@ pub(crate) fn validate_session_run_replacement_candidates(
     }
     if candidates
         .into_iter()
-        .all(awaken_run_ingress_contract::session_run_replacement_candidate_is_safe)
+        .all(awaken_dispatch_contract::session_run_replacement_candidate_is_safe)
     {
         Ok(())
     } else {
@@ -1368,12 +1366,12 @@ impl ExactClaimMode {
 /// dispatch's frozen execution pin.
 #[cfg(any(feature = "durable", test, kani))]
 pub(crate) fn claim_with_frozen<T>(
-    current: awaken_run_ingress_contract::DispatchTransition,
+    current: awaken_dispatch_contract::DispatchTransition,
     frozen: T,
     mode: ExactClaimMode,
 ) -> Result<
-    Option<(awaken_run_ingress_contract::DispatchTransition, T)>,
-    awaken_run_ingress_contract::DispatchTransitionError,
+    Option<(awaken_dispatch_contract::DispatchTransition, T)>,
+    awaken_dispatch_contract::DispatchTransitionError,
 > {
     let claimed = if mode == ExactClaimMode::ReservationRecovery {
         current.recover_reservation()
@@ -1432,7 +1430,7 @@ pub(crate) fn retry_exhaustion_evidence_is_eligible(
         .transpose()
         .map_err(|error| DispatchError::Rejected(error.to_string()))?;
     let attempt_count = crate::durable_u64("dispatch attempt count", attempt_count)?;
-    Ok(awaken_run_ingress_contract::retry_exhaustion_eligible(
+    Ok(awaken_dispatch_contract::retry_exhaustion_eligible(
         state,
         lease_until,
         attempt_count,
@@ -1454,9 +1452,9 @@ pub(crate) fn normalize_pending_millis(mut input: PendingInput) -> PendingInput 
 pub(crate) fn installed_worker_credential_capabilities(
     worker: &crate::WorkerSnapshot,
 ) -> Result<awaken_credential_contract::CredentialRealizationCapabilities, DispatchError> {
-    awaken_run_ingress_contract::worker_credential_realization_capabilities(worker).map_err(
-        |error| DispatchError::Rejected(format!("Worker capability evidence is invalid: {error}")),
-    )
+    awaken_dispatch_contract::worker_credential_realization_capabilities(worker).map_err(|error| {
+        DispatchError::Rejected(format!("Worker capability evidence is invalid: {error}"))
+    })
 }
 
 #[cfg(kani)]
@@ -1511,7 +1509,7 @@ mod claim_binding_proofs {
         // Constraint: the generic production kernel cannot inspect or rebuild
         // `T`; this four-axis witness makes a mixed or reordered binding visible
         // while the Rust move preserves the complete `RunDispatch` in callers.
-        let state = awaken_run_ingress_contract::DispatchTransition {
+        let state = awaken_dispatch_contract::DispatchTransition {
             state: arbitrary_state(),
             lease_epoch: kani::any(),
             cancellation_requested: kani::any(),
@@ -1542,7 +1540,7 @@ mod claim_binding_proofs {
         } else if state.lease_epoch == u64::MAX {
             assert_eq!(
                 result,
-                Err(awaken_run_ingress_contract::DispatchTransitionError::LeaseEpochExhausted),
+                Err(awaken_dispatch_contract::DispatchTransitionError::LeaseEpochExhausted),
                 "R4/E5"
             );
         } else {

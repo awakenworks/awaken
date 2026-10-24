@@ -33,7 +33,7 @@ pub async fn get_profiled_session_run_events(
     Path((id, run_id)): Path<(String, String)>,
     RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
     Query(query): Query<crate::awaken_extensions::ProfiledSessionRunEventsQuery>,
-) -> Result<Json<awaken_run_ingress_contract::SessionRunEventPage>, WireErr> {
+) -> Result<Json<awaken_dispatch_contract::SessionRunEventPage>, WireErr> {
     state
         .roles
         .profiled
@@ -41,7 +41,7 @@ pub async fn get_profiled_session_run_events(
             &owner_scope,
             &awaken_session_types::SessionId::from(id),
             &awaken_agent_contract::agent::run::Id(run_id),
-            awaken_run_ingress_contract::DispatchCursor(query.dispatch_after),
+            awaken_dispatch_contract::DispatchCursor(query.dispatch_after),
             awaken_agent_contract::RunLifecycleCursor(query.lifecycle_after),
             query.limit,
         )

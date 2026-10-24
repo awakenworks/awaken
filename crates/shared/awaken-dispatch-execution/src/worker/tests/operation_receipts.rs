@@ -5,7 +5,7 @@ use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitOperationId, commit_payload_hash,
 };
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
-use awaken_run_ingress_contract::ClaimedCommitCommand;
+use awaken_dispatch_contract::ClaimedCommitCommand;
 
 async fn prove_original_operation<S: awaken_dispatch_erasure::Dispatch + 'static>(
     worker: DispatchWorker<S>,

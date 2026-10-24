@@ -20,8 +20,8 @@
 //! wake target the current attempt only and return [`Error::NoSubscriber`] when no
 //! subscriber accepts them.
 
+use awaken_dispatch_contract::DispatchAdministration;
 use awaken_dispatch_erasure::{AnyCoordinatorDispatch, AnyDispatchStore, Dispatch};
-use awaken_run_ingress_contract::DispatchAdministration;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -208,8 +208,8 @@ impl LiveRunControlService<AnyDispatchStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_run_ingress_contract::DispatchClaims;
-    use awaken_run_ingress_contract::DispatchEnqueue;
+    use awaken_dispatch_contract::DispatchClaims;
+    use awaken_dispatch_contract::DispatchEnqueue;
     use std::sync::Arc;
 
     use awaken_runtime::Runtime;

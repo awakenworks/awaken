@@ -447,7 +447,7 @@ impl crate::SessionRuns {
     async fn durable_dispatch_rows(
         &self,
         thread: &str,
-    ) -> Result<Vec<awaken_run_ingress_contract::DispatchSummary>, SessionExecutionError> {
+    ) -> Result<Vec<awaken_dispatch_contract::DispatchSummary>, SessionExecutionError> {
         self.require_durable_delivery()?;
         let thread_id = ThreadId(thread.to_owned());
         self.coordinator_dispatch()?
@@ -500,7 +500,7 @@ impl crate::SessionRuns {
         let rows = self.durable_dispatch_rows(thread).await?;
         Ok(rows
             .into_iter()
-            .filter(|row| row.state == awaken_run_ingress_contract::DispatchState::DeadLetter)
+            .filter(|row| row.state == awaken_dispatch_contract::DispatchState::DeadLetter)
             .map(|row| row.run_id.0)
             .collect())
     }
@@ -522,7 +522,7 @@ impl crate::SessionRuns {
             .any(|row| {
                 row.run_id.0 == run_id
                     && row.thread_id.0 == thread
-                    && row.state == awaken_run_ingress_contract::DispatchState::DeadLetter
+                    && row.state == awaken_dispatch_contract::DispatchState::DeadLetter
             });
         if !belongs_to_thread {
             return Ok(false);
@@ -569,7 +569,7 @@ impl crate::SessionRuns {
         let rows = self.durable_dispatch_rows(thread).await?;
         Ok(rows
             .into_iter()
-            .filter(|row| row.state == awaken_run_ingress_contract::DispatchState::Superseded)
+            .filter(|row| row.state == awaken_dispatch_contract::DispatchState::Superseded)
             .map(|row| row.run_id.0)
             .collect())
     }
@@ -676,12 +676,12 @@ impl crate::SessionRuns {
                     && dispatch.session_thread_id.as_ref() == Some(&parent)
                     && matches!(
                         dispatch.state,
-                        awaken_run_ingress_contract::DispatchState::Reserved
-                            | awaken_run_ingress_contract::DispatchState::ReservationLeased
-                            | awaken_run_ingress_contract::DispatchState::Pending
-                            | awaken_run_ingress_contract::DispatchState::Leased
-                            | awaken_run_ingress_contract::DispatchState::Awaiting
-                            | awaken_run_ingress_contract::DispatchState::DeadLetter
+                        awaken_dispatch_contract::DispatchState::Reserved
+                            | awaken_dispatch_contract::DispatchState::ReservationLeased
+                            | awaken_dispatch_contract::DispatchState::Pending
+                            | awaken_dispatch_contract::DispatchState::Leased
+                            | awaken_dispatch_contract::DispatchState::Awaiting
+                            | awaken_dispatch_contract::DispatchState::DeadLetter
                     )
             })
             .filter(|dispatch| {
@@ -997,7 +997,7 @@ impl crate::SessionRuns {
     }
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchAdministration as _, DispatchEnqueue as _, DispatchMaintenance as _, DispatchReads as _,
 };
 

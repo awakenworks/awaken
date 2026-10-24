@@ -22,7 +22,7 @@ use awaken_agent_contract::credential::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
     CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     RunClaim, RunDispatch, SessionResourceEnvelope, SessionRuntimeEnvelope,
 };
 use awaken_runtime_contract::activation::RunActivation;

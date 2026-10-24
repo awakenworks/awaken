@@ -30,7 +30,7 @@ pub trait RuntimeAuthority: Send + Sync {
 
     fn dispatch_store(&self) -> Arc<AnyCoordinatorDispatch>;
 
-    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_run_ingress_contract::WakeSignal>>;
+    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_contract::WakeSignal>>;
 
     fn stream_checkpoint(
         &self,

@@ -8,13 +8,13 @@
 
 use std::sync::Arc;
 
+use awaken_dispatch_contract::{DispatchCommitAuthority, RunClaim};
 use awaken_resource_contract::{
     ConfigVersion, LiveResourceBindingVerifier, MemErr, Memory, MemoryCopyConflictPreservation,
     MemoryCopyConflictQueries, MemoryCopyWriteback, MemoryMaterializationReferenceEncoder,
     MemoryMaterializationReferenceError, MemoryQueries, MemorySnapshotSource, MemoryWriter,
     ResourceAccess,
 };
-use awaken_run_ingress_contract::{DispatchCommitAuthority, RunClaim};
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_realization_contract::SessionResourceMaterializationIntent;
 use awaken_session_state_contract::{SessionTerminalMemoryIntent, SessionTerminalMemoryTarget};
@@ -536,7 +536,7 @@ pub fn worker_memory_router(service: Arc<WorkerMemoryService>) -> Router {
 }
 
 fn manifest_allows(
-    dispatch: &awaken_run_ingress_contract::RunDispatch,
+    dispatch: &awaken_dispatch_contract::RunDispatch,
     reference: &RunMemoryMaterializationReferenceV1,
     writes: bool,
 ) -> bool {

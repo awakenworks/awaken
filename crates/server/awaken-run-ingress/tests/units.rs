@@ -333,4 +333,4 @@ async fn dispatch_harness_unknown_live_cancel_is_typed() {
     let _ = ingress.worker();
 }
 
-use awaken_run_ingress_contract::{DispatchClaims as _, DispatchEnqueue as _};
+use awaken_dispatch_contract::{DispatchClaims as _, DispatchEnqueue as _};

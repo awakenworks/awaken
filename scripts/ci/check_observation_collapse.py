@@ -114,7 +114,7 @@ OLD_SHAPE = re.compile(r"Result\s*<\s*Option\s*<\s*StreamCheckpoint\b")
 # names the file that performs the translation, and an entry whose translator
 # stopped translating, or whose file no longer carries the shape, fails here.
 TRANSLATED_TRANSPORT = {
-    "crates/contract/awaken-run-ingress-contract/src/dispatch/queue.rs": (
+    "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs": (
         "the DispatchQueue transport declares the remote checkpoint operations; its "
         "Err is 'the transport failed', which is ignorance, and the translation below "
         "is the only place that decides what that means"
@@ -402,7 +402,7 @@ class ObservationCollapseTests(unittest.TestCase):
         for path in (
             "crates/runtime/awaken-runtime/src/engine/resume.rs",
             "crates/runtime/awaken-runtime/src/engine/inference.rs",
-            "crates/contract/awaken-run-ingress-contract/src/worker_transport.rs",
+            "crates/contract/awaken-dispatch-contract/src/worker_transport.rs",
             "crates/server/awaken-worker-runtime/src/dispatch_client.rs",
         ):
             self.assertIn(path, self.sources, "R4")

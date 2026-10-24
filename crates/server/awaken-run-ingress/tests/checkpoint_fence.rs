@@ -1,5 +1,5 @@
 // @formal evidence checkpoint.terminal_completion_clears_resume
-use awaken_run_ingress_contract::{DispatchClaims, DispatchEnqueue};
+use awaken_dispatch_contract::{DispatchClaims, DispatchEnqueue};
 #[path = "checkpoint_fence/authority_matrix.rs"]
 mod authority_matrix;
 mod harness;

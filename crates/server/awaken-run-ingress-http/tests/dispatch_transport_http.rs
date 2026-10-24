@@ -1628,7 +1628,7 @@ async fn worker_stream_transport_forwards_only_live_events_from_the_current_clai
     );
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _,
 };
 

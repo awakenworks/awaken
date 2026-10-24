@@ -110,7 +110,7 @@ pub(crate) fn clock_ms(clock: &dyn awaken_time::WallClock) -> u64 {
 /// `workspace_id` and decodes. A foreign or malformed manifest is absent, so
 /// every caller fails closed on it.
 pub(crate) fn frozen_resource_manifest(
-    envelope: Option<&awaken_run_ingress_contract::SessionResourceEnvelope>,
+    envelope: Option<&awaken_dispatch_contract::SessionResourceEnvelope>,
     workspace_id: &str,
 ) -> Option<awaken_session_configuration_contract::resource::SessionResourceManifest> {
     envelope

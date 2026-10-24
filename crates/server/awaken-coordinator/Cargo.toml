@@ -13,7 +13,7 @@ separation = "process"
 
 
 [dependencies]
-awaken-run-ingress-contract.workspace = true
+awaken-dispatch-contract.workspace = true
 # The process dispatch and its lifecycle port; the executor that resolves
 # claimed Runs is selected by the composition root (ExecutionPorts).
 awaken-dispatch-execution.workspace = true

@@ -405,6 +405,6 @@ async fn a_chain_of_scheduled_actions_is_performed_to_completion_in_one_drive() 
     }
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchReads as _,
 };

@@ -143,7 +143,7 @@ async fn select_claim_band(
 // `sqlite.rs` so the public adapter and trait implementation paths do not move.
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchCommitAuthority for SqliteDispatchStore {
+impl awaken_dispatch_contract::DispatchCommitAuthority for SqliteDispatchStore {
     async fn worker_owns_run(
         &self,
         identity: &crate::WorkerIdentity,
@@ -186,7 +186,7 @@ impl awaken_run_ingress_contract::DispatchCommitAuthority for SqliteDispatchStor
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchClaims for SqliteDispatchStore {
+impl awaken_dispatch_contract::DispatchClaims for SqliteDispatchStore {
     async fn resolve_claimed_session_run_reservation(
         &self,
         claim: &RunClaim,
@@ -234,8 +234,7 @@ impl awaken_run_ingress_contract::DispatchClaims for SqliteDispatchStore {
                 session_activity_epoch,
             } => {
                 request.session_activity_epoch = Some(session_activity_epoch);
-                let awaken_run_ingress_contract::GuardedTransition::Applied(next) = transition
-                else {
+                let awaken_dispatch_contract::GuardedTransition::Applied(next) = transition else {
                     unreachable!("the exact recovery claim is admitted by the kernel")
                 };
                 sqlx::query(&format!(
@@ -256,8 +255,7 @@ impl awaken_run_ingress_contract::DispatchClaims for SqliteDispatchStore {
                 .rows_affected()
             }
             SessionRunReservationResolution::Retry { reservation_ttl_ms } => {
-                let awaken_run_ingress_contract::GuardedTransition::Applied(next) = transition
-                else {
+                let awaken_dispatch_contract::GuardedTransition::Applied(next) = transition else {
                     unreachable!("the exact recovery claim is admitted by the kernel")
                 };
                 sqlx::query(&format!(
@@ -284,7 +282,7 @@ impl awaken_run_ingress_contract::DispatchClaims for SqliteDispatchStore {
             SessionRunReservationResolution::Rejected => {
                 assert!(matches!(
                     transition,
-                    awaken_run_ingress_contract::GuardedTransition::Removed
+                    awaken_dispatch_contract::GuardedTransition::Removed
                 ));
                 let changed = sqlx::query(&format!(
                     "DELETE FROM {p}_dispatch WHERE run_id = ?1 \
@@ -647,7 +645,7 @@ impl awaken_run_ingress_contract::DispatchClaims for SqliteDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchEnqueue for SqliteDispatchStore {
+impl awaken_dispatch_contract::DispatchEnqueue for SqliteDispatchStore {
     async fn enqueue_with(
         &self,
         request: RunDispatch,
@@ -672,7 +670,7 @@ impl awaken_run_ingress_contract::DispatchEnqueue for SqliteDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchExecution for SqliteDispatchStore {
+impl awaken_dispatch_contract::DispatchExecution for SqliteDispatchStore {
     async fn renew_lease(
         &self,
         claim: &RunClaim,
@@ -840,7 +838,7 @@ impl awaken_run_ingress_contract::DispatchExecution for SqliteDispatchStore {
     async fn begin_attempt(
         &self,
         claim: &RunClaim,
-        _binding: Option<&awaken_run_ingress_contract::dispatch::AttemptExecutionBinding>,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         let now_ms = self.clock.now_ms();
         self.admit_physical_attempt(claim, now_ms, false, _binding)
@@ -850,7 +848,7 @@ impl awaken_run_ingress_contract::DispatchExecution for SqliteDispatchStore {
     async fn handoff_attempt(
         &self,
         claim: &RunClaim,
-        _binding: Option<&awaken_run_ingress_contract::dispatch::AttemptExecutionBinding>,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         let now_ms = self.clock.now_ms();
         self.admit_physical_attempt(claim, now_ms, true, _binding)
@@ -863,7 +861,7 @@ impl awaken_run_ingress_contract::DispatchExecution for SqliteDispatchStore {
     async fn finish_attempt(
         &self,
         claim: &RunClaim,
-        cause: Option<awaken_run_ingress_contract::AttemptReturnCause>,
+        cause: Option<awaken_dispatch_contract::AttemptReturnCause>,
     ) -> Result<SettleOutcome, DispatchError> {
         self.finish_physical_attempt_with(claim, crate::dispatch::AttemptFinish::Ordinary(cause))
             .await
@@ -878,7 +876,7 @@ impl awaken_run_ingress_contract::DispatchExecution for SqliteDispatchStore {
             NS,
             claim,
             None,
-            awaken_run_ingress_contract::ReleasedAttempt::Unspent,
+            awaken_dispatch_contract::ReleasedAttempt::Unspent,
             now_ms,
         )
         .await
@@ -901,7 +899,7 @@ impl awaken_run_ingress_contract::DispatchExecution for SqliteDispatchStore {
             NS,
             claim,
             Some(retry_not_before),
-            awaken_run_ingress_contract::ReleasedAttempt::Unspent,
+            awaken_dispatch_contract::ReleasedAttempt::Unspent,
             now_ms,
         )
         .await
@@ -925,7 +923,7 @@ impl awaken_run_ingress_contract::DispatchExecution for SqliteDispatchStore {
             NS,
             claim,
             Some(retry_not_before),
-            awaken_run_ingress_contract::ReleasedAttempt::Failed { max_attempts },
+            awaken_dispatch_contract::ReleasedAttempt::Failed { max_attempts },
             now_ms,
         )
         .await
@@ -933,7 +931,7 @@ impl awaken_run_ingress_contract::DispatchExecution for SqliteDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchClaimOwnership for SqliteDispatchStore {
+impl awaken_dispatch_contract::DispatchClaimOwnership for SqliteDispatchStore {
     /// The store's own clock decides liveness, exactly as it does for every
     /// other deadline this backend judges. This used to ride the trait default
     /// on a caller-supplied `now_ms`; the caller no longer has a say in when
@@ -948,7 +946,7 @@ impl awaken_run_ingress_contract::DispatchClaimOwnership for SqliteDispatchStore
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchSettlement for SqliteDispatchStore {
+impl awaken_dispatch_contract::DispatchSettlement for SqliteDispatchStore {
     async fn settle(
         &self,
         run_id: &RunId,
@@ -992,7 +990,7 @@ impl awaken_run_ingress_contract::DispatchSettlement for SqliteDispatchStore {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         };
-        let slot = awaken_run_ingress_contract::PhysicalAttemptSlot::from_facts(
+        let slot = awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
             attempt_owner.is_some(),
             active_attempt.is_some(),
             false,
@@ -1117,7 +1115,7 @@ impl awaken_run_ingress_contract::DispatchSettlement for SqliteDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchMaintenance for SqliteDispatchStore {
+impl awaken_dispatch_contract::DispatchMaintenance for SqliteDispatchStore {
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
@@ -1172,7 +1170,7 @@ impl awaken_run_ingress_contract::DispatchMaintenance for SqliteDispatchStore {
             let claim_epoch = durable_u64("dispatch lease epoch", epoch)?;
             // The SQL above only prefilters. The slot disposition is decided
             // here, on the locked row, by the one kernel every backend shares.
-            let slot = awaken_run_ingress_contract::PhysicalAttemptSlot::from_facts(
+            let slot = awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
                 active_attempt_owner.is_some(),
                 active_attempt_epoch.is_some(),
                 active_attempt_owner.as_deref() == Some(owner.as_str()),
@@ -1188,7 +1186,7 @@ impl awaken_run_ingress_contract::DispatchMaintenance for SqliteDispatchStore {
                 epoch,
                 cancellation_requested != 0,
             )?;
-            let awaken_run_ingress_contract::GuardedTransition::Applied(next) =
+            let awaken_dispatch_contract::GuardedTransition::Applied(next) =
                 current.exhaust_retries(claim_epoch, true)
             else {
                 continue;
@@ -1291,7 +1289,7 @@ impl SqliteDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchReads for SqliteDispatchStore {
+impl awaken_dispatch_contract::DispatchReads for SqliteDispatchStore {
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
         self.run_ids_by_status("dead_letter").await
     }
@@ -1306,7 +1304,7 @@ impl awaken_run_ingress_contract::DispatchReads for SqliteDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchAdministration for SqliteDispatchStore {
+impl awaken_dispatch_contract::DispatchAdministration for SqliteDispatchStore {
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let run_id = run_id.0.clone();
         let (_authority, mut conn) = self.with_conn().await?;
@@ -1367,7 +1365,7 @@ impl awaken_run_ingress_contract::DispatchAdministration for SqliteDispatchStore
         if let Some((_, status, _, epoch, cancellation_requested)) = &current {
             let transition =
                 crate::persisted_dispatch_transition(status, *epoch, *cancellation_requested != 0)?;
-            let awaken_run_ingress_contract::CancelTransition::Applied {
+            let awaken_dispatch_contract::CancelTransition::Applied {
                 state: next,
                 revoked_lease,
                 clear_retry_deadline,
@@ -1424,4 +1422,4 @@ impl awaken_run_ingress_contract::DispatchAdministration for SqliteDispatchStore
     }
 }
 
-use awaken_run_ingress_contract::DispatchCommitAuthority as _;
+use awaken_dispatch_contract::DispatchCommitAuthority as _;

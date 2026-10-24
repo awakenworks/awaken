@@ -11,7 +11,7 @@ async fn source_dispatch_observation_preserves_current_scope_and_rejects_affinit
     // identity, even after observing C3. Unrelated rows do not block this root.
     // The reader has only Dispatch read capabilities and changes no row.
     use crate::host::worker_resolver::test_support::test_activation;
-    use awaken_run_ingress_contract::{
+    use awaken_dispatch_contract::{
         DispatchEnqueue as _, DispatchReads as _, SessionRunReservations as _,
     };
     use awaken_session_runtime_contract::{
@@ -112,7 +112,7 @@ async fn source_dispatch_observation_preserves_current_scope_and_rejects_affinit
         for (index, (thread, parent)) in rows.into_iter().enumerate() {
             // Observe already-admitted activities; do not bypass fresh-root
             // reservation or the canonical child-admission command.
-            let request = awaken_run_ingress_contract::RunDispatch::new(test_activation(
+            let request = awaken_dispatch_contract::RunDispatch::new(test_activation(
                 thread,
                 &format!("source-run-{index}"),
             ))
@@ -124,7 +124,7 @@ async fn source_dispatch_observation_preserves_current_scope_and_rejects_affinit
                 store
                     .enqueue_session_child(
                         request,
-                        awaken_run_ingress_contract::SessionChildAdmission::new(25, Vec::new()),
+                        awaken_dispatch_contract::SessionChildAdmission::new(25, Vec::new()),
                     )
                     .await
                     .unwrap();
@@ -147,7 +147,7 @@ async fn ordinary_attempt_acknowledgement_releases_source_without_claiming_globa
     // closure. A full-history/independent-closure gate here would regress every
     // normal cleanup. O2 before that return -> Pending, with its slot retained.
     use crate::host::worker_resolver::test_support::test_activation;
-    use awaken_run_ingress_contract::{
+    use awaken_dispatch_contract::{
         DispatchAttemptRecordReads as _, DispatchClaims as _, DispatchEnqueue as _,
         DispatchExecution as _, DispatchSettlement as _,
     };
@@ -174,12 +174,9 @@ async fn ordinary_attempt_acknowledgement_releases_source_without_claiming_globa
     let run = RunId("source-ordinary-run".into());
     store
         .enqueue(
-            awaken_run_ingress_contract::RunDispatch::new(test_activation(
-                "source-ordinary",
-                &run.0,
-            ))
-            .for_session(ThreadId("source-ordinary".into()))
-            .with_session_activity_epoch(1),
+            awaken_dispatch_contract::RunDispatch::new(test_activation("source-ordinary", &run.0))
+                .for_session(ThreadId("source-ordinary".into()))
+                .with_session_activity_epoch(1),
         )
         .await
         .unwrap();
@@ -188,10 +185,10 @@ async fn ordinary_attempt_acknowledgement_releases_source_without_claiming_globa
         .await
         .unwrap()
         .unwrap();
-    let claim = awaken_run_ingress_contract::RunClaim::from(&claimed.lease);
+    let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
     assert_eq!(
         store.begin_attempt(&claim, None).await.unwrap(),
-        awaken_run_ingress_contract::AttemptAdmission::Applied
+        awaken_dispatch_contract::AttemptAdmission::Applied
     );
     root.archive("source-observation", 100).unwrap();
     assert_eq!(
@@ -203,23 +200,23 @@ async fn ordinary_attempt_acknowledgement_releases_source_without_claiming_globa
         store
             .finish_attempt(
                 &claim,
-                Some(awaken_run_ingress_contract::AttemptReturnCause::StructuredReturnObserved)
+                Some(awaken_dispatch_contract::AttemptReturnCause::StructuredReturnObserved)
             )
             .await
             .unwrap(),
-        awaken_run_ingress_contract::SettleOutcome::Applied
+        awaken_dispatch_contract::SettleOutcome::Applied
     );
     assert_eq!(
         store
             .settle(
                 &run,
                 claim.epoch,
-                awaken_run_ingress_contract::DispatchOutcome::Done,
+                awaken_dispatch_contract::DispatchOutcome::Done,
                 &[]
             )
             .await
             .unwrap(),
-        awaken_run_ingress_contract::SettleOutcome::Applied
+        awaken_dispatch_contract::SettleOutcome::Applied
     );
     assert_eq!(
         awaken_dispatch_execution::read_source_dispatch_observation(&store, &root).await,
@@ -234,7 +231,7 @@ async fn ordinary_attempt_acknowledgement_releases_source_without_claiming_globa
     assert!(
         matches!(
             &facts.events[0].record,
-            awaken_run_ingress_contract::AttemptPhysicalFact::Acknowledgement { .. }
+            awaken_dispatch_contract::AttemptPhysicalFact::Acknowledgement { .. }
         ),
         "O1 remains ordinary return, not independent closure"
     );
@@ -1461,7 +1458,7 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         .expect("A4/E4 one replay converges after raced work settles");
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchAdministration as _, DispatchClaims as _, DispatchEnqueue as _, DispatchReads as _,
     DispatchSettlement as _,
 };

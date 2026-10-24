@@ -144,7 +144,7 @@ impl MemoryStoreHandle for MemoryBinding {
 /// object to carry both implementations through Runtime composition.
 pub trait SessionMemoryReferenceEncoder:
     awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-        awaken_run_ingress_contract::RunClaim,
+        awaken_dispatch_contract::RunClaim,
     > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
         awaken_session_realization_contract::SessionResourceMaterializationIntent,
     > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
@@ -155,7 +155,7 @@ pub trait SessionMemoryReferenceEncoder:
 
 impl<T> SessionMemoryReferenceEncoder for T where
     T: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-            awaken_run_ingress_contract::RunClaim,
+            awaken_dispatch_contract::RunClaim,
         > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
             awaken_session_realization_contract::SessionResourceMaterializationIntent,
         > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<

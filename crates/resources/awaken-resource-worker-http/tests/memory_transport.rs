@@ -1382,6 +1382,6 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
     }
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchEnqueue as _, DispatchSettlement as _,
 };

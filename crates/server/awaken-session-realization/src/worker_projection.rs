@@ -5,7 +5,7 @@ use crate::{
     realization_error::RealizationError, realization_executor::RealizationExecutor,
     session_realizations::SessionRealizations,
 };
-use awaken_run_ingress_contract::RunClaim;
+use awaken_dispatch_contract::RunClaim;
 use awaken_runtime_contract::ExecutableAgentSnapshot;
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_session_realization_contract::{

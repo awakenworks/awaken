@@ -265,10 +265,10 @@ pub trait ProfiledSessionCommands: Send + Sync {
         owner_scope: &str,
         session_id: &SessionId,
         run_id: &awaken_agent_contract::agent::run::Id,
-        dispatch_after: awaken_run_ingress_contract::DispatchCursor,
+        dispatch_after: awaken_dispatch_contract::DispatchCursor,
         lifecycle_after: awaken_agent_contract::RunLifecycleCursor,
         limit: usize,
-    ) -> Result<awaken_run_ingress_contract::SessionRunEventPage, SessionProjectionRecoveryError>;
+    ) -> Result<awaken_dispatch_contract::SessionRunEventPage, SessionProjectionRecoveryError>;
 }
 
 /// Reply to a pending tool request of a profiled Session's primary Run.

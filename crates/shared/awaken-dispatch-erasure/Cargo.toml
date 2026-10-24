@@ -15,7 +15,7 @@ authority = "dispatch-role-erasure"
 thiserror.workspace = true
 awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true
-awaken-run-ingress-contract.workspace = true
+awaken-dispatch-contract.workspace = true
 awaken-runtime-contract.workspace = true
 async-trait.workspace = true
 

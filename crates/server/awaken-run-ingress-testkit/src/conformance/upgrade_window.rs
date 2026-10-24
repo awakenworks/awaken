@@ -44,7 +44,7 @@ fn runtime_projection_json(environment_id: &str) -> String {
 /// projection.
 fn projected_dispatch(ns: &str, run: &str, environment_id: &str, published: bool) -> RunDispatch {
     let mut request = dispatch(ns, run, &format!("{run}-thread")).with_session_runtime(
-        awaken_run_ingress_contract::SessionRuntimeEnvelope::new(runtime_projection_json(
+        awaken_dispatch_contract::SessionRuntimeEnvelope::new(runtime_projection_json(
             environment_id,
         )),
     );
@@ -91,7 +91,7 @@ async fn upgrade_window_retry_replays_rows_written_before_typed_requirements(
             .observe_session_run_admission(absent_stages.run_id())
             .await
             .unwrap(),
-        awaken_run_ingress_contract::SessionRunAdmissionObservation::Live(Box::new(
+        awaken_dispatch_contract::SessionRunAdmissionObservation::Live(Box::new(
             absent_stages.clone()
         )),
         "O4 original stages None stays absent"

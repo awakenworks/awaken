@@ -19,7 +19,7 @@ use awaken_agent_contract::stream::checkpoint::{
     StreamCheckpoint, StreamCheckpointError, StreamCheckpointStore,
 };
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     ClaimedCheckpointTransport, DispatchCommitAuthority, RunClaim, SettleOutcome,
 };
 

@@ -1,4 +1,4 @@
-use awaken_run_ingress_contract::{WorkerHeartbeat, WorkerIdentity, WorkerManifest};
+use awaken_dispatch_contract::{WorkerHeartbeat, WorkerIdentity, WorkerManifest};
 use awaken_worker_runtime::{WorkerControlClient, WorkerRegistrationError};
 use awaken_worker_transport_security::WorkerUpstream;
 use axum::extract::State;

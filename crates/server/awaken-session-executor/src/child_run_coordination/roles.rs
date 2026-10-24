@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use awaken_run_ingress_contract::SessionRunReservations as _;
+use awaken_dispatch_contract::SessionRunReservations as _;
 use awaken_session_application_contract::{DelegatedRun, StepOutcome};
 use awaken_session_types::RunError;
 
@@ -94,7 +94,7 @@ impl awaken_session_runtime_contract::CoordinationRuntime for ChildRunCoordinati
                 // Protocol-specific capabilities are implemented only by a
                 // registered Worker; never fall back to a generic local runner.
                 let strict_remote =
-                    awaken_run_ingress_contract::PlacementRequirements::remote_required();
+                    awaken_dispatch_contract::PlacementRequirements::remote_required();
                 request.placement.location = strict_remote.location;
                 if request.placement.contract_version == 0 {
                     request.placement.contract_version = strict_remote.contract_version;
@@ -116,26 +116,26 @@ impl awaken_session_runtime_contract::CoordinationRuntime for ChildRunCoordinati
                 .await
                 .map_err(|error| RunError::unavailable(error.to_string()))?
             {
-                awaken_run_ingress_contract::SessionRunReservationOutcome::Reserved => {
+                awaken_dispatch_contract::SessionRunReservationOutcome::Reserved => {
                     Ok(awaken_session_runtime_contract::SessionRunReservation::Reserved)
                 }
-                awaken_run_ingress_contract::SessionRunReservationOutcome::AlreadyReserved => {
+                awaken_dispatch_contract::SessionRunReservationOutcome::AlreadyReserved => {
                     Ok(awaken_session_runtime_contract::SessionRunReservation::AlreadyReserved)
                 }
-                awaken_run_ingress_contract::SessionRunReservationOutcome::RecoveryClaimed => {
+                awaken_dispatch_contract::SessionRunReservationOutcome::RecoveryClaimed => {
                     Ok(awaken_session_runtime_contract::SessionRunReservation::RecoveryClaimed)
                 }
-                awaken_run_ingress_contract::SessionRunReservationOutcome::AlreadyActivated {
+                awaken_dispatch_contract::SessionRunReservationOutcome::AlreadyActivated {
                     session_activity_epoch,
                 } => Ok(
                     awaken_session_runtime_contract::SessionRunReservation::AlreadyActivated {
                         session_activity_epoch,
                     },
                 ),
-                awaken_run_ingress_contract::SessionRunReservationOutcome::Completed => {
+                awaken_dispatch_contract::SessionRunReservationOutcome::Completed => {
                     Ok(awaken_session_runtime_contract::SessionRunReservation::Completed)
                 }
-                awaken_run_ingress_contract::SessionRunReservationOutcome::Conflict => Err(
+                awaken_dispatch_contract::SessionRunReservationOutcome::Conflict => Err(
                     RunError::bad_request("Session Run id was reused with different input"),
                 ),
             }
@@ -308,7 +308,7 @@ impl awaken_session_runtime_contract::SessionCoordinationReads for ChildRunCoord
         &self,
         command: awaken_session_runtime_contract::CoordinatedAdmissionRef<'_>,
     ) -> Result<Option<awaken_session_runtime_contract::SessionAgentMessageReceipt>, RunError> {
-        use awaken_run_ingress_contract::SessionRunAdmissionObservation;
+        use awaken_dispatch_contract::SessionRunAdmissionObservation;
         if command.activity_epoch() == Some(0)
             || matches!(command, awaken_session_runtime_contract::CoordinatedAdmissionRef::Report(_, baseline)
                 if baseline.agent_revision.is_none_or(|revision| revision == 0))
@@ -322,7 +322,7 @@ impl awaken_session_runtime_contract::SessionCoordinationReads for ChildRunCoord
             .session_runs
             .coordinator_dispatch()
             .map_err(|error| RunError::unavailable(error.message))?;
-        let reads: &dyn awaken_run_ingress_contract::SessionRunAdmissionReads = source.as_ref();
+        let reads: &dyn awaken_dispatch_contract::SessionRunAdmissionReads = source.as_ref();
         let observed = reads
             .observe_session_run_admission(&run)
             .await
@@ -331,7 +331,7 @@ impl awaken_session_runtime_contract::SessionCoordinationReads for ChildRunCoord
             SessionRunAdmissionObservation::Missing => Ok(None),
             SessionRunAdmissionObservation::Live(request)
                 if request.identity_scope
-                    == awaken_run_ingress_contract::DispatchIdentityScope::FullDispatch
+                    == awaken_dispatch_contract::DispatchIdentityScope::FullDispatch
                     && request.session_command_fingerprint.is_none()
                     && request.session_thread_id.as_ref()
                         == Some(&awaken_agent_contract::agent::thread::Id(

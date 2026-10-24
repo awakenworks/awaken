@@ -4,7 +4,7 @@
 // @formal reason: authority; construction decision tables test exact/foreign and partial bindings.
 //! Required execution observations frozen before the Session application is shared.
 
-use awaken_run_ingress_contract::DispatchOperationalFeed;
+use awaken_dispatch_contract::DispatchOperationalFeed;
 use awaken_session_realization_contract::SessionPreparationPlacement;
 use awaken_worker_contract::WorkerIncarnationSource;
 use std::sync::{Arc, OnceLock};
@@ -15,7 +15,7 @@ use std::sync::{Arc, OnceLock};
 /// ```compile_fail,E0061
 /// use std::sync::Arc;
 /// use awaken_session_application::SessionExecutionAdmission;
-/// use awaken_run_ingress_contract::DispatchOperationalFeed;
+/// use awaken_dispatch_contract::DispatchOperationalFeed;
 /// use awaken_worker_contract::WorkerIncarnationSource;
 /// fn incomplete(dispatch: Arc<dyn DispatchOperationalFeed>, workers: Arc<dyn WorkerIncarnationSource>) {
 ///     let _ = SessionExecutionAdmission::new(dispatch, workers);
@@ -27,7 +27,7 @@ use std::sync::{Arc, OnceLock};
 /// ```compile_fail,E0308
 /// use std::sync::Arc;
 /// use awaken_session_application::SessionExecutionAdmission;
-/// use awaken_run_ingress_contract::DispatchOperationalFeed;
+/// use awaken_dispatch_contract::DispatchOperationalFeed;
 /// use awaken_worker_contract::WorkerObservationSource;
 /// use awaken_session_realization_contract::SessionPreparationPlacement;
 /// fn roster_only(
@@ -41,7 +41,7 @@ use std::sync::{Arc, OnceLock};
 /// ```
 /// use std::sync::Arc;
 /// use awaken_session_application::SessionExecutionAdmission;
-/// use awaken_run_ingress_contract::DispatchOperationalFeed;
+/// use awaken_dispatch_contract::DispatchOperationalFeed;
 /// use awaken_worker_contract::WorkerIncarnationSource;
 /// use awaken_session_realization_contract::SessionPreparationPlacement;
 /// fn complete(

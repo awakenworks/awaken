@@ -75,7 +75,7 @@ impl ThreadCommitBoundary for OpenedThreadCommit {
 
     async fn boundary_worker(
         &self,
-        claimed: &awaken_run_ingress_contract::Claimed,
+        claimed: &awaken_dispatch_contract::Claimed,
         context: Option<awaken_runtime_contract::RuntimeRunContext>,
         install_cancellation_executor: bool,
     ) -> Result<
@@ -95,7 +95,7 @@ impl ThreadCommitBoundary for OpenedThreadCommit {
 
 pub(crate) async fn construct_boundary_worker(
     boundaries: &CommitBoundaryAssembly,
-    claimed: &awaken_run_ingress_contract::Claimed,
+    claimed: &awaken_dispatch_contract::Claimed,
     commit: Arc<crate::store::HostCommit>,
     mut context: Option<awaken_runtime_contract::RuntimeRunContext>,
     install_cancellation_executor: bool,

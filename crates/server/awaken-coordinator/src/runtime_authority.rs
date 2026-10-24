@@ -23,12 +23,12 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleFeed, RunLifecycleFeedError, RunLifecyclePage,
 };
+use awaken_dispatch_contract::WakeSignal;
 use awaken_dispatch_erasure::{
     LocalCommit, LocalCommitAdapter, LocalCommitQueries, RuntimeAuthority, RuntimeAuthorityError,
 };
 use awaken_dispatch_execution::{CoordinatorStorage, DispatchBackend, StoreKind, Wake};
 use awaken_run_ingress::AnyCoordinatorDispatch;
-use awaken_run_ingress_contract::WakeSignal;
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_postgres::PostgresCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;

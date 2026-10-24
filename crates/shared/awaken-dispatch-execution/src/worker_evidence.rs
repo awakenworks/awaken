@@ -1,7 +1,7 @@
 //! Exact closed-idle Worker retirement port for the process maintenance scan.
 
-use awaken_run_ingress_contract::dispatch::PhysicalAttempt;
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::dispatch::PhysicalAttempt;
+use awaken_dispatch_contract::{
     DispatchControlReads, DispatchReads, DispatchSummary, WorkerDirectory, WorkerIdentity,
 };
 use awaken_session_runtime_contract::ApplicationError;
@@ -87,7 +87,7 @@ pub trait WorkerEvidenceRelease: Send + Sync {
 ///
 /// ```compile_fail
 /// use awaken_dispatch_execution::{AnyCoordinatorDispatch, WorkerEvidenceRelease};
-/// use awaken_run_ingress_contract::{DispatchSummary, WorkerDirectory};
+/// use awaken_dispatch_contract::{DispatchSummary, WorkerDirectory};
 /// use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 /// async fn idle_only(
 ///     source: &dyn WorkerEvidenceRelease, queue: &AnyCoordinatorDispatch,
@@ -100,7 +100,7 @@ pub trait WorkerEvidenceRelease: Send + Sync {
 /// ```
 /// ```compile_fail
 /// use awaken_dispatch_execution::{AnyDispatchStore, WorkerTerminalReconciliation};
-/// use awaken_run_ingress_contract::{DispatchSummary, WorkerDirectory};
+/// use awaken_dispatch_contract::{DispatchSummary, WorkerDirectory};
 /// use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 /// async fn worker_queue(
 ///     source: &dyn WorkerTerminalReconciliation, queue: &AnyDispatchStore,
@@ -118,7 +118,7 @@ pub trait WorkerTerminalReconciliation: WorkerEvidenceRelease {
         dispatch: &awaken_dispatch_erasure::AnyCoordinatorDispatch,
         directory: &dyn WorkerDirectory,
         reader: &dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView,
-        summary: &awaken_run_ingress_contract::DispatchSummary,
+        summary: &awaken_dispatch_contract::DispatchSummary,
         recovery: Option<&PhysicalAttemptRecoveryRead<'_>>,
         now_ms: u64,
     ) -> Result<bool, ApplicationError>;

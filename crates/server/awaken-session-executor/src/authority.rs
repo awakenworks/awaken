@@ -222,7 +222,7 @@ impl RuntimeAuthority for EphemeralRuntimeAuthority {
         self.dispatch.clone()
     }
 
-    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_run_ingress_contract::WakeSignal>> {
+    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_contract::WakeSignal>> {
         None
     }
 
@@ -275,7 +275,7 @@ pub(crate) trait SessionAuthority: Send + Sync {
     fn claimed_commit(
         &self,
     ) -> Result<
-        Option<Arc<dyn awaken_run_ingress_contract::ClaimedRunCommit>>,
+        Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>,
         crate::SessionExecutionError,
     >;
 
@@ -283,7 +283,7 @@ pub(crate) trait SessionAuthority: Send + Sync {
     /// this process's completion registry.
     fn live_progress_publisher(
         &self,
-    ) -> Option<Arc<dyn awaken_run_ingress_contract::ClaimedStreamPublisher>>;
+    ) -> Option<Arc<dyn awaken_dispatch_contract::ClaimedStreamPublisher>>;
 
     /// The Control client that hands out cold terminal-cleanup assignments.
     fn terminal_cleanup_control(
@@ -300,7 +300,7 @@ pub(crate) trait SessionAuthority: Send + Sync {
     fn dispatch_binding(&self) -> Option<awaken_dispatch_erasure::DispatchBinding>;
 
     /// The cross-node dispatch wake this process owns, if any.
-    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_run_ingress_contract::WakeSignal>>;
+    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_contract::WakeSignal>>;
 
     /// Cancelling a Run records the durable cancellation intent (`true`), or
     /// only signals the attempt resident in this process (`false`): a Worker's
@@ -366,7 +366,7 @@ impl SessionAuthority for LocalAuthority {
     fn claimed_commit(
         &self,
     ) -> Result<
-        Option<Arc<dyn awaken_run_ingress_contract::ClaimedRunCommit>>,
+        Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>,
         crate::SessionExecutionError,
     > {
         Ok(None)
@@ -374,7 +374,7 @@ impl SessionAuthority for LocalAuthority {
 
     fn live_progress_publisher(
         &self,
-    ) -> Option<Arc<dyn awaken_run_ingress_contract::ClaimedStreamPublisher>> {
+    ) -> Option<Arc<dyn awaken_dispatch_contract::ClaimedStreamPublisher>> {
         None
     }
 
@@ -397,7 +397,7 @@ impl SessionAuthority for LocalAuthority {
         ))
     }
 
-    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_run_ingress_contract::WakeSignal>> {
+    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_contract::WakeSignal>> {
         self.runtime.dispatch_wake()
     }
 
@@ -433,7 +433,7 @@ impl SessionAuthority for LocalAuthority {
 #[derive(Default)]
 pub struct UpstreamAuthority {
     dispatch: Option<awaken_dispatch_erasure::DispatchBinding>,
-    stream_publisher: Option<Arc<dyn awaken_run_ingress_contract::ClaimedStreamPublisher>>,
+    stream_publisher: Option<Arc<dyn awaken_dispatch_contract::ClaimedStreamPublisher>>,
     terminal_cleanup_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>>,
     memory_reference_encoder: Option<Arc<dyn SessionMemoryReferenceEncoder>>,
@@ -481,7 +481,7 @@ impl UpstreamAuthority {
     #[must_use]
     pub fn with_stream_publisher(
         mut self,
-        publisher: Arc<dyn awaken_run_ingress_contract::ClaimedStreamPublisher>,
+        publisher: Arc<dyn awaken_dispatch_contract::ClaimedStreamPublisher>,
     ) -> Self {
         self.stream_publisher = Some(publisher);
         self
@@ -504,7 +504,7 @@ impl UpstreamAuthority {
     pub fn with_memory_reference_encoder<E>(mut self, encoder: Arc<E>) -> Self
     where
         E: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-                awaken_run_ingress_contract::RunClaim,
+                awaken_dispatch_contract::RunClaim,
             > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
                 awaken_session_realization_contract::SessionResourceMaterializationIntent,
             > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
@@ -538,7 +538,7 @@ impl SessionAuthority for UpstreamAuthority {
     fn claimed_commit(
         &self,
     ) -> Result<
-        Option<Arc<dyn awaken_run_ingress_contract::ClaimedRunCommit>>,
+        Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>,
         crate::SessionExecutionError,
     > {
         self.dispatch
@@ -559,7 +559,7 @@ impl SessionAuthority for UpstreamAuthority {
 
     fn live_progress_publisher(
         &self,
-    ) -> Option<Arc<dyn awaken_run_ingress_contract::ClaimedStreamPublisher>> {
+    ) -> Option<Arc<dyn awaken_dispatch_contract::ClaimedStreamPublisher>> {
         self.stream_publisher.clone()
     }
 
@@ -580,7 +580,7 @@ impl SessionAuthority for UpstreamAuthority {
         self.dispatch.clone()
     }
 
-    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_run_ingress_contract::WakeSignal>> {
+    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_contract::WakeSignal>> {
         None
     }
 

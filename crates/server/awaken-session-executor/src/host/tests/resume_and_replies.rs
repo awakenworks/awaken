@@ -677,7 +677,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
             )
             .await
             .expect("settle child Awaiting"),
-        awaken_run_ingress_contract::SettleOutcome::Applied
+        awaken_dispatch_contract::SettleOutcome::Applied
     );
 
     let follow_up_run = RunId("coordinated-reply-follow-up".into());
@@ -689,7 +689,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     ))
     .for_session(parent.clone())
     .with_session_activity_epoch(43);
-    let follow_up_input = awaken_run_ingress_contract::PendingInput {
+    let follow_up_input = awaken_dispatch_contract::PendingInput {
         message_id: "coordinated-reply-follow-up-message".into(),
         run_id: follow_up_run.clone(),
         thread_id: child.clone(),
@@ -718,7 +718,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         )
         .await
         .expect("CR6 exact follow-up retry");
-    let changed_follow_up = awaken_run_ingress_contract::PendingInput {
+    let changed_follow_up = awaken_dispatch_contract::PendingInput {
         context_messages: Vec::new(),
         result: awaken_runtime_contract::resume::ResumeResult::Input("changed intent".into()),
         ..follow_up_input.clone()
@@ -736,7 +736,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     );
     assert_eq!(
         dispatch.list(&child).await.expect("CR6 child Inbox"),
-        vec![awaken_run_ingress_contract::PendingRecord {
+        vec![awaken_dispatch_contract::PendingRecord {
             input: follow_up_input.clone(),
             revision: 1,
         }],
@@ -1050,7 +1050,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
             )
             .await
             .expect("CR5 settle the replied-to old Run"),
-        awaken_run_ingress_contract::SettleOutcome::Applied,
+        awaken_dispatch_contract::SettleOutcome::Applied,
         "CR5/E7"
     );
     clock.set(3);
@@ -1477,7 +1477,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
                 )
                 .await
                 .expect("settle primary Awaiting"),
-            awaken_run_ingress_contract::SettleOutcome::Applied
+            awaken_dispatch_contract::SettleOutcome::Applied
         );
 
         let command = awaken_session_runtime_contract::SessionThreadToolReplyCommand {
@@ -2121,7 +2121,7 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
     assert_eq!(awaiting[0].run_id, first.run_id);
     assert_eq!(
         awaiting[0].state,
-        awaken_run_ingress_contract::DispatchState::Awaiting
+        awaken_dispatch_contract::DispatchState::Awaiting
     );
 
     let resumed = bounded_stage(
@@ -2373,7 +2373,7 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
     );
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchEnqueue as _, DispatchReads as _, DispatchSettlement as _,
     InboxRead as _, SessionContinuationOutbox as _,
 };

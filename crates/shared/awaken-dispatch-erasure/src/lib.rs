@@ -30,21 +30,21 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
-use awaken_run_ingress_contract::{PlacementPolicy, WorkerSnapshot};
+use awaken_dispatch_contract::{PlacementPolicy, WorkerSnapshot};
 use awaken_runtime_contract::resume::ResumeResult;
 
 use awaken_agent_contract::credential::CandidateFingerprint;
-use awaken_run_ingress_contract::RunDispatch;
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::RunDispatch;
+use awaken_dispatch_contract::{
     AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
     DispatchCompletion, DispatchDepths, DispatchError, DispatchOutcome, DispatchSummary, Inbox,
     InboxRead, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, RunClaim,
     SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
     SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
-use awaken_run_ingress_contract::{DispatchCursor, DispatchOperationalFeed, DispatchPage};
+use awaken_dispatch_contract::{DispatchCursor, DispatchOperationalFeed, DispatchPage};
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     ContinuationAdmission, DispatchAdministration, DispatchAttemptControl, DispatchClaimOwnership,
     DispatchClaims, DispatchCommitAuthority, DispatchControlClaims, DispatchControlReads,
     DispatchEnqueue, DispatchExecution, DispatchMaintenance, DispatchReads, DispatchSettlement,
@@ -55,33 +55,33 @@ use awaken_run_ingress_contract::{
 ///
 /// ```compile_fail
 /// use awaken_dispatch_erasure::AnyDispatchStore;
-/// use awaken_run_ingress_contract::DispatchCommitAuthority;
+/// use awaken_dispatch_contract::DispatchCommitAuthority;
 /// fn local<T: DispatchCommitAuthority>() {}
 /// local::<AnyDispatchStore>();
 /// ```
 /// ```compile_fail
 /// use awaken_dispatch_erasure::AnyDispatchStore;
-/// use awaken_run_ingress_contract::Inbox;
+/// use awaken_dispatch_contract::Inbox;
 /// fn inbox<T: Inbox>() {}
 /// inbox::<AnyDispatchStore>();
 /// ```
 /// ```compile_fail
 /// use awaken_dispatch_erasure::AnyDispatchStore;
-/// use awaken_run_ingress_contract::DispatchMaintenance;
+/// use awaken_dispatch_contract::DispatchMaintenance;
 /// fn maintain<T: DispatchMaintenance>() {}
 /// maintain::<AnyDispatchStore>();
 /// ```
 /// Neither scoped nor global operational reads are fabricated on a Worker view.
 /// ```compile_fail
 /// use awaken_dispatch_erasure::AnyDispatchStore;
-/// use awaken_run_ingress_contract::{DispatchOperationalFeed, DispatchCursor};
+/// use awaken_dispatch_contract::{DispatchOperationalFeed, DispatchCursor};
 /// async fn global(worker: &AnyDispatchStore) {
 ///     worker.events_after(DispatchCursor(0), 1, None).await;
 /// }
 /// ```
 /// ```compile_fail
 /// use awaken_dispatch_erasure::AnyDispatchStore;
-/// use awaken_run_ingress_contract::{DispatchOperationalFeed, DispatchCursor};
+/// use awaken_dispatch_contract::{DispatchOperationalFeed, DispatchCursor};
 /// use awaken_agent_contract::agent::run::Id;
 /// async fn scoped(worker: &AnyDispatchStore, run: &Id) {
 ///     worker.events_after(DispatchCursor(0), 1, Some(run)).await;
@@ -90,7 +90,7 @@ use awaken_run_ingress_contract::{
 /// Admission input is also Coordinator-only; no claim-as-read escape exists.
 /// ```compile_fail,E0599
 /// use awaken_dispatch_erasure::AnyDispatchStore;
-/// use awaken_run_ingress_contract::SessionRunAdmissionReads;
+/// use awaken_dispatch_contract::SessionRunAdmissionReads;
 /// use awaken_agent_contract::agent::run::Id;
 /// async fn observe(worker: &AnyDispatchStore) {
 ///     worker.observe_session_run_admission(&Id("peer".into())).await;
@@ -103,7 +103,7 @@ use awaken_run_ingress_contract::{
 /// ```
 /// ```compile_fail
 /// use awaken_dispatch_erasure::AnyDispatchStore;
-/// use awaken_run_ingress_contract::SessionContinuationOutbox;
+/// use awaken_dispatch_contract::SessionContinuationOutbox;
 /// fn continuation<T: SessionContinuationOutbox>() {}
 /// continuation::<AnyDispatchStore>();
 /// ```
@@ -294,23 +294,23 @@ macro_rules! worker_roles {
             async fn begin_attempt(
                 &self,
                 claim: &RunClaim,
-                _binding: Option<&awaken_run_ingress_contract::dispatch::AttemptExecutionBinding>,
-            ) -> Result<awaken_run_ingress_contract::AttemptAdmission, DispatchError> {
+                _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
+            ) -> Result<awaken_dispatch_contract::AttemptAdmission, DispatchError> {
                 delegate!(self, begin_attempt(claim, _binding))
             }
 
             async fn handoff_attempt(
                 &self,
                 claim: &RunClaim,
-                _binding: Option<&awaken_run_ingress_contract::dispatch::AttemptExecutionBinding>,
-            ) -> Result<awaken_run_ingress_contract::AttemptAdmission, DispatchError> {
+                _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
+            ) -> Result<awaken_dispatch_contract::AttemptAdmission, DispatchError> {
                 delegate!(self, handoff_attempt(claim, _binding))
             }
 
             async fn finish_attempt(
                 &self,
                 claim: &RunClaim,
-                cause: Option<awaken_run_ingress_contract::AttemptReturnCause>,
+                cause: Option<awaken_dispatch_contract::AttemptReturnCause>,
             ) -> Result<SettleOutcome, DispatchError> {
                 delegate!(self, finish_attempt(claim, cause))
             }
@@ -400,7 +400,7 @@ impl DispatchAdministration for AnyCoordinatorDispatch {
 impl DispatchCommitAuthority for AnyCoordinatorDispatch {
     async fn worker_owns_run(
         &self,
-        identity: &awaken_run_ingress_contract::WorkerIdentity,
+        identity: &awaken_dispatch_contract::WorkerIdentity,
         run_id: &RunId,
     ) -> Result<Option<RunClaim>, DispatchError> {
         delegate_owner!(self, worker_owns_run(identity, run_id))
@@ -453,7 +453,7 @@ impl SessionRunAdmissionReads for AnyCoordinatorDispatch {
     async fn observe_session_run_admission(
         &self,
         run_id: &RunId,
-    ) -> Result<awaken_run_ingress_contract::SessionRunAdmissionObservation, DispatchError> {
+    ) -> Result<awaken_dispatch_contract::SessionRunAdmissionObservation, DispatchError> {
         delegate_owner!(self, observe_session_run_admission(run_id))
     }
 }
@@ -494,7 +494,7 @@ impl SessionRunReservations for AnyCoordinatorDispatch {
 }
 
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::SessionReservationAuthority for AnyCoordinatorDispatch {
+impl awaken_dispatch_contract::SessionReservationAuthority for AnyCoordinatorDispatch {
     async fn lock_session_run_reservation_epoch(
         &self,
         claim: &RunClaim,
@@ -506,7 +506,7 @@ impl awaken_run_ingress_contract::SessionReservationAuthority for AnyCoordinator
 impl DispatchAttemptControl for AnyCoordinatorDispatch {
     async fn finish_attempt_closure(
         &self,
-        record: &awaken_run_ingress_contract::AttemptClosureRecord,
+        record: &awaken_dispatch_contract::AttemptClosureRecord,
     ) -> Result<SettleOutcome, DispatchError> {
         delegate_owner!(self, finish_attempt_closure(record))
     }
@@ -514,10 +514,10 @@ impl DispatchAttemptControl for AnyCoordinatorDispatch {
     async fn admit_attempt_guarded(
         &self,
         claim: &RunClaim,
-        binding: Option<&awaken_run_ingress_contract::dispatch::AttemptExecutionBinding>,
-        guard: awaken_run_ingress_contract::WorkerIncarnationGuard,
+        binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
+        guard: awaken_dispatch_contract::WorkerIncarnationGuard,
         handoff: bool,
-    ) -> Result<awaken_run_ingress_contract::AttemptAdmission, DispatchError> {
+    ) -> Result<awaken_dispatch_contract::AttemptAdmission, DispatchError> {
         delegate_owner!(self, admit_attempt_guarded(claim, binding, guard, handoff))
     }
 }
@@ -555,7 +555,7 @@ impl DispatchControlReads for AnyCoordinatorDispatch {
     async fn load_physical_attempt(
         &self,
         run_id: &RunId,
-    ) -> Result<Option<awaken_run_ingress_contract::dispatch::PhysicalAttempt>, DispatchError> {
+    ) -> Result<Option<awaken_dispatch_contract::dispatch::PhysicalAttempt>, DispatchError> {
         delegate_owner!(self, load_physical_attempt(run_id))
     }
 
@@ -657,7 +657,7 @@ impl SessionContinuationOutbox for AnyCoordinatorDispatch {
 }
 
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchAttemptRecordReads for AnyCoordinatorDispatch {
+impl awaken_dispatch_contract::DispatchAttemptRecordReads for AnyCoordinatorDispatch {
     async fn attempt_admissions_after(
         &self,
         cursor: DispatchCursor,
@@ -676,7 +676,7 @@ impl awaken_run_ingress_contract::DispatchAttemptRecordReads for AnyCoordinatorD
         cursor: DispatchCursor,
         limit: usize,
         run: Option<&RunId>,
-    ) -> Result<awaken_run_ingress_contract::AttemptClosurePage, DispatchError> {
+    ) -> Result<awaken_dispatch_contract::AttemptClosurePage, DispatchError> {
         delegate_owner!(self, attempt_closure_records_after(cursor, limit, run))
     }
 }

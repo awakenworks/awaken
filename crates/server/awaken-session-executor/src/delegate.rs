@@ -664,7 +664,7 @@ mod durable_cancel_tests {
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
     use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-    use awaken_run_ingress_contract::DispatchReads;
+    use awaken_dispatch_contract::DispatchReads;
 
     use awaken_agent_contract::audit::model_request::TokenUsage;
     use awaken_runtime_contract::agent_bindings::{

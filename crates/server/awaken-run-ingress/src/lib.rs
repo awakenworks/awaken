@@ -14,7 +14,7 @@
 //! retaining another execution implementation here.
 //!
 //! Source-owner rule W4: the old host WakeSignal export is removed; callers
-//! import its existing two-method port from run-ingress-contract. No new wake
+//! import its existing two-method port from dispatch-contract. No new wake
 //! implementation or delivery law is introduced by this source control.
 //! ```compile_fail,E0432
 //! use awaken_run_ingress::WakeSignal;
@@ -83,21 +83,12 @@ pub use application::{
     has_active_physical_attempt_for_owner, reconcile_closed_idle_worker_evidence,
     release_closed_idle_worker_evidence, stop_committed_terminal_attempt, stop_expired_predecessor,
 };
-pub use awaken_dispatch_execution::{AnyDispatchStore, Dispatch};
-pub use awaken_dispatch_execution::{
-    ClaimedCommitCoordinator, ClaimedModelRequestGateFactory, ClaimedRunCommit, CompletionSink,
-    ControlDispatch, DEFAULT_LEASE_MS, DispatchPool, DispatchReconciler, DispatchService,
-    DispatchServiceConfig, DispatchWorker, FencedStreamCheckpointStore, GuardedRunCommit,
-    InferenceMaterializerFn, LiveRunControlError, LiveRunControlService, LocalWakeSignal,
-    PoolDrainFence, RecoveryProjection, RecoveryProjectionError, TerminalReconciliationScan,
-    WorkerResolver, claim_bound_ownership_verifier, publish_dispatch_hint,
-};
-pub use awaken_run_ingress_contract::DispatchAttemptRecordReads;
-pub use awaken_run_ingress_contract::operational::{
+pub use awaken_dispatch_contract::DispatchAttemptRecordReads;
+pub use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, LeaseLossReason,
 };
-pub use awaken_run_ingress_contract::{
+pub use awaken_dispatch_contract::{
     AssignmentRejection, CURRENT_RUNTIME_PROTOCOL_VERSION, ClaimedCommitCommand, ExecutionLocation,
     ExecutionScopeRef, HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy,
     PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext,
@@ -112,7 +103,7 @@ pub use awaken_run_ingress_contract::{
     WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally, place_assignment,
     retry_exhaustion_eligible, worker_credential_realization_capabilities,
 };
-pub use awaken_run_ingress_contract::{
+pub use awaken_dispatch_contract::{
     AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest,
     ClaimRunRequest, ClaimWorkerRequest, ClaimedCommitRequest, CredentialDeliveryRefreshRequest,
     CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest, HeartbeatWorkerRequest,
@@ -120,7 +111,16 @@ pub use awaken_run_ingress_contract::{
     SessionRunReservationResolutionRequest, SettleRequest, StreamEventRequest,
     StreamObservationRequest, WorkerIdentityRequest,
 };
-pub use awaken_run_ingress_contract::{ClaimedStreamPublisher, SessionContinuationOutbox};
+pub use awaken_dispatch_contract::{ClaimedStreamPublisher, SessionContinuationOutbox};
+pub use awaken_dispatch_execution::{AnyDispatchStore, Dispatch};
+pub use awaken_dispatch_execution::{
+    ClaimedCommitCoordinator, ClaimedModelRequestGateFactory, ClaimedRunCommit, CompletionSink,
+    ControlDispatch, DEFAULT_LEASE_MS, DispatchPool, DispatchReconciler, DispatchService,
+    DispatchServiceConfig, DispatchWorker, FencedStreamCheckpointStore, GuardedRunCommit,
+    InferenceMaterializerFn, LiveRunControlError, LiveRunControlService, LocalWakeSignal,
+    PoolDrainFence, RecoveryProjection, RecoveryProjectionError, TerminalReconciliationScan,
+    WorkerResolver, claim_bound_ownership_verifier, publish_dispatch_hint,
+};
 pub use dispatch::{
     AttemptAcknowledgementRecord, AttemptAdmission, AttemptClosureEvent, AttemptClosurePage,
     AttemptClosureRecord, AttemptCredentialBinding, AttemptExecutionBinding, AttemptPhysicalFact,
@@ -181,11 +181,11 @@ fn persisted_dispatch_transition(
     status: &str,
     lease_epoch: i64,
     cancellation_requested: bool,
-) -> Result<awaken_run_ingress_contract::DispatchTransition, DispatchError> {
+) -> Result<awaken_dispatch_contract::DispatchTransition, DispatchError> {
     let state = DispatchState::from_db(status).ok_or_else(|| {
         DispatchError::Rejected(format!("unknown persisted dispatch state `{status}`"))
     })?;
-    Ok(awaken_run_ingress_contract::DispatchTransition {
+    Ok(awaken_dispatch_contract::DispatchTransition {
         state,
         lease_epoch: durable_u64("dispatch lease epoch", lease_epoch)?,
         cancellation_requested,
@@ -206,9 +206,9 @@ fn dispatch_state_db(state: DispatchState) -> &'static str {
 }
 
 #[cfg(feature = "durable")]
-fn transition_error(error: awaken_run_ingress_contract::DispatchTransitionError) -> DispatchError {
+fn transition_error(error: awaken_dispatch_contract::DispatchTransitionError) -> DispatchError {
     match error {
-        awaken_run_ingress_contract::DispatchTransitionError::LeaseEpochExhausted => {
+        awaken_dispatch_contract::DispatchTransitionError::LeaseEpochExhausted => {
             DispatchError::Rejected(
                 "dispatch claim epoch exhausted; refusing to wrap fencing authority".to_string(),
             )
@@ -300,14 +300,14 @@ pub(crate) fn policy_selects_requester(
 }
 
 pub use application::AttemptControlAuthority;
-pub use awaken_dispatch_execution::{
-    AnyCoordinatorDispatch, DispatchBinding, DispatchTopology, DurableDispatch, RemoteDispatch,
-};
-pub use awaken_run_ingress_contract::{
+pub use awaken_dispatch_contract::{
     DispatchAdministration, DispatchAttemptControl, DispatchClaimOwnership, DispatchClaims,
     DispatchCommitAuthority, DispatchControlClaims, DispatchControlReads, DispatchEnqueue,
     DispatchExecution, DispatchMaintenance, DispatchReads, DispatchSettlement, InboxRead,
     SessionReservationAuthority, SessionRunReservations,
+};
+pub use awaken_dispatch_execution::{
+    AnyCoordinatorDispatch, DispatchBinding, DispatchTopology, DurableDispatch, RemoteDispatch,
 };
 
 pub use awaken_dispatch_execution::{PhysicalAttemptReads, PhysicalAttemptRecoveryRead};

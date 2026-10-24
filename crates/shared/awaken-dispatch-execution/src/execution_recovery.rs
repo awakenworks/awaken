@@ -2,8 +2,8 @@
 // @formal reason: Joins the existing frozen Session scope and original Dispatch history without writing or minting execution authority.
 //! Read the complete frozen execution scope before presenting closure evidence.
 
-use awaken_run_ingress_contract::dispatch::PhysicalAttempt;
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::dispatch::PhysicalAttempt;
+use awaken_dispatch_contract::{
     AttemptClosureRecord, AttemptPhysicalFact, DispatchCursor, DispatchOperation,
 };
 use awaken_session_runtime_contract::{
@@ -56,7 +56,7 @@ fn scope_member(
 /// Unlike whole-execution recovery, this does not require independent closure
 /// history after an ordinary, fully returned attempt has removed its row.
 pub async fn read_source_dispatch_observation<
-    S: awaken_run_ingress_contract::DispatchReads + ?Sized,
+    S: awaken_dispatch_contract::DispatchReads + ?Sized,
 >(
     source: &S,
     session: &PersistedSession,
@@ -90,9 +90,9 @@ pub async fn read_source_dispatch_observation<
 }
 
 fn expired_claim_for_fast_pending(
-    claim: awaken_run_ingress_contract::RunClaim,
+    claim: awaken_dispatch_contract::RunClaim,
     was_current: Option<bool>,
-) -> Option<awaken_run_ingress_contract::RunClaim> {
+) -> Option<awaken_dispatch_contract::RunClaim> {
     (was_current == Some(false)).then_some(claim)
 }
 
@@ -100,8 +100,8 @@ fn expired_claim_for_fast_pending(
 /// occupies the physical slot. This comparison grants no retirement receipt.
 #[must_use]
 pub fn exact_expired_slot_remains(
-    expected: &awaken_run_ingress_contract::RunClaim,
-    observed: Option<&awaken_run_ingress_contract::dispatch::PhysicalAttempt>,
+    expected: &awaken_dispatch_contract::RunClaim,
+    observed: Option<&awaken_dispatch_contract::dispatch::PhysicalAttempt>,
 ) -> bool {
     observed.is_some_and(|physical| physical.claim == *expected)
 }
@@ -111,10 +111,10 @@ pub fn exact_expired_slot_remains(
 pub async fn read_expired_physical_attempt<S>(
     source: &S,
     run_id: &awaken_agent_contract::agent::run::Id,
-) -> Result<Option<awaken_run_ingress_contract::RunClaim>, awaken_run_ingress_contract::DispatchError>
+) -> Result<Option<awaken_dispatch_contract::RunClaim>, awaken_dispatch_contract::DispatchError>
 where
-    S: awaken_run_ingress_contract::DispatchControlReads
-        + awaken_run_ingress_contract::DispatchClaimOwnership
+    S: awaken_dispatch_contract::DispatchControlReads
+        + awaken_dispatch_contract::DispatchClaimOwnership
         + ?Sized,
 {
     let Some(physical) = source.load_physical_attempt(run_id).await? else {
@@ -268,7 +268,7 @@ fn verified_closure(
 }
 
 async fn original_closure_records<
-    S: awaken_run_ingress_contract::DispatchAttemptRecordReads + ?Sized,
+    S: awaken_dispatch_contract::DispatchAttemptRecordReads + ?Sized,
 >(
     source: &S,
     run: &awaken_agent_contract::agent::run::Id,
@@ -298,7 +298,7 @@ pub async fn read_execution_recovery<S, R>(
     session: &PersistedSession,
 ) -> Observation
 where
-    S: awaken_run_ingress_contract::DispatchAttemptRecordReads + ?Sized,
+    S: awaken_dispatch_contract::DispatchAttemptRecordReads + ?Sized,
     R: awaken_session_runtime_contract::ThreadReadRuntime + ?Sized,
 {
     let (threads, runtime_commit_cursor) = match frozen_terminal_scope(session) {
@@ -498,12 +498,12 @@ mod tests {
     use super::*;
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_run_ingress_contract::dispatch::AttemptAcknowledgementRecord;
-    use awaken_run_ingress_contract::{AttemptClosureKind, AttemptReturnCause, RunClaim};
+    use awaken_dispatch_contract::dispatch::AttemptAcknowledgementRecord;
+    use awaken_dispatch_contract::{AttemptClosureKind, AttemptReturnCause, RunClaim};
 
     use awaken_agent_contract::agent::run::{EndCause, Record as RunRecord, RunState};
     use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
-    use awaken_run_ingress_contract::{AttemptClosureEvent, DispatchOperationalEvent};
+    use awaken_dispatch_contract::{AttemptClosureEvent, DispatchOperationalEvent};
     use awaken_session_types::{RunError, SessionId};
     use std::sync::{
         Arc,
@@ -518,19 +518,17 @@ mod tests {
         on_closure_read: Option<Arc<dyn Fn() + Send + Sync>>,
     }
     #[async_trait::async_trait]
-    impl awaken_run_ingress_contract::DispatchOperationalFeed for RecoverySource {
+    impl awaken_dispatch_contract::DispatchOperationalFeed for RecoverySource {
         async fn events_after(
             &self,
             cursor: DispatchCursor,
             limit: usize,
             run: Option<&RunId>,
-        ) -> Result<
-            awaken_run_ingress_contract::DispatchPage,
-            awaken_run_ingress_contract::DispatchError,
-        > {
+        ) -> Result<awaken_dispatch_contract::DispatchPage, awaken_dispatch_contract::DispatchError>
+        {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.unavailable.load(Ordering::SeqCst) {
-                return Err(awaken_run_ingress_contract::DispatchError::Unavailable(
+                return Err(awaken_dispatch_contract::DispatchError::Unavailable(
                     "fixture outage".into(),
                 ));
             }
@@ -543,27 +541,25 @@ mod tests {
                 .cloned()
                 .collect::<Vec<_>>();
             let next_cursor = events.last().map_or(cursor, |e| e.cursor);
-            Ok(awaken_run_ingress_contract::DispatchPage {
+            Ok(awaken_dispatch_contract::DispatchPage {
                 events,
                 next_cursor,
             })
         }
     }
     #[async_trait::async_trait]
-    impl awaken_run_ingress_contract::DispatchAttemptRecordReads for RecoverySource {
+    impl awaken_dispatch_contract::DispatchAttemptRecordReads for RecoverySource {
         async fn attempt_admissions_after(
             &self,
             cursor: DispatchCursor,
             limit: usize,
             root: &ThreadId,
             members: &[ThreadId],
-        ) -> Result<
-            awaken_run_ingress_contract::DispatchPage,
-            awaken_run_ingress_contract::DispatchError,
-        > {
+        ) -> Result<awaken_dispatch_contract::DispatchPage, awaken_dispatch_contract::DispatchError>
+        {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.unavailable.load(Ordering::SeqCst) {
-                return Err(awaken_run_ingress_contract::DispatchError::Unavailable(
+                return Err(awaken_dispatch_contract::DispatchError::Unavailable(
                     "fixture outage".into(),
                 ));
             }
@@ -581,7 +577,7 @@ mod tests {
                 .cloned()
                 .collect::<Vec<_>>();
             let next_cursor = events.last().map_or(cursor, |event| event.cursor);
-            Ok(awaken_run_ingress_contract::DispatchPage {
+            Ok(awaken_dispatch_contract::DispatchPage {
                 events,
                 next_cursor,
             })
@@ -593,14 +589,14 @@ mod tests {
             limit: usize,
             run: Option<&RunId>,
         ) -> Result<
-            awaken_run_ingress_contract::AttemptClosurePage,
-            awaken_run_ingress_contract::DispatchError,
+            awaken_dispatch_contract::AttemptClosurePage,
+            awaken_dispatch_contract::DispatchError,
         > {
             if let Some(hook) = &self.on_closure_read {
                 hook();
             }
             let records = self.closures.as_ref().ok_or_else(|| {
-                awaken_run_ingress_contract::DispatchError::Unavailable("fixture outage".into())
+                awaken_dispatch_contract::DispatchError::Unavailable("fixture outage".into())
             })?;
             let events = records
                 .iter()
@@ -610,7 +606,7 @@ mod tests {
                 .cloned()
                 .collect::<Vec<_>>();
             let next_cursor = events.last().map_or(cursor, |e| e.cursor);
-            Ok(awaken_run_ingress_contract::AttemptClosurePage {
+            Ok(awaken_dispatch_contract::AttemptClosurePage {
                 events,
                 next_cursor,
             })
@@ -1159,8 +1155,8 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_recovery_requires_every_frozen_thread_and_original_attempt() {
-        use awaken_run_ingress_contract::dispatch::PhysicalAttempt;
-        use awaken_run_ingress_contract::{
+        use awaken_dispatch_contract::dispatch::PhysicalAttempt;
+        use awaken_dispatch_contract::{
             AttemptClosureEvent, AttemptClosureKind, AttemptClosureRecord, AttemptPhysicalFact,
             DispatchCursor, DispatchOperation, DispatchOperationalEvent, RunClaim,
         };
@@ -1467,7 +1463,7 @@ mod fast_pending_tests {
         // P2=(current|unknown,any)|(expired,missing|replaced|unknown)=>E2.
         // Probe failure is an optimization miss, never a reason to skip
         // durable cancellation or to accept physical quiescence.
-        let claim = awaken_run_ingress_contract::RunClaim {
+        let claim = awaken_dispatch_contract::RunClaim {
             run_id: RunId("fast-pending-run".into()),
             owner: "worker-a".into(),
             epoch: 1,
@@ -1479,15 +1475,15 @@ mod fast_pending_tests {
                 "P1/P2 pre-cancel {current:?}"
             );
         }
-        let exact = awaken_run_ingress_contract::dispatch::PhysicalAttempt {
+        let exact = awaken_dispatch_contract::dispatch::PhysicalAttempt {
             closing: false,
             claim: claim.clone(),
             binding: None,
             thread_id: None,
             session_thread_id: None,
         };
-        let replacement = awaken_run_ingress_contract::dispatch::PhysicalAttempt {
-            claim: awaken_run_ingress_contract::RunClaim {
+        let replacement = awaken_dispatch_contract::dispatch::PhysicalAttempt {
+            claim: awaken_dispatch_contract::RunClaim {
                 epoch: 2,
                 ..claim.clone()
             },

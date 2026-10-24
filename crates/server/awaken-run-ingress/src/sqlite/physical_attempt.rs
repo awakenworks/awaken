@@ -91,7 +91,7 @@ impl SqliteDispatchStore {
             .map(|value| durable_u64("dispatch attempt epoch", value))
             .transpose()?;
         let retired_epoch = durable_u64("retired attempt epoch", current.retired_epoch)?;
-        let live = awaken_run_ingress_contract::attempt_epoch_is_open(claim.epoch, retired_epoch)
+        let live = awaken_dispatch_contract::attempt_epoch_is_open(claim.epoch, retired_epoch)
             && current.status == "running"
             && current.lease_owner.as_deref() == Some(&claim.owner)
             && persisted_epoch == claim.epoch

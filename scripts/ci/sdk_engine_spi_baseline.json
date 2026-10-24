@@ -11,7 +11,7 @@
     "awaken-executable-agent-contract": {
       "awaken_runtime_contract::plugin": 1
     },
-    "awaken-run-ingress-contract": {
+    "awaken-dispatch-contract": {
       "awaken_agent_contract::stream::checkpoint": 2,
       "awaken_agent_contract::stream::sink": 1,
       "awaken_agent_contract::thread::commit": 5,

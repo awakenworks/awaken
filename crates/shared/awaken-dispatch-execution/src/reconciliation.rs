@@ -2,7 +2,7 @@
 //! Bounded discovery shared by Worker and Host terminal reconciliation.
 //! The cursor schedules reads only; Dispatch and ThreadCommit retain authority.
 
-use awaken_run_ingress_contract::DispatchControlReads;
+use awaken_dispatch_contract::DispatchControlReads;
 use std::future::Future;
 
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};

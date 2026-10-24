@@ -21,7 +21,7 @@ async fn dispatched_mcp_effect_projection_decision_table() {
     // | R3 | present | exact/live | same | idempotent one |
     // | R4 | present | n/a | empty | drain all |
     // | R5 | present | foreign/expired | replace | reject, retain prior |
-    let legacy = awaken_run_ingress_contract::SessionRuntimeEnvelope::new(
+    let legacy = awaken_dispatch_contract::SessionRuntimeEnvelope::new(
         serde_json::json!({
             "environment": deferred_environment(),
             "toolsets": null
@@ -188,13 +188,11 @@ async fn undecodable_dispatched_runtime_projection_is_an_absorbing_resolution_fa
     .build()
     .expect("validated Host dependencies");
     let mut request = with_empty_session_resources(
-        awaken_run_ingress_contract::RunDispatch::new(test_activation(
+        awaken_dispatch_contract::RunDispatch::new(test_activation(
             "corrupt-projection",
             "run-corrupt-projection",
         ))
-        .with_session_runtime(awaken_run_ingress_contract::SessionRuntimeEnvelope::new(
-            "{",
-        )),
+        .with_session_runtime(awaken_dispatch_contract::SessionRuntimeEnvelope::new("{")),
         host.run_assembly.local_workspace(),
     );
     request.placement.session_mcp_credentials = Some(Vec::new());
@@ -221,6 +219,6 @@ async fn undecodable_dispatched_runtime_projection_is_an_absorbing_resolution_fa
     );
 }
 
-use awaken_run_ingress_contract::{DispatchClaims as _, DispatchEnqueue as _};
+use awaken_dispatch_contract::{DispatchClaims as _, DispatchEnqueue as _};
 
 mod projection_loss;

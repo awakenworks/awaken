@@ -181,7 +181,7 @@ fn ready_dispatch_worker(ns: &str, suffix: &str) -> WorkerSnapshot {
     // claim/credential/recovery cause under test.
     let mut manifest = WorkerManifest::default();
     manifest.runtime_protocol.min = 1;
-    manifest.runtime_protocol.max = awaken_run_ingress_contract::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.max = awaken_dispatch_contract::CURRENT_RUNTIME_PROTOCOL_VERSION;
     WorkerSnapshot {
         identity: WorkerIdentity::new(format!("{ns}-{suffix}-worker"), "boot", 1),
         capability_fingerprint: manifest

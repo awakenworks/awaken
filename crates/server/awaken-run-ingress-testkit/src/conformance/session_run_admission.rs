@@ -92,7 +92,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
             .observe_session_run_admission(enqueue_request.run_id())
             .await
             .unwrap(),
-        awaken_run_ingress_contract::SessionRunAdmissionObservation::Live(Box::new(
+        awaken_dispatch_contract::SessionRunAdmissionObservation::Live(Box::new(
             enqueue_request.clone().with_session_command_identity()
         )),
         "O2 Reserved full A"
@@ -374,7 +374,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     reprojected.traceparent =
         Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".into());
     reprojected.session_resources = Some(
-        awaken_run_ingress_contract::SessionResourceEnvelope::at_revision(
+        awaken_dispatch_contract::SessionResourceEnvelope::at_revision(
             "current-workspace",
             9,
             r#"{"inputs":[]}"#,
@@ -838,7 +838,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
             .observe_session_run_admission(prior.run_id())
             .await
             .unwrap(),
-        awaken_run_ingress_contract::SessionRunAdmissionObservation::Live(Box::new(
+        awaken_dispatch_contract::SessionRunAdmissionObservation::Live(Box::new(
             prior_claim.request.clone()
         )),
         "O2 Superseded full A"
@@ -1033,7 +1033,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
             .observe_session_run_admission(&repair_run)
             .await
             .unwrap(),
-        awaken_run_ingress_contract::SessionRunAdmissionObservation::Live(Box::new(
+        awaken_dispatch_contract::SessionRunAdmissionObservation::Live(Box::new(
             first_repair.request.clone()
         )),
         "O2 ReservationLeased full A"

@@ -6,7 +6,7 @@
 //! The claim a Coordinator grants a Worker for one Run.
 //!
 //! It is the Coordinator↔Worker vocabulary every claim-fenced call carries;
-//! `awaken-run-ingress-contract` mints it from its lease and re-exports it.
+//! `awaken-dispatch-contract` mints it from its lease and re-exports it.
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use serde::{Deserialize, Serialize};

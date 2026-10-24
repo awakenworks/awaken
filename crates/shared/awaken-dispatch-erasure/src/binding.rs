@@ -2,7 +2,7 @@
 // @formal reason: Required roles are statically bound from one owner; composition adds no second queue or lifecycle law.
 //! Immutable local/remote dispatch composition.
 use super::{AnyCoordinatorDispatch, AnyDispatchStore, RemoteDispatch};
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport, ClaimedRunCommit,
 };
 use std::sync::Arc;
@@ -22,7 +22,7 @@ pub enum DispatchTopology {
 /// ```compile_fail
 /// use std::sync::Arc;
 /// use awaken_dispatch_erasure::{DispatchBinding, AnyDispatchStore};
-/// use awaken_run_ingress_contract::ClaimedRunCommit;
+/// use awaken_dispatch_contract::ClaimedRunCommit;
 /// fn remote(worker: Arc<AnyDispatchStore>, commit: Arc<dyn ClaimedRunCommit>) {
 ///     DispatchBinding::remote(worker, commit);
 /// }

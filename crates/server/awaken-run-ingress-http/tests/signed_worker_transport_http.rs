@@ -701,7 +701,7 @@ impl WorkerDirectory for TestWorkerDirectory {
     async fn lock_incarnation(
         &self,
         _identity: &WorkerIdentity,
-    ) -> Result<Option<awaken_run_ingress_contract::WorkerIncarnationGuard>, RegistryError> {
+    ) -> Result<Option<awaken_dispatch_contract::WorkerIncarnationGuard>, RegistryError> {
         Err(RegistryError::Persistence(
             "fixture forbids physical admission".into(),
         ))
@@ -2851,7 +2851,7 @@ async fn protocol_admission_precedes_registration_and_heartbeat_mutation() {
             .unwrap();
         assert_eq!(response.status().is_success(), admitted, "{min}..{max}");
         if admitted {
-            let receipt: awaken_run_ingress_contract::WorkerRegistrationReceipt =
+            let receipt: awaken_dispatch_contract::WorkerRegistrationReceipt =
                 response.json().await.unwrap();
             assert_eq!(
                 receipt.runtime_protocol_version,

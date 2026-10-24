@@ -278,7 +278,7 @@ def selftest() -> None:
     for role in COORDINATOR_DISPATCH_ROLES:
         assert implementation_violation("crates/server/awaken-worker-runtime/src/dispatch_client.rs", role)
         assert dispatch_projection_violations(f"impl {role} for AnyDispatchStore {{}}")
-        assert dispatch_projection_violations(f"impl awaken_run_ingress_contract::{role} for AnyDispatchStore {{}}")
+        assert dispatch_projection_violations(f"impl awaken_dispatch_contract::{role} for AnyDispatchStore {{}}")
         assert not dispatch_projection_violations(f"impl {role} for AnyCoordinatorDispatch {{}}")
     for getter in ("control", "claimed_checkpoint_transport", "claimed_credential_delivery_transport"):
         assert dispatch_projection_violations(f"store.{getter}()")

@@ -59,7 +59,7 @@ awaken-ext-background-task.workspace = true
 # (SandboxSpec/Command/NetworkPolicy) when realizing the namespace tier.
 awaken-provisioning-contract = { workspace = true }
 awaken-tenancy = { workspace = true }
-awaken-run-ingress-contract.workspace = true
+awaken-dispatch-contract.workspace = true
 awaken-dispatch-erasure.workspace = true
 awaken-dispatch-execution.workspace = true
 awaken-acp-contract = { workspace = true }

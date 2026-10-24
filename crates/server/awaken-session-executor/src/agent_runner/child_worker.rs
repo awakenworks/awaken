@@ -15,9 +15,9 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_credential_contract::CredentialRealizationCapabilities;
+use awaken_dispatch_contract::Claimed;
 use awaken_dispatch_erasure::{AnyDispatchStore, DispatchBinding};
 use awaken_dispatch_execution::{DispatchWorker, Error, RecoveryProjection};
-use awaken_run_ingress_contract::Claimed;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::execution::RunAttemptExecutor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -137,7 +137,7 @@ impl ChildWorkerFactory {
                 host.resources.file_content_source.clone(),
                 workspace_id,
                 claimed.request.thread_id().0.clone(),
-                Some(awaken_run_ingress_contract::RunClaim::from(&claimed.lease)),
+                Some(awaken_dispatch_contract::RunClaim::from(&claimed.lease)),
             ),
         ));
         let has_model_request_gate = context.model_request_gate.is_some();
@@ -223,11 +223,11 @@ mod tests {
                 DispatchBinding::remote(
                     Arc::new(awaken_worker_runtime::HttpDispatchQueue::new(
                         "http://127.0.0.1:9",
-                        awaken_run_ingress_contract::WorkerIdentity::new("child", "boot", 1),
+                        awaken_dispatch_contract::WorkerIdentity::new("child", "boot", 1),
                     )),
                     Arc::new(awaken_worker_runtime::RemoteClaimedRunCommit::new(
                         "http://127.0.0.1:9",
-                        awaken_run_ingress_contract::WorkerIdentity::new("child", "boot", 1),
+                        awaken_dispatch_contract::WorkerIdentity::new("child", "boot", 1),
                     )),
                 ),
                 parent_reader.clone(),

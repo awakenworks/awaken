@@ -319,7 +319,7 @@ async fn oversized_adapter_page_cannot_exceed_observation_budget() {
     }
 }
 
-use awaken_run_ingress_contract::DispatchEnqueue as _;
+use awaken_dispatch_contract::DispatchEnqueue as _;
 
 use awaken_run_ingress_testkit::ConformanceDispatch;
 
@@ -342,7 +342,7 @@ async fn occupied_superseded_and_dead_letters_remain_terminal_scan_candidates() 
     // C5 projects only a read label over the real retained Leased slot, never
     // private stored state/history/closure. Underlying list and physical reads
     // prove S4 unchanged. The public occupied supersede attempt remains refused.
-    use awaken_run_ingress_contract::{
+    use awaken_dispatch_contract::{
         DispatchAdministration as _, DispatchClaims as _, DispatchControlReads as _,
         DispatchExecution as _, DispatchMaintenance as _, DispatchReads as _,
     };

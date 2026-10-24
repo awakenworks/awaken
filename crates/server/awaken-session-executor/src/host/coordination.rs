@@ -23,7 +23,7 @@ use awaken_session_runtime_contract::{
 };
 
 fn reply_dispatch_activity(
-    dispatch: Option<&awaken_run_ingress_contract::DispatchSummary>,
+    dispatch: Option<&awaken_dispatch_contract::DispatchSummary>,
     thread: &ThreadId,
     parent: &ThreadId,
 ) -> Result<awaken_session_runtime_contract::SessionThreadToolReplyActivity, SessionExecutionError>
@@ -54,16 +54,16 @@ fn reply_dispatch_activity(
 }
 
 fn dispatch_admission_error(
-    error: awaken_run_ingress_contract::DispatchError,
+    error: awaken_dispatch_contract::DispatchError,
 ) -> SessionExecutionError {
     match error {
-        awaken_run_ingress_contract::DispatchError::Rejected(message) => {
+        awaken_dispatch_contract::DispatchError::Rejected(message) => {
             SessionExecutionError::bad_request(message)
         }
-        awaken_run_ingress_contract::DispatchError::Conflict(message) => {
+        awaken_dispatch_contract::DispatchError::Conflict(message) => {
             SessionExecutionError::unavailable(message)
         }
-        awaken_run_ingress_contract::DispatchError::Unavailable(message) => {
+        awaken_dispatch_contract::DispatchError::Unavailable(message) => {
             SessionExecutionError::unavailable(message)
         }
     }
@@ -410,7 +410,7 @@ impl crate::ChildRunCoordination {
         thread_id: &ThreadId,
         intent: CoordinatedRunIntent,
         max_unarchived_threads: usize,
-    ) -> Result<awaken_run_ingress_contract::SessionChildAdmission, SessionExecutionError> {
+    ) -> Result<awaken_dispatch_contract::SessionChildAdmission, SessionExecutionError> {
         if max_unarchived_threads == 0 {
             return Err(SessionExecutionError::bad_request(
                 "Session child capacity must be greater than zero",
@@ -458,11 +458,10 @@ impl crate::ChildRunCoordination {
                 CoordinatedThreadTarget::Agent { .. } => {}
             }
         }
-        Ok(awaken_run_ingress_contract::SessionChildAdmission::new(
-            max_unarchived_threads,
-            archived,
+        Ok(
+            awaken_dispatch_contract::SessionChildAdmission::new(max_unarchived_threads, archived)
+                .with_capacity_exempt_threads(capacity_exempt),
         )
-        .with_capacity_exempt_threads(capacity_exempt))
     }
 
     pub(crate) async fn admit_coordinated_run(
@@ -679,7 +678,7 @@ impl crate::ChildRunCoordination {
         &self,
         session_id: &str,
         thread_id: &ThreadId,
-    ) -> Result<Vec<awaken_run_ingress_contract::DispatchSummary>, SessionExecutionError> {
+    ) -> Result<Vec<awaken_dispatch_contract::DispatchSummary>, SessionExecutionError> {
         let parent = ThreadId(session_id.to_string());
         Ok(self
             .session_runs
@@ -765,10 +764,10 @@ impl crate::ChildRunCoordination {
             && child_rows.iter().any(|dispatch| {
                 matches!(
                     dispatch.state,
-                    awaken_run_ingress_contract::DispatchState::Reserved
-                        | awaken_run_ingress_contract::DispatchState::ReservationLeased
-                        | awaken_run_ingress_contract::DispatchState::Pending
-                        | awaken_run_ingress_contract::DispatchState::Leased
+                    awaken_dispatch_contract::DispatchState::Reserved
+                        | awaken_dispatch_contract::DispatchState::ReservationLeased
+                        | awaken_dispatch_contract::DispatchState::Pending
+                        | awaken_dispatch_contract::DispatchState::Leased
                 )
             })
         {
@@ -777,9 +776,9 @@ impl crate::ChildRunCoordination {
             ));
         }
         if already_archived
-            || child_rows.iter().any(|dispatch| {
-                dispatch.state == awaken_run_ingress_contract::DispatchState::Awaiting
-            })
+            || child_rows
+                .iter()
+                .any(|dispatch| dispatch.state == awaken_dispatch_contract::DispatchState::Awaiting)
         {
             // The protocol projects an Awaiting tool boundary as idle for archive admission. Use
             // the ordinary claim-fenced interruption path to close its pending
@@ -852,7 +851,7 @@ impl crate::ChildRunCoordination {
     }
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchEnqueue as _, DispatchReads as _, SessionContinuationOutbox as _,
     SessionRunReservations as _,
 };
@@ -860,7 +859,7 @@ use awaken_run_ingress_contract::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_run_ingress_contract::DispatchClaims;
+    use awaken_dispatch_contract::DispatchClaims;
     use awaken_session_runtime_contract::coordinated_activation_input;
 
     #[tokio::test]
@@ -879,11 +878,11 @@ mod tests {
         // B changes only runtime input under the same Run identity. A later
         // conflict cannot erase that accepted A. Summary and operational cursor
         // stutter guard the original authority; no claim is used as a read.
-        let rejected = dispatch_admission_error(
-            awaken_run_ingress_contract::DispatchError::Rejected("invalid shape".into()),
-        );
+        let rejected = dispatch_admission_error(awaken_dispatch_contract::DispatchError::Rejected(
+            "invalid shape".into(),
+        ));
         let unavailable = dispatch_admission_error(
-            awaken_run_ingress_contract::DispatchError::Unavailable("response lost".into()),
+            awaken_dispatch_contract::DispatchError::Unavailable("response lost".into()),
         );
         assert_eq!(
             rejected.kind,
@@ -911,7 +910,7 @@ mod tests {
         assert_eq!(unavailable.message, "response lost");
 
         use crate::host::worker_resolver::test_support::{eager_environment, test_activation};
-        use awaken_run_ingress_contract::{
+        use awaken_dispatch_contract::{
             DispatchCursor, DispatchEnqueue as _, DispatchOperationalFeed as _, DispatchOutcome,
             DispatchSettlement as _, SessionChildAdmission, SessionRuntimeEnvelope,
         };
@@ -972,7 +971,7 @@ mod tests {
             mcp_stages: Some(Vec::new()),
         };
         let (encoded, requirements) = runtime.dispatch().expect("R2 frozen runtime A");
-        let mut accepted = awaken_run_ingress_contract::RunDispatch::new(
+        let mut accepted = awaken_dispatch_contract::RunDispatch::new(
             coordinated_run_activation(command.clone(), "coord-root".into(), Vec::new())
                 .with_model_ref_override(Some("frozen-original-route".into())),
         )
@@ -1052,7 +1051,7 @@ mod tests {
             .await
             .expect_err("R2 same Run with different runtime input must conflict");
         let message = match &conflict {
-            awaken_run_ingress_contract::DispatchError::Conflict(message) => message.clone(),
+            awaken_dispatch_contract::DispatchError::Conflict(message) => message.clone(),
             other => panic!("R2 expected actual identity conflict, got {other}"),
         };
         let conflict = dispatch_admission_error(conflict);
@@ -1101,7 +1100,7 @@ mod tests {
             &scoped.parent_run_id,
             &scoped.operation_id,
         );
-        let scoped_request = awaken_run_ingress_contract::RunDispatch::new(
+        let scoped_request = awaken_dispatch_contract::RunDispatch::new(
             coordinated_run_activation(scoped.clone(), "coord-root".into(), Vec::new()),
         )
         .for_session(ThreadId(session.to_string()))
@@ -1367,7 +1366,7 @@ mod tests {
                     .request
                     .placement
                     .required_capabilities
-                    .contains(awaken_run_ingress_contract::SESSION_RESOURCES_CAPABILITY),
+                    .contains(awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY),
                 "{rule}/E4 eligible Worker capability",
             );
             assert_eq!(
@@ -1465,7 +1464,7 @@ mod tests {
                 "W2 existing run remains frozen"
             );
 
-            use awaken_run_ingress_contract::DispatchEnqueue as _;
+            use awaken_dispatch_contract::DispatchEnqueue as _;
             use awaken_session_runtime_contract::SessionCoordinationReads as _;
             let managed = host.clone();
             let baseline = host
@@ -1488,7 +1487,7 @@ mod tests {
                     "Message from agent Child: original report",
                 ),
             };
-            let report_request = awaken_run_ingress_contract::RunDispatch::new(RunActivation::new(
+            let report_request = awaken_dispatch_contract::RunDispatch::new(RunActivation::new(
                 report.run_id(),
                 ThreadId(report.session_id.to_string()),
                 before.snapshot.clone(),

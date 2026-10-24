@@ -12,7 +12,7 @@
 //! `SessionRunReservationResolution`.
 
 use async_trait::async_trait;
-use awaken_run_ingress_contract::{DispatchSettlementError, RunClaim, RunDispatch};
+use awaken_dispatch_contract::{DispatchSettlementError, RunClaim, RunDispatch};
 use awaken_session_runtime_contract::{
     SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
 };

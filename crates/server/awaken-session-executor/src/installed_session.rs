@@ -51,7 +51,7 @@ pub(crate) struct SessionRunBinding {
     /// Current durable dispatch claim used by claim-fenced Resource effects.
     /// This process-local projection is replaced at every claimed resolve; the
     /// dispatch store remains the lease/epoch authority.
-    pub dispatch_claim: Option<awaken_run_ingress_contract::RunClaim>,
+    pub dispatch_claim: Option<awaken_dispatch_contract::RunClaim>,
     /// The thread entered through the Session application API and its durable
     /// dispatch must therefore cross the claimed Session realization boundary.
     /// It carries no desired-state data of its own.
@@ -81,7 +81,7 @@ impl crate::session_realizations::SessionRunQuery for SessionRunBinding {
         self.session_dispatch
     }
 
-    fn dispatch_claim(&self) -> Option<&awaken_run_ingress_contract::RunClaim> {
+    fn dispatch_claim(&self) -> Option<&awaken_dispatch_contract::RunClaim> {
         self.dispatch_claim.as_ref()
     }
 
@@ -89,7 +89,7 @@ impl crate::session_realizations::SessionRunQuery for SessionRunBinding {
         self.context = None;
     }
 
-    fn install_dispatch_claim(&mut self, claim: awaken_run_ingress_contract::RunClaim) {
+    fn install_dispatch_claim(&mut self, claim: awaken_dispatch_contract::RunClaim) {
         self.dispatch_claim = Some(claim);
     }
 

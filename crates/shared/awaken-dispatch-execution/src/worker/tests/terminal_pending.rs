@@ -1,5 +1,5 @@
 use super::*;
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchSettlementError, DispatchSettlementObserver, SessionChildAdmission,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -178,7 +178,7 @@ async fn terminal_observation_pending_defers_only_the_exact_claim() {
     );
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchControlClaims as _, DispatchControlReads as _, DispatchSettlement as _,
     SessionRunReservations as _,
 };

@@ -388,6 +388,6 @@ async fn every_dispatch_read_and_repair_verb_requires_the_one_durable_capability
     }
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchEnqueue as _, DispatchMaintenance as _,
 };

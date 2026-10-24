@@ -304,7 +304,7 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
             .observe_session_run_admission(&settled_run)
             .await
             .unwrap(),
-        awaken_run_ingress_contract::SessionRunAdmissionObservation::Live(Box::new(
+        awaken_dispatch_contract::SessionRunAdmissionObservation::Live(Box::new(
             recovered.request.clone()
         )),
         "O2 Awaiting full A"
@@ -369,7 +369,7 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
             .observe_session_run_admission(&dead_run)
             .await
             .unwrap(),
-        awaken_run_ingress_contract::SessionRunAdmissionObservation::Live(Box::new(
+        awaken_dispatch_contract::SessionRunAdmissionObservation::Live(Box::new(
             dead_recovered.request.clone()
         )),
         "O2 DeadLetter full A"

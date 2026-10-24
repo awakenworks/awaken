@@ -59,7 +59,7 @@ use crate::{
     LeaseLossReason, PlacementPolicy, WorkerAssignment, WorkerSnapshot, can_assign,
     can_claim_locally, durable_i64, durable_u64, next_claim_epoch, policy_selects_requester,
 };
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     CommitEpochAdmission, PhysicalAttemptSlot, PhysicalAttemptTransition, RunDispatch,
     classify_commit_epoch_admission,
 };
@@ -440,7 +440,7 @@ impl PostgresDispatchStore {
                             request,
                             durable_u64("dispatch lease expiry", expires_ms)?,
                             cancellation_requested != 0,
-                            awaken_run_ingress_contract::PhysicalAttemptSlot::from_facts(
+                            awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
                                 attempt_owner.is_some(),
                                 attempt_epoch.is_some(),
                                 attempt_owner.as_deref() == Some(&claim.owner),

@@ -1541,7 +1541,7 @@ async fn stream_event(
     respond(result)
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims, DispatchControlClaims, DispatchEnqueue, DispatchSettlement,
     SessionReservationAuthority,
 };

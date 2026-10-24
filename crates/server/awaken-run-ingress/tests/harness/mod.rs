@@ -1023,7 +1023,7 @@ impl FlakyDispatchStore {
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchExecution for FlakyDispatchStore {
+impl awaken_dispatch_contract::DispatchExecution for FlakyDispatchStore {
     async fn close_attempt(
         &self,
         claim: &awaken_run_ingress::RunClaim,
@@ -1075,14 +1075,14 @@ impl awaken_run_ingress_contract::DispatchExecution for FlakyDispatchStore {
     async fn begin_attempt(
         &self,
         claim: &awaken_run_ingress::RunClaim,
-        _binding: Option<&awaken_run_ingress_contract::dispatch::AttemptExecutionBinding>,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<awaken_run_ingress::AttemptAdmission, awaken_run_ingress::DispatchError> {
         self.inner.begin_attempt(claim, _binding).await
     }
     async fn handoff_attempt(
         &self,
         claim: &awaken_run_ingress::RunClaim,
-        _binding: Option<&awaken_run_ingress_contract::dispatch::AttemptExecutionBinding>,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<awaken_run_ingress::AttemptAdmission, awaken_run_ingress::DispatchError> {
         self.inner.handoff_attempt(claim, _binding).await
     }
@@ -1142,7 +1142,7 @@ impl awaken_run_ingress_contract::DispatchExecution for FlakyDispatchStore {
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchClaims for FlakyDispatchStore {
+impl awaken_dispatch_contract::DispatchClaims for FlakyDispatchStore {
     async fn resolve_claimed_session_run_reservation(
         &self,
         claim: &awaken_run_ingress::RunClaim,
@@ -1271,7 +1271,7 @@ impl awaken_run_ingress_contract::DispatchClaims for FlakyDispatchStore {
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchCommitAuthority for FlakyDispatchStore {
+impl awaken_dispatch_contract::DispatchCommitAuthority for FlakyDispatchStore {
     async fn worker_owns_run(
         &self,
         identity: &awaken_run_ingress::WorkerIdentity,
@@ -1291,7 +1291,7 @@ impl awaken_run_ingress_contract::DispatchCommitAuthority for FlakyDispatchStore
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchClaimOwnership for FlakyDispatchStore {
+impl awaken_dispatch_contract::DispatchClaimOwnership for FlakyDispatchStore {
     async fn claim_is_current(
         &self,
         claim: &awaken_run_ingress::RunClaim,
@@ -1302,7 +1302,7 @@ impl awaken_run_ingress_contract::DispatchClaimOwnership for FlakyDispatchStore 
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchEnqueue for FlakyDispatchStore {
+impl awaken_dispatch_contract::DispatchEnqueue for FlakyDispatchStore {
     async fn enqueue_with(
         &self,
         request: awaken_run_ingress::RunDispatch,
@@ -1314,7 +1314,7 @@ impl awaken_run_ingress_contract::DispatchEnqueue for FlakyDispatchStore {
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchSettlement for FlakyDispatchStore {
+impl awaken_dispatch_contract::DispatchSettlement for FlakyDispatchStore {
     async fn settle(
         &self,
         run_id: &RunId,
@@ -1328,7 +1328,7 @@ impl awaken_run_ingress_contract::DispatchSettlement for FlakyDispatchStore {
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchMaintenance for FlakyDispatchStore {
+impl awaken_dispatch_contract::DispatchMaintenance for FlakyDispatchStore {
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
@@ -1356,7 +1356,7 @@ impl awaken_run_ingress_contract::DispatchMaintenance for FlakyDispatchStore {
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchReads for FlakyDispatchStore {
+impl awaken_dispatch_contract::DispatchReads for FlakyDispatchStore {
     async fn dead_letters(&self) -> Result<Vec<RunId>, awaken_run_ingress::DispatchError> {
         self.inner.dead_letters().await
     }
@@ -1372,7 +1372,7 @@ impl awaken_run_ingress_contract::DispatchReads for FlakyDispatchStore {
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchAdministration for FlakyDispatchStore {
+impl awaken_dispatch_contract::DispatchAdministration for FlakyDispatchStore {
     async fn requeue(&self, run_id: &RunId) -> Result<bool, awaken_run_ingress::DispatchError> {
         self.inner.requeue(run_id).await
     }
@@ -1415,7 +1415,7 @@ impl awaken_run_ingress::Inbox for FlakyDispatchStore {
 
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::InboxRead for FlakyDispatchStore {
+impl awaken_dispatch_contract::InboxRead for FlakyDispatchStore {
     async fn list(
         &self,
         thread_id: &ThreadId,

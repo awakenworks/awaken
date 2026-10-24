@@ -51,11 +51,11 @@ impl ChildRunCoordination {
     pub fn dispatch_observation_source(
         &self,
     ) -> Result<
-        Arc<dyn awaken_run_ingress_contract::DispatchOperationalFeed>,
+        Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed>,
         crate::AgentCoordinationInstallError,
     > {
         self.coordinator_dispatch()
-            .map(|source| source as Arc<dyn awaken_run_ingress_contract::DispatchOperationalFeed>)
+            .map(|source| source as Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed>)
             .map_err(|_| crate::AgentCoordinationInstallError::DispatchObservationUnavailable)
     }
 

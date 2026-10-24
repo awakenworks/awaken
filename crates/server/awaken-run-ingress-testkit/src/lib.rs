@@ -21,17 +21,17 @@ use awaken_agent_contract::credential::{
     CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
 use awaken_credential_contract::{CredentialRealizationCapabilities, CredentialRealizationKind};
-use awaken_run_ingress_contract::dispatch::{
+use awaken_dispatch_contract::dispatch::{
     AttemptAdmission, CasOutcome, ContinuationAdmission, CredentialRealizationReceipt,
     DispatchError, DispatchOutcome, DispatchState, Inbox, Outbox, PendingInput, RunClaim,
     SessionChildAdmission, SessionContinuationOutbox, SessionRunReservationActivation,
     SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
-use awaken_run_ingress_contract::operational::{
+use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalFeed, LeaseLossReason,
 };
-use awaken_run_ingress_contract::{DispatchAdmissionShape, RunDispatch, SessionRuntimeEnvelope};
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{DispatchAdmissionShape, RunDispatch, SessionRuntimeEnvelope};
+use awaken_dispatch_contract::{
     LeastLoadedPolicy, PlacementRequirements, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
     WorkerCredentialObservation, WorkerCredentialRevision, WorkerIdentity, WorkerManifest,
     WorkerSnapshot, WorkerState,
@@ -58,7 +58,7 @@ pub const LEASE_MS: u64 = 1_000;
 pub mod worker_http {
     use std::sync::Arc;
 
-    use awaken_run_ingress_contract::{
+    use awaken_dispatch_contract::{
         RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
         WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRegistration,
         WorkerSnapshot, WorkerState,
@@ -123,8 +123,7 @@ pub mod worker_http {
     pub async fn ready_worker(worker_id: &str) -> (Arc<dyn WorkerDirectory>, WorkerIdentity) {
         let mut manifest = WorkerManifest::default();
         manifest.runtime_protocol.min = 1;
-        manifest.runtime_protocol.max =
-            awaken_run_ingress_contract::CURRENT_RUNTIME_PROTOCOL_VERSION;
+        manifest.runtime_protocol.max = awaken_dispatch_contract::CURRENT_RUNTIME_PROTOCOL_VERSION;
         let identity = WorkerIdentity::new(worker_id, format!("{worker_id}-boot"), 1);
         let registered = RegisteredWorker {
             snapshot: WorkerSnapshot {
@@ -188,7 +187,7 @@ pub mod worker_http {
         async fn lock_incarnation(
             &self,
             _identity: &WorkerIdentity,
-        ) -> Result<Option<awaken_run_ingress_contract::WorkerIncarnationGuard>, RegistryError>
+        ) -> Result<Option<awaken_dispatch_contract::WorkerIncarnationGuard>, RegistryError>
         {
             Err(RegistryError::Persistence(
                 "fixture forbids physical admission".into(),
@@ -247,7 +246,7 @@ pub mod worker_http {
         async fn record_process_exit(
             &self,
             _identity: &WorkerIdentity,
-            _receipt: awaken_run_ingress_contract::WorkerProcessExit,
+            _receipt: awaken_dispatch_contract::WorkerProcessExit,
         ) -> Result<RegistryMutation, RegistryError> {
             Err(RegistryError::Persistence(
                 "process-exit persistence is outside this read-oriented fixture".into(),
@@ -474,7 +473,7 @@ include!("conformance/upgrade_window.rs");
 
 include!("conformance/failed_attempt_budget.rs");
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchAdministration, DispatchAttemptControl, DispatchClaimOwnership, DispatchClaims,
     DispatchCommitAuthority, DispatchControlClaims, DispatchControlReads, DispatchEnqueue,
     DispatchExecution, DispatchMaintenance, DispatchReads, DispatchSettlement,

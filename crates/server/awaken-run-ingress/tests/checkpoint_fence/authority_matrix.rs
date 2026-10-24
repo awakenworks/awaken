@@ -1,10 +1,10 @@
 //! Exact selection and failure semantics, through the production adapter.
 use super::*;
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     ClaimedCheckpointTransport, CommitEpochGuard, DispatchCommitAuthority, DispatchError,
     SettleOutcome,
 };
-use awaken_run_ingress_contract::{DispatchClaims, DispatchEnqueue};
+use awaken_dispatch_contract::{DispatchClaims, DispatchEnqueue};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Clone, Copy, Debug)]
@@ -24,7 +24,7 @@ struct Authority {
 impl DispatchCommitAuthority for Authority {
     async fn worker_owns_run(
         &self,
-        _: &awaken_run_ingress_contract::WorkerIdentity,
+        _: &awaken_dispatch_contract::WorkerIdentity,
         _: &awaken_agent_contract::agent::run::Id,
     ) -> Result<Option<RunClaim>, DispatchError> {
         panic!("checkpoint selection requires the exact epoch guard")

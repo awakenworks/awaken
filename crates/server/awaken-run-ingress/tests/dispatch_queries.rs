@@ -3,13 +3,13 @@
 mod harness;
 
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_dispatch_contract::{
+    DispatchControlReads, DispatchCursor, DispatchError, DispatchOperationalFeed,
+    SessionRunAdmissionObservation, SessionRunAdmissionReads, SessionRunReservations,
+};
 use awaken_run_ingress::{
     AnyCoordinatorDispatch, DispatchOutcome, MemoryDispatchStore, PostgresDispatchStore,
     RunDispatch, SqliteDispatchStore,
-};
-use awaken_run_ingress_contract::{
-    DispatchControlReads, DispatchCursor, DispatchError, DispatchOperationalFeed,
-    SessionRunAdmissionObservation, SessionRunAdmissionReads, SessionRunReservations,
 };
 
 fn id(value: &str) -> RunId {
@@ -608,6 +608,6 @@ async fn postgres_corrupt_summary_does_not_poison_identity_pages() {
     );
 }
 
-use awaken_run_ingress_contract::DispatchEnqueue as _;
+use awaken_dispatch_contract::DispatchEnqueue as _;
 
 use awaken_run_ingress_testkit::ConformanceDispatch;

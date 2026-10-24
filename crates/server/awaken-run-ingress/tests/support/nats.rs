@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use super::NatsWakeSignal;
-use awaken_run_ingress_contract::WakeSignal;
+use awaken_dispatch_contract::WakeSignal;
 
 // async-nats 0.50 flush() acknowledges a local socket write, not server
 // processing. A self-published probe on the SAME connection is ordered after

@@ -1242,8 +1242,8 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
             )
             .expect("ephemeral process"),
         crate::host::test_upstream_authority(),
-        awaken_run_ingress_contract::RegisteredCapacity::of(
-            &awaken_run_ingress_contract::WorkerManifest::default(),
+        awaken_dispatch_contract::RegisteredCapacity::of(
+            &awaken_dispatch_contract::WorkerManifest::default(),
         )
         .unwrap(),
     )

@@ -231,16 +231,16 @@ async fn builder_enabled_retention_propagates_authority_failure_instead_of_silen
 struct ExecutionObservationProbe(AtomicUsize);
 
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::DispatchOperationalFeed for ExecutionObservationProbe {
+impl awaken_dispatch_contract::DispatchOperationalFeed for ExecutionObservationProbe {
     async fn events_after(
         &self,
-        cursor: awaken_run_ingress_contract::DispatchCursor,
+        cursor: awaken_dispatch_contract::DispatchCursor,
         _limit: usize,
         _run: Option<&awaken_agent_contract::agent::run::Id>,
-    ) -> Result<awaken_run_ingress_contract::DispatchPage, awaken_run_ingress_contract::DispatchError>
+    ) -> Result<awaken_dispatch_contract::DispatchPage, awaken_dispatch_contract::DispatchError>
     {
         self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(awaken_run_ingress_contract::DispatchPage {
+        Ok(awaken_dispatch_contract::DispatchPage {
             events: Vec::new(),
             next_cursor: cursor,
         })
@@ -300,11 +300,11 @@ async fn builder_freezes_execution_services_and_mount_checks_reject_foreign_inst
     ] {
         let probe = Arc::new(ExecutionObservationProbe::default());
         let foreign = Arc::new(ExecutionObservationProbe::default());
-        let dispatch: Arc<dyn awaken_run_ingress_contract::DispatchOperationalFeed> = probe.clone();
+        let dispatch: Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed> = probe.clone();
         let workers: Arc<dyn awaken_worker_contract::WorkerIncarnationSource> = probe.clone();
         let placement: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
             probe.clone();
-        let foreign_dispatch: Arc<dyn awaken_run_ingress_contract::DispatchOperationalFeed> =
+        let foreign_dispatch: Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed> =
             foreign.clone();
         let foreign_workers: Arc<dyn awaken_worker_contract::WorkerIncarnationSource> =
             foreign.clone();

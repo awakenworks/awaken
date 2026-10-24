@@ -108,7 +108,7 @@ TARGET_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     "awaken-session-runtime-contract": ("Session", ()),
     "awaken-session-realization-contract": ("Session", ()),
     "awaken-deployment-contract": ("Deployment", ()),
-    "awaken-run-ingress-contract": ("Dispatch", ()),
+    "awaken-dispatch-contract": ("Dispatch", ()),
     "awaken-executable-agent-contract": ("Dispatch", ()),
     "awaken-environment-contract": ("Environment and Worker", ()),
     # Provider SPI belongs to Environment, not Session realization decisions.

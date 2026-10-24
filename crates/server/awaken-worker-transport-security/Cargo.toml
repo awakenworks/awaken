@@ -15,7 +15,7 @@ isolates = ["axum", "k8s-openapi", "kube", "reqwest"]
 
 [dependencies]
 awaken-time.workspace = true
-awaken-run-ingress-contract.workspace = true
+awaken-dispatch-contract.workspace = true
 awaken-outbound-http.workspace = true
 awaken-worker-contract.workspace = true
 async-trait.workspace = true

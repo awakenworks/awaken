@@ -47,7 +47,7 @@ pub(crate) fn millis_from_db(value: i64) -> Result<u64, &'static str> {
 /// was named, the same comparison was spelled four times in Rust --- twice
 /// normalizing `now` and twice not --- plus once per SQL query.
 #[cfg(any(feature = "durable", test, kani))]
-pub(crate) use awaken_run_ingress_contract::deadline_has_passed;
+pub(crate) use awaken_dispatch_contract::deadline_has_passed;
 
 #[must_use]
 #[cfg(any(feature = "durable", test, kani))]

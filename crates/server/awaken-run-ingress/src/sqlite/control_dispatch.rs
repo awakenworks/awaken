@@ -20,7 +20,7 @@ type CompatibleCandidateRow = (
 );
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchAttemptControl for SqliteDispatchStore {
+impl awaken_dispatch_contract::DispatchAttemptControl for SqliteDispatchStore {
     async fn finish_attempt_closure(
         &self,
         record: &crate::AttemptClosureRecord,
@@ -36,7 +36,7 @@ impl awaken_run_ingress_contract::DispatchAttemptControl for SqliteDispatchStore
         &self,
         claim: &RunClaim,
         binding: Option<&AttemptExecutionBinding>,
-        guard: awaken_run_ingress_contract::WorkerIncarnationGuard,
+        guard: awaken_dispatch_contract::WorkerIncarnationGuard,
         handoff: bool,
     ) -> Result<AttemptAdmission, DispatchError> {
         crate::application::admit_with_incarnation_guard(self, claim, binding, guard, handoff).await
@@ -44,7 +44,7 @@ impl awaken_run_ingress_contract::DispatchAttemptControl for SqliteDispatchStore
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchControlReads for SqliteDispatchStore {
+impl awaken_dispatch_contract::DispatchControlReads for SqliteDispatchStore {
     async fn current_credential_binding(
         &self,
         claim: &RunClaim,
@@ -187,12 +187,12 @@ impl awaken_run_ingress_contract::DispatchControlReads for SqliteDispatchStore {
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::SessionRunAdmissionReads for SqliteDispatchStore {
+impl awaken_dispatch_contract::SessionRunAdmissionReads for SqliteDispatchStore {
     async fn observe_session_run_admission(
         &self,
         run_id: &RunId,
-    ) -> Result<awaken_run_ingress_contract::SessionRunAdmissionObservation, DispatchError> {
-        use awaken_run_ingress_contract::SessionRunAdmissionObservation;
+    ) -> Result<awaken_dispatch_contract::SessionRunAdmissionObservation, DispatchError> {
+        use awaken_dispatch_contract::SessionRunAdmissionObservation;
         let (_authority, mut conn) = self.with_conn().await?;
         let row = load_run_identity_evidence(&mut conn, NS, run_id).await?;
         if let Some(request) = decode_live_identity(&row)? {
@@ -213,7 +213,7 @@ impl awaken_run_ingress_contract::SessionRunAdmissionReads for SqliteDispatchSto
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::SessionRunReservations for SqliteDispatchStore {
+impl awaken_dispatch_contract::SessionRunReservations for SqliteDispatchStore {
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
@@ -369,7 +369,7 @@ impl awaken_run_ingress_contract::SessionRunReservations for SqliteDispatchStore
                     cancellation_requested != 0,
                 )?
                 .reject_reservation(),
-                awaken_run_ingress_contract::GuardedTransition::Removed
+                awaken_dispatch_contract::GuardedTransition::Removed
             )
         } else {
             false
@@ -422,7 +422,7 @@ impl awaken_run_ingress_contract::SessionRunReservations for SqliteDispatchStore
 }
 
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::SessionReservationAuthority for SqliteDispatchStore {
+impl awaken_dispatch_contract::SessionReservationAuthority for SqliteDispatchStore {
     async fn lock_session_run_reservation_epoch(
         &self,
         claim: &RunClaim,
@@ -433,7 +433,7 @@ impl awaken_run_ingress_contract::SessionReservationAuthority for SqliteDispatch
 }
 
 #[async_trait]
-impl awaken_run_ingress_contract::DispatchControlClaims for SqliteDispatchStore {
+impl awaken_dispatch_contract::DispatchControlClaims for SqliteDispatchStore {
     async fn claim_placed(
         &self,
         requester: &WorkerSnapshot,

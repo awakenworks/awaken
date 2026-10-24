@@ -18,7 +18,7 @@ async fn release_claim_transaction(
     p: &str,
     claim: RunClaim,
     retry_not_before: Option<i64>,
-    attempt: awaken_run_ingress_contract::ReleasedAttempt,
+    attempt: awaken_dispatch_contract::ReleasedAttempt,
     now_ms: u64,
 ) -> Result<SettleOutcome, DispatchError> {
     let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
@@ -66,19 +66,19 @@ async fn release_claim_transaction(
         attempt_count,
         attempt,
     ) {
-        awaken_run_ingress_contract::RelinquishTransition::Pending {
+        awaken_dispatch_contract::RelinquishTransition::Pending {
             state,
             attempt_count,
         } => (state, None, attempt_count),
-        awaken_run_ingress_contract::RelinquishTransition::Recovering {
+        awaken_dispatch_contract::RelinquishTransition::Recovering {
             state,
             attempt_count,
         } => (state, Some(0_i64), attempt_count),
-        awaken_run_ingress_contract::RelinquishTransition::Fenced => {
+        awaken_dispatch_contract::RelinquishTransition::Fenced => {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         }
-        awaken_run_ingress_contract::RelinquishTransition::Corrupt => {
+        awaken_dispatch_contract::RelinquishTransition::Corrupt => {
             let _ = tx.rollback().await;
             return Err(DispatchError::Rejected(
                 "persisted physical attempt slot is not an owner/epoch pair".to_string(),

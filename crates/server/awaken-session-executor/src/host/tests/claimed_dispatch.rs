@@ -580,7 +580,7 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
             dispatch
                 .placement
                 .required_capabilities
-                .contains(awaken_run_ingress_contract::SESSION_RESOURCES_CAPABILITY),
+                .contains(awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY),
             "{rule} selected manifest requires an eligible Worker",
         );
         assert_eq!(
@@ -739,7 +739,7 @@ async fn thread_extension_dispatch_reuses_frozen_inputs_without_session_admissio
     assert_eq!(dispatch.session_thread_id, None, "C2/E2");
     assert_eq!(
         dispatch.admission_shape(),
-        awaken_run_ingress_contract::DispatchAdmissionShape::OrdinaryRoot,
+        awaken_dispatch_contract::DispatchAdmissionShape::OrdinaryRoot,
         "C2/E2 remains eligible for generic full-dispatch admission",
     );
 }

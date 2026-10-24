@@ -6,7 +6,7 @@
 //! reuses the installed Resource, credential, and MCP authorities when a cold
 //! Worker realizes those projections; it owns no parallel store or policy.
 
-use awaken_run_ingress_contract::SessionResourceEnvelope;
+use awaken_dispatch_contract::SessionResourceEnvelope;
 use awaken_session_configuration_contract::resource::SessionResourceManifest;
 
 const fn dispatched_resource_scope_is_admitted(
@@ -21,7 +21,7 @@ const fn dispatched_resource_scope_is_admitted(
 /// keeping scope validation here prevents either caller from inventing a second
 /// wire interpretation.
 pub fn decode_dispatched_resource_manifest(
-    dispatch: &awaken_run_ingress_contract::RunDispatch,
+    dispatch: &awaken_dispatch_contract::RunDispatch,
 ) -> Result<Option<awaken_session_configuration_contract::resource::SessionResourceManifest>, String>
 {
     let Some(envelope) = &dispatch.session_resources else {

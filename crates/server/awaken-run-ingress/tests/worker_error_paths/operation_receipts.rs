@@ -77,4 +77,4 @@ async fn claimed_operation_lost_reply_replays_the_original_receipt_once() {
     assert_eq!(committed.commit_count(), 1, "L3 never append again");
 }
 
-use awaken_run_ingress_contract::{DispatchClaims as _, DispatchEnqueue as _};
+use awaken_dispatch_contract::{DispatchClaims as _, DispatchEnqueue as _};

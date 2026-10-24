@@ -4,7 +4,7 @@
 //! Worker lifecycle client over the same authenticated upstream used for
 //! dispatch and commits. It carries no store and trusts no client-side clock.
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     RegistryMutation, RunClaim, WorkerHeartbeat, WorkerHeartbeatReceipt, WorkerIdentity,
     WorkerManifest, WorkerRegistration, WorkerRegistrationReceipt,
 };

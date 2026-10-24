@@ -4,7 +4,7 @@
 //! through the `WorkerDispatchAuthority` trait, exactly as the pool would. Its own test binary
 //! (installs a one-shot injected dispatch store).
 
-use awaken_run_ingress_contract::ClaimedCheckpointTransport as _;
+use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -1002,11 +1002,11 @@ async fn credential_receipt_is_verified_and_fenced_over_real_http() {
     );
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchExecution as _,
     DispatchReads as _, DispatchSettlement as _,
 };
 
 use awaken_run_ingress_http::WorkerDispatchAuthority;
 
-use awaken_run_ingress_contract::ClaimedCredentialDeliveryTransport as _;
+use awaken_dispatch_contract::ClaimedCredentialDeliveryTransport as _;

@@ -1358,7 +1358,7 @@ async fn wake_suppressed_while_thread_running_on_sqlite() {
     harness::assert_wake_suppressed_while_thread_running(&store, &clock).await;
 }
 
-use awaken_run_ingress_contract::{
+use awaken_dispatch_contract::{
     DispatchAdministration as _, DispatchAttemptControl as _, DispatchClaims as _,
     DispatchControlReads as _, DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _,
 };

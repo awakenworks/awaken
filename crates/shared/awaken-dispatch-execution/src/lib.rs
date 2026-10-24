@@ -32,7 +32,7 @@ mod worker_evidence;
 // Existing execution modules retain their contract vocabulary while the
 // Coordinator adapter depends inward on this one implementation.
 mod dispatch {
-    pub use awaken_run_ingress_contract::dispatch::*;
+    pub use awaken_dispatch_contract::dispatch::*;
 }
 
 pub use admission_error::AdmissionError;
@@ -40,7 +40,7 @@ pub use attempt_termination::{
     NativeAttemptFootprint, NativeAttemptTermination, NativeAttemptTerminationError,
     classify_native_attempt_termination,
 };
-pub use awaken_run_ingress_contract::{
+pub use awaken_dispatch_contract::{
     ClaimedStreamPublisher, DispatchError, DispatchSettlementObserver, DispatchState,
     DispatchSummary, RunClaim, RunDispatch, SettleOutcome,
 };

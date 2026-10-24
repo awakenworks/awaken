@@ -7,7 +7,7 @@
 //! into [`StoredRunIdentity`] and delegates the decision to `dispatch`.
 
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_run_ingress_contract::{DispatchCompletion, RunDispatch};
+use awaken_dispatch_contract::{DispatchCompletion, RunDispatch};
 use sqlx::postgres::{PgConnection, PgPool, PgRow};
 use sqlx::types::Json;
 use sqlx::{Postgres, Row, Transaction};

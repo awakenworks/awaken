@@ -49,17 +49,17 @@ mod tests {
         CommitOperation, CommitOperationId, CommitReceipt, commit_payload_hash,
     };
     use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+    use awaken_dispatch_contract::ClaimedRunCommit;
+    use awaken_dispatch_contract::DispatchClaims;
+    use awaken_dispatch_contract::DispatchEnqueue;
+    use awaken_dispatch_contract::DispatchSettlement;
     use awaken_ext_memory::MemoryExtractionStatus;
     use awaken_run_ingress::ClaimedCommitService;
     use awaken_run_ingress::{
         ClaimedCommitRequest, MemoryDispatchStore, WorkerIdentity, WorkerResolver as _,
     };
-    use awaken_run_ingress_contract::ClaimedRunCommit;
-    use awaken_run_ingress_contract::DispatchClaims;
-    use awaken_run_ingress_contract::DispatchEnqueue;
-    use awaken_run_ingress_contract::DispatchSettlement;
 
-    use awaken_run_ingress_contract::{RunClaim, RunDispatch};
+    use awaken_dispatch_contract::{RunClaim, RunDispatch};
     use awaken_runtime_contract::RunActivation;
     use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ResolvedModelCandidate};
     use awaken_session_runtime_contract::ApplicationErrorKind;
@@ -958,12 +958,12 @@ mod tests {
                 .settle(
                     claimed.lease.run_id(),
                     claimed.lease.epoch(),
-                    awaken_run_ingress_contract::DispatchOutcome::Done,
+                    awaken_dispatch_contract::DispatchOutcome::Done,
                     &[],
                 )
                 .await
                 .expect("R7 close exact claim"),
-            awaken_run_ingress_contract::SettleOutcome::Applied,
+            awaken_dispatch_contract::SettleOutcome::Applied,
         );
         let stale = service
             .apply_claimed(apply(operation(child_run.clone(), child_run, child_thread)))
@@ -1005,11 +1005,7 @@ mod tests {
                 awaken_dispatch_erasure::DispatchBinding::remote(
                     Arc::new(awaken_worker_runtime::HttpDispatchQueue::new(
                         "http://127.0.0.1:9",
-                        awaken_run_ingress_contract::WorkerIdentity::new(
-                            "fixture",
-                            "fixture-boot",
-                            1,
-                        ),
+                        awaken_dispatch_contract::WorkerIdentity::new("fixture", "fixture-boot", 1),
                     )),
                     injected.clone(),
                 ),
