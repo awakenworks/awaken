@@ -25,6 +25,8 @@ awaken-session-state-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-worker-contract.workspace = true
 async-trait.workspace = true
+# The digest that binds a Worker-reported retention fact to its exact subject.
+blake3 = "1"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

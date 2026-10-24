@@ -266,6 +266,7 @@ async fn registration_facts_survive_invalid_ttl_but_heartbeat_grants_require_pos
                 warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
             },
         )
         .await
@@ -468,6 +469,7 @@ async fn blocked_session_control_request_does_not_serialize_worker_heartbeat() {
                 warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
             },
         ),
     )

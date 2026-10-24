@@ -5,6 +5,7 @@ mod claimed_control;
 pub mod realization_observation;
 mod resource_operation_fence;
 mod session_realization;
+mod source_retention;
 
 #[cfg(test)]
 pub(crate) use awaken_environment_contract::EnvironmentRevision;
@@ -43,6 +44,9 @@ pub(crate) use {
 pub use claimed_control::{ClaimedSessionControlError, ClaimedSessionRealizationControl};
 pub use resource_operation_fence::ResourceOperationFence;
 pub use session_realization::*;
+pub use source_retention::{
+    SourceRetentionSubject, WORKER_SOURCE_RETENTION_SUBJECTS_PATH, WorkerSourceRetentionSubjects,
+};
 
 #[cfg(test)]
 mod mcp_attachment {

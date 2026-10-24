@@ -794,15 +794,6 @@ impl $crate::SessionCoordinationReads for $ty {
     (TerminalCleanupRuntime for $ty:ty) => {
         #[$crate::__macro_support::async_trait::async_trait]
         impl $crate::TerminalCleanupRuntime for $ty {
-            async fn observe_terminal_cleanup_retention(
-                &self,
-                _session_id: &$crate::__macro_support::SessionId,
-                _projection: &$crate::__macro_support::FrozenSessionProjection,
-                _source_prepared: bool,
-            ) -> Result<bool, $crate::__macro_support::RunError> {
-                Ok(false)
-            }
-
             /// Make every source-dependent effect durable under the exact aggregate
             /// preparation fence without deleting the physical realization.
             async fn prepare_terminal_cleanup_for_effect(

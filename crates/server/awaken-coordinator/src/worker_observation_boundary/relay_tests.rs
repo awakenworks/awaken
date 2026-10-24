@@ -365,6 +365,7 @@ async fn destination_boundary_requires_exact_auth_root_registry_and_pod() {
                 warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: vec![],
+                source_retention: Default::default(),
             },
             100,
             50,

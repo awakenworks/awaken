@@ -126,6 +126,7 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
                         warm_environment_shapes: Default::default(),
                         credential_observations: Default::default(),
                         acp_capability_observations: Default::default(),
+                        source_retention: Default::default(),
                     },
                     heartbeat_at,
                     ttl

@@ -128,6 +128,7 @@ async fn initial_session_preparation_requires_exact_ready_worker_authority() {
                 warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
             },
         )
         .await
@@ -224,6 +225,7 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
                         observation.clone(),
                     ]),
                     acp_capability_observations: Default::default(),
+                    source_retention: Default::default(),
                 },
             )
             .await
@@ -270,6 +272,7 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
                 warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
             },
         )
         .await
@@ -424,6 +427,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
                 warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
             },
         )
         .await
@@ -570,6 +574,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
                     .into_iter()
                     .collect(),
                     acp_capability_observations: Default::default(),
+                    source_retention: Default::default(),
                 },
             )
             .await
@@ -633,6 +638,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
                     .into_iter()
                     .collect(),
                     acp_capability_observations: Default::default(),
+                    source_retention: Default::default(),
                 },
             )
             .await
@@ -704,6 +710,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
                     .into_iter()
                     .collect(),
                     acp_capability_observations: Default::default(),
+                    source_retention: Default::default(),
                 },
             )
             .await
@@ -732,6 +739,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
                     .into_iter()
                     .collect(),
                     acp_capability_observations: Default::default(),
+                    source_retention: Default::default(),
                 },
             )
             .await

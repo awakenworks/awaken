@@ -294,6 +294,22 @@ impl WorkerControlClient {
             .map_err(|error| format!("Environment warmup response decode: {error}"))
     }
 
+    /// The original Session sources this draining incarnation must observe
+    /// and report retained.
+    pub async fn source_retention_subjects(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<Vec<awaken_session_realization_contract::SourceRetentionSubject>, String> {
+        let body = self
+            .post(
+                awaken_session_realization_contract::WORKER_SOURCE_RETENTION_SUBJECTS_PATH,
+                json!({ "identity": identity }),
+            )
+            .await?;
+        serde_json::from_value(body.get("subjects").cloned().unwrap_or(Value::Null))
+            .map_err(|error| format!("source retention subjects response decode: {error}"))
+    }
+
     pub async fn begin_drain(
         &self,
         identity: &WorkerIdentity,

@@ -269,6 +269,7 @@ impl Fixture {
                     warm_environment_shapes: Default::default(),
                     credential_observations: Default::default(),
                     acp_capability_observations: Default::default(),
+                    source_retention: Default::default(),
                 },
                 10_000,
                 30_000,

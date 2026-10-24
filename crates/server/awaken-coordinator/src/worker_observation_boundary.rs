@@ -493,11 +493,15 @@ async fn handle_domain(
         session_realizations_active: true,
         retirement_permitted: None,
     };
-    // Select the exact same complete Session read once. Normal incarnation
-    // queries and blocked Actors never acquire a provider availability dependency.
+    // Select the exact same complete Session read once. Retirement decides
+    // from the retention this exact incarnation reported; the Coordinator
+    // observes no Sandbox and a missing or stale report refuses.
     let read =
         if retirement && observation.retirement_basis() == WorkerRetirementBasis::RetainedSources {
-            awaken_session_application::WorkerRealizationRead::Retirement(&identity)
+            awaken_session_application::WorkerRealizationRead::Retirement {
+                identity: &identity,
+                reported: &observation.registered.source_retention,
+            }
         } else {
             awaken_session_application::WorkerRealizationRead::Occupancy(&identity.worker_id)
         };
@@ -1153,6 +1157,7 @@ mod tests {
                 )
                 .unwrap(),
             ),
+            source_retention: Default::default(),
         }
     }
 

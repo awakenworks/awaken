@@ -24,6 +24,7 @@ mod registry;
 mod relay_route;
 mod requirements;
 mod run_claim;
+mod source_retention;
 
 pub use awaken_credential_contract::{
     CredentialObservationState as WorkerCredentialState, CredentialRef as WorkerCredentialRevision,
@@ -72,6 +73,7 @@ pub use requirements::{
     can_claim_locally, manifest_recovery_matches_installed, sandbox_tool_recovery_is_compatible,
 };
 pub use run_claim::RunClaim;
+pub use source_retention::WorkerSourceRetention;
 
 /// Why a Worker lifecycle is stopping. The Worker drives its drain from it,
 /// and a process that supervises a co-located Worker (AllInOne) selects it from
@@ -996,6 +998,7 @@ mod tests {
                     drain_deadline_ms: None,
                     process_exit: None,
                     create_ledger: None,
+                    source_retention: Default::default(),
                 }
             };
 

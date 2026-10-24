@@ -13,6 +13,7 @@ pub(super) fn empty_heartbeat(sequence: u64, ready: bool) -> WorkerHeartbeat {
         warm_environment_shapes: Default::default(),
         credential_observations: Default::default(),
         acp_capability_observations: Default::default(),
+        source_retention: Default::default(),
     }
 }
 
