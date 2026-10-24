@@ -351,6 +351,24 @@ def rust_source_results(rel: str, text: str, previous: str | None, staged: bool)
     return warnings, errors
 
 
+def rename_sources(fields: list[str]) -> dict[str, str]:
+    """New path -> committed path from `git diff --name-status -z -M --diff-filter=R` fields
+    (`R<score>`, old, new triples), so a moved file is judged against the file it was."""
+    if len(fields) % 3:
+        raise ValueError("rename status fields must come in (status, old, new) triples")
+    renames: dict[str, str] = {}
+    for status, old, new in zip(fields[::3], fields[1::3], fields[2::3]):
+        if not status.startswith("R"):
+            raise ValueError(f"unexpected rename status {status!r}")
+        renames[new] = old
+    return renames
+
+
+def staged_rename_sources() -> dict[str, str]:
+    return rename_sources(formal_sources.git_paths(
+        REPO_ROOT, "diff", "--cached", "--name-status", "-z", "-M", "--diff-filter=R"))
+
+
 def find_results(files: list[str], staged: bool,
                  formatter=rustfmt_output) -> tuple[list[str], list[str], bool]:
     errors: list[str] = []
@@ -358,19 +376,21 @@ def find_results(files: list[str], staged: bool,
     has_code_violation = False
     texts = {rel: text for rel in sorted(files)
              if limit_for(rel) is not None and (text := formal_sources.file_text(REPO_ROOT, rel, staged)) is not None}
+    renamed_from: dict[str, str] = {}
     if staged:
         texts = as_committed(texts, formatter)
+        renamed_from = staged_rename_sources()
     for rel, text in texts.items():
         limit = limit_for(rel)
         if is_rust_source(rel):
-            previous = formal_sources.committed_text(REPO_ROOT, rel) if staged else None
+            previous = formal_sources.committed_text(REPO_ROOT, renamed_from.get(rel, rel)) if staged else None
             found_warnings, found = rust_source_results(rel, text, previous, staged)
             warnings.extend(found_warnings)
             errors.extend(found)
             has_code_violation = has_code_violation or bool(found)
             continue
         if is_test_code_file(rel) or Path(rel).suffix == ".rs":
-            previous = formal_sources.committed_text(REPO_ROOT, rel) if staged else None
+            previous = formal_sources.committed_text(REPO_ROOT, renamed_from.get(rel, rel)) if staged else None
             found = test_file_errors(rel, text, previous, staged)
             errors.extend(found)
             has_code_violation = has_code_violation or bool(found)
@@ -453,6 +473,18 @@ def self_test() -> int:
     for name, text, previous, staged, rejected in rows:
         if bool(test_file_errors("tests/x.rs", text, previous, staged)) != rejected:
             failures.append(f"{name}: expected {'reject' if rejected else 'accept'}")
+    # A staged rename is judged against the committed file it moves (R1); a
+    # copy, add or modify keeps its own path (R2); malformed status fails (R3).
+    if rename_sources(["R100", "a/old.rs", "b/new.rs", "R087", "c.rs", "d.rs"]) != {"b/new.rs": "a/old.rs", "d.rs": "c.rs"}:
+        failures.append("R1 a staged rename must resolve to its committed path")
+    if rename_sources([]) != {}:
+        failures.append("R2 no rename keeps every path as itself")
+    for malformed in (["R100", "a.rs"], ["M", "a.rs", "b.rs"]):
+        try:
+            rename_sources(malformed)
+        except ValueError:
+            continue
+        failures.append(f"R3 malformed rename status {malformed} must fail closed")
     # Cause/effect table for production Rust sources. Causes: functional lines vs
     # 800 / 1500, comments and cfg(test) code (never functional), a legacy ceiling
     # marker, inline tests vs 3000, physical lines vs 4000. Effects: accept, warn, reject.
