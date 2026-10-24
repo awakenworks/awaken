@@ -592,6 +592,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-environment-contract",
  "awaken-provisioning-contract",
  "blake3",
  "serde",
@@ -1337,7 +1338,6 @@ dependencies = [
  "awaken-environment-contract",
  "awaken-executable-environment-contract",
  "awaken-provisioning-contract",
- "awaken-sandbox-container",
  "tokio",
 ]
 
@@ -1454,6 +1454,7 @@ dependencies = [
  "awaken-acp-contract",
  "awaken-agent-contract",
  "awaken-connection-plan",
+ "awaken-container-contract",
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-credential-vault",

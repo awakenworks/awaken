@@ -1,7 +1,8 @@
 //! Container-tier vocabulary shared by container backends, the Gateway and the
 //! Session owner: the allowlist capability wire, Kubernetes capacity and
 //! continuation-volume policy, the live-input projection root, and the
-//! Kubernetes Create broker wire and privileged effects role.
+//! Kubernetes Create broker wire and privileged effects role, and the
+//! package-image build port.
 //!
 //! The provider's vocabulary -- realization intent, adoption, observation
 //! purpose, effect ownership, the live [`awaken_provisioning_contract::SessionSandbox`]
@@ -24,6 +25,7 @@ mod create_reply;
 mod create_ticket;
 mod host;
 mod k8s_capacity;
+mod package_image;
 mod policy;
 mod runtime_error;
 
@@ -35,6 +37,7 @@ pub use k8s_capacity::{
     k8s_pod_age, k8s_pod_provisioning_deadline_ms, k8s_pod_unschedulable, k8s_pod_wait,
     kubernetes_refusal_is_capacity,
 };
+pub use package_image::PackageImageProvisioner;
 pub use policy::{
     K8sContinuationVolume, K8sImagePrewarm, LIVE_INPUTS_ROOT, REPOSITORY_GATEWAY_CA_PATH,
     live_input_relative_path,

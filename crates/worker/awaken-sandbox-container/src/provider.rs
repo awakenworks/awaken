@@ -86,7 +86,8 @@ fn refresh_effect_fence(
 /// Realizes [`pc::Sandbox`]es on a [`ContainerRuntime`].
 pub struct ContainerProvider<R: ContainerRuntime> {
     pub(super) runtime: Arc<R>,
-    pub(super) package_provisioner: Option<Arc<dyn PackageImageProvisioner>>,
+    pub(super) package_provisioner:
+        Option<Arc<dyn awaken_container_contract::PackageImageProvisioner>>,
     pub(super) default_image: String,
     /// Optional connectivity proxy for unrestricted traffic. It is never treated
     /// as network-policy enforcement.
@@ -249,7 +250,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     #[must_use]
     pub fn with_package_provisioner(
         mut self,
-        provisioner: Arc<dyn PackageImageProvisioner>,
+        provisioner: Arc<dyn awaken_container_contract::PackageImageProvisioner>,
     ) -> Self {
         self.package_provisioner = Some(provisioner);
         self

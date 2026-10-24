@@ -46,7 +46,7 @@ fn build_network_policy(config: &awaken_environment_contract::EnvironmentConfig)
 }
 
 struct PackageEnvironmentImageBuilder {
-    provisioner: Arc<dyn awaken_sandbox_container::PackageImageProvisioner>,
+    provisioner: Arc<dyn awaken_container_contract::PackageImageProvisioner>,
 }
 
 #[async_trait]
@@ -91,7 +91,7 @@ impl EnvironmentImageBuilder for PackageEnvironmentImageBuilder {
 /// image provisioning implementation.
 #[must_use]
 pub fn package_environment_image_builder(
-    provisioner: Arc<dyn awaken_sandbox_container::PackageImageProvisioner>,
+    provisioner: Arc<dyn awaken_container_contract::PackageImageProvisioner>,
 ) -> Arc<dyn EnvironmentImageBuilder> {
     Arc::new(PackageEnvironmentImageBuilder { provisioner })
 }
@@ -126,7 +126,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl awaken_sandbox_container::PackageImageProvisioner for RecordingProvisioner {
+    impl awaken_container_contract::PackageImageProvisioner for RecordingProvisioner {
         async fn probe_builder(&self) -> Result<(), awaken_container_contract::RuntimeError> {
             Ok(())
         }
