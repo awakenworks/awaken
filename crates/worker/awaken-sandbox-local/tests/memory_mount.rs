@@ -107,7 +107,7 @@ async fn memory_store_mount_realizes_and_persists_an_edit() {
     fs.create("s", "/note.md", "v1").await.unwrap();
     let mounter = Arc::new({
         let backend = fs.clone();
-        let bus = Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default());
+        let bus = Arc::new(awaken_resource_contract::LocalInvalidator::default());
         let memory = Arc::new(
             awaken_resource_application::memory::InvalidatingMemoryRepository::new(
                 backend,

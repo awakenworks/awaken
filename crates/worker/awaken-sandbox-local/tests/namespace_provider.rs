@@ -1134,7 +1134,7 @@ async fn bwrap_splices_a_live_fuse_memory_mount_into_the_namespace() {
     // host path the provider then binds into the namespace.
     let provider = NamespaceProvider::new(tmp.path()).with_memory_mounter(Arc::new({
         let backend = fs.clone();
-        let bus = Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default());
+        let bus = Arc::new(awaken_resource_contract::LocalInvalidator::default());
         let memory = Arc::new(
             awaken_resource_application::memory::InvalidatingMemoryRepository::new(
                 backend,

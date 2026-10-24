@@ -248,7 +248,7 @@ fn listener_setup_unwind_keeps_the_same_cleanup_owner() {
 
 #[test]
 fn invalidation_listener_drops_matching_paths_only() {
-    use crate::LocalInvalidator;
+    use awaken_resource_contract::LocalInvalidator;
     use awaken_resource_contract::MemoryInvalidator;
 
     let cache = Arc::new(Mutex::new(ContentLruCache::new(8)));
@@ -835,7 +835,7 @@ fn content_lru_handles_zero_capacity_prefix_clear_and_removal() {
 
 #[test]
 fn a_lagged_listener_clears_the_whole_cache() {
-    use crate::LocalInvalidator;
+    use awaken_resource_contract::LocalInvalidator;
     use awaken_resource_contract::MemoryInvalidator;
     // A listener that fell behind by more than the bus capacity has missed
     // invalidations, so it cannot know which paths are stale — it clears the
@@ -874,8 +874,8 @@ fn a_lagged_listener_clears_the_whole_cache() {
 
 #[test]
 fn cross_host_write_invalidates_a_peer_mounts_cache_end_to_end() {
-    use crate::LocalInvalidator;
     use awaken_resource_application::memory::InvalidatingMemoryRepository;
+    use awaken_resource_contract::LocalInvalidator;
     use awaken_resource_contract::MemoryInvalidator;
     // The D5 coherence model end-to-end, WITHOUT the kernel FUSE path: model two
     // hosts mounting one store over the in-process `VolatileMemoryRepository`. Host A writes through
@@ -985,7 +985,7 @@ fn unmount_drain_timeout_elapses_with_lingering_open_fds() {
 
 #[test]
 fn a_closed_bus_stops_the_listener_without_the_stop_flag() {
-    use crate::LocalInvalidator;
+    use awaken_resource_contract::LocalInvalidator;
     // Dropping the sender closes the bus; the listener observes `Closed` and exits
     // on its own (the drop-without-explicit-unmount path relies on this).
     let cache = Arc::new(Mutex::new(ContentLruCache::new(4)));
@@ -1035,7 +1035,7 @@ fn managed_api_writes_invalidate_the_same_mounter_without_waiting_for_cache_ttl(
 
     let rt = setup_rt();
     let clock = awaken_time::system_clock();
-    let bus = Arc::new(crate::LocalInvalidator::new(32));
+    let bus = Arc::new(awaken_resource_contract::LocalInvalidator::new(32));
     let physical = Arc::new(VolatileMemoryRepository::new(clock.clone()));
     let resources = rt.block_on(async {
         let storage = Arc::new(
@@ -1343,7 +1343,7 @@ fn managed_api_writes_invalidate_actual_kernel_mount_without_cache_ttl() {
     }
     let rt = setup_rt();
     let clock = awaken_time::system_clock();
-    let bus = Arc::new(crate::LocalInvalidator::new(32));
+    let bus = Arc::new(awaken_resource_contract::LocalInvalidator::new(32));
     let resources = rt.block_on(async {
         let storage = Arc::new(
             awaken_resource_store::SqliteResourceStore::in_memory()

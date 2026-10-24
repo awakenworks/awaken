@@ -22,7 +22,7 @@ mod resource_backend;
 #[derive(Clone)]
 pub(super) struct ProcessResources {
     pub(super) application: awaken_resource_application::ResourcesApplication,
-    pub(super) invalidator: std::sync::Arc<awaken_sandbox_memoryd::LocalInvalidator>,
+    pub(super) invalidator: std::sync::Arc<awaken_resource_contract::LocalInvalidator>,
 }
 
 pub(super) struct ProcessStores {

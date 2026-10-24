@@ -62,7 +62,7 @@ async fn preparation_requires_private_cleanup_and_preserves_existing_output_on_r
     ] {
         let resources = awaken_resource_persistence::ephemeral(
             awaken_time::system_clock(),
-            Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default()),
+            Arc::new(awaken_resource_contract::LocalInvalidator::default()),
         )
         .await
         .unwrap();

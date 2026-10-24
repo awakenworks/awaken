@@ -21,6 +21,8 @@ sha2 = "0.10"
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The in-process Memory invalidation bus is a broadcast channel.
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 # Property-based (formal) verification of the crate's pure decision functions (ADR-0059).

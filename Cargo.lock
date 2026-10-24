@@ -845,7 +845,6 @@ dependencies = [
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-sandbox-kubernetes",
- "awaken-sandbox-memoryd",
  "awaken-scenario-host",
  "awaken-scoped-migration",
  "awaken-service-auth-contract",
@@ -2410,6 +2409,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -2903,7 +2903,6 @@ dependencies = [
  "awaken-resource-store",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
- "awaken-sandbox-memoryd",
  "awaken-service-lifecycle",
  "awaken-session-application",
  "awaken-session-budget-contract",

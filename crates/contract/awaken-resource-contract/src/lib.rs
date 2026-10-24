@@ -34,6 +34,8 @@ mod lifecycle;
 mod memory_application;
 mod memory_copy;
 pub use memory_copy::{MemoryCopyBase, MemoryCopyConflict};
+mod memory_invalidation;
+pub use memory_invalidation::{Invalidation, LocalInvalidator};
 mod registry;
 mod repository_application;
 pub use repository_application::{

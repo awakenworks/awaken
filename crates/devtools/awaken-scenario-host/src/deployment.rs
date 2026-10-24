@@ -13,7 +13,7 @@ use awaken_session_executor::{ExecutorComponents, SessionExecutorBuilder};
 pub(crate) struct ScenarioPlatform {
     dependencies: SessionExecutorBuilder,
     resources: awaken_resource_application::ResourcesApplication,
-    memory_invalidator: Arc<awaken_sandbox_memoryd::LocalInvalidator>,
+    memory_invalidator: Arc<awaken_resource_contract::LocalInvalidator>,
     /// The typed Deployment the dependencies were selected from; Session
     /// environment, ACP and Memory mount selection read it explicitly.
     deployment: awaken_deployment_config::DeploymentConfig,
@@ -271,7 +271,7 @@ async fn resource_host_with_selected_runtime(
 ) -> ScenarioPlatform {
     // The Scenario process's Resources clock.
     let clock = awaken_time::system_clock();
-    let memory_invalidator = Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default());
+    let memory_invalidator = Arc::new(awaken_resource_contract::LocalInvalidator::default());
     let resources = match deployment.storage_dir.clone() {
         Some(storage_dir) => awaken_resource_persistence::open_embedded(
             &storage_dir,

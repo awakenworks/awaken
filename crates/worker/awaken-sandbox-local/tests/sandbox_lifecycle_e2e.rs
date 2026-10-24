@@ -34,7 +34,7 @@ async fn full_lifecycle_harvests_memory_collects_outputs_then_shreds_and_reaps()
     fs.create("mem", "/notes.md", "seed").await.unwrap();
     let mounter = Arc::new({
         let backend = fs.clone();
-        let bus = Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default());
+        let bus = Arc::new(awaken_resource_contract::LocalInvalidator::default());
         let memory = Arc::new(
             awaken_resource_application::memory::InvalidatingMemoryRepository::new(
                 backend,

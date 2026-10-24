@@ -216,7 +216,7 @@ struct DeploymentAndResources {
         Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
     content_eraser: Arc<dyn awaken_data_governance_contract::ContentEraser>,
     resource_application: awaken_resource_application::ResourcesApplication,
-    memory_invalidator: Arc<awaken_sandbox_memoryd::LocalInvalidator>,
+    memory_invalidator: Arc<awaken_resource_contract::LocalInvalidator>,
     resource_authorities: awaken_resource_application::ResourceAuthorities,
     resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
 }

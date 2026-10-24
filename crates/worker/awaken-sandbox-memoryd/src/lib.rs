@@ -17,7 +17,6 @@ use awaken_resource_contract::{MAX_MEMORY_BYTES, MemErr, MemoryEntry};
 pub mod copy;
 #[cfg(all(feature = "fuse", target_os = "linux"))]
 pub mod fuse;
-pub mod invalidate;
 pub mod mounter;
 
 pub use copy::{
@@ -25,7 +24,6 @@ pub use copy::{
 };
 #[cfg(all(feature = "fuse", target_os = "linux"))]
 pub use fuse::spawn_mount;
-pub use invalidate::{Invalidation, LocalInvalidator};
 pub use mounter::{MemoryMounterConstructionError, MemoryStoreMounter};
 
 /// A memoryd operation failure — the store's [`MemErr`] plus FUSE-local faults

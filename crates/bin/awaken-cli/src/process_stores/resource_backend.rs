@@ -8,7 +8,8 @@ impl ProcessResources {
     pub(crate) async fn ephemeral(
         clock: std::sync::Arc<dyn awaken_time::WallClock>,
     ) -> ProcessResources {
-        let invalidator = std::sync::Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default());
+        let invalidator =
+            std::sync::Arc::new(awaken_resource_contract::LocalInvalidator::default());
         let application = awaken_resource_persistence::ephemeral(clock, invalidator.clone())
             .await
             .expect("open ephemeral Resources application");
@@ -26,7 +27,8 @@ impl ProcessResources {
         clock: std::sync::Arc<dyn awaken_time::WallClock>,
         postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
     ) -> Result<ProcessResources, String> {
-        let invalidator = std::sync::Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default());
+        let invalidator =
+            std::sync::Arc::new(awaken_resource_contract::LocalInvalidator::default());
         let application = match backend {
             config::ResourceStoreBackend::Embedded(root) => {
                 awaken_resource_persistence::open_embedded(&root, clock, invalidator.clone())

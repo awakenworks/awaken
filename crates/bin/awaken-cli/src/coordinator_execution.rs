@@ -155,7 +155,7 @@ mod tests {
         // application refuses before selecting a second set of ports.
         let resources = awaken_resource_persistence::ephemeral(
             awaken_time::system_clock(),
-            Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default()),
+            Arc::new(awaken_resource_contract::LocalInvalidator::default()),
         )
         .await
         .expect("ephemeral Resources");

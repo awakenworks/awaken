@@ -17,11 +17,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::LocalInvalidator;
 use crate::copy;
 use awaken_provisioning_contract::{
     MemoryMount, MemoryMountOutcome, MemoryMounter, MountAccess, Realization, SandboxError,
 };
+use awaken_resource_contract::LocalInvalidator;
 use awaken_resource_contract::{
     MemoryCopyConflictPreservation, MemoryCopyWriteback, MemoryMountSource, MemoryQueries,
     MemorySnapshotSource,
@@ -71,7 +71,7 @@ impl MemoryStoreMounter {
     #[cfg(all(test, feature = "fuse", target_os = "linux"))]
     pub(crate) fn invalidations_for_test(
         &self,
-    ) -> tokio::sync::broadcast::Receiver<crate::Invalidation> {
+    ) -> tokio::sync::broadcast::Receiver<awaken_resource_contract::Invalidation> {
         self.fuse
             .as_ref()
             .expect("FUSE mode selected")
@@ -842,8 +842,8 @@ mod tests {
             ),
         );
         let source = MemoryMountSource::new(decorated.clone());
-        assert_eq!(original.subscriber_count_for_test(), 0);
-        assert_eq!(second.subscriber_count_for_test(), 0);
+        assert_eq!(original.subscriber_count(), 0);
+        assert_eq!(second.subscriber_count(), 0);
         let result =
             MemoryStoreMounter::fuse_preferred(source, second.clone(), awaken_time::system_clock());
         assert!(matches!(
@@ -851,12 +851,12 @@ mod tests {
             Err(MemoryMounterConstructionError::InvalidationBusMismatch)
         ));
         assert_eq!(
-            original.subscriber_count_for_test(),
+            original.subscriber_count(),
             0,
             "no original-bus listener was started"
         );
         assert_eq!(
-            second.subscriber_count_for_test(),
+            second.subscriber_count(),
             0,
             "no second-bus listener was started"
         );
