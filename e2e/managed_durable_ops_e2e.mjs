@@ -3,7 +3,7 @@
 // purge (ADR-0015).
 //
 // The deep dead-letter / crash-recovery STATE MACHINE is proven deterministically
-// at the store level (awaken-run-ingress `sqlite_dispatch` tests) on this exact
+// at the store level (awaken-dispatch `sqlite_dispatch` tests) on this exact
 // SQLite stack — a crashed `running` dispatch cannot be produced without an actual
 // process crash mid-execution, which is timing-dependent. What this e2e proves is
 // the SERVER SURFACE: the verbs are wired to a thread's durable queue, return the

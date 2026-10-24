@@ -35,7 +35,7 @@ use awaken_agent_contract::credential::{
 };
 use awaken_credential_contract::CredentialRealizationKind;
 use awaken_credential_contract::{AttemptCredentialBinding, AttemptCredentialDelivery};
-use awaken_run_ingress::MemoryDispatchStore;
+use awaken_dispatch::MemoryDispatchStore;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::AttemptRecoveryMode;
 use awaken_runtime_contract::resume::ResumeResult;

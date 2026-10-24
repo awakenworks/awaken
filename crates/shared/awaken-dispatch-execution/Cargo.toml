@@ -47,7 +47,7 @@ test-support = []
 awaken-credential-contract.workspace = true
 awaken-environment-contract.workspace = true
 awaken-worker-runtime.workspace = true
-awaken-run-ingress = { workspace = true, features = ["test-support"] }
+awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-lease-testkit.workspace = true
 awaken-store-inmem.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "test-util"] }

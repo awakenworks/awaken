@@ -2,7 +2,7 @@
 //!
 //! This crate owns the Coordinator-side HTTP boundary and its paired Worker
 //! clients. Resource identity and lifecycle remain in `awaken-resource-application`;
-//! dispatch claim authority remains in `awaken-run-ingress`.
+//! dispatch claim authority remains in `awaken-dispatch`.
 
 mod artifact_publication_http;
 mod file_content_http;

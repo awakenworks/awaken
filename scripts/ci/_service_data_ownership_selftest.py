@@ -511,13 +511,13 @@ def selftest() -> None:
     ]  # O20 target-conditioned normal edge
     guarded_dispatch = (
         'None => { #[cfg(any(test, feature = "test-support"))] '
-        "awaken_run_ingress::open_sqlite_dispatch_store_in_memory()?; "
+        "awaken_dispatch::open_sqlite_dispatch_store_in_memory()?; "
         '#[cfg(not(any(test, feature = "test-support")))] '
         'return Err(internal("product SQLite dispatch requires a durable storage_dir")); }'
     )
     assert product_dispatch_fallback_violations(guarded_dispatch) == []  # O21
     assert product_dispatch_fallback_violations(
-        "None => awaken_run_ingress::open_sqlite_dispatch_store_in_memory()?"
+        "None => awaken_dispatch::open_sqlite_dispatch_store_in_memory()?"
     ) == ["SQLite dispatch missing-storage path does not fail closed"]  # O22
     assert redundant_admin_store_reexport_violations("pub struct AdminState;") == []  # O23
     assert redundant_admin_store_reexport_violations(

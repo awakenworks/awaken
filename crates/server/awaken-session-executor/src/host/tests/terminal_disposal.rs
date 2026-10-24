@@ -1093,12 +1093,12 @@ async fn terminal_physical_claim_fixture(
     RunId,
     awaken_dispatch_contract::RunClaim,
 ) {
+    use awaken_dispatch::RunDispatch;
     use awaken_dispatch_contract::RunClaim;
-    use awaken_run_ingress::RunDispatch;
 
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .await
             .expect("physical Dispatch fixture"),
     );
@@ -1206,7 +1206,7 @@ async fn terminal_quiescence_still_waits_for_a_pre_cancel_live_physical_claim() 
     // E1 terminal cleanup does not mistake C2 for prior staleness; E2 it waits
     // until C3+C4, then succeeds; E3 no physical slot or runnable row remains.
     // Rule Q2=C1+C2+C3+C4=>E1+E2+E3. Q1 covers pre-cancel expiry instead.
-    use awaken_run_ingress::DispatchOutcome;
+    use awaken_dispatch::DispatchOutcome;
 
     let (host, dispatch, _clock, session, run, physical_claim) =
         terminal_physical_claim_fixture("live", 30_000).await;
@@ -1272,7 +1272,7 @@ async fn settle_cancelled_dispatch_rows(
     expected_rows: usize,
     worker: &'static str,
 ) -> Vec<RunId> {
-    use awaken_run_ingress::DispatchOutcome;
+    use awaken_dispatch::DispatchOutcome;
 
     loop {
         let rows = dispatch.list_dispatches().await.unwrap();
@@ -1385,10 +1385,10 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
     // | Rule | topology | cancellation | settlement | Effect |
     // | Q1 | coordinator-only | requested | pending | E1 + E2 |
     // | Q2 | coordinator-only | requested | exact Done | E3 + E4 |
-    use awaken_run_ingress::RunDispatch;
+    use awaken_dispatch::RunDispatch;
 
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
             .await
             .expect("remote quiescence dispatch"),
     );

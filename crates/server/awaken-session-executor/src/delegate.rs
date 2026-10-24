@@ -1217,7 +1217,7 @@ mod durable_cancel_tests {
         let clock = awaken_time::system_clock();
         let llm = Arc::new(CaptureAdvisorRequests::default());
         let store = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .await
                 .expect("durable advisor dispatch store"),
         );
@@ -1478,7 +1478,7 @@ mod durable_cancel_tests {
         // Runtime; approval must use the same handle as the original boundary.
         let clock = awaken_time::system_clock();
         let store = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .await
                 .expect("durable child dispatch store"),
         );

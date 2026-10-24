@@ -59,9 +59,9 @@ WORKER_REGISTRY_SQLITE_SOURCE = "crates/server/awaken-worker-registry/src/sqlite
 WORKER_REGISTRY_LIB_SOURCE = "crates/server/awaken-worker-registry/src/lib.rs"
 DREAM_APPLICATION_SOURCE = "crates/server/awaken-dream-application/src/lib.rs"
 TOOL_RELAY_SOURCE = "crates/worker/awaken-tool-relay/src/lib.rs"
-RUN_INGRESS_FACTORY_SOURCE = "crates/server/awaken-run-ingress/src/any_factory.rs"
-RUN_INGRESS_LIB_SOURCE = "crates/server/awaken-run-ingress/src/lib.rs"
-RUN_INGRESS_SQLITE_SOURCE = "crates/server/awaken-run-ingress/src/sqlite.rs"
+RUN_INGRESS_FACTORY_SOURCE = "crates/server/awaken-dispatch/src/any_factory.rs"
+RUN_INGRESS_LIB_SOURCE = "crates/server/awaken-dispatch/src/lib.rs"
+RUN_INGRESS_SQLITE_SOURCE = "crates/server/awaken-dispatch/src/sqlite.rs"
 RUNTIME_AUTHORITY_SOURCE = "crates/server/awaken-coordinator/src/runtime_authority.rs"
 RUNTIME_STORE_SOURCE = "crates/server/awaken-session-executor/src/store.rs"
 RUNTIME_COMMIT_SOURCES = (RUNTIME_STORE_SOURCE, LOCAL_COMMIT_ADAPTER_SOURCE)
@@ -358,7 +358,7 @@ NON_PRODUCT_APIS = (
         TEST_SUPPORT_GATE,
     ),
     (
-        "awaken_run_ingress::memory",
+        "awaken_dispatch::memory",
         RUN_INGRESS_LIB_SOURCE,
         r"\bpub\s+mod\s+memory\b",
         TEST_SUPPORT_GATE,
@@ -1057,7 +1057,7 @@ def product_dispatch_fallback_violations(source: str) -> list[str]:
     )
     guarded = re.search(
         rf"None\s*=>\s*\{{.*?{TEST_SUPPORT_GATE}.*?"
-        rf"(?:awaken_run_ingress::)?open_sqlite_dispatch_store_in_memory\(\).*?"
+        rf"(?:awaken_dispatch::)?open_sqlite_dispatch_store_in_memory\(\).*?"
         rf"#\s*\[\s*cfg\s*\(\s*not\s*\(\s*any\s*\(\s*test\s*,\s*feature\s*=\s*\"test-support\"\s*\)\s*\)\s*\)\s*\].*?"
         r"return\s+Err\(.*?product SQLite dispatch requires a durable storage_dir",
         source,

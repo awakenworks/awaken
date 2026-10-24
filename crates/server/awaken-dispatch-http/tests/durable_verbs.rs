@@ -1,7 +1,7 @@
 //! The durable-ingress operational verbs, end-to-end through their HTTP surface.
 //!
 //! The store-level dispatch state machine (manual quarantine / supersede) is proven
-//! in `awaken-run-ingress`; this pins the **host routing layer** — that
+//! in `awaken-dispatch`; this pins the **host routing layer** — that
 //! `ExecutorComponents::{list_dispatches, quarantine_retry_exhausted, dead_letters, requeue_dead_letter,
 //! purge_dead_letters, superseded}`
 //! reach the process-shared dispatch queue and project it onto the wire shape the
@@ -17,9 +17,9 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_dispatch::{MemoryDispatchStore, RunDispatch, SubmitOptions};
 use awaken_dispatch_http::durable_ops_router_with_session_admission;
 use awaken_dispatch_testkit::ConformanceClock as _;
-use awaken_run_ingress::{MemoryDispatchStore, RunDispatch, SubmitOptions};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
@@ -146,8 +146,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     // the queue deterministically and then assert the host verbs route to it.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let mem = Arc::new(MemoryDispatchStore::new(clock.clock()));
-    let any =
-        Arc::new(awaken_run_ingress::AnyCoordinatorDispatch::from_durable_dispatch(mem.clone()));
+    let any = Arc::new(awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(mem.clone()));
     let host = (awaken_session_executor_testkit::volatile_dependencies(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(any))
@@ -298,8 +297,7 @@ async fn monitoring_reads_committed_dispatches_without_materializing_a_session()
      * Superseded. The non-durable C1=false => 400 rule remains below. */
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let mem = Arc::new(MemoryDispatchStore::new(clock.clock()));
-    let any =
-        Arc::new(awaken_run_ingress::AnyCoordinatorDispatch::from_durable_dispatch(mem.clone()));
+    let any = Arc::new(awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(mem.clone()));
     let host = (awaken_session_executor_testkit::volatile_dependencies(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(any))

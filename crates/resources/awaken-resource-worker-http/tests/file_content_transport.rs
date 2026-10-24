@@ -1,9 +1,9 @@
 //! File Resource Coordinator boundary tests over real HTTP.
 
+use awaken_dispatch::DispatchClaims;
+use awaken_dispatch::DispatchEnqueue;
+use awaken_dispatch::DispatchSettlement;
 use awaken_dispatch_testkit::worker_http as support;
-use awaken_run_ingress::DispatchClaims;
-use awaken_run_ingress::DispatchEnqueue;
-use awaken_run_ingress::DispatchSettlement;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,6 +14,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
+use awaken_dispatch::{MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity};
 use awaken_file_store::FileStore as _;
 use awaken_resource_application::ApplicationFileContentSource;
 use awaken_resource_contract::FileCatalog as _;
@@ -21,7 +22,6 @@ use awaken_resource_contract::FileContentSource as _;
 use awaken_resource_contract::{FileReadPurpose, ResolvedFileContent};
 use awaken_resource_worker_http::HttpFileContentSource;
 use awaken_resource_worker_http::{WorkerFileContentService, worker_file_content_router};
-use awaken_run_ingress::{MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity};
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_realization_contract::SessionFileReadAuthorization as _;
 use awaken_session_repository_contract::{
@@ -61,7 +61,7 @@ async fn claimed_dispatch(
         .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
             awaken_tenancy::ScopeId::from("workspace-file"),
         ))
-        .with_session_resources(awaken_run_ingress::SessionResourceEnvelope::new(
+        .with_session_resources(awaken_dispatch::SessionResourceEnvelope::new(
             "workspace-file",
             serde_json::to_string(&resources(file_id)).unwrap(),
         ));
@@ -425,7 +425,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
         .settle(
             &claim.run_id,
             claim.epoch,
-            awaken_run_ingress::DispatchOutcome::Done,
+            awaken_dispatch::DispatchOutcome::Done,
             &[],
         )
         .await
@@ -520,7 +520,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
         .settle(
             &missing_claim.run_id,
             missing_claim.epoch,
-            awaken_run_ingress::DispatchOutcome::Done,
+            awaken_dispatch::DispatchOutcome::Done,
             &[],
         )
         .await

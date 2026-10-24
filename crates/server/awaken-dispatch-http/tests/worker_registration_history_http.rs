@@ -4,9 +4,9 @@
 //! application retries, not an attempt to bypass the signature nonce cache.
 mod postgres_support;
 
+use awaken_dispatch::{MemoryDispatchStore, WorkerDirectory, WorkerManifest};
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_lease_testkit::ManualClock;
-use awaken_run_ingress::{MemoryDispatchStore, WorkerDirectory, WorkerManifest};
 use awaken_worker_registry::{
     MemoryWorkerDirectory, PostgresWorkerDirectory, SqliteWorkerDirectory,
 };
@@ -63,8 +63,8 @@ async fn assert_registration_history(directory: Arc<dyn WorkerDirectory>, worker
         )));
     let client = WorkerControlClient::new(upstream);
     let mut manifest = WorkerManifest::default();
-    manifest.runtime_protocol.min = awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
-    manifest.runtime_protocol.max = awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     let a = client
         .register_classified("A", manifest.clone())
         .await

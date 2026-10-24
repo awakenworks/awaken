@@ -4,6 +4,7 @@ use awaken_dispatch_testkit::worker_http as support;
 
 use std::sync::Arc;
 
+use awaken_dispatch::{MemoryDispatchStore, RunClaim, RunDispatch};
 use awaken_memory_store::{
     MemErr, MemoryCopyConflictPreservation as _, MemoryCopyConflictQueries as _,
     MemorySnapshotSource as _, MemoryVersionQueries as _, MemoryWriter as _,
@@ -20,7 +21,6 @@ use awaken_resource_worker_http::{
 use awaken_resource_worker_http::{
     memory_materialization_reference, terminal_memory_materialization_reference,
 };
-use awaken_run_ingress::{MemoryDispatchStore, RunClaim, RunDispatch};
 use awaken_session_realization_contract::{
     SessionRealizationControlFailure, SessionResourceMaterializationIntent,
 };
@@ -368,7 +368,7 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
                 .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
                     awaken_tenancy::ScopeId::from("workspace-memory"),
                 ))
-                .with_session_resources(awaken_run_ingress::SessionResourceEnvelope::new(
+                .with_session_resources(awaken_dispatch::SessionResourceEnvelope::new(
                     "workspace-memory",
                     serde_json::to_string(&resources).unwrap(),
                 )),
@@ -643,7 +643,7 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
         .settle(
             &claim.run_id,
             claim.epoch,
-            awaken_run_ingress::DispatchOutcome::Done,
+            awaken_dispatch::DispatchOutcome::Done,
             &[],
         )
         .await
@@ -882,7 +882,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         .settle(
             &stale_run_claim.run_id,
             stale_run_claim.epoch,
-            awaken_run_ingress::DispatchOutcome::Done,
+            awaken_dispatch::DispatchOutcome::Done,
             &[],
         )
         .await

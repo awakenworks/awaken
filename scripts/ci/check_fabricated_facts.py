@@ -125,7 +125,7 @@ AMBIENT_CLOCK = re.compile(
     r"\b(?:SystemTime|Instant|Utc)\s*::\s*now\s*\(\s*\)"
     r"|\bOffsetDateTime\s*::\s*now_utc\s*\(\s*\)"
     # A concrete clock *value* asked for its time: `SystemClock.now_ms()`,
-    # `awaken_run_ingress::SystemClock.now_ms()`, `TokioModelInferenceClock.now()`.
+    # `awaken_dispatch::SystemClock.now_ms()`, `TokioModelInferenceClock.now()`.
     # A handle (`self.clock.now()`) is lower-case and is not matched.
     r"|\b[A-Z]\w*Clock\s*(?:::\s*default\s*\(\s*\)\s*)?\.\s*now\w*\s*\("
     # The same read spelled as a qualified call: `Clock::now_ms(&SystemClock)`.
@@ -711,7 +711,7 @@ def selftest() -> None:
 
     for spelling in (
         "let now = SystemClock.now_ms();",
-        "let now = awaken_run_ingress::SystemClock.now_ms();",
+        "let now = awaken_dispatch::SystemClock.now_ms();",
         "let id = SystemWorkerClock.now_ms();",
         "let now = Clock::now_ms(&awaken_agent_contract::clock::SystemClock);",
         "let started = TokioModelInferenceClock.now();",
@@ -831,7 +831,7 @@ def selftest() -> None:
 
     # ── R4 ──
     assert defaulted_clock_violations({"a.rs": "clock: Arc::new(SystemClock),\n"}), "D1/E2"
-    d2 = {"a.rs": "let store = Store::new(Arc::new(\n    awaken_run_ingress::SystemClock,\n));\n"}
+    d2 = {"a.rs": "let store = Store::new(Arc::new(\n    awaken_dispatch::SystemClock,\n));\n"}
     d2_hits = defaulted_clock_violations(d2).get("a.rs", [])
     assert len(d2_hits) == 1 and d2_hits[0].startswith("a.rs:1:"), f"D2/E2 {d2_hits}"
     assert defaulted_clock_violations({"a.rs": "Store::open(system_clock())\n"}), "D3/E2"

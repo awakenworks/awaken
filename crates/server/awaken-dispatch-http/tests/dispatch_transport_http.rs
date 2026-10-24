@@ -20,12 +20,12 @@ use awaken_agent_contract::stream::event::{
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
-use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
-use awaken_lease_testkit::ManualClock;
-use awaken_run_ingress::{
+use awaken_dispatch::{
     DispatchSettlementError, DispatchSettlementObserver, MemoryDispatchStore, RunClaim,
     RunDispatch, StreamEventRequest, StreamObservationRequest, WorkerIdentity,
 };
+use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{
@@ -390,7 +390,7 @@ async fn foreign_session_work_defers_only_its_dispatch_and_leaves_other_sessions
     let blocked = rows.iter().find(|row| row.run_id.0 == "busy-run").unwrap();
     assert_eq!(
         blocked.state,
-        awaken_run_ingress::DispatchState::Pending,
+        awaken_dispatch::DispatchState::Pending,
         "R1/E1"
     );
     assert_eq!(blocked.attempt_count, 0, "R1/E1 no physical retry cost");
@@ -443,7 +443,7 @@ async fn foreign_session_work_defers_only_its_dispatch_and_leaves_other_sessions
         .unwrap();
     assert_eq!(
         outage_row.state,
-        awaken_run_ingress::DispatchState::Pending,
+        awaken_dispatch::DispatchState::Pending,
         "R5/E4"
     );
     assert!(!outage_row.physical_attempt_active, "R5/E4");
@@ -646,7 +646,7 @@ async fn session_recovery_reads_committed_truth_only_under_the_exact_work_epoch(
     )
     .await;
     assert_eq!(status, StatusCode::OK, "claim: {body}");
-    let claimed: awaken_run_ingress::Claimed =
+    let claimed: awaken_dispatch::Claimed =
         serde_json::from_value(body["claimed"].clone()).expect("claimed response");
     let claim = RunClaim::from(&claimed.lease);
     let receipt = claimed
@@ -1028,7 +1028,7 @@ async fn terminal_observer_failure_withholds_remote_child_done_and_parent_work_r
     assert_eq!(rows.len(), 1, "R1/E1 retains replay evidence");
     assert_eq!(
         rows[0].state,
-        awaken_run_ingress::DispatchState::Leased,
+        awaken_dispatch::DispatchState::Leased,
         "R1/E1"
     );
     assert_eq!(work.releases.load(Ordering::SeqCst), 0, "R1/E1");
@@ -1188,7 +1188,7 @@ async fn remote_done_requires_one_exact_committed_terminal_recovery_prefix() {
         assert_eq!(rows.len(), 1, "{tag}/E4 retains retry evidence");
         assert_eq!(
             rows[0].state,
-            awaken_run_ingress::DispatchState::Leased,
+            awaken_dispatch::DispatchState::Leased,
             "{tag}/E4"
         );
         assert_eq!(observer.attempts.load(Ordering::SeqCst), 0, "{tag}/E4");

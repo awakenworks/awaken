@@ -42,7 +42,7 @@ async fn delayed_interruption_preserves_the_successor(
         calls: AtomicUsize::new(2),
     });
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
             .await
             .expect("real SQLite dispatch authority"),
     );

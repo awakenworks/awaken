@@ -12,11 +12,7 @@ use awaken_agent_contract::agent::run::{Record as RunRecord, RunState};
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
-use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
-use awaken_dispatch_testkit::worker_http::activation;
-use awaken_dispatch_testkit::{AuthoritativeWallClock, ConformanceClock};
-use awaken_lease_testkit::ManualClock;
-use awaken_run_ingress::{
+use awaken_dispatch::{
     AttemptAdmission, AttemptExecutionBinding, AttemptStopStatus, ClosedAttemptExecution,
     ClosedWorkerExecution, MemoryDispatchStore, PhysicalAttempt, PostgresDispatchStore, RunClaim,
     RunDispatch, SqliteDispatchStore, WorkerDirectory, WorkerExecutionStopSource, WorkerHeartbeat,
@@ -24,6 +20,10 @@ use awaken_run_ingress::{
     WorkerState, has_active_physical_attempt_for_owner, stop_committed_terminal_attempt,
     stop_expired_predecessor,
 };
+use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_dispatch_testkit::worker_http::activation;
+use awaken_dispatch_testkit::{AuthoritativeWallClock, ConformanceClock};
+use awaken_lease_testkit::ManualClock;
 use awaken_worker_registry::{
     MemoryWorkerDirectory, PostgresWorkerDirectory, SqliteWorkerDirectory,
 };
@@ -53,7 +53,7 @@ impl WorkerExecutionStopSource for StopSource {
     async fn seal_closed_worker_admission(
         &self,
         identity: &WorkerIdentity,
-        _create_ledger: Option<&awaken_run_ingress::WorkerCreateLedger>,
+        _create_ledger: Option<&awaken_dispatch::WorkerCreateLedger>,
     ) -> Result<(), ApplicationError> {
         self.admission_seal_calls
             .lock()
@@ -69,7 +69,7 @@ impl WorkerExecutionStopSource for StopSource {
         &self,
         _identity: &WorkerIdentity,
         may_stop_active: bool,
-        _create_ledger: Option<&awaken_run_ingress::WorkerCreateLedger>,
+        _create_ledger: Option<&awaken_dispatch::WorkerCreateLedger>,
     ) -> Result<Option<WorkerProcessExit>, ApplicationError> {
         self.idle_observe_may_stop
             .lock()
@@ -80,7 +80,7 @@ impl WorkerExecutionStopSource for StopSource {
     async fn release_closed_idle_worker_evidence(
         &self,
         identity: &WorkerIdentity,
-        _original_create_ledger: Option<&awaken_run_ingress::WorkerCreateLedger>,
+        _original_create_ledger: Option<&awaken_dispatch::WorkerCreateLedger>,
     ) -> Result<(), ApplicationError> {
         self.idle_release_calls
             .lock()
@@ -246,8 +246,8 @@ async fn register(
     ttl: u64,
 ) -> WorkerIdentity {
     let mut manifest = WorkerManifest::default();
-    manifest.runtime_protocol.min = awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
-    manifest.runtime_protocol.max = awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     let identity = directory
         .register(
             WorkerRegistration {
@@ -335,7 +335,7 @@ impl Fixture {
         let old_worker = register(directory.as_ref(), &format!("{tag}-old"), 100, old_ttl).await;
         let worker = register(directory.as_ref(), &format!("{tag}-next"), 200, 10_000).await;
         let request = RunDispatch::new(activation(&tag))
-            .with_placement(awaken_run_ingress::PlacementRequirements::remote_required());
+            .with_placement(awaken_dispatch::PlacementRequirements::remote_required());
         let run_id = request.run_id().clone();
         store.enqueue(request).await.unwrap();
         let mut old_snapshot = directory
@@ -372,7 +372,7 @@ impl Fixture {
         );
         assert_eq!(
             store.renew_lease(&old, 0).await.unwrap(),
-            awaken_run_ingress::LeaseRenewalOutcome::Current
+            awaken_dispatch::LeaseRenewalOutcome::Current
         );
         AuthoritativeWallClock.advance_past(0).await;
         let mut next_snapshot = directory
@@ -488,14 +488,14 @@ impl Fixture {
     async fn committed_projection(
         &self,
         record: Option<RunRecord>,
-    ) -> awaken_run_ingress::RecoveryProjection {
+    ) -> awaken_dispatch::RecoveryProjection {
         let mut snapshot = self
             .recovery
             .recovery_snapshot(&self.thread_id, &self.old.run_id)
             .await
             .unwrap();
         snapshot.runs = record.into_iter().collect();
-        let view = awaken_run_ingress::RecoveryProjection::new();
+        let view = awaken_dispatch::RecoveryProjection::new();
         view.install(&self.old.run_id, &self.thread_id, snapshot)
             .unwrap();
         view
@@ -503,13 +503,13 @@ impl Fixture {
 
     async fn stop_terminal(
         &self,
-        view: &awaken_run_ingress::RecoveryProjection,
-        summary: &awaken_run_ingress::DispatchSummary,
+        view: &awaken_dispatch::RecoveryProjection,
+        summary: &awaken_dispatch::DispatchSummary,
     ) -> Result<bool, ApplicationError> {
         stop_committed_terminal_attempt(
             self.store.as_ref(),
             Some((self.directory.as_ref(), self.stop.as_ref())),
-            Some(&awaken_run_ingress::PhysicalAttemptRecoveryRead::new(
+            Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
                 self.recovery.as_ref(),
             )),
             view,
@@ -615,7 +615,7 @@ async fn create_admission_and_worker_exit_observation_fail_independently() {
                     .unwrap(),
                 );
             }
-            let result = awaken_run_ingress::release_closed_idle_worker_evidence(
+            let result = awaken_dispatch::release_closed_idle_worker_evidence(
                 f.store.as_ref(),
                 f.directory.as_ref(),
                 f.stop.as_ref(),
@@ -633,7 +633,7 @@ async fn create_admission_and_worker_exit_observation_fail_independently() {
             assert_eq!(*f.stop.idle_observe_may_stop.lock().unwrap(), [false]);
             if observed_exit {
                 *f.stop.admission_seal_result.lock().unwrap() = Ok(());
-                awaken_run_ingress::release_closed_idle_worker_evidence(
+                awaken_dispatch::release_closed_idle_worker_evidence(
                     f.store.as_ref(),
                     f.directory.as_ref(),
                     f.stop.as_ref(),
@@ -718,7 +718,7 @@ async fn closed_worker_exit_survives_an_unavailable_physical_scan() {
     f.stop.idle_observe_may_stop.lock().unwrap().clear();
     pool.close().await;
     assert!(
-        awaken_run_ingress::release_closed_idle_worker_evidence(
+        awaken_dispatch::release_closed_idle_worker_evidence(
             f.store.as_ref(),
             f.directory.as_ref(),
             f.stop.as_ref(),
@@ -870,7 +870,7 @@ async fn postgres_guarded_admission_uses_one_process_connection_and_rejects_fore
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .unwrap();
-    let composed = awaken_run_ingress::with_postgres_dispatch_pool(pool.clone())
+    let composed = awaken_dispatch::with_postgres_dispatch_pool(pool.clone())
         .await
         .unwrap();
     let foreign = PostgresWorkerDirectory::connect_existing(&url, 1)
@@ -893,7 +893,7 @@ async fn postgres_guarded_admission_uses_one_process_connection_and_rejects_fore
         .await;
         let snapshot = directory.current(&tag).await.unwrap().unwrap().snapshot;
         let request = RunDispatch::new(activation(&tag))
-            .with_placement(awaken_run_ingress::PlacementRequirements::remote_required());
+            .with_placement(awaken_dispatch::PlacementRequirements::remote_required());
         let run_id = request.run_id().clone();
         store.enqueue(request).await.unwrap();
         let claim = RunClaim::from(
@@ -1138,7 +1138,7 @@ async fn stop_admission_rejects_live_replaced_historical_and_noncurrent_subjects
                 f.store.as_ref(),
                 f.directory.as_ref(),
                 f.stop.as_ref(),
-                Some(&awaken_run_ingress::PhysicalAttemptRecoveryRead::new(
+                Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
                     f.recovery.as_ref()
                 )),
                 &successor,
@@ -1363,7 +1363,7 @@ async fn local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidenc
         first.store.as_ref(),
         first.directory.as_ref(),
         first.stop.as_ref(),
-        Some(&awaken_run_ingress::PhysicalAttemptRecoveryRead::new(
+        Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
             first.recovery.as_ref(),
         )),
         &first.next,
@@ -1385,7 +1385,7 @@ async fn local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidenc
             second.store.as_ref(),
             second.directory.as_ref(),
             second.stop.as_ref(),
-            Some(&awaken_run_ingress::PhysicalAttemptRecoveryRead::new(
+            Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
                 second.recovery.as_ref()
             )),
             &second.next,
@@ -1402,7 +1402,7 @@ async fn local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidenc
             second.store.as_ref(),
             second.directory.as_ref(),
             second.stop.as_ref(),
-            Some(&awaken_run_ingress::PhysicalAttemptRecoveryRead::new(
+            Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
                 second.recovery.as_ref()
             )),
             &second.next,
@@ -1778,7 +1778,7 @@ async fn reported_local_entry_closure_recovers_without_stopping_a_healthy_worker
         .unwrap();
     assert_eq!(
         heartbeat,
-        awaken_run_ingress::RegistryMutation::Applied,
+        awaken_dispatch::RegistryMutation::Applied,
         "H0 live Worker premise"
     );
     let probe = AttemptStopProbe::install(&f);
@@ -1795,7 +1795,7 @@ async fn reported_local_entry_closure_recovers_without_stopping_a_healthy_worker
     }
     assert_eq!(
         f.store.finish_attempt(&f.old, None).await.unwrap(),
-        awaken_run_ingress::SettleOutcome::Fenced
+        awaken_dispatch::SettleOutcome::Fenced
     );
     probe.release.add_permits(1);
     let pending = f.begin().await;
@@ -2029,7 +2029,7 @@ async fn committed_terminal_closure_needs_no_current_successor_and_retains_unkno
         assert!(
             f.store
                 .attempt_closure_records_after(
-                    awaken_run_ingress::DispatchCursor(0),
+                    awaken_dispatch::DispatchCursor(0),
                     10,
                     Some(&f.old.run_id)
                 )
@@ -2056,7 +2056,7 @@ async fn committed_terminal_closure_needs_no_current_successor_and_retains_unkno
         let records = f
             .store
             .attempt_closure_records_after(
-                awaken_run_ingress::DispatchCursor(0),
+                awaken_dispatch::DispatchCursor(0),
                 10,
                 Some(&f.old.run_id),
             )
@@ -2070,7 +2070,7 @@ async fn committed_terminal_closure_needs_no_current_successor_and_retains_unkno
         );
         assert_eq!(
             match &records.events[0].record {
-                awaken_run_ingress::AttemptPhysicalFact::IndependentClosure { record } =>
+                awaken_dispatch::AttemptPhysicalFact::IndependentClosure { record } =>
                     record.evidence_ref(),
                 _ => panic!("T8 trusted stop must retain independent closure"),
             },
@@ -2163,7 +2163,7 @@ async fn cancelled_terminal_observation_retries_the_same_original_closing_slot()
     assert!(
         f.store
             .attempt_closure_records_after(
-                awaken_run_ingress::DispatchCursor(0),
+                awaken_dispatch::DispatchCursor(0),
                 10,
                 Some(&f.old.run_id)
             )

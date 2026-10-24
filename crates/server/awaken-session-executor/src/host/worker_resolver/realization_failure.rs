@@ -65,11 +65,11 @@ mod tests {
         use crate::host::worker_resolver::test_support::{
             adoption_dependencies, eager_environment, test_activation, with_empty_session_resources,
         };
+        use awaken_dispatch::WorkerResolver as _;
         use awaken_dispatch_contract::{
             DispatchClaimOwnership as _, DispatchClaims as _, DispatchEnqueue as _,
             DispatchReads as _, DispatchState, RunClaim, RunDispatch, SessionRuntimeEnvelope,
         };
-        use awaken_run_ingress::WorkerResolver as _;
         use awaken_session_environment::SandboxEnvironmentProvider;
         use awaken_session_environment::test_support::{
             FakeContainerProvider, FakeHandExecutorFactory,
@@ -79,7 +79,7 @@ mod tests {
 
         let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .await
                 .unwrap(),
         );

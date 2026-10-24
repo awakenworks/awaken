@@ -376,13 +376,12 @@ pub struct ManagedRoutingExtensions {
     pub memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
     pub worker_file_application: Arc<dyn awaken_resource_contract::FileApplicationService>,
     pub worker_skill_bundles: Arc<
-        dyn awaken_session_configuration_contract::SkillBundleSource<awaken_run_ingress::RunClaim>,
+        dyn awaken_session_configuration_contract::SkillBundleSource<awaken_dispatch::RunClaim>,
     >,
     pub worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
     pub worker_placement_policy: Option<Arc<dyn awaken_worker_contract::PlacementPolicy>>,
-    pub worker_execution_bindings:
-        Option<Arc<dyn awaken_run_ingress::WorkerExecutionBindingSource>>,
-    pub worker_execution_stops: Option<Arc<dyn awaken_run_ingress::WorkerExecutionStopSource>>,
+    pub worker_execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
+    pub worker_execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
     pub worker_create_broker_router: Option<Router>,
     pub credential_deliveries:
         Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
@@ -616,7 +615,7 @@ pub enum WorkerTransportBuildError {
 }
 
 fn worker_checkpoint_authority(
-    dispatch: &awaken_run_ingress::AnyCoordinatorDispatch,
+    dispatch: &awaken_dispatch::AnyCoordinatorDispatch,
     store_dir: Option<&std::path::Path>,
 ) -> Result<
     Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>,
@@ -652,7 +651,7 @@ fn worker_checkpoint_authority(
 #[cfg(test)]
 mod worker_checkpoint_authority_tests {
     use super::*;
-    use awaken_run_ingress::{AnyCoordinatorDispatch, MemoryDispatchStore};
+    use awaken_dispatch::{AnyCoordinatorDispatch, MemoryDispatchStore};
 
     #[test]
     fn checkpoint_authority_selection_is_fail_closed() {
@@ -1044,7 +1043,7 @@ async fn mount_with_managed_over_and_models(
     // loop before exposing the Worker transport; local-pool embeddings already
     // perform the same maintenance inside that pool.
     if let Some(source) = worker_execution_stops.as_ref() {
-        let maintenance = awaken_run_ingress::WorkerEvidenceReleaseAdapter::new(source.clone());
+        let maintenance = awaken_dispatch::WorkerEvidenceReleaseAdapter::new(source.clone());
         execution
             .dispatch
             .bind_worker_evidence(worker_directory.clone(), Arc::new(maintenance))
@@ -1153,7 +1152,7 @@ async fn mount_with_managed_over_and_models(
         ));
     let commit = Arc::new(awaken_dispatch_http::ClaimedCommitHttpService::new(
         Arc::new(
-            awaken_run_ingress::ClaimedCommitService::with_coordinator_resolver(
+            awaken_dispatch::ClaimedCommitService::with_coordinator_resolver(
                 dispatch as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
                 execution.commit_owners.clone(),
             ),

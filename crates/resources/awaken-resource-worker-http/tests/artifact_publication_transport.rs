@@ -1,16 +1,19 @@
 // @formal evidence remote_worker.stale_epoch_never_mutates_truth
 //! Session artifact publication over the real Worker HTTP boundary.
 
-use awaken_run_ingress::DispatchClaims;
-use awaken_run_ingress::DispatchCommitAuthority;
-use awaken_run_ingress::DispatchEnqueue;
-use awaken_run_ingress::DispatchExecution;
-use awaken_run_ingress::DispatchSettlement;
+use awaken_dispatch::DispatchClaims;
+use awaken_dispatch::DispatchCommitAuthority;
+use awaken_dispatch::DispatchEnqueue;
+use awaken_dispatch::DispatchExecution;
+use awaken_dispatch::DispatchSettlement;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
+use awaken_dispatch::{
+    LeaseRenewalOutcome, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
+};
 use awaken_dispatch_testkit::worker_http as support;
 use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublisher as _, ArtifactRecovery,
@@ -19,9 +22,6 @@ use awaken_resource_contract::{
 use awaken_resource_worker_http::{
     ARTIFACT_METADATA_HEADER, ARTIFACT_PUBLICATION_PATH, ArtifactPublicationRequest,
     HttpArtifactPublisher, WorkerArtifactPublicationService, worker_artifact_publication_router,
-};
-use awaken_run_ingress::{
-    LeaseRenewalOutcome, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
@@ -594,7 +594,7 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
         .settle(
             &claim.run_id,
             claim.epoch,
-            awaken_run_ingress::DispatchOutcome::Done,
+            awaken_dispatch::DispatchOutcome::Done,
             &[],
         )
         .await

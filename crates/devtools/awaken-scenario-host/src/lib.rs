@@ -64,9 +64,9 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Role;
+use awaken_dispatch::SessionRunReservations as _;
 use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
 use awaken_provider_genai::GenaiExecutor;
-use awaken_run_ingress::SessionRunReservations as _;
 use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate, ToolKind};
@@ -1551,7 +1551,7 @@ pub async fn build_config_router() -> Router {
 
 #[derive(Deserialize)]
 struct SessionReservationScenarioRequest {
-    request: awaken_run_ingress::RunDispatch,
+    request: awaken_dispatch::RunDispatch,
     reservation_ttl_ms: u64,
 }
 
@@ -1559,10 +1559,10 @@ struct SessionReservationScenarioRequest {
 /// crash boundary. It delegates the production Dispatch command and owns no
 /// state, transition, clock, or SQL mutation of its own.
 async fn session_reservation_scenario_router(
-    dispatch: Arc<awaken_run_ingress::AnyCoordinatorDispatch>,
+    dispatch: Arc<awaken_dispatch::AnyCoordinatorDispatch>,
 ) -> Router {
     async fn reserve(
-        State(dispatch): State<Arc<awaken_run_ingress::AnyCoordinatorDispatch>>,
+        State(dispatch): State<Arc<awaken_dispatch::AnyCoordinatorDispatch>>,
         Json(command): Json<SessionReservationScenarioRequest>,
     ) -> (StatusCode, Json<serde_json::Value>) {
         match dispatch

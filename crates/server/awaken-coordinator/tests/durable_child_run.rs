@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, RunState};
-use awaken_run_ingress::{AnyCoordinatorDispatch, MemoryDispatchStore};
+use awaken_dispatch::{AnyCoordinatorDispatch, MemoryDispatchStore};
 use awaken_runtime_contract::StaticPublishedAgentSnapshots;
 use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 use awaken_runtime_contract::llm::{
@@ -234,4 +234,4 @@ async fn durable_child_run_scenario() {
     );
 }
 
-use awaken_run_ingress::DispatchReads as _;
+use awaken_dispatch::DispatchReads as _;

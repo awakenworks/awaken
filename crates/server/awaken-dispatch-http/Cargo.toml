@@ -18,7 +18,7 @@ awaken-credential-contract.workspace = true
 awaken-time.workspace = true
 awaken-agent-contract.workspace = true
 awaken-observability.workspace = true
-awaken-run-ingress.workspace = true
+awaken-dispatch.workspace = true
 awaken-dispatch-contract.workspace = true
 awaken-runtime.workspace = true
 awaken-session-application-contract.workspace = true
@@ -54,7 +54,7 @@ awaken-resource-application.workspace = true
 awaken-file-store = { workspace = true, features = ["test-support"] }
 awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
-awaken-run-ingress = { workspace = true, features = ["test-support"] }
+awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-dispatch-testkit.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-executor = { workspace = true, features = ["test-support"] }

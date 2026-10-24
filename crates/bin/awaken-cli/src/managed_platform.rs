@@ -235,7 +235,7 @@ pub struct CoordinatorServiceAdapters {
         Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
     pub worker_authenticator:
         Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
-    pub worker_placement_policy: Option<Arc<dyn awaken_run_ingress::PlacementPolicy>>,
+    pub worker_placement_policy: Option<Arc<dyn awaken_dispatch::PlacementPolicy>>,
     pub cloud_native_credential_realization:
         Option<awaken_credential_contract::CredentialRealizationProfile>,
     pub repository_transport_authorizer:
@@ -270,7 +270,7 @@ impl CoordinatorServiceAdapters {
     #[must_use]
     pub fn with_worker_placement_policy(
         mut self,
-        policy: Arc<dyn awaken_run_ingress::PlacementPolicy>,
+        policy: Arc<dyn awaken_dispatch::PlacementPolicy>,
     ) -> Self {
         self.worker_placement_policy = Some(policy);
         self

@@ -6,7 +6,7 @@
 //!
 //! [`RunDispatch`] is exactly the data a durable queue persists and replays. It
 //! carries no live handles (G3/G4), so any worker can rebuild the Run after a
-//! crash. Live worker dependencies stay in the `awaken-run-ingress` host.
+//! crash. Live worker dependencies stay in the `awaken-dispatch` host.
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;

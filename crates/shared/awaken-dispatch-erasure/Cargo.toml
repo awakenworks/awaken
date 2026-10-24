@@ -21,7 +21,7 @@ async-trait.workspace = true
 
 [dev-dependencies]
 awaken-time.workspace = true
-awaken-run-ingress = { workspace = true, features = ["test-support"] }
+awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-store-inmem.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 

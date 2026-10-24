@@ -226,7 +226,7 @@ mod tests {
 
     use crate::RunDispatch;
     use crate::worker::DispatchWorker;
-    use awaken_run_ingress::MemoryDispatchStore;
+    use awaken_dispatch::MemoryDispatchStore;
 
     fn make_service() -> LiveRunControlService<MemoryDispatchStore> {
         let runtime = Arc::new(Runtime::new());

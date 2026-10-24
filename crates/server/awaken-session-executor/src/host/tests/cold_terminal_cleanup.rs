@@ -81,7 +81,7 @@ async fn source_dispatch_observation_preserves_current_scope_and_rejects_affinit
             },
         ),
     ] {
-        let store = awaken_run_ingress::open_sqlite_dispatch_store_in_memory(Arc::new(
+        let store = awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
             awaken_lease_testkit::ManualClock::new(100),
         ))
         .await
@@ -152,7 +152,7 @@ async fn ordinary_attempt_acknowledgement_releases_source_without_claiming_globa
         DispatchExecution as _, DispatchSettlement as _,
     };
     use awaken_session_runtime_contract::SessionSourceDispatchObservation as Source;
-    let store = awaken_run_ingress::open_sqlite_dispatch_store_in_memory(Arc::new(
+    let store = awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
         awaken_lease_testkit::ManualClock::new(100),
     ))
     .await
@@ -1174,11 +1174,11 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
     use awaken_agent_contract::agent::awaiting::{AwaitTarget, RemoteInputReason, ResumeTicket};
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
-    use awaken_run_ingress::{DispatchOutcome, DispatchState, RunDispatch};
+    use awaken_dispatch::{DispatchOutcome, DispatchState, RunDispatch};
 
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .await
             .expect("archive saga dispatch"),
     );

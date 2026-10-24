@@ -10,7 +10,7 @@ if [ "$#" -ne 0 ] || [ -z "${AWAKEN_TEST_NATS_URL:-}" ]; then
   exit 2
 fi
 export AWAKEN_TEST_REQUIRE_NATS=1
-run_required_rust_tests -p awaken-run-ingress --features nats --lib wake::nats_tests \
+run_required_rust_tests -p awaken-dispatch --features nats --lib wake::nats_tests \
   --require-case=wake::nats_tests::nats_wake_signal_notifies_a_waiter \
   --require-case=wake::nats_tests::nats_fixture_absence_and_configured_failure_are_distinct -- --test-threads=1
 run_required_rust_tests -p awaken-sandbox --features hand --lib nats \

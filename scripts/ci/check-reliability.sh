@@ -45,7 +45,7 @@ if [ "${1:-}" = "--session-observations" ]; then
   cargo test --locked -p awaken-session-realization-driver --lib scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation
   cargo test --locked -p awaken-session-executor --lib control_deadline_releases_capacity_before_expired_session_mutex_cleanup
   cargo test --locked -p awaken-coordinator --lib runtime_authority::tests
-  cargo test --locked -p awaken-run-ingress --features test-support --test pool_memory only_the_queue_owner_runs_maintenance_without_disabling_worker_drains
+  cargo test --locked -p awaken-dispatch --features test-support --test pool_memory only_the_queue_owner_runs_maintenance_without_disabling_worker_drains
   pnpm -C e2e exec tsx managed_mcp_recovery_e2e.ts
   python3 scripts/ci/render_runtime_refinement_traces.py --projection session-observations \
     "$AWAKEN_OBSERVATION_TRACE_DIR" "$session_evidence_dir/rendered" --require-complete-transition-coverage
@@ -79,7 +79,7 @@ python3 scripts/ci/check_reliability.py
 source scripts/ci/_rust_test_execution.sh
 run_required_rust_tests -p awaken-reliability-testkit --lib
 run_required_rust_tests -p awaken-mcp-wire --lib sse::tests
-run_required_rust_tests -p awaken-run-ingress --features test-support --test dispatch_conformance \
+run_required_rust_tests -p awaken-dispatch --features test-support --test dispatch_conformance \
   memory_and_sqlite_refine_the_same_crash_recovery_history
 
 if [ "$mode" = "--quick" ]; then

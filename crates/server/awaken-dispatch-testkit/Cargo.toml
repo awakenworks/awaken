@@ -9,7 +9,7 @@ context = "coordinator"
 product = "platform"
 bounded_context = "dispatch"
 layer = "tooling"
-authority = "run-ingress"
+authority = "dispatch"
 description = "Reusable conformance suite for DispatchQueue implementations and decorators"
 separation = "test-support"
 

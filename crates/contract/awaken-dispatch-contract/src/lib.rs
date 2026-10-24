@@ -5,7 +5,7 @@
 //! The dispatch contract (ADR-0039 slice 2.1).
 //!
 //! This is the durable-dispatch bounded context's port surface, factored out of
-//! the `awaken-run-ingress` host so store backends and adapters can depend on the
+//! the `awaken-dispatch` host so store backends and adapters can depend on the
 //! contract without the host crate (G2). It carries the neutral dispatch ports
 //! (caller-specific dispatch roles / `Inbox` / `Outbox`) and the
 //! serializable [`RunDispatch`] a durable queue persists and replays — no live

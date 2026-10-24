@@ -196,7 +196,7 @@ class EvidenceTests(unittest.TestCase):
             "formal_failure_deadline_seconds=\n"
             "run_with_deadline() { printf '%s\\n' \"$1\" > \"$DEADLINE_CALL\"; shift; \"$@\"; }\n"
             + function
-            + "\nrun_kani awaken-run-ingress --no-default-features --harness exact_claim\n"
+            + "\nrun_kani awaken-dispatch --no-default-features --harness exact_claim\n"
         )
         result = run_shell_fixture(
             [bash_executable(), "-c", script],
@@ -210,7 +210,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(Path(lines[0]), target / "kani")
         self.assertEqual(
             lines[1],
-            "kani -p awaken-run-ingress --output-format terse --verbose -j 1 "
+            "kani -p awaken-dispatch --output-format terse --verbose -j 1 "
             "--no-default-features --harness exact_claim",
         )
         self.assertEqual(deadline_call.read_text(), "37\n")

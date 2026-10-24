@@ -13,7 +13,7 @@
 # with the reason; revisit an exclusion when its wiring changes. The MCP server,
 # file store, local/namespace providers, and container providers are intentionally
 # included: all are linked into and selected by the production composition.
-#   - awaken-run-ingress/src/memory.rs    in-memory reference implementation
+#   - awaken-dispatch/src/memory.rs    in-memory reference implementation
 #     ("executable specification" per its module doc); the server always uses
 #     the SQLite dispatch store.
 #   - awaken-ext-mcp/src/stdio.rs         the server wires the HTTP MCP

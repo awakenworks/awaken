@@ -16,7 +16,7 @@ separation = "test-support"
 [dependencies]
 awaken-dispatch-erasure.workspace = true
 awaken-session-executor = { workspace = true, features = ["test-support"] }
-awaken-run-ingress = { workspace = true, features = ["test-support"] }
+awaken-dispatch = { workspace = true, features = ["test-support"] }
 # The sandbox-backed Session environment volatile and durable fixtures run in.
 awaken-session-environment = { workspace = true, features = ["test-support"] }
 awaken-runtime-contract.workspace = true

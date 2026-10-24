@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
-use awaken_run_ingress::ClaimedOperationCoordinatorResolver;
+use awaken_dispatch::ClaimedOperationCoordinatorResolver;
 use awaken_session_application::{SessionApplication, SessionRunApplication};
 use awaken_session_application_contract::{RunApplication, SessionRunBackgroundApplication};
 use awaken_session_executor::{

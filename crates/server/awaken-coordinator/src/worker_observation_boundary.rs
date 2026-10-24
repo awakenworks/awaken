@@ -54,7 +54,7 @@ pub(crate) struct DomainState {
     pub(crate) session_queries: Arc<awaken_session_application::SessionQueries>,
     pub(crate) worker_occupancy: Arc<awaken_session_application::SessionWorkerOccupancy>,
     pub(crate) relay_targets: Option<Arc<dyn awaken_worker_contract::WorkerRelayTargetObserver>>,
-    pub(crate) bindings: Option<Arc<dyn awaken_run_ingress::WorkerExecutionBindingSource>>,
+    pub(crate) bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     pub(crate) clock: Arc<dyn awaken_time::WallClock>,
     pub(crate) authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
     pub(crate) relay_authenticator:
@@ -217,7 +217,7 @@ async fn handle_bootstrap_close(
 
 async fn close_bootstrap(
     directory: &dyn WorkerDirectory,
-    bindings: Option<&dyn awaken_run_ingress::WorkerExecutionBindingSource>,
+    bindings: Option<&dyn awaken_dispatch::WorkerExecutionBindingSource>,
     worker_id: String,
     expected: awaken_worker_contract::WorkerCreateLedger,
 ) -> Result<BootstrapCloseObservation, StatusCode> {
@@ -458,7 +458,7 @@ async fn handle_domain(
     let dispatch = state.dispatch.clone();
     let owner = identity.lease_owner();
     let physical_attempt_active =
-        match awaken_run_ingress::has_active_physical_attempt_for_owner(dispatch.as_ref(), &owner)
+        match awaken_dispatch::has_active_physical_attempt_for_owner(dispatch.as_ref(), &owner)
             .await
         {
             Ok(active) => active,
@@ -852,13 +852,13 @@ mod tests {
     }
 
     #[async_trait]
-    impl awaken_run_ingress::WorkerExecutionBindingSource for BootstrapBinding {
+    impl awaken_dispatch::WorkerExecutionBindingSource for BootstrapBinding {
         async fn seal_unattempted_worker(
             &self,
             worker_id: &str,
-            _expected: &awaken_run_ingress::WorkerCreateLedger,
+            _expected: &awaken_dispatch::WorkerCreateLedger,
         ) -> Result<
-            awaken_run_ingress::WorkerCreateLedger,
+            awaken_dispatch::WorkerCreateLedger,
             awaken_session_runtime_contract::ApplicationError,
         > {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -899,9 +899,9 @@ mod tests {
         }
         async fn binding_for(
             &self,
-            _: &awaken_run_ingress::WorkerIdentity,
+            _: &awaken_dispatch::WorkerIdentity,
         ) -> Result<
-            awaken_run_ingress::AttemptExecutionBinding,
+            awaken_dispatch::AttemptExecutionBinding,
             awaken_session_runtime_contract::ApplicationError,
         > {
             unreachable!("bootstrap never invents an incarnation")
@@ -954,7 +954,7 @@ mod tests {
             let result = close_bootstrap(
                 directory.as_ref(),
                 (cause != "no-provider")
-                    .then_some(&binding as &dyn awaken_run_ingress::WorkerExecutionBindingSource),
+                    .then_some(&binding as &dyn awaken_dispatch::WorkerExecutionBindingSource),
                 if cause == "invalid-id" {
                     " ".into()
                 } else {

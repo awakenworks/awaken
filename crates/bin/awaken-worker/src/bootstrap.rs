@@ -607,8 +607,8 @@ mod tests {
         for (authored, expected) in [
             ("", Some("info")),
             (
-                "log_filter='info,awaken_run_ingress::pool=debug'",
-                Some("info,awaken_run_ingress::pool=debug"),
+                "log_filter='info,awaken_dispatch::pool=debug'",
+                Some("info,awaken_dispatch::pool=debug"),
             ),
             ("log_filter='off'", Some("off")),
             ("log_filter=''", None),

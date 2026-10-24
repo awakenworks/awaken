@@ -7,8 +7,8 @@ mod closed_worker;
 mod fixture;
 use super::*;
 use awaken_container_contract::K8S_CREATE_CAPTURE_HEADER;
+use awaken_dispatch::{WorkerHeartbeat, WorkerManifest, WorkerRegistration};
 use awaken_lease_testkit::ManualClock;
-use awaken_run_ingress::{WorkerHeartbeat, WorkerManifest, WorkerRegistration};
 use awaken_sandbox_kubernetes::K8sWorkerCreateLedger;
 use awaken_worker_contract::WorkerIncarnationSource as _;
 use awaken_worker_registry::MemoryWorkerDirectory;
@@ -572,7 +572,7 @@ async fn private_seal_route_allows_draining_without_create_admission() {
             .begin_drain(&identity, now_ms + 1_000)
             .await
             .unwrap(),
-        awaken_run_ingress::RegistryMutation::Applied,
+        awaken_dispatch::RegistryMutation::Applied,
         "S2/S3 real Draining transition"
     );
     // Check fresh Create refusal before the deliberately red Seal row, so the
@@ -622,7 +622,7 @@ async fn private_seal_route_uses_existing_non_ready_control_admission() {
                     )
                     .await
                     .unwrap(),
-                awaken_run_ingress::RegistryMutation::Applied,
+                awaken_dispatch::RegistryMutation::Applied,
                 "P1 real Starting transition"
             );
         } else {
@@ -688,7 +688,7 @@ async fn private_seal_route_keeps_identity_liveness_and_transport_fences() {
                 .begin_drain(&identity, fixture.clock.now_ms() + 1_000)
                 .await
                 .unwrap(),
-            awaken_run_ingress::RegistryMutation::Applied,
+            awaken_dispatch::RegistryMutation::Applied,
             "real Draining precondition/{cause}"
         );
         let mut asserted = identity.clone();
@@ -704,7 +704,7 @@ async fn private_seal_route_keeps_identity_liveness_and_transport_fences() {
             "dead" | "replaced" => {
                 assert_eq!(
                     fixture.directory.deregister(&identity).await.unwrap(),
-                    awaken_run_ingress::RegistryMutation::Applied,
+                    awaken_dispatch::RegistryMutation::Applied,
                     "real Dead transition/{cause}"
                 );
                 if cause == "replaced" {

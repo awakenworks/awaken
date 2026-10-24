@@ -139,7 +139,7 @@ calling `RunExecutor`.
 
 ## Implemented Slice
 
-A first slice of this boundary was introduced in `awaken-run-ingress`
+A first slice of this boundary was introduced in `awaken-dispatch`
 ([ADR-0009](../adr/0009-durable-run-ingress-slice.md)). Today its contract owns
 dispatch values/ports, `awaken-dispatch-execution` owns the one Worker/Pool, and
 Ingress retains Coordinator backends and claimed-commit authority. Rustdoc in

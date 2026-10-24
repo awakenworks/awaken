@@ -51,7 +51,7 @@ async fn signed_draining_cleanup_keeps_its_original_renewal_authority() {
         )));
     let mut manifest = WorkerManifest::default();
     manifest.runtime_protocol.min = 1;
-    manifest.runtime_protocol.max = awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     let registered = WorkerControlClient::new(bootstrap.clone())
         .register_classified("drain-boot", manifest)
         .await

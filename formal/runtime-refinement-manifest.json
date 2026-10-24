@@ -410,7 +410,7 @@
       },
       "maintenance-scheduler-composition": {
         "family": "maintenance",
-        "source": "crates/server/awaken-run-ingress/tests/pool_memory/maintenance_observations.rs",
+        "source": "crates/server/awaken-dispatch/tests/pool_memory/maintenance_observations.rs",
         "rules": [
           "owner-false-service-timer-false-pause-none-error-false",
           "owner-false-service-timer-true-pause-none-error-false",

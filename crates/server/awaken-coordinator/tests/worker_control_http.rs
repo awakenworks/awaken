@@ -1,5 +1,5 @@
 // @formal evidence worker_credential.stale_heartbeat_never_rolls_back_revision
-use awaken_run_ingress::ClaimedCheckpointTransport as _;
+use awaken_dispatch::ClaimedCheckpointTransport as _;
 use awaken_worker_contract::WorkerCurrentSource;
 
 use std::sync::Arc;
@@ -10,11 +10,11 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
-use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
-use awaken_lease_testkit::ManualClock;
-use awaken_run_ingress::{
+use awaken_dispatch::{
     MemoryDispatchStore, PlacementRequirements, RunDispatch, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
 };
+use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{
@@ -448,7 +448,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
         claimed.assignment.unwrap().identity,
         registered.worker.snapshot.identity
     );
-    let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
+    let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
     assert!(
         client
             .bind_sandbox(&claim, "sandbox-cpu")
@@ -651,7 +651,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
         .settle(
             claimed.lease.run_id(),
             claimed.lease.epoch(),
-            awaken_run_ingress::DispatchOutcome::Done,
+            awaken_dispatch::DispatchOutcome::Done,
             &[],
         )
         .await
@@ -754,7 +754,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     );
 }
 
-use awaken_run_ingress::{
+use awaken_dispatch::{
     DispatchClaims as _, DispatchEnqueue as _, DispatchExecution as _, DispatchSettlement as _,
 };
 

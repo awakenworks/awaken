@@ -1,0 +1,405 @@
+// @formal evidence remote_worker.acknowledged_projection_is_monotonic
+// @formal evidence remote_worker.recovery_projection_is_committed_prefix
+use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason, ResumeTicket};
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::audit::model_request::{ModelRequestObservation, TokenUsage};
+use awaken_agent_contract::audit::run_event::RunEvent;
+use awaken_agent_contract::thread::commit::RunDisposition;
+use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as CommitError};
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitOperationId, CommitPayloadHash, CommitReceipt,
+};
+use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunResumeTicket};
+use awaken_dispatch::{
+    ClaimedCommitCommand, ClaimedCommitCoordinator, ClaimedRunCommit, RecoveryProjection, RunClaim,
+};
+
+fn ticket(run_id: &RunId, thread_id: &ThreadId) -> ResumeTicket {
+    ResumeTicket::new(
+        "corr",
+        run_id.clone(),
+        thread_id.clone(),
+        "snapshot",
+        "catalog",
+        AwaitTarget::Pause(PauseReason::Manual),
+    )
+}
+
+fn snapshot() -> RunRecoverySnapshot {
+    let thread_id = ThreadId("thread".to_string());
+    let run_id = RunId("run".to_string());
+    let historical_run_id = RunId("historical-run".to_string());
+    let resume = ticket(&run_id, &thread_id);
+    RunRecoverySnapshot {
+        commit_timestamps: Default::default(),
+        thread_id: thread_id.clone(),
+        claimed_run_id: run_id.clone(),
+        runs: vec![
+            RunRecord {
+                id: historical_run_id,
+                thread_id: thread_id.clone(),
+                state: RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
+            },
+            RunRecord {
+                id: run_id.clone(),
+                thread_id: thread_id.clone(),
+                state: RunState::Awaiting,
+            },
+        ],
+        latest_run_id: Some(run_id.clone()),
+        messages: vec![Message::text(
+            MessageId("before".to_string()),
+            Role::User,
+            "before",
+        )],
+        message_commit_cursors: Vec::new(),
+        state: Vec::new(),
+        state_commit_cursors: Vec::new(),
+        events: Vec::new(),
+        resume_tickets: vec![RunResumeTicket {
+            run_id,
+            ticket: resume,
+        }],
+        thread_version: 1,
+        store_cursor: 7,
+        next_commit_ordinal: 1,
+    }
+}
+
+#[test]
+fn install_exposes_the_claimed_committed_prefix() {
+    // Cause/effect graph: C1 a snapshot contains a historical Run and a distinct
+    // latest claimed Run; C2 the queried Thread matches; C3 a Run/Thread is
+    // unknown. Effects: E1 both known Runs are addressable; E2 latest_run selects
+    // only the snapshot head; E3 unknown identities are absent. Decision table:
+    // R1 C1+C2 -> E1+E2; R2 C3 -> E3. This pins Worker projection semantics to
+    // the same committed view contract used by every authoritative backend.
+    let projection = RecoveryProjection::new();
+    let run_id = RunId("run".to_string());
+    let thread_id = ThreadId("thread".to_string());
+    projection
+        .install(&run_id, &thread_id, snapshot())
+        .expect("install snapshot");
+
+    assert_eq!(
+        projection
+            .committed_messages(&ThreadId("thread".to_string()))
+            .len(),
+        1
+    );
+    assert_eq!(projection.run_state(&run_id), Some(RunState::Awaiting));
+    assert!(projection.resume_ticket(&run_id).is_some());
+    assert!(CommittedThreadView::run(&projection, &run_id).is_some());
+    assert!(
+        CommittedThreadView::run(&projection, &RunId("historical-run".to_string())).is_some(),
+        "R1/E1"
+    );
+    assert_eq!(
+        projection
+            .latest_run(&ThreadId("thread".to_string()))
+            .map(|run| run.id),
+        Some(run_id),
+        "R1/E2"
+    );
+    assert!(
+        projection.run(&RunId("missing-run".to_string())).is_none(),
+        "R2/E3"
+    );
+    assert!(
+        projection
+            .latest_run(&ThreadId("missing-thread".to_string()))
+            .is_none(),
+        "R2/E3"
+    );
+}
+
+#[test]
+fn recovery_projection_never_selects_a_historical_wait() {
+    /* Cause/effect graph: C1 snapshot retains an Awaiting ticket; C2 that Run
+     * is the Thread head; C3 a newer terminal Run becomes the head while C1 is
+     * retained. Effects: E1 select the exact ticket; E2 select no wait.
+     * Decision rules: R1 C1+C2=>E1; R2 C1+C3=>E2. Constraint: a remote Worker
+     * uses this one snapshot query, never a ticket scan or Dispatch state.
+     */
+    let projection = RecoveryProjection::new();
+    let claimed = RunId("run".to_string());
+    let thread = ThreadId("thread".to_string());
+    let initial = snapshot();
+    let expected = initial.resume_tickets[0].ticket.clone();
+    projection
+        .install(&claimed, &thread, initial.clone())
+        .expect("R1 install awaiting head");
+    assert_eq!(
+        projection.open_wait_for_thread(&thread),
+        Some((claimed.clone(), expected)),
+        "R1/E1"
+    );
+
+    let mut newer_terminal = initial;
+    let terminal = RunId("newer-terminal".to_string());
+    newer_terminal.runs.push(RunRecord {
+        id: terminal.clone(),
+        thread_id: thread.clone(),
+        state: RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
+    });
+    newer_terminal.latest_run_id = Some(terminal);
+    projection
+        .install(&claimed, &thread, newer_terminal)
+        .expect("R2 replace with newer terminal head");
+    assert!(
+        projection.resume_ticket(&claimed).is_some(),
+        "R2 historical ticket remains Run-addressable"
+    );
+    assert_eq!(projection.open_wait_for_thread(&thread), None, "R2/E2");
+}
+
+#[test]
+fn projection_counter_overflow_is_rejected_without_partial_update() {
+    // Causes: C1 an installed committed prefix is at the maximum Thread
+    // version; C2 an otherwise matching durable receipt arrives. Effects: E1
+    // the receipt is rejected; E2 messages, state, events, counters, and tickets
+    // remain unchanged. Decision rule O1=C1+C2=>E1+E2. This is the overflow row
+    // of the same receipt classifier used by production; no unversioned cache
+    // advance path exists.
+    let projection = RecoveryProjection::new();
+    let run_id = RunId("run".to_string());
+    let thread_id = ThreadId("thread".to_string());
+    let mut at_limit = snapshot();
+    at_limit.thread_version = u64::MAX;
+    projection
+        .install(&run_id, &thread_id, at_limit.clone())
+        .expect("install snapshot at boundary");
+
+    let operation = CommitOperation {
+        operation_id: CommitOperationId::new(run_id.clone(), at_limit.next_commit_ordinal),
+        expected_thread_version: u64::MAX,
+        payload_hash: CommitPayloadHash("sha256:overflow".to_string()),
+        commit: ThreadCommit {
+            thread_id: ThreadId("thread".to_string()),
+            run: RunDisposition::running(run_id),
+            messages: vec![Message::text(
+                MessageId("must-not-appear".to_string()),
+                Role::Assistant,
+                "must not appear",
+            )],
+            state: Vec::new(),
+            events: Vec::new(),
+        },
+    };
+    let receipt = CommitReceipt {
+        operation_id: operation.operation_id.clone(),
+        commit_sequence: 8,
+        thread_version: u64::MAX,
+        payload_hash: operation.payload_hash.clone(),
+        duplicate: true,
+    };
+    let result = projection.apply_receipt(operation, &receipt);
+
+    assert!(matches!(result, Err(CommitError::Rejected(message)) if message.contains("overflow")));
+    assert_eq!(
+        projection.current().expect("projection remains installed"),
+        at_limit,
+        "a rejected boundary transition cannot partially mutate the cache"
+    );
+}
+
+#[test]
+fn recovery_install_requires_the_exact_claimed_run_and_thread() {
+    // Causes: C1 returned Run matches the claim; C2 returned Thread matches the
+    // guarded dispatch. Effects: E1 install the complete prefix; E2 reject
+    // without replacing the current projection. Decision rules:
+    // R1=C1+C2=>E1; R2=!C1=>E2; R3=C1+!C2=>E2. A simultaneous mismatch follows
+    // R2 so the error classification remains stable.
+    let projection = RecoveryProjection::new();
+    let run_id = RunId("run".to_string());
+    let thread_id = ThreadId("thread".to_string());
+    assert!(
+        projection
+            .install(&RunId("other".to_string()), &thread_id, snapshot())
+            .is_err(),
+        "R2/E2"
+    );
+    assert!(projection.current().is_none(), "R2/E2 no mutation");
+
+    assert!(
+        projection
+            .install(&run_id, &ThreadId("other-thread".to_string()), snapshot())
+            .is_err(),
+        "R3/E2"
+    );
+    assert!(projection.current().is_none(), "R3/E2 no mutation");
+
+    projection
+        .install(&run_id, &thread_id, snapshot())
+        .expect("R1/E1 exact identity");
+    assert!(projection.current().is_some(), "R1/E1");
+}
+
+#[test]
+fn duplicate_receipt_advances_after_response_loss_and_then_becomes_a_noop() {
+    // Causes: C1 the Coordinator committed one model observation but its reply
+    // was lost; C2 the Worker applies the duplicate receipt twice; C3 a receipt
+    // skips the required successor version. Effects: E1 the first receipt
+    // advances the cold snapshot; E2 the replay appends neither messages nor
+    // audit again; E3 the audit cursor remains fenced by the acknowledged store
+    // cursor; E4 the version gap is rejected without mutation. Rules:
+    // R1=C1+C2=>E1+E2+E3; R2=C3=>E4.
+    // Constraint/Invariant: the committed operation receipt, not transport reply
+    // delivery, owns idempotency. Decision rule: apply the same receipt twice and
+    // require one projection advance followed by a no-op.
+    let projection = RecoveryProjection::new();
+    let run_id = RunId("run".to_string());
+    let thread_id = ThreadId("thread".to_string());
+    projection
+        .install(&run_id, &thread_id, snapshot())
+        .expect("install snapshot");
+    let operation = CommitOperation {
+        operation_id: CommitOperationId::new(run_id.clone(), 1),
+        expected_thread_version: 1,
+        payload_hash: CommitPayloadHash("sha256:operation".to_string()),
+        commit: ThreadCommit {
+            thread_id: ThreadId("thread".to_string()),
+            run: RunDisposition::running(run_id),
+            messages: vec![Message::text(
+                MessageId("after-loss".to_string()),
+                Role::Assistant,
+                "after loss",
+            )],
+            state: Vec::new(),
+            events: vec![
+                RunEvent::ModelRequestCompleted(ModelRequestObservation {
+                    is_error: false,
+                    usage: TokenUsage {
+                        prompt_tokens: 3,
+                        completion_tokens: 2,
+                        ..Default::default()
+                    },
+                    retry_count: 1,
+                })
+                .into(),
+            ],
+        },
+    };
+    let receipt = CommitReceipt {
+        operation_id: operation.operation_id.clone(),
+        commit_sequence: 8,
+        thread_version: 2,
+        payload_hash: operation.payload_hash.clone(),
+        duplicate: true,
+    };
+
+    projection
+        .apply_receipt(operation.clone(), &receipt)
+        .expect("duplicate receipt advances an unadvanced projection");
+    projection
+        .apply_receipt(operation.clone(), &receipt)
+        .expect("same receipt is now an idempotent no-op");
+    let current = projection.current().unwrap();
+    assert_eq!(current.thread_version, 2);
+    assert_eq!(current.next_commit_ordinal, 2);
+    assert_eq!(current.messages.len(), 2, "facts projected exactly once");
+    assert_eq!(current.events.len(), 1, "R1/E1-E2");
+    assert_eq!(current.events[0].sequence, 8_000, "R1/E3");
+    assert_eq!(
+        ModelRequestObservation::from_record(&current.events[0]).unwrap(),
+        Some(ModelRequestObservation {
+            is_error: false,
+            usage: TokenUsage {
+                prompt_tokens: 3,
+                completion_tokens: 2,
+                ..Default::default()
+            },
+            retry_count: 1,
+        }),
+        "R1/E1"
+    );
+    let before_rejection = current;
+    let mut gap = receipt;
+    gap.thread_version = 3;
+    assert!(projection.apply_receipt(operation, &gap).is_err(), "R2/E4");
+    assert_eq!(projection.current().unwrap(), before_rejection, "R2/E4");
+}
+
+struct ReceiptService {
+    command: Mutex<Option<ClaimedCommitCommand>>,
+}
+
+#[async_trait::async_trait]
+impl ClaimedRunCommit for ReceiptService {
+    async fn commit(
+        &self,
+        _claim: &RunClaim,
+        _commit: ThreadCommit,
+    ) -> Result<CommitRecord, CommitError> {
+        Err(CommitError::Rejected(
+            "versioned Worker must use commit_operation".to_string(),
+        ))
+    }
+
+    async fn commit_operation(
+        &self,
+        command: ClaimedCommitCommand,
+    ) -> Result<CommitReceipt, CommitError> {
+        let receipt = CommitReceipt {
+            operation_id: command.operation.operation_id.clone(),
+            commit_sequence: 8,
+            thread_version: command.operation.expected_thread_version + 1,
+            payload_hash: command.operation.payload_hash.clone(),
+            duplicate: true,
+        };
+        *self.command.lock().unwrap() = Some(command);
+        Ok(receipt)
+    }
+}
+
+#[tokio::test]
+async fn claimed_coordinator_builds_stable_operation_from_recovery_prefix() {
+    let projection = Arc::new(RecoveryProjection::new());
+    projection
+        .install(
+            &RunId("run".to_string()),
+            &ThreadId("thread".to_string()),
+            snapshot(),
+        )
+        .unwrap();
+    let service = Arc::new(ReceiptService {
+        command: Mutex::new(None),
+    });
+    let coordinator = ClaimedCommitCoordinator::new(
+        service.clone(),
+        RunClaim {
+            run_id: RunId("run".to_string()),
+            owner: "worker".to_string(),
+            epoch: 7,
+        },
+    )
+    .with_recovery_projection(projection.clone());
+    coordinator
+        .commit(ThreadCommit {
+            thread_id: ThreadId("thread".to_string()),
+            run: RunDisposition::running(RunId("run".to_string())),
+            messages: vec![Message::text(
+                MessageId("coordinated".to_string()),
+                Role::Assistant,
+                "coordinated",
+            )],
+            state: Vec::new(),
+            events: Vec::new(),
+        })
+        .await
+        .expect("duplicate receipt after response loss is accepted");
+
+    let command = service.command.lock().unwrap().clone().unwrap();
+    assert_eq!(command.operation.operation_id.ordinal, 1);
+    assert_eq!(command.operation.expected_thread_version, 1);
+    assert_eq!(command.claim.epoch, 7);
+    let current = projection.current().unwrap();
+    assert_eq!(current.thread_version, 2);
+    assert_eq!(current.next_commit_ordinal, 2);
+    assert_eq!(current.messages.len(), 2);
+}
+use std::sync::{Arc, Mutex};

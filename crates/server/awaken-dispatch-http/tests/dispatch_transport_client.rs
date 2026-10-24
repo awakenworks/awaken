@@ -25,13 +25,13 @@ use awaken_credential_contract::{
     AttemptCredentialDeliverySource,
 };
 use awaken_credential_contract::{CredentialRealizationCapabilities, CredentialRealizationKind};
-use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
-use awaken_lease_testkit::ManualClock;
-use awaken_run_ingress::{
+use awaken_dispatch::{
     CredentialRealizationReceipt, DispatchBinding, DispatchOutcome, DispatchState,
     DispatchTopology, FencedStreamCheckpointStore, MemoryDispatchStore, PendingInput, RunClaim,
     RunDispatch, WorkerIdentity,
 };
+use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::InferenceEndpoint;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{
@@ -561,7 +561,7 @@ async fn remote_special_claim_uses_control_side_retry_policy_without_quarantinin
             )
             .await
             .unwrap(),
-        awaken_run_ingress::SettleOutcome::Applied
+        awaken_dispatch::SettleOutcome::Applied
     );
 }
 
@@ -676,7 +676,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
             .put_stream_checkpoint(&original_claim, checkpoint("current"))
             .await
             .expect("put checkpoint over http"),
-        awaken_run_ingress::SettleOutcome::Applied,
+        awaken_dispatch::SettleOutcome::Applied,
         "R1"
     );
     let remote_checkpoint =
@@ -706,7 +706,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
             .renew_lease(&wrong_epoch, 30_000)
             .await
             .expect("wrong epoch is a normal fenced renewal outcome"),
-        awaken_run_ingress::LeaseRenewalOutcome::Lost,
+        awaken_dispatch::LeaseRenewalOutcome::Lost,
         "the authenticated owner cannot renew an epoch it does not hold",
     );
     assert_eq!(
@@ -714,7 +714,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
             .renew_lease(&original_claim, 30_000)
             .await
             .expect("renew over http"),
-        awaken_run_ingress::LeaseRenewalOutcome::Current,
+        awaken_dispatch::LeaseRenewalOutcome::Current,
         "the owner renews its live lease"
     );
 
@@ -737,7 +737,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
             .put_stream_checkpoint(&original_claim, checkpoint("stale"))
             .await
             .expect("stale checkpoint put is a fenced outcome"),
-        awaken_run_ingress::SettleOutcome::Fenced,
+        awaken_dispatch::SettleOutcome::Fenced,
         "R2"
     );
     assert_eq!(
@@ -745,7 +745,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
             .delete_stream_checkpoint(&original_claim)
             .await
             .expect("stale checkpoint delete is a fenced outcome"),
-        awaken_run_ingress::SettleOutcome::Fenced,
+        awaken_dispatch::SettleOutcome::Fenced,
         "R2"
     );
     let replacement_claim = RunClaim::from(&reclaimed.lease);
@@ -770,7 +770,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
             .put_stream_checkpoint(&replacement_claim, checkpoint("replacement"))
             .await
             .expect("replacement overwrites checkpoint"),
-        awaken_run_ingress::SettleOutcome::Applied,
+        awaken_dispatch::SettleOutcome::Applied,
         "R3"
     );
     let replacement_checkpoint =
@@ -785,7 +785,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
             .delete_stream_checkpoint(&replacement_claim)
             .await
             .expect("replacement deletes checkpoint"),
-        awaken_run_ingress::SettleOutcome::Applied,
+        awaken_dispatch::SettleOutcome::Applied,
         "R3"
     );
     assert_eq!(
@@ -813,7 +813,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
             )
             .await
             .expect("settle over http"),
-        awaken_run_ingress::SettleOutcome::Fenced,
+        awaken_dispatch::SettleOutcome::Fenced,
         "the stale owner's settle is fenced over the wire"
     );
     // The current owner settles under the fresh epoch: applied, the run is removed.
@@ -827,7 +827,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
             )
             .await
             .expect("settle over http"),
-        awaken_run_ingress::SettleOutcome::Applied,
+        awaken_dispatch::SettleOutcome::Applied,
         "the current owner's settle applies over the wire"
     );
 
@@ -899,7 +899,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
 
     // Cancel is absent from the Worker type; HttpDispatchQueue's compile-fail
     // example owns that refusal. This real transport supplies all Remote roles.
-    fn remote_role<T: awaken_run_ingress::RemoteDispatch>() {}
+    fn remote_role<T: awaken_dispatch::RemoteDispatch>() {}
     remote_role::<HttpDispatchQueue>();
 }
 

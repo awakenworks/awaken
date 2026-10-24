@@ -27,10 +27,10 @@ struct Facts {
     update_failure: AtomicBool,
 }
 
-fn manifest() -> awaken_run_ingress::WorkerManifest {
-    let mut manifest = awaken_run_ingress::WorkerManifest::default();
-    manifest.runtime_protocol.min = awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
-    manifest.runtime_protocol.max = awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
+fn manifest() -> awaken_dispatch::WorkerManifest {
+    let mut manifest = awaken_dispatch::WorkerManifest::default();
+    manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     manifest
 }
 
@@ -481,7 +481,7 @@ async fn relay_target_reuses_the_selected_worker_pod_observer() {
 
 #[tokio::test]
 async fn legacy_closed_idle_worker_without_a_frozen_create_ledger_never_retires_a_pod() {
-    use awaken_run_ingress::WorkerDirectory;
+    use awaken_dispatch::WorkerDirectory;
     // C1 legacy registration has no Registry-frozen Create ledger/process
     // binding; C2 Registry spans Starting/Ready/Draining/Quiesced/Dead; C3
     // an exact, unbound or foreign Dispatch slot may exist. Rule CI1=C1 with
@@ -501,10 +501,10 @@ async fn legacy_closed_idle_worker_without_a_frozen_create_ledger_never_retires_
         facts.pod.lock().unwrap().1["spec"]["restartPolicy"] = json!("Always");
         let directory = awaken_worker_registry::MemoryWorkerDirectory::new();
         let clock = Arc::new(awaken_lease_testkit::ManualClock::new(100));
-        let store = awaken_run_ingress::MemoryDispatchStore::new(clock.clone());
+        let store = awaken_dispatch::MemoryDispatchStore::new(clock.clone());
         let record = directory
             .register(
-                awaken_run_ingress::WorkerRegistration {
+                awaken_dispatch::WorkerRegistration {
                     worker_id: "k8s:workers:worker-a:uid-a".into(),
                     incarnation_id: "uid-a".into(),
                     manifest: manifest(),
@@ -520,19 +520,17 @@ async fn legacy_closed_idle_worker_without_a_frozen_create_ledger_never_retires_
         if matches!(case, "occupied" | "foreign-slot") {
             store
                 .enqueue(
-                    awaken_run_ingress::RunDispatch::new(model_only_activation("idle-retirement"))
-                        .with_placement(
-                            awaken_run_ingress::PlacementRequirements::remote_required(),
-                        ),
+                    awaken_dispatch::RunDispatch::new(model_only_activation("idle-retirement"))
+                        .with_placement(awaken_dispatch::PlacementRequirements::remote_required()),
                 )
                 .await
                 .unwrap();
             let mut snapshot = record.snapshot.clone();
-            snapshot.state = awaken_run_ingress::WorkerState::Ready;
+            snapshot.state = awaken_dispatch::WorkerState::Ready;
             if case == "foreign-slot" {
                 snapshot.identity = WorkerIdentity::new("foreign-worker", "foreign-boot", 1);
             }
-            let claim = awaken_run_ingress::RunClaim::from(
+            let claim = awaken_dispatch::RunClaim::from(
                 &store
                     .claim_compatible(&snapshot, 50)
                     .await
@@ -542,7 +540,7 @@ async fn legacy_closed_idle_worker_without_a_frozen_create_ledger_never_retires_
             );
             assert_eq!(
                 store.begin_attempt(&claim, None).await.unwrap(),
-                awaken_run_ingress::AttemptAdmission::Applied
+                awaken_dispatch::AttemptAdmission::Applied
             );
             occupied_run = Some((
                 claim.run_id.clone(),
@@ -554,7 +552,7 @@ async fn legacy_closed_idle_worker_without_a_frozen_create_ledger_never_retires_
                 directory
                     .heartbeat(
                         &identity,
-                        awaken_run_ingress::WorkerHeartbeat {
+                        awaken_dispatch::WorkerHeartbeat {
                             sequence: 1,
                             ready: true,
                             in_flight: 0,
@@ -579,7 +577,7 @@ async fn legacy_closed_idle_worker_without_a_frozen_create_ledger_never_retires_
             }
             _ => {}
         }
-        awaken_run_ingress::release_closed_idle_worker_evidence(
+        awaken_dispatch::release_closed_idle_worker_evidence(
             &store,
             &directory,
             transport.stop_source().unwrap().as_ref(),
@@ -613,7 +611,7 @@ async fn legacy_closed_idle_worker_without_a_frozen_create_ledger_never_retires_
 
 #[tokio::test]
 async fn independent_stop_consumes_only_original_closed_binding_and_preserves_dispatch_veto() {
-    use awaken_run_ingress::WorkerDirectory;
+    use awaken_dispatch::WorkerDirectory;
     use awaken_store_inmem::MemoryCommitCoordinator;
     // S1 current successor + persisted old binding + exact expired Registry
     // => independent UID/resourceVersion stop with Coordinator client (no token
@@ -639,7 +637,7 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
         let manifest = manifest();
         let old = directory
             .register(
-                awaken_run_ingress::WorkerRegistration {
+                awaken_dispatch::WorkerRegistration {
                     worker_id: "k8s:workers:worker-a:uid-a".into(),
                     incarnation_id: "uid-a".into(),
                     manifest,
@@ -668,16 +666,16 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
             original.clone()
         };
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
-        let store = awaken_run_ingress::MemoryDispatchStore::new(clock.clone());
+        let store = awaken_dispatch::MemoryDispatchStore::new(clock.clone());
         let activation = model_only_activation("cli-stop");
         let model_activation = activation.clone();
-        let request = awaken_run_ingress::RunDispatch::new(activation)
-            .with_placement(awaken_run_ingress::PlacementRequirements::remote_required());
+        let request = awaken_dispatch::RunDispatch::new(activation)
+            .with_placement(awaken_dispatch::PlacementRequirements::remote_required());
         store.enqueue(request).await.unwrap();
         let mut snapshot = old.snapshot;
-        snapshot.state = awaken_run_ingress::WorkerState::Ready;
+        snapshot.state = awaken_dispatch::WorkerState::Ready;
         clock.set(100);
-        let old_claim = awaken_run_ingress::RunClaim::from(
+        let old_claim = awaken_dispatch::RunClaim::from(
             &store
                 .claim_compatible(&snapshot, 50)
                 .await
@@ -694,7 +692,7 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
         snapshot.identity = WorkerIdentity::new("successor", "successor-boot", 1);
         snapshot.expires_at_ms = 10_000;
         clock.set(200);
-        let next = awaken_run_ingress::RunClaim::from(
+        let next = awaken_dispatch::RunClaim::from(
             &store
                 .claim_compatible(&snapshot, 10_000)
                 .await
@@ -712,7 +710,7 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
         }
         let reads = facts.reads.load(Ordering::SeqCst);
         let stop = stops.unwrap();
-        let result = awaken_run_ingress::stop_expired_predecessor(
+        let result = awaken_dispatch::stop_expired_predecessor(
             &store,
             &directory,
             stop.as_ref(),
@@ -737,7 +735,7 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
                 json!({"uid":"uid-a","resourceVersion":"7"})
             );
             assert_eq!(
-                awaken_run_ingress::stop_expired_predecessor(
+                awaken_dispatch::stop_expired_predecessor(
                     &store,
                     &directory,
                     stop.as_ref(),
@@ -757,11 +755,11 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
                     "startedAt":"2026-09-09T00:00:00Z","finishedAt":"2026-09-09T00:01:00Z"
                 }});
             }
-            let observation = awaken_run_ingress::stop_expired_predecessor(
+            let observation = awaken_dispatch::stop_expired_predecessor(
                 &store,
                 &directory,
                 stop.as_ref(),
-                Some(&awaken_run_ingress::PhysicalAttemptRecoveryRead::new(
+                Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
                     recovery.as_ref(),
                 )),
                 &next,
@@ -817,7 +815,7 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
             clock.set(200);
             assert_eq!(
                 store.begin_attempt(&next, None).await.unwrap(),
-                awaken_run_ingress::AttemptAdmission::Applied,
+                awaken_dispatch::AttemptAdmission::Applied,
                 "S4 successor retries through fresh admission"
             );
         } else {
@@ -833,7 +831,7 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
             clock.set(200);
             assert_eq!(
                 store.begin_attempt(&next, None).await.unwrap(),
-                awaken_run_ingress::AttemptAdmission::Blocked,
+                awaken_dispatch::AttemptAdmission::Blocked,
                 "S3 remote veto"
             );
         }
@@ -868,6 +866,6 @@ fn shared_policy_validation_rejects_invalid_provider_coordinates_before_io() {
     }
 }
 
-use awaken_run_ingress::{
+use awaken_dispatch::{
     DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchExecution as _,
 };

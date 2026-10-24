@@ -7,7 +7,7 @@ async fn erased_dispatch_retains_only_the_roles_selected_by_composition() {
     // C2 durable owner: continuation and scoped/global feed always exist.
     // C3 checkpoint disabled/enabled: None or the exact supplied Arc.
     // C4 repeated local binding: the cached Worker view keeps exact Arc identity.
-    let backend = Arc::new(awaken_run_ingress::MemoryDispatchStore::new(
+    let backend = Arc::new(awaken_dispatch::MemoryDispatchStore::new(
         awaken_time::system_clock(),
     ));
     let coordinator = Arc::new(AnyCoordinatorDispatch::from_durable_dispatch(
@@ -64,7 +64,7 @@ async fn erased_dispatch_retains_only_the_roles_selected_by_composition() {
     let checkpoint: Arc<dyn StreamCheckpointStore> =
         Arc::new(awaken_store_inmem::MemoryStreamCheckpointStore::new());
     let paired = AnyCoordinatorDispatch::from_durable_store(
-        awaken_run_ingress::MemoryDispatchStore::new(awaken_time::system_clock()),
+        awaken_dispatch::MemoryDispatchStore::new(awaken_time::system_clock()),
         Some(checkpoint.clone()),
     );
     require_continuation(&paired);

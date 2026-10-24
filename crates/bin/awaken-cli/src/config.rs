@@ -428,7 +428,7 @@ mod tests {
         let defaulted = resolve(FileConfig::default(), ConfigOverrides::default());
         assert_eq!(
             defaulted.runtime.dispatch_poll_interval,
-            awaken_run_ingress::DispatchServiceConfig::default().poll_interval,
+            awaken_dispatch::DispatchServiceConfig::default().poll_interval,
             "P1"
         );
         assert!(defaulted.runtime.sample_dispatch_queue_depth, "P1/E4");

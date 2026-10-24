@@ -199,8 +199,8 @@ pub fn volatile_runtime_authority(
     // R1 C1+C2 -> one Ingress MemoryDispatchStore is selected here, retains its
     // continuation and operational-feed roles through AnyCoordinatorDispatch, and is injected once;
     // product Host construction never selects a Coordinator backend implicitly.
-    let dispatch = awaken_run_ingress::AnyCoordinatorDispatch::from_durable_store(
-        awaken_run_ingress::MemoryDispatchStore::new(clock.clone()),
+    let dispatch = awaken_dispatch::AnyCoordinatorDispatch::from_durable_store(
+        awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
         None,
     );
     Arc::new(

@@ -11,7 +11,7 @@ dependency edge come back, so three rules hold it:
 * D1 ``awaken-dispatch-execution`` has no normal dependency on
   ``awaken-session-realization`` or on any ``awaken-ext-*`` crate.
 * D2 The Coordinator's dispatch path -- ``awaken-dispatch-execution``,
-  ``awaken-run-ingress`` (the Coordinator's dispatch adapter) and
+  ``awaken-dispatch`` (the Coordinator's dispatch adapter) and
   ``awaken-dispatch-http`` -- has no Worker-side implementation crate in its
   normal dependency closure.
 * D3 The Coordinator ``awaken-coordinator`` has neither the Session executor
@@ -63,7 +63,7 @@ DISPATCH_EXECUTION = "awaken-dispatch-execution"
 DISPATCH_FORBIDDEN = "awaken-session-realization"
 DISPATCH_PATH: tuple[str, ...] = (
     "awaken-dispatch-execution",
-    "awaken-run-ingress",
+    "awaken-dispatch",
     "awaken-dispatch-http",
 )
 COORDINATOR = "awaken-coordinator"
@@ -281,8 +281,8 @@ def selftest() -> None:
     base = [
         ("awaken-dispatch-execution", "shared", "infrastructure", {"awaken-dispatch-contract"}),
         ("awaken-dispatch-contract", "shared", "contract", set()),
-        ("awaken-run-ingress", "coordinator", "infrastructure", {"awaken-dispatch-execution"}),
-        ("awaken-dispatch-http", "coordinator", "interface", {"awaken-run-ingress"}),
+        ("awaken-dispatch", "coordinator", "infrastructure", {"awaken-dispatch-execution"}),
+        ("awaken-dispatch-http", "coordinator", "interface", {"awaken-dispatch"}),
         ("awaken-session-realization", "shared", "infrastructure", {"awaken-sandbox-control"}),
         ("awaken-sandbox-control", "worker", "contract", set()),
         ("awaken-sandbox-local", "worker", "infrastructure", {"awaken-sandbox-control"}),
@@ -290,7 +290,7 @@ def selftest() -> None:
         ("awaken-session-executor", "shared", "infrastructure", {"awaken-dispatch-contract"}),
         ("awaken-ext-memory", "runtime", "infrastructure", set()),
         ("awaken-session-application", "shared", "application", {"awaken-dispatch-contract"}),
-        ("awaken-coordinator", "coordinator", "bootstrap", {"awaken-run-ingress", "awaken-session-application"}),
+        ("awaken-coordinator", "coordinator", "bootstrap", {"awaken-dispatch", "awaken-session-application"}),
         ("awaken-worker", "worker", "bootstrap", {"awaken-session-executor"}),
     ]
 
@@ -303,10 +303,10 @@ def selftest() -> None:
     assert any("(D1)" in error for error in b2) and any("(D2)" in error for error in b2), "B2"
     b3 = dispatch_boundary_errors(with_edge("awaken-dispatch-execution", "awaken-ext-memory"))
     assert [error for error in b3 if "(D1)" in error] and not [e for e in b3 if "(D2)" in e], "B3"
-    b4 = dispatch_boundary_errors(with_edge("awaken-run-ingress", "awaken-sandbox-local"))
-    assert any("awaken-run-ingress reaches Worker-side implementation awaken-sandbox-local" in e for e in b4), "B4"
+    b4 = dispatch_boundary_errors(with_edge("awaken-dispatch", "awaken-sandbox-local"))
+    assert any("awaken-dispatch reaches Worker-side implementation awaken-sandbox-local" in e for e in b4), "B4"
     assert dispatch_boundary_errors(
-        with_edge("awaken-run-ingress", "awaken-sandbox-control", "awaken-sandbox-policy-store")
+        with_edge("awaken-dispatch", "awaken-sandbox-control", "awaken-sandbox-policy-store")
     ) == [], "B5"
     b6 = dispatch_boundary_errors(with_edge("awaken-coordinator", "awaken-sandbox-local"))
     assert any("awaken-coordinator reaches awaken-sandbox-local" in e and "(D3)" in e for e in b6), "B6"

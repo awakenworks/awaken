@@ -22,11 +22,11 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
-use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
-use awaken_run_ingress::{
+use awaken_dispatch::{
     AttemptAdmission, ClaimedStreamPublisher, DispatchError, DispatchOutcome, MemoryDispatchStore,
     RunClaim, RunDispatch, SettleOutcome, StreamObservationRequest, SubmitOptions, WorkerIdentity,
 };
+use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
@@ -304,7 +304,7 @@ async fn finish_attempt(
         req.get("identity").is_some(),
         "exact Worker identity crosses"
     );
-    let request: awaken_run_ingress::AttemptExecutionRequest =
+    let request: awaken_dispatch::AttemptExecutionRequest =
         serde_json::from_value(req).expect("exact finish request");
     let finished = state
         .store
@@ -317,7 +317,7 @@ async fn finish_attempt(
 
 #[tokio::test]
 async fn local_return_cause_crosses_http_without_fallback_on_old_strict_rejection() {
-    use awaken_run_ingress::{
+    use awaken_dispatch::{
         AttemptPhysicalFact, AttemptReturnCause, DispatchAttemptRecordReads as _,
     };
     // T1 current codec/client preserves Some through the original finish verb;
@@ -350,7 +350,7 @@ async fn local_return_cause_crosses_http_without_fallback_on_old_strict_rejectio
     );
     let records = store
         .attempt_closure_records_after(
-            awaken_run_ingress::DispatchCursor::default(),
+            awaken_dispatch::DispatchCursor::default(),
             usize::MAX,
             Some(&claim.run_id),
         )
@@ -463,7 +463,7 @@ async fn bind_sandbox(
     Json(req): Json<Value>,
 ) -> Json<Value> {
     assert_server_authority_fields_absent(&req);
-    let claim: awaken_run_ingress::RunClaim =
+    let claim: awaken_dispatch::RunClaim =
         serde_json::from_value(req["claim"].clone()).expect("claim");
     let outcome = state
         .store
@@ -609,7 +609,7 @@ async fn worker_transport_cannot_silently_erase_an_execution_binding() {
         epoch: 1,
     };
     let binding =
-        awaken_run_ingress::AttemptExecutionBinding::new(identity.clone(), "cluster-a", "pod-a")
+        awaken_dispatch::AttemptExecutionBinding::new(identity.clone(), "cluster-a", "pod-a")
             .unwrap();
     let queue = HttpDispatchQueue::new(format!("http://{address}"), identity);
     assert!(matches!(
@@ -1129,7 +1129,7 @@ async fn renew_lease_returns_typed_loss_over_the_wire_when_the_lease_was_stolen(
             .renew_lease(&RunClaim::from(&a.lease), 1_000)
             .await
             .unwrap(),
-        awaken_run_ingress::LeaseRenewalOutcome::Current,
+        awaken_dispatch::LeaseRenewalOutcome::Current,
         "the current owner renews its own live lease"
     );
 
@@ -1155,7 +1155,7 @@ async fn renew_lease_returns_typed_loss_over_the_wire_when_the_lease_was_stolen(
             .renew_lease(&RunClaim::from(&a.lease), 1_000)
             .await
             .unwrap(),
-        awaken_run_ingress::LeaseRenewalOutcome::Lost,
+        awaken_dispatch::LeaseRenewalOutcome::Lost,
         "a stale owner's renew fails so it abandons the run",
     );
     // And A's settle at its old epoch is fenced, leaving B's in-flight run inviolate.
@@ -1201,10 +1201,10 @@ async fn maintenance_verbs_fail_closed_except_the_legitimate_inbox_list_readback
         "http://127.0.0.1:1",
         WorkerIdentity::new("worker-local", "boot-local", 1),
     ));
-    let remote = awaken_run_ingress::DispatchBinding::remote(queue, Arc::new(SelectionOnlyCommit));
+    let remote = awaken_dispatch::DispatchBinding::remote(queue, Arc::new(SelectionOnlyCommit));
     assert!(matches!(
         remote.placement(),
-        awaken_run_ingress::DispatchTopology::Remote { .. }
+        awaken_dispatch::DispatchTopology::Remote { .. }
     ));
     assert!(
         awaken_dispatch_contract::InboxRead::list(
@@ -1216,25 +1216,25 @@ async fn maintenance_verbs_fail_closed_except_the_legitimate_inbox_list_readback
         .is_empty()
     );
     let local = Arc::new(
-        awaken_run_ingress::AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
+        awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
             MemoryDispatchStore::new(awaken_time::system_clock()),
         )),
     );
     assert!(matches!(
-        awaken_run_ingress::DispatchBinding::local(local).placement(),
-        awaken_run_ingress::DispatchTopology::Local(_)
+        awaken_dispatch::DispatchBinding::local(local).placement(),
+        awaken_dispatch::DispatchTopology::Local(_)
     ));
 }
 
 #[tokio::test]
 async fn any_dispatch_store_exposes_the_control_rung_only_when_its_inner_handle_owns_it() {
     let owner = Arc::new(
-        awaken_run_ingress::AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
+        awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
             MemoryDispatchStore::new(awaken_time::system_clock()),
         )),
     );
-    let binding = awaken_run_ingress::DispatchBinding::local(owner.clone());
-    let awaken_run_ingress::DispatchTopology::Local(selected) = binding.placement() else {
+    let binding = awaken_dispatch::DispatchBinding::local(owner.clone());
+    let awaken_dispatch::DispatchTopology::Local(selected) = binding.placement() else {
         panic!("local authority retained");
     };
     assert!(Arc::ptr_eq(selected, &owner));
@@ -1282,8 +1282,8 @@ fn any_dispatch_store_preserves_the_claimed_recovery_transport() {
     let credentials: Arc<dyn awaken_dispatch_contract::ClaimedCredentialDeliveryTransport> =
         owner.clone();
     let commit: Arc<dyn awaken_dispatch_contract::ClaimedRunCommit> = Arc::new(SelectionOnlyCommit);
-    let binding = awaken_run_ingress::DispatchBinding::remote(owner, commit.clone());
-    let awaken_run_ingress::DispatchTopology::Remote {
+    let binding = awaken_dispatch::DispatchBinding::remote(owner, commit.clone());
+    let awaken_dispatch::DispatchTopology::Remote {
         checkpoints: selected,
         credentials: delivery,
         commit: selected_commit,

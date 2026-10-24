@@ -1,14 +1,15 @@
 //! Repository binding boundary tests over real HTTP.
 
+use awaken_dispatch::DispatchAdministration;
+use awaken_dispatch::DispatchClaims;
+use awaken_dispatch::DispatchEnqueue;
+use awaken_dispatch::DispatchSettlement;
 use awaken_dispatch_testkit::worker_http as support;
-use awaken_run_ingress::DispatchAdministration;
-use awaken_run_ingress::DispatchClaims;
-use awaken_run_ingress::DispatchEnqueue;
-use awaken_run_ingress::DispatchSettlement;
 
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_dispatch::{MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity};
 use awaken_resource_contract::RepositoryBindingVerifier as _;
 use awaken_resource_contract::{ConfigVersion, LiveResourceBindingVerifier, ResourceRegistryError};
 use awaken_resource_worker_http::HttpRepositoryBindingVerifier;
@@ -16,7 +17,6 @@ use awaken_resource_worker_http::{
     RepositoryTransportAuthority, RepositoryTransportAuthorization, RepositoryTransportAuthorizer,
     WorkerRepositoryBindingService, worker_repository_binding_router,
 };
-use awaken_run_ingress::{MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity};
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
@@ -213,7 +213,7 @@ async fn claimed_dispatch(dispatch: &Arc<MemoryDispatchStore>, owner: &str) -> R
         .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
             awaken_tenancy::ScopeId::from("workspace-repository"),
         ))
-        .with_session_resources(awaken_run_ingress::SessionResourceEnvelope::new(
+        .with_session_resources(awaken_dispatch::SessionResourceEnvelope::new(
             "workspace-repository",
             serde_json::to_string(&resources()).unwrap(),
         ));
@@ -526,7 +526,7 @@ async fn repository_verification_is_scope_claim_manifest_and_incarnation_fenced(
         .settle(
             &claim.run_id,
             claim.epoch,
-            awaken_run_ingress::DispatchOutcome::Done,
+            awaken_dispatch::DispatchOutcome::Done,
             &[],
         )
         .await

@@ -51,7 +51,7 @@ pub(super) async fn session_preparation_claim_next(
             .await
             .map_err(RealizationHttpError::from)?;
         let snapshot = terminal_cleanup_snapshot(&authority)?;
-        if snapshot.state != awaken_run_ingress::WorkerState::Ready
+        if snapshot.state != awaken_dispatch::WorkerState::Ready
             || request.target.reassign_existing_lease
             || request.target.owner != request.identity.worker_id
             || request.target.runtime_incarnation != request.identity.lease_owner()

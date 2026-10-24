@@ -7,8 +7,8 @@ fn running(unit: &str, invocation_id: &str) -> String {
     )
 }
 
-fn registration(worker: &WorkerIdentity) -> awaken_run_ingress::WorkerRegistration {
-    awaken_run_ingress::WorkerRegistration {
+fn registration(worker: &WorkerIdentity) -> awaken_dispatch::WorkerRegistration {
+    awaken_dispatch::WorkerRegistration {
         worker_id: worker.worker_id.clone(),
         incarnation_id: worker.incarnation_id.clone(),
         manifest: Default::default(),

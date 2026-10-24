@@ -49,15 +49,15 @@ mod tests {
         CommitOperation, CommitOperationId, CommitReceipt, commit_payload_hash,
     };
     use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+    use awaken_dispatch::ClaimedCommitService;
+    use awaken_dispatch::{
+        ClaimedCommitRequest, MemoryDispatchStore, WorkerIdentity, WorkerResolver as _,
+    };
     use awaken_dispatch_contract::ClaimedRunCommit;
     use awaken_dispatch_contract::DispatchClaims;
     use awaken_dispatch_contract::DispatchEnqueue;
     use awaken_dispatch_contract::DispatchSettlement;
     use awaken_ext_memory::MemoryExtractionStatus;
-    use awaken_run_ingress::ClaimedCommitService;
-    use awaken_run_ingress::{
-        ClaimedCommitRequest, MemoryDispatchStore, WorkerIdentity, WorkerResolver as _,
-    };
 
     use awaken_dispatch_contract::{RunClaim, RunDispatch};
     use awaken_runtime_contract::RunActivation;
@@ -69,7 +69,7 @@ mod tests {
     struct SessionCommitOwner(Arc<ExecutorComponents>);
 
     #[async_trait::async_trait]
-    impl awaken_run_ingress::ClaimedOperationCoordinatorResolver for SessionCommitOwner {
+    impl awaken_dispatch::ClaimedOperationCoordinatorResolver for SessionCommitOwner {
         async fn resolve(
             &self,
             session_thread: &ThreadId,
@@ -556,7 +556,7 @@ mod tests {
         .build()
         .expect("validated Host dependencies");
         let queue = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
                 .await
                 .expect("durable dispatch store"),
         );

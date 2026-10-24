@@ -92,7 +92,7 @@ trait StreamSink { async fn send(&self, event: StreamEvent) -> Result<()>; }
 
 ### Dispatch / run ingress — new `awaken-dispatch-contract`
 
-Extracted from `awaken-run-ingress` so backends can depend on the contract without
+Extracted from `awaken-dispatch` so backends can depend on the contract without
 the host crate (G2). The traits are the current ones, renamed and grouped:
 
 ```rust

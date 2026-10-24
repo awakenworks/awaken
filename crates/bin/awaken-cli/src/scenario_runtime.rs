@@ -22,8 +22,8 @@ pub async fn scenario_runtime_authority(
         && storage.store == StoreKind::Sqlite
         && storage.dispatch_backend == DispatchBackend::Sqlite
     {
-        let dispatch = awaken_run_ingress::AnyCoordinatorDispatch::from_durable_store(
-            awaken_run_ingress::MemoryDispatchStore::new(clock.clone()),
+        let dispatch = awaken_dispatch::AnyCoordinatorDispatch::from_durable_store(
+            awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
             None,
         );
         return Ok(Arc::new(
@@ -51,13 +51,13 @@ mod tests {
         let reference = scenario_runtime_authority(&missing, awaken_time::system_clock())
             .await
             .expect("R0 scenario SQLite runtime needs no shared backend");
-        fn continuation(_: &dyn awaken_run_ingress::SessionContinuationOutbox) {}
+        fn continuation(_: &dyn awaken_dispatch::SessionContinuationOutbox) {}
         continuation(reference.dispatch_store().as_ref());
-        use awaken_run_ingress::DispatchOperationalFeed as _;
+        use awaken_dispatch::DispatchOperationalFeed as _;
         assert!(
             reference
                 .dispatch_store()
-                .events_after(awaken_run_ingress::DispatchCursor(0), 1, None)
+                .events_after(awaken_dispatch::DispatchCursor(0), 1, None)
                 .await
                 .is_ok(),
             "R0 exact operational feed survives erasure"

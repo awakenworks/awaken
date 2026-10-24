@@ -14,8 +14,8 @@ import _crate_boundary_workspace
 ROOT = Path(__file__).resolve().parents[2]
 RULES = {
     "crates/stores/awaken-work-store/src/session_access.rs": ("lease_epoch + 1",),
-    "crates/server/awaken-run-ingress/src/postgres.rs": (" as i64", " as u64", ".max(0)"),
-    "crates/server/awaken-run-ingress/src/sqlite.rs": (" as i64", " as u64", ".max(0)"),
+    "crates/server/awaken-dispatch/src/postgres.rs": (" as i64", " as u64", ".max(0)"),
+    "crates/server/awaken-dispatch/src/sqlite.rs": (" as i64", " as u64", ".max(0)"),
     "crates/server/awaken-worker-registry/src/postgres.rs": (" as i64", " as u64"),
     "crates/server/awaken-worker-registry/src/sqlite.rs": (" as i64", " as u64"),
     "crates/server/awaken-worker-registry/src/transition.rs": ("saturating_add(1)",),

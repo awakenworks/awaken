@@ -1,5 +1,5 @@
 // Supersede stale input — the DROP guarantee, mirroring the dispatch worker's
-// stale-input drop (awaken-run-ingress `worker.rs`: input for a superseded ticket
+// stale-input drop (awaken-dispatch `worker.rs`: input for a superseded ticket
 // is never delivered, and a superseded dispatch is never woken again).
 //
 // The sibling `durable_supersede_e2e.mjs` proves newest-wins: an awaiting run is

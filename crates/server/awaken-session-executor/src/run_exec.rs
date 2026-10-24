@@ -974,7 +974,7 @@ pub(crate) mod tests {
         let thread = "thread-router";
         let storage = tempfile::tempdir().unwrap();
         let dispatch = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
                 .await
                 .expect("artifact test dispatch"),
         );

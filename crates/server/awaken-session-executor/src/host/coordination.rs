@@ -920,7 +920,7 @@ mod tests {
 
         let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let dispatch = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock)
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock)
                 .await
                 .expect("R2 original dispatch owner"),
         );
@@ -1271,7 +1271,7 @@ mod tests {
             );
             let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
             let dispatch = Arc::new(
-                awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+                awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                     .await
                     .expect("coordinated Resource dispatch store"),
             );

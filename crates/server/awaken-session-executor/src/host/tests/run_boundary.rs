@@ -857,7 +857,7 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
     let reached = Arc::new(tokio::sync::Notify::new());
     let gate = Arc::new(tokio::sync::Notify::new());
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
             .await
             .expect("dispatch store"),
     );
@@ -990,7 +990,7 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
     );
 
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
             .await
             .expect("live-control dispatch store"),
     );
@@ -1057,7 +1057,7 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
 
 #[tokio::test]
 async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environment() {
-    use awaken_run_ingress::RunDispatch;
+    use awaken_dispatch::RunDispatch;
 
     // Cause/effect graph: C1 one Session-affined dispatch exhausted retries; C2
     // no Runtime context/Environment is resident; C3 Environment realization
@@ -1077,7 +1077,7 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
     let run_id = RunId("cold-managed-interrupt-run".into());
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .await
             .expect("dispatch store"),
     );
@@ -1156,7 +1156,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
     // settles Cancelled. Constraint/Invariant: selection uses durable dispatch
     // truth, never guessed process state. Decision rule: C0+unique C2+C3 yields
     // E1; ambiguity is owned by the fail-closed sibling test.
-    use awaken_run_ingress::RunDispatch;
+    use awaken_dispatch::RunDispatch;
     use awaken_runtime_contract::execution::{
         Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
     };
@@ -1239,7 +1239,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
         .expect("coherent active remote candidate");
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .await
             .expect("dispatch store"),
     );
@@ -1329,7 +1329,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
 
 #[tokio::test]
 async fn managed_primary_interrupt_cancels_every_exact_session_dispatch() {
-    use awaken_run_ingress::{DispatchOutcome, RunDispatch};
+    use awaken_dispatch::{DispatchOutcome, RunDispatch};
 
     // Cause/effect graph: C1 the local active Run hint is absent; C2 the store
     // has an Awaiting customer-tool Run and a queued child-report continuation
@@ -1344,7 +1344,7 @@ async fn managed_primary_interrupt_cancels_every_exact_session_dispatch() {
     // | A2 | two | two | yes | E1+E2+E3 |
     let thread = "queued-managed-primary-interrupt";
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
             .await
             .expect("dispatch store"),
     );

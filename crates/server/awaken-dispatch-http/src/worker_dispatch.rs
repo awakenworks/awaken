@@ -27,7 +27,7 @@ use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
-use awaken_run_ingress::{
+use awaken_dispatch::{
     AttemptExecutionRequest as AttemptExecutionReq, BindSandboxRequest as BindSandboxReq,
     CheckpointRequest as CheckpointReq, ClaimNewRunRequest as ClaimNewRunReq,
     ClaimRunRequest as ClaimRunReq, ClaimWorkerRequest as ClaimWorkerReq, CompletionSink,
@@ -187,8 +187,8 @@ pub struct WorkerDispatchService {
     credential_deliveries:
         Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
     max_attempts: u64,
-    execution_bindings: Option<Arc<dyn awaken_run_ingress::WorkerExecutionBindingSource>>,
-    execution_stops: Option<Arc<dyn awaken_run_ingress::WorkerExecutionStopSource>>,
+    execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
+    execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
 }
 
 impl WorkerDispatchService {
@@ -229,7 +229,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_execution_binding_source(
         mut self,
-        source: Arc<dyn awaken_run_ingress::WorkerExecutionBindingSource>,
+        source: Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>,
     ) -> Self {
         self.execution_bindings = Some(source);
         self
@@ -238,7 +238,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_execution_stop_source(
         mut self,
-        source: Arc<dyn awaken_run_ingress::WorkerExecutionStopSource>,
+        source: Arc<dyn awaken_dispatch::WorkerExecutionStopSource>,
     ) -> Self {
         self.execution_stops = Some(source);
         self
@@ -502,17 +502,17 @@ async fn observe_expired_predecessor(
     service: &WorkerDispatchService,
     successor: &RunClaim,
     request_budget_ms: u64,
-) -> Result<Option<awaken_run_ingress::WorkerProcessStopStatus>, ApplicationError> {
+) -> Result<Option<awaken_dispatch::WorkerProcessStopStatus>, ApplicationError> {
     let Some(source) = &service.execution_stops else {
         return Ok(None);
     };
     let recovery = service
         .recovery
         .as_deref()
-        .map(awaken_run_ingress::PhysicalAttemptRecoveryRead::new);
+        .map(awaken_dispatch::PhysicalAttemptRecoveryRead::new);
     tokio::time::timeout(
         std::time::Duration::from_millis(request_budget_ms.max(1)),
-        awaken_run_ingress::stop_expired_predecessor(
+        awaken_dispatch::stop_expired_predecessor(
             service.dispatch.as_ref(),
             directory(service)?.as_ref(),
             source.as_ref(),
@@ -526,8 +526,8 @@ async fn observe_expired_predecessor(
 }
 
 pub struct RegisteredDispatchDependencies {
-    pub execution_bindings: Option<Arc<dyn awaken_run_ingress::WorkerExecutionBindingSource>>,
-    pub execution_stops: Option<Arc<dyn awaken_run_ingress::WorkerExecutionStopSource>>,
+    pub execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
+    pub execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
     pub dispatch: Arc<dyn WorkerDispatchAuthority>,
     pub checkpoint: Arc<dyn StreamCheckpointStore>,
     pub directory: Arc<dyn WorkerDirectory>,
@@ -859,8 +859,8 @@ const SESSION_WORK_BUSY_RETRY_MS: u64 = 5_000;
 async fn bind_claimed_session_work_authority(
     service: &WorkerDispatchService,
     authority: &ClaimAuthority,
-    mut claimed: Option<awaken_run_ingress::Claimed>,
-) -> Result<Option<awaken_run_ingress::Claimed>, ApplicationError> {
+    mut claimed: Option<awaken_dispatch::Claimed>,
+) -> Result<Option<awaken_dispatch::Claimed>, ApplicationError> {
     let Some(claimed_run) = claimed.as_mut() else {
         return Ok(None);
     };
@@ -1192,7 +1192,7 @@ async fn release_closed_idle_worker_evidence(
     };
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        awaken_run_ingress::release_closed_idle_worker_evidence(
+        awaken_dispatch::release_closed_idle_worker_evidence(
             service.dispatch.as_ref(),
             directory(service)?.as_ref(),
             source.as_ref(),
@@ -1252,7 +1252,7 @@ async fn settle(
         let thread_id = guard.request().thread_id().clone();
         let session_thread_id = guard.request().session_thread_id().clone();
         let owns_session_work = thread_id == session_thread_id;
-        let terminal_observer = if request.outcome == awaken_run_ingress::DispatchOutcome::Done {
+        let terminal_observer = if request.outcome == awaken_dispatch::DispatchOutcome::Done {
             service.terminal_observer.as_ref()
         } else {
             None
@@ -1348,7 +1348,7 @@ async fn settle(
         // terminal fact. Terminal cleanup retires Work before waiting for this
         // dispatch to quiesce; requiring the retired lease here would deadlock
         // both owners. Only exact claim-guarded Ended truth permits this closure.
-        let committed_terminal = request.outcome == awaken_run_ingress::DispatchOutcome::Done
+        let committed_terminal = request.outcome == awaken_dispatch::DispatchOutcome::Done
             && matches!(committed_state.as_ref(), Some(RunState::Ended(_)));
         let session_boundary = if coordinated_dispatch {
             if let Some(session_activity_epoch) = guard.request().session_activity_epoch {
@@ -1360,12 +1360,9 @@ async fn settle(
                 let state_matches = matches!(
                     (request.outcome, state),
                     (
-                        awaken_run_ingress::DispatchOutcome::Awaiting,
+                        awaken_dispatch::DispatchOutcome::Awaiting,
                         RunState::Awaiting
-                    ) | (
-                        awaken_run_ingress::DispatchOutcome::Done,
-                        RunState::Ended(_)
-                    )
+                    ) | (awaken_dispatch::DispatchOutcome::Done, RunState::Ended(_))
                 );
                 if !state_matches || session_activity_epoch == 0 {
                     return Err(RealizationHttpError::from(ApplicationError::invalid(
@@ -1548,8 +1545,8 @@ use awaken_dispatch_contract::{
 /// Required server-side authority for authenticated Worker dispatch endpoints.
 /// Administration, queue maintenance, inbox writes and reservation mutations are excluded.
 pub trait WorkerDispatchAuthority:
-    awaken_run_ingress::AttemptControlAuthority
-    + awaken_run_ingress::PhysicalAttemptReads
+    awaken_dispatch::AttemptControlAuthority
+    + awaken_dispatch::PhysicalAttemptReads
     + DispatchEnqueue
     + DispatchClaims
     + DispatchSettlement
@@ -1558,8 +1555,8 @@ pub trait WorkerDispatchAuthority:
 {
 }
 impl<
-    T: awaken_run_ingress::AttemptControlAuthority
-        + awaken_run_ingress::PhysicalAttemptReads
+    T: awaken_dispatch::AttemptControlAuthority
+        + awaken_dispatch::PhysicalAttemptReads
         + DispatchEnqueue
         + DispatchClaims
         + DispatchSettlement

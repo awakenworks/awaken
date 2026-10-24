@@ -202,7 +202,7 @@ struct CoordinatorFixture {
 
 fn coordinator_fixture() -> CoordinatorFixture {
     let clock = awaken_time::system_clock();
-    let store = Arc::new(awaken_run_ingress::MemoryDispatchStore::new(clock.clone()));
+    let store = Arc::new(awaken_dispatch::MemoryDispatchStore::new(clock.clone()));
     let owner = Arc::new(AnyCoordinatorDispatch::from_durable_dispatch(store.clone()));
     let dispatch = ProcessDispatch::new(
         ExecutionTopology {

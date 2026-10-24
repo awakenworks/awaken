@@ -7,13 +7,13 @@ use std::sync::Arc;
 
 use super::WorkerTransport;
 #[cfg(test)]
-use awaken_run_ingress::classify_native_attempt_termination;
-use awaken_run_ingress::{
+use awaken_dispatch::classify_native_attempt_termination;
+use awaken_dispatch::{
     AttemptExecutionBinding, AttemptStopStatus, ClosedAttemptExecution, ClosedWorkerExecution,
     WorkerCreateLedger, WorkerExecutionBindingSource, WorkerExecutionStopSource, WorkerIdentity,
     WorkerProcessStopStatus, WorkerRegistration,
 };
-use awaken_run_ingress::{NativeAttemptFootprint, NativeAttemptTermination};
+use awaken_dispatch::{NativeAttemptFootprint, NativeAttemptTermination};
 use awaken_sandbox_kubernetes::{
     K8sWorkerCreateLedger, PodProcessBinding, PodProcessObserver, PodProcessStopper,
     PodProcessTermination,
@@ -366,7 +366,7 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
         worker: &WorkerIdentity,
         may_stop_active: bool,
         create_ledger: Option<&WorkerCreateLedger>,
-    ) -> Result<Option<awaken_run_ingress::WorkerProcessExit>, ApplicationError> {
+    ) -> Result<Option<awaken_dispatch::WorkerProcessExit>, ApplicationError> {
         let pod = KubernetesPodIdentity::from_worker_id(&worker.worker_id)
             .map_err(ApplicationError::invalid)?;
         if pod.namespace() != self.namespace || !pod.matches_worker(worker) {
@@ -417,7 +417,7 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
         };
         let reference = serde_json::to_string(&process)
             .map_err(|_| ApplicationError::internal("idle Worker process encoding failed"))?;
-        awaken_run_ingress::WorkerProcessExit::new(
+        awaken_dispatch::WorkerProcessExit::new(
             &self.provider_id,
             reference,
             receipt.resource_version(),

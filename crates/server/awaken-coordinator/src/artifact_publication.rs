@@ -3,11 +3,11 @@
 
 use std::sync::{Arc, OnceLock};
 
+use awaken_dispatch::DispatchCommitAuthority;
 use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
     ArtifactRecovery,
 };
-use awaken_run_ingress::DispatchCommitAuthority;
 use awaken_session_realization_contract::ResourceOperationFence;
 
 use awaken_time::WallClockExt as _;
@@ -65,7 +65,7 @@ impl ClaimFencedArtifactPublisher {
         workspace_id: &str,
         session_id: &str,
         idempotency_scope: Option<&str>,
-    ) -> Result<Option<awaken_run_ingress::CommitEpochGuard>, ArtifactPublicationError> {
+    ) -> Result<Option<awaken_dispatch::CommitEpochGuard>, ArtifactPublicationError> {
         let guard = match fence {
             Some(ResourceOperationFence::SessionMaterialization(_))
             | Some(ResourceOperationFence::RepositoryPublication { .. }) => {
@@ -312,8 +312,8 @@ fn control_publication_error(
 
 #[cfg(test)]
 mod tests {
-    use awaken_run_ingress::DispatchClaims;
-    use awaken_run_ingress::DispatchEnqueue;
+    use awaken_dispatch::DispatchClaims;
+    use awaken_dispatch::DispatchEnqueue;
     /// The tests' host-clock reading, the clock their publishers use.
     fn artifact_now_ms() -> u64 {
         awaken_time::WallClockExt::now_ms(awaken_time::system_clock().as_ref())
@@ -321,7 +321,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use awaken_run_ingress::MemoryDispatchStore;
+    use awaken_dispatch::MemoryDispatchStore;
     use awaken_session_realization_contract::SessionRealizationControlFailure;
 
     use super::*;
@@ -483,10 +483,10 @@ mod tests {
             },
         );
         let dispatch = Arc::new(
-            awaken_run_ingress::AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
+            awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
                 MemoryDispatchStore::new(awaken_time::system_clock()),
             )
-                as Arc<dyn awaken_run_ingress::DurableDispatch>),
+                as Arc<dyn awaken_dispatch::DurableDispatch>),
         );
         let publisher_for = |asserted_effect, current_lease| {
             let inner = Arc::new(RecordingPublisher::default());
@@ -733,7 +733,7 @@ mod tests {
             let clock = Arc::new(awaken_lease_testkit::ManualClock::new(artifact_now_ms()));
             let queue = Arc::new(MemoryDispatchStore::new(clock.clone()));
             let mut dispatch =
-                awaken_run_ingress::RunDispatch::new(support::activation("capture-local"));
+                awaken_dispatch::RunDispatch::new(support::activation("capture-local"));
             let session = dispatch.thread_id().0.clone();
             // L3 a child's recovery affinity names the parent, but its output
             // File scope is its own execution Thread. Parent publication must
@@ -760,7 +760,7 @@ mod tests {
             if cause == "expired" {
                 clock.set(artifact_now_ms());
             }
-            let mut claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
+            let mut claim = awaken_dispatch::RunClaim::from(&claimed.lease);
             if cause == "epoch" {
                 claim.epoch += 1;
             }
@@ -783,8 +783,8 @@ mod tests {
             let peer = ClaimFencedArtifactPublisher::new(
                 inner.clone(),
                 Arc::new(
-                    awaken_run_ingress::AnyCoordinatorDispatch::from_durable_dispatch(
-                        queue as Arc<dyn awaken_run_ingress::DurableDispatch>,
+                    awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(
+                        queue as Arc<dyn awaken_dispatch::DurableDispatch>,
                     ),
                 ),
                 awaken_time::system_clock(),
@@ -888,10 +888,10 @@ mod tests {
             );
             let inner = Arc::new(RecordingPublisher::default());
             let queue = Arc::new(
-                awaken_run_ingress::AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
+                awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
                     MemoryDispatchStore::new(awaken_time::system_clock()),
                 )
-                    as Arc<dyn awaken_run_ingress::DurableDispatch>),
+                    as Arc<dyn awaken_dispatch::DurableDispatch>),
             );
             let peer = ClaimFencedArtifactPublisher::new(
                 inner.clone(),
@@ -1014,10 +1014,10 @@ mod tests {
                 })
             };
             let dispatch = Arc::new(
-                awaken_run_ingress::AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
-                    awaken_run_ingress::MemoryDispatchStore::new(awaken_time::system_clock()),
+                awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
+                    awaken_dispatch::MemoryDispatchStore::new(awaken_time::system_clock()),
                 )
-                    as Arc<dyn awaken_run_ingress::DurableDispatch>),
+                    as Arc<dyn awaken_dispatch::DurableDispatch>),
             );
             let publisher = ClaimFencedArtifactPublisher::new(
                 Arc::new(RecordingPublisher::default()),

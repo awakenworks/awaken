@@ -48,7 +48,7 @@ COORDINATOR_DISPATCH_ROLES = (
     "Inbox", "Outbox", "SessionContinuationOutbox", "DispatchOperationalFeed",
 )
 DISPATCH_OWNERS = (
-    "crates/server/awaken-run-ingress/src/",
+    "crates/server/awaken-dispatch/src/",
     "crates/shared/awaken-dispatch-erasure/src/lib.rs",
 )
 for role in WORKER_DISPATCH_ROLES:
@@ -93,7 +93,7 @@ TABLE_AUTHORITIES: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
             r"dispatch_completion|stream_checkpoint|dispatch_operation)\b",
             re.IGNORECASE,
         ),
-        ("crates/server/awaken-run-ingress/",),
+        ("crates/server/awaken-dispatch/",),
     ),
     (
         "committed run/thread truth",
@@ -122,12 +122,12 @@ TABLE_AUTHORITIES: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
     ),
 )
 
-ATTEMPT_RESULT_OWNER = "crates/server/awaken-run-ingress/src/dispatch.rs"
+ATTEMPT_RESULT_OWNER = "crates/server/awaken-dispatch/src/dispatch.rs"
 ATTEMPT_BACKENDS = {
-    "crates/server/awaken-run-ingress/src/memory/physical_attempt.rs": ("admission", "finish", "close"),
-    "crates/server/awaken-run-ingress/src/sqlite/physical_attempt.rs": ("admission", "finish", "close"),
-    "crates/server/awaken-run-ingress/src/postgres/dispatch_queue.rs": ("admission", "close"),
-    "crates/server/awaken-run-ingress/src/postgres/message_ports.rs": ("finish",),
+    "crates/server/awaken-dispatch/src/memory/physical_attempt.rs": ("admission", "finish", "close"),
+    "crates/server/awaken-dispatch/src/sqlite/physical_attempt.rs": ("admission", "finish", "close"),
+    "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs": ("admission", "close"),
+    "crates/server/awaken-dispatch/src/postgres/message_ports.rs": ("finish",),
 }
 ATTEMPT_DECISIONS = {
     "admission": "decide_physical_attempt_admission",
@@ -139,7 +139,7 @@ ATTEMPT_DECISIONS = {
 def attempt_rule_violations(relative: str, source: str) -> list[str]:
     """Adapters may apply storage effects, but cannot fork physical-slot policy."""
     errors: list[str] = []
-    if relative.startswith("crates/server/awaken-run-ingress/src/"):
+    if relative.startswith("crates/server/awaken-dispatch/src/"):
         if relative != ATTEMPT_RESULT_OWNER and re.search(
             r"\b(?:begin|handoff|finish|can_close)_physical_attempt\s*\(", source
         ):
@@ -237,7 +237,7 @@ def selftest() -> None:
     database owners without treating test doubles as production authorities.
     """
     assert implementation_violation(
-        "crates/server/awaken-run-ingress/src/sqlite.rs", "DispatchCommitAuthority"
+        "crates/server/awaken-dispatch/src/sqlite.rs", "DispatchCommitAuthority"
     ) == []  # R1
     assert implementation_violation(
         "crates/server/awaken-worker-runtime/src/dispatch_client.rs", "DispatchClaims"
@@ -309,8 +309,8 @@ def selftest() -> None:
         for operation in operations:
             missing = shared.replace(f"{ATTEMPT_DECISIONS[operation]}(x);", "")
             assert attempt_rule_violations(backend, missing)  # A4
-    postgres_queue = "crates/server/awaken-run-ingress/src/postgres/dispatch_queue.rs"
-    postgres_records = "crates/server/awaken-run-ingress/src/postgres/message_ports.rs"
+    postgres_queue = "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs"
+    postgres_records = "crates/server/awaken-dispatch/src/postgres/message_ports.rs"
     assert attempt_rule_violations(
         postgres_queue, "decide_physical_attempt_admission(x); decide_physical_attempt_close(x);"
     ) == []  # A6 responsibilities retained at the actual queue owner

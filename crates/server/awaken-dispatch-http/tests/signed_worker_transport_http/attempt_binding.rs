@@ -1,7 +1,7 @@
 // @formal evidence session_execution.one_physical_attempt_per_thread
 use super::*;
-use awaken_run_ingress::DispatchAttemptRecordReads as _;
-use awaken_run_ingress::{AttemptExecutionBinding, RunClaim, WorkerExecutionBindingSource};
+use awaken_dispatch::DispatchAttemptRecordReads as _;
+use awaken_dispatch::{AttemptExecutionBinding, RunClaim, WorkerExecutionBindingSource};
 use awaken_session_runtime_contract::ApplicationError;
 use awaken_worker_contract::{WorkerCurrentSource, WorkerIncarnationSource};
 
@@ -24,8 +24,8 @@ struct BindingSource {
 impl WorkerExecutionBindingSource for BindingSource {
     async fn prepare_registration_physical_evidence(
         &self,
-        _: &awaken_run_ingress::WorkerRegistration,
-    ) -> Result<Option<awaken_run_ingress::WorkerCreateLedger>, ApplicationError> {
+        _: &awaken_dispatch::WorkerRegistration,
+    ) -> Result<Option<awaken_dispatch::WorkerCreateLedger>, ApplicationError> {
         self.preparation
             .lock()
             .unwrap()
@@ -36,7 +36,7 @@ impl WorkerExecutionBindingSource for BindingSource {
     async fn retain_registered_worker_evidence(
         &self,
         worker: &WorkerIdentity,
-        _create_ledger: Option<&awaken_run_ingress::WorkerCreateLedger>,
+        _create_ledger: Option<&awaken_dispatch::WorkerCreateLedger>,
     ) -> Result<(), ApplicationError> {
         self.retained.lock().unwrap().push(worker.clone());
         self.retention
@@ -74,7 +74,7 @@ struct Fixture {
 
 #[tokio::test]
 async fn ordinary_return_uses_historical_protocol_identity_without_authorizing_other_verbs() {
-    use awaken_run_ingress::{AttemptPhysicalFact, AttemptReturnCause, DispatchCursor};
+    use awaken_dispatch::{AttemptPhysicalFact, AttemptReturnCause, DispatchCursor};
     // O1 exact current-protocol incarnation becomes superseded/expired; O2
     // typed cause appears on begin/handoff/close; O3 ordinary Some is repeated
     // or changed. R1 O1+finish -> original binding+local cause only, no current
@@ -243,7 +243,7 @@ impl Fixture {
         let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
         let mut manifest = WorkerManifest::default();
         manifest.runtime_protocol.min = 1;
-        manifest.runtime_protocol.max = awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
+        manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
         let identity = directory
             .register(
                 WorkerRegistration {
@@ -285,7 +285,7 @@ impl Fixture {
         store
             .enqueue(
                 RunDispatch::new(support::activation("binding-http"))
-                    .with_placement(awaken_run_ingress::PlacementRequirements::remote_required()),
+                    .with_placement(awaken_dispatch::PlacementRequirements::remote_required()),
             )
             .await
             .unwrap();
@@ -425,7 +425,7 @@ async fn registration_retention_failure_retries_the_same_durable_identity_before
     let control = awaken_worker_runtime::WorkerControlClient::new(upstream);
     let mut manifest = WorkerManifest::default();
     manifest.runtime_protocol.min = 1;
-    manifest.runtime_protocol.max = awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     f.directory
         .deregister(f.upstream.worker_identity().unwrap())
         .await
@@ -912,7 +912,7 @@ pub(super) async fn verify_ordinary_return_compatibility(
         mismatched_queue
             .finish_attempt(
                 claim,
-                Some(awaken_run_ingress::AttemptReturnCause::StructuredReturnObserved)
+                Some(awaken_dispatch::AttemptReturnCause::StructuredReturnObserved)
             )
             .await
             .is_err(),
@@ -947,7 +947,7 @@ pub(super) async fn verify_ordinary_return_compatibility(
         queue
             .finish_attempt(
                 claim,
-                Some(awaken_run_ingress::AttemptReturnCause::StructuredReturnObserved)
+                Some(awaken_dispatch::AttemptReturnCause::StructuredReturnObserved)
             )
             .await
             .is_err(),
@@ -969,7 +969,7 @@ pub(super) async fn verify_ordinary_return_compatibility(
         queue
             .finish_attempt(
                 claim,
-                Some(awaken_run_ingress::AttemptReturnCause::StructuredReturnObserved)
+                Some(awaken_dispatch::AttemptReturnCause::StructuredReturnObserved)
             )
             .await
             .is_err(),

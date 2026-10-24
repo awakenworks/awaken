@@ -180,7 +180,7 @@ impl EphemeralRuntimeAuthority {
     #[must_use]
     pub fn new(clock: Arc<dyn awaken_time::WallClock>) -> Self {
         let dispatch = awaken_dispatch_erasure::AnyCoordinatorDispatch::from_durable_store(
-            awaken_run_ingress::MemoryDispatchStore::new(clock.clone()),
+            awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
             None,
         );
         Self::with_dispatch(clock, Arc::new(dispatch))

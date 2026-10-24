@@ -25,7 +25,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl awaken_run_ingress::WorkerExecutionStopSource for IdleEvidence {
+    impl awaken_dispatch::WorkerExecutionStopSource for IdleEvidence {
         fn owns_worker_evidence(&self, _: &awaken_dispatch_contract::WorkerIdentity) -> bool {
             true
         }
@@ -33,13 +33,13 @@ mod tests {
             &self,
             identity: &awaken_dispatch_contract::WorkerIdentity,
             _: bool,
-            _: Option<&awaken_run_ingress::WorkerCreateLedger>,
+            _: Option<&awaken_dispatch::WorkerCreateLedger>,
         ) -> Result<
-            Option<awaken_run_ingress::WorkerProcessExit>,
+            Option<awaken_dispatch::WorkerProcessExit>,
             awaken_session_runtime_contract::ApplicationError,
         > {
             Ok(Some(
-                awaken_run_ingress::WorkerProcessExit::new(
+                awaken_dispatch::WorkerProcessExit::new(
                     "fixture-process",
                     identity.lease_owner(),
                     "durable-exit",
@@ -64,9 +64,9 @@ mod tests {
         }
         async fn stop_closed_worker(
             &self,
-            command: &awaken_run_ingress::ClosedWorkerExecution,
+            command: &awaken_dispatch::ClosedWorkerExecution,
         ) -> Result<
-            awaken_run_ingress::WorkerProcessStopStatus,
+            awaken_dispatch::WorkerProcessStopStatus,
             awaken_session_runtime_contract::ApplicationError,
         > {
             self.stops.lock().unwrap().push(command.binding().clone());
@@ -74,10 +74,10 @@ mod tests {
         }
         async fn close_attempt_execution(
             &self,
-            command: &awaken_run_ingress::ClosedAttemptExecution,
+            command: &awaken_dispatch::ClosedAttemptExecution,
             recovery: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
         ) -> Result<
-            awaken_run_ingress::AttemptStopStatus,
+            awaken_dispatch::AttemptStopStatus,
             awaken_session_runtime_contract::ApplicationError,
         > {
             assert_eq!(recovery.claimed_run_id, command.attempt().claim.run_id);
@@ -92,7 +92,7 @@ mod tests {
             if self.complete.load(Ordering::SeqCst) {
                 command.observed_all_execution_stopped("all-original-participants-terminal")
             } else {
-                Ok(awaken_run_ingress::AttemptStopStatus::Unknown)
+                Ok(awaken_dispatch::AttemptStopStatus::Unknown)
             }
         }
     }
@@ -141,7 +141,7 @@ mod tests {
         )
         .await
         .with_ephemeral_dispatch(Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(Arc::new(
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
                 awaken_lease_testkit::ManualClock::new(0),
             ))
             .await
@@ -159,7 +159,7 @@ mod tests {
         host.dispatch
             .bind_worker_evidence(
                 directory.clone(),
-                Arc::new(awaken_run_ingress::WorkerEvidenceReleaseAdapter::new(
+                Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
                     source.clone(),
                 )),
             )
@@ -221,19 +221,19 @@ mod tests {
     }
 
     #[async_trait]
-    impl awaken_run_ingress::WorkerExecutionStopSource for LeaseDeadlineEvidence {
+    impl awaken_dispatch::WorkerExecutionStopSource for LeaseDeadlineEvidence {
         async fn observe_closed_idle_worker(
             &self,
             identity: &awaken_dispatch_contract::WorkerIdentity,
             may_stop_active: bool,
-            _: Option<&awaken_run_ingress::WorkerCreateLedger>,
+            _: Option<&awaken_dispatch::WorkerCreateLedger>,
         ) -> Result<
-            Option<awaken_run_ingress::WorkerProcessExit>,
+            Option<awaken_dispatch::WorkerProcessExit>,
             awaken_session_runtime_contract::ApplicationError,
         > {
             self.observed.lock().unwrap().push(may_stop_active);
             Ok(may_stop_active.then(|| {
-                awaken_run_ingress::WorkerProcessExit::new(
+                awaken_dispatch::WorkerProcessExit::new(
                     "fixture-process",
                     identity.lease_owner(),
                     "observed-stop",
@@ -251,9 +251,9 @@ mod tests {
         }
         async fn stop_closed_worker(
             &self,
-            _: &awaken_run_ingress::ClosedWorkerExecution,
+            _: &awaken_dispatch::ClosedWorkerExecution,
         ) -> Result<
-            awaken_run_ingress::WorkerProcessStopStatus,
+            awaken_dispatch::WorkerProcessStopStatus,
             awaken_session_runtime_contract::ApplicationError,
         > {
             panic!("no Dispatch slot exists")
@@ -294,7 +294,7 @@ mod tests {
             .snapshot
             .identity;
         directory.deregister(&identity).await.unwrap();
-        let dispatch = awaken_run_ingress::open_sqlite_dispatch_store_in_memory(Arc::new(
+        let dispatch = awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
             awaken_lease_testkit::ManualClock::new(100),
         ))
         .await
@@ -303,7 +303,7 @@ mod tests {
             observed: Default::default(),
             released: AtomicUsize::new(0),
         };
-        awaken_run_ingress::release_closed_idle_worker_evidence(
+        awaken_dispatch::release_closed_idle_worker_evidence(
             &dispatch, &directory, &source, &identity, 1099,
         )
         .await
@@ -320,7 +320,7 @@ mod tests {
             "G1"
         );
         assert_eq!(source.released.load(Ordering::SeqCst), 0, "G1");
-        awaken_run_ingress::release_closed_idle_worker_evidence(
+        awaken_dispatch::release_closed_idle_worker_evidence(
             &dispatch, &directory, &source, &identity, 1100,
         )
         .await
@@ -343,7 +343,7 @@ mod tests {
             "G2"
         );
         assert_eq!(source.released.load(Ordering::SeqCst), 1, "G2");
-        awaken_run_ingress::release_closed_idle_worker_evidence(
+        awaken_dispatch::release_closed_idle_worker_evidence(
             &dispatch, &directory, &source, &identity, 1200,
         )
         .await
@@ -359,7 +359,7 @@ mod tests {
     struct UnknownIdleEvidence;
 
     #[async_trait]
-    impl awaken_run_ingress::WorkerExecutionStopSource for UnknownIdleEvidence {
+    impl awaken_dispatch::WorkerExecutionStopSource for UnknownIdleEvidence {
         fn owns_worker_evidence(&self, _: &awaken_dispatch_contract::WorkerIdentity) -> bool {
             true
         }
@@ -372,9 +372,9 @@ mod tests {
         }
         async fn stop_closed_worker(
             &self,
-            _: &awaken_run_ingress::ClosedWorkerExecution,
+            _: &awaken_dispatch::ClosedWorkerExecution,
         ) -> Result<
-            awaken_run_ingress::WorkerProcessStopStatus,
+            awaken_dispatch::WorkerProcessStopStatus,
             awaken_session_runtime_contract::ApplicationError,
         > {
             panic!("idle maintenance has no Dispatch attempt")
@@ -413,7 +413,7 @@ mod tests {
         )
         .await
         .with_ephemeral_dispatch(Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(Arc::new(
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
                 awaken_lease_testkit::ManualClock::new(0),
             ))
             .await
@@ -424,7 +424,7 @@ mod tests {
         host.dispatch
             .bind_worker_evidence(
                 directory.clone(),
-                Arc::new(awaken_run_ingress::WorkerEvidenceReleaseAdapter::new(
+                Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
                     Arc::new(UnknownIdleEvidence),
                 )),
             )
@@ -449,7 +449,7 @@ mod tests {
     struct UnownedEvidence;
 
     #[async_trait]
-    impl awaken_run_ingress::WorkerExecutionStopSource for UnownedEvidence {
+    impl awaken_dispatch::WorkerExecutionStopSource for UnownedEvidence {
         async fn release_closed_idle_worker_evidence(
             &self,
             _: &awaken_dispatch_contract::WorkerIdentity,
@@ -459,9 +459,9 @@ mod tests {
         }
         async fn stop_closed_worker(
             &self,
-            _: &awaken_run_ingress::ClosedWorkerExecution,
+            _: &awaken_dispatch::ClosedWorkerExecution,
         ) -> Result<
-            awaken_run_ingress::WorkerProcessStopStatus,
+            awaken_dispatch::WorkerProcessStopStatus,
             awaken_session_runtime_contract::ApplicationError,
         > {
             panic!("expiry is not physical termination")
@@ -480,7 +480,7 @@ mod tests {
         // expires the Registry. Rules UE1=U1+U2=>E1+E3+E4;
         // UE2=U1+U3=>E2+E3. This uses normal registration/claim/admission APIs,
         // not a database backfill or synthetic termination assertion.
-        use awaken_run_ingress::WorkerDirectory as _;
+        use awaken_dispatch::WorkerDirectory as _;
         let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
         let mut identities = Vec::new();
         for (id, ttl) in [("legacy-a", 1), ("legacy-b", u64::MAX)] {
@@ -504,7 +504,7 @@ mod tests {
         }
         let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let dispatch = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .await
                 .unwrap(),
         );
@@ -544,7 +544,7 @@ mod tests {
         host.dispatch
             .bind_worker_evidence(
                 directory.clone(),
-                Arc::new(awaken_run_ingress::WorkerEvidenceReleaseAdapter::new(
+                Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
                     Arc::new(UnownedEvidence),
                 )),
             )
@@ -641,7 +641,7 @@ mod tests {
                 let storage = tempfile::tempdir().unwrap();
                 let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
                 let store = Arc::new(
-                    awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+                    awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                         .await
                         .unwrap(),
                 );
@@ -832,7 +832,7 @@ mod tests {
                     host.dispatch
                         .bind_worker_evidence(
                             directory,
-                            Arc::new(awaken_run_ingress::WorkerEvidenceReleaseAdapter::new(
+                            Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
                                 source.clone(),
                             )),
                         )
@@ -1013,7 +1013,7 @@ mod tests {
         let now = awaken_time::system_clock().now().as_epoch_ms();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(now));
         let store = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .await
                 .expect("dispatch store"),
         );
@@ -1136,7 +1136,7 @@ mod tests {
     async fn coordinator_only_executor(storage: &std::path::Path) -> Arc<ExecutorComponents> {
         let clock = awaken_time::system_clock();
         let store = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock)
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock)
                 .await
                 .expect("dispatch store"),
         );
@@ -1237,13 +1237,13 @@ mod tests {
         // | A2 | Leased | no | expired | coordinator scan | E1 leave recovery to Worker |
         // | A3 | Leased | no | expired | Worker B | E2 reclaim epoch + 1 |
         // | A4 | Leased | no | superseded | Worker A | E3 fenced |
-        use awaken_run_ingress::SettleOutcome;
+        use awaken_dispatch::SettleOutcome;
 
         let storage = tempfile::tempdir().expect("storage");
         let now = awaken_time::system_clock().now().as_epoch_ms();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .await
                 .expect("dispatch store"),
         );
@@ -1369,13 +1369,13 @@ mod tests {
         // Cause/effect table: H1 expired+exhausted exact claim -> boundary Worker
         // commits Indeterminate and Done; H2 no Session/Environment exists -> no
         // realization is attempted; H3 current epoch -> one completion tombstone.
-        use awaken_run_ingress::WorkerResolver;
+        use awaken_dispatch::WorkerResolver;
 
         let storage = tempfile::tempdir().expect("storage");
         let now = awaken_time::system_clock().now().as_epoch_ms();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .await
                 .expect("dispatch store"),
         );
@@ -1464,13 +1464,13 @@ mod tests {
         // created. Rule P1=C1+C2+C3=>E1+E2+E3. An implementation that opens the
         // queue Thread before claiming leaves the row Awaiting on FS/SQLite.
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
-        use awaken_run_ingress::SessionChildAdmission;
+        use awaken_dispatch::SessionChildAdmission;
 
         let storage = tempfile::tempdir().expect("storage");
         let now = awaken_time::system_clock().now().as_epoch_ms();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .await
                 .expect("dispatch store"),
         );

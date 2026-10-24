@@ -40,7 +40,7 @@ tracing = "0.1"
 tempfile = "3"
 awaken-runtime-contract.workspace = true
 awaken-store-inmem.workspace = true
-awaken-run-ingress = { workspace = true, features = ["test-support"] }
+awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-worker-transport-security.workspace = true
 async-trait.workspace = true
 awaken-time.workspace = true

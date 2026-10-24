@@ -2,20 +2,20 @@
 // @formal evidence skill.loaded_version_equals_session_pin
 //! Custom-Skill Resource Coordinator boundary tests over real HTTP.
 
+use awaken_dispatch::DispatchClaims;
+use awaken_dispatch::DispatchEnqueue;
+use awaken_dispatch::DispatchSettlement;
 use awaken_dispatch_testkit::worker_http as support;
-use awaken_run_ingress::DispatchClaims;
-use awaken_run_ingress::DispatchEnqueue;
-use awaken_run_ingress::DispatchSettlement;
 
 use std::sync::Arc;
 
 use awaken_agent_contract::AgentSkillKind;
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_dispatch::{MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity};
 use awaken_resource_application::StoreSkillBundleSource;
 use awaken_resource_worker_http::{
     HttpSkillBundleSource, WorkerSkillBundleService, worker_skill_bundle_router,
 };
-use awaken_run_ingress::{MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity};
 use awaken_session_configuration_contract::SkillBundleSource as _;
 use awaken_session_configuration_contract::resource::{
     ResolvedSessionResources, ResolvedSkillBinding,
@@ -65,7 +65,7 @@ async fn claimed_dispatch(
         .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
             awaken_tenancy::ScopeId::from("workspace-skill"),
         ))
-        .with_session_resources(awaken_run_ingress::SessionResourceEnvelope::new(
+        .with_session_resources(awaken_dispatch::SessionResourceEnvelope::new(
             "workspace-skill",
             serde_json::to_string(&resources).unwrap(),
         ));
@@ -173,7 +173,7 @@ async fn exact_skill_bundle_is_scope_claim_and_incarnation_fenced_and_digest_ver
         .settle(
             &claim.run_id,
             claim.epoch,
-            awaken_run_ingress::DispatchOutcome::Done,
+            awaken_dispatch::DispatchOutcome::Done,
             &[],
         )
         .await

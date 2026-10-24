@@ -1210,8 +1210,8 @@ mod process_role_surface_tests {
         // -> empty. R6 exact expired Session realization with unfinished
         // cleanup -> occupied. Public listener remains absent in the role matrix.
         let mut domain_manifest = awaken_worker_contract::WorkerManifest::default();
-        domain_manifest.runtime_protocol.min = awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
-        domain_manifest.runtime_protocol.max = awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
+        domain_manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+        domain_manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
         let domain_identity = worker_directory
             .register(
                 awaken_worker_contract::WorkerRegistration {

@@ -59,7 +59,7 @@ pub struct CoordinatorDependencies {
     pub memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
     pub worker_file_application: Arc<dyn awaken_resource_contract::FileApplicationService>,
     pub worker_skill_bundles: Arc<
-        dyn awaken_session_configuration_contract::SkillBundleSource<awaken_run_ingress::RunClaim>,
+        dyn awaken_session_configuration_contract::SkillBundleSource<awaken_dispatch::RunClaim>,
     >,
     pub application_access: Arc<ApplicationAccessStore>,
     /// Explicit route-scoped browser admission for the AI SDK ingress.
@@ -69,9 +69,8 @@ pub struct CoordinatorDependencies {
     pub worker_authenticator: Arc<dyn WorkerRequestAuthenticator>,
     pub worker_placement_policy: Option<Arc<dyn awaken_worker_contract::PlacementPolicy>>,
     /// Trusted provider composition, not Worker-authored manifest metadata.
-    pub worker_execution_bindings:
-        Option<Arc<dyn awaken_run_ingress::WorkerExecutionBindingSource>>,
-    pub worker_execution_stops: Option<Arc<dyn awaken_run_ingress::WorkerExecutionStopSource>>,
+    pub worker_execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
+    pub worker_execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
     pub worker_relay_targets: Option<Arc<dyn awaken_worker_contract::WorkerRelayTargetObserver>>,
     /// The signed provider Create executor is mounted only on the private
     /// Worker router; Session and Dispatch retain their existing owners.

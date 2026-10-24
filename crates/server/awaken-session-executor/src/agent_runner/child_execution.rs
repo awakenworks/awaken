@@ -1188,7 +1188,7 @@ mod tests {
                 Some(RunScheduler {
                     clock: clock.clone(),
                     binding: awaken_dispatch_erasure::DispatchBinding::local(Arc::new(
-                        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+                        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                             .await
                             .unwrap(),
                     )),
@@ -1314,7 +1314,7 @@ mod tests {
         let scheduler = RunScheduler {
             clock: clock.clone(),
             binding: awaken_dispatch_erasure::DispatchBinding::local(Arc::new(
-                awaken_run_ingress::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
+                awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
                     .await
                     .expect("child dispatch store"),
             )),
@@ -1382,7 +1382,7 @@ mod tests {
         let replacement = RunScheduler {
             clock: clock.clone(),
             binding: awaken_dispatch_erasure::DispatchBinding::local(Arc::new(
-                awaken_run_ingress::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
+                awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
                     .await
                     .expect("reopen child dispatch"),
             )),
@@ -1451,7 +1451,7 @@ mod tests {
             execution(RunScheduler {
                 clock: clock.clone(),
                 binding: awaken_dispatch_erasure::DispatchBinding::local(Arc::new(
-                    awaken_run_ingress::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
+                    awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
                         .await
                         .expect("reopen terminal child dispatch"),
                 )),

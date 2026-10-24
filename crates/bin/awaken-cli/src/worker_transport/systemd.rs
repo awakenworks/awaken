@@ -14,7 +14,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use awaken_run_ingress::{
+use awaken_dispatch::{
     AttemptExecutionBinding, AttemptStopStatus, ClosedAttemptExecution, ClosedWorkerExecution,
     NativeAttemptFootprint, NativeAttemptTermination, WorkerExecutionBindingSource,
     WorkerExecutionStopSource, WorkerIdentity, WorkerProcessExit, WorkerProcessStopStatus,
@@ -612,8 +612,8 @@ impl SystemdWorkerEvidence {
 impl WorkerExecutionBindingSource for SystemdWorkerEvidence {
     async fn prepare_registration_physical_evidence(
         &self,
-        registration: &awaken_run_ingress::WorkerRegistration,
-    ) -> Result<Option<awaken_run_ingress::WorkerCreateLedger>, ApplicationError> {
+        registration: &awaken_dispatch::WorkerRegistration,
+    ) -> Result<Option<awaken_dispatch::WorkerCreateLedger>, ApplicationError> {
         // The unit coordinate depends on the launcher incarnation, not on the
         // Registry-assigned generation. Retain before the first insert so a
         // crash between registration and Ready cannot erase the only binding.
@@ -627,7 +627,7 @@ impl WorkerExecutionBindingSource for SystemdWorkerEvidence {
     async fn retain_registered_worker_evidence(
         &self,
         worker: &WorkerIdentity,
-        _create_ledger: Option<&awaken_run_ingress::WorkerCreateLedger>,
+        _create_ledger: Option<&awaken_dispatch::WorkerCreateLedger>,
     ) -> Result<(), ApplicationError> {
         let unit = unit_name(worker)?;
         let observation = self.show(&unit).await?;
@@ -676,7 +676,7 @@ impl WorkerExecutionStopSource for SystemdWorkerEvidence {
         &self,
         worker: &WorkerIdentity,
         may_stop_active: bool,
-        _create_ledger: Option<&awaken_run_ingress::WorkerCreateLedger>,
+        _create_ledger: Option<&awaken_dispatch::WorkerCreateLedger>,
     ) -> Result<Option<WorkerProcessExit>, ApplicationError> {
         let Some(binding) = self.read_binding(worker)? else {
             return Ok(None);
@@ -706,7 +706,7 @@ impl WorkerExecutionStopSource for SystemdWorkerEvidence {
     async fn release_closed_idle_worker_evidence(
         &self,
         worker: &WorkerIdentity,
-        _original_create_ledger: Option<&awaken_run_ingress::WorkerCreateLedger>,
+        _original_create_ledger: Option<&awaken_dispatch::WorkerCreateLedger>,
     ) -> Result<(), ApplicationError> {
         let unit = unit_name(worker)?;
         let observed = self.show(&unit).await?;

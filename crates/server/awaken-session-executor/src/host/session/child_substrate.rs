@@ -146,9 +146,9 @@ mod tests {
     use crate::host::worker_resolver::test_support::{
         AdoptionModel, eager_environment, empty_frozen_projection_for_snapshot, test_activation,
     };
+    use awaken_dispatch::WorkerResolver as _;
     use awaken_dispatch_contract::DispatchClaims;
     use awaken_dispatch_contract::DispatchEnqueue;
-    use awaken_run_ingress::WorkerResolver as _;
     use awaken_runtime_contract::resolved::ModelBinding;
 
     #[tokio::test]
@@ -178,7 +178,7 @@ mod tests {
             .model(ModelBinding::new("test", "model", "native"))
             .build();
         let store = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
                 .await
                 .expect("dispatch store"),
         );

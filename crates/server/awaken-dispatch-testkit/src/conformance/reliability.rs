@@ -4,7 +4,7 @@
 // @formal evidence remote_worker.single_live_claim_owner
 // @formal evidence run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
 // @formal surface exclude=test_support_crate
-// @formal owner crates/server/awaken-run-ingress/tests/dispatch_conformance.rs
+// @formal owner crates/server/awaken-dispatch/tests/dispatch_conformance.rs
 // @formal reason: Static owner: normalized crash-recovery history for adapter differential tests. Dynamic
 // @formal reason: path: the tooling-only testkit drives production DispatchStore implementations and
 // @formal reason: records observations; it neither transitions nor persists product state itself.

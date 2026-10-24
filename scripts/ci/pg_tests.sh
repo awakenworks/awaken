@@ -614,7 +614,7 @@ self_test() {
     echo "Postgres gate must run WorkerRegistry migration and conformance tests" >&2
     return 1
   }
-  grep -Fxq 'pg_test cargo test -p awaken-run-ingress --features test-support || record_failure "$?"' "$0" || {
+  grep -Fxq 'pg_test cargo test -p awaken-dispatch --features test-support || record_failure "$?"' "$0" || {
     echo "Postgres gate must run the complete ingress suite with test-support" >&2
     return 1
   }
@@ -1037,12 +1037,12 @@ fi
 # are meaningful only against this live database. This selects all R1-R7 rules.
 storage_evidence
 pg_test cargo test -p awaken-worker-registry --features test-support --lib --test conformance || record_failure "$?"
-pg_test cargo test -p awaken-run-ingress --features test-support || record_failure "$?"
+pg_test cargo test -p awaken-dispatch --features test-support || record_failure "$?"
 # Scale qualification remains owned by the existing ingress target and this
 # exact database/image fixture. Explicit selection prevents its three ignored
 # cases from becoming green without execution. Timings qualify this fixture,
 # not production capacity or an unmeasured baseline improvement.
-pg_test cargo test -p awaken-run-ingress --features test-support \
+pg_test cargo test -p awaken-dispatch --features test-support \
   --test dispatch_claim_perf -- --ignored --test-threads=1 --nocapture \
   || record_failure "$?"
 http_transport_evidence || record_failure "$?"

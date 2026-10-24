@@ -14,8 +14,8 @@ mod systemd;
 /// An injected authenticator alone is deliberately an unbound transport.
 pub struct WorkerTransport {
     authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
-    bindings: Option<Arc<dyn awaken_run_ingress::WorkerExecutionBindingSource>>,
-    stops: Option<Arc<dyn awaken_run_ingress::WorkerExecutionStopSource>>,
+    bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
+    stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
     relay_targets: Option<Arc<dyn WorkerRelayTargetObserver>>,
     #[cfg(feature = "container-k8s")]
     create_broker: Option<Arc<awaken_coordinator::worker_create_broker::K8sCreateBroker>>,
@@ -41,13 +41,11 @@ impl WorkerTransport {
         self.authenticator.clone()
     }
 
-    pub fn binding_source(
-        &self,
-    ) -> Option<Arc<dyn awaken_run_ingress::WorkerExecutionBindingSource>> {
+    pub fn binding_source(&self) -> Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>> {
         self.bindings.clone()
     }
 
-    pub fn stop_source(&self) -> Option<Arc<dyn awaken_run_ingress::WorkerExecutionStopSource>> {
+    pub fn stop_source(&self) -> Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>> {
         self.stops.clone()
     }
 
@@ -62,7 +60,7 @@ impl WorkerTransport {
     /// plane. No public route or second Worker registry is constructed.
     pub fn create_broker_router(
         &self,
-        directory: Arc<dyn awaken_run_ingress::WorkerDirectory>,
+        directory: Arc<dyn awaken_dispatch::WorkerDirectory>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Option<axum::Router> {
         self.create_broker.as_ref().map(|broker| {

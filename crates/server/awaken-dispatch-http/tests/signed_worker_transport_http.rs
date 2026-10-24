@@ -22,17 +22,17 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
-use awaken_dispatch_http::{
-    WorkerDispatchService, dispatch_transport_router_with_service, worker_environment_warmup_router,
-};
-use awaken_lease_testkit::ManualClock;
-use awaken_run_ingress::{
+use awaken_dispatch::{
     AttemptAdmission, ClaimedStreamPublisher as _, DispatchClaimOwnership as _,
     DispatchClaims as _, DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _,
     DispatchSettlement as _, MemoryDispatchStore, RegisteredWorker, RegistryError,
     RegistryMutation, RunDispatch, SettleOutcome, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
     WorkerManifest, WorkerRegistration, WorkerSnapshot, WorkerState,
 };
+use awaken_dispatch_http::{
+    WorkerDispatchService, dispatch_transport_router_with_service, worker_environment_warmup_router,
+};
+use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{
@@ -809,7 +809,7 @@ impl WorkerDirectory for TestWorkerDirectory {
     async fn record_process_exit(
         &self,
         _identity: &WorkerIdentity,
-        _receipt: awaken_run_ingress::WorkerProcessExit,
+        _receipt: awaken_dispatch::WorkerProcessExit,
     ) -> Result<RegistryMutation, RegistryError> {
         Err(RegistryError::Persistence(
             "process-exit persistence is outside this read-oriented fixture".into(),
@@ -958,7 +958,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         ..WorkerManifest::default()
     };
     manifest.runtime_protocol.min = 1;
-    manifest.runtime_protocol.max = awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     // Worker lease receipt decision rules: successful registration and Applied
     // heartbeat both disclose the same positive Coordinator-owned TTL; a
     // bootstrap credential still cannot use incarnation-only operations.
@@ -969,7 +969,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     assert_eq!(registration_receipt.lease_ttl_ms, 30_000);
     assert_eq!(
         registration_receipt.runtime_protocol_version,
-        Some(awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION)
+        Some(awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION)
     );
     let registered = registration_receipt.worker;
     assert!(
@@ -1088,7 +1088,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             Default::default(),
         );
     let mut request = standard_worker_dispatch(activation());
-    request.session_resources = Some(awaken_run_ingress::SessionResourceEnvelope::at_revision(
+    request.session_resources = Some(awaken_dispatch::SessionResourceEnvelope::at_revision(
         carried_resources.workspace_id.clone(),
         carried_resources.revision,
         carried_resources.encode_resources().unwrap(),
@@ -1110,7 +1110,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         claimed.lease.owner(),
         registered.snapshot.identity.lease_owner()
     );
-    let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
+    let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
     assert!(
         queue
             .claim_is_current(&claim)
@@ -2358,7 +2358,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .await
         .expect("T22 child claim")
         .expect("T22 child is independently claimable");
-    let child_claim = awaken_run_ingress::RunClaim::from(&child.lease);
+    let child_claim = awaken_dispatch::RunClaim::from(&child.lease);
     session_work.acquired_sessions.lock().unwrap().clear();
     assert!(
         queue
@@ -2565,7 +2565,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .settle(
             &child_claim.run_id,
             child_claim.epoch,
-            awaken_run_ingress::DispatchOutcome::Done,
+            awaken_dispatch::DispatchOutcome::Done,
             &[],
         )
         .await
@@ -2586,12 +2586,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .settle(
                 &claim.run_id,
                 claim.epoch,
-                awaken_run_ingress::DispatchOutcome::Done,
+                awaken_dispatch::DispatchOutcome::Done,
                 &[],
             )
             .await
             .expect("T20 signed settlement"),
-        awaken_run_ingress::SettleOutcome::Applied,
+        awaken_dispatch::SettleOutcome::Applied,
         "T20"
     );
     assert_eq!(
@@ -2621,7 +2621,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .await
         .expect("post-settlement claim")
         .expect("released Session Work permits the next Session Run");
-    let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
+    let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
     assert!(
         queue
             .claim_is_current(&claim)
@@ -2719,7 +2719,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // T23: a failed attempt spends one attempt of the Coordinator's retry
     // budget (default 5); the Worker-supplied limit is ignored, so a limit of
     // one cannot exhaust the Run from the Worker side.
-    let failed_claim = awaken_run_ingress::RunClaim::from(&replacement.lease);
+    let failed_claim = awaken_dispatch::RunClaim::from(&replacement.lease);
     assert!(
         queue
             .retry_claim(&failed_claim, 0, 1)
@@ -2740,7 +2740,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     };
     assert_eq!(
         attempts(dispatch.clone(), failed_claim.run_id.clone()).await,
-        (awaken_run_ingress::DispatchState::Pending, 1),
+        (awaken_dispatch::DispatchState::Pending, 1),
         "T23 one attempt spent against the Coordinator's limit"
     );
     let replacement = queue
@@ -2760,7 +2760,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .applied(),
         "T23"
     );
-    let replacement_claim = awaken_run_ingress::RunClaim::from(&replacement.lease);
+    let replacement_claim = awaken_dispatch::RunClaim::from(&replacement.lease);
     assert!(
         queue
             .defer_claim(&replacement_claim, i64::MAX as u64)
@@ -2771,7 +2771,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
     assert_eq!(
         attempts(dispatch.clone(), replacement_claim.run_id.clone()).await,
-        (awaken_run_ingress::DispatchState::Pending, 1),
+        (awaken_dispatch::DispatchState::Pending, 1),
         "T23 a deferral keeps the budget"
     );
 
@@ -2817,18 +2817,14 @@ async fn protocol_admission_precedes_registration_and_heartbeat_mutation() {
         (1, 3, false),
         (3, 3, false),
         (
-            awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION + 1,
-            awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION + 1,
+            awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION + 1,
+            awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION + 1,
             false,
         ),
+        (1, awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION, true),
         (
-            1,
-            awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION,
-            true,
-        ),
-        (
-            awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION,
-            awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION,
+            awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION,
+            awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION,
             true,
         ),
     ] {
@@ -2855,7 +2851,7 @@ async fn protocol_admission_precedes_registration_and_heartbeat_mutation() {
                 response.json().await.unwrap();
             assert_eq!(
                 receipt.runtime_protocol_version,
-                Some(awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION)
+                Some(awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION)
             );
             continue;
         }
@@ -3136,8 +3132,8 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
         (1, 3),
         (3, 3),
         (
-            awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION + 1,
-            awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION + 1,
+            awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION + 1,
+            awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION + 1,
         ),
     ] {
         {

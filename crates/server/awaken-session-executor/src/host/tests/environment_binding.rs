@@ -668,7 +668,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     assert!(ephemeral.dispatch.pool().is_some(), "T1/E1");
 
     let local_store = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store(":memory:", system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store(":memory:", system_clock())
             .await
             .unwrap(),
     );
@@ -698,7 +698,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     assert!(local.dispatch.pool().is_some(), "T2/E1");
 
     let coordinator_store = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store(":memory:", system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store(":memory:", system_clock())
             .await
             .unwrap(),
     );
@@ -753,7 +753,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         manifest.capacity.max_concurrent = capacity as u32;
         let registered = awaken_dispatch_contract::RegisteredCapacity::of(&manifest)
             .expect("R2 non-zero registered capacity");
-        let store = Arc::new(awaken_run_ingress::MemoryDispatchStore::new(system_clock()));
+        let store = Arc::new(awaken_dispatch::MemoryDispatchStore::new(system_clock()));
         let file: Arc<
             dyn awaken_resource_contract::FileContentSource<crate::ResourceOperationFence>,
         > = Arc::new(awaken_resource_contract::UnavailableFileContentSource);

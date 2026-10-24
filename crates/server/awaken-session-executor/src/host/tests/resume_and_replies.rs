@@ -373,7 +373,7 @@ async fn durable_foreground_run_relays_live_progress_before_committed_completion
     // | R2 | yes | no | yes | E2 (existing durable tests) |
     // | R3 | yes | yes | remote | E2 fallback; no false replay guarantee |
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
             .await
             .expect("in-memory dispatch"),
     );
@@ -424,7 +424,7 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
     // | R4 | Ended | exact | any | zero | reject before mutation |
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .await
             .expect("in-memory dispatch"),
     );
@@ -564,7 +564,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     use awaken_agent_contract::agent::awaiting::{AwaitTarget, PendingTool, ToolAwaitReason};
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
-    use awaken_run_ingress::{
+    use awaken_dispatch::{
         ContinuationAdmission, DispatchOutcome, Outbox as _, SessionChildAdmission,
     };
 
@@ -573,7 +573,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     let child_run = RunId("coordinated-reply-run".into());
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .await
             .expect("coordinated reply dispatch"),
     );
@@ -1364,7 +1364,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
     use awaken_agent_contract::agent::awaiting::{AwaitTarget, PendingTool, ToolAwaitReason};
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
-    use awaken_run_ingress::{DispatchOutcome, Outbox as _, RunDispatch};
+    use awaken_dispatch::{DispatchOutcome, Outbox as _, RunDispatch};
 
     // PR4 repeats PR1-PR3 for an extension-owned Run: same ticket/result checks,
     // no Session epoch, unchanged ordinary affinity. This is the real Outcome tool boundary.
@@ -1373,7 +1373,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
         let run_id = RunId("primary-reply-run".into());
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let dispatch = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .await
                 .expect("primary reply dispatch"),
         );
@@ -1641,14 +1641,14 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
     };
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
-    use awaken_run_ingress::{DispatchOutcome, RunDispatch};
+    use awaken_dispatch::{DispatchOutcome, RunDispatch};
     use awaken_session_application_contract::{
         SessionBudgetResumeDelivery, SessionBudgetResumeDisposition,
     };
 
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .await
             .expect("budget resume dispatch"),
     );
@@ -2088,7 +2088,7 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
     // R3 is owned by run-ingress worker settle tests; R4 by the resume-identity
     // test plus each Inbox backend's idempotency-conflict conformance suite.
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
             .await
             .expect("in-memory dispatch"),
     );
@@ -2165,7 +2165,7 @@ async fn coordinator_only_foreground_admission_survives_request_drop_without_a_p
     // | Q1 | yes | no  | no  | local claim and settle (sibling) |
     // | Q2 | yes | yes | yes | E1+E2+E3 |
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
             .await
             .expect("in-memory dispatch"),
     );
@@ -2340,7 +2340,7 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
     // without claiming two runtime refusals. Canonical Session replacement is
     // allowed for a valid Managed root and is a separate positive behavior.
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
             .await
             .expect("managed ingress fence dispatch"),
     );

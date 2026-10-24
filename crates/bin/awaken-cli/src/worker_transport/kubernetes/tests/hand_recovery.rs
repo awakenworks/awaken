@@ -4,7 +4,7 @@
 //! Real Native Runtime/Hand journal and exact Dispatch retirement over the existing mock API.
 use super::*;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
-use awaken_run_ingress::{DispatchClaims, DispatchEnqueue, DispatchExecution, WorkerDirectory};
+use awaken_dispatch::{DispatchClaims, DispatchEnqueue, DispatchExecution, WorkerDirectory};
 use awaken_runtime_contract::RunExecutor;
 use awaken_tool_contract::tool::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 
@@ -104,7 +104,7 @@ async fn lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires
         let directory = awaken_worker_registry::MemoryWorkerDirectory::new();
         let registered = directory
             .register(
-                awaken_run_ingress::WorkerRegistration {
+                awaken_dispatch::WorkerRegistration {
                     worker_id: "k8s:workers:worker-a:uid-a".into(),
                     incarnation_id: "uid-a".into(),
                     manifest: manifest(),
@@ -144,7 +144,7 @@ async fn lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires
             }
         };
         let clock = Arc::new(awaken_lease_testkit::ManualClock::new(100));
-        let store = awaken_run_ingress::MemoryDispatchStore::new(clock.clone());
+        let store = awaken_dispatch::MemoryDispatchStore::new(clock.clone());
         let mut activation = model_only_activation(if contained {
             "contained-hand"
         } else {
@@ -161,14 +161,14 @@ async fn lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires
         let thread = activation.thread_id.clone();
         store
             .enqueue(
-                awaken_run_ingress::RunDispatch::new(activation.clone())
-                    .with_placement(awaken_run_ingress::PlacementRequirements::remote_required()),
+                awaken_dispatch::RunDispatch::new(activation.clone())
+                    .with_placement(awaken_dispatch::PlacementRequirements::remote_required()),
             )
             .await
             .unwrap();
         let mut snapshot = registered.snapshot;
-        snapshot.state = awaken_run_ingress::WorkerState::Ready;
-        let old = awaken_run_ingress::RunClaim::from(
+        snapshot.state = awaken_dispatch::WorkerState::Ready;
+        let old = awaken_dispatch::RunClaim::from(
             &store
                 .claim_compatible(&snapshot, 50)
                 .await
@@ -268,7 +268,7 @@ async fn lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires
         );
         let successor = directory
             .register(
-                awaken_run_ingress::WorkerRegistration {
+                awaken_dispatch::WorkerRegistration {
                     worker_id: "next".into(),
                     incarnation_id: "next".into(),
                     manifest: manifest(),
@@ -280,8 +280,8 @@ async fn lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires
             .await
             .unwrap();
         let mut next_snapshot = successor.snapshot;
-        next_snapshot.state = awaken_run_ingress::WorkerState::Ready;
-        let next = awaken_run_ingress::RunClaim::from(
+        next_snapshot.state = awaken_dispatch::WorkerState::Ready;
+        let next = awaken_dispatch::RunClaim::from(
             &store
                 .claim_compatible(&next_snapshot, 50)
                 .await
@@ -290,11 +290,11 @@ async fn lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires
                 .lease,
         );
         let stops = transport.stop_source().unwrap();
-        awaken_run_ingress::stop_expired_predecessor(
+        awaken_dispatch::stop_expired_predecessor(
             &store,
             &directory,
             stops.as_ref(),
-            Some(&awaken_run_ingress::PhysicalAttemptRecoveryRead::new(
+            Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
                 commit.as_ref(),
             )),
             &next,
@@ -319,11 +319,11 @@ async fn lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires
                 "exitCode":137,"reason":"Error","containerID":"containerd://exact", "startedAt":"2026-09-09T00:00:00Z","finishedAt":"2026-09-09T00:01:00Z"
             }});
         }
-        awaken_run_ingress::stop_expired_predecessor(
+        awaken_dispatch::stop_expired_predecessor(
             &store,
             &directory,
             stops.as_ref(),
-            Some(&awaken_run_ingress::PhysicalAttemptRecoveryRead::new(
+            Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
                 commit.as_ref(),
             )),
             &next,
@@ -338,7 +338,7 @@ async fn lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires
         );
         assert_eq!(
             store.begin_attempt(&next, None).await.unwrap()
-                == awaken_run_ingress::AttemptAdmission::Applied,
+                == awaken_dispatch::AttemptAdmission::Applied,
             contained,
             "NH4"
         );

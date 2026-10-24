@@ -574,7 +574,7 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
 
 #[tokio::test]
 async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
-    use awaken_run_ingress::WorkerResolver as _;
+    use awaken_dispatch::WorkerResolver as _;
 
     // Causes: C1 a child Run is claimed for a Memory-enabled parent Session;
     // C2 the parent Runtime is cold or warm; C3 the Worker is co-located, so it

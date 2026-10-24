@@ -22,17 +22,17 @@ use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitOperationId, commit_payload_hash,
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
-use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
-use awaken_dispatch_http::{
-    WorkerDispatchService, dispatch_transport_router_with_service,
-    registered_worker_transport_router_with_services,
-};
-use awaken_run_ingress::ClaimedCommitService;
-use awaken_run_ingress::{
+use awaken_dispatch::ClaimedCommitService;
+use awaken_dispatch::{
     ClaimedCommitCommand, ClaimedRunCommit, DispatchOutcome, PostgresDispatchStore,
     RegisteredWorker, RegistryError, RegistryMutation, RunClaim, RunDispatch, SettleOutcome,
     WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource,
     WorkerRegistration, WorkerSnapshot, WorkerState,
+};
+use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
+use awaken_dispatch_http::{
+    WorkerDispatchService, dispatch_transport_router_with_service,
+    registered_worker_transport_router_with_services,
 };
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -147,7 +147,7 @@ impl WorkerDirectory for ConfiguredWorkerDirectory {
     async fn record_process_exit(
         &self,
         _identity: &WorkerIdentity,
-        _receipt: awaken_run_ingress::WorkerProcessExit,
+        _receipt: awaken_dispatch::WorkerProcessExit,
     ) -> Result<RegistryMutation, RegistryError> {
         Err(RegistryError::Persistence(
             "process-exit persistence is outside this read-oriented fixture".into(),
@@ -160,8 +160,8 @@ fn configured_worker() -> (WorkerIdentity, Arc<dyn WorkerDirectory>) {
     // execution protocol. ANY/omitted is intentionally not positive evidence;
     // the transport admission decision table covers rejection of those peers.
     let mut manifest = WorkerManifest::default();
-    manifest.runtime_protocol.min = awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
-    manifest.runtime_protocol.max = awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     let identity = WorkerIdentity::new(WORKER_ID, WORKER_INCARNATION_ID, 1);
     let worker = RegisteredWorker {
         snapshot: WorkerSnapshot {
@@ -504,10 +504,9 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
     // the same execution protocol. RunDispatch::new preserves the legacy v0
     // decoder posture; that is not the request this acceptance scenario tests.
     let mut dispatch = RunDispatch::new(activation(&run_id, &thread_id));
-    dispatch.placement = awaken_run_ingress::PlacementRequirements::remote_preferred();
-    dispatch.placement.runtime_protocol_version =
-        awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
-    awaken_run_ingress::can_claim(
+    dispatch.placement = awaken_dispatch::PlacementRequirements::remote_preferred();
+    dispatch.placement.runtime_protocol_version = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    awaken_dispatch::can_claim(
         &directory
             .current(WORKER_ID)
             .await

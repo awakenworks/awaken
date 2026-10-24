@@ -121,7 +121,7 @@ STORE_BACKEND_TESTS = (
     "crates/stores/awaken-store-sqlite/tests/checkpoint_reader.rs",
     "crates/stores/awaken-store-postgres/tests/postgres_live.rs",
 )
-INGRESS_CONFORMANCE = "crates/server/awaken-run-ingress/tests/dispatch_conformance.rs"
+INGRESS_CONFORMANCE = "crates/server/awaken-dispatch/tests/dispatch_conformance.rs"
 # A test may wait, but it must say how long. The runner's deadline stops a
 # stuck test from taking the suite with it; it cannot tell you what the test
 # was waiting for, and it spends five minutes not telling you. The debt is

@@ -19,8 +19,8 @@ where
 
 async fn attach_claim_credential_deliveries(
     service: &WorkerDispatchService,
-    claimed: Option<awaken_run_ingress::Claimed>,
-) -> Result<Option<awaken_run_ingress::Claimed>, ApplicationError> {
+    claimed: Option<awaken_dispatch::Claimed>,
+) -> Result<Option<awaken_dispatch::Claimed>, ApplicationError> {
     let Some(mut claimed) = claimed else {
         return Ok(None);
     };
@@ -95,11 +95,11 @@ async fn attach_claim_credential_deliveries(
 async fn finalize_claim(
     service: &WorkerDispatchService,
     authority: &ClaimAuthority,
-    claimed: Option<awaken_run_ingress::Claimed>,
-) -> Result<Option<awaken_run_ingress::Claimed>, ApplicationError> {
+    claimed: Option<awaken_dispatch::Claimed>,
+) -> Result<Option<awaken_dispatch::Claimed>, ApplicationError> {
     let claim = claimed
         .as_ref()
-        .map(|claimed| awaken_run_ingress::RunClaim::from(&claimed.lease));
+        .map(|claimed| awaken_dispatch::RunClaim::from(&claimed.lease));
     match attach_claim_credential_deliveries(service, claimed).await {
         Ok(claimed) => bind_claimed_session_work_authority(service, authority, claimed).await,
         Err(error) => {
@@ -359,7 +359,7 @@ async fn admit_attempt(
             .await
             .map_err(|error| ApplicationError::unavailable(error.to_string()))?
         {
-            return Ok(json!({ "admission": awaken_run_ingress::AttemptAdmission::Fenced }));
+            return Ok(json!({ "admission": awaken_dispatch::AttemptAdmission::Fenced }));
         }
         let snapshot = authority.snapshot.as_ref().ok_or_else(|| {
             ApplicationError::invalid("execution binding requires a registered Worker")
@@ -405,7 +405,7 @@ async fn admit_attempt(
         if snapshot.expires_at_ms <= service.clock.now_ms()
             || matches!(
                 snapshot.state,
-                awaken_run_ingress::WorkerState::Quiesced | awaken_run_ingress::WorkerState::Dead
+                awaken_dispatch::WorkerState::Quiesced | awaken_dispatch::WorkerState::Dead
             )
         {
             guard
@@ -440,10 +440,10 @@ async fn admit_attempt(
     .await
     .map_err(|_| ApplicationError::unavailable("physical admission completion unavailable"))??;
     let admission = admission.map_err(|error| match error {
-        awaken_run_ingress::DispatchError::Conflict(message) => ApplicationError::conflict(message),
+        awaken_dispatch::DispatchError::Conflict(message) => ApplicationError::conflict(message),
         error => ApplicationError::internal(error.to_string()),
     })?;
-    if admission == awaken_run_ingress::AttemptAdmission::Blocked {
+    if admission == awaken_dispatch::AttemptAdmission::Blocked {
         let observation =
             observe_expired_predecessor(service, &request.claim, authority.lease_ms).await?;
         // This request was not admitted. Even after independently confirmed
@@ -700,7 +700,7 @@ pub(super) async fn refresh_credential_delivery(
 #[cfg(test)]
 mod admission_cancellation_tests {
     use super::complete_admission;
-    use awaken_run_ingress::{RegistryMutation, WorkerDirectory, WorkerRegistration};
+    use awaken_dispatch::{RegistryMutation, WorkerDirectory, WorkerRegistration};
 
     #[tokio::test]
     async fn cancelled_receipt_keeps_original_exclusion_until_admission_finishes() {

@@ -177,7 +177,7 @@ export async function runRemoteWorkerScenario(
         AWAKEN_TEST_WORKER_STORAGE_DIR: workerStorage,
         SESSION_ENVIRONMENT_TIER: TIER,
         AWAKEN_TEST_SESSION_IMAGE: IMAGE,
-        RUST_LOG: 'awaken_run_ingress=debug,awaken_worker=debug,awaken_session_executor=debug',
+        RUST_LOG: 'awaken_dispatch=debug,awaken_worker=debug,awaken_session_executor=debug',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });

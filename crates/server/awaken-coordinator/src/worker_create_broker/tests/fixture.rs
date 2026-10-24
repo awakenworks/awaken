@@ -24,12 +24,12 @@ pub(super) fn ledger_state(stored: &Mutex<Option<Value>>) -> Value {
 pub(super) async fn quiesce_worker(directory: &dyn WorkerDirectory, identity: &WorkerIdentity) {
     assert_eq!(
         directory.begin_drain(identity, 1_100).await.unwrap(),
-        awaken_run_ingress::RegistryMutation::Applied,
+        awaken_dispatch::RegistryMutation::Applied,
         "real Draining precondition"
     );
     assert_eq!(
         directory.mark_quiesced(identity).await.unwrap(),
-        awaken_run_ingress::RegistryMutation::Applied,
+        awaken_dispatch::RegistryMutation::Applied,
         "real Quiesced precondition"
     );
 }
@@ -107,7 +107,7 @@ pub(super) async fn ready_route_fixture() -> (NoApiRouteFixture, WorkerIdentity)
             .heartbeat(&identity, empty_heartbeat(1, true), now_ms, 60_000,)
             .await
             .unwrap(),
-        awaken_run_ingress::RegistryMutation::Applied,
+        awaken_dispatch::RegistryMutation::Applied,
         "S1 real Ready transition"
     );
     (fixture, identity)

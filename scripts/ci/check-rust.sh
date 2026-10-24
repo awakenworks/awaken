@@ -349,9 +349,9 @@ scoped_step "sdk-consumer" "keep the public SDK usable from an ordinary external
 # CR5 cfg(test) activates memory fixtures, not SQL adapters: execute the same
 # pure kernels there; SQL migration fixtures stay in the default/durable suite.
 scoped_step "run-ingress-neutral" "keep store-only arithmetic out of the database-less Worker graph" \
-  "awaken-run-ingress" cargo clippy -p awaken-run-ingress --no-default-features --lib "${locked[@]}" -- -D warnings
+  "awaken-dispatch" cargo clippy -p awaken-dispatch --no-default-features --lib "${locked[@]}" -- -D warnings
 scoped_step "run-ingress-neutral-unit" "keep memory and domain tests independent from optional SQL drivers" \
-  "awaken-run-ingress" cargo test -p awaken-run-ingress --no-default-features --lib "${locked[@]}"
+  "awaken-dispatch" cargo test -p awaken-dispatch --no-default-features --lib "${locked[@]}"
 
 # CR7 a brokered client needs catalog/HTTP contracts but no Admin database:
 # its actual transitive graph must compile warning-free without workspace SQL

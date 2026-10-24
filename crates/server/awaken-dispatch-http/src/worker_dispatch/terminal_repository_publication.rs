@@ -21,7 +21,7 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use awaken_run_ingress::WorkerIdentity;
+use awaken_dispatch::WorkerIdentity;
 use awaken_worker_transport_security::VerifiedWorkerContext;
 
 use super::session_realization::{

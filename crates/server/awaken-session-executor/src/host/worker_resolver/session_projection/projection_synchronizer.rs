@@ -1451,7 +1451,7 @@ mod tests {
         let storage = tempfile::tempdir().unwrap();
         let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .await
                 .unwrap(),
         );

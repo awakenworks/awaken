@@ -6,11 +6,11 @@ mod postgres_support;
 
 use std::sync::Arc;
 
-use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
-use awaken_lease_testkit::ManualClock;
-use awaken_run_ingress::{
+use awaken_dispatch::{
     MemoryDispatchStore, WorkerDirectory, WorkerManifest, WorkerRegistration, WorkerState,
 };
+use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_lease_testkit::ManualClock;
 use awaken_worker_registry::{
     MemoryWorkerDirectory, PostgresWorkerDirectory, SqliteWorkerDirectory,
 };
@@ -24,8 +24,8 @@ use serde_json::{Value, json};
 
 fn manifest() -> WorkerManifest {
     let mut manifest = WorkerManifest::default();
-    manifest.runtime_protocol.min = awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
-    manifest.runtime_protocol.max = awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     manifest
 }
 
@@ -141,7 +141,7 @@ async fn assert_immutable_registration(directory: Arc<dyn WorkerDirectory>, back
                     .expire_incarnation(&first.snapshot.identity, 151)
                     .await
                     .unwrap(),
-                awaken_run_ingress::RegistryMutation::Applied
+                awaken_dispatch::RegistryMutation::Applied
             );
         }
         let before = f
@@ -173,7 +173,7 @@ async fn assert_immutable_registration(directory: Arc<dyn WorkerDirectory>, back
         let heartbeat = bound
             .heartbeat(
                 &retry.snapshot.identity,
-                awaken_run_ingress::WorkerHeartbeat {
+                awaken_dispatch::WorkerHeartbeat {
                     sequence: 1,
                     ready: true,
                     in_flight: 0,
@@ -188,7 +188,7 @@ async fn assert_immutable_registration(directory: Arc<dyn WorkerDirectory>, back
             heartbeat.mutation,
             // Expiry is checked before lifecycle state in the canonical
             // heartbeat admission table, for both Starting and Dead records.
-            awaken_run_ingress::RegistryMutation::StaleIncarnation,
+            awaken_dispatch::RegistryMutation::StaleIncarnation,
             "P2 returned identity cannot renew closed/expired authority"
         );
         assert_eq!(heartbeat.lease_ttl_ms, None);

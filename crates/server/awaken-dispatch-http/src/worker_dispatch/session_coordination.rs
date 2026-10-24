@@ -19,7 +19,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_run_ingress::{RunClaim, WorkerIdentity};
+use awaken_dispatch::{RunClaim, WorkerIdentity};
 use awaken_worker_transport_security::VerifiedWorkerContext;
 
 use super::{
@@ -73,7 +73,7 @@ async fn claimed_session_authority(
     identity: &WorkerIdentity,
     claim: &RunClaim,
     session_id: &str,
-) -> Result<(ClaimAuthority, awaken_run_ingress::CommitEpochGuard), RealizationHttpError> {
+) -> Result<(ClaimAuthority, awaken_dispatch::CommitEpochGuard), RealizationHttpError> {
     // This guard proves the authenticated claim and trusted Session affinity at
     // command admission. Callers deliberately drop it before invoking the
     // Session application: send/report re-enter this same
@@ -118,7 +118,7 @@ async fn claimed_session_authority(
 }
 
 fn require_primary_session_claim(
-    guard: &awaken_run_ingress::CommitEpochGuard,
+    guard: &awaken_dispatch::CommitEpochGuard,
 ) -> Result<(), RealizationHttpError> {
     let dispatch = guard.request();
     if dispatch.thread_id() != dispatch.session_thread_id() {

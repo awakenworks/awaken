@@ -68,7 +68,7 @@ record coordinates and does not depend upward on Dispatch.
 The execution-owned `NativeAttemptFootprint` is the single decoder of original
 Native coverage, model operations and tool entry domains. Physical retirement
 and Session recovery both use that decoder through `awaken-dispatch-execution`;
-the existing `awaken-run-ingress` exports remain compatible. Coverage must have
+the existing `awaken-dispatch` exports remain compatible. Coverage must have
 its own positive commit coordinate strictly before every entry. Missing,
 unaligned or reordered history, and duplicate coverage, cannot acquire a
 response-only footprint through a weaker second parser. The recovery query also

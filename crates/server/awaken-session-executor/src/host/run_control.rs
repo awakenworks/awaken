@@ -468,7 +468,7 @@ mod durable_cancellation_tests {
         // | D4   | yes           | yes            | yes        | persisted               | 1     |
         let installed = Arc::new(crate::InstalledSessions::default());
         let owner: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch> = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
                 .await
                 .unwrap(),
         );

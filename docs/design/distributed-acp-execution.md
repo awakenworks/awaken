@@ -22,7 +22,7 @@ lands on awaken's existing seams (`RunExecutor`, `DispatchQueue`,
   (the Dispatch/Server boundary; `thread_id` is the shard and consistency key;
   only one owner may freeze/snapshot/execute a thread); the ACP `RunExecutor`
   Run model (`awaken-run-executor-acp`, `awaken-protocol-acp`); durable dispatch
-  and lease recovery (`awaken-run-ingress`, `SharedHost::ensure_dispatch_pool`).
+  and lease recovery (`awaken-dispatch`, `SharedHost::ensure_dispatch_pool`).
 
 ## Verdict
 

@@ -127,13 +127,13 @@ SILENT_SKIP_EXEMPTIONS: dict[str, str] = {
         "Reads SESSION_DEPLOYMENT_DATABASE_URL, which no lane sets: "
         "scripts/ci/pg_tests.sh exports AWAKEN_TEST_DATABASE_URL and runs Rust "
         "suites, not these Node runners. Durable commit against a real "
-        "Postgres is covered by pg_tests.sh's awaken-run-ingress and "
+        "Postgres is covered by pg_tests.sh's awaken-dispatch and "
         "awaken-session-store suites; what is uncovered is the same path "
         "driven through the served HTTP process."
     ),
     "e2e/durable_pg_wake_e2e.mjs": (
         "Same unset variable, same gap, same Rust-level coverage: the wake path "
-        "is exercised by pg_tests.sh's awaken-run-ingress suite and by the k3d "
+        "is exercised by pg_tests.sh's awaken-dispatch suite and by the k3d "
         "NATS wake runner."
     ),
     "e2e/postgres_claimed_commit_guard_e2e.ts": (

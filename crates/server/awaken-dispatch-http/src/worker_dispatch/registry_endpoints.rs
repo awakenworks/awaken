@@ -12,8 +12,8 @@ use awaken_time::WallClockExt;
 use tracing::Instrument;
 
 fn heartbeat_changes_placement(
-    previous: Option<&awaken_run_ingress::RegisteredWorker>,
-    heartbeat: &awaken_run_ingress::WorkerHeartbeat,
+    previous: Option<&awaken_dispatch::RegisteredWorker>,
+    heartbeat: &awaken_dispatch::WorkerHeartbeat,
 ) -> bool {
     let Some(previous) = previous else {
         return false;
@@ -82,7 +82,7 @@ pub(super) async fn register_worker(
             .await
         {
             Ok(record) => record,
-            Err(awaken_run_ingress::RegistryError::SlotOccupied {
+            Err(awaken_dispatch::RegistryError::SlotOccupied {
                 worker_id,
                 generation,
             }) => {
@@ -92,7 +92,7 @@ pub(super) async fn register_worker(
             }
             Err(error) => return Err(ApplicationError::invalid(error.to_string())),
         };
-        if record.snapshot.state == awaken_run_ingress::WorkerState::Starting
+        if record.snapshot.state == awaken_dispatch::WorkerState::Starting
             && let Some(source) = &service.execution_bindings
         {
             tokio::time::timeout(std::time::Duration::from_secs(5),
@@ -113,7 +113,7 @@ pub(super) async fn register_worker(
         Ok(json!({
             "worker": record,
             "lease_ttl_ms": service.registry_ttl_ms,
-            "runtime_protocol_version": awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION,
+            "runtime_protocol_version": awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION,
         }))
     }
     .await;
@@ -161,7 +161,7 @@ pub(super) async fn heartbeat_worker(
             .instrument(tracing::info_span!("worker.registry.heartbeat"))
             .await
             .map_err(|error| ApplicationError::internal(error.to_string()))?;
-        if mutation == awaken_run_ingress::RegistryMutation::Applied
+        if mutation == awaken_dispatch::RegistryMutation::Applied
             && placement_changed
             && let Some(session_work) = service.session_work.as_ref()
         {
@@ -171,7 +171,7 @@ pub(super) async fn heartbeat_worker(
             );
             session_work.request_lifecycle_reconciliation();
         }
-        let lease_ttl_ms = (mutation == awaken_run_ingress::RegistryMutation::Applied)
+        let lease_ttl_ms = (mutation == awaken_dispatch::RegistryMutation::Applied)
             .then_some(service.registry_ttl_ms);
         Ok(json!({
             "mutation": mutation,
@@ -216,7 +216,7 @@ pub(super) async fn quiesce_worker(
             .mark_quiesced(&request.identity)
             .await
             .map_err(|error| ApplicationError::internal(error.to_string()))?;
-        if mutation == awaken_run_ingress::RegistryMutation::Applied {
+        if mutation == awaken_dispatch::RegistryMutation::Applied {
             release_closed_idle_worker_evidence(&service, &request.identity).await?;
         }
         Ok(json!({ "mutation": mutation }))
@@ -244,7 +244,7 @@ pub(super) async fn deregister_worker(
             .instrument(tracing::info_span!("worker.registry.deregister"))
             .await
             .map_err(|error| ApplicationError::internal(error.to_string()))?;
-        if mutation == awaken_run_ingress::RegistryMutation::Applied {
+        if mutation == awaken_dispatch::RegistryMutation::Applied {
             release_closed_idle_worker_evidence(&service, &request.identity).await?;
         }
         Ok(json!({ "mutation": mutation }))

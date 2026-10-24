@@ -8,10 +8,10 @@ use awaken_container_contract::{K8sLedgerBinding, RequestJoin};
 use awaken_lease_testkit::ManualClock;
 use awaken_worker_contract::{WorkerCurrentSource, WorkerIncarnationSource};
 
-use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
-use awaken_run_ingress::{
+use awaken_dispatch::{
     AttemptAdmission, RunClaim, RunDispatch, SqliteDispatchStore, WorkerHeartbeat,
 };
+use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_sandbox_kubernetes::{K8sCreateTransport, K8sWorkerCreateLedger, PodProcessObserver};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_time::WallClockExt;
@@ -105,10 +105,7 @@ async fn ready(client: &WorkerControlClient, identity: &WorkerIdentity, sequence
         )
         .await
         .unwrap();
-    assert_eq!(
-        receipt.mutation,
-        awaken_run_ingress::RegistryMutation::Applied
-    );
+    assert_eq!(receipt.mutation, awaken_dispatch::RegistryMutation::Applied);
 }
 
 struct Server {
@@ -476,7 +473,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     store
         .enqueue(
             RunDispatch::new(activation)
-                .with_placement(awaken_run_ingress::PlacementRequirements::remote_required()),
+                .with_placement(awaken_dispatch::PlacementRequirements::remote_required()),
         )
         .await
         .unwrap();
@@ -618,7 +615,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
             .unwrap()
             .snapshot
             .state,
-        awaken_run_ingress::WorkerState::Dead,
+        awaken_dispatch::WorkerState::Dead,
         "L4 authority closed before stop"
     );
     let stop = transport.stop_source().unwrap();
@@ -629,11 +626,11 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     let receipt = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             if let Some(WorkerProcessStopStatus::Exited(receipt)) =
-                awaken_run_ingress::stop_expired_predecessor(
+                awaken_dispatch::stop_expired_predecessor(
                     store.as_ref(),
                     &directory,
                     stop.as_ref(),
-                    Some(&awaken_run_ingress::PhysicalAttemptRecoveryRead::new(
+                    Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
                         &recovery,
                     )),
                     &next,
@@ -787,7 +784,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     );
     assert_eq!(
         idle_control.deregister(&idle_identity).await.unwrap(),
-        awaken_run_ingress::RegistryMutation::Applied,
+        awaken_dispatch::RegistryMutation::Applied,
         "E10 close exact idle Registry admission after Coordinator restart"
     );
     assert!(
@@ -812,7 +809,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     pods.delete("idle", &DeleteParams::default()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            awaken_run_ingress::release_closed_idle_worker_evidence(
+            awaken_dispatch::release_closed_idle_worker_evidence(
                 store.as_ref(),
                 &directory,
                 stop.as_ref(),
@@ -882,7 +879,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         WorkerControlClient::new(idle_upstream.with_worker_identity(idle_identity.clone()));
     assert_eq!(
         idle_control.deregister(&idle_identity).await.unwrap(),
-        awaken_run_ingress::RegistryMutation::Applied,
+        awaken_dispatch::RegistryMutation::Applied,
         "L7"
     );
     let directory = SqliteWorkerDirectory::open(files.path().join("registry.sqlite"))
@@ -895,7 +892,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         .unwrap();
     assert_eq!(
         closed.snapshot.state,
-        awaken_run_ingress::WorkerState::Dead,
+        awaken_dispatch::WorkerState::Dead,
         "L7"
     );
     assert!(
@@ -914,7 +911,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     clock.set(closed.snapshot.expires_at_ms.checked_add(1).unwrap());
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            awaken_run_ingress::release_closed_idle_worker_evidence(
+            awaken_dispatch::release_closed_idle_worker_evidence(
                 store.as_ref(),
                 &directory,
                 transport.stop_source().unwrap().as_ref(),
@@ -939,7 +936,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     .await
     .expect("L7b exact original process exit is retained before successor admission");
     let successor = ready_deployment_pod(&pods, idle.metadata.uid.as_deref()).await;
-    awaken_run_ingress::release_closed_idle_worker_evidence(
+    awaken_dispatch::release_closed_idle_worker_evidence(
         store.as_ref(),
         &directory,
         transport.stop_source().unwrap().as_ref(),
@@ -971,7 +968,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
             .worker;
     assert_eq!(
         registered_successor.snapshot.state,
-        awaken_run_ingress::WorkerState::Starting,
+        awaken_dispatch::WorkerState::Starting,
         "L9"
     );
     assert_ne!(
@@ -1042,6 +1039,6 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         .unwrap();
 }
 
-use awaken_run_ingress::{
+use awaken_dispatch::{
     DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchExecution as _,
 };

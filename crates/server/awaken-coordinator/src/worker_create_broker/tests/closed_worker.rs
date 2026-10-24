@@ -1,7 +1,7 @@
 //! Original Worker closure reuses the registered provider ledger before release.
 use super::*;
 use awaken_container_contract::{CreateTicketRequest, RequestJoin, TicketAdmission};
-use awaken_run_ingress::{
+use awaken_dispatch::{
     AttemptExecutionBinding, DispatchClaims, DispatchControlReads, DispatchEnqueue,
     DispatchExecution, WorkerDirectory,
 };
@@ -31,14 +31,14 @@ async fn closed_worker_create_fence_survives_missing_process_history() {
         fixture::quiesce_worker(f.directory.as_ref(), &f.identity).await;
         let record = f.directory.incarnation(&f.identity).await.unwrap().unwrap();
         let source = source(&f);
-        awaken_run_ingress::WorkerExecutionStopSource::seal_closed_worker_admission(
+        awaken_dispatch::WorkerExecutionStopSource::seal_closed_worker_admission(
             source.as_ref(),
             &f.identity,
             record.create_ledger.as_ref(),
         )
         .await
         .unwrap();
-        let result = awaken_run_ingress::WorkerExecutionStopSource::observe_closed_idle_worker(
+        let result = awaken_dispatch::WorkerExecutionStopSource::observe_closed_idle_worker(
             source.as_ref(),
             &f.identity,
             false,
@@ -104,7 +104,7 @@ async fn create_seal_uses_closed_registry_and_original_ledger_without_process_ex
                     .expire_incarnation(&f.identity, 70_000)
                     .await
                     .unwrap(),
-                awaken_run_ingress::RegistryMutation::Applied,
+                awaken_dispatch::RegistryMutation::Applied,
                 "real Dead precondition"
             );
         } else if closed {
@@ -232,10 +232,10 @@ async fn closed_idle_worker_uses_the_same_original_creator_seal() {
         .record_process_exit(&f.identity, exit.clone())
         .await
         .unwrap();
-    let store = awaken_run_ingress::MemoryDispatchStore::new(Arc::new(ManualClock::new(200)));
+    let store = awaken_dispatch::MemoryDispatchStore::new(Arc::new(ManualClock::new(200)));
     let source = source(&f);
     for _ in 0..2 {
-        awaken_run_ingress::release_closed_idle_worker_evidence(
+        awaken_dispatch::release_closed_idle_worker_evidence(
             &store,
             f.directory.as_ref(),
             source.as_ref(),
@@ -267,7 +267,7 @@ fn original_process() -> String {
     .to_string()
 }
 
-fn source(f: &fixture::BrokerFixture) -> Arc<dyn awaken_run_ingress::WorkerExecutionStopSource> {
+fn source(f: &fixture::BrokerFixture) -> Arc<dyn awaken_dispatch::WorkerExecutionStopSource> {
     // The existing process root selects the real stop adapter over this same
     // client, control namespace and provider fingerprint. All M/CW/CI rows
     // above keep their original Registry, ledger, exit and no-Create effects;
@@ -300,14 +300,14 @@ async fn exited_worker_closes_its_original_create_ledger_before_releasing_eviden
         let old_record = f.directory.incarnation(&f.identity).await.unwrap().unwrap();
         let anchor = old_record.create_ledger.clone().unwrap();
         let clock = Arc::new(ManualClock::new(100));
-        let store = awaken_run_ingress::MemoryDispatchStore::new(clock.clone());
+        let store = awaken_dispatch::MemoryDispatchStore::new(clock.clone());
         let activation = awaken_dispatch_testkit::worker_http::activation("closed-creator");
         let run = activation.run_id.clone();
         store
-            .enqueue(awaken_run_ingress::RunDispatch::new(activation))
+            .enqueue(awaken_dispatch::RunDispatch::new(activation))
             .await
             .unwrap();
-        let old = awaken_run_ingress::RunClaim::from(
+        let old = awaken_dispatch::RunClaim::from(
             &store
                 .claim_run_compatible(&run, &old_record.snapshot, 50)
                 .await
@@ -351,7 +351,7 @@ async fn exited_worker_closes_its_original_create_ledger_before_releasing_eviden
             .await
             .unwrap()
             .unwrap();
-        let next = awaken_run_ingress::RunClaim::from(
+        let next = awaken_dispatch::RunClaim::from(
             &store
                 .claim_run_compatible(&run, &next.snapshot, 60_000)
                 .await
@@ -370,7 +370,7 @@ async fn exited_worker_closes_its_original_create_ledger_before_releasing_eviden
             f.stored.lock().unwrap().as_mut().unwrap()["metadata"]["uid"] = "foreign-ledger".into();
         }
         let original = store.load_physical_attempt(&run).await.unwrap();
-        let result = awaken_run_ingress::stop_expired_predecessor(
+        let result = awaken_dispatch::stop_expired_predecessor(
             &store,
             f.directory.as_ref(),
             source.as_ref(),
@@ -391,7 +391,7 @@ async fn exited_worker_closes_its_original_create_ledger_before_releasing_eviden
             Some(exit)
         );
         f.stored.lock().unwrap().as_mut().unwrap()["metadata"]["uid"] = anchor.uid().into();
-        awaken_run_ingress::stop_expired_predecessor(
+        awaken_dispatch::stop_expired_predecessor(
             &store,
             f.directory.as_ref(),
             source.as_ref(),

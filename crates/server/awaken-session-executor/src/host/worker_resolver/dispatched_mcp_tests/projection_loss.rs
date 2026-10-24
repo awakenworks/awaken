@@ -166,7 +166,7 @@ impl awaken_session_runtime_contract::McpAttachmentRealizer for RecordUnexpected
 
 #[tokio::test]
 async fn managed_claim_projection_loss_never_enters_ordinary_mcp_staging() {
-    use awaken_run_ingress::{DispatchClaims as _, DispatchEnqueue as _, WorkerResolver as _};
+    use awaken_dispatch::{DispatchClaims as _, DispatchEnqueue as _, WorkerResolver as _};
     // M1 a genuine parent-affined child Queue claim has immutable Session authority.
     // M2 its real SQLite Root installed a complete canonical local projection.
     // M3 that original projection is actually removed after its ready read.
@@ -174,7 +174,7 @@ async fn managed_claim_projection_loss_never_enters_ordinary_mcp_staging() {
     let session = "managed-claim-projection-loss";
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let queue = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
             .await
             .unwrap(),
     );
@@ -285,7 +285,7 @@ async fn managed_claim_projection_loss_never_enters_ordinary_mcp_staging() {
         "Managed claim used ordinary MCP after original projection loss: calls={calls}"
     );
     assert!(
-        matches!(error, awaken_run_ingress::Error::ResolutionNotReady(_)),
+        matches!(error, awaken_dispatch::Error::ResolutionNotReady(_)),
         "E1: {error}"
     );
     assert!(

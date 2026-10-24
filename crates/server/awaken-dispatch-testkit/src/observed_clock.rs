@@ -1,5 +1,5 @@
 // @formal surface exclude=test_support_crate
-// @formal owner crates/server/awaken-run-ingress/tests/dispatch_conformance.rs
+// @formal owner crates/server/awaken-dispatch/tests/dispatch_conformance.rs
 // @formal reason: Test-only observation of an adapter's authority clock; no production transition.
 //! Wait on the clock that issued a persisted lease, independently of host skew.
 use std::future::Future;

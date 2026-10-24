@@ -110,7 +110,7 @@ impl WorkerDirectory for ScriptedDirectory {
     async fn record_process_exit(
         &self,
         _identity: &WorkerIdentity,
-        _receipt: awaken_run_ingress::WorkerProcessExit,
+        _receipt: awaken_dispatch::WorkerProcessExit,
     ) -> Result<RegistryMutation, RegistryError> {
         unreachable!("a readiness read never records a process exit")
     }

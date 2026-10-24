@@ -20,7 +20,7 @@ pub async fn run_echo_worker(
 
     impl InferenceExecutorMaterializer for EchoWorkerProvider {
         fn supported_access_schemes(&self) -> &'static [&'static str] {
-            &[awaken_run_ingress::HOST_EXECUTOR_CAPABILITY]
+            &[awaken_dispatch::HOST_EXECUTOR_CAPABILITY]
         }
 
         fn materialize_pinned(
@@ -105,7 +105,7 @@ mod tests {
         struct HostMaterializer;
         impl InferenceExecutorMaterializer for HostMaterializer {
             fn supported_access_schemes(&self) -> &'static [&'static str] {
-                &[awaken_run_ingress::HOST_EXECUTOR_CAPABILITY]
+                &[awaken_dispatch::HOST_EXECUTOR_CAPABILITY]
             }
 
             fn materialize_pinned(

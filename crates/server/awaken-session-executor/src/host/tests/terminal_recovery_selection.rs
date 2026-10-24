@@ -31,7 +31,7 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
         calls: AtomicUsize::new(2),
     });
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
             .await
             .expect("real SQLite dispatch authority"),
     );
@@ -192,7 +192,7 @@ async fn missing_current_terminal_work_retires_original(renew: bool) {
         calls: AtomicUsize::new(2),
     });
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
             .await
             .expect("real SQLite dispatch authority"),
     );
@@ -326,7 +326,7 @@ async fn completed_terminal_projection_not_found_cancels_its_original_real_run()
         calls: AtomicUsize::new(2),
     });
     let dispatch = Arc::new(
-        awaken_run_ingress::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
             .await
             .expect("real SQLite dispatch authority"),
     );

@@ -187,7 +187,7 @@ mod tests {
         // parent's claim prefix and fence its next otherwise-valid commit.
         let clock = awaken_time::system_clock();
         let store = Arc::new(
-            awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clone())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .await
                 .expect("test dispatch store"),
         );

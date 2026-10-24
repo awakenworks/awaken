@@ -79,7 +79,7 @@ awaken-environment-application.workspace = true
 awaken-environment-image-build.workspace = true
 awaken-environment-package-image-builder.workspace = true
 awaken-ext-builtin-tools.workspace = true
-awaken-run-ingress = { workspace = true, features = ["durable"] }
+awaken-dispatch = { workspace = true, features = ["durable"] }
 awaken-dispatch-execution.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-session-runtime-contract.workspace = true
@@ -214,7 +214,7 @@ k8s-openapi = { workspace = true }
 awaken-worker-runtime.workspace = true
 awaken-dispatch-testkit.workspace = true
 awaken-worker-registry = { workspace = true, features = ["test-support"] }
-awaken-run-ingress = { workspace = true, features = ["test-support"] }
+awaken-dispatch = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
 awaken-session-application = { workspace = true, features = ["test-support"] }
 awaken-environment-image-build = { workspace = true, features = ["test-support"] }
