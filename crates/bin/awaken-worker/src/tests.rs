@@ -286,7 +286,41 @@ impl awaken_provisioning_contract::SandboxProvider for CheckpointContainerProvid
         '_,
         std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
     > {
-        awaken_provisioning_contract::SandboxRestoration::Unsupported
+        awaken_provisioning_contract::SandboxRestoration::Targets(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl
+    awaken_provisioning_contract::RestoreTargetProvider<
+        std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
+    > for CheckpointContainerProvider
+{
+    async fn acquire_restore(
+        &self,
+        _spec: &awaken_provisioning_contract::SandboxSpec,
+        _request: &awaken_provisioning_contract::SandboxRestoreRequest,
+    ) -> Result<
+        awaken_provisioning_contract::SandboxRestoreTarget<
+            std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
+        >,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "builder tests do not restore an environment",
+        ))
+    }
+
+    async fn dispose_restored(
+        &self,
+        _spec: &awaken_provisioning_contract::SandboxSpec,
+        _request: &awaken_provisioning_contract::SandboxRestoreRequest,
+        _authorization: &awaken_provisioning_contract::SandboxDisposalAuthorization,
+        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "builder tests do not dispose restored environments",
+        ))
     }
 }
 

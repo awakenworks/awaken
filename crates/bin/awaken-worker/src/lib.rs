@@ -70,6 +70,7 @@ mod acp_capability;
 mod admin;
 mod attempt_decorator;
 mod bootstrap;
+mod checkpoint_topology;
 mod credential_files;
 mod credential_liveness;
 #[cfg(feature = "container-k8s")]
@@ -922,16 +923,13 @@ impl WorkerNodeBuilder {
             .application
             .capabilities()
             .map_err(WorkerNodeBuildError)?;
-        if !provider_checkpoint_formats.is_empty() && !dependency_capabilities.checkpoint_store {
-            return Err(WorkerNodeBuildError(
-                "checkpoint-capable Session provider requires a checkpoint store".to_string(),
-            ));
-        }
-        if dependency_capabilities.checkpoint_store && provider_checkpoint_formats.is_empty() {
-            return Err(WorkerNodeBuildError(
-                "checkpoint store requires a checkpoint-capable Session provider".to_string(),
-            ));
-        }
+        checkpoint_topology::validate(
+            self.session_container_provider
+                .as_ref()
+                .map(|installed| &installed.provider),
+            &provider_checkpoint_formats,
+            dependency_capabilities.checkpoint_store,
+        )?;
         let sandbox_override = self
             .session_container_provider
             .as_ref()

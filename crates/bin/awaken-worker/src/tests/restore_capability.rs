@@ -308,7 +308,6 @@ async fn restore_capability_pairing_and_ordinary_mode_hold_and_late_option_disco
 }
 
 #[tokio::test]
-#[ignore = "product gap: WorkerNodeBuilder::build never consults SandboxProvider::restoration() for checkpoint formats+store"]
 async fn restore_enabled_worker_with_unsupported_restoration_is_refused_at_construction() {
     // K4: formats + store, restoration() == Unsupported.
     let provider = Arc::new(CountingRestoreProvider::new(&["hosted-csi-v1"]));
@@ -319,9 +318,16 @@ async fn restore_enabled_worker_with_unsupported_restoration_is_refused_at_const
                 creates: provider.creates(),
             }
         }
-        Err(_) => Construction::Refused {
-            creates: provider.creates(),
-        },
+        Err(error) => {
+            assert_eq!(
+                error.to_string(),
+                "checkpoint-capable Session provider requires a restore rung",
+                "K4 stable refusal"
+            );
+            Construction::Refused {
+                creates: provider.creates(),
+            }
+        }
     };
     assert_eq!(provider.creates(), 0, "K4 zero external creates");
     assert_eq!(
