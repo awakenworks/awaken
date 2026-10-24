@@ -1,3 +1,8 @@
+// @formal surface requirement=protocol.adapters.adapter_projection
+// @formal reason: The profiled Run adapter mints the Session access verdict from the authenticated
+// @formal reason: Workspace and delegates admission and activation to SessionApplication. Existing
+// @formal reason: adapter tests own executable route evidence; this classification does not claim a
+// @formal reason: formal refinement of authentication or transport.
 //! Private profiled-Session Run lowering over canonical Session admission.
 
 use crate::common::scope::RequiredWorkspaceScope;
@@ -100,8 +105,14 @@ pub async fn submit_profiled_session_run(
         )))
     })?;
     let run_id = body.run_id.clone();
+    let access = state
+        .roles
+        .roots
+        .authorize(&owner_scope, &awaken_session_types::SessionId::from(&id))
+        .await
+        .map_err(|error| session_projection_error(error.into()))?;
     let admitted = Box::pin(state.roles.profiled.admit_profiled_session_run(
-        &owner_scope,
+        &access,
         awaken_session_execution_contract::AdmitSessionRun {
             session_id: awaken_session_types::SessionId::from(&id),
             agent_id: body.agent_id,

@@ -120,7 +120,6 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "process_roles",
         "session_effects",
         "session_execution_error",
-        "hub",
         "live_inbox",
         "managed_input_projection",
         "managed_model_capability",

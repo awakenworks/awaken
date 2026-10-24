@@ -189,3 +189,4 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0091-architecture-rules.md` | Decision record | Not required | n/a |
 | `adr/0092-worker-capacity-and-schedulability.md` | Decision record | Not required | n/a |
 | `adr/0093-immutable-application-origin-provenance.md` | Decision record; source carrier/read projection does not qualify product model authorization | Not required | n/a |
+| `adr/0094-session-access-and-run-admission-outcomes.md` | Decision record; executed by the Session acceptance ledger tests | Not required | n/a |

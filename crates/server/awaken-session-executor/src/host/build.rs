@@ -180,10 +180,9 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
             .cloned(),
     ));
     let capture = Arc::new(capture);
-    let completion = Arc::new(CompletionRegistry::new(
-        hub.clone(),
-        session_application.lifecycle_wakeup_binding(),
-    ));
+    let settlement =
+        crate::host::SettlementWakeup::over(&hub, session_application.lifecycle_wakeup_binding());
+    let completion = settlement.completion();
     let dispatch_hint = dispatch_hint(authority.as_ref());
     let durable_run_cancellation = crate::host::DurableRunCancellation::new(
         installed_sessions.clone(),
@@ -233,7 +232,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         durable_run_cancellation,
         mcp_root_authority,
     });
-    let (dispatch, session_runs) = session_run_delivery(&run_assembly, &completion, dispatch_hint);
+    let (dispatch, session_runs) = session_run_delivery(&run_assembly, &settlement, dispatch_hint);
     ExecutorComponents {
         realization_executor,
         thread_reads,
@@ -252,6 +251,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         store_dir,
         clock,
         completion,
+        settlement,
         session_application,
     }
 }
@@ -369,7 +369,7 @@ fn dispatch_execution(
 /// and publishes through it.
 fn session_run_delivery(
     run_assembly: &Arc<crate::RunAssembly>,
-    completion: &Arc<CompletionRegistry>,
+    settlement: &Arc<crate::host::SettlementWakeup>,
     hint: awaken_dispatch_execution::DispatchHint,
 ) -> (
     Arc<awaken_dispatch_execution::ProcessDispatch>,
@@ -378,12 +378,12 @@ fn session_run_delivery(
     let dispatch = Arc::new(awaken_dispatch_execution::ProcessDispatch::new(
         run_assembly.execution.clone(),
         run_assembly.clock.clone(),
-        completion.clone(),
+        settlement.clone(),
         hint,
     ));
     let runs = Arc::new(crate::SessionRuns::new(
         run_assembly.clone(),
-        completion.clone(),
+        settlement.completion(),
         dispatch.clone(),
     ));
     (dispatch, runs)
@@ -491,8 +491,8 @@ impl ExecutorComponents {
     /// state back into the same host. The sink is notification-only: committed
     /// Run truth remains authoritative and the bounded timeout retains its
     /// existing one-read recovery fallback.
-    pub fn dispatch_completion_sink(&self) -> Arc<dyn awaken_dispatch_execution::CompletionSink> {
-        self.completion.clone()
+    pub fn dispatch_completion_sink(&self) -> Arc<dyn awaken_dispatch_contract::CompletionSink> {
+        self.settlement.clone()
     }
 
     /// The edges back into the Session application built over this Host. The

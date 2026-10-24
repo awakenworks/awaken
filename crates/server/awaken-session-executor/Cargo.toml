@@ -16,6 +16,9 @@ isolates = ["axum"]
 
 [dependencies]
 awaken-session-realization.workspace = true
+# The Coordinator half of Run delivery: the Thread event hub and the
+# foreground completion relay this executor builds on.
+awaken-session-run-delivery.workspace = true
 awaken-tool-contract.workspace = true
 awaken-data-governance-contract.workspace = true
 # The auxiliary-run sandbox ports the process composition injects.

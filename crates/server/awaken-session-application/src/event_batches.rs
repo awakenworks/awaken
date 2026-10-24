@@ -23,7 +23,7 @@ use awaken_session_event_contract::{
 };
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionAgentCoordination, SessionRunActivation,
-    SessionThreadTarget, admit_interrupt_topology,
+    SessionThreadTarget, admit_event_batch_topology,
 };
 use awaken_session_state_contract::{PersistedSession, SessionEventHistory as EventHistory};
 use awaken_session_types::{RunError, SessionRevision};
@@ -425,11 +425,52 @@ impl SessionEventBatchCommands {
         })
     }
 
+    /// The Event append every caller outside this crate uses. Ownership was
+    /// decided once, when `access` was minted; only this crate's own
+    /// reconcilers append without it.
+    pub async fn append_owned_session_event_batch(
+        &self,
+        access: &crate::SessionAccess,
+        inputs: Vec<SessionEventInput>,
+        data_subject_id: Option<String>,
+        traceparent: Option<String>,
+        idempotency: Option<(String, String)>,
+    ) -> Result<SessionEventBatch, RunError> {
+        self.append_session_event_batch_idempotent(
+            access.session_id(),
+            inputs,
+            data_subject_id,
+            traceparent,
+            idempotency,
+        )
+        .await
+    }
+
+    /// The owned form of the request-local append-and-drive.
+    pub async fn append_and_drive_owned_session_event_batch(
+        &self,
+        access: &crate::SessionAccess,
+        inputs: Vec<SessionEventInput>,
+        data_subject_id: Option<String>,
+        traceparent: Option<String>,
+        idempotency: Option<(String, String)>,
+    ) -> Result<(SessionEventBatch, Option<RunError>), RunError> {
+        self.append_and_drive_session_event_batch_idempotent(
+            access.session_id(),
+            inputs,
+            data_subject_id,
+            traceparent,
+            idempotency,
+        )
+        .await
+    }
+
     /// Atomically accept one complete ordinary Event batch in the Session root.
     /// Its prospective committed revision is the stable linearization identity.
     /// Acceptance opens no activity: queued work may wait while the Thread is
     /// idle or Awaiting without fabricating a Running Session.
-    pub async fn append_session_event_batch(
+    #[cfg(test)]
+    pub(crate) async fn append_session_event_batch(
         &self,
         session_id: &str,
         inputs: Vec<SessionEventInput>,
@@ -449,7 +490,7 @@ impl SessionEventBatchCommands {
     /// Atomically append or replay one HTTP-idempotent Event batch. The key and
     /// fingerprint live on the existing root command, so concurrent callers
     /// either observe that exact batch or a conflict under the same root CAS.
-    pub async fn append_session_event_batch_idempotent(
+    pub(crate) async fn append_session_event_batch_idempotent(
         &self,
         session_id: &awaken_session_types::SessionId,
         inputs: Vec<SessionEventInput>,
@@ -479,7 +520,7 @@ impl SessionEventBatchCommands {
     /// before notifying the full recovery sweep. This removes a duplicate race
     /// between the synchronous driver and its own wake while retaining the
     /// periodic recovery authority if this future is lost after acceptance.
-    pub async fn append_and_drive_session_event_batch_idempotent(
+    pub(crate) async fn append_and_drive_session_event_batch_idempotent(
         &self,
         session_id: &awaken_session_types::SessionId,
         inputs: Vec<SessionEventInput>,
@@ -537,17 +578,7 @@ impl SessionEventBatchCommands {
                 &request_fingerprint,
             );
         }
-        match self.mutations.owner(session_id).await {
-            Ok(owner) if owner == owner_scope => {}
-            Ok(_) | Err(SessionMutationError::NotFound) => {
-                return Err(RunError {
-                    message: "Session was not found".into(),
-                    kind: awaken_session_types::RunErrorKind::BadRequest,
-                    code: "session_not_found".into(),
-                });
-            }
-            Err(error) => return Err(mutation_run_error(error)),
-        }
+        self.queries.authorize(owner_scope, session_id).await?;
         let result = self
             .resolve_session_event_batch(
                 session_id,
@@ -698,7 +729,7 @@ impl SessionEventBatchCommands {
             // Recheck on EVERY retry; the durable batch owns occupancy even
             // after Runtime delivery, without a second registry or local lock.
             if let EventBatchAdmission::Accept { inputs, .. } = &admission {
-                admit_interrupt_topology(coordination, thread_reads, session_id, inputs).await?;
+                admit_event_batch_topology(coordination, thread_reads, session_id, inputs).await?;
             }
             batch.validate_tool_reply_occupancy(&session.event_batches)?;
             session
@@ -1558,15 +1589,15 @@ fn mutation_run_error(error: SessionMutationError) -> RunError {
 impl crate::SessionEventBatches for SessionEventBatchCommands {
     async fn append_and_drive_session_event_batch_idempotent(
         &self,
-        session_id: &awaken_session_types::SessionId,
+        access: &crate::SessionAccess,
         inputs: Vec<SessionEventInput>,
         data_subject_id: Option<String>,
         traceparent: Option<String>,
         idempotency: Option<(String, String)>,
     ) -> Result<(SessionEventBatch, Option<RunError>), RunError> {
-        SessionEventBatchCommands::append_and_drive_session_event_batch_idempotent(
+        SessionEventBatchCommands::append_and_drive_owned_session_event_batch(
             self,
-            session_id,
+            access,
             inputs,
             data_subject_id,
             traceparent,
@@ -1577,15 +1608,15 @@ impl crate::SessionEventBatches for SessionEventBatchCommands {
 
     async fn append_session_event_batch_idempotent(
         &self,
-        session_id: &awaken_session_types::SessionId,
+        access: &crate::SessionAccess,
         inputs: Vec<SessionEventInput>,
         data_subject_id: Option<String>,
         traceparent: Option<String>,
         idempotency: Option<(String, String)>,
     ) -> Result<SessionEventBatch, RunError> {
-        SessionEventBatchCommands::append_session_event_batch_idempotent(
+        SessionEventBatchCommands::append_owned_session_event_batch(
             self,
-            session_id,
+            access,
             inputs,
             data_subject_id,
             traceparent,

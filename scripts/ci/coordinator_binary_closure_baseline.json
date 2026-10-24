@@ -2,9 +2,9 @@
   "$comment": "Reviewed transitions of scripts/ci/_dispatch_boundary_fitness.py rule D4: each Worker-side crate the awaken-coordinator binary's package still links, with its D10 review record. Shrink with --tighten; a new entry needs --write-baseline --reason '<JSON review record>'.",
   "transitions": {
     "awaken-credential-materializer": {
-      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; reached through the Session executor and realization, and the startup refuses ambient provider keys through it; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; reviewed at integration (record restated after the Coordinator binary left awaken-cli)",
-      "date": "2026-10-24",
+      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; reached through the Session executor and realization, and the startup's AllInOne model and credential plane (PinnedCredentialMaterializer over the local Vault, CredentialInferenceMaterializer, the A2A attempt relay capabilities, the hosted InferenceExecutorMaterializer adapter); the ambient-key guard, the Cloud broker transport, the recipient-key envelope, the refresh port and the MCP credential probe left it on 2026-10-25; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
+      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; reviewed at integration (record restated after the credential pieces outside execution left the materializer)",
+      "date": "2026-10-25",
       "remove_when": "the executor leaves the Coordinator closure"
     },
     "awaken-session-executor": {

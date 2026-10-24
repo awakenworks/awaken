@@ -619,11 +619,18 @@ impl Timeline for RootTimeline {
                     .warm
                     .application
                     .event_batches()
-                    .append_session_event_batch(
-                        &session_id,
+                    .append_owned_session_event_batch(
+                        &awaken_session_application::SessionRootReads::authorize(
+                            &*self.warm.application.queries(),
+                            &self.warm.resolve_owner(&session_id).await.unwrap().unwrap(),
+                            &SessionId::from(&session_id),
+                        )
+                        .await
+                        .unwrap(),
                         vec![SessionEventInput::UserMessage {
                             content: vec![ContentBlock::text(format!("input-{index}"))],
                         }],
+                        None,
                         None,
                         None,
                     )

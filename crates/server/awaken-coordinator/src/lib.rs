@@ -1278,13 +1278,23 @@ fn application_protocol_routers(
     ai_sdk_browser_cors: &AiSdkBrowserCors,
     org_admission: Option<&Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>>,
 ) -> (Router, Router) {
+    // A guarded mount resolves every thread through a grant binding to an
+    // existing Session. The unguarded test mount has no grant, so a first Run
+    // creates the Session the grant would have bound.
+    let session_runs = match &application_access {
+        ApplicationAccessMount::Guarded(_) => session_runs.clone(),
+        #[cfg(feature = "test-support")]
+        ApplicationAccessMount::ExplicitlyUnguardedTest => {
+            Arc::new(session_runs.as_ref().clone().with_first_run_creation())
+        }
+    };
     let ai_sdk = org_admission::admitted(
         awaken_protocol_ai_sdk::router_with_owner_scope(session_runs.clone()),
         org_admission,
         org_admission::AI_SDK,
     );
     let ag_ui = org_admission::admitted(
-        awaken_protocol_ag_ui::router_with_owner_scope(session_runs.clone()),
+        awaken_protocol_ag_ui::router_with_owner_scope(session_runs),
         org_admission,
         org_admission::AG_UI,
     );

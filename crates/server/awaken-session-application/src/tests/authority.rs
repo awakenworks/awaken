@@ -3566,19 +3566,15 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
         )
     };
 
-    assert!(
-        accepted
-            .coordination
-            .resume_session_run_streaming_for_owner(
-                "foreign-workspace",
-                "foreground-request-foreign",
-                &SessionId::from("foreground-resume"),
-                "reply-tool",
-                allow(),
-                Arc::new(awaken_session_application_contract::EventForwardingSink::new(|_| Ok(()))),
-            )
-            .await
-            .is_err(),
+    // F0: a foreign owner never obtains the access an owned resume requires.
+    assert_eq!(
+        crate::SessionRootReads::authorize(
+            &*accepted.queries(),
+            "foreign-workspace",
+            &SessionId::from("foreground-resume"),
+        )
+        .await,
+        Err(crate::SessionAccessError::NotFound),
         "F0 foreign owner fails closed"
     );
 
@@ -3621,12 +3617,18 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
         "F0/F1/F2/E1"
     );
 
+    let access = crate::SessionRootReads::authorize(
+        &*accepted.queries(),
+        "workspace",
+        &SessionId::from("foreground-resume"),
+    )
+    .await
+    .expect("F3 the owner is authorized");
     let outcome = accepted
         .coordination
-        .resume_session_run_streaming_for_owner(
-            "workspace",
+        .resume_owned_session_run_streaming(
+            &access,
             "foreground-request-accepted",
-            &SessionId::from("foreground-resume"),
             "reply-tool",
             allow(),
             Arc::new(awaken_session_application_contract::EventForwardingSink::new(|_| Ok(()))),
