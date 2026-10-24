@@ -139,7 +139,7 @@ async fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     image: Option<&str>,
     settings: &awaken_deployment_config::SandboxSettings,
     policy: &ContainerTierPolicy,
-    package_provisioner: Option<Arc<dyn awaken_sandbox_container::PackageImageProvisioner>>,
+    package_provisioner: Option<Arc<dyn awaken_container_contract::PackageImageProvisioner>>,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<BuiltContainerEnvironment, String> {
     let leased = runtime.capacity_lease_domain().is_some();
@@ -318,7 +318,7 @@ async fn k8s_runtime_for_realization(
 async fn k8s_package_provisioner(
     settings: &awaken_deployment_config::SandboxSettings,
     create_transport: Option<Arc<dyn awaken_sandbox_kubernetes::K8sCreateTransport>>,
-) -> Result<Option<Arc<dyn awaken_sandbox_container::PackageImageProvisioner>>, String> {
+) -> Result<Option<Arc<dyn awaken_container_contract::PackageImageProvisioner>>, String> {
     let Some(builder) = settings.package_image_builder else {
         return Ok(None);
     };
@@ -376,7 +376,7 @@ async fn k8s_package_provisioner(
 /// owns no journal, lease, or Environment-domain state.
 pub async fn package_image_provisioner(
     deployment: &awaken_deployment_config::DeploymentConfig,
-) -> Result<Option<Arc<dyn awaken_sandbox_container::PackageImageProvisioner>>, String> {
+) -> Result<Option<Arc<dyn awaken_container_contract::PackageImageProvisioner>>, String> {
     match deployment.sandbox_tier {
         #[cfg(feature = "docker")]
         SandboxTier::Docker => Ok(Some(Arc::new(docker_runtime(&deployment.sandbox)?))),

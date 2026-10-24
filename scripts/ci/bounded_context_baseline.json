@@ -5,7 +5,6 @@
     "awaken-acp-application -> awaken-run-executor-acp": "reach the execution context through its contract instead of awaken-run-executor-acp (infrastructure), or re-home awaken-acp-application",
     "awaken-admin-config-api -> awaken-credential-vault": "reach the credentials context through its contract instead of awaken-credential-vault (application), or re-home awaken-admin-config-api",
     "awaken-config-resolver -> awaken-credential-vault": "reach the credentials context through its contract instead of awaken-credential-vault (application), or re-home awaken-config-resolver",
-    "awaken-environment-package-image-builder -> awaken-sandbox-container": "reach the sandbox context through its contract instead of awaken-sandbox-container (infrastructure), or re-home awaken-environment-package-image-builder",
     "awaken-executable-agent-catalog -> awaken-durable-projection": "awaken-durable-projection is Agent/Environment-neutral projection mechanics filed under session; give it a neutral home, which also clears the environment catalog's edge",
     "awaken-executable-environment-catalog -> awaken-durable-projection": "reach the session context through its contract instead of awaken-durable-projection (application), or re-home awaken-executable-environment-catalog",
     "awaken-execution-composition -> awaken-connection-plan": "the Execution composition root mounts the Dispatch connection plan; reach it through a dispatch contract or move the plan values it reads into one",

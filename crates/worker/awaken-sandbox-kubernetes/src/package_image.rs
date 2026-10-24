@@ -29,7 +29,8 @@ use crate::{
     K8sCreateTransport, backend, brokered_client, create_or_verify_exact, sandbox_network_labels,
     stamp_realization,
 };
-use awaken_sandbox_container::{ForwardProxy, PackageImageProvisioner};
+use awaken_container_contract::PackageImageProvisioner;
+use awaken_sandbox_container::ForwardProxy;
 
 pub(crate) const DEFAULT_K8S_BUILDKIT_IMAGE: &str = "moby/buildkit:v0.30.0-rootless";
 // A cold desktop/multimedia image installs hundreds of Debian packages. On a

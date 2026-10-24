@@ -39,13 +39,12 @@ use crate::runtime::{
 use crate::{
     ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
     ContainerRealizationNamespace, ContainerRuntime, ContainerState, MANAGED_SANDBOX_LABEL,
-    PackageImageProvisioner, PreparedContainer, RUNTIME_OWNER_LABEL, RuntimeRestoreTarget,
-    SANDBOX_ADOPTION_LABEL, SANDBOX_ATTEMPT_LABEL, SANDBOX_EFFECT_EPOCH_LABEL,
-    SANDBOX_EFFECT_EXPIRY_LABEL, SANDBOX_EFFECT_LABEL, SANDBOX_EFFECT_OWNER_LABEL,
-    SANDBOX_EFFECT_RUNTIME_LABEL, SANDBOX_REALIZATION_LABEL, SANDBOX_SCOPE_LABEL,
-    container_effect_fence_from_values, container_effect_label_values, restoration_metadata,
-    restoration_plan_fingerprint, restore_container_name, runtime_container_name,
-    sandbox_scope_identity,
+    PreparedContainer, RUNTIME_OWNER_LABEL, RuntimeRestoreTarget, SANDBOX_ADOPTION_LABEL,
+    SANDBOX_ATTEMPT_LABEL, SANDBOX_EFFECT_EPOCH_LABEL, SANDBOX_EFFECT_EXPIRY_LABEL,
+    SANDBOX_EFFECT_LABEL, SANDBOX_EFFECT_OWNER_LABEL, SANDBOX_EFFECT_RUNTIME_LABEL,
+    SANDBOX_REALIZATION_LABEL, SANDBOX_SCOPE_LABEL, container_effect_fence_from_values,
+    container_effect_label_values, restoration_metadata, restoration_plan_fingerprint,
+    restore_container_name, runtime_container_name, sandbox_scope_identity,
 };
 use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory};
 use awaken_provisioning_contract::AgentProcess;
@@ -1839,7 +1838,7 @@ impl ContainerRuntime for DockerRuntime {
 }
 
 #[async_trait]
-impl PackageImageProvisioner for DockerRuntime {
+impl awaken_container_contract::PackageImageProvisioner for DockerRuntime {
     async fn probe_builder(&self) -> Result<(), RuntimeError> {
         self.ping().await
     }

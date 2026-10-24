@@ -19,6 +19,8 @@ async-trait.workspace = true
 blake3 = "1"
 # Pure container wire and capacity values share provisioning vocabulary.
 awaken-provisioning-contract.workspace = true
+# The package requirements a package image realizes.
+awaken-environment-contract.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true

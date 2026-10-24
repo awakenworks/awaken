@@ -1452,35 +1452,6 @@ mod realization_tests {
 
 use awaken_provisioning_contract::AgentProcess;
 
-/// Independent package-image build/publish port.
-#[async_trait]
-pub trait PackageImageProvisioner: Send + Sync {
-    /// Whether the builder answers now; a builder that does not is not
-    /// advertised as package provisioning (ADR-0092).
-    async fn probe_builder(&self) -> Result<(), RuntimeError>;
-
-    async fn package_base_image_identity(&self, reference: &str) -> Result<String, RuntimeError> {
-        Ok(reference.to_owned())
-    }
-
-    async fn prepare_package_image(
-        &self,
-        base_image: &str,
-        packages: &awaken_environment_contract::PackageRequirements,
-        network: &pc::NetworkPolicy,
-    ) -> Result<String, RuntimeError>;
-
-    async fn package_image_available(
-        &self,
-        _base_image: &str,
-        _packages: &awaken_environment_contract::PackageRequirements,
-        _network: &pc::NetworkPolicy,
-        _image: &str,
-    ) -> Result<bool, RuntimeError> {
-        Ok(false)
-    }
-}
-
 /// The sole provider answer when a Session lost its durable container handle.
 /// `ExactIncarnation` is not a cleanup receipt: the provider must still validate
 /// the frozen spec/effect and use its ordinary handle-bound terminal path.
