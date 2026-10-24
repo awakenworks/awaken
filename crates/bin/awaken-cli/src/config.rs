@@ -31,7 +31,6 @@ mod service_boundary;
 mod worker_bootstrap;
 mod workspace_data;
 
-pub use awaken_worker::WorkerBootstrap;
 pub use cloud_iam::CloudIamConfig;
 pub use deployment::{
     CloudModelMode, ConfigOverrides, CoordinatorStoreConfig, OperatingMode, ResolvedDeployment,

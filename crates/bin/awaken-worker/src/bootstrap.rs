@@ -1,51 +1,12 @@
 // @formal entrypoint worker.remote_transport_is_secure_exact_and_identity_bound
 // @formal entrypoint worker_credential.projected_binding_use_rechecks_after_probe
-// @formal entrypoint worker_credential.publication_budget_covers_probe_and_delivery
 //! Authority-store-isolated Worker process configuration and assembly.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use awaken_worker_transport_security::{WorkerBootstrap, WorkerBootstrapInput};
 use serde::Deserialize;
-
-/// Worker-owned bootstrap settings also reused by the all-in-one startup.
-#[derive(Debug, Clone)]
-pub struct WorkerBootstrap {
-    pub worker_id: String,
-    pub request_credential_file: Option<PathBuf>,
-    pub kubernetes_identity_directory: Option<PathBuf>,
-    pub credential_material_root: PathBuf,
-    pub credential_envelope_keys_file: Option<PathBuf>,
-    pub credential_trust_domain: String,
-    pub admin_listen: Option<String>,
-    pub drain_grace_secs: u64,
-    pub build_digest: Option<String>,
-    pub zone: Option<String>,
-    pub capabilities: Vec<String>,
-    pub max_concurrent: Option<u32>,
-    pub credential_probe_interval_secs: u64,
-    pub credential_observation_ttl_secs: u64,
-}
-
-/// Optional authored Worker values resolved through one defaulting/validation
-/// path by both the standalone artifact and the all-in-one startup.
-#[derive(Debug, Clone, Default)]
-pub struct WorkerBootstrapInput {
-    pub worker_id: Option<String>,
-    pub request_credential_file: Option<PathBuf>,
-    pub kubernetes_identity_directory: Option<PathBuf>,
-    pub credential_material_root: Option<PathBuf>,
-    pub credential_envelope_keys_file: Option<PathBuf>,
-    pub credential_trust_domain: Option<String>,
-    pub admin_listen: Option<String>,
-    pub drain_grace_secs: Option<u64>,
-    pub build_digest: Option<String>,
-    pub zone: Option<String>,
-    pub capabilities: Option<Vec<String>>,
-    pub max_concurrent: Option<u32>,
-    pub credential_probe_interval_secs: Option<u64>,
-    pub credential_observation_ttl_secs: Option<u64>,
-}
 
 /// Explicit transport posture: embedding may use a trusted local channel;
 /// standalone Workers must use the canonical authenticated HTTPS constructor.
@@ -56,162 +17,88 @@ pub enum WorkerUpstreamSecurity<'a> {
     },
 }
 
-impl WorkerBootstrap {
-    /// One credential-loading boundary for standalone and embedded startup.
-    /// Credential parsing and secure remote admission remain transport-owned.
-    /// `clock` is the Worker process's one clock; its signed request
-    /// assertions are stamped with it.
-    pub fn upstream(
-        &self,
-        server: impl Into<String>,
-        security: WorkerUpstreamSecurity<'_>,
-        clock: Arc<dyn awaken_time::WallClock>,
-    ) -> Result<awaken_worker_transport_security::WorkerUpstream, String> {
-        let server = server.into();
-        if let Some(directory) = &self.kubernetes_identity_directory {
-            if self.request_credential_file.is_some() {
-                return Err("Worker cannot mix Pod-bound tokens and signing credentials".into());
-            }
-            #[cfg(feature = "container-k8s")]
-            {
-                let authorizer = awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer::from_projected_directory(directory)?;
-                if authorizer.pod().worker_id() != self.worker_id {
-                    return Err("Worker Pod projection changed after bootstrap resolution".into());
-                }
-                let ca = match security {
-                    WorkerUpstreamSecurity::Local => None,
-                    WorkerUpstreamSecurity::Remote {
-                        server_ca_certificate,
-                    } => server_ca_certificate,
-                };
-                return authorizer.into_remote_upstream(&server, ca);
-            }
-            #[cfg(not(feature = "container-k8s"))]
-            {
-                let _ = directory;
-                return Err(
-                    "Pod-bound Worker transport requires the container-k8s build feature".into(),
-                );
-            }
+/// The Worker's upstream to its Coordinator, built from its resolved
+/// bootstrap. One credential-loading boundary for standalone and embedded startup.
+/// Credential parsing and secure remote admission remain transport-owned.
+/// `clock` is the Worker process's one clock; its signed request
+/// assertions are stamped with it.
+pub fn worker_upstream(
+    bootstrap: &WorkerBootstrap,
+    server: impl Into<String>,
+    security: WorkerUpstreamSecurity<'_>,
+    clock: Arc<dyn awaken_time::WallClock>,
+) -> Result<awaken_worker_transport_security::WorkerUpstream, String> {
+    let server = server.into();
+    if let Some(directory) = &bootstrap.kubernetes_identity_directory {
+        if bootstrap.request_credential_file.is_some() {
+            return Err("Worker cannot mix Pod-bound tokens and signing credentials".into());
         }
-        use awaken_worker_transport_security::{
-            WorkerUpstream, parse_projected_signing_credentials, projected_request_authorizer,
-        };
-        let source = self
-            .request_credential_file
-            .as_ref()
-            .map(|path| {
-                std::fs::read_to_string(path).map_err(|error| {
-                    format!("read Worker request credential {}: {error}", path.display())
-                })
-            })
-            .transpose()?;
-        match security {
-            WorkerUpstreamSecurity::Local => {
-                let upstream = WorkerUpstream::new(server).with_worker_id(&self.worker_id);
-                match source {
-                    Some(source) => Ok(upstream.with_request_authorizer(
-                        projected_request_authorizer(&source, &self.worker_id, clock)?,
-                    )),
-                    None => Ok(upstream),
-                }
+        #[cfg(feature = "container-k8s")]
+        {
+            let authorizer = awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer::from_projected_directory(directory)?;
+            if authorizer.pod().worker_id() != bootstrap.worker_id {
+                return Err("Worker Pod projection changed after bootstrap resolution".into());
             }
-            WorkerUpstreamSecurity::Remote {
-                server_ca_certificate,
-            } => {
-                let source = source.ok_or_else(|| {
-                    "server-mode Worker requires worker_request_credential_file".to_owned()
-                })?;
-                let credentials = parse_projected_signing_credentials(&source)?;
-                match server_ca_certificate {
-                    Some(ca) => WorkerUpstream::remote_with_ca_certificate(
-                        server,
-                        &self.worker_id,
-                        credentials,
-                        ca,
-                        clock,
-                    ),
-                    None => WorkerUpstream::remote(server, &self.worker_id, credentials, clock),
-                }
-            }
+            let ca = match security {
+                WorkerUpstreamSecurity::Local => None,
+                WorkerUpstreamSecurity::Remote {
+                    server_ca_certificate,
+                } => server_ca_certificate,
+            };
+            return authorizer.into_remote_upstream(&server, ca);
+        }
+        #[cfg(not(feature = "container-k8s"))]
+        {
+            let _ = directory;
+            return Err(
+                "Pod-bound Worker transport requires the container-k8s build feature".into(),
+            );
         }
     }
-
-    pub fn resolve(input: WorkerBootstrapInput, data_dir: &Path) -> Result<Self, String> {
-        let worker_id = if let Some(directory) = &input.kubernetes_identity_directory {
-            if input.request_credential_file.is_some() {
-                return Err("Worker cannot mix Pod-bound tokens and signing credentials".into());
+    use awaken_worker_transport_security::{
+        WorkerUpstream, parse_projected_signing_credentials, projected_request_authorizer,
+    };
+    let source = bootstrap
+        .request_credential_file
+        .as_ref()
+        .map(|path| {
+            std::fs::read_to_string(path).map_err(|error| {
+                format!("read Worker request credential {}: {error}", path.display())
+            })
+        })
+        .transpose()?;
+    match security {
+        WorkerUpstreamSecurity::Local => {
+            let upstream = WorkerUpstream::new(server).with_worker_id(&bootstrap.worker_id);
+            match source {
+                Some(source) => Ok(
+                    upstream.with_request_authorizer(projected_request_authorizer(
+                        &source,
+                        &bootstrap.worker_id,
+                        clock,
+                    )?),
+                ),
+                None => Ok(upstream),
             }
-            #[cfg(feature = "container-k8s")]
-            {
-                let pod = awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer::from_projected_directory(directory)?;
-                let exact = pod.pod().worker_id();
-                if input
-                    .worker_id
-                    .as_ref()
-                    .is_some_and(|configured| configured != &exact)
-                {
-                    return Err("worker_id must exactly match its Kubernetes Pod projection".into());
-                }
-                Some(exact)
+        }
+        WorkerUpstreamSecurity::Remote {
+            server_ca_certificate,
+        } => {
+            let source = source.ok_or_else(|| {
+                "server-mode Worker requires worker_request_credential_file".to_owned()
+            })?;
+            let credentials = parse_projected_signing_credentials(&source)?;
+            match server_ca_certificate {
+                Some(ca) => WorkerUpstream::remote_with_ca_certificate(
+                    server,
+                    &bootstrap.worker_id,
+                    credentials,
+                    ca,
+                    clock,
+                ),
+                None => WorkerUpstream::remote(server, &bootstrap.worker_id, credentials, clock),
             }
-            #[cfg(not(feature = "container-k8s"))]
-            {
-                let _ = directory;
-                return Err(
-                    "Pod-bound Worker transport requires the container-k8s build feature".into(),
-                );
-            }
-        } else {
-            input.worker_id
-        };
-        if input.credential_envelope_keys_file.is_some()
-            && (input.credential_material_root.is_some() || input.credential_trust_domain.is_some())
-        {
-            return Err("credential envelope keys and file projection settings select competing material resolvers".into());
         }
-        if input
-            .credential_envelope_keys_file
-            .as_ref()
-            .is_some_and(|path| path.as_os_str().is_empty())
-        {
-            return Err("credential_envelope_keys_file must not be empty".into());
-        }
-        let worker = Self {
-            worker_id: worker_id.unwrap_or_else(|| "awaken-worker".into()),
-            request_credential_file: input.request_credential_file,
-            kubernetes_identity_directory: input.kubernetes_identity_directory,
-            credential_envelope_keys_file: input.credential_envelope_keys_file,
-            credential_material_root: input
-                .credential_material_root
-                .unwrap_or_else(|| data_dir.join("worker-credentials")),
-            credential_trust_domain: input.credential_trust_domain.unwrap_or_else(|| {
-                awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN.into()
-            }),
-            admin_listen: input.admin_listen.or_else(|| Some("0.0.0.0:9090".into())),
-            drain_grace_secs: input.drain_grace_secs.unwrap_or(20),
-            build_digest: input.build_digest,
-            zone: input.zone,
-            capabilities: input.capabilities.unwrap_or_default(),
-            max_concurrent: input.max_concurrent,
-            credential_probe_interval_secs: input.credential_probe_interval_secs.unwrap_or(10),
-            credential_observation_ttl_secs: input.credential_observation_ttl_secs.unwrap_or(30),
-        };
-        if worker.worker_id.trim().is_empty() {
-            return Err("worker_id must not be empty".into());
-        }
-        if worker.credential_material_root.as_os_str().is_empty() {
-            return Err("worker_credential_material_root must not be empty".into());
-        }
-        if worker.credential_trust_domain.trim().is_empty() {
-            return Err("worker_credential_trust_domain must not be empty".into());
-        }
-        crate::credential_liveness::validate_observation_timing(
-            std::time::Duration::from_secs(worker.credential_probe_interval_secs),
-            std::time::Duration::from_secs(worker.credential_observation_ttl_secs),
-            None,
-        )?;
-        Ok(worker)
     }
 }
 
@@ -454,7 +341,8 @@ impl WorkerDaemonConfig {
                 })
             })
             .transpose()?;
-        let upstream = self.worker.upstream(
+        let upstream = worker_upstream(
+            &self.worker,
             &self.server,
             WorkerUpstreamSecurity::Remote {
                 server_ca_certificate: certificate.as_deref(),
@@ -637,41 +525,6 @@ mod tests {
         }
     }
 
-    /// Decision table: C1 envelope path, C2 explicit projected root, C3 explicit
-    /// projected holder. !C1 keeps the original file resolver; C1+!C2+!C3 selects
-    /// the envelope resolver; C1+(C2|C3) rejects competing ownership before IO.
-    /// Empty envelope paths reject even when no other source is authored.
-    #[test]
-    fn material_resolver_configuration_has_one_owner() {
-        for envelope in [false, true] {
-            for root in [false, true] {
-                for holder in [false, true] {
-                    let result = WorkerBootstrap::resolve(
-                        WorkerBootstrapInput {
-                            credential_envelope_keys_file: envelope
-                                .then(|| PathBuf::from("keys.json")),
-                            credential_material_root: root.then(|| PathBuf::from("projection")),
-                            credential_trust_domain: holder.then(|| "worker-a".into()),
-                            ..Default::default()
-                        },
-                        Path::new("worker"),
-                    );
-                    assert_eq!(result.is_ok(), !envelope || !(root || holder));
-                }
-            }
-        }
-        assert!(
-            WorkerBootstrap::resolve(
-                WorkerBootstrapInput {
-                    credential_envelope_keys_file: Some(PathBuf::new()),
-                    ..Default::default()
-                },
-                Path::new("worker")
-            )
-            .is_err()
-        );
-    }
-
     #[test]
     fn pod_bootstrap_freezes_projected_identity_and_never_falls_back_to_signing() {
         // P1 supported feature + complete projection => derive exact Worker ID
@@ -735,13 +588,13 @@ mod tests {
         {
             let mut worker = resolved.unwrap();
             assert_eq!(worker.worker_id, "k8s:workers:worker-a:uid-a");
-            let upstream = worker
-                .upstream(
-                    "https://coordinator",
-                    WorkerUpstreamSecurity::Local,
-                    awaken_time::system_clock(),
-                )
-                .unwrap();
+            let upstream = worker_upstream(
+                &worker,
+                "https://coordinator",
+                WorkerUpstreamSecurity::Local,
+                awaken_time::system_clock(),
+            )
+            .unwrap();
             let request = upstream
                 .authorize_request(
                     "POST",
@@ -759,13 +612,13 @@ mod tests {
                 "P1"
             );
             assert!(
-                worker
-                    .upstream(
-                        "http://coordinator",
-                        WorkerUpstreamSecurity::Local,
-                        awaken_time::system_clock()
-                    )
-                    .is_err(),
+                worker_upstream(
+                    &worker,
+                    "http://coordinator",
+                    WorkerUpstreamSecurity::Local,
+                    awaken_time::system_clock()
+                )
+                .is_err(),
                 "P1 still HTTPS"
             );
             let mut mismatch = input();
@@ -776,25 +629,25 @@ mod tests {
             );
             worker.request_credential_file = Some(directory.path().join("signer"));
             assert!(
-                worker
-                    .upstream(
-                        "https://coordinator",
-                        WorkerUpstreamSecurity::Local,
-                        awaken_time::system_clock()
-                    )
-                    .is_err(),
+                worker_upstream(
+                    &worker,
+                    "https://coordinator",
+                    WorkerUpstreamSecurity::Local,
+                    awaken_time::system_clock()
+                )
+                .is_err(),
                 "P3 mutation"
             );
             worker.request_credential_file = None;
             std::fs::write(directory.path().join("uid"), "replacement").unwrap();
             assert!(
-                worker
-                    .upstream(
-                        "https://coordinator",
-                        WorkerUpstreamSecurity::Local,
-                        awaken_time::system_clock()
-                    )
-                    .is_err(),
+                worker_upstream(
+                    &worker,
+                    "https://coordinator",
+                    WorkerUpstreamSecurity::Local,
+                    awaken_time::system_clock()
+                )
+                .is_err(),
                 "P4"
             );
         }
@@ -826,19 +679,23 @@ mod tests {
             server_ca_certificate: None,
         };
         assert!(
-            worker
-                .upstream(
-                    "http://coordinator",
-                    WorkerUpstreamSecurity::Local,
-                    awaken_time::system_clock()
-                )
-                .is_ok(),
+            worker_upstream(
+                &worker,
+                "http://coordinator",
+                WorkerUpstreamSecurity::Local,
+                awaken_time::system_clock()
+            )
+            .is_ok(),
             "B1"
         );
         assert!(
-            worker
-                .upstream("https://coordinator", remote(), awaken_time::system_clock())
-                .is_err(),
+            worker_upstream(
+                &worker,
+                "https://coordinator",
+                remote(),
+                awaken_time::system_clock()
+            )
+            .is_err(),
             "B2"
         );
         let file = directory.path().join("credential.json");
@@ -855,48 +712,60 @@ mod tests {
                     WorkerUpstreamSecurity::Local
                 };
                 assert_eq!(
-                    worker
-                        .upstream("https://coordinator", security, awaken_time::system_clock())
-                        .is_ok(),
+                    worker_upstream(
+                        &worker,
+                        "https://coordinator",
+                        security,
+                        awaken_time::system_clock()
+                    )
+                    .is_ok(),
                     source == Some(valid),
                     "B3/B4 {is_remote}"
                 );
             }
         }
         assert!(
-            worker
-                .upstream(
-                    "http://coordinator",
-                    WorkerUpstreamSecurity::Local,
-                    awaken_time::system_clock()
-                )
-                .is_ok(),
+            worker_upstream(
+                &worker,
+                "http://coordinator",
+                WorkerUpstreamSecurity::Local,
+                awaken_time::system_clock()
+            )
+            .is_ok(),
             "B3 local"
         );
         assert!(
-            worker
-                .upstream("http://coordinator", remote(), awaken_time::system_clock())
-                .is_err(),
+            worker_upstream(
+                &worker,
+                "http://coordinator",
+                remote(),
+                awaken_time::system_clock()
+            )
+            .is_err(),
             "B3 remote"
         );
         assert!(
-            worker
-                .upstream(
-                    "https://coordinator",
-                    WorkerUpstreamSecurity::Remote {
-                        server_ca_certificate: Some(b"invalid")
-                    },
-                    awaken_time::system_clock()
-                )
-                .is_err(),
+            worker_upstream(
+                &worker,
+                "https://coordinator",
+                WorkerUpstreamSecurity::Remote {
+                    server_ca_certificate: Some(b"invalid")
+                },
+                awaken_time::system_clock()
+            )
+            .is_err(),
             "B5"
         );
         worker.worker_id = "other".into();
         for security in [WorkerUpstreamSecurity::Local, remote()] {
             assert!(
-                worker
-                    .upstream("https://coordinator", security, awaken_time::system_clock())
-                    .is_err(),
+                worker_upstream(
+                    &worker,
+                    "https://coordinator",
+                    security,
+                    awaken_time::system_clock()
+                )
+                .is_err(),
                 "B4 mismatch"
             );
         }

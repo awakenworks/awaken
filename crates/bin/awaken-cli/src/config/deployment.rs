@@ -31,7 +31,7 @@ pub struct ResolvedDeployment {
     pub ai_sdk_browser_cors: awaken_coordinator::AiSdkBrowserCors,
     pub run_local_pool: bool,
     pub worker_server: Option<String>,
-    pub worker: super::WorkerBootstrap,
+    pub worker: awaken_worker_transport_security::WorkerBootstrap,
     pub worker_trust_credentials_file: Option<PathBuf>,
     pub worker_kubernetes: Option<super::KubernetesWorkerTransport>,
     pub identity_mode: awaken_control::ManagementIdentityMode,

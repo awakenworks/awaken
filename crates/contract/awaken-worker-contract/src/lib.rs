@@ -18,6 +18,7 @@ mod capability_agreement;
 mod fleet_readiness;
 mod manifest;
 mod observation;
+mod observation_budget;
 mod placement;
 mod registry;
 mod relay_route;
@@ -42,6 +43,7 @@ pub use observation::{
     WorkerAcpCapabilityRequirement, WorkerCredentialObservation, dynamic_evidence_admits,
     select_verified_acp_capability,
 };
+pub use observation_budget::{observation_budget_fits, validate_observation_timing};
 pub use placement::{
     LeastLoadedPolicy, PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE, PlacementContext, PlacementError,
     PlacementPolicy, RankedWorker, place, place_assignment,

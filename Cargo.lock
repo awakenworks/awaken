@@ -3846,6 +3846,7 @@ name = "awaken-worker-transport-security"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-agent-contract",
  "awaken-dispatch-contract",
  "awaken-lease-testkit",
  "awaken-outbound-http",
