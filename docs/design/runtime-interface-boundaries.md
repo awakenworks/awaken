@@ -75,15 +75,21 @@ Worker-side implementation. The Coordinator component (`awaken-coordinator`)
 already holds this: it consumes the executor only through
 [`ExecutionPorts`](../../crates/server/awaken-coordinator/src/execution_ports.rs),
 and rule D3 of `scripts/ci/_dispatch_boundary_fitness.py` refuses any executor
-or Worker-side crate in its closure. The Coordinator *binary* does not hold it
-yet: `awaken-coordinator` is a target of `awaken-cli`, which is also the
-AllInOne root, and the Coordinator role builds the full Session executor
-(`SessionExecutorBuilder::for_coordinator`) because the Coordinator-side Session
-execution still lives there. Rule D4 checks the closure of the package that
-declares the binary and holds the remaining Worker-side crates as reviewed
-transitions in `scripts/ci/coordinator_binary_closure_baseline.json`; a new
-reach is refused and each transition is removed with `--tighten` when its crate
-leaves the closure.
+or Worker-side crate in its closure. The Coordinator *binary* is declared by
+its own package, [`awaken-coordinator-process`](../../crates/bin/awaken-coordinator-process/src/main.rs),
+over the shared process startup
+[`awaken-process-startup`](../../crates/bin/awaken-process-startup/src/lib.rs),
+which links no Worker: the `awaken` launcher (`awaken-cli`) supplies the Worker
+an AllInOne process co-locates through
+[`ColocatedWorkerPreparation`](../../crates/bin/awaken-process-startup/src/colocated_worker.rs),
+and the Coordinator package supplies none. The startup still builds the full
+Session executor for the Coordinator role (`SessionExecutorBuilder::for_coordinator`)
+because the Coordinator-side Session execution still lives there. Rule D4
+checks the closure of the package that declares the binary and holds the
+remaining Worker-side crates as reviewed transitions in
+`scripts/ci/coordinator_binary_closure_baseline.json`; a new reach is refused
+and each transition is removed with `--tighten` when its crate leaves the
+closure.
 
 ### Composition mechanism
 
@@ -122,24 +128,24 @@ have left the executor and the Worker-side crates.
 | Kubernetes Worker fleet control (Pod identity authentication, Pod process observation and stop, the Worker create ledger) | `awaken-sandbox-kubernetes`, selected by the root's Worker transport | Yes: the Coordinator authenticates, observes and stops Worker Pods through the Sandbox adapter crate | A Kubernetes Worker fleet crate of the Coordinator context, shared by the Sandbox adapter where it observes Sandbox Pods |
 | Environment package image provisioning (`EnvironmentImageBuildCoordinator`) | `awaken_execution_composition::package_image_provisioner` | Yes: the provisioner is built over the container engines | The Environment image build context (`awaken-environment-package-image-builder`), over an image-build port the container engines implement |
 | Local Memory invalidation bus (`LocalInvalidator`) | *done*: `awaken-resource-contract`, beside the `MemoryInvalidator` port it implements | No | The Resources stores every process opens publish to it; only the Worker's Memory mounter (`awaken-sandbox-memoryd`) subscribes. A context seam forbids the mounter from reaching the Resource application, so the contract owns the bus |
-| Process startup (configuration, stores, identity, listeners, drain) | `awaken-cli` library | Links `awaken-worker`, `awaken-execution-composition` and the Sandbox adapters | The Coordinator process package over an executor-free startup; `awaken-cli` adds the executor and the co-located Worker |
+| Process startup (configuration, stores, identity, listeners, drain) | *done*: `awaken-process-startup`, declared over by `awaken-coordinator-process` (`awaken-coordinator`) and `awaken-cli` (`awaken`, `awaken-control`) | No longer links `awaken-worker`; still composes the executor, the execution composition and the Memory mount data plane | The co-located Worker is the launcher's (`ColocatedWorkerPreparation`); the Worker bootstrap value is resolved by `awaken-worker-transport-security`, the Hand executor factory is `awaken-tool-relay`'s and the Worker shutdown mode is the Worker contract's, so the startup names none of them through `awaken-worker`. Executor-free once the Coordinator-side crate exists: the executor composition then moves to `awaken-cli` |
 
 The order that removes D4's transitions, each step a reviewed `--tighten`:
 the Deployment configuration (done); the Memory invalidation bus (done); the
-Kubernetes Worker fleet crate; the executor-free process startup and the
-Coordinator process package that declares `awaken-coordinator` (the package
-then still composes the executor, and its baseline names exactly the
-executor, realization, credential materializer and execution composition);
-Environment image provisioning and retirement observation as data (removes
-the execution composition and the Sandbox adapters); then the Coordinator-side
-crate (commit ingest, committed reads, completion, the event hub, the
-projection registry), Run admission from the frozen projection and the
-placement-typed role sets in the Session application, which together remove
-the executor, the realization and the credential materializer and empty the
-baseline. The Session application and the executor stop binding each other
-(`SessionApplicationBindings`) in that last step: the bindings exist because
-the executor serves the application's roles while the application supplies
-the executor's coordination and background submission.
+Coordinator process package over the extracted startup (done: removed
+`awaken-worker`); the Kubernetes Worker fleet crate; Environment image
+provisioning and retirement observation as data, and the co-located execution
+install (Hand factory, Memory mount data plane) moved behind the launcher
+(removes the execution composition, `awaken-sandbox-memoryd` and the Sandbox
+adapters); then the Coordinator-side crate (commit ingest, committed reads,
+completion, the event hub, the projection registry), Run admission from the
+frozen projection and the placement-typed role sets in the Session
+application, which together remove the executor, the realization and the
+credential materializer and empty the baseline. The Session application and
+the executor stop binding each other (`SessionApplicationBindings`) in that
+last step: the bindings exist because the executor serves the application's
+roles while the application supplies the executor's coordination and
+background submission.
 
 ## Embedded Runtime SDK Boundary
 

@@ -13,7 +13,7 @@
         {
           "kind": "metric",
           "name": "awaken_control_registration_pending_domains",
-          "path": "crates/bin/awaken-cli/src/process_admin.rs"
+          "path": "crates/bin/awaken-process-startup/src/process_admin.rs"
         }
       ],
       "status": "evidenced",

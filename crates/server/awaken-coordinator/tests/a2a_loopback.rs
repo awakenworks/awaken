@@ -312,7 +312,9 @@ async fn published_delegating_host(
         Arc::new(publications),
     )
     .await
-    .with_remote_attempt_executor(awaken_cli::a2a_attempt_executor(Some(materializer))))
+    .with_remote_attempt_executor(awaken_process_startup::a2a_attempt_executor(Some(
+        materializer,
+    ))))
     .build()
     .expect("validated Host dependencies")
 }

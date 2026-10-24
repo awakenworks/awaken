@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use awaken_cli::build_all_in_one_router_with_model;
+use awaken_process_startup::build_all_in_one_router_with_model;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;

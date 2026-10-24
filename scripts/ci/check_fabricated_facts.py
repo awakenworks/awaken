@@ -265,19 +265,19 @@ SHADOW_CLOCK_HELPER = re.compile(r"\bfn\s+now\w*\s*[<(]")
 # the object graph. Named, not pattern-matched, so adding one is a decision.
 COMPOSITION_ROOTS: frozenset[str] = frozenset(
     {
-        "crates/bin/awaken-cli/src/process_stores.rs",
-        "crates/bin/awaken-cli/src/local_process_stores.rs",
+        "crates/bin/awaken-process-startup/src/process_stores.rs",
+        "crates/bin/awaken-process-startup/src/local_process_stores.rs",
         # The Coordinator/AllInOne and Control process compositions: each
         # chooses the process's one wall clock and hands it to every store and
         # component it builds.
-        "crates/bin/awaken-cli/src/deployment_process.rs",
-        "crates/bin/awaken-cli/src/control.rs",
+        "crates/bin/awaken-process-startup/src/deployment_process.rs",
+        "crates/bin/awaken-process-startup/src/control.rs",
         # The CLI binary's Config and Doctor commands are their own process
         # entry points and select the clock before lease admission.
         "crates/bin/awaken-cli/src/main.rs",
         # Service startup composes its local ACP Worker before the later
         # Control/Coordinator graph; it selects their shared clock once.
-        "crates/bin/awaken-cli/src/service.rs",
+        "crates/bin/awaken-process-startup/src/service.rs",
         # The Worker daemon's bootstrap: it composes the Worker transport and
         # chooses the clock its signed request assertions are stamped with.
         "crates/bin/awaken-worker/src/bootstrap.rs",

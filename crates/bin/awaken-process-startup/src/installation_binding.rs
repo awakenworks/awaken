@@ -148,7 +148,7 @@ impl PreparedPostgresInstallations {
 /// role-owned store or migration opens. It retains the exact local observation
 /// and the already-validated PostgreSQL coordinate; callers may not reconstruct
 /// either value from mutable deployment state.
-pub(crate) struct PreparedDeploymentInstallations {
+pub struct PreparedDeploymentInstallations {
     local: PreparedLocalInstallation,
     postgres: PreparedPostgresInstallations,
 }
@@ -165,7 +165,7 @@ impl PreparedDeploymentInstallations {
     /// Exact process coordinate after the final local fence and before the first
     /// role-owned store write. Mixed local/PostgreSQL deployments must prove both
     /// authorities resolve to the same coordinate.
-    pub(crate) fn platform_workspace_before_write(&self) -> Result<Option<String>, String> {
+    pub fn platform_workspace_before_write(&self) -> Result<Option<String>, String> {
         let local = self.local.workspace_before_write()?;
         match (&self.postgres.workspace_id, local) {
             (Some(expected), Some(actual)) if actual != *expected => Err(format!(
@@ -179,7 +179,7 @@ impl PreparedDeploymentInstallations {
 
 /// Read-only Serve/Doctor admission. Both consumers receive the same typed
 /// proof; only Serve invokes its before-write fence.
-pub(crate) async fn verify_deployment_installations(
+pub async fn verify_deployment_installations(
     deployment: &ResolvedDeployment,
 ) -> Result<PreparedDeploymentInstallations, String> {
     let local =

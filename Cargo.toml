@@ -208,6 +208,7 @@ awaken-coordinator = { path = "crates/server/awaken-coordinator" }
 awaken-scenario-host = { path = "crates/devtools/awaken-scenario-host" }
 awaken-reliability-testkit = { path = "crates/devtools/awaken-reliability-testkit" }
 awaken-cli = { path = "crates/bin/awaken-cli" }
+awaken-process-startup = { path = "crates/bin/awaken-process-startup" }
 awaken-worker = { path = "crates/bin/awaken-worker" }
 awaken-authz-enforce = { path = "crates/control/awaken-authz-enforce" }
 awaken-webhook = { path = "crates/server/awaken-webhook" }

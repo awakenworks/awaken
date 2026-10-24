@@ -84,7 +84,7 @@ CLOUD_PLACEMENT_TOKENS = (
     "runtime_cell_incarnation",
     "runtime_placement_epoch",
 )
-CLOUD_HOSTING_ACL = Path("crates/bin/awaken-cli/src/config/workspace_data.rs")
+CLOUD_HOSTING_ACL = Path("crates/bin/awaken-process-startup/src/config/workspace_data.rs")
 
 NEUTRAL_CRATES = {
     "awaken-agent-contract",

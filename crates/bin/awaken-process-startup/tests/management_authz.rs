@@ -11,7 +11,7 @@
 //! tokens hydrate across a restart over the same directory; and WITHOUT the
 //! guard the plane stays exactly as open as before (regression pin).
 
-use awaken_cli::{
+use awaken_process_startup::{
     ADMIN_TOKEN_FILE, BOOTSTRAP_WORKSPACE, TokenSpec, build_durable_all_in_one_router,
     build_secured_all_in_one_router as build_isolated_secured_all_in_one_router,
 };
@@ -33,7 +33,7 @@ static TEST_RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::O
 
 struct SharedSecuredDeployment {
     app: axum::Router,
-    iam: std::sync::Arc<awaken_cli::ManagementAuthz>,
+    iam: std::sync::Arc<awaken_process_startup::ManagementAuthz>,
     admin_token: String,
     _directory: tempfile::TempDir,
 }
@@ -57,7 +57,10 @@ fn run_local_deployment(future: impl std::future::Future<Output = ()>) {
 async fn shared_secured_all_in_one_router(
     token_handoff_dir: &std::path::Path,
     key: &[u8; 32],
-) -> (axum::Router, std::sync::Arc<awaken_cli::ManagementAuthz>) {
+) -> (
+    axum::Router,
+    std::sync::Arc<awaken_process_startup::ManagementAuthz>,
+) {
     let deployment = SHARED_SECURED_DEPLOYMENT
         .get_or_init(|| async {
             let directory = tempfile::tempdir().expect("shared deployment directory");

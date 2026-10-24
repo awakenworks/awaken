@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_cli::build_all_in_one_router_with_host_customizer;
+use awaken_process_startup::build_all_in_one_router_with_host_customizer;
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::resolved::ModelBinding;
 

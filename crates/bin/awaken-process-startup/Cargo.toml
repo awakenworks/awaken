@@ -1,0 +1,291 @@
+[package]
+name = "awaken-process-startup"
+description = "The executable-independent process startup of the Control, Coordinator and AllInOne services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "apps"
+product = "apps"
+layer = "bootstrap"
+authority = "process-startup"
+separation = "process"
+
+[lib]
+name = "awaken_process_startup"
+path = "src/lib.rs"
+
+# The one process startup every service executable composes: configuration,
+# stores, identity, listeners, lifecycle and drain, and the role assembly of
+# the Control, Coordinator and AllInOne processes. It declares no executable
+# and links no Worker: the AllInOne launcher (awaken-cli) supplies its
+# co-located Worker, the Coordinator process package (awaken-coordinator-process)
+# supplies none.
+[dependencies]
+awaken-deployment-config.workspace = true
+awaken-dispatch-erasure.workspace = true
+awaken-plugin-composition.workspace = true
+awaken-acp-contract = { workspace = true }
+# Deployment policy fields and the broker wire consume their canonical contract.
+awaken-container-contract.workspace = true
+awaken-tool-contract.workspace = true
+awaken-data-governance-contract.workspace = true
+# Assembles the container-tier Session environment the deployment names.
+awaken-execution-composition.workspace = true
+# This product root selects the original publication-pinned outbound A2A adapter.
+awaken-run-executor-a2a.workspace = true
+awaken-protocol-a2a.workspace = true
+# Deployment-file PVC policy is owned by the existing container substrate.
+# The Kubernetes engine: the control client that authenticates Pod Workers.
+awaken-sandbox-kubernetes = { workspace = true, optional = true }
+awaken-sandbox-memoryd.workspace = true
+kube = { workspace = true, features = ["client", "rustls-tls", "http-proxy"], optional = true }
+awaken-protocol-mcp.workspace = true
+awaken-service-lifecycle.workspace = true
+awaken-api-contract = { workspace = true }
+awaken-ui-artifact.workspace = true
+# The Control and Coordinator services started by this product process.
+awaken-control = { workspace = true }
+awaken-coordinator = { workspace = true }
+# The service layer: ExecutorComponents / ConfigService / ConfigPlane and the
+# durable session repositories the startup opens.
+awaken-session-executor.workspace = true
+# The live MCP credential probe and the container MCP relay exposure value.
+awaken-session-mcp.workspace = true
+# The container Hand residency the runtime settings select.
+awaken-session-environment-contract.workspace = true
+# Local Resource ports for the test-support runtime process without a Deployment.
+awaken-session-executor-testkit = { workspace = true, optional = true }
+# The installation platform Workspace marker this startup reads or publishes.
+awaken-installation-workspace.workspace = true
+awaken-resource-worker-http.workspace = true
+awaken-config-service.workspace = true
+awaken-credential-materializer = { workspace = true, features = ["authority", "brokered"] }
+awaken-credential-contract.workspace = true
+awaken-env-store.workspace = true
+awaken-environment-application.workspace = true
+awaken-environment-image-build.workspace = true
+awaken-environment-package-image-builder.workspace = true
+awaken-ext-builtin-tools.workspace = true
+awaken-dispatch = { workspace = true, features = ["durable"] }
+awaken-session-realization-contract.workspace = true
+awaken-session-execution-contract.workspace = true
+awaken-work-store.workspace = true
+awaken-worker-transport-security.workspace = true
+awaken-worker-contract.workspace = true
+awaken-dispatch-http.workspace = true
+awaken-local-process.workspace = true
+# The Hand executor factory the co-located Session execution binds Hand channels with.
+awaken-tool-relay.workspace = true
+awaken-fs-durability.workspace = true
+uuid = { version = "1", features = ["v7"] }
+awaken-sandbox-policy-store = { workspace = true }
+awaken-resource-reclaimer = { workspace = true }
+awaken-webhook = { workspace = true }
+awaken-resource-contract = { workspace = true }
+awaken-resource-application = { workspace = true }
+awaken-resource-persistence.workspace = true
+awaken-session-application-contract.workspace = true
+awaken-session-repository-contract.workspace = true
+awaken-session-budget-contract.workspace = true
+awaken-session-dream-contract.workspace = true
+awaken-environment-contract.workspace = true
+awaken-service-auth-contract = { workspace = true }
+awaken-session-application.workspace = true
+awaken-deployment-application = { workspace = true }
+awaken-deployment-contract = { workspace = true }
+awaken-ext-memory = { workspace = true }
+awaken-provisioning-contract = { workspace = true }
+awaken-executable-agent-contract = { workspace = true }
+awaken-executable-agent-catalog = { workspace = true }
+awaken-executable-environment-contract = { workspace = true }
+awaken-executable-environment-catalog = { workspace = true }
+awaken-session-store = { workspace = true }
+# The ACP executor (AcpLaunch/AcpRunExecutor) for `acp:*` threads — wired by config
+# (AWAKEN_ACP_ARGV) into the worker's configured sandbox tier.
+awaken-run-executor-acp = { workspace = true }
+awaken-acp-application = { workspace = true }
+awaken-observability = { workspace = true }
+# The admin `/metrics` gauges are OTel observable instruments (rendered via the
+# Prometheus exporter in awaken-observability).
+opentelemetry = { version = "0.32", features = ["metrics"] }
+# Managed HTTP receives the Session repository, Vault, and Environment services
+# shared by its route families.
+awaken-protocol-managed = { workspace = true }
+awaken-protocol-awaken = { workspace = true }
+# The management stores this startup opens (in-memory / SQLite / Postgres).
+awaken-model-catalog.workspace = true
+awaken-model-catalog-store = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-credential-vault.workspace = true
+awaken-credential-store = { workspace = true, features = ["sqlite", "sealed-aead", "postgres"] }
+awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-agent-config.workspace = true
+awaken-config-store = { workspace = true }
+awaken-config-resolver = { workspace = true }
+awaken-data-subject-application.workspace = true
+awaken-data-subject-store = { workspace = true, features = ["postgres"] }
+awaken-captured-content-store = { workspace = true, features = ["postgres"] }
+# The management assistant executables the host carries (ADR-0052).
+awaken-admin-assistant = { workspace = true }
+# The opaque scope id the warm-load + reserved-scope seeding are keyed by.
+awaken-tenancy = { workspace = true }
+# The open Org request limiter (`OrgRateLimiter`) every protocol entry admits through.
+awaken-authz-enforce.workspace = true
+# Shared Awaken Cloud login cache; credential acquisition stays in the
+# process startup, outside the authorization/resource services.
+awaken-iam-client = { workspace = true, features = ["desktop-oauth"] }
+awaken-iam-core.workspace = true
+# The live credential probe backing the admin router — the only place the model SDK
+# is named in the startup (mirrors the standalone's GenaiProbe).
+awaken-provider-genai = { workspace = true }
+awaken-agent-contract = { workspace = true }
+awaken-runtime-contract = { workspace = true }
+async-trait.workspace = true
+thiserror.workspace = true
+awaken-time.workspace = true
+axum = "0.8"
+bytes = "1"
+http-body = "1"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "process", "signal", "sync"] }
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+base64 = "0.22"
+url.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+awaken-scoped-migration = { workspace = true, features = ["postgres"] }
+awaken-sql-storage = { workspace = true, features = ["postgres"] }
+
+[features]
+# Volatile startup helpers used by integration/scenario harnesses. The default
+# product library and binary cannot link the process-local WorkQueue backend.
+test-support = [
+    "awaken-admin-config-api/test-support",
+    "awaken-captured-content-store/test-support",
+    "awaken-config-resolver/test-support",
+    "awaken-config-store/test-support",
+    "awaken-credential-vault/test-support",
+    "awaken-data-subject-store/test-support",
+    "awaken-env-store/test-support",
+    "awaken-model-catalog/test-support",
+    "awaken-sandbox-policy-store/test-support",
+    "awaken-session-store/test-support",
+    "awaken-session-application/test-support",
+    "awaken-work-store/test-support",
+    "awaken-protocol-managed/test-support",
+    "awaken-coordinator/test-support",
+    "awaken-session-executor/test-support",
+    "dep:awaken-session-executor-testkit",
+    "awaken-resource-persistence/test-support",
+]
+# Container ACP tiers (AWAKEN_SANDBOX_TIER=docker/podman/k8s): enable the backend a
+# deployment runs its agents on. Off by default — the namespace tier needs no feature.
+container-docker = ["awaken-execution-composition/docker"]
+container-podman = ["awaken-execution-composition/podman"]
+container-k8s = ["awaken-coordinator/container-k8s", "awaken-execution-composition/k8s", "awaken-worker-transport-security/kubernetes", "dep:awaken-sandbox-kubernetes", "dep:kube"]
+
+[build-dependencies]
+awaken-ui-artifact.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+
+[dev-dependencies]
+# The live Kubernetes Worker transport tests drive a real Worker create client.
+awaken-worker = { workspace = true, features = ["container-k8s"] }
+# Runtime codecs/planning are used by CLI fixtures; production uses its composition root.
+awaken-sandbox-container.workspace = true
+awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
+awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
+awaken-sqlite-pool.workspace = true
+sha2 = "0.10"
+awaken-ext-goal.workspace = true
+k8s-openapi = { workspace = true }
+awaken-coordinator-client.workspace = true
+awaken-dispatch-testkit.workspace = true
+awaken-worker-registry = { workspace = true, features = ["test-support"] }
+awaken-dispatch = { workspace = true, features = ["test-support"] }
+tokio = { workspace = true, features = ["test-util"] }
+awaken-session-application = { workspace = true, features = ["test-support"] }
+awaken-environment-image-build = { workspace = true, features = ["test-support"] }
+awaken-resource-persistence = { workspace = true, features = ["test-support"] }
+awaken-admin-config-api = { workspace = true, features = ["test-support"] }
+awaken-captured-content-store = { workspace = true, features = ["test-support"] }
+awaken-config-resolver = { workspace = true, features = ["test-support"] }
+awaken-config-store = { workspace = true, features = ["test-support"] }
+awaken-credential-vault = { workspace = true, features = ["test-support"] }
+awaken-data-subject-store = { workspace = true, features = ["test-support"] }
+awaken-env-store = { workspace = true, features = ["test-support"] }
+awaken-model-catalog = { workspace = true, features = ["test-support"] }
+awaken-sandbox-policy-store = { workspace = true, features = ["test-support"] }
+awaken-session-store = { workspace = true, features = ["test-support"] }
+awaken-work-store = { workspace = true, features = ["test-support"] }
+awaken-protocol-managed = { workspace = true, features = ["test-support"] }
+awaken-protocol-managed-testkit.workspace = true
+awaken-coordinator = { workspace = true, features = ["test-support"] }
+# The management integration tests moved here from awaken-coordinator (they drive
+# build_all_in_one_router* over this process startup).
+awaken-scenario-host = { workspace = true }
+awaken-runtime = { workspace = true }
+awaken-store-inmem.workspace = true
+awaken-store-sqlite.workspace = true
+# mcp_sessions drives the VaultRefresher refresh grant + the ext-mcp tool-id shape.
+awaken-ext-mcp = { workspace = true }
+# management_authz drives a legacy iam.sqlite import: the contract ids.
+awaken-iam-contract = { workspace = true }
+awaken-iam-core = { workspace = true }
+awaken-lease-testkit.workspace = true
+awaken-tool-relay = { workspace = true, features = ["test-support"] }
+awaken-session-executor-testkit.workspace = true
+# sqlite_process_store_contract holds an independent writer on the shared file.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+tempfile = "3"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+awaken-session-configuration-contract.workspace = true
+awaken-session-state-contract.workspace = true
+awaken-session-types.workspace = true
+
+[[test]]
+name = "deployment_sessions"
+required-features = ["test-support"]
+
+[[test]]
+name = "management_surface"
+required-features = ["test-support"]
+
+[[test]]
+name = "management_authz"
+required-features = ["test-support"]
+
+[[test]]
+name = "management_persistence"
+required-features = ["test-support"]
+
+[[test]]
+name = "management_tokens"
+required-features = ["test-support"]
+
+[[test]]
+name = "mcp_sessions"
+required-features = ["test-support"]
+
+[[test]]
+name = "snapshot_export_offline"
+required-features = ["test-support"]
+
+[[test]]
+name = "tenancy_isolation_matrix"
+required-features = ["test-support"]
+
+[[test]]
+name = "workspace_path_addressing"
+required-features = ["test-support"]
+
+[[test]]
+name = "resource_scheduling"
+required-features = ["test-support", "container-k8s"]
+
+[lints]
+workspace = true

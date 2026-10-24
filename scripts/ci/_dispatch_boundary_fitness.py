@@ -27,8 +27,10 @@ dependency edge come back, so three rules hold it:
   must carry a reviewed transition in ``coordinator_binary_closure_baseline.json``
   (a complete D10 review record); a new reach is refused, and a transition whose
   crate is no longer reached must be removed with ``--tighten``. The binary is
-  a target of ``awaken-cli``, the AllInOne root, until the Coordinator process
-  startup and the Coordinator-side Session execution leave the executor (see
+  declared by ``awaken-coordinator-process`` over the shared process startup
+  (``awaken-process-startup``), which links no Worker; the startup still
+  composes the executor-backed Coordinator execution and its Sandbox
+  observation (see
   ``docs/design/runtime-interface-boundaries.md#coordinator-only-composition``);
   the transitions record exactly what remains.
 

@@ -11,7 +11,6 @@
 //! env vars, so the test cannot race other tests on process-global state.
 
 use awaken_agent_config::{ScopeId, ScopedConfigRegistry};
-use awaken_cli::build_durable_all_in_one_router;
 use awaken_config_store::SqliteConfigStore;
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_model_catalog::{
@@ -19,6 +18,7 @@ use awaken_model_catalog::{
     Provider, ProviderId,
 };
 use awaken_model_catalog_store::SqliteCatalogRepo;
+use awaken_process_startup::build_durable_all_in_one_router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;

@@ -51,7 +51,7 @@ AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
 
 # The co-located root that selects the Coordinator's execution ports, and the
 # ports themselves.
-COORDINATOR_EXECUTION_ROOT = "crates/bin/awaken-cli/src/coordinator_execution.rs"
+COORDINATOR_EXECUTION_ROOT = "crates/bin/awaken-process-startup/src/coordinator_execution.rs"
 COORDINATOR_EXECUTION_PORTS = "crates/server/awaken-coordinator/src/execution_ports.rs"
 
 
