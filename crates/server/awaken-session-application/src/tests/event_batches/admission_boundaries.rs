@@ -358,7 +358,6 @@ async fn grammar_valid_payloads_still_fail_business_admission() {
 }
 
 #[tokio::test]
-#[ignore = "product gap: every Event batch compile error maps to the generic code invalid_request (no stable per-class code)"]
 async fn compile_rejections_carry_distinct_stable_codes() {
     let idle = "t12-codes";
     let fixture = boundary_fixture(&[(idle, "idle")]).await;
@@ -390,7 +389,6 @@ async fn compile_rejections_carry_distinct_stable_codes() {
 }
 
 #[tokio::test]
-#[ignore = "product gap: Event batch admission accepts Interrupt targeting an unknown Child thread (\"ghost\") without topology validation"]
 async fn interrupt_of_unknown_child_target_is_rejected_without_effect() {
     let idle = "t12-ghost";
     let fixture = boundary_fixture(&[(idle, "idle")]).await;

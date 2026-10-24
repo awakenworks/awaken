@@ -110,6 +110,23 @@ pub struct SessionEventToolReply {
     pub reply: SessionEventToolReplyKind,
 }
 
+impl SessionEventToolReply {
+    /// Whether this reply carries every coordinate a NEW admission needs.
+    /// Only retained legacy rows may lack the exact Thread version and
+    /// Awaiting commit; a new admission must carry both, so the executor
+    /// fence never skips its version check for it.
+    fn is_complete_new_admission(&self) -> bool {
+        !self.tool_request_event_id.trim().is_empty()
+            && !self.runtime_tool_use_id.trim().is_empty()
+            && !self.expected_run_id.0.trim().is_empty()
+            && !self.expected_correlation_id.trim().is_empty()
+            && self
+                .expected_thread_version
+                .is_some_and(|version| version > 0)
+            && self.answered_pending_commit_cursor.is_some()
+    }
+}
+
 /// The three official reply families remain closed and non-interchangeable.
 /// This value preserves wire provenance; [`SessionThreadToolReply`] remains the
 /// neutral Runtime effect vocabulary.
@@ -782,11 +799,7 @@ impl SessionEventBatch {
                     });
                 }
                 SessionEventInput::ToolReply(reply) => {
-                    if reply.tool_request_event_id.trim().is_empty()
-                        || reply.runtime_tool_use_id.trim().is_empty()
-                        || reply.expected_run_id.0.trim().is_empty()
-                        || reply.expected_correlation_id.trim().is_empty()
-                    {
+                    if !reply.is_complete_new_admission() {
                         return Err(SessionEventBatchError::InvalidToolReplyCoordinate);
                     }
                     events.push(SessionEventEntry {
@@ -919,6 +932,43 @@ pub enum SessionEventBatchError {
     InvalidClosedAdmission,
     #[error("accepted Session Event admission must contain events, revision, and projection fence")]
     InvalidAcceptedAdmission,
+}
+
+impl From<SessionEventBatchError> for awaken_session_types::RunError {
+    /// A typed rejection keeps its stable class as the error code.
+    fn from(error: SessionEventBatchError) -> Self {
+        Self::bad_request_classified(error.code(), error.to_string())
+    }
+}
+
+impl SessionEventBatchError {
+    /// Stable machine-readable class of this rejection. Callers classify on
+    /// this code, never on the English message.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::AdmissionClosed => "event_admission_closed",
+            Self::EmptySessionId => "event_batch_empty_session_id",
+            Self::EmptyBatchId => "event_batch_empty_batch_id",
+            Self::InvalidBatchRevision => "event_batch_invalid_revision",
+            Self::EmptyBatch => "event_batch_empty",
+            Self::TooManyEvents => "event_batch_too_many_events",
+            Self::EmptyMessageContent => "event_message_content_empty",
+            Self::EmptyOutcomeDescription => "event_outcome_description_empty",
+            Self::EmptyOutcomeRubric => "event_outcome_rubric_empty",
+            Self::InvalidOutcomeIterations => "event_outcome_iterations_invalid",
+            Self::MultipleSystemMessages => "event_batch_multiple_system_messages",
+            Self::SystemMessagePlacement => "event_system_message_placement",
+            Self::InvalidToolReplyCoordinate => "event_tool_reply_coordinate_invalid",
+            Self::DuplicateToolReply => "event_tool_reply_duplicate",
+            Self::InvalidInterruptTargets => "event_interrupt_targets_invalid",
+            Self::UnsupportedInitialEvent => "event_initial_unsupported",
+            Self::ProgressMismatch => "event_progress_mismatch",
+            Self::InvalidIdempotencyCoordinate => "event_idempotency_coordinate_invalid",
+            Self::InvalidClosedAdmission => "event_closed_admission_invalid",
+            Self::InvalidAcceptedAdmission => "event_accepted_admission_invalid",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1054,6 +1104,21 @@ mod tests {
                     10 => {}
                     _ => unreachable!(),
                 }
+                if variant == 9 {
+                    // R4 new side: a new admission without its Awaiting commit
+                    // is refused at compile, before occupancy is consulted.
+                    assert_eq!(
+                        SessionEventBatch::compile(
+                            &crate::SessionId::from("s"),
+                            "new",
+                            vec![SessionEventInput::ToolReply(next)],
+                        )
+                        .err(),
+                        Some(SessionEventBatchError::InvalidToolReplyCoordinate),
+                        "R4 variant 9, processed {processed}"
+                    );
+                    continue;
+                }
                 let mut old = retained.clone();
                 if variant == 10 {
                     let SessionEventCommand::ToolReply { reply, .. } = &mut old.events[0].event
@@ -1096,8 +1161,8 @@ mod tests {
             target: SessionThreadTarget::Primary,
             expected_run_id: RunId("run-awaiting".into()),
             expected_correlation_id: "correlation-awaiting".into(),
-            expected_thread_version: None,
-            answered_pending_commit_cursor: None,
+            expected_thread_version: Some(1),
+            answered_pending_commit_cursor: Some(1),
             runtime_tool_use_id: "tool-awaiting".into(),
             reply: SessionEventToolReplyKind::CustomToolResult {
                 content: None,

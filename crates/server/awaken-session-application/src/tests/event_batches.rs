@@ -1278,7 +1278,7 @@ fn tool_reply_input_for_target(
         target,
         expected_run_id: RunId("awaiting-run".into()),
         expected_correlation_id: "awaiting-correlation".into(),
-        expected_thread_version: None,
+        expected_thread_version: Some(1),
         answered_pending_commit_cursor: Some(777),
         runtime_tool_use_id: tool_use_id.into(),
         reply: SessionEventToolReplyKind::ToolResult {

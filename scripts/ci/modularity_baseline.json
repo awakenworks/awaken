@@ -332,7 +332,7 @@
     "awaken-session-application::terminal_cleanup/claims.rs::claim_terminal_cleanup_root": 172,
     "awaken-session-application::terminal_cleanup/local_drive.rs::release_terminal_resources_once": 178,
     "awaken-session-application::update.rs::update_session_once": 155,
-    "awaken-session-event-contract::lib.rs::compile_attributed": 172,
+    "awaken-session-event-contract::lib.rs::compile_attributed": 168,
     "awaken-session-executor::agent_runner/child_execution.rs::run_configured_agent_until_boundary": 277,
     "awaken-session-executor::application.rs::install_frozen_session_projection_with_resource_authority": 302,
     "awaken-session-executor::background_task.rs::launch": 182,
