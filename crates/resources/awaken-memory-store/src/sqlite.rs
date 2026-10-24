@@ -8,9 +8,9 @@
 //! SQLite [`MemoryWriter`] over the crate's `memory_store` migration scope.
 
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+use awaken_sql_storage::StoredU64;
 use awaken_sqlite_pool::EmbeddedPool;
 use awaken_sqlite_pool::EmbeddedSqlite;
-use awaken_sql_storage::StoredU64;
 use awaken_time::WallClock;
 use sqlx::SqliteConnection;
 use std::future::Future;

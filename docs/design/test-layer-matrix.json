@@ -20,9 +20,9 @@
     },
     {
       "profile": "storage",
-      "receipt": "target/session-acceptance-evidence/archive/9445338c3944f0ba6f3625bc226894890cbf4fe7ffa92b5048bbfd60f1eb20e5/receipt.json",
+      "receipt": "target/session-acceptance-evidence/archive/6daa1bb12e62b60fb61d14b79d940224115fb5d06f02ce252cb73d932a595518/receipt.json",
       "meaning": "Historical packet for its original source and platform; no current execution claim.",
-      "receipt_sha256": "9445338c3944f0ba6f3625bc226894890cbf4fe7ffa92b5048bbfd60f1eb20e5"
+      "receipt_sha256": "6daa1bb12e62b60fb61d14b79d940224115fb5d06f02ce252cb73d932a595518"
     },
     {
       "profile": "resources",
