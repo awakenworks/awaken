@@ -66,6 +66,20 @@ pub struct SessionBudgetResumeTicket {
     pub prior_session_activity_epoch: Option<u64>,
 }
 
+impl SessionBudgetResumeTicket {
+    /// Whether a budget raise answers this pause. Other pauses keep waiting
+    /// on their own resolver.
+    #[must_use]
+    pub fn awaits_budget(&self) -> bool {
+        matches!(
+            self.ticket.target(),
+            awaken_agent_contract::agent::awaiting::AwaitTarget::Pause(
+                awaken_agent_contract::agent::awaiting::PauseReason::BudgetReached
+            )
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionBudgetResumeDisposition {
     /// The durable dispatch row accepted the resume and new epoch.

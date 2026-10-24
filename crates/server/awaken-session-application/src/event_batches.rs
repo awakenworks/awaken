@@ -23,7 +23,7 @@ use awaken_session_event_contract::{
 };
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionAgentCoordination, SessionRunActivation,
-    SessionThreadTarget,
+    SessionThreadTarget, admit_interrupt_topology,
 };
 use awaken_session_state_contract::{PersistedSession, SessionEventHistory as EventHistory};
 use awaken_session_types::{RunError, SessionRevision};
@@ -591,7 +591,7 @@ impl SessionEventBatchCommands {
         wake_after_accept: bool,
     ) -> Result<SessionEventBatch, RunError> {
         let mutations = &self.mutations;
-        let thread_reads = self.thread_reads.as_ref();
+        let (thread_reads, coordination) = (self.thread_reads.as_ref(), &*self.coordination_reads);
 
         for attempt in 0..ROOT_CAS_ATTEMPTS {
             let owner = mutations
@@ -652,8 +652,7 @@ impl SessionEventBatchCommands {
                     .checked_add(1)
                     .ok_or_else(|| RunError::internal("Session revision is exhausted"))?,
             );
-            let batch_id = session_event_batch_id(session_id, committed_revision)
-                .map_err(|error| RunError::bad_request(error.to_string()))?;
+            let batch_id = session_event_batch_id(session_id, committed_revision)?;
             let mut batch = match (plan, &admission) {
                 (
                     SessionEventBatchAdmissionPlan::AppendAccepted,
@@ -683,8 +682,7 @@ impl SessionEventBatchCommands {
                     request_fingerprint.clone(),
                 ),
                 _ => unreachable!("admission plan is derived from the requested action"),
-            }
-            .map_err(|error| RunError::bad_request(error.to_string()))?;
+            }?;
             batch.admitted_revision = committed_revision;
             if let Some(anchor) = admission_projection_anchor {
                 batch
@@ -694,16 +692,15 @@ impl SessionEventBatchCommands {
             if !batch.admission_closed
                 && let Some((key, request_fingerprint)) = admission.idempotency()
             {
-                batch
-                    .bind_idempotency(key.to_owned(), request_fingerprint.to_owned())
-                    .map_err(|error| RunError::bad_request(error.to_string()))?;
+                batch.bind_idempotency(key.to_owned(), request_fingerprint.to_owned())?;
             }
             // Protocol validation can race another key before either root CAS.
             // Recheck on EVERY retry; the durable batch owns occupancy even
             // after Runtime delivery, without a second registry or local lock.
-            batch
-                .validate_tool_reply_occupancy(&session.event_batches)
-                .map_err(|error| RunError::bad_request(error.to_string()))?;
+            if let EventBatchAdmission::Accept { inputs, .. } = &admission {
+                admit_interrupt_topology(coordination, thread_reads, session_id, inputs).await?;
+            }
+            batch.validate_tool_reply_occupancy(&session.event_batches)?;
             session
                 .events()
                 .append_batch(batch.clone())
