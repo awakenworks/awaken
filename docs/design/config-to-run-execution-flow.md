@@ -72,7 +72,7 @@ The crate-level static boundary is explicit:
 |---|---|---|
 | `awaken-session-application` | Coordinator application / Session | private application collaborators; exact Environment selection; repository/environment-binding consistency; one create/recovery WorkQueue projection command; lifecycle fence |
 | `awaken-protocol-managed::ManagedState` | Coordinator interface / Managed wire | explicit calls into `SessionApplication`, DTO projections, public ids, event/SSE delivery; no implicit dereference or Session repository ownership |
-| `awaken-session-executor::SharedHost` | Shared host infrastructure / Runtime | one protocol-neutral execution/session substrate composed from injected ports/adapters |
+| `awaken-session-executor::ExecutorComponents` | Execution / Session executor | caller-role components (`SessionRuns`, `ThreadReads`, `RunCapabilities`, ...) composed from injected roles |
 | `awaken-dispatch-http` | Coordinator interface / durable operations | HTTP translation into neutral Host durable-control methods |
 | `awaken-coordinator-client` | Worker infrastructure / Worker transport | authenticated registration/lifecycle and Session-control clients |
 
@@ -80,11 +80,11 @@ The dynamic path is correspondingly single-track:
 
 ```text
 Managed HTTP -> ManagedState wire projection -> SessionApplication
-             -> exact Environment + Session repository / SharedHost ports
+             -> exact Environment + Session repository / executor roles
              -> committed Session -> one idempotent WorkQueue projection -> wire/SSE projection
 
-Worker claim -> awaken-coordinator-client client -> Coordinator authenticated interface
-             -> SessionApplication / SharedHost -> claim-fenced commit and settle
+Worker claim -> awaken-coordinator-client -> Coordinator authenticated interface
+             -> SessionApplication / executor roles -> claim-fenced commit and settle
 ```
 
 ## Database And Migration Ownership

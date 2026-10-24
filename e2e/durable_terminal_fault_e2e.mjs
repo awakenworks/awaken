@@ -6,7 +6,7 @@
 // live channel. This pins that the AI-SDK wire still surfaces the error frame when
 // the run is settled off-process by the dispatch pool.
 //
-// Chain: POST /v1/ai-sdk/threads/T/runs -> SharedHost (durable) -> submit_background
+// Chain: POST /v1/ai-sdk/threads/T/runs -> executor (durable) -> submit_background
 //   -> DispatchPool -> Runtime (persistent upstream fault -> retries exhaust ->
 //   commit EndCause::Error) -> committed StepOutcome{terminal: Failed} -> encode_step
 //   -> `error` + `finish("error")`.

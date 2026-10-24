@@ -2284,7 +2284,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads
     ) -> Result<awaken_session_execution_contract::SessionAgentMessageCommand, RunError> {
         if self.source_valid.load(Ordering::SeqCst) {
             // These application tests exercise policy after the Runtime-owned
-            // provenance boundary. ManagedHost owns the production refinement.
+            // provenance boundary. ChildRunCoordination owns the production refinement.
             Ok(command.clone())
         } else {
             Err(RunError::bad_request(

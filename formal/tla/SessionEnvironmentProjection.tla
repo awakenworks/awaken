@@ -306,7 +306,7 @@ ProjectionEventuallyConverges ==
       (\A p \in Processes: convergence.cached[p] = SnapshotB) /\
       convergence.physical["Worker"] = "B"
 
-\* Executed ManagedHost observations use this SAME admission predicate. The
+\* Executed executor observations use this SAME admission predicate. The
 \* producer reads before/after from the slot and records the actual Result.
 \* No statement about provider atomicity or all Rust interleavings is implied.
 ProjectionObservation(before, incoming, after, admitted) ==

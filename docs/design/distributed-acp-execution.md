@@ -4,7 +4,7 @@ Single `server` owns SQLite, workers are stateless and converge (not relay), the
 ACP stream never crosses the network, and Kubernetes scales workers. One **cell**
 is self-contained; scale by replicating cells keyed on `thread_id`. Everything
 lands on awaken's existing seams (`RunExecutor`, `DispatchQueue`,
-`AgentEvent`, `SharedHost`, `awaken-run-executor-acp`).
+`AgentEvent`, `ExecutorComponents`, `awaken-run-executor-acp`).
 
 - Status: Accepted for Phase 1; Phase 2 remains deliberately deferred
 - Date: 2026-07-13
@@ -22,7 +22,7 @@ lands on awaken's existing seams (`RunExecutor`, `DispatchQueue`,
   (the Dispatch/Server boundary; `thread_id` is the shard and consistency key;
   only one owner may freeze/snapshot/execute a thread); the ACP `RunExecutor`
   Run model (`awaken-run-executor-acp`, `awaken-protocol-acp`); durable dispatch
-  and lease recovery (`awaken-dispatch`, `SharedHost::ensure_dispatch_pool`).
+  and lease recovery (`awaken-dispatch`, `ProcessDispatch`).
 
 ## Verdict
 
@@ -147,7 +147,7 @@ fan-in collapse (tens of thousands of connections instead of tens of millions).
 ```
 ┌──────────────── Kubernetes Namespace — one cell ─────────────────┐
 │                                                                  │
-│   Ingress / LB ──▶ Cell Server (SharedHost)      Worker Deploy   │
+│   Ingress / LB ──▶ Cell Server (executor)        Worker Deploy   │
 │                    StatefulSet · 1 writer         HPA · N replicas│
 │                    commits on relay               ┌────────────┐ │
 │                         │                         │ worker-1   │ │
@@ -161,7 +161,7 @@ fan-in collapse (tens of thousands of connections instead of tens of millions).
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-- **StatefulSet** cell-server (`SharedHost`) — 1 replica (single writer) + **PVC**
+- **StatefulSet** cell-server (`ExecutorComponents`) — 1 replica (single writer) + **PVC**
   mounting `sqlite`; a **Service**.
 - **Deployment** worker — N replicas + **HPA** (scale on in-flight run count /
   queue depth). Starting sandboxes in-pod needs userns / privileges.
@@ -193,7 +193,7 @@ threads. The single-writer + SQLite elegance is preserved **inside** each cell �
 ## Phased roadmap
 
 - **Phase 0 — single process, co-located pool** *(current)*: dev / single node.
-  `SharedHost::ensure_dispatch_pool` runs the pool in-process, SQLite local.
+  `ProcessDispatch` runs the pool in-process, SQLite local.
 - **Phase 1 — single cell, workers on k8s**: split out the worker Deployment
   (HPA); server StatefulSet + PVC. Edge projection + local egress + tunable
   concurrency. Reaches tens of thousands of concurrent runs.
@@ -262,7 +262,7 @@ Order: scale workers first (cheapest) → swap store (single-cell write bottlene
 |---|---|---|
 | have | neutral execution port + AcpRunExecutor | `awaken-run-executor-acp` (`AgentChannelSource` opens the channel) |
 | have | dispatch queue port + self-contained activation | `DispatchQueue` / `RunDispatch` |
-| have | co-located pool + HTTP ops surface | `SharedHost::ensure_dispatch_pool`, `durable_ops_router` |
+| have | co-located pool + HTTP ops surface | `ProcessDispatch`, `durable_ops_router` |
 | have | single-writer commit, ACP subprocess launch | commit coordinator, `subprocess.rs` (env_clear + passthrough) |
 | **done · read side** | **server→client live streaming across all three frontends** — RuntimeHost's per-Thread `ThreadEventHub` is the one neutral live fan-out; Managed projects its subscription into `event_start`/`event_delta`, while the Session broadcast carries committed SSE truth only | `awaken-session-executor` (`hub.rs`), `awaken-session-execution-contract` (`SessionThreadLiveSubscription`), `awaken-protocol-managed` (`preview.rs`, live SSE) |
 | **done · published language** | **the Fact contract** — the existing neutral `ThreadCommit` carries thread/run identity, ordered commands and events, and deterministic commit identity; transport does not introduce a second fact vocabulary | `awaken-agent-contract::thread::commit::staged::ThreadCommit` |
