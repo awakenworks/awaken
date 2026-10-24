@@ -111,6 +111,7 @@ pub(crate) fn register(
             drain_deadline_ms: None,
             process_exit: None,
             create_ledger: registration.create_ledger,
+            source_retention: Default::default(),
         },
         true,
     ))
@@ -212,6 +213,7 @@ pub(crate) fn heartbeat(
     next.snapshot.warm_environment_shapes = heartbeat.warm_environment_shapes;
     next.snapshot.credential_observations = heartbeat.credential_observations;
     next.snapshot.acp_capability_observations = heartbeat.acp_capability_observations;
+    next.source_retention = heartbeat.source_retention;
     next.observation_sequence = observation_sequence;
     next.snapshot.expires_at_ms = now_ms.saturating_add(ttl_ms);
     next.heartbeat_sequence = heartbeat.sequence;
@@ -384,6 +386,7 @@ mod tests {
                 warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
             },
             20,
             100,
@@ -407,6 +410,7 @@ mod tests {
             warm_environment_shapes: Default::default(),
             credential_observations: Default::default(),
             acp_capability_observations: Default::default(),
+            source_retention: Default::default(),
         };
         let (at_boundary, result) = heartbeat(Some(&first), &identity, late.clone(), 110, 100);
         assert!(at_boundary.is_none());
@@ -437,6 +441,7 @@ mod tests {
                 warm_environment_shapes: Default::default(),
                 credential_observations: std::collections::BTreeSet::from([observation.clone()]),
                 acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
             },
             20,
             100,
@@ -459,6 +464,7 @@ mod tests {
                 warm_environment_shapes: Default::default(),
                 credential_observations: updated.snapshot.credential_observations.clone(),
                 acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
             },
             21,
             100,
@@ -495,6 +501,7 @@ mod tests {
                 warm_environment_shapes: Default::default(),
                 credential_observations: std::collections::BTreeSet::from([observation]),
                 acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
             },
             20,
             100,
@@ -523,6 +530,7 @@ mod tests {
             warm_environment_shapes: values.iter().map(|value| (*value).into()).collect(),
             credential_observations: Default::default(),
             acp_capability_observations: Default::default(),
+            source_retention: Default::default(),
         };
         let (current, result) = heartbeat(
             Some(&first),

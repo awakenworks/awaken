@@ -184,19 +184,6 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RunAssembly {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::TerminalCleanupRuntime for RunAssembly {
-    async fn observe_terminal_cleanup_retention(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        projection: &awaken_session_realization_contract::FrozenSessionProjection,
-        source_prepared: bool,
-    ) -> Result<bool, RunError> {
-        self.realization_executor
-            .environments()
-            .observe_terminal_cleanup_retention(session_id, projection, source_prepared)
-            .await
-            .map_err(RunError::from)
-    }
-
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_state_contract::SessionTerminalCleanupEffect,

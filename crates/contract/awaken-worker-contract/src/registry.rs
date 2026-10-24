@@ -19,6 +19,7 @@ use crate::observation::{
     WorkerAcpCapabilityObservation, WorkerCredentialObservation, dynamic_evidence_admits,
 };
 use crate::requirements::{PlacementRequirements, WorkerRecoveryMode, can_claim};
+use crate::source_retention::WorkerSourceRetention;
 
 /// One concrete worker process. `worker_id` names the logical slot;
 /// `incarnation_id` changes on every boot; `generation` is allocated durably by
@@ -241,6 +242,11 @@ pub struct RegisteredWorker {
     /// have started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub create_ledger: Option<WorkerCreateLedger>,
+    /// The original-source retention this incarnation last reported while
+    /// draining. Retirement qualification reads it; a later heartbeat
+    /// replaces it whole and no other writer changes it.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub source_retention: BTreeSet<WorkerSourceRetention>,
 }
 
 /// Secret-free provider identity of the independent Create request ledger.
@@ -385,6 +391,10 @@ pub struct WorkerHeartbeat {
     pub credential_observations: BTreeSet<WorkerCredentialObservation>,
     #[serde(default)]
     pub acp_capability_observations: Vec<WorkerAcpCapabilityObservation>,
+    /// Original-source retention of the Sessions this draining incarnation
+    /// holds; empty while it is not draining.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub source_retention: BTreeSet<WorkerSourceRetention>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -959,6 +969,7 @@ mod tests {
                             drain_deadline_ms: None,
                             process_exit: receipt,
                             create_ledger: None,
+                            source_retention: Default::default(),
                         }),
                         fail: false,
                     };

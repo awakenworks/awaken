@@ -138,6 +138,11 @@ pub(crate) fn converged_registry_bundle() -> Result<MigrationBundle, MigrationEr
                 "freeze the provider Create ledger UID with the worker incarnation",
                 include_str!("migrations/V0004__retain_worker_create_ledger.sql").trim(),
             )?,
+            Migration::new(
+                5,
+                "retain the original-source retention a draining worker reports",
+                include_str!("migrations/V0005__retain_worker_source_retention.sql").trim(),
+            )?,
         ],
     )
 }

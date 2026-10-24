@@ -502,7 +502,7 @@ pub trait SessionProjectionSynchronizer: Send + Sync {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
         FailSessionRealization, RenewSessionRealization, SessionProjectionInstallMode,
@@ -756,7 +756,7 @@ mod tests {
         );
     }
 
-    fn legacy_resource_projection(bound: bool) -> super::FrozenSessionProjection {
+    pub(crate) fn legacy_resource_projection(bound: bool) -> super::FrozenSessionProjection {
         let baseline = crate::SessionBaseline::compile(crate::SessionBaselineInputs {
             environment: crate::EnvironmentSnapshot {
                 environment_id: "environment".into(),

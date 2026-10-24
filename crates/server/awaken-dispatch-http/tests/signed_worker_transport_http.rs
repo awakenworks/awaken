@@ -736,6 +736,7 @@ impl WorkerDirectory for TestWorkerDirectory {
             drain_deadline_ms: None,
             process_exit: None,
             create_ledger: None,
+            source_retention: Default::default(),
         };
         *self.0.lock().unwrap() = Some(record.clone());
         Ok(record)
@@ -983,6 +984,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                     warm_environment_shapes: Default::default(),
                     credential_observations: Default::default(),
                     acp_capability_observations: Default::default(),
+                    source_retention: Default::default(),
                 },
             )
             .await
@@ -1008,6 +1010,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
             },
         )
         .await
@@ -1034,6 +1037,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
             },
         )
         .await
@@ -2643,6 +2647,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
             },
         )
         .await
@@ -2694,6 +2699,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
             },
         )
         .await
@@ -2868,6 +2874,7 @@ async fn protocol_admission_precedes_registration_and_heartbeat_mutation() {
             warm_environment_shapes: Default::default(),
             credential_observations: Default::default(),
             acp_capability_observations: Default::default(),
+            source_retention: Default::default(),
         };
         let response = client
             .post(format!("http://{address}/v1/worker/heartbeat"))
@@ -2937,6 +2944,7 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
         drain_deadline_ms: None,
         process_exit: None,
         create_ledger: None,
+        source_retention: Default::default(),
     });
     let session_control = Arc::new(RecordingSessionControl::default());
     // A real queued v1 request must remain pending after every denial; an

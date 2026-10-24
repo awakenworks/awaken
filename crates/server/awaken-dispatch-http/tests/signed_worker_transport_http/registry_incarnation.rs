@@ -67,6 +67,7 @@ async fn signed_draining_cleanup_keeps_its_original_renewal_authority() {
         warm_environment_shapes: Default::default(),
         credential_observations: Default::default(),
         acp_capability_observations: Default::default(),
+        source_retention: Default::default(),
     };
     client.heartbeat(&identity, heartbeat(1)).await.unwrap();
     *work.owner.lock().unwrap() = Some(identity.lease_owner());

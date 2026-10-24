@@ -12,7 +12,7 @@ pub(crate) const WORKER_COLUMNS: &str = "worker_id, incarnation_id, generation, 
     manifest_json, capability_fingerprint, in_flight, warm_environment_shapes_json, \
     credential_observations_json, acp_capability_observations_json, expires_at_ms, \
     heartbeat_sequence, observation_sequence, registered_at_ms, heartbeat_at_ms, \
-    drain_deadline_ms, process_exit_json, create_ledger_json";
+    drain_deadline_ms, process_exit_json, create_ledger_json, source_retention_json";
 
 pub(crate) fn current_workers_query() -> String {
     format!(
@@ -41,6 +41,8 @@ pub(crate) struct EncodedWorkerRow {
     pub drain_deadline_ms: Option<i64>,
     pub process_exit_json: Option<String>,
     pub create_ledger_json: Option<String>,
+    /// NULL is an empty report: rows written before the report existed.
+    pub source_retention_json: Option<String>,
 }
 
 fn persistence(message: impl Into<String>) -> RegistryError {
@@ -126,5 +128,11 @@ pub(crate) fn decode(row: EncodedWorkerRow) -> Result<RegisteredWorker, Registry
             .transpose()?,
         process_exit,
         create_ledger,
+        source_retention: row
+            .source_retention_json
+            .as_deref()
+            .map(|value| decode_json("source_retention_json", value))
+            .transpose()?
+            .unwrap_or_default(),
     })
 }

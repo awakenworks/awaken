@@ -242,6 +242,7 @@ pub async fn assert_registry(directory: Arc<dyn WorkerDirectory>, worker_id: &st
                     warm_environment_shapes: Default::default(),
                     credential_observations: Default::default(),
                     acp_capability_observations: Default::default(),
+                    source_retention: Default::default(),
                 },
                 120,
                 50,
@@ -266,6 +267,7 @@ pub async fn assert_registry(directory: Arc<dyn WorkerDirectory>, worker_id: &st
                     warm_environment_shapes: Default::default(),
                     credential_observations: Default::default(),
                     acp_capability_observations: Default::default(),
+                    source_retention: Default::default(),
                 },
                 130,
                 50,
@@ -278,6 +280,14 @@ pub async fn assert_registry(directory: Arc<dyn WorkerDirectory>, worker_id: &st
         directory.begin_drain(&identity, 200).await.unwrap(),
         RegistryMutation::Applied
     );
+    // R1 a draining heartbeat's source-retention report is persisted with
+    // the incarnation; R2 the next heartbeat replaces it whole.
+    let reported_retention =
+        std::collections::BTreeSet::from([awaken_worker_contract::WorkerSourceRetention {
+            session_id: "retained-session".into(),
+            subject: "subject-digest".into(),
+            retained: true,
+        }]);
     assert_eq!(
         directory
             .heartbeat(
@@ -289,6 +299,7 @@ pub async fn assert_registry(directory: Arc<dyn WorkerDirectory>, worker_id: &st
                     warm_environment_shapes: Default::default(),
                     credential_observations: Default::default(),
                     acp_capability_observations: Default::default(),
+                    source_retention: reported_retention.clone(),
                 },
                 140,
                 50,
@@ -300,6 +311,7 @@ pub async fn assert_registry(directory: Arc<dyn WorkerDirectory>, worker_id: &st
     let draining = directory.current(worker_id).await.unwrap().unwrap();
     assert_eq!(draining.snapshot.state, WorkerState::Draining);
     assert_eq!(draining.snapshot.in_flight, 1);
+    assert_eq!(draining.source_retention, reported_retention, "R1");
     assert_eq!(
         directory.mark_quiesced(&identity).await.unwrap(),
         RegistryMutation::InvalidTransition
@@ -314,6 +326,7 @@ pub async fn assert_registry(directory: Arc<dyn WorkerDirectory>, worker_id: &st
                 warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
             },
             150,
             50,
@@ -323,6 +336,16 @@ pub async fn assert_registry(directory: Arc<dyn WorkerDirectory>, worker_id: &st
     assert_eq!(
         directory.mark_quiesced(&identity).await.unwrap(),
         RegistryMutation::Applied
+    );
+    assert!(
+        directory
+            .current(worker_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .source_retention
+            .is_empty(),
+        "R2 a later heartbeat replaces the report"
     );
 
     let second = directory
@@ -341,6 +364,7 @@ pub async fn assert_registry(directory: Arc<dyn WorkerDirectory>, worker_id: &st
                     warm_environment_shapes: Default::default(),
                     credential_observations: Default::default(),
                     acp_capability_observations: Default::default(),
+                    source_retention: Default::default(),
                 },
                 170,
                 50,
@@ -511,6 +535,7 @@ pub async fn assert_exact_expiry(directory: Arc<dyn WorkerDirectory>, prefix: &s
                 warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
             };
             if state != WorkerState::Starting {
                 directory

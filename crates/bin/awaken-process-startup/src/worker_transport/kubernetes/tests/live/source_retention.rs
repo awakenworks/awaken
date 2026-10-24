@@ -14,15 +14,12 @@ use kube::api::ObjectMeta;
 #[path = "../../../../../../../worker/awaken-sandbox-container/tests/common/disposal.rs"]
 mod disposal;
 
-/// One Coordinator read of one original source.
+/// One retiring Worker's read of one original source it holds.
 struct ObservationRow {
     source_residency: ContainerHandResidency,
-    observer_residency: ContainerHandResidency,
-    observer_keeps_volume: bool,
     actual: Result<pc::SandboxObservation, pc::SandboxError>,
     /// `Some((before, after))` when the identity projection changed.
     changed: Option<(serde_json::Value, serde_json::Value)>,
-    execution_installed: bool,
 }
 
 /// The facts a retained-source read must not alter: object identity, the
@@ -72,12 +69,12 @@ pub(super) async fn assert_original_sources_remain_observable(
     // Cause/effect graph F1. C1 a real registered successor uses the canonical
     // Worker namespace/factory and its signed Create client; C2 the original
     // Pod/PVC and producer-installed guard exist; C3 original Hand residency is
-    // attached/resident; C4 Coordinator residency is attached/resident; C5 its
-    // current PVC policy is present/absent. R1-R8 are the full C3 x C4 x C5
-    // table: fixed C1+C2 -> RetainedOriginal for every row, unchanged
-    // original identity, no installed execution provider. These are read facts,
-    // never process-exit, ordinary adoption or physical-disposal authority.
-    // The existing RCO table owns mutation refusal; retained_plan owns missing
+    // attached/resident. R1-R2 are the C3 rows: the retiring Worker reads the
+    // source through its own provider for the retention it reports, and fixed
+    // C1+C2 -> RetainedOriginal for every row with unchanged original
+    // identity. These are read facts, never process-exit, ordinary adoption or
+    // physical-disposal authority; the Coordinator decides retirement from
+    // the reported fact and observes nothing. retained_plan owns missing
     // UID/guard/API-error rows. Keep the old Worker's C7 one-ticket assertion:
     // this extension uses only the separately registered successor's group.
     // Every created source is disposed before any row or precondition failure
@@ -184,7 +181,7 @@ pub(super) async fn assert_original_sources_remain_observable(
         let examined = tokio::spawn(examine_original_source(
             client.clone(),
             namespace.to_owned(),
-            deployment,
+            components.provider.clone(),
             spec.clone(),
             handle.clone(),
             create.clone(),
@@ -231,23 +228,15 @@ pub(super) async fn assert_original_sources_remain_observable(
     }
     assert_eq!(
         observations.len(),
-        8,
-        "F1 both original sources completed all read rows and cleanup"
+        2,
+        "F1 both original sources completed their read and cleanup"
     );
     for row in observations {
-        let case = (
-            row.source_residency,
-            row.observer_residency,
-            row.observer_keeps_volume,
-        );
+        let case = row.source_residency;
         assert!(
             row.changed.is_none(),
             "F1 {case:?}: original identity changed; inspect concurrent API writers before attributing this to observation: {:?}",
             row.changed
-        );
-        assert!(
-            !row.execution_installed,
-            "F1 {case:?}: observation installed execution"
         );
         assert!(
             matches!(
@@ -260,13 +249,15 @@ pub(super) async fn assert_original_sources_remain_observable(
     }
 }
 
-/// Checks the published original source, then reads it through the
-/// Coordinator observation factory under every residency/PVC configuration.
-/// Returns the bound claim name and the unasserted rows.
+/// Checks the published original source, then reads it through the Worker's
+/// own provider, as the retention it reports. Returns the bound claim name and
+/// the unasserted row.
 async fn examine_original_source(
     client: kube::Client,
     namespace: String,
-    deployment: DeploymentConfig,
+    provider: Arc<
+        dyn pc::SandboxProvider<Environment = dyn awaken_provisioning_contract::SessionSandbox>,
+    >,
     spec: pc::SandboxSpec,
     handle: pc::SandboxHandle,
     create: pc::SandboxEffectFence,
@@ -342,59 +333,25 @@ async fn examine_original_source(
     assert!(handle.container_adoption_fingerprint().unwrap().is_some());
     assert!(handle.realization_fingerprint().is_some());
     let before = read_retained_identity(&pods, &claims, &pod_name, &claim_name).await;
-    let mut rows = Vec::new();
-    for (observer_residency, observer_keeps_volume) in [
-        (ContainerHandResidency::AttachedExec, true),
-        (ContainerHandResidency::AttachedExec, false),
-        (ContainerHandResidency::Resident, true),
-        (ContainerHandResidency::Resident, false),
-    ] {
-        let mut observer_deployment = deployment.clone();
-        observer_deployment.sandbox.container_hand_residency = observer_residency;
-        if !observer_keeps_volume {
-            observer_deployment.sandbox.k8s_continuation_volume = None;
-        }
-        let host = awaken_session_executor_testkit::unconfigured_dependencies_with_deployment(
-            Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
-            "unused",
-            observer_deployment.clone(),
+    let mut adoption = pc::SandboxAdoption::new(&spec, &handle);
+    adoption.observation_purpose = pc::SandboxObservationPurpose::WorkerRetirement {
+        source_prepared: false,
+    };
+    let actual = provider
+        .observe(
+            adoption,
+            pc::SandboxObservationBasis::Effect {
+                spec: &spec,
+                effect_fence: &create,
+            },
         )
         .await;
-        let host =
-            awaken_execution_composition::with_session_environment_observation_from_deployment(
-                host,
-                &observer_deployment,
-            )
-            .await
-            .expect("F1 original Coordinator observation factory");
-        let provider = host.installed_session_environment_provider();
-        let actual = provider
-            .adoption()
-            .observe_effective(
-                &spec,
-                &handle,
-                None,
-                pc::SandboxObservationBasis::Effect {
-                    spec: &spec,
-                    effect_fence: &create,
-                },
-                pc::SandboxObservationPurpose::WorkerRetirement {
-                    source_prepared: false,
-                },
-            )
-            .await;
-        eprintln!(
-            "F1 original-source read {residency:?}/{observer_residency:?}/PVC={observer_keeps_volume}: {actual:?}"
-        );
-        let after = read_retained_identity(&pods, &claims, &pod_name, &claim_name).await;
-        rows.push(ObservationRow {
-            source_residency: residency,
-            observer_residency,
-            observer_keeps_volume,
-            actual,
-            changed: (after != before).then(|| (before.clone(), after)),
-            execution_installed: host.session_environment_provider_installed(),
-        });
-    }
+    eprintln!("F1 original-source read {residency:?}: {actual:?}");
+    let after = read_retained_identity(&pods, &claims, &pod_name, &claim_name).await;
+    let rows = vec![ObservationRow {
+        source_residency: residency,
+        actual,
+        changed: (after != before).then(|| (before.clone(), after)),
+    }];
     (claim_name, rows)
 }

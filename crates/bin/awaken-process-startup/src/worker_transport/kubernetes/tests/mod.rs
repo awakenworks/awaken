@@ -559,6 +559,7 @@ async fn legacy_closed_idle_worker_without_a_frozen_create_ledger_never_retires_
                             warm_environment_shapes: Default::default(),
                             credential_observations: Default::default(),
                             acp_capability_observations: Default::default(),
+                            source_retention: Default::default(),
                         },
                         100,
                         1_000,

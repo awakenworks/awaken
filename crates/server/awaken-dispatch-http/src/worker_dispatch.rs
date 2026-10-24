@@ -158,6 +158,73 @@ pub fn worker_environment_warmup_router(
         .with_state(state)
 }
 
+/// Authenticated read of the original Session sources a draining Worker
+/// observes and reports retained. `source` is the Coordinator's Worker
+/// occupancy read; this adapter verifies the exact current incarnation and
+/// owns no report, cache or decision.
+pub fn worker_source_retention_router(
+    source: Arc<dyn awaken_session_realization_contract::WorkerSourceRetentionSubjects>,
+    directory: Arc<dyn WorkerDirectory>,
+    authenticator: Arc<dyn WorkerRequestAuthenticator>,
+    clock: Arc<dyn WallClock>,
+) -> Router {
+    #[derive(Clone)]
+    struct RetentionState {
+        source: Arc<dyn awaken_session_realization_contract::WorkerSourceRetentionSubjects>,
+        directory: Arc<dyn WorkerDirectory>,
+        authenticator: Arc<dyn WorkerRequestAuthenticator>,
+        clock: Arc<dyn WallClock>,
+    }
+
+    async fn subjects(
+        State(state): State<RetentionState>,
+        Extension(worker): Extension<VerifiedWorkerContext>,
+        Json(request): Json<WorkerIdentityReq>,
+    ) -> (StatusCode, Json<Value>) {
+        let result = async {
+            verify_current_worker_identity(
+                state.directory.as_ref(),
+                &worker,
+                &request.identity,
+                state.clock.now_ms(),
+                false,
+            )
+            .await
+            .map_err(ApplicationError::invalid)?;
+            let subjects = state
+                .source
+                .source_retention_subjects(&request.identity)
+                .await
+                .map_err(|error| match error.kind {
+                    awaken_session_types::RunErrorKind::BadRequest => {
+                        ApplicationError::invalid(error.to_string())
+                    }
+                    _ => ApplicationError::unavailable(error.to_string()),
+                })?;
+            Ok(json!({ "subjects": subjects }))
+        }
+        .await;
+        respond(result)
+    }
+
+    let state = RetentionState {
+        source,
+        directory,
+        authenticator,
+        clock,
+    };
+    Router::new()
+        .route(
+            awaken_session_realization_contract::WORKER_SOURCE_RETENTION_SUBJECTS_PATH,
+            post(subjects),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.authenticator.clone(),
+            authenticate_worker_request,
+        ))
+        .with_state(state)
+}
+
 /// Explicit application service mounted by the worker HTTP adapter.
 pub struct WorkerDispatchService {
     dispatch: Arc<dyn WorkerDispatchAuthority>,

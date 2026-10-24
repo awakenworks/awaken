@@ -182,6 +182,7 @@ fn configured_worker() -> (WorkerIdentity, Arc<dyn WorkerDirectory>) {
         drain_deadline_ms: None,
         process_exit: None,
         create_ledger: None,
+        source_retention: Default::default(),
     };
     (identity, Arc::new(ConfiguredWorkerDirectory(worker)))
 }

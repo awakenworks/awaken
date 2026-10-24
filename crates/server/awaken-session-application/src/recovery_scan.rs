@@ -21,7 +21,12 @@ use super::SessionRecoveryCandidates;
 #[derive(Clone, Copy, Debug)]
 pub enum WorkerRealizationRead<'a> {
     Occupancy(&'a str),
-    Retirement(&'a awaken_worker_contract::WorkerIdentity),
+    /// Qualify the exact incarnation's retirement from the original-source
+    /// retention it reported (the registry record's `source_retention`).
+    Retirement {
+        identity: &'a awaken_worker_contract::WorkerIdentity,
+        reported: &'a std::collections::BTreeSet<awaken_worker_contract::WorkerSourceRetention>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

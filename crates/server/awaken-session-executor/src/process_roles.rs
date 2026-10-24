@@ -183,6 +183,26 @@ impl WorkerRoles {
             .providers()
     }
 
+    /// Observe whether the original source of one Session this Worker holds
+    /// is retained, for the retention report a draining Worker sends. Only
+    /// the Worker role set observes Sandboxes; the root supplies preparation
+    /// status, and this read installs no slot and grants no preparation,
+    /// disposal, retirement or cleanup receipt.
+    pub async fn observe_source_retention(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        projection: &awaken_session_realization_contract::FrozenSessionProjection,
+        source_prepared: bool,
+    ) -> Result<bool, awaken_session_types::RunError> {
+        self.process
+            .assembly
+            .realization_executor
+            .environments()
+            .observe_source_retention(session_id, projection, source_prepared)
+            .await
+            .map_err(awaken_session_types::RunError::from)
+    }
+
     /// The process wall clock this Worker drives its claims on.
     #[must_use]
     pub fn clock(&self) -> Arc<dyn awaken_time::WallClock> {

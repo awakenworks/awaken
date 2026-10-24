@@ -592,15 +592,6 @@ impl RecordingReplyRuntime {
 #[derive(Default)]
 struct RecordingCleanupRuntime {
     source_observation: Mutex<awaken_session_execution_contract::SessionSourceDispatchObservation>,
-    source_retained: AtomicBool,
-    retention_unavailable: AtomicBool,
-    retention_reads: Mutex<
-        Vec<(
-            String,
-            awaken_session_realization_contract::FrozenSessionProjection,
-            bool,
-        )>,
-    >,
     fail_quiesce_once: AtomicBool,
     fail_before_effect_once: AtomicBool,
     fail_once: AtomicBool,
@@ -1082,21 +1073,6 @@ no_committed_threads!(NoopRuntime);
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::TerminalCleanupRuntime for NoopRuntime {
-    async fn observe_terminal_cleanup_retention(
-        &self,
-        session_id: &awaken_session_execution_contract::__macro_support::SessionId,
-        projection: &awaken_session_execution_contract::__macro_support::FrozenSessionProjection,
-        source_prepared: bool,
-    ) -> Result<bool, awaken_session_execution_contract::__macro_support::RunError> {
-        awaken_session_execution_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
-            &awaken_session_execution_contract::NeutralRuntime,
-            session_id,
-            projection,
-            source_prepared,
-        )
-        .await
-    }
-
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
@@ -4630,6 +4606,7 @@ fn terminal_cleanup_worker(
         drain_deadline_ms: None,
         process_exit: None,
         create_ledger: None,
+        source_retention: Default::default(),
     }
 }
 

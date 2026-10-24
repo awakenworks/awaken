@@ -171,8 +171,9 @@ impl PostgresWorkerDirectory {
                  capability_fingerprint, in_flight, warm_environment_shapes_json, \
                  credential_observations_json, acp_capability_observations_json, \
                  expires_at_ms, heartbeat_sequence, observation_sequence, registered_at_ms, \
-                 heartbeat_at_ms, drain_deadline_ms, process_exit_json, create_ledger_json) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) \
+                 heartbeat_at_ms, drain_deadline_ms, process_exit_json, create_ledger_json, \
+                 source_retention_json) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) \
              ON CONFLICT(worker_id, generation) DO UPDATE SET \
                 state = excluded.state, manifest_json = excluded.manifest_json, \
                 capability_fingerprint = excluded.capability_fingerprint, \
@@ -187,7 +188,8 @@ impl PostgresWorkerDirectory {
                 heartbeat_at_ms = excluded.heartbeat_at_ms, \
                 drain_deadline_ms = excluded.drain_deadline_ms, \
                 process_exit_json = excluded.process_exit_json, \
-                create_ledger_json = excluded.create_ledger_json",
+                create_ledger_json = excluded.create_ledger_json, \
+                source_retention_json = excluded.source_retention_json",
         )
         .bind(&record.snapshot.identity.worker_id)
         .bind(&record.snapshot.identity.incarnation_id)
@@ -237,6 +239,11 @@ impl PostgresWorkerDirectory {
                 .create_ledger
                 .as_ref()
                 .map(|ledger| encode_json("create_ledger_json", ledger))
+                .transpose()?,
+        )
+        .bind(
+            (!record.source_retention.is_empty())
+                .then(|| encode_json("source_retention_json", &record.source_retention))
                 .transpose()?,
         )
         .execute(conn)
@@ -452,6 +459,7 @@ fn encoded_row(row: &sqlx::postgres::PgRow) -> EncodedWorkerRow {
         drain_deadline_ms: row.get("drain_deadline_ms"),
         process_exit_json: row.get("process_exit_json"),
         create_ledger_json: row.get("create_ledger_json"),
+        source_retention_json: row.get("source_retention_json"),
     }
 }
 

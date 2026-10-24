@@ -97,8 +97,9 @@ use awaken_session_configuration_contract::{environment_projection, resource as 
 use awaken_session_realization_contract::{CanonicalSessionProjection, FrozenSessionProjection};
 
 impl EnvironmentHolding {
-    /// Read original source retention without installing or changing a Session.
-    pub async fn observe_terminal_cleanup_retention(
+    /// Read original source retention without installing or changing a Session:
+    /// the observation behind the retention a draining Worker reports.
+    pub async fn observe_source_retention(
         &self,
         session_id: &awaken_session_types::SessionId,
         projection: &FrozenSessionProjection,

@@ -10,7 +10,10 @@
     "held_transactions_release_or_drop_without_committing_and_preserve_fifo": "ADR-0087: the rusqlite bridge it tested was deleted from awaken-sqlite-pool; its decision table is asserted by pool::tests::pool_held_transactions_release_or_drop_without_committing_and_preserve_fifo (H1-H3)",
     "owned_bridge_is_independent_of_a_current_thread_caller": "ADR-0087 item 4: awaken-sql-storage block_on_owned_runtime lost its last caller when the synchronous SQLite ports became async, so the helper and its test were deleted",
     "queued_callers_enter_in_exactly_the_order_they_queued": "ADR-0087: the rusqlite bridge it tested was deleted from awaken-sqlite-pool; its decision table is asserted by pool::tests::pool_queued_callers_enter_in_exactly_the_order_they_queued (F2)",
-    "transport_opens_when_transparent_and_fails_closed_otherwise": "ADR-0091 D4 (W28): AgentTransport had no production implementation and no user, so the trait and its ChannelError were deleted with this test of a test-only fake"
+    "transport_opens_when_transparent_and_fails_closed_otherwise": "ADR-0091 D4 (W28): AgentTransport had no production implementation and no user, so the trait and its ChannelError were deleted with this test of a test-only fake",
+    "readonly_container_observation_preserves_exact_results_and_effect_basis": "Worker retirement retention became Worker-reported data: the Coordinator observes no Sandbox, so the read-only container observation roles it tested are deleted; the retiring Worker observes through its execution provider (live/source_retention.rs F1, host::tests::terminal_memory) and the Coordinator decision is tested by source_retention::tests::a_reported_fact_counts_only_for_the_exact_subject_digest",
+    "readonly_container_roles_refuse_all_effects_before_backend_access": "Worker retirement retention became Worker-reported data: the Coordinator observes no Sandbox, so the read-only container observation roles it tested are deleted; the retiring Worker observes through its execution provider (live/source_retention.rs F1, host::tests::terminal_memory) and the Coordinator decision is tested by source_retention::tests::a_reported_fact_counts_only_for_the_exact_subject_digest",
+    "readonly_observation_cannot_replace_explicit_execution": "Worker retirement retention became Worker-reported data: the Coordinator observes no Sandbox, so the read-only container observation roles it tested are deleted; the retiring Worker observes through its execution provider (live/source_retention.rs F1, host::tests::terminal_memory) and the Coordinator decision is tested by source_retention::tests::a_reported_fact_counts_only_for_the_exact_subject_digest"
   },
   "renamed": {
     "closed_idle_retirement_uses_registry_and_exact_dispatch_owner_without_minting_exit": "legacy_closed_idle_worker_without_a_frozen_create_ledger_never_retires_a_pod",
@@ -55,6 +58,8 @@
     "resource_scope_cancellation_and_slot_replacement_cannot_erase_a_successor": "resource_scope_cancellation_and_installed_session_replacement_cannot_erase_a_successor",
     "retained_worker_recovery_releases_original_slots_and_idle_context": "retained_worker_recovery_releases_original_installed_sessions_and_idle_context",
     "session_projection_active_future_holds_original_slots_until_success_or_error": "session_projection_active_future_holds_original_installed_sessions_until_success_or_error",
-    "suspension_and_terminal_admission_use_live_observation_and_never_reopen_closed_slots": "suspension_and_terminal_admission_use_live_observation_and_never_reopen_closed_installed_sessions"
+    "suspension_and_terminal_admission_use_live_observation_and_never_reopen_closed_slots": "suspension_and_terminal_admission_use_live_observation_and_never_reopen_closed_installed_sessions",
+    "observation_runtime_does_not_read_package_write_credentials": "realization_runtime_validates_package_write_credentials",
+    "registered_worker_observation_does_not_install_execution": "registered_worker_placement_installs_no_sandbox_role"
   }
 }

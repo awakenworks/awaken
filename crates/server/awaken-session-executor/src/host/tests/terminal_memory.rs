@@ -95,12 +95,13 @@ async fn worker_retirement_consumes_only_explicit_retention_and_preserves_provid
             idle_since_unix_ms: None,
         };
         let before = serde_json::to_value(&projection).unwrap();
-        let result = awaken_session_execution_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
-            &*host.run_assembly,
-            &awaken_session_types::SessionId::from(id),
-            &projection,
-            prepared,
-        ).await;
+        let result = crate::WorkerRoles::of(&host)
+            .observe_source_retention(
+                &awaken_session_types::SessionId::from(id),
+                &projection,
+                prepared,
+            )
+            .await;
         assert_eq!(serde_json::to_value(&projection).unwrap(), before);
         assert_eq!(*events.lock().unwrap(), ["observe-source-retention"]);
         result
@@ -217,14 +218,14 @@ async fn worker_retirement_refuses_unprepared_memory_in_current_or_retained_reso
         };
         let before = serde_json::to_value(&projection).unwrap();
         assert!(
-            !awaken_session_execution_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
-                &*host.run_assembly,
-                &awaken_session_types::SessionId::from("live-memory"),
-                &projection,
-                false,
-            )
-            .await
-            .unwrap(),
+            !crate::WorkerRoles::of(&host)
+                .observe_source_retention(
+                    &awaken_session_types::SessionId::from("live-memory"),
+                    &projection,
+                    false,
+                )
+                .await
+                .unwrap(),
             "unprepared Memory is not independent source retention: current={current_memory}",
         );
         assert_eq!(serde_json::to_value(&projection).unwrap(), before);

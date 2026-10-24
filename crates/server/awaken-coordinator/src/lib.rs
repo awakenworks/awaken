@@ -804,17 +804,59 @@ async fn mount_with_managed_over(
     )
 }
 
+/// The Coordinator-derived reads a registered Worker pulls over its private
+/// transport: current Environment warm demand, and the original Session
+/// sources a draining Worker must report retained.
+///
+/// The warmup source is the exact Environment execution application already
+/// used by Session admission; the retention subjects come from the same
+/// Worker occupancy read that decides retirement. Neither adapter owns a
+/// second catalog, WorkQueue, cache, report or receipt state.
+fn worker_pulled_reads(
+    managed_state: &Arc<ManagedState>,
+    refresh: Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
+    session_application: &Arc<awaken_session_application::SessionApplication>,
+    directory: &Arc<dyn awaken_worker_registry::WorkerDirectory>,
+    authenticator: &Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
+    clock: &Arc<dyn awaken_time::WallClock>,
+) -> (Router, Router) {
+    let warmup_source: Arc<dyn awaken_session_configuration_contract::EnvironmentWarmupSource> =
+        match refresh {
+            Some(refresh) => Arc::new(RefreshingEnvironmentWarmups {
+                source: managed_state.environment_execution(),
+                refresh,
+            }),
+            None => managed_state.environment_execution(),
+        };
+    (
+        awaken_dispatch_http::worker_environment_warmup_router(
+            warmup_source,
+            directory.clone(),
+            authenticator.clone(),
+            clock.clone(),
+        ),
+        awaken_dispatch_http::worker_source_retention_router(
+            session_application.worker_occupancy(),
+            directory.clone(),
+            authenticator.clone(),
+            clock.clone(),
+        ),
+    )
+}
+
 fn registered_worker_transport_with_broker(
     dispatch: Router,
     resources: Router,
     commit: Arc<awaken_dispatch_http::ClaimedCommitHttpService>,
     environment_warmups: Router,
+    source_retention: Router,
     broker: Option<Router>,
 ) -> Router {
     let transport = awaken_dispatch_http::registered_worker_transport_router_with_services(
         dispatch, resources, commit,
     )
-    .merge(environment_warmups);
+    .merge(environment_warmups)
+    .merge(source_retention);
     match broker {
         Some(broker) => transport.merge(broker),
         None => transport,
@@ -889,24 +931,13 @@ async fn mount_with_managed_over_and_models(
         .execution_admission()
         .verify_worker_admission(&worker_observations, &preparation)
         .map_err(|error| WorkerTransportBuildError::Dispatch(error.into()))?;
-    // The Worker warmup projection is part of the same private transport in
-    // production and Scenario compositions. Its source is the exact Environment
-    // execution application already used by Session admission; this adapter owns
-    // no second catalog, WorkQueue, cache, or receipt state.
-    let environment_warmup_source: Arc<
-        dyn awaken_session_configuration_contract::EnvironmentWarmupSource,
-    > = match executable_projection_refresh.clone() {
-        Some(refresh) => Arc::new(RefreshingEnvironmentWarmups {
-            source: managed_state.environment_execution(),
-            refresh,
-        }),
-        None => managed_state.environment_execution(),
-    };
-    let environment_warmups = awaken_dispatch_http::worker_environment_warmup_router(
-        environment_warmup_source,
-        worker_directory.clone(),
-        worker_authenticator.clone(),
-        worker_clock.clone(),
+    let (environment_warmups, source_retention) = worker_pulled_reads(
+        &managed_state,
+        executable_projection_refresh.clone(),
+        &session_application,
+        &worker_directory,
+        &worker_authenticator,
+        &worker_clock,
     );
     let model_inventory =
         model_inventory.map(|source| match executable_projection_refresh.clone() {
@@ -1166,6 +1197,7 @@ async fn mount_with_managed_over_and_models(
         resource_worker,
         commit,
         environment_warmups,
+        source_retention,
         worker_create_broker_router,
     );
     // The Models API (`/v1/models`) over the deployment's model directory.

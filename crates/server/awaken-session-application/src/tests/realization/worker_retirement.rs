@@ -1,18 +1,56 @@
 // @formal evidence session_realization.concurrent_drivers_preserve_one_owner_fence
-//! Read qualification retains the original roots and delegates physical facts.
+//! Read qualification retains the original roots and decides from the
+//! source retention the Worker reported for the exact subjects it was given.
 use super::*;
+
+use awaken_session_realization_contract::{SourceRetentionSubject, WorkerSourceRetentionSubjects};
+use awaken_worker_contract::WorkerSourceRetention;
+use std::collections::BTreeSet;
+
+/// The Worker's report of `subjects`: one fact per subject, `retained` as given.
+fn report(subjects: &[SourceRetentionSubject], retained: bool) -> BTreeSet<WorkerSourceRetention> {
+    subjects
+        .iter()
+        .map(|subject| WorkerSourceRetention {
+            session_id: subject.session_id.to_string(),
+            subject: subject.digest.clone(),
+            retained,
+        })
+        .collect()
+}
+
+/// Read the subjects the Worker is asked to observe, then qualify retirement
+/// from `reported`, built from those subjects.
+async fn qualify_retirement(
+    app: &SessionApplication,
+    identity: &awaken_worker_contract::WorkerIdentity,
+    reported: impl FnOnce(&[SourceRetentionSubject]) -> BTreeSet<WorkerSourceRetention>,
+) -> (
+    Result<crate::WorkerRealizationObservation, RunError>,
+    Vec<SourceRetentionSubject>,
+) {
+    let occupancy = app.worker_occupancy();
+    let subjects = occupancy.source_retention_subjects(identity).await.unwrap();
+    let reported = reported(&subjects);
+    let observed = occupancy
+        .observe_worker_realizations(crate::WorkerRealizationRead::Retirement {
+            identity,
+            reported: &reported,
+        })
+        .await;
+    (observed, subjects)
+}
 
 #[tokio::test]
 async fn ordinary_worker_occupancy_does_not_depend_on_source_provider_availability() {
-    // R7 ordinary exact-incarnation consumers need occupancy/exit facts even
-    // when the source provider is unavailable. Explicit retirement remains a
-    // separate projection of this ONE read, not another scan/state authority.
+    // R7 ordinary exact-incarnation consumers need occupancy/exit facts and no
+    // retention report. Explicit retirement remains a separate projection of
+    // this ONE read, not another scan/state authority.
     let identity = awaken_worker_contract::WorkerIdentity::new("occupancy-only", "boot", 1);
     let repo = sqlite_session_repository("provider-independent occupancy").await;
     let id = SessionId::from("occupancy-retained");
     create(repo.as_ref(), retained_root(id.as_str(), &identity)).await;
     let runtime = Arc::new(RecordingCleanupRuntime::default());
-    runtime.retention_unavailable.store(true, Ordering::SeqCst);
     let app = configured_application(
         runtime.clone(),
         crate::SessionPersistence::new(repo, awaken_time::system_clock()),
@@ -30,7 +68,6 @@ async fn ordinary_worker_occupancy_does_not_depend_on_source_provider_availabili
         !read.sources_retained,
         "no implicit retirement qualification"
     );
-    assert!(runtime.retention_reads.lock().unwrap().is_empty());
     assert!(
         app.worker_occupancy()
             .observe_worker_realizations(crate::WorkerRealizationRead::Occupancy(""))
@@ -85,7 +122,6 @@ async fn worker_retirement_observes_the_existing_disposal_action_without_acknowl
     create(repo.as_ref(), root).await;
     let before = repo.get(&id).await.unwrap();
     let runtime = Arc::new(RecordingCleanupRuntime::default());
-    runtime.source_retained.store(true, Ordering::SeqCst);
     *runtime.source_observation.lock().unwrap() =
         awaken_session_execution_contract::SessionSourceDispatchObservation::Settled;
     let app = configured_application(
@@ -95,13 +131,11 @@ async fn worker_retirement_observes_the_existing_disposal_action_without_acknowl
         Default::default(),
         None,
     );
-    let observed = app
-        .worker_occupancy()
-        .observe_worker_realizations(crate::WorkerRealizationRead::Retirement(&identity))
-        .await
-        .unwrap();
+    let (observed, subjects) =
+        qualify_retirement(&app, &identity, |subjects| report(subjects, true)).await;
+    let observed = observed.unwrap();
     assert!(observed.occupied && observed.sources_retained);
-    assert!(runtime.retention_reads.lock().unwrap()[0].2);
+    assert!(subjects[0].source_prepared);
     assert_eq!(repo.get(&id).await.unwrap(), before);
     assert!(!before.terminal_cleanup.is_completed());
 }
@@ -146,7 +180,6 @@ async fn active_resident_source_retirement_preserves_the_original_session() {
     create(repo.as_ref(), root).await;
     let before = repo.get(&id).await.unwrap();
     let runtime = Arc::new(RecordingCleanupRuntime::default());
-    runtime.source_retained.store(true, Ordering::SeqCst);
     *runtime.source_observation.lock().unwrap() =
         awaken_session_execution_contract::SessionSourceDispatchObservation::Pending;
     let app = configured_application(
@@ -159,21 +192,19 @@ async fn active_resident_source_retirement_preserves_the_original_session() {
         },
         None,
     );
-    let observed = app
-        .worker_occupancy()
-        .observe_worker_realizations(crate::WorkerRealizationRead::Retirement(&identity))
-        .await
-        .unwrap();
+    let (observed, subjects) =
+        qualify_retirement(&app, &identity, |subjects| report(subjects, true)).await;
+    let observed = observed.unwrap();
     assert!(observed.occupied);
     assert!(
         observed.sources_retained,
-        "LR1 positive retained source does not require terminating the Session"
+        "LR1 positive reported retained source does not require terminating the Session"
     );
     assert_eq!(repo.get(&id).await.unwrap(), before);
     assert!(!before.is_terminal());
     assert!(!before.terminal_cleanup.is_completed());
-    assert_eq!(runtime.retention_reads.lock().unwrap().len(), 1);
-    assert!(!runtime.retention_reads.lock().unwrap()[0].2);
+    assert_eq!(subjects.len(), 1);
+    assert!(!subjects[0].source_prepared);
     assert!(runtime.terminal_assignments.lock().unwrap().is_empty());
     assert!(runtime.intents.lock().unwrap().is_empty());
     assert!(runtime.acknowledged_completed.lock().unwrap().is_empty());
@@ -186,21 +217,25 @@ async fn active_resident_source_retirement_preserves_the_original_session() {
 #[tokio::test]
 async fn worker_retirement_requires_each_terminal_source_without_mutating_roots() {
     // Causes: exact Actor incarnation; live/expired grant; terminal/frozen root;
-    // settled source Dispatch; provider retained/unknown/unavailable. Ordered
-    // rules R1 foreign/preparing/activating/nonresident/incomplete events or
-    // terminal waiting/unsettled facts -> false
-    // before provider I/O. R2 all root facts + positive provider -> true;
-    // R3 unknown provider -> false; R4 failed provider -> Err. Every rule keeps
-    // the complete root/lease/binding/preparations unchanged and installs no
-    // Runtime projection. LR2 Active Idle/Running/Rescheduling + Resident uses
-    // the same provider with unprepared-source semantics; neither its Run nor
-    // cleanup is completed. LR3 unknown/error provider still refuses/errors.
-    // The physical provider's API witnesses own retention; private Memory
-    // refusal remains in that existing provider-selection/read owner.
+    // settled source Dispatch; Worker report retained/not retained/missing/
+    // stale. Ordered rules R1 foreign/preparing/activating/nonresident/
+    // incomplete events or terminal waiting/unsettled facts -> false and no
+    // subject is named. R2 all root facts + a retained report for the exact
+    // subject -> true; R3 a not-retained report -> false; R4 a missing report
+    // (the Worker's observation failed or never ran) -> false, never an error
+    // and never a Coordinator-side observation; R5 a report for another
+    // digest (stale) -> false. Every rule keeps the complete root/lease/
+    // binding/preparations unchanged and installs no Runtime projection. LR2
+    // Active Idle/Running/Rescheduling + Resident names the same subject with
+    // unprepared-source semantics; neither its Run nor cleanup is completed.
+    // LR3 a not-retained or missing report for it still refuses. The Worker's
+    // provider witnesses own retention; private Memory refusal remains in that
+    // Worker-side provider-selection/read owner.
     for row in [
         "retained",
         "provider-unknown",
-        "provider-error",
+        "report-missing",
+        "report-stale",
         "live",
         "foreign",
         "nonterminal",
@@ -211,7 +246,7 @@ async fn worker_retirement_requires_each_terminal_source_without_mutating_roots(
         "nonresident",
         "incomplete-events",
         "live-provider-unknown",
-        "live-provider-error",
+        "live-report-missing",
         "waiting",
         "pending",
         "unsealed",
@@ -234,7 +269,7 @@ async fn worker_retirement_requires_each_terminal_source_without_mutating_roots(
             | "nonresident"
             | "incomplete-events"
             | "live-provider-unknown"
-            | "live-provider-error" => {
+            | "live-report-missing" => {
                 use awaken_session_state_contract::SessionExecutionState;
                 root.execution = match row {
                     "running" => SessionExecutionState::Running,
@@ -297,12 +332,6 @@ async fn worker_retirement_requires_each_terminal_source_without_mutating_roots(
         create(repo.as_ref(), root).await;
         let before = repo.get(&id).await.unwrap();
         let runtime = Arc::new(RecordingCleanupRuntime::default());
-        runtime
-            .source_retained
-            .store(!row.ends_with("provider-unknown"), Ordering::SeqCst);
-        runtime
-            .retention_unavailable
-            .store(row.ends_with("provider-error"), Ordering::SeqCst);
         *runtime.source_observation.lock().unwrap() = match row {
             "pending" => awaken_session_execution_contract::SessionSourceDispatchObservation::Pending,
             "unsealed" => {
@@ -323,27 +352,35 @@ async fn worker_retirement_requires_each_terminal_source_without_mutating_roots(
             },
             None,
         );
-        let result = app
-            .worker_occupancy()
-            .observe_worker_realizations(crate::WorkerRealizationRead::Retirement(&identity))
-            .await;
-        if row.ends_with("provider-error") {
-            assert!(result.is_err(), "R4");
-        } else {
-            let observed = result.unwrap();
-            assert!(
-                observed.occupied,
-                "retirement never clears cleanup occupancy"
-            );
-            assert_eq!(
-                observed.sources_retained,
-                matches!(
-                    row,
-                    "retained" | "live" | "nonterminal" | "running" | "rescheduling"
-                ),
-                "R1/R2/R3 {row}"
-            );
-        }
+        let (result, subjects) = qualify_retirement(&app, &identity, |subjects| {
+            if row.ends_with("report-missing") {
+                BTreeSet::new()
+            } else if row == "report-stale" {
+                report(subjects, true)
+                    .into_iter()
+                    .map(|fact| WorkerSourceRetention {
+                        subject: format!("{}-before-the-subject-changed", fact.subject),
+                        ..fact
+                    })
+                    .collect()
+            } else {
+                report(subjects, !row.ends_with("provider-unknown"))
+            }
+        })
+        .await;
+        let observed = result.unwrap();
+        assert!(
+            observed.occupied,
+            "retirement never clears cleanup occupancy"
+        );
+        assert_eq!(
+            observed.sources_retained,
+            matches!(
+                row,
+                "retained" | "live" | "nonterminal" | "running" | "rescheduling"
+            ),
+            "R1-R5 {row}"
+        );
         assert_eq!(
             repo.get(&id).await.unwrap(),
             before,
@@ -365,29 +402,35 @@ async fn worker_retirement_requires_each_terminal_source_without_mutating_roots(
             runtime.ordinary_resource_apply_calls.load(Ordering::SeqCst),
             0
         );
-        let reads = runtime.retention_reads.lock().unwrap();
         assert_eq!(
-            reads.len(),
+            subjects.len(),
             usize::from(matches!(
                 row,
                 "retained"
                     | "live"
                     | "provider-unknown"
-                    | "provider-error"
+                    | "report-missing"
+                    | "report-stale"
                     | "nonterminal"
                     | "running"
                     | "rescheduling"
                     | "live-provider-unknown"
-                    | "live-provider-error"
+                    | "live-report-missing"
             )),
-            "provider read gate: {row}"
+            "subject gate: {row}"
         );
-        if let Some((source_id, projection, source_prepared)) = reads.first() {
+        if let Some(SourceRetentionSubject {
+            session_id: source_id,
+            projection,
+            source_prepared,
+            ..
+        }) = subjects.first()
+        {
             assert!(
                 !source_prepared,
                 "Prepare cannot claim durable preparation: {row}"
             );
-            assert_eq!(source_id, id.as_str());
+            assert_eq!(source_id.as_str(), id.as_str());
             assert_eq!(
                 projection.environment, before.environment,
                 "original binding"
@@ -409,10 +452,11 @@ async fn worker_retirement_requires_each_terminal_source_without_mutating_roots(
 
 #[tokio::test]
 async fn worker_retirement_never_publishes_a_successful_source_prefix() {
-    // R5 one retained source cannot qualify a later Preparing or incomplete
-    // root. R6 all sources retained, including a mixed terminal/active set,
-    // qualify only after the complete set is observed. Roots remain unchanged
-    // and no successful prefix is published when a later root refuses.
+    // R6 one retained source cannot qualify a later Preparing or incomplete
+    // root: the blocked read names no subject at all. R7 all sources retained,
+    // including a mixed terminal/active set, qualify only once every subject
+    // of the complete set is reported. Roots remain unchanged and no
+    // successful prefix is published when a later root refuses.
     for later in [
         "terminal",
         "retained-active",
@@ -441,7 +485,6 @@ async fn worker_retirement_never_publishes_a_successful_source_prefix() {
             roots.push(repo.get(&SessionId::from(id)).await.unwrap());
         }
         let runtime = Arc::new(RecordingCleanupRuntime::default());
-        runtime.source_retained.store(true, Ordering::SeqCst);
         *runtime.source_observation.lock().unwrap() =
             awaken_session_execution_contract::SessionSourceDispatchObservation::Settled;
         let app = configured_application(
@@ -454,23 +497,21 @@ async fn worker_retirement_never_publishes_a_successful_source_prefix() {
             },
             None,
         );
+        let (observed, subjects) =
+            qualify_retirement(&app, &identity, |subjects| report(subjects, true)).await;
         assert_eq!(
-            app.worker_occupancy()
-                .observe_worker_realizations(crate::WorkerRealizationRead::Retirement(&identity))
-                .await
-                .unwrap()
-                .sources_retained,
+            observed.unwrap().sources_retained,
             matches!(later, "terminal" | "retained-active"),
         );
         for root in roots {
             assert_eq!(repo.get(&root.session_id).await.unwrap(), root);
         }
         assert_eq!(
-            runtime.retention_reads.lock().unwrap().len(),
+            subjects.len(),
             if matches!(later, "terminal" | "retained-active") {
                 2
             } else {
-                1
+                0
             },
             "no partial successful source set: {later}",
         );

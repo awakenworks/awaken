@@ -1715,6 +1715,7 @@ impl WorkerNode {
             observation_ttl: self.credential_observation_ttl,
             probe_interval: self.credential_probe_interval,
             warm_environments: Default::default(),
+            source_retention: Default::default(),
         });
         // Publish Ready before starting the pull loop. Dynamic capability probes
         // and capacity warmups are eligibility evidence, not process liveness:
@@ -1728,13 +1729,11 @@ impl WorkerNode {
         // started. Anchoring locally before I/O prevents response latency from
         // extending the Coordinator-owned expiry in the Worker process.
         let initial_heartbeat_started = lifecycle::authority_proof_started()?;
-        let initial_heartbeat = lifecycle.observations.snapshot().into_heartbeat(
+        let initial_heartbeat = lifecycle.heartbeat(
             1,
             awaken_worker_contract::process_ready_after_startup(
                 awaken_worker_contract::DynamicEvidenceProbeState::Pending,
             ),
-            0,
-            lifecycle.warm_environment_shapes(),
         );
         let initial = tokio::time::timeout(
             startup_timing.request_timeout(),
@@ -1778,12 +1777,9 @@ impl WorkerNode {
                 std::io::Error::other("sandbox evidence expired before pool admission").into(),
             );
         }
-        if let Err(error) = lifecycle
+        lifecycle
             .authority
-            .apply(initial_heartbeat_started, heartbeat_timing)
-        {
-            return Err(error.into());
-        }
+            .apply(initial_heartbeat_started, heartbeat_timing)?;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>((lifecycle.roles.clone(), lifecycle, heartbeat_timing, environment_proof_started))
         }).catch_unwind();
         tokio::pin!(startup);
@@ -1807,6 +1803,7 @@ impl WorkerNode {
             self.clock.clone(),
         );
         let environment_warmups = spawn_environment_warmup_reconciliation(lifecycle.clone());
+        let source_retention = lifecycle::spawn_source_retention_reconciliation(lifecycle.clone());
         let session_realizations =
             spawn_session_realization_reconciliation(lifecycle.clone(), heartbeat_timing);
         let mut session_preparations =
@@ -1930,6 +1927,7 @@ impl WorkerNode {
         heartbeat.abort();
         credential_probe.abort();
         environment_warmups.abort();
+        source_retention.abort();
         session_realizations.abort();
         session_preparations.abort();
         // No producer can refill unused capacity after these aborts. When

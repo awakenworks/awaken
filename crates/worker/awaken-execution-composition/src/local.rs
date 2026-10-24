@@ -553,38 +553,6 @@ mod startup_tests {
         .await
     }
 
-    #[tokio::test]
-    async fn readonly_observation_cannot_replace_explicit_execution() {
-        // RCO5: an explicitly installed execution provider cannot be partially
-        // replaced by read-only roles. The implicit-fallback/uninstalled
-        // positive rows are owned by the actual CLI placement regression.
-        // Rejection must precede any backend observation, creation or adoption.
-        let host = host(DeploymentConfig::ephemeral()).await;
-        let execution = host.installed_session_environment_provider().clone();
-        let host = host.with_session_environment_provider(execution);
-        let backend =
-            Arc::new(awaken_session_environment::test_support::FakeContainerProvider::default());
-        let observation = Arc::new(
-            awaken_session_environment::ContainerEnvironmentObservation::new(
-                backend.clone(),
-                Vec::new(),
-            ),
-        );
-        let error = host
-            .with_session_environment_observation(observation)
-            .err()
-            .expect("RCO5 explicit execution must not be replaced");
-        assert!(error.contains("already installed"));
-        assert_eq!(
-            backend
-                .observation_calls
-                .load(std::sync::atomic::Ordering::SeqCst),
-            0
-        );
-        assert_eq!(backend.creates.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert_eq!(backend.adopts.load(std::sync::atomic::Ordering::SeqCst), 0);
-    }
-
     fn trusted_host_provider(host: &SessionExecutorBuilder) -> &SandboxEnvironmentProvider {
         host.installed_backend_owned_environment_provider()
             .expect("TrustedHost provider installed")
