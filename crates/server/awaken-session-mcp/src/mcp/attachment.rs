@@ -529,7 +529,7 @@ impl McpSessions {
                                 )
                             }
                             error => RunError::classified(
-                                "mcp_credential_revision_mismatch",
+                                credential_rejection_code(&error),
                                 format!(
                                     "mcp server `{}` credential could not be resolved exactly: {error}",
                                     request.name
@@ -867,6 +867,19 @@ impl McpSessions {
         self.drain_projection(slots, &generation)
             .await
             .map_err(run_error)
+    }
+}
+
+/// Stable class of an exact-credential refusal; a revision change, a foreign
+/// recipient and every other binding refusal stay distinguishable.
+fn credential_rejection_code(
+    error: &awaken_credential_contract::CredentialMaterialError,
+) -> &'static str {
+    use awaken_credential_contract::CredentialMaterialError as Material;
+    match error {
+        Material::RevisionMismatch => "mcp_credential_revision_mismatch",
+        Material::RecipientMismatch => "mcp_credential_recipient_mismatch",
+        _ => "mcp_credential_binding_rejected",
     }
 }
 
