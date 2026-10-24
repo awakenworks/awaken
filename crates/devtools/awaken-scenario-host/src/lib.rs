@@ -1261,7 +1261,7 @@ pub async fn build_remote_delegation_router() -> Router {
         .await
         .map_dependencies(|host| {
             host.with_agent_publications(publication.clone())
-                .with_remote_attempt_executor(awaken_cli::a2a_attempt_executor(None))
+                .with_remote_attempt_executor(awaken_process_startup::a2a_attempt_executor(None))
         });
     mount_with_agent_source(host, publication).await
 }
@@ -1492,7 +1492,7 @@ pub async fn build_config_router() -> Router {
             host.with_local_workspace(platform_workspace.clone())
                 .with_agent_publications(executable_agent_catalog.clone())
                 .with_admin_tools(admin_execs)
-                .with_remote_attempt_executor(awaken_cli::a2a_attempt_executor(None))
+                .with_remote_attempt_executor(awaken_process_startup::a2a_attempt_executor(None))
         });
     let (host, resources) = host.into_dependencies();
     // Rebuild the disposable executable catalog through the same registration

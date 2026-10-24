@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use awaken_cli::build_all_in_one_router_with_model;
+use awaken_process_startup::build_all_in_one_router_with_model;
 use awaken_protocol_managed_testkit::DurableFact;
 use awaken_scenario_host::EchoModel;
 use axum::Router;

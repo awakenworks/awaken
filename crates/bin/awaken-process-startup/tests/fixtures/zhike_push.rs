@@ -480,7 +480,7 @@ async fn scenario(
             }
         })
     });
-    let app = awaken_cli::build_all_in_one_router_with_host_customizer(
+    let app = awaken_process_startup::build_all_in_one_router_with_host_customizer(
         executor,
         awaken_runtime_contract::resolved::ModelBinding::parse("default", model_name, "genai")
             .unwrap(),

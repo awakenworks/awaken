@@ -42,7 +42,7 @@ fn host_with_client_tool(dependencies: SessionExecutorBuilder) -> Arc<ExecutorCo
 async fn host_over(dir: &std::path::Path, process: &str) -> Arc<ExecutorComponents> {
     let mut authority_deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     authority_deployment.storage_dir = Some(dir.to_path_buf());
-    let authority = awaken_cli::scenario_runtime_authority(
+    let authority = awaken_process_startup::scenario_runtime_authority(
         &authority_deployment.coordinator_storage(),
         awaken_time::system_clock(),
     )

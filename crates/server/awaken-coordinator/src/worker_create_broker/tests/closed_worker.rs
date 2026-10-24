@@ -272,7 +272,7 @@ fn source(f: &fixture::BrokerFixture) -> Arc<dyn awaken_dispatch::WorkerExecutio
     // client, control namespace and provider fingerprint. All M/CW/CI rows
     // above keep their original Registry, ledger, exit and no-Create effects;
     // the fixture no longer reaches through a foreign private implementation.
-    awaken_cli::WorkerTransport::kubernetes(
+    awaken_process_startup::WorkerTransport::kubernetes(
         f.api_client.clone(),
         "sandbox-ns",
         "worker",

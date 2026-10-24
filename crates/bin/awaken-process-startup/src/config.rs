@@ -67,9 +67,15 @@ pub(in crate::config) fn resolve_test_file(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn local_test_deployment(data_dir: PathBuf) -> ResolvedDeployment {
-    crate::config::resolve_test_file(
+/// A local AllInOne deployment rooted at `data_dir`, resolved on `clock`, for
+/// tests of the compositions that read it (this crate and the `awaken`
+/// launcher).
+#[cfg(any(test, feature = "test-support"))]
+pub fn local_test_deployment_at(
+    data_dir: PathBuf,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
+) -> ResolvedDeployment {
+    ResolvedDeployment::resolve_file(
         ConfigOverrides {
             data_dir: Some(data_dir),
             ..Default::default()
@@ -77,8 +83,14 @@ pub(crate) fn local_test_deployment(data_dir: PathBuf) -> ResolvedDeployment {
         Some(PathBuf::from("/home/test")),
         PathBuf::from("/home/test/.awaken/config.toml"),
         FileConfig::default(),
+        clock,
     )
     .expect("test local deployment")
+}
+
+#[cfg(test)]
+pub(crate) fn local_test_deployment(data_dir: PathBuf) -> ResolvedDeployment {
+    local_test_deployment_at(data_dir, awaken_time::system_clock())
 }
 
 #[cfg(test)]

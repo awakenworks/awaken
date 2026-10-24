@@ -507,9 +507,9 @@ Build slices (**core** = both builds; **managed** = server-local only):
   which seed no Org ([ADR-0048](0048-iam-host-adoption-org-workspace-path-alignment-and-a2a-carve-out.md)
   D4), the deployment configuration, because the operator is the controller.
   Code: `deployment.runtime.content_capture.level`
-  (`crates/bin/awaken-cli/src/deployment_process.rs:225`,
-  `crates/bin/awaken-cli/src/control.rs:369`; parsed in
-  `crates/bin/awaken-cli/src/config/runtime_settings.rs:156`). Workspace, Agent
+  (`crates/bin/awaken-process-startup/src/deployment_process.rs:225`,
+  `crates/bin/awaken-process-startup/src/control.rs:369`; parsed in
+  `crates/bin/awaken-process-startup/src/config/runtime_settings.rs:156`). Workspace, Agent
   and Session may only tighten it. D3's "Org fields are required" applies where
   an Org exists.
 - **Lower-layer narrowing.** `TelemetryCeiling` and the lower-layer

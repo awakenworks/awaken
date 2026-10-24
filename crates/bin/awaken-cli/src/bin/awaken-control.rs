@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    awaken_cli::block_on_service(|| {
-        awaken_cli::run_service_binary(awaken_cli::ServiceRole::Control)
+    awaken_process_startup::block_on_service(|| {
+        awaken_process_startup::run_service_binary(awaken_process_startup::ServiceRole::Control)
     })
 }

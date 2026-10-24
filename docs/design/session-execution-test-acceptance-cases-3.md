@@ -394,7 +394,7 @@
 
 ## T40 Memory 缓存与投影能力边界
 
-责任组件：Resources invalidator 与 MemoryStoreMounter。入口：[源码或现有门禁](../../crates/worker/awaken-sandbox-memoryd/src/invalidate.rs)。风险基准：P1。类型：行为域。
+责任组件：Resources invalidator 与 MemoryStoreMounter。入口：[源码或现有门禁](../../crates/contract/awaken-resource-contract/src/memory_invalidation.rs)。风险基准：P1。类型：行为域。
 
 校准：新增。区分同进程 FUSE 失效、远端 CopyOnly 和未来分布式实时一致性；不默认要求实现新网络总线。
 

@@ -2,64 +2,58 @@
   "$comment": "Reviewed transitions of scripts/ci/_dispatch_boundary_fitness.py rule D4: each Worker-side crate the awaken-coordinator binary's package still links, with its D10 review record. Shrink with --tighten; a new entry needs --write-baseline --reason '<JSON review record>'.",
   "transitions": {
     "awaken-credential-materializer": {
-      "reason": "awaken-cli declares the awaken-coordinator binary and is also the AllInOne root; the Coordinator process startup and the Coordinator-side Session execution (Run admission over RunAssembly, committed reads, commit ingest, the Session application executor roles) still live with the Session executor, see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; the Coordinator-only binary extraction is its own slice after W21",
+      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; reached through the Session executor and realization, and the startup refuses ambient provider keys through it; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
+      "approved_by": "pending: v4-coord-process for integrator review (record restated after the Coordinator binary left awaken-cli)",
       "date": "2026-10-24",
-      "remove_when": "the awaken-coordinator binary is declared by the executor-free Coordinator process package"
+      "remove_when": "the executor leaves the Coordinator closure"
     },
     "awaken-execution-composition": {
-      "reason": "awaken-cli declares the awaken-coordinator binary and is also the AllInOne root; the Coordinator process startup and the Coordinator-side Session execution (Run admission over RunAssembly, committed reads, commit ingest, the Session application executor roles) still live with the Session executor, see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; the Coordinator-only binary extraction is its own slice after W21",
+      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; the startup installs the read-only Sandbox observation a Coordinator uses for Worker retirement, the Environment package image provisioner and the AllInOne co-located execution through it; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
+      "approved_by": "pending: v4-coord-process for integrator review (record restated after the Coordinator binary left awaken-cli)",
       "date": "2026-10-24",
-      "remove_when": "the awaken-coordinator binary is declared by the executor-free Coordinator process package"
+      "remove_when": "Worker-retirement observation is reported by Workers and image provisioning moves to the Environment image build context"
     },
     "awaken-sandbox-container": {
-      "reason": "awaken-cli declares the awaken-coordinator binary and is also the AllInOne root; the Coordinator process startup and the Coordinator-side Session execution (Run admission over RunAssembly, committed reads, commit ingest, the Session application executor roles) still live with the Session executor, see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; the Coordinator-only binary extraction is its own slice after W21",
+      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; reached through the execution composition (observation and image provisioning); see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
+      "approved_by": "pending: v4-coord-process for integrator review (record restated after the Coordinator binary left awaken-cli)",
       "date": "2026-10-24",
-      "remove_when": "the awaken-coordinator binary is declared by the executor-free Coordinator process package"
+      "remove_when": "the execution composition leaves the Coordinator closure"
     },
     "awaken-sandbox-control-transport": {
-      "reason": "awaken-cli declares the awaken-coordinator binary and is also the AllInOne root; the Coordinator process startup and the Coordinator-side Session execution (Run admission over RunAssembly, committed reads, commit ingest, the Session application executor roles) still live with the Session executor, see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; the Coordinator-only binary extraction is its own slice after W21",
+      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; reached through the execution composition; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
+      "approved_by": "pending: v4-coord-process for integrator review (record restated after the Coordinator binary left awaken-cli)",
       "date": "2026-10-24",
-      "remove_when": "the awaken-coordinator binary is declared by the executor-free Coordinator process package"
+      "remove_when": "the execution composition leaves the Coordinator closure"
     },
     "awaken-sandbox-kubernetes": {
-      "reason": "awaken-cli declares the awaken-coordinator binary and is also the AllInOne root; the Coordinator process startup and the Coordinator-side Session execution (Run admission over RunAssembly, committed reads, commit ingest, the Session application executor roles) still live with the Session executor, see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; the Coordinator-only binary extraction is its own slice after W21",
+      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; the startup authenticates, observes and stops Kubernetes Worker Pods through it, and the execution composition reaches it; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
+      "approved_by": "pending: v4-coord-process for integrator review (record restated after the Coordinator binary left awaken-cli)",
       "date": "2026-10-24",
-      "remove_when": "the awaken-coordinator binary is declared by the executor-free Coordinator process package"
+      "remove_when": "the Kubernetes Worker fleet adapters leave the Sandbox adapter crate"
     },
     "awaken-sandbox-local": {
-      "reason": "awaken-cli declares the awaken-coordinator binary and is also the AllInOne root; the Coordinator process startup and the Coordinator-side Session execution (Run admission over RunAssembly, committed reads, commit ingest, the Session application executor roles) still live with the Session executor, see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; the Coordinator-only binary extraction is its own slice after W21",
+      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; reached through the execution composition; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
+      "approved_by": "pending: v4-coord-process for integrator review (record restated after the Coordinator binary left awaken-cli)",
       "date": "2026-10-24",
-      "remove_when": "the awaken-coordinator binary is declared by the executor-free Coordinator process package"
+      "remove_when": "the execution composition leaves the Coordinator closure"
     },
     "awaken-sandbox-memoryd": {
-      "reason": "awaken-cli declares the awaken-coordinator binary and is also the AllInOne root; the Coordinator process startup and the Coordinator-side Session execution (Run admission over RunAssembly, committed reads, commit ingest, the Session application executor roles) still live with the Session executor, see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; the Coordinator-only binary extraction is its own slice after W21",
+      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; the startup installs the Memory mount data plane of the AllInOne co-located execution, and the execution composition reaches it; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
+      "approved_by": "pending: v4-coord-process for integrator review (record restated after the Coordinator binary left awaken-cli)",
       "date": "2026-10-24",
-      "remove_when": "the awaken-coordinator binary is declared by the executor-free Coordinator process package"
+      "remove_when": "the co-located execution install leaves the shared startup"
     },
     "awaken-session-executor": {
-      "reason": "awaken-cli declares the awaken-coordinator binary and is also the AllInOne root; the Coordinator process startup and the Coordinator-side Session execution (Run admission over RunAssembly, committed reads, commit ingest, the Session application executor roles) still live with the Session executor, see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; the Coordinator-only binary extraction is its own slice after W21",
+      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; the shared process startup composes the Coordinator execution ports from the Session executor (Run admission over RunAssembly, committed reads, commit ingest, the Session application executor roles); see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
+      "approved_by": "pending: v4-coord-process for integrator review (record restated after the Coordinator binary left awaken-cli)",
       "date": "2026-10-24",
-      "remove_when": "the awaken-coordinator binary is declared by the executor-free Coordinator process package"
+      "remove_when": "the Coordinator-side Session execution crate and placement-typed Session role sets replace the executor on the Coordinator"
     },
     "awaken-session-realization": {
-      "reason": "awaken-cli declares the awaken-coordinator binary and is also the AllInOne root; the Coordinator process startup and the Coordinator-side Session execution (Run admission over RunAssembly, committed reads, commit ingest, the Session application executor roles) still live with the Session executor, see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; the Coordinator-only binary extraction is its own slice after W21",
+      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; reached through the Session executor the startup composes; the Coordinator installs dispatch projections into its realization registry; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
+      "approved_by": "pending: v4-coord-process for integrator review (record restated after the Coordinator binary left awaken-cli)",
       "date": "2026-10-24",
-      "remove_when": "the awaken-coordinator binary is declared by the executor-free Coordinator process package"
-    },
-    "awaken-worker": {
-      "reason": "awaken-cli declares the awaken-coordinator binary and is also the AllInOne root; the Coordinator process startup and the Coordinator-side Session execution (Run admission over RunAssembly, committed reads, commit ingest, the Session application executor roles) still live with the Session executor, see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; the Coordinator-only binary extraction is its own slice after W21",
-      "date": "2026-10-24",
-      "remove_when": "the awaken-coordinator binary is declared by the executor-free Coordinator process package"
+      "remove_when": "Run admission reads the frozen projection from the Session application"
     }
   }
 }

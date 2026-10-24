@@ -234,7 +234,7 @@ mod tests {
     /// `workspace_id?`, `kind`, `provider_id`, `env_key`, `secret`; archive
     /// sends `expected_version`), `e2e/management_*_e2e.mjs`,
     /// `e2e/managed_web_tools_e2e.mjs` (`idempotency_key`), and
-    /// `crates/bin/awaken-cli/tests/management_*.rs`. No producer sends a key
+    /// `crates/bin/awaken-process-startup/tests/management_*.rs`. No producer sends a key
     /// this type does not model, which is why the attribute can go on now.
     const PRODUCER_KEYS: &[&str] = &[
         "workspace_id",

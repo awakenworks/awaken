@@ -163,7 +163,7 @@ awaken-run-executor-acp.workspace = true
 awaken-coordinator-client.workspace = true
 # Cross-component closure cases select the actual existing transport and keep
 # all original Registry/Dispatch/ledger assertions at the broker decision owner.
-awaken-cli = { workspace = true, features = ["container-k8s", "test-support"] }
+awaken-process-startup = { workspace = true, features = ["container-k8s", "test-support"] }
 awaken-executable-environment-contract.workspace = true
 # Captures the Session adoption's correlated rollout diagnostics in its tests.
 awaken-reliability-testkit = { workspace = true, features = ["tracing", "postgres"] }

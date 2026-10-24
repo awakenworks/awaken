@@ -25,15 +25,15 @@ pub async fn serve_distributed_control(
     // production Control migration command; omission retains the normal default
     // path for focused unit tests.
     let config_path = std::env::var_os("AWAKEN_SCENARIO_CONFIG").map(std::path::PathBuf::from);
-    let deployment = awaken_cli::config::ResolvedDeployment::load(
-        awaken_cli::config::ConfigOverrides {
+    let deployment = awaken_process_startup::config::ResolvedDeployment::load(
+        awaken_process_startup::config::ConfigOverrides {
             config_path,
             ..Default::default()
         },
         clock,
     )
     .map_err(|error| format!("distributed Control deployment configuration: {error}"))?;
-    if deployment.role != awaken_cli::config::Role::Control {
+    if deployment.role != awaken_process_startup::config::Role::Control {
         return Err("distributed Control scenario requires role = \"control\"".into());
     }
     let key = deployment
@@ -43,11 +43,14 @@ pub async fn serve_distributed_control(
     let resolver = Arc::new(DistributedProviderPublicationResolver::new(
         scenario_model_catalog("adr71-echo").await,
     ));
-    let process =
-        awaken_cli::prepare_control_process_with_publication_resolver(&deployment, &key, resolver)
-            .await
-            .map_err(|error| format!("assemble distributed Control scenario: {error}"))?;
-    awaken_cli::serve_prepared_control(deployment, process).await
+    let process = awaken_process_startup::prepare_control_process_with_publication_resolver(
+        &deployment,
+        &key,
+        resolver,
+    )
+    .await
+    .map_err(|error| format!("assemble distributed Control scenario: {error}"))?;
+    awaken_process_startup::serve_prepared_control(deployment, process).await
 }
 
 /// Hermetic Anthropic Messages edge used by the distributed-role cluster proof.

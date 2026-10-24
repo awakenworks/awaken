@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::{EndCause, RunState};
-use awaken_cli::build_all_in_one_router_with_model;
+use awaken_process_startup::build_all_in_one_router_with_model;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::RuntimeRunContext;
 use awaken_scenario_host::EchoModel;

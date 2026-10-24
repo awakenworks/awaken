@@ -171,9 +171,9 @@ critical_durability_evidence() {
     --require-case=secret_write_survives_kill_and_is_compensated_from_the_intent \
     --require-case=writing_material_survives_kill_but_expired_owner_is_aborted \
     --require-case=published_material_retirement_survives_process_crash -- --test-threads=1 || record_failure "$?"
-  pg_required_test -p awaken-cli --locked --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy \
+  pg_required_test -p awaken-process-startup --locked --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy \
     --require-case=installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy -- --exact --test-threads=1 || record_failure "$?"
-  pg_required_test -p awaken-cli --locked --lib postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling \
+  pg_required_test -p awaken-process-startup --locked --lib postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling \
     --require-case=postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling -- --ignored --exact --test-threads=1 || record_failure "$?"
   pg_required_test -p awaken-coordinator --locked --lib application_access_store::tests::provisioned_postgres_application_access_durability_release_gate --require-case=application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact --test-threads=1 || record_failure "$?"
 }
@@ -683,14 +683,14 @@ self_test() {
     echo "Postgres gate omits Session history, read-only open, and repository parity" >&2
     return 1
   }
-  grep -Fq 'pg_required_test -p awaken-cli --locked --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy' "$0" || {
+  grep -Fq 'pg_required_test -p awaken-process-startup --locked --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy' "$0" || {
     echo "Postgres gate omits exact CLI installation-binding continuity" >&2
     return 1
   }
   # P15 an ignored process-pool test exists + this runner supplies a live URL
   # => execute that exact test under the existing deadline/first-failure owner.
   # Without --ignored the default CLI suite can pass without measuring cap2.
-  grep -Fq 'pg_required_test -p awaken-cli --locked --lib postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling' "$0" || {
+  grep -Fq 'pg_required_test -p awaken-process-startup --locked --lib postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling' "$0" || {
     echo "Postgres gate omits live process-pool cardinality and closure" >&2
     return 1
   }

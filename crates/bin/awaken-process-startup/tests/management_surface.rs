@@ -1,6 +1,6 @@
 //! The composed product plane serves the canonical Worker readiness projection.
 
-use awaken_cli::build_ephemeral_all_in_one_router as build_all_in_one_router;
+use awaken_process_startup::build_ephemeral_all_in_one_router as build_all_in_one_router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;

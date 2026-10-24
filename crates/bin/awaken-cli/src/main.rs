@@ -5,12 +5,12 @@
 
 use std::process::ExitCode;
 
-use awaken_cli::ServiceRole;
-use awaken_cli::config::{ConfigOverrides, ResolvedDeployment};
-use awaken_cli::console::{self, Command};
+use awaken_process_startup::ServiceRole;
+use awaken_process_startup::config::{ConfigOverrides, ResolvedDeployment};
+use awaken_process_startup::console::{self, Command};
 
 fn main() -> ExitCode {
-    awaken_cli::block_on_service(async_main)
+    awaken_process_startup::block_on_service(async_main)
 }
 
 async fn async_main() -> ExitCode {
@@ -71,7 +71,9 @@ async fn run(command: Command) -> Result<(), String> {
             );
             Ok(())
         }
-        Command::DatabaseMigrate(args) => awaken_cli::migrate_service_with_request(args).await,
+        Command::DatabaseMigrate(args) => {
+            awaken_process_startup::migrate_service_with_request(args).await
+        }
         Command::ControlIamProfile => print_json(
             &awaken_control::workspace_authorization_profile(),
             "Workspace IAM profile",
@@ -89,9 +91,13 @@ async fn run(command: Command) -> Result<(), String> {
             ),
             "Hosted Runtime route profile",
         ),
-        Command::AllInOne(args) => awaken_cli::run_service(args, ServiceRole::AllInOne).await,
-        Command::Control(args) => awaken_cli::run_service(args, ServiceRole::Control).await,
-        Command::Coordinator(args) => awaken_cli::run_service(args, ServiceRole::Coordinator).await,
+        Command::AllInOne(args) => awaken_cli::run_all_in_one(args).await,
+        Command::Control(args) => {
+            awaken_process_startup::run_service(args, ServiceRole::Control).await
+        }
+        Command::Coordinator(args) => {
+            awaken_process_startup::run_service(args, ServiceRole::Coordinator).await
+        }
     }
 }
 

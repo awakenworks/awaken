@@ -1,5 +1,5 @@
 // @formal surface exclude=external_port_contract
-// @formal owner crates/bin/awaken-cli/tests/mcp_sessions.rs
+// @formal owner crates/bin/awaken-process-startup/tests/mcp_sessions.rs
 // @formal reason: Defines the three-state MCP probe result, the refresh-exchange outcome, their port
 // @formal reason: signatures, and the pure scrub-then-bound projection of observed HTTP evidence; live
 // @formal reason: handshake classification is owned by the runtime-host adapter and the exchange by the

@@ -353,7 +353,7 @@ cargo test -p awaken-sandbox-kubernetes --lib remote_completion_requires_explici
 cargo test -p awaken-tool-relay --features test-support
 cargo test -p awaken-session-environment --lib terminal_
 cargo test -p awaken-worker --lib relay_hand::tests::resident_request_recovery_cancels_real_bash_without_replaying_or_claiming_stop
-cargo test -p awaken-cli --features container-k8s --lib lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires_the_same_slot
+cargo test -p awaken-process-startup --features container-k8s --lib lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires_the_same_slot
 cargo test -p awaken-worker --lib lifecycle::tests
 cargo test -p awaken-protocol-managed --features test-support --lib rollout
 

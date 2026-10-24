@@ -36,7 +36,6 @@ use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::RedactedString;
 use awaken_agent_contract::credential::{CredentialRefreshAccess, TokenEndpointAuth};
-use awaken_cli::build_all_in_one_router_with_model;
 use awaken_control::VaultRefresher;
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
@@ -45,6 +44,7 @@ use awaken_credential_vault::{
     OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretRef, SecretStore,
 };
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher};
+use awaken_process_startup::build_all_in_one_router_with_model;
 use awaken_protocol_managed_testkit::DurableFact;
 use awaken_scenario_host::McpToolModel;
 use awaken_session_configuration_contract::{

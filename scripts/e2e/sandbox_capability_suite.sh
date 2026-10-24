@@ -216,7 +216,7 @@ if command -v systemctl >/dev/null 2>&1 \
    && systemctl --user --no-pager show-environment >/dev/null 2>&1; then
   systemd_test=worker_transport::systemd::tests::live_systemd_unit_stop_survives_adapter_reopen
   AWAKEN_SYSTEMD_WORKER_E2E=1 run "systemd:exact-worker-exit-after-reopen" \
-    run_required_rust_tests -p awaken-cli --lib "$systemd_test" \
+    run_required_rust_tests -p awaken-process-startup --lib "$systemd_test" \
       --require-case="$systemd_test" -- --exact
 else
   skip "systemd user manager or trusted launcher unavailable"

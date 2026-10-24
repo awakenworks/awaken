@@ -414,7 +414,7 @@ log "1/11 build production roles and the protocol-only Provider fixture"
 SANDBOX_IMAGE=$(k3d_image_digest "$SANDBOX_BUILD_IMAGE")
 echo "using immutable Sandbox image $SANDBOX_IMAGE"
 CONTROL_BIN=$(resolve_cargo_executable awaken-cli awaken-control)
-COORDINATOR_BIN=$(resolve_cargo_executable awaken-cli awaken-coordinator --features container-k8s)
+COORDINATOR_BIN=$(resolve_cargo_executable awaken-coordinator-process awaken-coordinator --features container-k8s)
 WORKER_BIN=$(resolve_cargo_executable awaken-worker awaken-worker --features container-k8s)
 SCENARIO_BIN=$(resolve_cargo_executable awaken-scenario-host awaken-scenario-host)
 [ -n "$CONTROL_BIN" ] && [ -n "$COORDINATOR_BIN" ] && [ -n "$WORKER_BIN" ] && [ -n "$SCENARIO_BIN" ] \
@@ -1035,13 +1035,13 @@ TRANSPORT_TEST=worker_transport::kubernetes::tests::live::real_pod_identity_surv
 # T1 physical transport lives in the process composition; a stale filter otherwise
 # exits successfully with zero tests. Enumerate this exact feature/target first;
 # only the one current test enters the existing real Kubernetes qualification.
-TRANSPORT_TESTS=$(cargo test --locked -p awaken-cli --features container-k8s --lib \
+TRANSPORT_TESTS=$(cargo test --locked -p awaken-process-startup --features container-k8s --lib \
   "$TRANSPORT_TEST" -- --list --exact)
 grep -Fqx "$TRANSPORT_TEST: test" <<<"$TRANSPORT_TESTS" \
   || { err "exact Kubernetes transport qualification test was not selected"; exit 1; }
 AWAKEN_K8S_E2E=1 AWAKEN_K3D_CLUSTER="$CLUSTER" AWAKEN_K8S_FIXTURE_IMAGE="$IMAGE" \
   AWAKEN_K8S_CONTROL_IMAGE="$SANDBOX_IMAGE" \
-  cargo test --locked -p awaken-cli --features container-k8s --lib \
+  cargo test --locked -p awaken-process-startup --features container-k8s --lib \
   "$TRANSPORT_TEST" -- --exact --nocapture
 kubectl -n "$NS" scale statefulset/worker --replicas=0 >/dev/null
 kubectl -n "$NS" wait --for=delete pod/worker-0 pod/worker-1 --timeout=180s

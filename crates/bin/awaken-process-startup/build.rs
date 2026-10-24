@@ -9,7 +9,7 @@ fn main() {
     let workspace = manifest_dir
         .ancestors()
         .nth(3)
-        .expect("awaken-cli must live under crates/bin/awaken-cli");
+        .expect("awaken-process-startup must live under crates/bin/awaken-process-startup");
     let web = workspace.join("web");
 
     println!("cargo:rerun-if-changed={}", web.join("src").display());

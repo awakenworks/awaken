@@ -674,7 +674,7 @@
     "id": "T40",
     "title": "Memory 缓存与投影能力边界",
     "owner": "Resources invalidator 与 MemoryStoreMounter",
-    "entrypoint": "crates/worker/awaken-sandbox-memoryd/src/invalidate.rs",
+    "entrypoint": "crates/contract/awaken-resource-contract/src/memory_invalidation.rs",
     "change": "add",
     "why": "区分同进程 FUSE 失效、远端 CopyOnly 和未来分布式实时一致性；不默认要求实现新网络总线。",
     "kind": "behavior",

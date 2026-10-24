@@ -1,0 +1,33 @@
+[package]
+name = "awaken-coordinator-process"
+description = "The Coordinator-only service executable"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "apps"
+product = "apps"
+layer = "bootstrap"
+authority = "coordinator-process"
+separation = "process"
+
+[[bin]]
+name = "awaken-coordinator"
+path = "src/main.rs"
+
+# The Coordinator process: the shared process startup with no co-located
+# Worker. Its normal closure is what rule D4 of
+# scripts/ci/_dispatch_boundary_fitness.py holds against the reviewed
+# Coordinator transitions.
+[dependencies]
+awaken-process-startup.workspace = true
+
+[features]
+# The Kubernetes Worker transport and container tiers the Coordinator observes.
+container-docker = ["awaken-process-startup/container-docker"]
+container-podman = ["awaken-process-startup/container-podman"]
+container-k8s = ["awaken-process-startup/container-k8s"]
+
+[lints]
+workspace = true

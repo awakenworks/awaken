@@ -785,6 +785,6 @@ D6 says the resource backends are "selected together once by
 [ADR-0069](0069-acp-capability-configuration-lifecycle.md) D12 (product configuration is typed, not ambient) and [ADR-0061](0061-selectable-identity-and-platform-managed-resource-scopes.md)
 (retired process-environment aliases do not participate) decide it: the selection is the
 typed deployment field `resource_database_url`
-(`crates/bin/awaken-cli/src/config/file_schema.rs:69`, validated in `deployment.rs:150`).
+(`crates/bin/awaken-process-startup/src/config/file_schema.rs:69`, validated in `deployment.rs:150`).
 Neither environment variable is read in `crates/`. The one-bundle selection rule is
 unchanged.
