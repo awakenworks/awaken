@@ -11,6 +11,8 @@ use awaken_session_execution_contract::{
 use awaken_session_types::SessionId;
 
 mod pre_activation;
+pub(super) mod response_loss_store;
+mod retry_identity;
 
 struct ProtocolProjectionRuntime;
 

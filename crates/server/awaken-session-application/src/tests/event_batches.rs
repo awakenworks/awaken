@@ -5845,7 +5845,9 @@ mod outcome_reconciliation;
 mod resumed_dispatch;
 
 mod admission_boundaries;
+mod concurrent_consumption;
 mod frozen_projection;
+mod pause_transaction;
 
 #[test]
 fn postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict_fixture_admission() {
