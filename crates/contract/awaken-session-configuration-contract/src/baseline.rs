@@ -312,6 +312,18 @@ pub enum SessionBaselineState {
     Frozen(SessionBaseline),
 }
 
+impl SessionBaselineState {
+    /// The named input-mutation decision frozen with the Session; a Session
+    /// still preparing its baseline admits the default policy.
+    #[must_use]
+    pub fn resource_mutation_policy(&self) -> SessionMutationPolicy {
+        match self {
+            Self::Frozen(baseline) => baseline.mutation_policy,
+            Self::Preparing(_) => SessionMutationPolicy::default(),
+        }
+    }
+}
+
 impl SessionBaseline {
     #[must_use]
     pub fn compile(inputs: SessionBaselineInputs) -> Self {

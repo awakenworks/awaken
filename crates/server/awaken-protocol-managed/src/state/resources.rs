@@ -264,10 +264,7 @@ pub(crate) async fn observe_resource_manifest(
     id: &str,
 ) -> Result<crate::types::resource::SessionResourceObservation, StateError> {
     let session = state.read_persisted_session_projection(id).await?.session;
-    let policy = session
-        .frozen_baseline()
-        .map(|baseline| baseline.mutation_policy)
-        .unwrap_or_default();
+    let policy = session.baseline.resource_mutation_policy();
     let mut manifest = ManagedState::resource_manifest_view(&session);
     // The watermark survives rollback; the desired/active pairs do not advance
     // unless their manifests do. The read must not pair old inputs with a new
