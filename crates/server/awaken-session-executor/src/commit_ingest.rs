@@ -49,15 +49,15 @@ mod tests {
         CommitOperation, CommitOperationId, CommitReceipt, commit_payload_hash,
     };
     use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+    use awaken_dispatch_contract::ClaimedRunCommit;
+    use awaken_dispatch_contract::DispatchClaims;
+    use awaken_dispatch_contract::DispatchEnqueue;
+    use awaken_dispatch_contract::DispatchSettlement;
     use awaken_ext_memory::MemoryExtractionStatus;
     use awaken_dispatch::ClaimedCommitService;
     use awaken_dispatch::{
         ClaimedCommitRequest, MemoryDispatchStore, WorkerIdentity, WorkerResolver as _,
     };
-    use awaken_dispatch_contract::ClaimedRunCommit;
-    use awaken_dispatch_contract::DispatchClaims;
-    use awaken_dispatch_contract::DispatchEnqueue;
-    use awaken_dispatch_contract::DispatchSettlement;
 
     use awaken_dispatch_contract::{RunClaim, RunDispatch};
     use awaken_runtime_contract::RunActivation;
@@ -1005,11 +1005,7 @@ mod tests {
                 awaken_dispatch_erasure::DispatchBinding::remote(
                     Arc::new(awaken_coordinator_client::HttpDispatchQueue::new(
                         "http://127.0.0.1:9",
-                        awaken_dispatch_contract::WorkerIdentity::new(
-                            "fixture",
-                            "fixture-boot",
-                            1,
-                        ),
+                        awaken_dispatch_contract::WorkerIdentity::new("fixture", "fixture-boot", 1),
                     )),
                     injected.clone(),
                 ),

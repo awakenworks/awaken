@@ -6,10 +6,10 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::{ContentBlock, DocumentSource, ImageSource};
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
+use awaken_dispatch_contract::DispatchCommitAuthority;
 use awaken_resource_contract::{
     FileContentSource, FileContentSourceError, FileReadPurpose, ResolvedFileContent, content_id,
 };
-use awaken_dispatch_contract::DispatchCommitAuthority;
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{

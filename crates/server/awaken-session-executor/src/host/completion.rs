@@ -8,11 +8,9 @@
 use super::*;
 use crate::session_execution_error::ExecutorLock;
 #[cfg(test)]
-use awaken_dispatch_execution::placement::remote_worker_placement;
+use awaken_dispatch_contract::{HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY};
 #[cfg(test)]
-use awaken_dispatch_contract::{
-    HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
-};
+use awaken_dispatch_execution::placement::remote_worker_placement;
 use std::collections::HashMap;
 
 impl crate::SessionRuns {

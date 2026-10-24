@@ -6,8 +6,8 @@
 
 use std::time::Duration;
 
-use awaken_dispatch::PgNotifyWake;
 use awaken_dispatch_contract::WakeSignal;
+use awaken_dispatch::PgNotifyWake;
 use sqlx::postgres::PgPoolOptions;
 
 fn pg_url() -> Option<String> {

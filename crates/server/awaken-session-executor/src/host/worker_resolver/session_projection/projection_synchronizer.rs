@@ -714,9 +714,10 @@ mod tests {
             .map(|binding| binding.queue())
             .unwrap();
         dispatch
-            .enqueue(awaken_dispatch_contract::RunDispatch::new(
-                test_activation(thread, "run-claimed-ready-durable"),
-            ))
+            .enqueue(awaken_dispatch_contract::RunDispatch::new(test_activation(
+                thread,
+                "run-claimed-ready-durable",
+            )))
             .await
             .unwrap();
         let claimed = dispatch
@@ -1339,9 +1340,10 @@ mod tests {
             .map(|binding| binding.queue())
             .unwrap();
         dispatch
-            .enqueue(awaken_dispatch_contract::RunDispatch::new(
-                test_activation(thread, "run-claimed-ready-v1"),
-            ))
+            .enqueue(awaken_dispatch_contract::RunDispatch::new(test_activation(
+                thread,
+                "run-claimed-ready-v1",
+            )))
             .await
             .unwrap();
         let claimed = dispatch

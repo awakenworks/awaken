@@ -114,7 +114,7 @@ slot can be released.
 ## Amendment 2026-10-09: reconciled with ADR-0022
 
 D1's list of states that return `None` is out of date. The code is authoritative
-(`crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs:516-574`):
+(`crates/contract/awaken-run-ingress-contract/src/dispatch_transition.rs:516-574`):
 
 - A superseded run is not cancellable (`Superseded => NotCancellable`, :549). It
   has no committed terminal fact; it is visible only through `superseded()`.

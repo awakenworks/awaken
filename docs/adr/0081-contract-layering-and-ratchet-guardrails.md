@@ -325,7 +325,7 @@ error payloads.
 The compatibility facade has been deleted. Every source and manifest now names
 the owner it consumes, and the public API snapshots cover those owners directly.
 The deeper visible paths in `awaken-session-execution-contract` and
-`awaken-dispatch-contract` are the actual state -> realization -> runtime ->
+`awaken-run-ingress-contract` are the actual state -> realization -> runtime ->
 ingress dependency chain; the ratchet records that topology with its reason so a
 replacement aggregator cannot conceal it. All audited Session, Run-ingress and
 Resource contracts retain zero missing-capability defaults.

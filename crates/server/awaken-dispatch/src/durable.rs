@@ -22,10 +22,10 @@ use awaken_runtime_contract::execution::{Error as ExecError, Result as ExecResul
 
 use crate::Error;
 use crate::dispatch::{DispatchSummary, PendingInput, SubmitOptions};
+use awaken_dispatch_contract::RunDispatch;
 use awaken_dispatch_execution::{
     DispatchService, DispatchServiceConfig, DispatchWorker, LiveRunControlService,
 };
-use awaken_dispatch_contract::RunDispatch;
 use awaken_time::WallClock;
 
 /// Feature-gated synchronous harness over one Worker and its committed reader.

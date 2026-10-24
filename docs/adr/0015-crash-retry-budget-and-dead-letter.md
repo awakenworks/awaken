@@ -89,7 +89,7 @@ Quarantine is dispatch operations state, not a terminal Run outcome.
   automatically. The current text is authoritative: retry exhaustion commits
   `Ended(Indeterminate)`, and `DeadLetter` is only an explicit operator
   quarantine (`claim_retry_exhausted` / `quarantine_retry_exhausted`,
-  `crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs:146,317`).
+  `crates/contract/awaken-run-ingress-contract/src/dispatch/queue.rs:146,317`).
 - Stale text elsewhere that still assumes automatic dead-lettering: the
   `DispatchState::DeadLetter` comment (`.../dispatch/model.rs:383`) and
   [ADR-0018](0018-priority-dedupe-gc.md) D4.

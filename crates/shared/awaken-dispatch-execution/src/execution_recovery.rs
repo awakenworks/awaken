@@ -524,10 +524,8 @@ mod tests {
             cursor: DispatchCursor,
             limit: usize,
             run: Option<&RunId>,
-        ) -> Result<
-            awaken_dispatch_contract::DispatchPage,
-            awaken_dispatch_contract::DispatchError,
-        > {
+        ) -> Result<awaken_dispatch_contract::DispatchPage, awaken_dispatch_contract::DispatchError>
+        {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.unavailable.load(Ordering::SeqCst) {
                 return Err(awaken_dispatch_contract::DispatchError::Unavailable(
@@ -557,10 +555,8 @@ mod tests {
             limit: usize,
             root: &ThreadId,
             members: &[ThreadId],
-        ) -> Result<
-            awaken_dispatch_contract::DispatchPage,
-            awaken_dispatch_contract::DispatchError,
-        > {
+        ) -> Result<awaken_dispatch_contract::DispatchPage, awaken_dispatch_contract::DispatchError>
+        {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.unavailable.load(Ordering::SeqCst) {
                 return Err(awaken_dispatch_contract::DispatchError::Unavailable(

@@ -1445,11 +1445,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         .fingerprint()
         .expect("R1 deterministic Worker capability fingerprint");
     let worker = awaken_dispatch_contract::WorkerSnapshot {
-        identity: awaken_dispatch_contract::WorkerIdentity::new(
-            "inspection-worker",
-            "boot-1",
-            1,
-        ),
+        identity: awaken_dispatch_contract::WorkerIdentity::new("inspection-worker", "boot-1", 1),
         state: awaken_dispatch_contract::WorkerState::Ready,
         manifest,
         capability_fingerprint,

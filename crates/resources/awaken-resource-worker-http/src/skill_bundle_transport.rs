@@ -12,8 +12,8 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::AgentSkillKind;
-use awaken_resource_contract::SkillVersion;
 use awaken_dispatch_contract::{DispatchCommitAuthority, RunClaim};
+use awaken_resource_contract::SkillVersion;
 use awaken_session_configuration_contract::resource::ResolvedSkillBinding;
 use awaken_session_configuration_contract::{
     SkillBundleSource, SkillBundleSourceError, validate_skill_bundle,

@@ -1,8 +1,8 @@
 // @formal surface exclude=module_facade
 // @formal owner crates/contract/awaken-dispatch-contract/src/lib.rs
-// @formal reason: Run-ingress contract declarations and public re-exports only; dispatch, claim,
+// @formal reason: Dispatch contract declarations and public re-exports only; dispatch, claim,
 // @formal reason: placement, and settlement decisions remain inventoried in their defining modules.
-//! The dispatch / run-ingress contract (ADR-0039 slice 2.1).
+//! The dispatch contract (ADR-0039 slice 2.1).
 //!
 //! This is the durable-dispatch bounded context's port surface, factored out of
 //! the `awaken-dispatch` host so store backends and adapters can depend on the

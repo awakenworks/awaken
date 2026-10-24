@@ -64,7 +64,7 @@ running server.
 ## Amendment 2026-10-09: names and references
 
 D3 uses the port names that [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md)
-later renamed. Current names, all in `crates/contract/awaken-dispatch-contract/src/dispatch/`:
+later renamed. Current names, all in `crates/contract/awaken-run-ingress-contract/src/dispatch/`:
 
 - `DispatchStore` / `RunDispatch` → `DispatchQueue` (`queue.rs:13`);
 - `PendingInbox` → `Inbox` (`delivery.rs:69`);

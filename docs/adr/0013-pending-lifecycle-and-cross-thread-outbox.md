@@ -74,7 +74,7 @@ does not define a model-visible command.
 ## Amendment 2026-10-09: names and references
 
 - `PendingInbox` is `Inbox` and `MessageOutbox` is `Outbox`
-  (`crates/contract/awaken-dispatch-contract/src/dispatch/delivery.rs:69,105`),
+  (`crates/contract/awaken-run-ingress-contract/src/dispatch/delivery.rs:69,105`),
   per [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md).
 - `RunIngress` and `DurableRunIngress` no longer exist (2026-09-01 amendment of
   [ADR-0009](0009-durable-run-ingress-slice.md)). Staging and relay are `Outbox::stage` / `Outbox::relay`;

@@ -9,8 +9,8 @@ use std::sync::Arc;
 use crate::AdmissionError;
 use crate::DispatchHint;
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_dispatch_erasure::AnyCoordinatorDispatch;
 use awaken_dispatch_contract::{DispatchAdministration, Outbox, PendingInput};
+use awaken_dispatch_erasure::AnyCoordinatorDispatch;
 use awaken_runtime_contract::control::{LiveCommand, LiveRunControl};
 
 /// The existing durable cancellation ordering, shared by all control callers.

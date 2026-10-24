@@ -174,12 +174,9 @@ async fn ordinary_attempt_acknowledgement_releases_source_without_claiming_globa
     let run = RunId("source-ordinary-run".into());
     store
         .enqueue(
-            awaken_dispatch_contract::RunDispatch::new(test_activation(
-                "source-ordinary",
-                &run.0,
-            ))
-            .for_session(ThreadId("source-ordinary".into()))
-            .with_session_activity_epoch(1),
+            awaken_dispatch_contract::RunDispatch::new(test_activation("source-ordinary", &run.0))
+                .for_session(ThreadId("source-ordinary".into()))
+                .with_session_activity_epoch(1),
         )
         .await
         .unwrap();

@@ -2,9 +2,7 @@
 // @formal reason: Immutable credential capability selection from the admitted model candidate.
 //! Immutable candidate credential capability requirement.
 use awaken_agent_contract::credential::CredentialMaterialSource;
-use awaken_dispatch_contract::{
-    HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
-};
+use awaken_dispatch_contract::{HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY};
 /// Select the exact Worker capability required to realize one immutable model
 /// candidate. Credential custody owns this mapping; dispatch placement only
 /// aggregates the selected capabilities across candidates.

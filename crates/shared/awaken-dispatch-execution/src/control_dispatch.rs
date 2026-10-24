@@ -10,11 +10,11 @@
 //! the one place generic over all three at once. Worker projections implement
 //! the Worker-side `Dispatch` bundle of `awaken-dispatch-erasure` only.
 
-use awaken_dispatch_erasure::Dispatch;
 use awaken_dispatch_contract::{
     DispatchAdministration, DispatchCommitAuthority, DispatchControlClaims, DispatchControlReads,
     DispatchMaintenance, Inbox, Outbox, SessionReservationAuthority, SessionRunReservations,
 };
+use awaken_dispatch_erasure::Dispatch;
 /// Local execution and scheduling authority selected at construction.
 pub trait ControlDispatch:
     LocalWorkerDispatch

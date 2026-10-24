@@ -29,15 +29,14 @@ impl MemoryDispatchStore {
                 && peer.request.thread_id() == row.request.thread_id()
                 && peer.active_attempt.is_some()
         });
-        let current = awaken_dispatch_contract::attempt_epoch_is_open(
-            claim.epoch,
-            row.retired_attempt_epoch,
-        ) && row.state == DispatchState::Leased
-            && row.lease_epoch == claim.epoch
-            && row.lease.as_ref().is_some_and(|lease| {
-                lease.owner() == claim.owner
-                    && !crate::clock::deadline_has_passed(Some(lease.expires_ms()), now_ms)
-            });
+        let current =
+            awaken_dispatch_contract::attempt_epoch_is_open(claim.epoch, row.retired_attempt_epoch)
+                && row.state == DispatchState::Leased
+                && row.lease_epoch == claim.epoch
+                && row.lease.as_ref().is_some_and(|lease| {
+                    lease.owner() == claim.owner
+                        && !crate::clock::deadline_has_passed(Some(lease.expires_ms()), now_ms)
+                });
         let slot = match row.active_attempt.as_ref() {
             None => PhysicalAttemptSlot::Empty,
             Some(active) if active == claim => PhysicalAttemptSlot::ExactClaim,

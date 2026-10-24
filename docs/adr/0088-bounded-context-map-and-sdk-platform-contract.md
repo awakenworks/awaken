@@ -64,7 +64,7 @@ domain problem it solves:
      `awaken-execution-composition`, `awaken-agent-channel`, `awaken-acp-contract`,
      `awaken-dispatch-execution`, `awaken-dispatch-erasure`. The latter owns
      immutable execution bindings and role projections; Dispatch's published
-     leaf ports remain in `awaken-dispatch-contract`. Backend adapters and
+     leaf ports remain in `awaken-run-ingress-contract`. Backend adapters and
      Worker transports consume that binding through their existing execution
      entrypoint, without a second cross-context infrastructure dependency.
    - **The `worker` context is retired.** `awaken-coordinator-client`,
@@ -232,24 +232,24 @@ The code follows ADR-0086: `crates/contract/awaken-agent-contract/src/lib.rs:7`
 ## Amendment 2026-10-10: the dispatch contract stops depending on Session contracts
 
 Decision 3 says Dispatch carries the Session's ports and published values but does
-not own them. `awaken-dispatch-contract` still owned six of them, so its contract
+not own them. `awaken-run-ingress-contract` still owned six of them, so its contract
 depth was 9. They now live with the Session, and the dispatch contract's depth is 6.
 Its one remaining Session dependency, `awaken-session-configuration-contract`, is
 legacy-only: claim admission decodes the runtime projection of rows written before
 the Session published typed MCP credential requirements. It is removed once those
 rows have drained. Persisted bytes did not change; golden tests in
-`crates/contract/awaken-dispatch-contract/tests/persisted_wire_golden.rs` pin
+`crates/contract/awaken-run-ingress-contract/tests/persisted_wire_golden.rs` pin
 them.
 
 Public paths that moved (ADR-0091 D9 requires recording them):
 
 | Before | After |
 |---|---|
-| `awaken_dispatch_contract::{ClaimedSessionControlError, ClaimedSessionRealizationControl}` | `awaken_session_realization_contract::…` |
-| `awaken_dispatch_contract::ClaimedSessionCoordinationControl` | `awaken_session_execution_contract::ClaimedSessionCoordinationControl<Claim>` (Host uses `<RunClaim>`) |
+| `awaken_run_ingress_contract::{ClaimedSessionControlError, ClaimedSessionRealizationControl}` | `awaken_session_realization_contract::…` |
+| `awaken_run_ingress_contract::ClaimedSessionCoordinationControl` | `awaken_session_execution_contract::ClaimedSessionCoordinationControl<Claim>` (Host uses `<RunClaim>`) |
 | `awaken_dispatch[_contract]::SessionRunAdmissionObserver` | `awaken_dispatch_execution::SessionRunAdmissionObserver` |
 | `awaken_dispatch[_contract]::{ResourceOperationFence, ArtifactPublicationFence}` | `awaken_session_realization_contract::ResourceOperationFence`; the alias is deleted |
-| `awaken_dispatch_contract::run_dispatch::DispatchedSessionRuntimeProjection` | `awaken_session_configuration_contract::SessionRuntimeProjection` |
+| `awaken_run_ingress_contract::run_dispatch::DispatchedSessionRuntimeProjection` | `awaken_session_configuration_contract::SessionRuntimeProjection` |
 | `awaken_session_execution_contract::{SessionRunReplacement, SessionRunCommandFingerprint}` | `awaken_session_types::…`; `SessionRunCommandFingerprint::current(&cmd)` is `cmd.command_fingerprint()` |
 | `SessionResourceEnvelope::from_manifest(&m)` | `SessionResourceEnvelope::at_revision(m.workspace_id.clone(), m.revision, m.encode_resources()?)` |
 | `envelope.decode_manifest()` (resource) | `envelope.decode_with(SessionResourceManifest::decode_resources)` |
@@ -702,7 +702,7 @@ SDK versions, deep paths and release-cohort decisions do not change here.
 ## Implementation note 2026-10-20: canonical wake and durable capability declarations
 
 The single two-method `WakeSignal` declaration belongs to the existing
-`awaken-dispatch-contract`, alongside its original `DispatchError` vocabulary.
+`awaken-run-ingress-contract`, alongside its original `DispatchError` vocabulary.
 Local notification and the cancellation/100ms publication budget remain in
 `awaken-dispatch-execution`; PostgreSQL and NATS adapters and their factories
 remain with Ingress. A hint still grants no queue, claim, cancellation-settlement

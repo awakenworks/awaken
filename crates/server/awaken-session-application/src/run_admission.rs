@@ -659,8 +659,7 @@ impl crate::ProfiledSessionCommands for SessionRunAdmissions {
         dispatch_after: awaken_dispatch_contract::DispatchCursor,
         lifecycle_after: awaken_agent_contract::RunLifecycleCursor,
         limit: usize,
-    ) -> Result<awaken_dispatch_contract::SessionRunEventPage, SessionProjectionRecoveryError>
-    {
+    ) -> Result<awaken_dispatch_contract::SessionRunEventPage, SessionProjectionRecoveryError> {
         SessionRunAdmissions::session_run_events_after(
             self,
             owner_scope,

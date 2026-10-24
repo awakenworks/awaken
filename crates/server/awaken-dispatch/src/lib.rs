@@ -14,7 +14,7 @@
 //! retaining another execution implementation here.
 //!
 //! Source-owner rule W4: the old host WakeSignal export is removed; callers
-//! import its existing two-method port from run-ingress-contract. No new wake
+//! import its existing two-method port from dispatch-contract. No new wake
 //! implementation or delivery law is introduced by this source control.
 //! ```compile_fail,E0432
 //! use awaken_dispatch::WakeSignal;
@@ -83,15 +83,6 @@ pub use application::{
     has_active_physical_attempt_for_owner, reconcile_closed_idle_worker_evidence,
     release_closed_idle_worker_evidence, stop_committed_terminal_attempt, stop_expired_predecessor,
 };
-pub use awaken_dispatch_execution::{AnyDispatchStore, Dispatch};
-pub use awaken_dispatch_execution::{
-    ClaimedCommitCoordinator, ClaimedModelRequestGateFactory, ClaimedRunCommit, CompletionSink,
-    ControlDispatch, DEFAULT_LEASE_MS, DispatchPool, DispatchReconciler, DispatchService,
-    DispatchServiceConfig, DispatchWorker, FencedStreamCheckpointStore, GuardedRunCommit,
-    InferenceMaterializerFn, LiveRunControlError, LiveRunControlService, LocalWakeSignal,
-    PoolDrainFence, RecoveryProjection, RecoveryProjectionError, TerminalReconciliationScan,
-    WorkerResolver, claim_bound_ownership_verifier, publish_dispatch_hint,
-};
 pub use awaken_dispatch_contract::DispatchAttemptRecordReads;
 pub use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
@@ -121,6 +112,15 @@ pub use awaken_dispatch_contract::{
     StreamObservationRequest, WorkerIdentityRequest,
 };
 pub use awaken_dispatch_contract::{ClaimedStreamPublisher, SessionContinuationOutbox};
+pub use awaken_dispatch_execution::{AnyDispatchStore, Dispatch};
+pub use awaken_dispatch_execution::{
+    ClaimedCommitCoordinator, ClaimedModelRequestGateFactory, ClaimedRunCommit, CompletionSink,
+    ControlDispatch, DEFAULT_LEASE_MS, DispatchPool, DispatchReconciler, DispatchService,
+    DispatchServiceConfig, DispatchWorker, FencedStreamCheckpointStore, GuardedRunCommit,
+    InferenceMaterializerFn, LiveRunControlError, LiveRunControlService, LocalWakeSignal,
+    PoolDrainFence, RecoveryProjection, RecoveryProjectionError, TerminalReconciliationScan,
+    WorkerResolver, claim_bound_ownership_verifier, publish_dispatch_hint,
+};
 pub use dispatch::{
     AttemptAcknowledgementRecord, AttemptAdmission, AttemptClosureEvent, AttemptClosurePage,
     AttemptClosureRecord, AttemptCredentialBinding, AttemptExecutionBinding, AttemptPhysicalFact,
@@ -300,14 +300,14 @@ pub(crate) fn policy_selects_requester(
 }
 
 pub use application::AttemptControlAuthority;
-pub use awaken_dispatch_execution::{
-    AnyCoordinatorDispatch, DispatchBinding, DispatchTopology, DurableDispatch, RemoteDispatch,
-};
 pub use awaken_dispatch_contract::{
     DispatchAdministration, DispatchAttemptControl, DispatchClaimOwnership, DispatchClaims,
     DispatchCommitAuthority, DispatchControlClaims, DispatchControlReads, DispatchEnqueue,
     DispatchExecution, DispatchMaintenance, DispatchReads, DispatchSettlement, InboxRead,
     SessionReservationAuthority, SessionRunReservations,
+};
+pub use awaken_dispatch_execution::{
+    AnyCoordinatorDispatch, DispatchBinding, DispatchTopology, DurableDispatch, RemoteDispatch,
 };
 
 pub use awaken_dispatch_execution::{PhysicalAttemptReads, PhysicalAttemptRecoveryRead};

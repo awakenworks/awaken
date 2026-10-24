@@ -26,11 +26,11 @@
 //! DispatchQueue aggregate free of run-outcome truth.
 
 use crate::control_dispatch::LocalWorkerDispatch;
-use awaken_dispatch_erasure::{AnyDispatchStore, Dispatch, DispatchBinding, DispatchTopology};
 use awaken_dispatch_contract::{
     ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport, DispatchClaimOwnership,
     DispatchCommitAuthority, DispatchExecution,
 };
+use awaken_dispatch_erasure::{AnyDispatchStore, Dispatch, DispatchBinding, DispatchTopology};
 use std::sync::Arc;
 
 use awaken_agent_contract::ThreadCommit;
