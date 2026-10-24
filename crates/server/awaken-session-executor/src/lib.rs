@@ -47,7 +47,6 @@ mod compact;
 mod config;
 mod coordination;
 mod delegate;
-mod deployment_config;
 mod durable_operations;
 mod session_execution_error;
 pub use session_execution_error::{SessionExecutionError, SessionExecutionErrorKind, to_run_error};
@@ -129,11 +128,6 @@ pub use crate::cache_volume::{
 };
 pub use crate::commit_ingest::session_commit_owner;
 pub use crate::config::{advertised_tools, authorable_tools, block_text};
-pub use crate::deployment_config::{
-    ContentCaptureSettings, ContentRedaction, DeploymentConfig, PackageImageBuilder,
-    SandboxPackageSettingsInput, SandboxSettings, SandboxTier, default_postgres_max_connections,
-    session_sandbox_base,
-};
 pub(crate) use crate::host::ApplicationPortBinding;
 pub use crate::host::capability::WorkerContentAdapters;
 #[cfg(any(test, feature = "test-support"))]
@@ -146,9 +140,8 @@ pub use crate::host::{
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
 use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialMaterializer};
-pub(crate) use awaken_dispatch_execution::{
-    DispatchPoolSizing, ExecutionTopology, LeaseOwnerId, LocalExecution, QueueDepthSource,
-    RunIngress,
+pub(crate) use awaken_deployment_config::{
+    DispatchPoolSizing, ExecutionTopology, LocalExecution, RunIngress,
 };
 use awaken_resource_contract::FileContentSource;
 #[cfg(test)]

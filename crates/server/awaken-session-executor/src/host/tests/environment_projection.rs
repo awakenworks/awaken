@@ -603,8 +603,8 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     // Decision rule: exercise the read-only collision branch and require both the
     // explicit failure and unchanged live projection effects documented below.
 
-    let mut deployment = crate::DeploymentConfig::ephemeral();
-    deployment.sandbox_tier = crate::SandboxTier::Local;
+    let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
     let host = (crate::host::with_test_resource_validation(
         crate::SessionExecutorBuilder::ephemeral_with_deployment(
             Arc::new(OkModel),
@@ -727,8 +727,8 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
     // production binding sink precede first I/O. Installation itself has no
     // provider effect; the original denial/lazy/coordination assertions below
     // retain their causes and cannot borrow a fabricated Authorized result.
-    let mut deployment = crate::DeploymentConfig::ephemeral();
-    deployment.sandbox_tier = crate::SandboxTier::Local;
+    let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
     let roots = ManagedSessionRootFixture::new().await;
     let host = (crate::host::with_test_resource_validation(
         roots.configure(

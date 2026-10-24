@@ -32,6 +32,7 @@ path = "src/bin/awaken-coordinator.rs"
 # and thin Control/Coordinator executables. Every target calls the same role
 # service lifecycle; the authority-free Worker remains its own package and binary.
 [dependencies]
+awaken-deployment-config.workspace = true
 awaken-dispatch-erasure.workspace = true
 awaken-plugin-composition.workspace = true
 awaken-acp-contract = { workspace = true }
@@ -80,7 +81,6 @@ awaken-environment-image-build.workspace = true
 awaken-environment-package-image-builder.workspace = true
 awaken-ext-builtin-tools.workspace = true
 awaken-dispatch = { workspace = true, features = ["durable"] }
-awaken-dispatch-execution.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-work-store.workspace = true

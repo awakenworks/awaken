@@ -17,6 +17,7 @@ name = "awaken-scenario-host"
 path = "src/main.rs"
 
 [dependencies]
+awaken-deployment-config.workspace = true
 awaken-dispatch-erasure.workspace = true
 awaken-plugin-composition.workspace = true
 awaken-sandbox-memoryd.workspace = true
@@ -34,7 +35,6 @@ awaken-ext-builtin-tools.workspace = true
 awaken-ext-memory.workspace = true
 awaken-ext-skills.workspace = true
 awaken-dispatch = { workspace = true, features = ["durable"] }
-awaken-dispatch-execution.workspace = true
 awaken-worker-transport-security.workspace = true
 awaken-admin-assistant = { workspace = true }
 awaken-tenancy = { workspace = true }

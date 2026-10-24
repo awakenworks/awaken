@@ -14,6 +14,7 @@ authority = "execution-composition"
 separation = "process"
 
 [dependencies]
+awaken-deployment-config.workspace = true
 awaken-credential-contract.workspace = true
 awaken-tool-contract.workspace = true
 # The Session owner whose container-tier provider this crate selects and installs.

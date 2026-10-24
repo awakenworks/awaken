@@ -14,9 +14,10 @@
 
 use std::sync::Arc;
 
+use awaken_deployment_config::DeploymentConfig;
 use awaken_session_environment::SandboxEnvironmentProvider;
 use awaken_session_environment_contract::HandExecutorFactory;
-use awaken_session_executor::{DeploymentConfig, SessionExecutorBuilder};
+use awaken_session_executor::SessionExecutorBuilder;
 
 mod acp_backend;
 mod acp_provision;
@@ -347,7 +348,7 @@ pub fn with_acp_from_deployment(
             None => host,
         };
     };
-    let base = awaken_session_executor::session_sandbox_base(deployment);
+    let base = awaken_deployment_config::session_sandbox_base(deployment);
     let routes = profile
         .cli_ids()
         .map(|id| {

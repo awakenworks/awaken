@@ -41,6 +41,7 @@ container-k8s = [
 ]
 
 [dependencies]
+awaken-deployment-config.workspace = true
 awaken-agent-contract.workspace = true
 awaken-dispatch-erasure.workspace = true
 awaken-credential-contract.workspace = true

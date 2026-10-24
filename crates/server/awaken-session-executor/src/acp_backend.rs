@@ -70,7 +70,7 @@ pub(crate) fn with_fixture_acp(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_sandbox_base;
+    use awaken_deployment_config::session_sandbox_base;
 
     struct NoLlm;
 
@@ -85,7 +85,7 @@ mod tests {
         //
         // Decision table: S1 C1+C2=>E1; S2 !C1+C2=>E2; S3 !C1+!C2=>E3;
         // S4 !C1+!C2+C3=>E3+E4.
-        let mut deployment = crate::DeploymentConfig::ephemeral();
+        let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
         deployment.storage_dir = Some("/durable/runtime".into());
         deployment.sandbox_dir = Some("/operator/sandboxes".into());
         assert_eq!(

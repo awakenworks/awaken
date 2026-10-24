@@ -60,8 +60,8 @@ fn echo_worker_builder(
     // remote claim/commit recovery, while sandbox-tier tests own OS isolation.
     // Install Local explicitly through the canonical Worker builder rather than
     // relying on an unsafe fallback from the Namespace default.
-    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
-    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
+    let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
     awaken_worker::WorkerNodeBuilder::new(upstream, clock)
         .with_deployment_config(deployment)
         // Local is an explicit TrustedHost profile. Its Native capability must

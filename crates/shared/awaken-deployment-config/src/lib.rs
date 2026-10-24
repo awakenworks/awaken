@@ -13,10 +13,27 @@
 //! [`DeploymentConfig`] is that single typed surface. The process startup builds
 //! one from a typed configuration file (or explicitly for an embedding), and the
 //! library reads it rather than process-global deployment configuration.
+//!
+//! The value is a crate of its own, the execution context's only domain
+//! crate, because every composition root reads it: the Coordinator process, the Worker, the AllInOne launcher and the
+//! scenario hosts. The Session executor only projects it into the process it
+//! is constructed in (`SessionExecutionProcess::from_deployment`), so a
+//! Coordinator resolves the same file without linking the executor (plan v4
+//! section 3.3). Dispatch topology and storage selection live beside it
+//! because they are read from the same file by the same roots.
+#![warn(unreachable_pub)]
+
+mod coordinator_storage;
+mod execution_topology;
+
+pub use coordinator_storage::{CoordinatorStorage, DispatchBackend, StoreKind, Wake};
+pub use execution_topology::{
+    DEFAULT_DISPATCH_POLL_INTERVAL, DispatchPoolSizing, ExecutionTopology, LeaseOwnerId,
+    LocalExecution, QueueDepthSource, RunIngress,
+};
 
 use awaken_acp_contract::AcpWorkerProfile;
-use awaken_dispatch_execution::{CoordinatorStorage, DispatchBackend, StoreKind, Wake};
-use awaken_session_mcp::ContainerMcpRelayExposure;
+use awaken_session_environment_contract::ContainerMcpRelayExposure;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 
@@ -519,34 +536,6 @@ impl DeploymentConfig {
         Ok(topology)
     }
 
-    /// The process a Host is constructed in, projected from this file by the
-    /// composition root. Consumer: every `SessionExecutorBuilder` constructor.
-    pub fn session_execution_process(
-        &self,
-        local_workspace: String,
-        clock: std::sync::Arc<dyn awaken_time::WallClock>,
-    ) -> Result<crate::SessionExecutionProcess, String> {
-        Ok(crate::SessionExecutionProcess {
-            local_workspace,
-            execution: self.execution_topology()?,
-            content_capture: self.content_capture,
-            storage_dir: self.storage_dir.clone(),
-            sandbox_root: session_sandbox_base(self),
-            trusted_host: if self.trusted_host_enabled() {
-                crate::TrustedHostPolicy::Admitted
-            } else {
-                crate::TrustedHostPolicy::Refused
-            },
-            warm_pool: crate::WarmPool::new(
-                self.sandbox.warm_pool_size,
-                self.sandbox.warm_pool_total_size,
-            ),
-            mcp_relay: self.sandbox.container_mcp_relay.clone(),
-            acp_profile: self.acp.clone(),
-            clock,
-        })
-    }
-
     /// One configuration admission rule, reused by Worker and direct Host
     /// construction. The capability projection remains independently qualified.
     pub fn validate_local_execution(&self) -> Result<(), String> {
@@ -659,8 +648,7 @@ impl DeploymentConfig {
             database_url: None,
             postgres_max_connections: default_postgres_max_connections(),
             dispatch_owner: "embedded-worker".to_string(),
-            dispatch_poll_interval: awaken_dispatch_execution::DispatchServiceConfig::default()
-                .poll_interval,
+            dispatch_poll_interval: DEFAULT_DISPATCH_POLL_INTERVAL,
             sample_dispatch_queue_depth: true,
             sandbox_tier: SandboxTier::Namespace,
             sandbox_dir: None,

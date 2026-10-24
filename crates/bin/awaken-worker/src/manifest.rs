@@ -58,7 +58,7 @@ impl ManifestSelection {
     pub(crate) fn require_capacity(
         &self,
         config: &StandardManifestConfig,
-        deployment: &awaken_session_executor::DeploymentConfig,
+        deployment: &awaken_deployment_config::DeploymentConfig,
     ) -> Result<(), crate::WorkerNodeBuildError> {
         if matches!(self, Self::Selected(ManifestSource::Standard { .. })) {
             config
@@ -143,11 +143,11 @@ impl StandardManifestConfig {
     /// sandboxes on this host and defaults to its parallelism.
     pub(crate) fn max_concurrent_for(
         &self,
-        tier: awaken_session_executor::SandboxTier,
+        tier: awaken_deployment_config::SandboxTier,
     ) -> Result<u32, String> {
         match (self.max_concurrent, tier) {
             (Some(max_concurrent), _) => Ok(max_concurrent),
-            (None, awaken_session_executor::SandboxTier::K8s) => Err(
+            (None, awaken_deployment_config::SandboxTier::K8s) => Err(
                 "worker_max_concurrent must be set on a Kubernetes Worker: it bounds the \
                  simultaneous sandbox Pods this Worker may run"
                     .into(),
@@ -187,7 +187,7 @@ impl
 }
 
 pub(crate) struct StandardManifestInputs<'a> {
-    pub(crate) deployment: &'a awaken_session_executor::DeploymentConfig,
+    pub(crate) deployment: &'a awaken_deployment_config::DeploymentConfig,
     pub(crate) inference_schemes: &'a BTreeSet<String>,
     pub(crate) inference_credentials:
         &'a awaken_credential_contract::CredentialRealizationCapabilities,
@@ -383,9 +383,9 @@ impl PreparedLocalSandbox {
     /// Workdir only under the explicit fallback opt-in) and keep the effective
     /// tier's manifest projection with its readiness probe.
     pub(crate) async fn probe(
-        deployment: &awaken_session_executor::DeploymentConfig,
+        deployment: &awaken_deployment_config::DeploymentConfig,
     ) -> Result<Self, crate::WorkerNodeBuildError> {
-        let base = awaken_session_executor::session_sandbox_base(deployment);
+        let base = awaken_deployment_config::session_sandbox_base(deployment);
         let tier = awaken_execution_composition::resolve_sandbox_tier(
             deployment.sandbox_tier,
             deployment.sandbox.allow_local_fallback,
@@ -435,7 +435,7 @@ pub(crate) fn ensure_registered_local_provider(
 #[cfg(test)]
 mod capacity_tests {
     use super::*;
-    use awaken_session_executor::SandboxTier;
+    use awaken_deployment_config::SandboxTier;
 
     #[test]
     fn kubernetes_capacity_must_be_explicit_and_host_backends_keep_the_default() {
@@ -477,7 +477,7 @@ mod capacity_tests {
         // without `worker_max_concurrent` is refused before any cluster
         // connection (prepare); an explicit manifest carries its own capacity
         // and is not refused by this rule (K5).
-        let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+        let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
         deployment.sandbox_tier = SandboxTier::K8s;
         let builder = || {
             crate::WorkerNodeBuilder::new(

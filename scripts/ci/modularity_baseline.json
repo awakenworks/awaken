@@ -73,10 +73,10 @@
     "awaken-scenario-host": 1,
     "awaken-session-application": 2,
     "awaken-session-environment": 1,
+    "awaken-session-execution-contract": 3,
     "awaken-session-executor": 25,
     "awaken-session-realization-contract": 1,
     "awaken-session-repository-contract": 1,
-    "awaken-session-execution-contract": 3,
     "awaken-session-state-contract": 4,
     "awaken-session-store": 2,
     "awaken-store-conformance": 2,
@@ -365,7 +365,7 @@
     "awaken-session-store::postgres.rs::commit": 151,
     "awaken-session-store::sqlite.rs::commit": 155,
     "awaken-store-postgres::lib.rs::recovery_snapshot": 194,
-    "awaken-worker::lib.rs::run_until": 555,
+    "awaken-worker::lib.rs::run_until": 554,
     "awaken-worker::lifecycle.rs::renew_registry_authority": 176
   },
   "crate-budget": {

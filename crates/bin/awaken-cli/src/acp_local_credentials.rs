@@ -91,8 +91,8 @@ fn uses_host_acp_discovery(deployment: &crate::config::ResolvedDeployment) -> bo
             .is_none_or(|cli_ids| !cli_ids.is_empty())
         && matches!(
             deployment.runtime.sandbox_tier,
-            awaken_session_executor::SandboxTier::Local
-                | awaken_session_executor::SandboxTier::Namespace
+            awaken_deployment_config::SandboxTier::Local
+                | awaken_deployment_config::SandboxTier::Namespace
         )
 }
 
@@ -1133,15 +1133,15 @@ mod tests {
         // I4 Server + Workdir -> no personal identity startup
         let directory = tempfile::tempdir().unwrap();
         let mut deployment = crate::config::local_test_deployment(directory.path().into());
-        deployment.runtime.sandbox_tier = awaken_session_executor::SandboxTier::Local;
+        deployment.runtime.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
         assert!(uses_trusted_local_identity(&deployment), "I1");
 
-        deployment.runtime.sandbox_tier = awaken_session_executor::SandboxTier::Namespace;
+        deployment.runtime.sandbox_tier = awaken_deployment_config::SandboxTier::Namespace;
         assert!(uses_trusted_local_identity(&deployment), "I2");
-        deployment.runtime.sandbox_tier = awaken_session_executor::SandboxTier::Docker;
+        deployment.runtime.sandbox_tier = awaken_deployment_config::SandboxTier::Docker;
         assert!(uses_trusted_local_identity(&deployment), "I3");
 
-        deployment.runtime.sandbox_tier = awaken_session_executor::SandboxTier::Local;
+        deployment.runtime.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
         deployment.mode = crate::config::OperatingMode::Server;
         assert!(!uses_trusted_local_identity(&deployment), "I4");
     }
@@ -1291,8 +1291,8 @@ fn host_discovery_is_limited_to_host_backed_sandbox_tiers() {
     let directory = tempfile::tempdir().unwrap();
     let mut deployment = crate::config::local_test_deployment(directory.path().into());
     for tier in [
-        awaken_session_executor::SandboxTier::Local,
-        awaken_session_executor::SandboxTier::Namespace,
+        awaken_deployment_config::SandboxTier::Local,
+        awaken_deployment_config::SandboxTier::Namespace,
     ] {
         deployment.runtime.sandbox_tier = tier;
         deployment.configured_acp_clis = None;
@@ -1303,9 +1303,9 @@ fn host_discovery_is_limited_to_host_backed_sandbox_tiers() {
         assert!(!uses_host_acp_discovery(&deployment));
     }
     for tier in [
-        awaken_session_executor::SandboxTier::Docker,
-        awaken_session_executor::SandboxTier::Podman,
-        awaken_session_executor::SandboxTier::K8s,
+        awaken_deployment_config::SandboxTier::Docker,
+        awaken_deployment_config::SandboxTier::Podman,
+        awaken_deployment_config::SandboxTier::K8s,
     ] {
         deployment.runtime.sandbox_tier = tier;
         for selection in [None, Some(Vec::new()), Some(vec!["codex".to_owned()])] {

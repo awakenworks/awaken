@@ -20,7 +20,7 @@ pub struct SessionExecutionProcess {
     pub execution: crate::ExecutionTopology,
     /// The process content-capture ceiling and redactor. Per-request consent
     /// and the Workspace policy may only narrow it.
-    pub content_capture: crate::ContentCaptureSettings,
+    pub content_capture: awaken_deployment_config::ContentCaptureSettings,
     /// The durable storage root: set selects durable SQLite commit and
     /// Resource adapters that survive a restart; `None` selects ephemeral ones.
     pub storage_dir: Option<PathBuf>,
@@ -32,11 +32,42 @@ pub struct SessionExecutionProcess {
     /// The warm Session capacity this process keeps.
     pub warm_pool: crate::WarmPool,
     /// How the Session MCP relay is exposed to container networks, if at all.
-    pub mcp_relay: Option<awaken_session_mcp::ContainerMcpRelayExposure>,
+    pub mcp_relay: Option<awaken_session_environment_contract::ContainerMcpRelayExposure>,
     /// The exact ACP adapters this process advertises and serves.
     pub acp_profile: Option<awaken_acp_contract::AcpWorkerProfile>,
     /// The process wall clock the Host drives its Workers on.
     pub clock: Arc<dyn awaken_time::WallClock>,
+}
+
+impl SessionExecutionProcess {
+    /// The process a Host is constructed in, projected from the typed
+    /// Deployment configuration by the composition root. Consumer: every
+    /// `SessionExecutorBuilder` constructor.
+    pub fn from_deployment(
+        deployment: &awaken_deployment_config::DeploymentConfig,
+        local_workspace: String,
+        clock: Arc<dyn awaken_time::WallClock>,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            local_workspace,
+            execution: deployment.execution_topology()?,
+            content_capture: deployment.content_capture,
+            storage_dir: deployment.storage_dir.clone(),
+            sandbox_root: awaken_deployment_config::session_sandbox_base(deployment),
+            trusted_host: if deployment.trusted_host_enabled() {
+                crate::TrustedHostPolicy::Admitted
+            } else {
+                crate::TrustedHostPolicy::Refused
+            },
+            warm_pool: crate::WarmPool::new(
+                deployment.sandbox.warm_pool_size,
+                deployment.sandbox.warm_pool_total_size,
+            ),
+            mcp_relay: deployment.sandbox.container_mcp_relay.clone(),
+            acp_profile: deployment.acp.clone(),
+            clock,
+        })
+    }
 }
 
 impl SessionExecutorBuilder {
@@ -586,12 +617,12 @@ mod startup_tests {
                 }
             },
             expected.clone(),
-            crate::DeploymentConfig::ephemeral()
-                .session_execution_process(
-                    ExecutorComponents::mint_local_workspace(),
-                    awaken_time::system_clock(),
-                )
-                .expect("ephemeral process"),
+            crate::SessionExecutionProcess::from_deployment(
+                &awaken_deployment_config::DeploymentConfig::ephemeral(),
+                ExecutorComponents::mint_local_workspace(),
+                awaken_time::system_clock(),
+            )
+            .expect("ephemeral process"),
             Arc::new(crate::EphemeralRuntimeAuthority::new(
                 awaken_time::system_clock(),
             )),
@@ -627,12 +658,12 @@ mod startup_tests {
                 .expect("test extraction repository"),
         );
         let process = || {
-            crate::DeploymentConfig::ephemeral()
-                .session_execution_process(
-                    ExecutorComponents::mint_local_workspace(),
-                    awaken_time::system_clock(),
-                )
-                .expect("ephemeral process")
+            crate::SessionExecutionProcess::from_deployment(
+                &awaken_deployment_config::DeploymentConfig::ephemeral(),
+                ExecutorComponents::mint_local_workspace(),
+                awaken_time::system_clock(),
+            )
+            .expect("ephemeral process")
         };
         assert!(
             SessionExecutorBuilder::for_worker(

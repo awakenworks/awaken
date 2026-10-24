@@ -957,9 +957,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             Err("stage-only fixture has no upstream egress".into())
         }
     }
-    let mut secure_deployment = crate::DeploymentConfig::ephemeral();
+    let mut secure_deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     secure_deployment.sandbox.container_mcp_relay = Some(
-        awaken_session_mcp::ContainerMcpRelayExposure::new(
+        awaken_session_environment_contract::ContainerMcpRelayExposure::new(
             format!("0.0.0.0:{relay_port}").parse().unwrap(),
             format!("http://{relay_host}:{relay_port}"),
         )
@@ -1249,9 +1249,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let backend_relay_reservation = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
     let backend_relay_port = backend_relay_reservation.local_addr().unwrap().port();
     drop(backend_relay_reservation);
-    let mut backend_deployment = crate::DeploymentConfig::ephemeral();
+    let mut backend_deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     backend_deployment.sandbox.container_mcp_relay = Some(
-        awaken_session_mcp::ContainerMcpRelayExposure::new(
+        awaken_session_environment_contract::ContainerMcpRelayExposure::new(
             format!("0.0.0.0:{backend_relay_port}").parse().unwrap(),
             format!("http://{relay_host}:{backend_relay_port}"),
         )

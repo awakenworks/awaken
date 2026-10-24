@@ -7,7 +7,6 @@
 mod mcp;
 mod mcp_material;
 mod mcp_relay;
-mod mcp_relay_exposure;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_mcp;
 
@@ -21,7 +20,6 @@ pub use mcp_material::{
     McpStagingActivity, McpTransportMaterial, McpTransportMaterialKind, McpWiring, SessionMcpState,
 };
 pub use mcp_relay::{McpRelay, McpRelayOutboundProxy};
-pub use mcp_relay_exposure::ContainerMcpRelayExposure;
 
 mod direct_attachments;
 pub use direct_attachments::DirectMcpAttachments;

@@ -562,7 +562,7 @@ pub(crate) fn has_role_owned_local_persistence(deployment: &ResolvedDeployment) 
     let coordinator_local = role_owns_managed_execution(deployment.role)
         && (matches!(
             deployment.runtime.store,
-            awaken_dispatch_execution::StoreKind::Sqlite
+            awaken_deployment_config::StoreKind::Sqlite
         ) || matches!(&deployment.resources, ResourceStoreBackend::Embedded(_))
             || sqlite(&deployment.coordinator.sessions)
             || sqlite(&deployment.coordinator.captured_content));
