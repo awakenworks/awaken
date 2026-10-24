@@ -28,6 +28,7 @@ use tokio::io::AsyncReadExt;
 mod container_projection;
 mod container_transfer;
 mod execution_domain;
+mod foreign_instance;
 mod memory_replay;
 mod session_hand;
 mod shared_environment;

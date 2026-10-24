@@ -824,8 +824,12 @@
           ],
           "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B149",
+          "B150",
+          "B151"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -835,7 +839,24 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, L1 component, in-memory SQLite / fakes, nextest"
+          ],
+          "unaccepted": [
+            "L2 real adapters and process crash are separate scenarios",
+            "T35 platform gate open"
+          ]
+        },
+        "product_gap": {
+          "reason": "健康快照不含机密，但 supervisor 日志直接输出原始错误（含凭据 URL），且没有稳定 code、领域身份或恢复方向",
+          "follow_up": "awaken-control registration supervisor：结构化、脱敏诊断（S）",
+          "reproducers": [
+            "degraded_registration_diagnostics_never_contain_the_secret_canary",
+            "degraded_registration_diagnostics_carry_stable_code_identity_and_recovery"
+          ]
+        }
       },
       {
         "id": "T41-C02",

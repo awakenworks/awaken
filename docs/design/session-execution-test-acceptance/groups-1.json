@@ -179,8 +179,11 @@
           ],
           "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B115",
+          "B116"
+        ],
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -219,7 +222,16 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, L1 component, in-memory SQLite / fakes, nextest"
+          ],
+          "unaccepted": [
+            "L2 real adapters and process crash are separate scenarios",
+            "T35 platform gate open"
+          ]
+        }
       },
       {
         "id": "T01-C02",
@@ -841,8 +853,13 @@
           ],
           "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B117",
+          "B118",
+          "B119",
+          "B120"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -852,7 +869,24 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, L1 component, in-memory SQLite / fakes, nextest"
+          ],
+          "unaccepted": [
+            "L2 real adapters and process crash are separate scenarios",
+            "T35 platform gate open"
+          ]
+        },
+        "product_gap": {
+          "reason": "部分内部入口（event batch 追加等）不带所有者参数，可绕过 HTTP 校验；run admission 对未知 id 创建、对外来 id 报未找到，泄露存在性",
+          "follow_up": "session-application：为内部入口加所有者证明，并使缺失与外来 id 的回答一致（M）",
+          "reproducers": [
+            "owner_less_event_append_refuses_without_owner_proof",
+            "foreign_run_admission_is_indistinguishable_from_missing"
+          ]
+        }
       },
       {
         "id": "T06-C02",

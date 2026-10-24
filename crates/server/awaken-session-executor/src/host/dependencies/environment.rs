@@ -40,12 +40,13 @@ impl SessionExecutorBuilder {
     }
 
     /// Install the credential-file broker shared by every Session sandbox tier
-    /// on the providers selected so far. Application plans retain opaque
-    /// `MountSource::Secret` references; only the selected provider asks this
-    /// port for bytes at realization time.
+    /// on the providers selected so far; a provider selected later receives
+    /// it too. Application plans retain opaque `MountSource::Secret`
+    /// references; only the selected provider asks this port for bytes at
+    /// realization time.
     #[must_use]
     pub fn with_session_secret_broker(
-        self,
+        mut self,
         broker: Arc<dyn awaken_provisioning_contract::SecretBroker>,
     ) -> Self {
         self.env
@@ -53,17 +54,35 @@ impl SessionExecutorBuilder {
             .installation()
             .install_secret_broker(broker.clone());
         if let Some(provider) = &self.env.backend_owned_session_provider {
+            provider
+                .installation()
+                .install_secret_broker(broker.clone());
+        }
+        self.env.secret_broker = Some(broker);
+        self
+    }
+
+    /// Install the shared services selected so far (Memory mounter, secret
+    /// broker) on a provider selected or relocated after them, so the call
+    /// order of the selections never drops a capability.
+    pub(super) fn install_shared_environment_services(
+        &self,
+        provider: &awaken_session_environment_contract::SessionEnvironmentProvider,
+    ) {
+        if let Some(mounter) = self.env.memory_mounter.clone() {
+            provider.installation().install_memory_mounter(mounter);
+        }
+        if let Some(broker) = self.env.secret_broker.clone() {
             provider.installation().install_secret_broker(broker);
         }
-        self
     }
 
     /// Select the authoritative provider of every Session environment on this
     /// Host. The process composition selects and builds it from the Deployment
     /// (`awaken-execution-composition`); the Host continues to own Session
     /// routing and lifecycle. A caller that also selects a
-    /// [`awaken_provisioning_contract::SecretBroker`] does so afterwards, so the
-    /// broker lands on this authoritative provider.
+    /// [`awaken_provisioning_contract::SecretBroker`] or Memory mounter may do
+    /// so before or after; either lands on this authoritative provider.
     #[must_use]
     pub fn with_session_environment_provider(
         mut self,
@@ -71,12 +90,7 @@ impl SessionExecutorBuilder {
     ) -> Self {
         self.env.session_provider = provider;
         self.env.session_provider_explicit = true;
-        if let Some(mounter) = self.env.memory_mounter.clone() {
-            self.env
-                .session_provider
-                .installation()
-                .install_memory_mounter(mounter);
-        }
+        self.install_shared_environment_services(&self.env.session_provider);
         self
     }
 
@@ -91,12 +105,7 @@ impl SessionExecutorBuilder {
     ) -> Self {
         self.env.session_provider = provider;
         self.env.session_provider_explicit = false;
-        if let Some(mounter) = self.env.memory_mounter.clone() {
-            self.env
-                .session_provider
-                .installation()
-                .install_memory_mounter(mounter);
-        }
+        self.install_shared_environment_services(&self.env.session_provider);
         self
     }
 
@@ -107,9 +116,7 @@ impl SessionExecutorBuilder {
         mut self,
         provider: awaken_session_environment_contract::SessionEnvironmentProvider,
     ) -> Self {
-        if let Some(mounter) = self.env.memory_mounter.clone() {
-            provider.installation().install_memory_mounter(mounter);
-        }
+        self.install_shared_environment_services(&provider);
         self.env.backend_owned_session_provider = Some(provider);
         self
     }

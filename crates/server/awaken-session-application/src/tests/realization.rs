@@ -13,6 +13,7 @@ use awaken_credential_contract::CredentialMaterialInput;
 mod capacity_budget;
 mod cleanup_timing;
 mod initial_preparation;
+mod partial_preparation;
 mod resource_effect_authorization;
 mod retry_hint;
 mod source_admission;

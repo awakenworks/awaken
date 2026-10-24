@@ -16,7 +16,7 @@
 - 必须断言：无部分 root；原 manifest 仍有效；准备责任保留可恢复身份。
 - 反向控制：只比较返回错误不检查原 root 和准备责任不能通过。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`failed_second_input_or_stale_version_keeps_the_original_manifest`、`error_only_oracle_cannot_accept_partial_or_forgotten_preparation`；当前提交本机 Windows L1 执行（E13），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ### T14-C02 并发替换
 
@@ -48,7 +48,7 @@
 - 必须断言：在获取明文和外部效果前拒绝；错误分类稳定；拒绝次数与物理效果可观测。
 - 反向控制：只换 credential id 而不覆盖 revision/holder 不足。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`binding_matrix_rejects_each_dimension_before_plaintext_with_stable_class`（E13 本机 Windows 执行通过，覆盖已成立的 oracle 与反向控制）；产品缺口复现 `binding_matrix_holder_dimension_has_its_recipient_classification`（忽略，不计证据）：其余维度在明文前以稳定类型拒绝，但公开 resolve 把 holder 不符映射为可重试的 Unavailable；MCP attachment 另把所有非 Unavailable 错误映射为 revision mismatch（未在本批测试）。完整场景：待验收。
 
 ### T15-C02 等待后撤销
 
@@ -476,7 +476,7 @@
 - 必须断言：在创建外部环境或提交不可恢复生命周期前拒绝；普通执行模式仍可用。
 - 反向控制：运行到半途才从 Option 得知缺能力不能作为构造完成。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`restore_capability_pairing_and_ordinary_mode_hold_and_late_option_discovery_is_detected`（E13 本机 Windows 执行通过，覆盖已成立的 oracle 与反向控制）；产品缺口复现 `restore_enabled_worker_with_unsupported_restoration_is_refused_at_construction`（忽略，不计证据）：启用 checkpoint 格式与存储时，构造阶段不检查 Provider 的 restore 能力，不支持恢复的 Provider 也能构造成功。完整场景：待验收。
 
 ### T27-C02 混入其他实例
 
@@ -484,7 +484,7 @@
 - 必须断言：构造或 exact identity 校验拒绝；能力来自同一受控物理来源而非仅同字符串。
 - 反向控制：只比较逻辑 id 的负控必须失败。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`foreign_instance_with_differing_identity_is_refused_and_logical_id_check_is_insufficient`（E13 本机 Windows 执行通过，覆盖已成立的 oracle 与反向控制）；产品缺口复现 `foreign_instance_with_equal_handle_cannot_rebind_another_providers_environment`（忽略，不计证据）：rebind_retained 只比较 SandboxHandle 值，相同 handle 的另一 Provider 实例可绑定外来 Environment。完整场景：待验收。
 
 ### T27-C03 create/adopt 证据
 

@@ -29,8 +29,11 @@
           ],
           "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B141",
+          "B142"
+        ],
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -40,7 +43,16 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, L1 component, in-memory SQLite / fakes, nextest"
+          ],
+          "unaccepted": [
+            "L2 real adapters and process crash are separate scenarios",
+            "T35 platform gate open"
+          ]
+        }
       },
       {
         "id": "T14-C02",
@@ -151,8 +163,11 @@
           ],
           "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B143",
+          "B144"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -162,7 +177,23 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, L1 component, in-memory SQLite / fakes, nextest"
+          ],
+          "unaccepted": [
+            "L2 real adapters and process crash are separate scenarios",
+            "T35 platform gate open"
+          ]
+        },
+        "product_gap": {
+          "reason": "其余维度在明文前以稳定类型拒绝，但公开 resolve 把 holder 不符映射为可重试的 Unavailable；MCP attachment 另把所有非 Unavailable 错误映射为 revision mismatch（未在本批测试）",
+          "follow_up": "credential-materializer 公开错误映射（S）；session-mcp attachment 错误分类（S）",
+          "reproducers": [
+            "binding_matrix_holder_dimension_has_its_recipient_classification"
+          ]
+        }
       },
       {
         "id": "T15-C02",
