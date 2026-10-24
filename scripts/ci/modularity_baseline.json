@@ -191,7 +191,7 @@
     "awaken-run-ingress",
     "awaken-dispatch-contract",
     "awaken-dispatch-http",
-    "awaken-run-ingress-testkit",
+    "awaken-dispatch-testkit",
     "awaken-runtime",
     "awaken-runtime-contract",
     "awaken-runtime-examples",

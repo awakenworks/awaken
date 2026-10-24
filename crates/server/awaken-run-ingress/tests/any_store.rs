@@ -25,7 +25,7 @@ use awaken_run_ingress::{RunClaim, SettleOutcome, WorkerRecoveryMode};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
-use awaken_run_ingress_testkit::ConformanceClock as _;
+use awaken_dispatch_testkit::ConformanceClock as _;
 use harness::{TICKET, activation, activation_on, tool_runtime};
 
 async fn any_in_memory() -> AnyCoordinatorDispatch {
@@ -46,7 +46,7 @@ async fn any_in_memory_with_clock_handle(
 /// The same runtime-selected backend over a clock the test drives, because the
 /// dispatch port now reads "now" from the store it was built with.
 async fn any_in_memory_with_clock(
-    clock: &awaken_run_ingress_testkit::ManualStoreClock,
+    clock: &awaken_dispatch_testkit::ManualStoreClock,
 ) -> AnyCoordinatorDispatch {
     awaken_run_ingress::open_sqlite_dispatch_store_in_memory(clock.clock())
         .await
@@ -58,7 +58,7 @@ async fn execution_binding_is_frozen_with_the_physical_slot() {
     // Shared B1-B10/I1-I2 includes Any delegation, Memory and real SQLite
     // transactions. With no injected fault, the existing fault decorator must
     // preserve the same original admission inventory and global cursors.
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     for store in [
         AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(MemoryDispatchStore::new(
             clock.clock(),
@@ -81,7 +81,7 @@ async fn returned_attempt_cannot_restart_under_the_same_claim() {
     // physical execution. R1 exact live admission retry before ACK is idempotent;
     // R2 same claim after ACK is fenced; R3 repeated ACK stays idempotent.
     // This is a prerequisite for accepting independently delayed stop evidence.
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     for store in [
         AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(MemoryDispatchStore::new(
             clock.clock(),
@@ -115,7 +115,7 @@ async fn non_postgres_wrapper_does_not_fabricate_a_checkpoint_authority() {
 
 #[tokio::test]
 async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = any_in_memory_with_clock(&clock).await;
     let mut gpu = PlacementRequirements::remote_required();
     gpu.required_capabilities.insert("gpu".to_string());
@@ -165,7 +165,7 @@ async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
 
 async fn exact_backend_capability_claim_conformance(
     store: &dyn ConformanceDispatch,
-    clock: &dyn awaken_run_ingress_testkit::ConformanceClock,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     // Cause/effect graph:
     // immutable backend_ref -> exact required capability -> atomic claim
@@ -239,10 +239,10 @@ async fn exact_backend_capability_claim_conformance(
 
 #[tokio::test]
 async fn exact_backend_capability_routes_a_mixed_queue_on_every_local_store() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     exact_backend_capability_claim_conformance(&MemoryDispatchStore::new(clock.clock()), &clock)
         .await;
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     exact_backend_capability_claim_conformance(&any_in_memory_with_clock(&clock).await, &clock)
         .await;
 }
@@ -304,7 +304,7 @@ fn worker_with_load(id: &str, load: u32) -> WorkerSnapshot {
 
 async fn policy_claim_conformance(
     store: &dyn ConformanceDispatch,
-    clock: &dyn awaken_run_ingress_testkit::ConformanceClock,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     let mut requirements = PlacementRequirements::remote_required();
     requirements.required_capabilities.insert("cpu".to_string());
@@ -339,15 +339,15 @@ async fn policy_claim_conformance(
 
 #[tokio::test]
 async fn policy_claim_is_wired_through_memory_and_runtime_selected_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     policy_claim_conformance(&MemoryDispatchStore::new(clock.clock()), &clock).await;
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     policy_claim_conformance(&any_in_memory_with_clock(&clock).await, &clock).await;
 }
 
 #[tokio::test]
 async fn replacement_policy_cannot_override_never_replace() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     let mut requirements = PlacementRequirements::remote_required();
     requirements.required_capabilities.insert("cpu".to_string());
@@ -402,7 +402,7 @@ async fn replacement_policy_cannot_override_never_replace() {
 
 #[tokio::test]
 async fn recovery_mode_is_enforced_from_the_durable_previous_assignment() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = any_in_memory_with_clock(&clock).await;
     let mut never = PlacementRequirements::remote_required();
     never.required_capabilities.insert("cpu".to_string());
@@ -488,7 +488,7 @@ async fn any_delegates_enqueue_claim_and_owner_scoped_lease() {
     // F1 C1+C2(before)+C3(original) => E1; F2 C1+C2(before)+C3(foreign)
     // => E2; F3 C1+C2(after)+C3(foreign) => E3. The moved erasure delegates
     // to the same SQL row and does not install another clock or lease owner.
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = any_in_memory_with_clock(&clock).await;
     store
         .enqueue(RunDispatch::new(activation("run-1")))
@@ -539,7 +539,7 @@ async fn any_lets_two_owners_claim_distinct_runs() {
     // claim two distinct runs, never the same one. Under single-writer-per-thread
     // (ADR-0022) "distinct runs" means distinct THREADS — two runs of one thread
     // cannot both be in flight (see `any_serializes_one_thread_across_workers`).
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = any_in_memory_with_clock(&clock).await;
     store
         .enqueue(RunDispatch::new(activation_on("run-1", "thread-1")))
@@ -586,7 +586,7 @@ async fn any_serializes_one_thread_across_workers() {
     // once. Enqueue run-2 while run-1 is already in flight (so run-2 is a fresh
     // pending run, not a supersession of run-1) — a second worker still cannot claim
     // it, and it becomes claimable only after run-1 settles.
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = any_in_memory_with_clock(&clock).await;
     store
         .enqueue(RunDispatch::new(activation_on("run-1", "thread-x")))
@@ -650,7 +650,7 @@ async fn any_exposes_the_builtin_backends_operational_feed() {
     // A1 global selection retains its fact; A2 exact Run retains the same
     // identity; A3 unknown Run returns empty with unchanged cursor. Dropping
     // the selector fails A3. The adjacent erased-adapter case owns A4.
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = any_in_memory_with_clock(&clock).await;
     store
         .enqueue(RunDispatch::new(activation("operations-run")))
@@ -876,4 +876,4 @@ use awaken_dispatch_contract::{
     DispatchSettlement as _,
 };
 
-use awaken_run_ingress_testkit::ConformanceDispatch;
+use awaken_dispatch_testkit::ConformanceDispatch;

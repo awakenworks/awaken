@@ -44,7 +44,7 @@ use awaken_runtime_contract::resume::ResumeCommand;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
-use awaken_run_ingress_testkit::ConformanceClock as _;
+use awaken_dispatch_testkit::ConformanceClock as _;
 use harness::{activation, blocking_tool_runtime, counting_text_runtime, text_runtime};
 
 const LEASE: u64 = 1_000;
@@ -60,7 +60,7 @@ async fn native_worker_freezes_binding_before_tool_entry_and_clears_on_return() 
         let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
         let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
         let (directory, identity) =
-            awaken_run_ingress_testkit::worker_http::ready_worker("binding-worker").await;
+            awaken_dispatch_testkit::worker_http::ready_worker("binding-worker").await;
         let snapshot = directory
             .current(&identity.worker_id)
             .await
@@ -305,7 +305,7 @@ async fn assert_parent_return_waits_for_all_participants<
 #[tokio::test]
 async fn physical_ack_waits_for_all_participants_memory() {
     for dropped in [false, true] {
-        let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+        let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
         assert_parent_return_waits_for_all_participants(
             Arc::new(MemoryDispatchStore::new(clock.clock())),
             dropped,
@@ -317,7 +317,7 @@ async fn physical_ack_waits_for_all_participants_memory() {
 #[tokio::test]
 async fn physical_ack_waits_for_all_participants_sqlite() {
     for dropped in [false, true] {
-        let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+        let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
         assert_parent_return_waits_for_all_participants(
             Arc::new(
                 SqliteDispatchStore::open_in_memory(clock.clock())
@@ -654,7 +654,7 @@ async fn a_returned_unknown_tool_result_cannot_release_the_durable_physical_slot
 async fn assert_native_cancel_observes_history_before_physical_ack<S>(
     store: Arc<S>,
     unknown: bool,
-    clock: &dyn awaken_run_ingress_testkit::ConformanceClock,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) where
     S: awaken_run_ingress::ControlDispatch + awaken_run_ingress::DispatchReads + 'static,
 {
@@ -751,7 +751,7 @@ async fn assert_native_cancel_observes_history_before_physical_ack<S>(
 #[tokio::test]
 async fn native_cancel_evidence_precedes_physical_ack_memory() {
     for unknown in [false, true] {
-        let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+        let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
         assert_native_cancel_observes_history_before_physical_ack(
             Arc::new(MemoryDispatchStore::new(clock.clock())),
             unknown,
@@ -764,7 +764,7 @@ async fn native_cancel_evidence_precedes_physical_ack_memory() {
 #[tokio::test]
 async fn native_cancel_evidence_precedes_physical_ack_sqlite() {
     for unknown in [false, true] {
-        let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+        let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
         assert_native_cancel_observes_history_before_physical_ack(
             Arc::new(
                 SqliteDispatchStore::open_in_memory(clock.clock())
@@ -785,7 +785,7 @@ async fn native_cancel_evidence_precedes_physical_ack_sqlite() {
 /// the run is not double-owned. Every backend must match, so the body lives once.
 async fn assert_live_lease_fences_a_claim<S: ControlDispatch>(
     store: &S,
-    clock: &dyn awaken_run_ingress_testkit::ConformanceClock,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     store
         .enqueue(RunDispatch::new(activation("run-1")))
@@ -828,7 +828,7 @@ async fn assert_live_lease_fences_a_claim<S: ControlDispatch>(
 
 #[tokio::test]
 async fn live_lease_fences_a_claim_memory() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     assert_live_lease_fences_a_claim(&MemoryDispatchStore::new(clock.clock()), &clock).await;
 }
 
@@ -922,7 +922,7 @@ async fn replacement_claim_defers_until_predecessor_quiescence_before_model_entr
 async fn live_lease_fences_a_claim_sqlite() {
     // The SQL claim predicate (`lease_until >= now`) must fence exactly as the
     // in-memory reference does.
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     assert_live_lease_fences_a_claim(
         &SqliteDispatchStore::open_in_memory(clock.clock())
             .await
@@ -1108,7 +1108,7 @@ async fn assert_occupied_attempt_terminal_recovery<
     acp_backend: bool,
     cancel: bool,
     coordinated: bool,
-    clock: &dyn awaken_run_ingress_testkit::ConformanceClock,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     let (runtime, infers) = counting_text_runtime();
     let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
@@ -1227,7 +1227,7 @@ async fn occupied_attempt_recovery_memory() {
     // Backend row M: run every legal R2/R4 combination through the same oracle.
     for (acp, cancel) in [(true, false), (true, true), (false, true)] {
         for coordinated in [false, true] {
-            let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+            let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
             assert_occupied_attempt_terminal_recovery(
                 Arc::new(MemoryDispatchStore::new(clock.clock())),
                 acp,
@@ -1245,7 +1245,7 @@ async fn occupied_attempt_recovery_sqlite() {
     // Backend row S: SQL persistence must preserve the same logical/physical split.
     for (acp, cancel) in [(true, false), (true, true), (false, true)] {
         for coordinated in [false, true] {
-            let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+            let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
             assert_occupied_attempt_terminal_recovery(
                 Arc::new(
                     SqliteDispatchStore::open_in_memory(clock.clock())
@@ -1401,7 +1401,7 @@ async fn renewal_keeps_a_slow_owner_across_multiple_lease_periods() {
     //
     // This deliberately renews a complete `RunClaim`; an owner-wide heartbeat
     // would be a second, weaker ownership authority.
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     let lease = 100u64;
     store

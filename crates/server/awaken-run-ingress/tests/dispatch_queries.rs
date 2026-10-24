@@ -18,7 +18,7 @@ fn id(value: &str) -> RunId {
 
 async fn assert_bounded_query_conformance(
     store: &(impl ConformanceDispatch + DispatchOperationalFeed),
-    clock: &dyn awaken_run_ingress_testkit::ConformanceClock,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     // Cause/effect decision table. C1 page budget is zero/one/multiple; C2 the
     // cursor exists/is deleted/is absent; C3 peers are inserted before/after it;
@@ -317,7 +317,7 @@ async fn assert_bounded_query_conformance(
 async fn memory_and_any_bounded_dispatch_queries_conform() {
     // Backend matrix Q1-Q6 above: Any must forward the same bounded port rather
     // than silently using a full-list fallback; Memory owns one ordered row map.
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     assert_bounded_query_conformance(
         &AnyCoordinatorDispatch::from_durable_dispatch(std::sync::Arc::new(
             MemoryDispatchStore::new(clock.clock()),
@@ -331,7 +331,7 @@ async fn memory_and_any_bounded_dispatch_queries_conform() {
 async fn sqlite_bounded_dispatch_queries_conform() {
     // Backend matrix Q1-Q6 above: SQLite uses its existing primary key and exact
     // projection decoder; the budget applies before payload deserialization.
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     assert_bounded_query_conformance(
         &SqliteDispatchStore::open_in_memory(clock.clock())
             .await
@@ -610,4 +610,4 @@ async fn postgres_corrupt_summary_does_not_poison_identity_pages() {
 
 use awaken_dispatch_contract::DispatchEnqueue as _;
 
-use awaken_run_ingress_testkit::ConformanceDispatch;
+use awaken_dispatch_testkit::ConformanceDispatch;

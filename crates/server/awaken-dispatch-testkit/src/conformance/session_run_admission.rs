@@ -1,5 +1,5 @@
 // @formal surface exclude=test_support_crate
-// @formal owner crates/server/awaken-run-ingress-testkit/src/lib.rs
+// @formal owner crates/server/awaken-dispatch-testkit/src/lib.rs
 // @formal reason: Original Session admission conformance, extracted as one whole caller responsibility.
 // @formal reason: Included at the same crate root; existing reservation/lifecycle fixtures and function paths stay authoritative.
 /// Session Run reservation cause/effect graph. Causes: C1 canonical dispatch is

@@ -11,7 +11,7 @@ use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpoi
 use awaken_run_ingress::{FencedStreamCheckpointStore, MemoryDispatchStore, RunClaim, RunDispatch};
 use awaken_store_inmem::MemoryStreamCheckpointStore;
 
-use awaken_run_ingress_testkit::ConformanceClock as _;
+use awaken_dispatch_testkit::ConformanceClock as _;
 use harness::activation;
 
 /// The partial an observation found. An `Unknown` fails the assertion instead
@@ -42,7 +42,7 @@ async fn replacement_fences_stale_checkpoint_put_and_delete() {
     // -> stale put/delete ignored; R3 new C1+C2+C3 -> replacement applies/deletes.
     // The remote `inner=None` row is covered through the transport E2E, where an
     // unverifiable local epoch delegates to the claim-bound upstream operations.
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let dispatch = Arc::new(MemoryDispatchStore::new(clock.clock()));
     dispatch
         .enqueue(RunDispatch::new(activation("run-fenced-checkpoint")))

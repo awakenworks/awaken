@@ -78,9 +78,9 @@ pub async fn schema_pool(schema: &'static str) -> Option<PgPool> {
 }
 
 /// Observe the same moving clock that issues PostgreSQL fixture leases.
-pub fn postgres_clock(pool: &PgPool) -> impl awaken_run_ingress_testkit::ConformanceClock + use<> {
+pub fn postgres_clock(pool: &PgPool) -> impl awaken_dispatch_testkit::ConformanceClock + use<> {
     let pool = pool.clone();
-    awaken_run_ingress_testkit::ObservedStoreClock::new(move || {
+    awaken_dispatch_testkit::ObservedStoreClock::new(move || {
         let pool = pool.clone();
         async move { postgres_now_ms(&pool).await }
     })

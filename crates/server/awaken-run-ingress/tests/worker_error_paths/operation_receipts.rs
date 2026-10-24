@@ -17,7 +17,7 @@ async fn claimed_operation_lost_reply_replays_the_original_receipt_once() {
     // durable append but error; L3=L2+C2+C3=>original receipt, duplicate=true,
     // no second append. The shared original fault decorator applies to both
     // ordinary and versioned paths; no fixture fabricates a receipt.
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let dispatch = Arc::new(MemoryDispatchStore::new(clock.clock()));
     dispatch
         .enqueue(RunDispatch::new(activation("run-1")))

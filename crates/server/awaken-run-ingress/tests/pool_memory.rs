@@ -35,6 +35,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::{run::Id as RunId, run::RunState, thread::Id as ThreadId};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch_contract::WakeSignal;
+use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_lease_testkit::ManualClock;
 use awaken_run_ingress::{
     CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchPool, DispatchReconciler,
@@ -42,7 +43,6 @@ use awaken_run_ingress::{
     Error, LocalWakeSignal, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch,
     SessionChildAdmission, WorkerResolver,
 };
-use awaken_run_ingress_testkit::ConformanceClock as _;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::{llm::ModelInferenceBudget, resume::ResumeResult};
 use awaken_store_inmem::MemoryCommitCoordinator;
@@ -138,7 +138,7 @@ async fn assert_native_uncertainty_retains_physical_slot(return_unknown_error: b
             ..Default::default()
         },
     ));
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let worker =
@@ -1989,7 +1989,7 @@ async fn physical_return_ack_retries_transport_without_reexecuting_the_attempt()
         harness::FinishFault::Rejected,
     ] {
         let rejected = matches!(fault, harness::FinishFault::Rejected);
-        let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+        let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
         let store = Arc::new(FlakyDispatchStore::new(0, clock.clock()).with_finish_fault(fault));
         let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
         let (runtime, infers) = counting_text_runtime();
@@ -2125,7 +2125,7 @@ async fn durable_cancel_signals_the_exact_live_attempt_before_lease_expiry() {
     // worker are covered by the shared three-backend LR6/LR7 table.
     // Constraint: this uses the sole renewal loop; no direct live-control signal,
     // extra poller, or cancellation registry participates.
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let worker = Arc::new(
@@ -2322,7 +2322,7 @@ async fn transient_renewal_errors_retry_inside_the_same_guard() {
     // completes normally. No retry attempt authors lease state outside Dispatch.
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, ran) = blocking_tool_runtime(release.clone());
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = Arc::new(FlakyDispatchStore::new(0, clock.clock()).with_renewal_failures(2));
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let worker = Arc::new(
@@ -2378,7 +2378,7 @@ async fn stalled_renewal_call_cancels_before_the_lease_can_be_recovered() {
     // Effects: E1 calls are bounded and retried by the same guard; E2 Runtime is
     // cancelled before the durable lease expires; E3 no Thread commit occurs.
     let renewal_gate = Arc::new(tokio::sync::Semaphore::new(0));
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = Arc::new(FlakyDispatchStore::new(0, clock.clock()).with_renewal_gate(renewal_gate));
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let entered = Arc::new(tokio::sync::Notify::new());
@@ -2449,7 +2449,7 @@ async fn ambiguous_renewal_response_retries_the_same_exact_claim() {
     let response_gate = Arc::new(tokio::sync::Semaphore::new(0));
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, ran) = blocking_tool_runtime(release.clone());
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = Arc::new(
         FlakyDispatchStore::new(0, clock.clock()).with_renewal_response_gate(response_gate.clone()),
     );

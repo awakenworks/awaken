@@ -1,8 +1,8 @@
 // @formal surface exclude=test_support_crate
-// @formal owner crates/server/awaken-run-ingress-testkit/src/lib.rs
+// @formal owner crates/server/awaken-dispatch-testkit/src/lib.rs
 // @formal reason: Static owner: the upgrade-window replay rule of the shared dispatch conformance. Dynamic
 // @formal reason: path: the tooling-only testkit includes this file for every store backend; it is absent
-// @formal reason: from the product runtime graph. Evidence: crates/server/awaken-run-ingress-testkit/src/lib.rs.
+// @formal reason: from the product runtime graph. Evidence: crates/server/awaken-dispatch-testkit/src/lib.rs.
 /// A frozen Session runtime projection with no MCP attachments, as both the
 /// build before typed MCP credential requirements and the current build
 /// write it. The current build additionally publishes `Some([])` beside it.

@@ -1,5 +1,5 @@
 // @formal surface exclude=test_support_crate
-// @formal owner crates/server/awaken-run-ingress-testkit/src/lib.rs
+// @formal owner crates/server/awaken-dispatch-testkit/src/lib.rs
 // @formal reason: Reusable dispatch conformance fixtures and fake executors; it is not linked into a
 // @formal reason: product execution surface.
 //! Reusable behavioural conformance for durable dispatch implementations.

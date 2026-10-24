@@ -1332,7 +1332,7 @@ mod tests {
         // R9=refusal+Conflict=>E2 with the complete original current Memory.
         // Every rule traverses the actual HTTP client and existing fixture;
         // no alternate decoder or transport is introduced for testing.
-        use awaken_run_ingress_testkit::worker_http as support;
+        use awaken_dispatch_testkit::worker_http as support;
 
         enum Expected {
             Snapshot,

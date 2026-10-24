@@ -27,7 +27,7 @@ GENERATED_WORK_DIRS = {".codex-work", ".pnpm-store", "outputs", "reports"}
 
 REQUIRED_SURFACES = (
     "crates/devtools/awaken-reliability-testkit/src/lib.rs",
-    "crates/server/awaken-run-ingress-testkit/src/conformance/reliability.rs",
+    "crates/server/awaken-dispatch-testkit/src/conformance/reliability.rs",
     "crates/stores/awaken-store-fs/tests/recovery.rs",
     "crates/stores/awaken-store-sqlite/tests/failure_atomicity.rs",
     "crates/stores/awaken-session-store/tests/process_crash_outbox.rs",

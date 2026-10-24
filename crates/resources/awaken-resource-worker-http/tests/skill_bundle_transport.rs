@@ -2,10 +2,10 @@
 // @formal evidence skill.loaded_version_equals_session_pin
 //! Custom-Skill Resource Coordinator boundary tests over real HTTP.
 
+use awaken_dispatch_testkit::worker_http as support;
 use awaken_run_ingress::DispatchClaims;
 use awaken_run_ingress::DispatchEnqueue;
 use awaken_run_ingress::DispatchSettlement;
-use awaken_run_ingress_testkit::worker_http as support;
 
 use std::sync::Arc;
 

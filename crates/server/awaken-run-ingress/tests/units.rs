@@ -14,7 +14,7 @@ use awaken_runtime_contract::control::Error as ControlError;
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 use awaken_time::system_clock;
 
-use awaken_run_ingress_testkit::ConformanceClock as _;
+use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_time::WallClockExt;
 use harness::{THREAD, activation, text_runtime};
 
@@ -87,7 +87,7 @@ fn request_exposes_run_and_thread_ids() {
 /// no context stays `None` — a fresh, un-parented span.
 #[tokio::test]
 async fn the_admitting_traceparent_survives_the_enqueue_claim_queue_hop() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     let traceparent = "00-aa11bb22cc33dd44ee55ff6677889900-1122334455667788-01";
 

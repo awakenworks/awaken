@@ -100,9 +100,9 @@ pub fn assert_configuration_contract(tests: &[&str]) {
 #[allow(dead_code)] // Other HTTP suites share this module without expiry waits.
 pub fn postgres_clock(
     pool: &sqlx::PgPool,
-) -> impl awaken_run_ingress_testkit::ConformanceClock + use<> {
+) -> impl awaken_dispatch_testkit::ConformanceClock + use<> {
     let pool = pool.clone();
-    awaken_run_ingress_testkit::ObservedStoreClock::new(move || {
+    awaken_dispatch_testkit::ObservedStoreClock::new(move || {
         let pool = pool.clone();
         async move {
             let now: i64 = sqlx::query_scalar(

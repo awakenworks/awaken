@@ -11,9 +11,9 @@ use awaken_run_ingress::{
 pub async fn bound_claim(
     store: &impl ConformanceDispatch,
     name: &str,
-    clock: &dyn awaken_run_ingress_testkit::ConformanceClock,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) -> (RunClaim, AttemptExecutionBinding, WorkerSnapshot) {
-    let (directory, identity) = awaken_run_ingress_testkit::worker_http::ready_worker(name).await;
+    let (directory, identity) = awaken_dispatch_testkit::worker_http::ready_worker(name).await;
     let mut worker = directory
         .current(&identity.worker_id)
         .await
@@ -46,7 +46,7 @@ pub async fn bound_claim(
 /// Shared decision table, executed against all three stores and Any delegation.
 pub async fn assert_binding_lifecycle(
     store: &(impl ConformanceDispatch + awaken_run_ingress::DispatchOperationalFeed),
-    clock: &dyn awaken_run_ingress_testkit::ConformanceClock,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     // C1 exact registered Worker tuple (not merely its owner string); C2 empty,
     // same-claim or predecessor slot; C3 absent/equal/changed provider coordinate;
@@ -476,7 +476,7 @@ pub async fn assert_binding_lifecycle(
 
 pub async fn assert_closing_lifecycle(
     store: &(impl ConformanceDispatch + awaken_run_ingress::DispatchOperationalFeed),
-    clock: &dyn awaken_run_ingress_testkit::ConformanceClock,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     // C1 exact old entry vs foreign epoch; C2 durable closing phase; C3 late
     // ordinary ACK or successor handoff; C4 complete Coordinator closure.
@@ -698,7 +698,7 @@ pub async fn assert_closing_lifecycle(
 
 async fn assert_ordinary_acknowledgement_history(
     store: &(impl ConformanceDispatch + awaken_run_ingress::DispatchOperationalFeed),
-    clock: &dyn awaken_run_ingress_testkit::ConformanceClock,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     use awaken_run_ingress::{
         AttemptPhysicalFact as F, AttemptReturnCause as C, DispatchCursor, DispatchOutcome,
@@ -900,11 +900,11 @@ async fn assert_ordinary_acknowledgement_history(
     );
 }
 
-use awaken_run_ingress_testkit::ConformanceDispatch;
+use awaken_dispatch_testkit::ConformanceDispatch;
 
 async fn assert_internal_history_preserves_public_projection(
     store: &(impl ConformanceDispatch + awaken_run_ingress::DispatchOperationalFeed),
-    clock: &dyn awaken_run_ingress_testkit::ConformanceClock,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     use awaken_run_ingress::{DispatchCursor, DispatchOutcome};
     // Cause/effect decisions: H1 exact closing subject + either trusted kind ->

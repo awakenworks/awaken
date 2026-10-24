@@ -301,7 +301,7 @@ async fn exited_worker_closes_its_original_create_ledger_before_releasing_eviden
         let anchor = old_record.create_ledger.clone().unwrap();
         let clock = Arc::new(ManualClock::new(100));
         let store = awaken_run_ingress::MemoryDispatchStore::new(clock.clone());
-        let activation = awaken_run_ingress_testkit::worker_http::activation("closed-creator");
+        let activation = awaken_dispatch_testkit::worker_http::activation("closed-creator");
         let run = activation.run_id.clone();
         store
             .enqueue(awaken_run_ingress::RunDispatch::new(activation))

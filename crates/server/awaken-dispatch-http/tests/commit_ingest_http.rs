@@ -16,13 +16,13 @@ use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_dispatch_http::{ClaimedCommitHttpService, claimed_commit_router};
+use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_run_ingress::ClaimedCommitService;
 use awaken_run_ingress::{
     ClaimedCommitCommand, ClaimedRunCommit, MemoryDispatchStore, RegisteredWorker, RegistryError,
     RegistryMutation, RunClaim, RunDispatch, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
     WorkerManifest, WorkerObservationSource, WorkerRegistration, WorkerSnapshot, WorkerState,
 };
-use awaken_run_ingress_testkit::ConformanceClock as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{
@@ -211,7 +211,7 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         process_exit: None,
         create_ledger: None,
     }));
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let dispatch = Arc::new(MemoryDispatchStore::new(clock.clock()));
     dispatch
         .enqueue(RunDispatch::new(activation(

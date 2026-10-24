@@ -1,9 +1,9 @@
 // @formal evidence run_ingress.failed_attempt_release_spends_one_attempt_and_exhausts_through_retry_exhaustion
 // @formal surface exclude=test_support_crate
-// @formal owner crates/server/awaken-run-ingress-testkit/src/lib.rs
+// @formal owner crates/server/awaken-dispatch-testkit/src/lib.rs
 // @formal reason: Static owner: the failed-attempt retry budget rule of the shared dispatch conformance.
 // @formal reason: Dynamic path: the tooling-only testkit includes this file for every store backend; it is
-// @formal reason: absent from the product runtime graph. Evidence: crates/server/awaken-run-ingress-testkit/src/lib.rs.
+// @formal reason: absent from the product runtime graph. Evidence: crates/server/awaken-dispatch-testkit/src/lib.rs.
 /// Failed-attempt retry budget decision table (ADR-0015 D1). A claim returned
 /// after a classified failed attempt spends one attempt; the attempt that
 /// reaches `max_attempts` is terminalized by the same retry-exhaustion claim as

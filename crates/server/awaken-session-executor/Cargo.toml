@@ -150,7 +150,7 @@ awaken-session-store = { workspace = true, features = ["test-support"] }
 awaken-skill-store = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
 awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
-awaken-run-ingress-testkit = { workspace = true }
+awaken-dispatch-testkit = { workspace = true }
 # The durable session-store round-trip test opens a real sessions.db under a temp dir.
 # Test fixtures cut an exact physical Environment root by inode.
 awaken-fs-durability = { workspace = true, features = ["native-fs"] }

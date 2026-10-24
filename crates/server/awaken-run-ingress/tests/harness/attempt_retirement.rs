@@ -7,7 +7,7 @@ use awaken_run_ingress::{
 pub async fn assert_retirement(
     store: &impl ConformanceDispatch,
     now: u64,
-    clock: &dyn awaken_run_ingress_testkit::ConformanceClock,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     // Causes: C1 current/expired claim; C2 empty/live/retired slot;
     // C3 ordinary begin/durable handoff; C4 exact/delayed predecessor ACK.
@@ -146,13 +146,13 @@ pub async fn assert_retirement(
     assert_eq!(store.finish_attempt(&d, None).await.unwrap(), S::Applied);
 }
 
-use awaken_run_ingress_testkit::ConformanceDispatch;
+use awaken_dispatch_testkit::ConformanceDispatch;
 
 /// GC is not an execution-close acknowledgement. One matrix runs against
 /// Memory, SQLite and PostgreSQL through their existing TTL test cases.
 pub async fn assert_purge_retains_occupied(
     store: &impl ConformanceDispatch,
-    clock: &dyn awaken_run_ingress_testkit::ConformanceClock,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     // Causes: C1 a cancelled, expired row is dead-lettered; C2 its original
     // physical slot is bound/unbound; C3 its entry is open/closing; C4 the
@@ -340,7 +340,7 @@ pub async fn assert_purge_retains_occupied(
 pub async fn dead_letter_empty(
     store: &impl ConformanceDispatch,
     name: &str,
-    clock: &dyn awaken_run_ingress_testkit::ConformanceClock,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) -> (awaken_agent_contract::agent::run::Id, u64) {
     let run = awaken_agent_contract::agent::run::Id(name.into());
     store

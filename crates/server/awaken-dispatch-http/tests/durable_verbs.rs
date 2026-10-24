@@ -18,8 +18,8 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch_http::durable_ops_router_with_session_admission;
+use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_run_ingress::{MemoryDispatchStore, RunDispatch, SubmitOptions};
-use awaken_run_ingress_testkit::ConformanceClock as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
@@ -144,7 +144,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     // sequence also proves every Coordinator HTTP effect reaches the same queue.
     // Inject one in-memory dispatch store we also keep a handle to, so we can drive
     // the queue deterministically and then assert the host verbs route to it.
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let mem = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let any =
         Arc::new(awaken_run_ingress::AnyCoordinatorDispatch::from_durable_dispatch(mem.clone()));
@@ -296,7 +296,7 @@ async fn monitoring_reads_committed_dispatches_without_materializing_a_session()
      * R1 C1+C2+C3+C4 => dispatches 200 with only requested rows; R2 same causes
      * => dead-letters 200 with only DeadLetter; R3 => superseded 200 with only
      * Superseded. The non-durable C1=false => 400 rule remains below. */
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let mem = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let any =
         Arc::new(awaken_run_ingress::AnyCoordinatorDispatch::from_durable_dispatch(mem.clone()));

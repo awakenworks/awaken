@@ -33,11 +33,11 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch_contract::SessionContinuationOutbox as _;
+use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_run_ingress::{
     ContinuationAdmission, DispatchWorker, Inbox, MemoryDispatchStore, RunDispatch,
     SqliteDispatchStore, SubmitOptions,
 };
-use awaken_run_ingress_testkit::ConformanceClock as _;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
@@ -111,7 +111,7 @@ async fn dedupe_key_blocks_a_duplicate_dispatch_on_sqlite() {
     // Prove the durable dedupe index (V0008) holds: two DISTINCT run ids sharing a
     // live dedupe key yield only ONE claimable dispatch — the second submit is a
     // no-op while the first is live.
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .expect("open");

@@ -23,6 +23,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as AuditKind;
 use awaken_dispatch_contract::SessionContinuationOutbox as _;
+use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_lease_testkit::ManualClock;
 use awaken_run_ingress::PlacementRequirements;
 use awaken_run_ingress::{
@@ -30,7 +31,6 @@ use awaken_run_ingress::{
     DispatchSettlementObserver, DispatchTestHarness, DispatchWorker, Inbox, MemoryDispatchStore,
     PendingInput, RunClaim, RunDispatch, SessionChildAdmission,
 };
-use awaken_run_ingress_testkit::ConformanceClock as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{
     Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
@@ -1504,7 +1504,7 @@ async fn duplicate_pending_delivery_is_idempotent() {
 
 #[tokio::test]
 async fn expired_lease_is_reclaimable_for_recovery() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     store
         .enqueue(RunDispatch::new(activation("run-1")))
@@ -1621,7 +1621,7 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
 #[tokio::test]
 async fn settle_done_clears_pending_and_dispatch() {
     // A store-level invariant: settling Done removes the dispatch and any pending.
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     store
         .enqueue(RunDispatch::new(activation("run-1")))
@@ -1963,7 +1963,7 @@ async fn cross_thread_outbox_store_spec() {
 
 #[tokio::test]
 async fn message_idempotency_conflicts_store_spec() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::assert_message_idempotency_conflicts(&store, &clock).await;
 }
@@ -2015,28 +2015,28 @@ async fn staged_delivery_relays_and_resumes_an_awaiting_run() {
 
 #[tokio::test]
 async fn scheduled_delivery_due_store_spec() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::assert_scheduled_due(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn millis_boundaries_store_spec() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::assert_millis_boundaries(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn dead_letter_budget_store_spec() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::assert_dead_letter(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn cancel_store_spec() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::assert_cancel(&store, &clock).await;
 }
@@ -2364,14 +2364,14 @@ async fn authenticated_remote_cancellation_receives_only_its_current_claim_bindi
 
 #[tokio::test]
 async fn priority_dedupe_gc_store_spec() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::assert_priority_dedupe_gc(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn lease_renewal_store_spec() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::assert_lease_renewal(&store, &clock).await;
 }
@@ -2391,7 +2391,7 @@ async fn local_wake_signal_delivers_a_held_hint() {
 #[tokio::test]
 async fn dispatch_harness_dead_letter_and_purge_ops() {
     let runtime = text_runtime();
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit, system_clock());
@@ -2621,7 +2621,7 @@ async fn fresh_continuation_identity_is_stable_without_a_parallel_message_comman
 
 #[tokio::test]
 async fn supersession_store_spec() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::assert_supersession(&store, &clock).await;
 }
@@ -2648,7 +2648,7 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
         ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit, RunClaim,
     };
 
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let inner = Arc::new(MemoryCommitCoordinator::new(system_clock()));
 
@@ -2739,7 +2739,7 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
 
 #[tokio::test]
 async fn concurrent_recovery_yields_one_winner_on_memory() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     harness::assert_concurrent_recovery_yields_one_winner(
         std::sync::Arc::new(MemoryDispatchStore::new(clock.clock())),
         &clock,
@@ -2792,7 +2792,7 @@ async fn submit_superseding_abandons_prior_thread_work() {
 
 #[tokio::test]
 async fn dead_letter_ttl_gc_store_spec() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::assert_dead_letter_ttl_gc(&store, &clock).await;
     harness::attempt_retirement::assert_purge_retains_occupied(&store, &clock).await;
@@ -2800,21 +2800,21 @@ async fn dead_letter_ttl_gc_store_spec() {
 
 #[tokio::test]
 async fn relinquish_claim_store_spec() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::assert_relinquish_claim(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn defer_claim_is_request_local_store_spec() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::assert_defer_claim_is_request_local(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn capacity_deferrals_hand_off_without_spending_budget_on_memory() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::capacity_deferral::assert_capacity_deferrals_hand_off_without_spending_budget(
         &store, &clock,
@@ -2831,28 +2831,28 @@ async fn defer_claim_uses_the_store_clock_and_exact_deadline_on_memory() {
 
 #[tokio::test]
 async fn physical_attempt_admission_store_spec() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::assert_physical_attempt_admission(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn list_dispatches_store_spec() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::assert_list_dispatches(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn dedupe_ignores_dead_lettered_store_spec() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::assert_dedupe_ignores_dead_lettered(&store, &clock).await;
 }
 
 #[tokio::test]
 async fn wake_suppressed_while_thread_running_store_spec() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::assert_wake_suppressed_while_thread_running(&store, &clock).await;
 }
@@ -2861,7 +2861,7 @@ async fn wake_suppressed_while_thread_running_store_spec() {
 async fn dispatch_harness_lists_dispatches_and_purges_aged_dead_letters() {
     // Covers the DispatchTestHarness query + time-windowed GC wrappers.
     let runtime = text_runtime();
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit, system_clock());

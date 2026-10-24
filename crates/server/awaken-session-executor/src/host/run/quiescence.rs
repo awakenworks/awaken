@@ -342,7 +342,7 @@ mod terminal_scope_tests {
                 .await
                 .unwrap();
             let (directory, worker) =
-                awaken_run_ingress_testkit::worker_http::ready_worker("old-worker").await;
+                awaken_dispatch_testkit::worker_http::ready_worker("old-worker").await;
             let registered = directory.incarnation(&worker).await.unwrap().unwrap();
             let claimed = store
                 .claim_run_compatible(&run, &registered.snapshot, 10)

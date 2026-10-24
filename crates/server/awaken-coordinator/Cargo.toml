@@ -174,7 +174,7 @@ awaken-protocol-managed-testkit.workspace = true
 awaken-session-executor-testkit.workspace = true
 k8s-openapi = { workspace = true }
 awaken-runtime.workspace = true
-awaken-run-ingress-testkit.workspace = true
+awaken-dispatch-testkit.workspace = true
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
 awaken-control = { workspace = true, features = ["test-support"] }
 awaken-executable-agent-catalog.workspace = true

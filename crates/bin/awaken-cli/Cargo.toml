@@ -212,7 +212,7 @@ sha2 = "0.10"
 awaken-ext-goal.workspace = true
 k8s-openapi = { workspace = true }
 awaken-worker-runtime.workspace = true
-awaken-run-ingress-testkit.workspace = true
+awaken-dispatch-testkit.workspace = true
 awaken-worker-registry = { workspace = true, features = ["test-support"] }
 awaken-run-ingress = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }

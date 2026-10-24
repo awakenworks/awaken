@@ -1045,7 +1045,7 @@ mod tests {
                     async move { application_error_response(&error) }
                 }),
             );
-            let address = awaken_run_ingress_testkit::worker_http::serve(router).await;
+            let address = awaken_dispatch_testkit::worker_http::serve(router).await;
             let response = reqwest::Client::new()
                 .post(format!("http://{address}/"))
                 .send()
@@ -1104,7 +1104,7 @@ mod tests {
             (StatusCode::CONFLICT, "", ArtifactFailure::Conflict {}),
         ] {
             let router = Router::new().route("/", post(move || async move { (status, body) }));
-            let address = awaken_run_ingress_testkit::worker_http::serve(router).await;
+            let address = awaken_dispatch_testkit::worker_http::serve(router).await;
             let response = reqwest::Client::new()
                 .post(format!("http://{address}/"))
                 .send()

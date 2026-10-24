@@ -483,7 +483,7 @@ async fn claimed_terminal_dispatch(
     } else {
         thread_id.clone()
     };
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let mut request = RunDispatch::new(activation(&run_id.0, &thread_id.0))
         .for_session(session_thread_id.clone())
@@ -1471,7 +1471,7 @@ async fn work_release_response_loss_retries_done_from_the_same_committed_run() {
 /// | R6 | T | T | T | T | absent | E1+E4 |
 #[tokio::test(flavor = "multi_thread")]
 async fn worker_stream_transport_forwards_only_live_events_from_the_current_claim() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let mem = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let stream = Arc::new(MemoryStreamSink::new());
     let router = dispatch_transport_router_with_service(Arc::new(

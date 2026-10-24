@@ -5,10 +5,10 @@
 // @formal evidence session_run.reservation_ttl_uses_store_clock
 // @formal evidence session_terminal.unstarted_reservation_is_rejected_after_cancel
 // @formal surface exclude=test_support_crate
-// @formal owner crates/server/awaken-run-ingress-testkit/src/lib.rs
+// @formal owner crates/server/awaken-dispatch-testkit/src/lib.rs
 // @formal reason: Static owner: dispatch-reservation conformance cases. Dynamic path: the tooling-only
 // @formal reason: testkit includes this exact file to assert store behavior; it does not reserve product
-// @formal reason: work itself. Evidence: crates/server/awaken-run-ingress-testkit/src/lib.rs.
+// @formal reason: work itself. Evidence: crates/server/awaken-dispatch-testkit/src/lib.rs.
 // Session reservation, claim guard, sandbox recovery, and completion rules.
 // Included at crate root to retain all existing conformance function paths.
 

@@ -1,6 +1,6 @@
 //! Claim-fenced Memory Coordinator tests over real HTTP.
 
-use awaken_run_ingress_testkit::worker_http as support;
+use awaken_dispatch_testkit::worker_http as support;
 
 use std::sync::Arc;
 

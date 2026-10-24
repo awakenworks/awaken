@@ -5,7 +5,7 @@ use awaken_run_ingress::{AttemptExecutionBinding, RunClaim, WorkerExecutionBindi
 use awaken_session_runtime_contract::ApplicationError;
 use awaken_worker_contract::{WorkerCurrentSource, WorkerIncarnationSource};
 
-use awaken_run_ingress_testkit::worker_http as support;
+use awaken_dispatch_testkit::worker_http as support;
 use serde_json::{Value, json};
 use std::future::Future;
 use tokio::sync::{Notify, Semaphore};

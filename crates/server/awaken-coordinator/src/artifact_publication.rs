@@ -715,7 +715,7 @@ mod tests {
         // presence, and lease liveness -> all three inner I/O counts stay zero.
         // Local dispatch fencing must have the same scope/expiry contract as
         // registered Worker HTTP; a matching epoch alone grants no other scope.
-        use awaken_run_ingress_testkit::worker_http as support;
+        use awaken_dispatch_testkit::worker_http as support;
         for cause in [
             "exact",
             "workspace",

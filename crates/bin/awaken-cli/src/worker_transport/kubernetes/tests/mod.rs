@@ -35,7 +35,7 @@ fn manifest() -> awaken_run_ingress::WorkerManifest {
 }
 
 fn model_only_activation(tag: &str) -> awaken_runtime_contract::activation::RunActivation {
-    let mut activation = awaken_run_ingress_testkit::worker_http::activation(tag);
+    let mut activation = awaken_dispatch_testkit::worker_http::activation(tag);
     // The generic HTTP fixture deliberately owns two opaque consistency tokens;
     // actual Runtime execution requires the canonical internally coherent hash.
     // Compile before enqueue so Dispatch and Runtime consume identical bytes.

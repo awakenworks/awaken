@@ -11,6 +11,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+use awaken_dispatch_testkit::worker_http as support;
 use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublisher as _, ArtifactRecovery,
     FileApplicationService, FileRecord, FileStore, FileStoreError, ResourcePurgeError, content_id,
@@ -22,7 +23,6 @@ use awaken_resource_worker_http::{
 use awaken_run_ingress::{
     LeaseRenewalOutcome, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };
-use awaken_run_ingress_testkit::worker_http as support;
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 use base64::Engine as _;

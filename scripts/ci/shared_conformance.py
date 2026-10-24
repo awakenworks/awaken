@@ -154,7 +154,7 @@ def shared_conformance_errors(
                     if path in ("", "self", "crate") and callee in ingress[1]:
                         if callee not in ingress[2] or awaited:
                             pending.append(callee)
-                    elif path in ("", "awaken_run_ingress_testkit") and awaited:
+                    elif path in ("", "awaken_dispatch_testkit") and awaited:
                         boundary = re.fullmatch(
                             r"assert_dispatch_(operational_feed_)?conformance(?:_with_clock)?", callee,
                         )

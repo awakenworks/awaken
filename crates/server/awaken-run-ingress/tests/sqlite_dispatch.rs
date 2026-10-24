@@ -20,7 +20,7 @@ async fn admission_append_failure_rolls_back_and_cold_replay_retains_entry() {
     // unchanged. Neither E2 nor E3 is evidence of process or effect closure.
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("admission.db");
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open(path.to_str().unwrap(), clock.clock())
         .await
         .unwrap();
@@ -113,7 +113,7 @@ async fn ordinary_ack_append_failure_rolls_back_and_cold_replay_retains_original
     // not turn a structured return into a Provider or Session stop assertion.
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("ordinary-ack.db");
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open(path.to_str().unwrap(), clock.clock())
         .await
         .unwrap();
@@ -240,7 +240,7 @@ async fn closed_entry_survives_process_reopen_and_rejects_late_worker_ack() {
     // S3=C4 => one retirement; duplicate closure cannot resurrect the epoch.
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("closing.db");
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open(path.to_str().unwrap(), clock.clock())
         .await
         .unwrap();
@@ -464,7 +464,7 @@ async fn sqlite_execution_binding_survives_reopen_without_the_worker() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("bound-attempt.db");
     let path = path.to_str().unwrap();
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open(path, clock.clock())
         .await
         .unwrap();
@@ -549,7 +549,7 @@ async fn sqlite_ack_retirement_survives_reopen_and_sql_bypass_is_rejected() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("retirement.db");
     let path = path.to_str().unwrap();
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open(path, clock.clock())
         .await
         .unwrap();
@@ -617,7 +617,7 @@ use awaken_run_ingress::{
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
-use awaken_run_ingress_testkit::ConformanceClock as _;
+use awaken_dispatch_testkit::ConformanceClock as _;
 use harness::{TICKET, activation, tool_runtime};
 
 struct BlockingCommit {
@@ -660,7 +660,7 @@ fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
 
 #[tokio::test]
 async fn enqueue_is_idempotent_and_expired_lease_is_reclaimed() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .expect("open");
@@ -701,7 +701,7 @@ async fn enqueue_is_idempotent_and_expired_lease_is_reclaimed() {
 
 #[tokio::test]
 async fn sqlite_epoch_guard_blocks_reclaim_until_commit_returns() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = Arc::new(
         SqliteDispatchStore::open_in_memory(clock.clock())
             .await
@@ -833,7 +833,7 @@ async fn cross_thread_outbox_on_sqlite() {
 
 #[tokio::test]
 async fn message_idempotency_conflicts_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .unwrap();
@@ -842,7 +842,7 @@ async fn message_idempotency_conflicts_on_sqlite() {
 
 #[tokio::test]
 async fn scheduled_delivery_due_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .expect("open");
@@ -851,7 +851,7 @@ async fn scheduled_delivery_due_on_sqlite() {
 
 #[tokio::test]
 async fn millis_boundaries_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .unwrap();
@@ -865,7 +865,7 @@ async fn sqlite_dispatch_opens_a_file_and_persists() {
     let path = path.to_str().unwrap().to_string();
     let _ = std::fs::remove_file(&path);
 
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     {
         let store = SqliteDispatchStore::open(&path, clock.clock())
             .await
@@ -1052,7 +1052,7 @@ async fn latest_schema_removes_the_obsolete_delegation_table() {
 
 #[tokio::test]
 async fn dead_letter_budget_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .expect("open");
@@ -1061,7 +1061,7 @@ async fn dead_letter_budget_on_sqlite() {
 
 #[tokio::test]
 async fn cancel_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .expect("open");
@@ -1070,7 +1070,7 @@ async fn cancel_on_sqlite() {
 
 #[tokio::test]
 async fn priority_dedupe_gc_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .expect("open");
@@ -1079,7 +1079,7 @@ async fn priority_dedupe_gc_on_sqlite() {
 
 #[tokio::test]
 async fn lease_renewal_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .expect("open");
@@ -1088,7 +1088,7 @@ async fn lease_renewal_on_sqlite() {
 
 #[tokio::test]
 async fn idle_thread_inbox_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .expect("open");
@@ -1097,7 +1097,7 @@ async fn idle_thread_inbox_on_sqlite() {
 
 #[tokio::test]
 async fn supersession_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .expect("open");
@@ -1106,7 +1106,7 @@ async fn supersession_on_sqlite() {
 
 #[tokio::test]
 async fn concurrent_recovery_yields_one_winner_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = std::sync::Arc::new(
         SqliteDispatchStore::open_in_memory(clock.clock())
             .await
@@ -1121,7 +1121,7 @@ async fn dead_letter_ttl_gc_on_sqlite() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("purge.db");
     let path = path.to_str().unwrap();
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open(path, clock.clock())
         .await
         .expect("open");
@@ -1285,7 +1285,7 @@ async fn dead_letter_ttl_gc_on_sqlite() {
 
 #[tokio::test]
 async fn relinquish_claim_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .expect("open");
@@ -1294,7 +1294,7 @@ async fn relinquish_claim_on_sqlite() {
 
 #[tokio::test]
 async fn defer_claim_is_request_local_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .expect("open");
@@ -1303,7 +1303,7 @@ async fn defer_claim_is_request_local_on_sqlite() {
 
 #[tokio::test]
 async fn capacity_deferrals_hand_off_without_spending_budget_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .expect("open");
@@ -1324,7 +1324,7 @@ async fn defer_claim_uses_the_store_clock_and_exact_deadline_on_sqlite() {
 
 #[tokio::test]
 async fn physical_attempt_admission_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .expect("open");
@@ -1333,7 +1333,7 @@ async fn physical_attempt_admission_on_sqlite() {
 
 #[tokio::test]
 async fn list_dispatches_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .expect("open");
@@ -1342,7 +1342,7 @@ async fn list_dispatches_on_sqlite() {
 
 #[tokio::test]
 async fn dedupe_ignores_dead_lettered_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .expect("open");
@@ -1351,7 +1351,7 @@ async fn dedupe_ignores_dead_lettered_on_sqlite() {
 
 #[tokio::test]
 async fn wake_suppressed_while_thread_running_on_sqlite() {
-    let clock = awaken_run_ingress_testkit::ManualStoreClock::new(0);
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())
         .await
         .expect("open");

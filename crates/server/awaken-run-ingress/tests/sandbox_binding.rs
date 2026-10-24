@@ -18,8 +18,8 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch_contract::RunDispatch;
 use awaken_dispatch_contract::dispatch::{DispatchOutcome, RunClaim, SettleOutcome};
+use awaken_dispatch_testkit::{ConformanceClock, ManualStoreClock};
 use awaken_run_ingress::MemoryDispatchStore;
-use awaken_run_ingress_testkit::{ConformanceClock, ManualStoreClock};
 use awaken_runtime_contract::activation::RunActivation;
 
 mod harness;
@@ -152,4 +152,4 @@ async fn postgres_backend_binds_and_recovers() {
     binding_survives_a_recovery_claim(&store, &harness::postgres_clock(&pool)).await;
 }
 
-use awaken_run_ingress_testkit::ConformanceDispatch;
+use awaken_dispatch_testkit::ConformanceDispatch;

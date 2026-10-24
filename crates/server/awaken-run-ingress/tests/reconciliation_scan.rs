@@ -321,7 +321,7 @@ async fn oversized_adapter_page_cannot_exceed_observation_budget() {
 
 use awaken_dispatch_contract::DispatchEnqueue as _;
 
-use awaken_run_ingress_testkit::ConformanceDispatch;
+use awaken_dispatch_testkit::ConformanceDispatch;
 
 #[tokio::test]
 async fn occupied_superseded_and_dead_letters_remain_terminal_scan_candidates() {

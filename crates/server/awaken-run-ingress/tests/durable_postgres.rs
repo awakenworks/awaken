@@ -32,13 +32,13 @@ use awaken_agent_contract::thread::commit::coordinator::{
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition, ThreadCommit};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_dispatch_testkit::ConformanceClock;
 use awaken_run_ingress::{
     ClaimedCommitCoordinator, ClaimedRunCommit, DEFAULT_LEASE_MS, DispatchControlReads,
     DispatchTestHarness, DispatchWorker, GuardedRunCommit, Inbox, LeastLoadedPolicy, PendingInput,
     PlacementRequirements, PostgresDispatchStore, PostgresStreamCheckpointStore, RunClaim,
     RunDispatch, SubmitOptions,
 };
-use awaken_run_ingress_testkit::ConformanceClock;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_postgres::PostgresCommitCoordinator;
 use sqlx::Executor as _;
@@ -1174,7 +1174,7 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
         .await
         .expect("dispatch");
     let (directory, identity) =
-        awaken_run_ingress_testkit::worker_http::ready_worker("page-worker").await;
+        awaken_dispatch_testkit::worker_http::ready_worker("page-worker").await;
     let worker = directory
         .current(&identity.worker_id)
         .await
@@ -1475,7 +1475,7 @@ async fn exhausted_epoch_deep_discovery_preserves_remote_audiences_and_expired_r
     )
     .await;
     let (directory, identity) =
-        awaken_run_ingress_testkit::worker_http::ready_worker("boundary-remote-worker").await;
+        awaken_dispatch_testkit::worker_http::ready_worker("boundary-remote-worker").await;
     let worker = directory
         .current(&identity.worker_id)
         .await

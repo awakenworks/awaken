@@ -196,7 +196,7 @@ awaken-dispatch-contract = { path = "crates/contract/awaken-dispatch-contract" }
 awaken-dispatch-erasure = { path = "crates/shared/awaken-dispatch-erasure" }
 awaken-dispatch-execution = { path = "crates/shared/awaken-dispatch-execution" }
 awaken-run-ingress = { path = "crates/server/awaken-run-ingress", default-features = false }
-awaken-run-ingress-testkit = { path = "crates/server/awaken-run-ingress-testkit" }
+awaken-dispatch-testkit = { path = "crates/server/awaken-dispatch-testkit" }
 awaken-worker-transport-security = { path = "crates/server/awaken-worker-transport-security" }
 awaken-session-executor = { path = "crates/server/awaken-session-executor", default-features = false }
 awaken-dispatch-http = { path = "crates/server/awaken-dispatch-http" }

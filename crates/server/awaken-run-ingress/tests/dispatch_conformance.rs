@@ -10,16 +10,16 @@
 // @formal evidence session_run.reservation_ttl_uses_store_clock
 use std::sync::Arc;
 
-use awaken_lease_testkit::ManualClock;
-use awaken_run_ingress::{MemoryDispatchStore, PostgresDispatchStore, SqliteDispatchStore};
-use awaken_run_ingress_testkit::{
+use awaken_dispatch_testkit::{
     ConformanceCapabilities, assert_atomic_report_continuation_conformance,
     assert_dispatch_conformance_with_clock, assert_session_reply_activity_rotation_conformance,
 };
-use awaken_run_ingress_testkit::{
+use awaken_dispatch_testkit::{
     assert_dispatch_operational_feed_conformance_with_clock,
     assert_occupied_slot_quarantine_conformance_with_clock, record_dispatch_recovery_history,
 };
+use awaken_lease_testkit::ManualClock;
+use awaken_run_ingress::{MemoryDispatchStore, PostgresDispatchStore, SqliteDispatchStore};
 
 mod harness;
 
@@ -198,7 +198,7 @@ async fn postgres_dispatch_conforms() {
         &harness::postgres_clock(&pool),
     )
     .await;
-    awaken_run_ingress_testkit::assert_atomic_report_continuation_conformance_with_clock(
+    awaken_dispatch_testkit::assert_atomic_report_continuation_conformance_with_clock(
         &store,
         "conformance-postgres-report",
         &harness::postgres_clock(&pool),
@@ -225,7 +225,7 @@ async fn postgres_session_reply_activity_rotation_conforms() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("open postgres reply conformance store");
-    awaken_run_ingress_testkit::assert_session_reply_activity_rotation_conformance_with_clock(
+    awaken_dispatch_testkit::assert_session_reply_activity_rotation_conformance_with_clock(
         &store,
         "conformance-postgres-reply",
         &harness::postgres_clock(&pool),
