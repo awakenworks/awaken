@@ -248,7 +248,11 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .stage_direct_mcp_attachment(request("mcp-foreign", "workspace-b", 1))
         .await
         .unwrap_err();
-    assert_eq!(foreign_error.code, "mcp_credential_revision_mismatch", "H5");
+    // A foreign Workspace is a recipient refusal, not a stale revision.
+    assert_eq!(
+        foreign_error.code, "mcp_credential_recipient_mismatch",
+        "H5"
+    );
 
     let mut unsupported_usage = request("mcp-usage", "workspace-a", 1);
     unsupported_usage.credential.as_mut().unwrap().usage = CredentialUsage::QueryParameter {
