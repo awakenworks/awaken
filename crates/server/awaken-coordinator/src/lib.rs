@@ -962,6 +962,7 @@ async fn mount_with_managed_over_and_models(
             // requested model, so this is resolution-only and persists nothing.
             match self
                 .sessions
+                .creation_commands()
                 .resolve_session_model_override(
                     workspace_id,
                     model_id,

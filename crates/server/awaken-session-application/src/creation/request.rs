@@ -30,10 +30,10 @@ use awaken_session_configuration_contract::{
 use awaken_session_state_contract::PersistedSession;
 use awaken_session_types::RunError;
 
-use super::session_input::{self, SessionInputRequest};
-use super::{
-    CreateSessionCommand, McpAttachmentCandidate, McpAttachmentCandidateTarget, SessionApplication,
-    SessionCreationError, SessionPreparationError,
+use crate::session_input::{self, SessionInputRequest};
+use crate::{
+    CreateSessionCommand, McpAttachmentCandidate, McpAttachmentCandidateTarget,
+    SessionCreationCommands, SessionCreationError, SessionPreparationError,
 };
 
 /// A model the request names in place of the Agent publication's.
@@ -220,12 +220,12 @@ fn compile_creation_tools<P: SessionCreateProtocol + ?Sized>(
     Ok((tools, clears_all_tools))
 }
 
-impl SessionApplication {
+impl SessionCreationCommands {
     /// Finish the same resolved Resource generation for both creation entries.
     /// Error presentation stays with the caller: only pinning has a distinct
     /// preparation error. The suffix is the original compensation diagnostic,
     /// never a domain classification or a new cleanup authority.
-    pub(super) async fn finalize_creation_inputs<E: From<RunError>>(
+    pub(crate) async fn finalize_creation_inputs<E: From<RunError>>(
         &self,
         owner_scope: &str,
         agent_defaults: &[awaken_resource_contract::InputBinding],
@@ -307,7 +307,8 @@ impl SessionApplication {
         session_input::preflight_repository_mount_paths(&inputs)?;
         session_input::admit_file_count(&inputs)?;
         let admission = self
-            .refresh_executable_projections()
+            .executable_projections
+            .refresh()
             .await
             .map_err(|error| {
                 RunError::unavailable_classified(
@@ -552,8 +553,8 @@ impl SessionApplication {
             .await?;
         let skills =
             skills_override.or_else(|| profile.as_ref().map(|profile| profile.skills.clone()));
-        super::runtime_commands::validate_session_skill_total(
-            self,
+        crate::runtime_commands::validate_session_skill_total(
+            &self.queries,
             &owner_scope,
             &agent_id,
             profile.as_ref(),
@@ -640,8 +641,8 @@ impl SessionApplication {
         // Applied participants; R3 later resolve/pin fails -> compensate every
         // Applied participant; R4 root Applied/Replayed -> creation owns the
         // participants and terminal reconciliation becomes the only retire path.
-        let (attachments, repository_configurations) = self
-            .lower_prepared_session_inputs(&session_id, &owner_scope, &prepared_inputs)
+        let (attachments, repository_configurations) = prepared_inputs
+            .lower(&self.repository_participants, &session_id, &owner_scope)
             .await?;
         // Sole Session input resolution point. Environment selection has
         // already produced one exact snapshot above; the creation intent is the

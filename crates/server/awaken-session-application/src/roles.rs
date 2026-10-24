@@ -413,49 +413,6 @@ pub trait DeploymentSessionEnvironment: Send + Sync {
 }
 
 #[async_trait]
-impl SessionCreation for SessionApplication {
-    async fn refresh_executable_projections(
-        &self,
-    ) -> Result<ExecutableProjectionAdmission, String> {
-        SessionApplication::refresh_executable_projections(self).await
-    }
-
-    async fn create_requested_session(
-        &self,
-        request: SessionCreateRequest,
-        protocol: &dyn SessionCreateProtocol,
-    ) -> Result<PersistedSession, SessionCreateRequestError> {
-        SessionApplication::create_requested_session(self, request, protocol).await
-    }
-
-    async fn replay_session_create(
-        &self,
-        owner_scope: &str,
-        session_id: &SessionId,
-        idempotency: &IdempotencyRecord,
-    ) -> Result<Option<PersistedSession>, SessionCreationError> {
-        self.mutations
-            .replay_session_create(owner_scope, session_id, idempotency)
-            .await
-    }
-
-    async fn replay_accepted_session_create(
-        &self,
-        owner_scope: &str,
-        session_id: &SessionId,
-        idempotency: &IdempotencyRecord,
-    ) -> Result<Option<PersistedSession>, SessionCreationError> {
-        self.mutations
-            .replay_accepted_session_create(owner_scope, session_id, idempotency)
-            .await
-    }
-
-    fn runtime_incarnation(&self) -> &str {
-        SessionApplication::runtime_incarnation(self)
-    }
-}
-
-#[async_trait]
 impl SessionEventBatches for SessionApplication {
     async fn append_and_drive_session_event_batch_idempotent(
         &self,
@@ -546,7 +503,9 @@ impl ProfiledSessionCommands for SessionApplication {
         &self,
         command: CreateProfiledSessionCommand,
     ) -> Result<PersistedSession, SessionCreationError> {
-        SessionApplication::accept_profiled_session(self, command).await
+        self.creation_commands
+            .accept_profiled_session(command)
+            .await
     }
 
     async fn admit_profiled_session_run(

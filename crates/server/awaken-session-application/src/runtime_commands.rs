@@ -14,13 +14,12 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_executable_agent_contract::ExecutableAgentSessionProfile;
 use awaken_session_application_contract::DelegatedRun;
 use awaken_session_budget_contract::SessionUsage;
-use awaken_session_configuration_contract::resource::ResolvedSkillBinding;
 use awaken_session_types::RunError;
 
 /// One transitive count law; callers lend their already selected direct values.
 /// The resolver owns exact/current selection, never an implicit pin fallback.
 pub(super) fn validate_session_skill_total(
-    application: &SessionApplication,
+    queries: &crate::SessionQueries,
     workspace_id: &str,
     root_agent_id: &str,
     root_view: Option<&ExecutableAgentSessionProfile>,
@@ -53,7 +52,7 @@ pub(super) fn validate_session_skill_total(
             .find(|(id, _)| id == &delegate.agent_id)
             .map(|(_, selected)| selected.clone())
             .or_else(|| {
-                application.queries.selected_session_profile(
+                queries.selected_session_profile(
                     workspace_id,
                     &delegate.agent_id,
                     delegate.source_revision,
@@ -123,25 +122,6 @@ fn merge_session_usage(total: &mut SessionUsage, child: SessionUsage) {
 }
 
 impl SessionApplication {
-    /// Validate that one published Agent can start new Sessions in this scope.
-    pub fn validate_profiled_agent(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-    ) -> Result<(), RunError> {
-        if self
-            .queries
-            .selected_session_profile(workspace_id, agent_id, None)
-            .is_none()
-            || self.queries.agent_unavailable(workspace_id, agent_id)
-        {
-            return Err(RunError::bad_request(format!(
-                "agent `{agent_id}` is unavailable"
-            )));
-        }
-        Ok(())
-    }
-
     /// Observe one Session's frozen execution selection and committed primary
     /// Thread Runs without driving realization or execution. A completed model
     /// request is included only when its audit record and Run coexist in the
@@ -292,29 +272,6 @@ impl SessionApplication {
         })
     }
 
-    pub fn validate_session_skill_total(
-        &self,
-        workspace_id: &str,
-        root_agent_id: &str,
-        root_view: Option<&ExecutableAgentSessionProfile>,
-        root_skills: &[awaken_agent_contract::AgentSkillBinding],
-    ) -> Result<(), RunError> {
-        validate_session_skill_total(
-            self,
-            workspace_id,
-            root_agent_id,
-            root_view,
-            root_skills,
-            &[],
-        )
-    }
-
-    pub async fn runtime_owns_thread(&self, thread: &str) -> Result<bool, RunError> {
-        let thread_reads = self.runtime().thread_reads();
-
-        thread_reads.owns_thread(thread).await
-    }
-
     /// Read cumulative accounting for one logical Thread through its parent
     /// Session partition. This is the same neutral Runtime authority used by
     /// Session totals; the application does not cache or re-aggregate it.
@@ -350,18 +307,6 @@ impl SessionApplication {
         let coordination_reads = self.runtime().coordination_reads();
 
         coordination_reads.delegated_runs(thread).await
-    }
-
-    pub async fn resolve_session_skills(
-        &self,
-        workspace_id: &str,
-        skills: &[awaken_agent_contract::AgentSkillBinding],
-    ) -> Result<Vec<ResolvedSkillBinding>, RunError> {
-        let environment_runtime = self.runtime().environment();
-
-        environment_runtime
-            .resolve_session_skills(workspace_id, skills)
-            .await
     }
 
     pub async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
@@ -488,13 +433,6 @@ impl SessionApplication {
         }
         usage.active_seconds = session.effective_runtime_active_millis(now_unix_ms) / 1_000;
         usage
-    }
-
-    #[must_use]
-    pub fn model(&self) -> String {
-        let execution = self.runtime().core();
-
-        execution.model()
     }
 }
 

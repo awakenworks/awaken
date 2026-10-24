@@ -65,6 +65,7 @@ async fn creation_finalization_preserves_resolution_skill_and_pin_failure_stages
             InputResourceId::Repository(configured.repository_id.clone())
         };
         let (first, stage) = app
+            .creation_commands
             .finalize_creation_inputs(
                 "workspace",
                 &[],
@@ -153,6 +154,7 @@ async fn creation_finalization_retains_exact_successful_bindings_and_skill_selec
         let inputs = [attachment(InputResourceId::File("original-file".into()))];
         let selected = skills.clone().unwrap_or_default();
         let result = app
+            .creation_commands
             .finalize_creation_inputs::<SessionCreateRequestError>(
                 "workspace",
                 &[],
@@ -255,6 +257,7 @@ async fn creation_finalization_failure_cannot_dispose_replayed_adopted_or_unread
             ingress.fail_next_retirement();
         }
         let (first, stage) = app
+            .creation_commands
             .finalize_creation_inputs::<SessionCreateRequestError>(
                 "workspace",
                 &[],

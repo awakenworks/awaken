@@ -43,7 +43,7 @@ pub(crate) struct SessionApplicationRoles {
 impl SessionApplicationRoles {
     pub(super) fn of(application: &Arc<SessionApplication>) -> Self {
         Self {
-            creation: application.clone(),
+            creation: application.creation_commands(),
             credentials: application.credentials(),
             roots: application.queries(),
             projection: application.queries(),

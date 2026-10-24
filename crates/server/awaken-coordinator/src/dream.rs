@@ -189,6 +189,7 @@ impl BuiltInDreamAgent {
             ));
         }
         self.sessions
+            .creation_commands()
             .create_profiled_session(CreateProfiledSessionCommand {
                 owner_scope: request.workspace_id.clone(),
                 session_id: session_id.clone(),
@@ -320,6 +321,7 @@ impl DreamExecutor for BuiltInDreamAgent {
     async fn validate_inputs(&self, request: &DreamRequest) -> Result<(), DreamFailure> {
         if request.agent_id != awaken_dream_application::BUILT_IN_DREAM_AGENT_ID {
             self.sessions
+                .creation_commands()
                 .validate_profiled_agent(&request.workspace_id, &request.agent_id)
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         }

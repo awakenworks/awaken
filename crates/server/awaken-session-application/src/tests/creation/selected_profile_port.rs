@@ -96,15 +96,16 @@ async fn selected_profile_port_keeps_absent_and_missing_snapshot_budget_refusals
         "P1/P2 no selected source"
     );
     assert_eq!(
-        app.managed_session_model_refs(
-            "workspace",
-            "profiled",
-            None,
-            "legacy-model",
-            Some("native"),
-            None
-        )
-        .unwrap(),
+        app.creation_commands
+            .managed_session_model_refs(
+                "workspace",
+                "profiled",
+                None,
+                "legacy-model",
+                Some("native"),
+                None
+            )
+            .unwrap(),
         ["legacy-model"],
         "P1 no-profile return precedes the required-source branch"
     );
@@ -135,6 +136,7 @@ async fn selected_profile_port_keeps_absent_and_missing_snapshot_budget_refusals
             source_revision: None,
         });
     let error = app
+        .creation_commands
         .managed_session_model_refs(
             "workspace",
             "profiled",
@@ -174,6 +176,7 @@ async fn selected_profile_port_keeps_absent_and_missing_snapshot_budget_refusals
             "{rule} snapshot9"
         );
         let error = app
+            .creation_commands
             .managed_session_model_refs(
                 "workspace",
                 "profiled",
@@ -258,7 +261,11 @@ async fn selected_profile_port_reads_the_live_handle_and_custom_delegate_without
     );
     let mut command = profiled_session_command("selected-profile-live", None);
     command.source_revision = Some(7);
-    let session = app.create_profiled_session(command).await.unwrap();
+    let session = app
+        .creation_commands
+        .create_profiled_session(command)
+        .await
+        .unwrap();
     let before = repository.get(&session.session_id).await.unwrap();
     let preparations = runtime.preparations.load(Ordering::SeqCst);
     let start = source.calls.lock().unwrap().len();

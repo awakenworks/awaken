@@ -11,23 +11,16 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use awaken_agent_contract::McpTarget;
 #[cfg(test)]
 use awaken_environment_contract::EnvItem;
 #[cfg(test)]
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
-use awaken_session_configuration_contract::{
-    is_native_session_runtime, validate_sandbox_provisioning_runtime,
-};
+use awaken_session_configuration_contract::EnvironmentSnapshot;
 use awaken_session_repository_contract::SessionRepository;
 use awaken_session_runtime_contract::{McpAttachmentRealizer, SessionEnvironmentBindingSink};
 use awaken_session_state_contract::SessionEnvironmentFacts;
 use awaken_session_state_contract::SessionExecutionState;
 use awaken_session_types::RunError;
-use {
-    awaken_session_configuration_contract::EnvironmentSnapshot,
-    awaken_session_types::SessionRuntimePlacement,
-};
 use {
     awaken_session_state_contract::{PersistedSession, SessionScan},
     awaken_session_types::SessionRecoveryQuarantine,
@@ -189,11 +182,12 @@ pub use lifecycle_outbox_relay::{
 mod continuation;
 mod coordination;
 mod creation;
-mod creation_request;
 mod session_input;
 pub use continuation::{SessionContinuationError, SessionContinuations};
-pub use creation::{CreateSessionCommand, SessionCreateReceipt, SessionCreationError};
-pub use creation_request::{
+pub use creation::{
+    CreateSessionCommand, SessionCreateReceipt, SessionCreationCommands, SessionCreationError,
+};
+pub use creation::{
     SessionBudgetRequest, SessionCreateProtocol, SessionCreateRequest, SessionCreateRequestError,
     SessionModelRequest, SessionToolsOverride,
 };
@@ -234,6 +228,7 @@ pub use terminal_cleanup::SessionTerminalCleanups;
 mod work_assignments;
 pub(crate) use resource_effect_authorization::require_live_root_lease;
 mod resource_manifests;
+pub use creation::{CreateProfiledSessionCommand, ProfiledSessionRepositoryInput};
 pub use resource_manifests::{
     ReplaceSessionResourceManifest, SessionResourceAttachment, SessionResourceManifestError,
     SessionResourceManifestOutcome, SessionResourceManifestRequest, SessionResourceManifests,
@@ -245,8 +240,7 @@ pub use roles::{
     SessionResourceCommands, SessionRootReads, SessionTermination, SessionUpdates,
 };
 pub use run_admission::{
-    CreateProfiledSessionCommand, ProfiledSessionRepositoryInput, RecoveredSessionProjection,
-    SessionProjectionRecoveryError, SessionRunApplication,
+    RecoveredSessionProjection, SessionProjectionRecoveryError, SessionRunApplication,
 };
 pub use runtime_commands::{
     SessionExecutionObservation, SessionModelRequestObservation, SessionRunExecutionObservation,

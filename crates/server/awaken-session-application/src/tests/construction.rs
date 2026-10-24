@@ -100,11 +100,13 @@ async fn builder_freezes_normalized_owner_and_preserves_exact_creation_replay() 
     assert!(Arc::ptr_eq(&sink, &app.environment_binding_sink()));
     assert_eq!(clock.0.load(Ordering::SeqCst), 1);
     let created = app
+        .creation_commands
         .create_session(creation::creation_command("builder-replay"))
         .await
         .unwrap();
     let preparations = runtime.preparations.load(Ordering::SeqCst);
     let replay = app
+        .creation_commands
         .create_session(creation::creation_command("builder-replay"))
         .await
         .unwrap();
@@ -490,9 +492,9 @@ async fn compiler_precedes_effects(
         let mut command = creation::creation_command(&id);
         command.tools = invalid.clone();
         let result = if durable_only {
-            app.accept_session(command).await
+            app.creation_commands.accept_session(command).await
         } else {
-            app.create_session(command).await
+            app.creation_commands.create_session(command).await
         };
         let SessionCreationError::Rejected(error) = result.unwrap_err() else {
             panic!("configuration must be rejected")
@@ -504,7 +506,7 @@ async fn compiler_precedes_effects(
     let mut inherited = creation::creation_command(&inherited_id);
     inherited.intent.control.toolsets = invalid.toolsets.clone();
     assert!(
-        matches!(app.create_session(inherited).await, Err(SessionCreationError::Rejected(error)) if error.code == "invalid_web_domain_count")
+        matches!(app.creation_commands.create_session(inherited).await, Err(SessionCreationError::Rejected(error)) if error.code == "invalid_web_domain_count")
     );
     assert!(
         repository
@@ -528,7 +530,11 @@ async fn compiler_precedes_effects(
     }));
     accepted.tools = expected.clone();
     accepted.intent.control.toolsets = expected.toolsets.clone();
-    let created = app.create_session(accepted).await.unwrap();
+    let created = app
+        .creation_commands
+        .create_session(accepted)
+        .await
+        .unwrap();
     assert_eq!(created.tools, expected);
     assert_eq!(
         created.frozen_baseline().unwrap().toolsets,
@@ -584,6 +590,7 @@ async fn session_observation_keeps_an_absent_runtime_observer_without_effects() 
     let application =
         application_with_runtime(runtime.clone(), store.clone(), environments.clone());
     let created = application
+        .creation_commands
         .create_session(creation::creation_command("absent-observer"))
         .await
         .unwrap();

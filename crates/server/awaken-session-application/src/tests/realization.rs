@@ -4243,9 +4243,12 @@ async fn realization_owner_follows_the_frozen_placement_decision_table() {
             "{rule}/frozen"
         );
     }
-    assert_eq!(local.runtime_placement(), SessionRuntimePlacement::Local);
     assert_eq!(
-        registered.runtime_placement(),
+        local.creation_commands.runtime_placement(),
+        SessionRuntimePlacement::Local
+    );
+    assert_eq!(
+        registered.creation_commands.runtime_placement(),
         SessionRuntimePlacement::Worker
     );
 }
