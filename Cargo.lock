@@ -1030,6 +1030,7 @@ dependencies = [
  "awaken-dispatch-contract",
  "awaken-dispatch-execution",
  "awaken-dispatch-testkit",
+ "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-observability",
  "awaken-reliability-testkit",

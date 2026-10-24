@@ -56,13 +56,15 @@ PRODUCT_GAP = "product_gap"
 STATES = LEGACY_STATES | {CLAUSE_COMPLETE, PLATFORM_PENDING, PRODUCT_GAP}
 CLAUSE_RELATION = "covers_case_clauses"
 GAP_RELATION = "reproduces_product_gap"
-IGNORED = re.compile(r"#\[ignore\s*=\s*\"product gap:")
+# A Rust reproducer is `#[ignore = "product gap: ..."]`; a Python one is a
+# `skip*` decorator whose reason starts the same way.
+IGNORED = re.compile(r'#\[ignore\s*=\s*"product gap:|@unittest\.skip\w*\(.*"product gap:')
 GATE_GROUPS = ("T00", "T34", "T35", "T36")
 ACCEPTED = frozenset({"accepted_in_scope"})
 # Text that proves something was checked. A helper whose name only says
 # "check" does not count; the cited line has to be the assertion itself.
 ASSERTION = re.compile(
-    r"\b(?:assert(?:_eq|_ne|_matches)?!|prop_assert(?:_eq|_ne)?!|panic!|unreachable!|"
+    r"\b(?:assert(?:_eq|_ne|_matches)?!|prop_assert(?:_eq|_ne)?!|panic!|unreachable!|compile_fail|assert_\w+(?:::<[^>]*>)?\(|"
     r"self\.assert\w+\(|assert\s|assert\.\w+\(|expect\()"
 )
 COMPILE_ONLY = re.compile(r"(?:--no-run\b|\bcargo\s+(?:check|build)\b)")

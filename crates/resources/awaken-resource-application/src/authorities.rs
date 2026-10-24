@@ -138,6 +138,14 @@ impl ResourceAuthorities {
         self.memory_snapshot_source.clone()
     }
 
+    /// The writer role carries no physical purge capability (T26-C03):
+    ///
+    /// ```compile_fail,E0599
+    /// use awaken_resource_application::ResourcesApplication;
+    /// async fn writer_cannot_purge(a: &ResourcesApplication) {
+    ///     let _ = a.authorities().memory_writer().purge_store("store").await;
+    /// }
+    /// ```
     #[must_use]
     pub fn memory_writer(&self) -> Arc<dyn MemoryWriter> {
         self.memory_writer.clone()

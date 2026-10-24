@@ -55,6 +55,10 @@ name = "work_queue_conformance"
 required-features = ["test-support"]
 
 [[test]]
+name = "work_queue_parity"
+required-features = ["test-support"]
+
+[[test]]
 name = "work_queue_properties"
 required-features = ["test-support"]
 

@@ -52,5 +52,9 @@ required-features = ["test-support"]
 name = "failure_atomicity"
 required-features = ["test-support"]
 
+[[test]]
+name = "capacity_exhaustion"
+required-features = ["test-support"]
+
 [lints]
 workspace = true

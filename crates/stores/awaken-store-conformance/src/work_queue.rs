@@ -1499,3 +1499,143 @@ pub async fn environment_revision_races_preserve_the_maximum<Q: WorkBackend>(q: 
         assert!(q.ensure_healthcheck(&env).await.is_err());
     }
 }
+
+/// T34-C01 reopen row for the `WorkQueue` port. Writes through `first`, drops
+/// it, and re-asserts through the handle `reopen` returns:
+///
+/// | Step | Through | Effect |
+/// |---|---|---|
+/// | S1 | `first` | Environment revision 2 registered; two Session works enqueued |
+/// | S2 | `first` | `owner-a` acquires the Session lease (epoch 1) on the first work |
+/// | R1 | `reopen()` | identical rows (ids, states, metadata, `*_at` clock readings) |
+/// | R2 | `reopen()` | Session enqueue replay returns the original work id; no new row |
+/// | R3 | `reopen()` | the durable lease still fences: `owner-b` sees `owner-a`/epoch 1, its ack/stop fail |
+/// | R4 | `reopen()` | revision 2 replay is AlreadyApplied, revision 1 is Superseded |
+/// | R5 | `reopen()` | the original owner's ack is accepted |
+///
+/// A factory that does not reach the same durable authority fails R1.
+pub async fn reopen_preserves_authority<Q: WorkBackend, F: std::future::Future<Output = Q>>(
+    first: Q,
+    reopen: impl Fn() -> F,
+) {
+    use RevisionOperation::Register;
+    use RevisionOutcome::{AlreadyApplied, Applied, Superseded};
+    let env = "t34-reopen";
+    let image = async |q: &Q| -> Vec<String> {
+        let mut rows: Vec<String> = q
+            .list(env)
+            .await
+            .expect("list")
+            .iter()
+            .map(|item| format!("{item:?}"))
+            .collect();
+        rows.sort();
+        rows
+    };
+
+    // S1
+    assert_eq!(
+        first
+            .apply_environment_revision(
+                env,
+                EnvironmentRevision(2),
+                Register { healthcheck: false }
+            )
+            .await
+            .expect("S1 revision"),
+        Applied
+    );
+    let a = first
+        .enqueue_session(env, &SessionId::from("reopen-a"))
+        .await
+        .expect("S1 enqueue a");
+    let b = first
+        .enqueue_session(env, &SessionId::from("reopen-b"))
+        .await
+        .expect("S1 enqueue b");
+    assert_ne!(a, b, "S1 distinct identities");
+    // S2
+    let lease = first
+        .acquire_session(env, &SessionId::from("reopen-a"), "owner-a", 0)
+        .await
+        .expect("S2 acquire")
+        .expect("S2 lease");
+    assert_eq!((lease.work_id(), lease.epoch()), (a.as_str(), 1), "S2");
+    let before = image(&first).await;
+    assert_eq!(before.len(), 2, "S1 two rows");
+
+    drop(first);
+    let reopened = reopen().await;
+
+    // R1
+    assert_eq!(image(&reopened).await, before, "R1 reopen image");
+    // R2
+    assert_eq!(
+        reopened
+            .enqueue_session(env, &SessionId::from("reopen-a"))
+            .await
+            .expect("R2 replay"),
+        a,
+        "R2 the replay returns the original work id"
+    );
+    assert_eq!(image(&reopened).await, before, "R2 no new row");
+    // R3
+    let fenced = reopened
+        .acquire_session(env, &SessionId::from("reopen-a"), "owner-b", 1)
+        .await
+        .expect("R3 acquire")
+        .expect("R3 returns the current lease for typed fencing");
+    assert_eq!(
+        (fenced.owner(), fenced.epoch()),
+        ("owner-a", 1),
+        "R3 the lease survived the reopen"
+    );
+    assert!(
+        matches!(
+            reopened.ack(env, &a, "owner-b").await.expect("R3 ack"),
+            WorkMutationResult::PreconditionFailed
+        ),
+        "R3 a foreign ack is fenced after reopen"
+    );
+    assert!(
+        matches!(
+            reopened.stop(env, &a, "owner-b").await.expect("R3 stop"),
+            WorkMutationResult::PreconditionFailed
+        ),
+        "R3 a foreign stop is fenced after reopen"
+    );
+    // R4
+    assert_eq!(
+        reopened
+            .apply_environment_revision(
+                env,
+                EnvironmentRevision(2),
+                Register { healthcheck: false }
+            )
+            .await
+            .expect("R4 replay"),
+        AlreadyApplied,
+        "R4 revision replay"
+    );
+    assert_eq!(
+        reopened
+            .apply_environment_revision(
+                env,
+                EnvironmentRevision(1),
+                Register { healthcheck: false }
+            )
+            .await
+            .expect("R4 stale"),
+        Superseded,
+        "R4 stale revision"
+    );
+    // R5
+    assert!(
+        reopened
+            .ack(env, &a, "owner-a")
+            .await
+            .expect("R5 ack")
+            .is_accepted(),
+        "R5 the original owner still holds the lease"
+    );
+}

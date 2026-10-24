@@ -1,0 +1,659 @@
+[
+  {
+    "name": "sqlite_file_update_child_killed_inside_its_transaction_rolls_back_and_retries_once",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "line": 594,
+        "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "line": 524
+      },
+      {
+        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "line": 536
+      },
+      {
+        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "line": 541
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E16",
+        "case": "awaken-env-store::cancellation sqlite_file_update_child_killed_inside_its_transaction_rolls_back_and_retries_once",
+        "package": "awaken-env-store",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "historical": false,
+        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T34-C02": {
+        "oracles": [
+          0
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
+    "limitation": null,
+    "id": "B191"
+  },
+  {
+    "name": "sqlite_file_archive_child_killed_inside_its_transaction_rolls_back_and_retries_once",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "line": 603,
+        "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "line": 524
+      },
+      {
+        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "line": 536
+      },
+      {
+        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "line": 541
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E16",
+        "case": "awaken-env-store::cancellation sqlite_file_archive_child_killed_inside_its_transaction_rolls_back_and_retries_once",
+        "package": "awaken-env-store",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "historical": false,
+        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T34-C02": {
+        "oracles": [
+          0
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
+    "limitation": null,
+    "id": "B192"
+  },
+  {
+    "name": "postgres_update_aborted_inside_its_transaction_fixture_admission",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "line": 446,
+        "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "line": 447
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E16",
+        "case": "awaken-env-store::cancellation postgres_update_aborted_inside_its_transaction_fixture_admission",
+        "package": "awaken-env-store",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "historical": false,
+        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T34-C02": {
+        "oracles": [
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
+    "limitation": null,
+    "id": "B193"
+  },
+  {
+    "name": "postgres_update_child_killed_inside_its_transaction_fixture_admission",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "line": 453,
+        "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "line": 454
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E16",
+        "case": "awaken-env-store::cancellation postgres_update_child_killed_inside_its_transaction_fixture_admission",
+        "package": "awaken-env-store",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "historical": false,
+        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T34-C02": {
+        "oracles": [
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
+    "limitation": null,
+    "id": "B194"
+  },
+  {
+    "name": "postgres_archive_child_killed_inside_its_transaction_fixture_admission",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "line": 460,
+        "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "line": 461
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E16",
+        "case": "awaken-env-store::cancellation postgres_archive_child_killed_inside_its_transaction_fixture_admission",
+        "package": "awaken-env-store",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "historical": false,
+        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T34-C02": {
+        "oracles": [
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
+    "limitation": null,
+    "id": "B195"
+  },
+  {
+    "name": "file_sqlite_backend_conforms_with_a_fresh_file_per_rule",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
+        "line": 38,
+        "file_sha256": "3a0a02d92ff403de2eb1619b8f2792b46e72da5ef8e85450667de780eb53d557"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/stores/awaken-store-conformance/src/env_registry.rs",
+        "line": 56
+      },
+      {
+        "path": "crates/stores/awaken-store-conformance/src/env_registry.rs",
+        "line": 58
+      },
+      {
+        "path": "crates/stores/awaken-store-conformance/src/env_registry.rs",
+        "line": 59
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E16",
+        "case": "awaken-env-store::env_registry_parity file_sqlite_backend_conforms_with_a_fresh_file_per_rule",
+        "package": "awaken-env-store",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "historical": false,
+        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T34-C01": {
+        "oracles": [
+          0
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
+    "limitation": null,
+    "id": "B196"
+  },
+  {
+    "name": "file_sqlite_reopen_preserves_authority_and_in_memory_reopen_is_detected",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
+        "line": 56,
+        "file_sha256": "3a0a02d92ff403de2eb1619b8f2792b46e72da5ef8e85450667de780eb53d557"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
+        "line": 74
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E16",
+        "case": "awaken-env-store::env_registry_parity file_sqlite_reopen_preserves_authority_and_in_memory_reopen_is_detected",
+        "package": "awaken-env-store",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "historical": false,
+        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T34-C01": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
+    "limitation": null,
+    "id": "B197"
+  },
+  {
+    "name": "divergent_backends_fail_the_shared_behaviour_table",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
+        "line": 191,
+        "file_sha256": "3a0a02d92ff403de2eb1619b8f2792b46e72da5ef8e85450667de780eb53d557"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
+        "line": 196
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E16",
+        "case": "awaken-env-store::env_registry_parity divergent_backends_fail_the_shared_behaviour_table",
+        "package": "awaken-env-store",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "historical": false,
+        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T34-C01": {
+        "oracles": [
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
+    "limitation": null,
+    "id": "B198"
+  },
+  {
+    "name": "postgres_reopen_preserves_authority_through_an_independent_pool",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
+        "line": 211,
+        "file_sha256": "3a0a02d92ff403de2eb1619b8f2792b46e72da5ef8e85450667de780eb53d557"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
+        "line": 220
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E16",
+        "case": "awaken-env-store::env_registry_parity postgres_reopen_preserves_authority_through_an_independent_pool",
+        "package": "awaken-env-store",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "historical": false,
+        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T34-C01": {
+        "oracles": [
+          0
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
+    "limitation": null,
+    "id": "B199"
+  },
+  {
+    "name": "file_sqlite_backend_conforms_with_a_fresh_file_per_rule",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "line": 68,
+        "file_sha256": "bc4f970f5eb1eb0c2dbf4475b669f988023b48bbaeeea51651845f7174b37463"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "line": 80
+      },
+      {
+        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "line": 84
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E16",
+        "case": "awaken-session-store::session_store_parity file_sqlite_backend_conforms_with_a_fresh_file_per_rule",
+        "package": "awaken-session-store",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "historical": false,
+        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T34-C01": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
+    "limitation": null,
+    "id": "B200"
+  },
+  {
+    "name": "file_sqlite_reopen_preserves_authority_and_in_memory_reopen_is_detected",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "line": 92,
+        "file_sha256": "bc4f970f5eb1eb0c2dbf4475b669f988023b48bbaeeea51651845f7174b37463"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "line": 104
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E16",
+        "case": "awaken-session-store::session_store_parity file_sqlite_reopen_preserves_authority_and_in_memory_reopen_is_detected",
+        "package": "awaken-session-store",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "historical": false,
+        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T34-C01": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
+    "limitation": null,
+    "id": "B201"
+  },
+  {
+    "name": "divergent_backends_fail_the_shared_behaviour_table",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "line": 257,
+        "file_sha256": "bc4f970f5eb1eb0c2dbf4475b669f988023b48bbaeeea51651845f7174b37463"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "line": 262
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E16",
+        "case": "awaken-session-store::session_store_parity divergent_backends_fail_the_shared_behaviour_table",
+        "package": "awaken-session-store",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "historical": false,
+        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T34-C01": {
+        "oracles": [
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
+    "limitation": null,
+    "id": "B202"
+  },
+  {
+    "name": "postgres_reopen_preserves_authority_through_an_independent_pool",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "line": 277,
+        "file_sha256": "bc4f970f5eb1eb0c2dbf4475b669f988023b48bbaeeea51651845f7174b37463"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "line": 287
+      },
+      {
+        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "line": 292
+      },
+      {
+        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "line": 307
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E16",
+        "case": "awaken-session-store::session_store_parity postgres_reopen_preserves_authority_through_an_independent_pool",
+        "package": "awaken-session-store",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "historical": false,
+        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T34-C01": {
+        "oracles": [
+          0
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
+    "limitation": null,
+    "id": "B203"
+  },
+  {
+    "name": "file_sqlite_backend_conforms_with_a_fresh_file_per_rule",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
+        "line": 52,
+        "file_sha256": "8f30d77c9c9c187163903f66a6969515660f7b64009965cf3b3399c2916a0d17"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
+        "line": 65
+      },
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
+        "line": 70
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E16",
+        "case": "awaken-work-store::work_queue_parity file_sqlite_backend_conforms_with_a_fresh_file_per_rule",
+        "package": "awaken-work-store",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "historical": false,
+        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T34-C01": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
+    "limitation": null,
+    "id": "B204"
+  },
+  {
+    "name": "file_sqlite_reopen_preserves_authority_and_in_memory_reopen_is_detected",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
+        "line": 77,
+        "file_sha256": "8f30d77c9c9c187163903f66a6969515660f7b64009965cf3b3399c2916a0d17"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
+        "line": 95
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E16",
+        "case": "awaken-work-store::work_queue_parity file_sqlite_reopen_preserves_authority_and_in_memory_reopen_is_detected",
+        "package": "awaken-work-store",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "historical": false,
+        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T34-C01": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
+    "limitation": null,
+    "id": "B205"
+  }
+]

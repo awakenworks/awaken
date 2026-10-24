@@ -5,6 +5,8 @@
 
 #[path = "artifact_publication_transport.rs"]
 mod artifact_publication_transport;
+#[path = "file_content_revocation.rs"]
+mod file_content_revocation;
 #[path = "file_content_transport.rs"]
 mod file_content_transport;
 #[path = "repository_transport.rs"]

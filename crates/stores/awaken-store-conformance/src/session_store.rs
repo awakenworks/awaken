@@ -1670,6 +1670,10 @@ mod cas;
 pub use cas::*;
 mod deployment;
 pub use deployment::*;
+mod independent_clients;
+pub use independent_clients::*;
+mod reopen;
+pub use reopen::*;
 
 mod suite;
 pub use suite::run_suite;

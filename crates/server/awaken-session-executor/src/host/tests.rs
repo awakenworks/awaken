@@ -238,6 +238,7 @@ pub(crate) mod fixtures;
 mod managed_interrupt;
 mod mcp_credentials;
 mod mcp_generation;
+mod mcp_preparation_fence;
 mod mcp_relay_lease;
 mod outcome_query;
 mod pinned_skill_read;

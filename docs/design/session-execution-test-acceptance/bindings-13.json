@@ -1,0 +1,317 @@
+[
+  {
+    "name": "budget_paused_interrupt_only_batch_is_a_no_op_at_root_admission",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
+        "line": 225,
+        "file_sha256": "f19a03f0741490c96bccff47284168c45c90324aa38ea0c9a0d042c1c3de9d92"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T12-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: the interrupt-only budget no-op exists only in the protocol parser, not at root admission",
+    "limitation": "Not execution evidence. Follow-up: session-application event-batch admission (S)",
+    "id": "B236"
+  },
+  {
+    "name": "unadmitted_and_unknown_failures_are_classified_apart",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
+        "line": 254,
+        "file_sha256": "49602567bc68457a514474cd74327e2afcc49cd4827c8bfc0af9dfbc5acfc7e3"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T33-C02": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: not-admitted and unknown outcomes both surface as Unavailable",
+    "limitation": "Not execution evidence. Follow-up: run-admission error taxonomy (M)",
+    "id": "B237"
+  },
+  {
+    "name": "orphaned_prepare_is_found_by_recovery_after_rebuild",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "line": 441,
+        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T04-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: no durable prepare intent; a prepared participant is known only to the failed call",
+    "limitation": "Not execution evidence. Follow-up: session creation / repository participants intent store (L)",
+    "id": "B238"
+  },
+  {
+    "name": "crash_after_prepare_is_recoverable_without_the_original_caller",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "line": 584,
+        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T17-C01": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: no durable pre-root intent; only the original caller can rediscover a started prepare",
+    "limitation": "Not execution evidence. Follow-up: session creation intent store (L, shared with T04-C03)",
+    "id": "B239"
+  },
+  {
+    "name": "failed_compensation_is_retried_by_a_rebuilt_service",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "line": 707,
+        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T17-C02": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: compensation failure is only logged; nothing durable stays pending for a recoverer",
+    "limitation": "Not execution evidence. Follow-up: repository participant compensation and recovery (M)",
+    "id": "B240"
+  },
+  {
+    "name": "compensation_cannot_retire_a_participant_adopted_concurrently",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "line": 838,
+        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T17-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: abort_unadopted checks then retires without a fence against a concurrent adopt",
+    "limitation": "Not execution evidence. Follow-up: repository participant conditional retire (M)",
+    "id": "B241"
+  },
+  {
+    "name": "exhausted_capacity_has_a_distinct_classification",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-store-sqlite/tests/capacity_exhaustion.rs",
+        "line": 138,
+        "file_sha256": "dda4a866373916a043e26d10c2b3469b3bd53801d9f3f070f6ab93a584871840"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T38-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: disk full surfaces as the generic Rejected class",
+    "limitation": "Not execution evidence. Follow-up: store-sqlite / coordinator error type (M)",
+    "id": "B242"
+  },
+  {
+    "name": "wedged_single_connection_fails_admission_promptly",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-store-sqlite/tests/capacity_exhaustion.rs",
+        "line": 148,
+        "file_sha256": "dda4a866373916a043e26d10c2b3469b3bd53801d9f3f070f6ab93a584871840"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T38-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: a wedged connection makes admission wait up to 24h instead of failing classified",
+    "limitation": "Not execution evidence. Follow-up: awaken-sqlite-pool admission wait (S-M)",
+    "id": "B243"
+  },
+  {
+    "name": "capacity_exhausted_snapshot_clone_has_a_distinct_failure_kind",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
+        "line": 546,
+        "file_sha256": "c7b93952ad4321851cfa6b8d3985b15eb4a880f3b93553ed88cd7e4fd2cf3901"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T38-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: Dream maps memory AtCapacity to internal_error",
+    "limitation": "Not execution evidence. Follow-up: coordinator Dream error mapping (S)",
+    "id": "B244"
+  },
+  {
+    "name": "interrupted_snapshot_clone_never_exposes_a_half_snapshot",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
+        "line": 316,
+        "file_sha256": "c7b93952ad4321851cfa6b8d3985b15eb4a880f3b93553ed88cd7e4fd2cf3901"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T23-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: Dream prepare registers the snapshot catalog entry Active before the clone completes",
+    "limitation": "Not execution evidence. Follow-up: coordinator Dream prepare (M)",
+    "id": "B245"
+  },
+  {
+    "name": "failed_snapshot_cleanup_is_reported_or_leaves_no_private_content",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
+        "line": 341,
+        "file_sha256": "c7b93952ad4321851cfa6b8d3985b15eb4a880f3b93553ed88cd7e4fd2cf3901"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T23-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: release_result discards set_state/purge errors so cleanup reports Ok with private content left",
+    "limitation": "Not execution evidence. Follow-up: coordinator Dream cleanup (S)",
+    "id": "B246"
+  },
+  {
+    "name": "retried_ack_replays_the_original_acknowledgement",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "line": 666,
+        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T08-C02": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: a retried Work ack re-stamps acknowledged_at",
+    "limitation": "Not execution evidence. Follow-up: work-store ack replay (S-M)",
+    "id": "B247"
+  },
+  {
+    "name": "retried_stop_after_lost_response_replays",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "line": 689,
+        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T08-C02": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: a retried stop after a lost response returns 412 instead of replaying",
+    "limitation": "Not execution evidence. Follow-up: work-store stop replay (M)",
+    "id": "B248"
+  },
+  {
+    "name": "work_and_dispatch_epochs_are_distinct_types",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs",
+        "line": 403,
+        "file_sha256": "6b70a5172a5eb79ad8d71439e4dfd5950c44013be4ad2e419ca4b9259514a277"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T08-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: Work and Dispatch epochs are both raw u64 and can be swapped",
+    "limitation": "Not execution evidence. Follow-up: work-store and run-ingress contracts (M)",
+    "id": "B249"
+  },
+  {
+    "name": "stale_same_owner_claimer_is_refused_after_reclaim",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "line": 626,
+        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T09-C02": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: plain ack/heartbeat/stop check only the owner, not the epoch",
+    "limitation": "Not execution evidence. Follow-up: work-store lease fence (M)",
+    "id": "B250"
+  }
+]

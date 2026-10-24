@@ -24,7 +24,7 @@
 - 必须断言：在契约要求的最近 effect gate 再校验；旧缓存成功或未绑定 disposal 不能扩权。
 - 反向控制：把 barrier 移到效果之后的测试不能证明前置拒绝。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`t28_c02_change_at_pre_effect_barrier_is_denied_at_the_nearest_effect_gate`、`t28_c02_post_effect_barrier_cannot_prove_pre_effect_denial`、`t28_c02_cached_or_unbound_disposal_never_widens_authority`；当前提交本机 Windows 执行（E16），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ### T28-C03 已发出效果的未知结果
 
@@ -32,7 +32,7 @@
 - 必须断言：记录并观察原操作，不能声称零效果；无观察能力则保留 unknown，不进行不安全重发。
 - 反向控制：把 RPC 失败等同效果未发生必须失败。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`t28_c03_sent_native_request_stays_unknown_and_is_never_resent`；当前提交本机 Windows 执行（E16），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ## T29 进程 文件 资源和产物
 
@@ -190,7 +190,7 @@
 - 必须断言：确定未接纳可重新接纳；已提交回原回执；未知效果先观察原 operation。
 - 反向控制：对所有 5xx 无条件创建新 operation 的实现必须失败。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`retries_keep_the_original_admission_identity`、`minting_a_new_operation_on_unavailable_is_detected`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `unadmitted_and_unknown_failures_are_classified_apart`（忽略，不计证据；E17 为预期失败）：未接纳与结果未知两类都表现为 Unavailable。完整场景：待验收。
 
 ### T33-C03 跨适配器一致
 
@@ -214,7 +214,7 @@
 - 必须断言：相同命令、CAS、receipt、历史、时钟和回滚语义；不由各后端自定义不同 oracle。
 - 反向控制：Volatile 通过不能证明 SQL 事务，in-memory SQLite 不能证明文件重启。
 - 层级与基质：L1/L2；Volatile logical model；file SQLite for persistence clauses；live PostgreSQL for supported SQL clauses。只覆盖该操作真实支持的 backend；不凭空要求 Volatile 持久性。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`file_sqlite_backend_conforms_with_a_fresh_file_per_rule`、`file_sqlite_reopen_preserves_authority_and_in_memory_reopen_is_detected`、`divergent_backends_fail_the_shared_behaviour_table`、`postgres_reopen_preserves_authority_through_an_independent_pool`、`file_sqlite_backend_conforms_with_a_fresh_file_per_rule`、`file_sqlite_reopen_preserves_authority_and_in_memory_reopen_is_detected`、`divergent_backends_fail_the_shared_behaviour_table`、`postgres_reopen_preserves_authority_through_an_independent_pool`、`file_sqlite_backend_conforms_with_a_fresh_file_per_rule`、`file_sqlite_reopen_preserves_authority_and_in_memory_reopen_is_detected`、`divergent_backend_fails_the_shared_behaviour_table`、`postgres_reopen_preserves_authority_through_an_independent_pool`；当前提交本机 Windows 执行（E16），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ### T34-C02 durability 与取消
 
@@ -222,7 +222,7 @@
 - 必须断言：完整提交/回滚且连接可再用；fixture 必需时不可因不可用而跳过。
 - 反向控制：catch 连接错误 return 绿色或只验证断言数量必须拒绝。
 - 层级与基质：L2；file SQLite；live PostgreSQL；independent clients/processes where required。需要持久性时真实文件和重开；仅 in-memory SQLite 不足。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`postgres_update_aborted_inside_its_transaction_rolls_back_and_retries_once`、`postgres_update_child_killed_inside_its_transaction_rolls_back_and_retries_once`、`postgres_archive_child_killed_inside_its_transaction_rolls_back_and_retries_once`、`sqlite_file_update_child_killed_inside_its_transaction_rolls_back_and_retries_once`、`sqlite_file_archive_child_killed_inside_its_transaction_rolls_back_and_retries_once`、`postgres_update_aborted_inside_its_transaction_fixture_admission`、`postgres_update_child_killed_inside_its_transaction_fixture_admission`、`postgres_archive_child_killed_inside_its_transaction_fixture_admission`；当前提交本机 Windows 执行（E16），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ### T34-C03 证明边界
 
@@ -350,7 +350,7 @@
 - 必须断言：资源增长受既有容量约束；背压/拒绝分类正确；不静默丢已接纳责任；关闭仍在共享预算内。
 - 反向控制：无界缓冲或依赖永不返回导致 drain 永不结束必须失败。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`saturated_pool_backpressures_without_dropping_and_drains_within_budget`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `shutdown_is_bounded_when_a_dependency_never_returns`、`live_inbox_applies_backpressure_to_a_stalled_consumer`（忽略，不计证据；E17 为预期失败）：DispatchPool::shutdown 没有期限；LiveInbox::offer 无界。完整场景：待验收。
 
 ### T38-C03 空间与资源失败
 
@@ -358,7 +358,7 @@
 - 必须断言：保留已提交/不确定责任；无 partial success/全局 panic；恢复原 operation；不以调大超时遮蔽失败。
 - 反向控制：真实磁盘填满主机不是合法 fixture，应使用受控配额/注入层。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`exhausted_capacity_rejects_atomically_and_retry_commits_once_with_original_receipt`、`sqlite_file_memory_quota_rejects_atomically_and_retry_commits_once`、`capacity_exhausted_snapshot_clone_keeps_protected_output_and_retry_rebuilds_once`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `exhausted_capacity_has_a_distinct_classification`、`wedged_single_connection_fails_admission_promptly`、`capacity_exhausted_snapshot_clone_has_a_distinct_failure_kind`（忽略，不计证据；E17 为预期失败）：磁盘满归入通用 Rejected；Dream 把 AtCapacity 映射为 internal_error；连接卡死时接纳最长等待 24h。完整场景：待验收。
 
 ## T39 Environment 镜像与软件包交付
 

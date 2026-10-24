@@ -1035,3 +1035,101 @@ pub async fn run_suite<
 }
 
 // ── Backend rows: each must pass the identical suite ─────────────────────────────
+
+/// Every authority fact one handle can observe for the given ids: current
+/// rows, the full immutable revision chain and the registration outbox.
+#[derive(Debug, PartialEq)]
+pub struct DurableEnvironmentImage {
+    pub all: Vec<awaken_environment_contract::EnvItem>,
+    pub revisions: Vec<awaken_environment_contract::EnvItem>,
+    pub intents: Vec<awaken_environment_contract::EnvironmentRegistrationIntent>,
+}
+
+pub async fn durable_image<
+    R: EnvironmentDefinitionQueries + EnvironmentDefinitionStore + EnvironmentRegistrationOutbox,
+>(
+    r: &R,
+) -> DurableEnvironmentImage {
+    let mut all = r.list_all().await.expect("list all Environments");
+    all.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut revisions = Vec::new();
+    for item in &all {
+        for revision in 1..=item.revision.0 {
+            revisions.push(
+                r.get_revision(&item.id, EnvironmentRevision(revision))
+                    .await
+                    .expect("read revision")
+                    .expect("every authored revision is retained"),
+            );
+        }
+    }
+    DurableEnvironmentImage {
+        all,
+        revisions,
+        intents: r
+            .registration_intents(EnvironmentRegistrationIntentFilter::All)
+            .await
+            .expect("read the registration outbox"),
+    }
+}
+
+/// T34-C01 reopen row: create/update/archive and one delivered intent written
+/// through `first` are observed identically through a handle produced by
+/// `reopen` after `first` is dropped; a stale CAS still conflicts afterwards.
+/// A factory that does not reach the same durable authority fails this rule.
+pub async fn reopen_preserves_authority<
+    R: EnvironmentDefinitionQueries + EnvironmentDefinitionStore + EnvironmentRegistrationOutbox,
+    F: std::future::Future<Output = R>,
+>(
+    first: R,
+    reopen: impl Fn() -> F,
+) {
+    let kept = make(&first, "reopen-kept").await;
+    let archived = make(&first, "reopen-archived").await;
+    let updated = first
+        .update(
+            &kept,
+            EnvironmentRevision(1),
+            EnvUpdate {
+                name: Some("reopen-updated".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("update")
+        .expect("active");
+    first
+        .archive(&archived)
+        .await
+        .expect("archive")
+        .expect("exists");
+    let delivered = first
+        .registration_intent(&kept, EnvironmentRevision(1))
+        .await
+        .expect("intent")
+        .expect("revision 1 intent");
+    assert!(
+        first
+            .mark_registration_intent_delivered(&delivered)
+            .await
+            .expect("deliver")
+    );
+    let before = durable_image(&first).await;
+    drop(first);
+    let reopened = reopen().await;
+    assert_eq!(durable_image(&reopened).await, before, "reopen image");
+    assert!(
+        matches!(
+            reopened
+                .update(&kept, EnvironmentRevision(1), EnvUpdate::default())
+                .await,
+            Err(EnvironmentStoreError::RevisionConflict)
+        ),
+        "stale CAS still conflicts after reopen"
+    );
+    assert_eq!(
+        reopened.get(&kept).await.expect("get"),
+        Some(updated),
+        "reopen head"
+    );
+}

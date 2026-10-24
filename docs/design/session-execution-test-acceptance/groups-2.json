@@ -119,8 +119,11 @@
           ],
           "scope": "实际启用模式；内核、引擎或物理恢复额外需要 L4"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B218",
+          "B219"
+        ],
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -130,7 +133,15 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        }
       }
     ],
     "risk": "P0",
@@ -207,8 +218,13 @@
           ],
           "scope": "只覆盖该操作真实支持的 backend；不凭空要求 Volatile 持久性"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B210",
+          "B211",
+          "B247",
+          "B248"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -218,7 +234,23 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        },
+        "product_gap": {
+          "reason": "重试 Work ack 会改写 acknowledged_at；丢响应后重试 stop 返回 412 而非重放",
+          "follow_up": "work-store ack/stop 重放（S–M、M）",
+          "reproducers": [
+            "retried_ack_replays_the_original_acknowledgement",
+            "retried_stop_after_lost_response_replays"
+          ]
+        }
       },
       {
         "id": "T08-C03",
@@ -244,8 +276,13 @@
           ],
           "scope": "只覆盖该操作真实支持的 backend；不凭空要求 Volatile 持久性"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B212",
+          "B213",
+          "B216",
+          "B249"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -255,7 +292,22 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        },
+        "product_gap": {
+          "reason": "Work 与 Dispatch epoch 都是裸 u64，可被互换",
+          "follow_up": "work-store 与 run-ingress 契约（M）",
+          "reproducers": [
+            "work_and_dispatch_epochs_are_distinct_types"
+          ]
+        }
       }
     ],
     "risk": "P0",
@@ -335,8 +387,16 @@
           ],
           "scope": "只覆盖该操作真实支持的 backend；不凭空要求 Volatile 持久性"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B214",
+          "B215",
+          "B213",
+          "B216",
+          "B217",
+          "B250",
+          "B251"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -346,7 +406,23 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        },
+        "product_gap": {
+          "reason": "普通 ack/heartbeat/stop 只核对 owner 不核对 epoch；ack 不检查租约过期；epoch 类型可互换",
+          "follow_up": "work-store 租约 fence（M）与过期检查（S）",
+          "reproducers": [
+            "stale_same_owner_claimer_is_refused_after_reclaim",
+            "ack_after_the_lease_lapsed_is_refused"
+          ]
+        }
       },
       {
         "id": "T09-C03",
@@ -463,8 +539,11 @@
           ],
           "scope": "实际启用模式；内核、引擎或物理恢复额外需要 L4"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B235",
+          "B259"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -474,7 +553,22 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        },
+        "product_gap": {
+          "reason": "LocalProcess 在 Windows 没有 Job Object，leader 退出即被视为 stopped",
+          "follow_up": "local-process 与 protocol-acp 进程树（L）",
+          "reproducers": [
+            "t10_c02_reap_after_leader_exit_does_not_claim_stopped_while_descendant_lives"
+          ]
+        }
       },
       {
         "id": "T10-C03",
@@ -498,8 +592,11 @@
           ],
           "scope": "实际启用模式；内核、引擎或物理恢复额外需要 L4"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B220",
+          "B252"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -509,7 +606,22 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        },
+        "product_gap": {
+          "reason": "无恢复证据的适配器返回未分类的内部执行错误，没有可操作的拒绝",
+          "follow_up": "run-executor-a2a 恢复错误（S）",
+          "reproducers": [
+            "incapable_recovery_is_a_typed_actionable_rejection"
+          ]
+        }
       }
     ],
     "risk": "P0",
@@ -643,8 +755,11 @@
           ],
           "scope": "需要持久性时真实文件和重开；仅 in-memory SQLite 不足"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B157",
+          "B158"
+        ],
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -654,7 +769,15 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        }
       }
     ],
     "risk": "P0",
@@ -791,8 +914,13 @@
           ],
           "scope": "需要持久性时真实文件和重开；仅 in-memory SQLite 不足"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B159",
+          "B160",
+          "B161",
+          "B236"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -802,7 +930,22 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        },
+        "product_gap": {
+          "reason": "仅 interrupt 的预算暂停 no-op 只在协议 parser 中，不在 root 接纳处",
+          "follow_up": "session-application event batch 接纳（S）",
+          "reproducers": [
+            "budget_paused_interrupt_only_batch_is_a_no_op_at_root_admission"
+          ]
+        }
       }
     ],
     "risk": "P0",

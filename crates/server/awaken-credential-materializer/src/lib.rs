@@ -553,6 +553,7 @@ pub(crate) fn pinned_vault(
 mod tests {
     mod binding_matrix;
     mod native_capabilities;
+    mod revocation_wait;
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 

@@ -62,5 +62,13 @@ test-support = []
 name = "session_repo_conformance"
 required-features = ["test-support"]
 
+[[test]]
+name = "independent_clients"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_store_parity"
+required-features = ["test-support"]
+
 [lints]
 workspace = true

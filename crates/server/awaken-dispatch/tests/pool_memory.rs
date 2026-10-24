@@ -4485,6 +4485,8 @@ mod maintenance_observations;
 mod queue_depth;
 #[path = "pool_memory/retry_budget.rs"]
 mod retry_budget;
+#[path = "pool_memory/slow_consumer.rs"]
+mod slow_consumer;
 
 #[path = "pool_memory/composition.rs"]
 mod composition;

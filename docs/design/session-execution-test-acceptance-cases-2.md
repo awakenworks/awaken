@@ -56,7 +56,7 @@
 - 必须断言：按当前权威拒绝后续效果；原不确定外部请求有观察/过期责任。
 - 反向控制：重放缓存的成功材料绕过撤销必须失败。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`t15_c02_revocation_before_resolution_and_cached_replay_are_rejected`、`t15_c02_blocked_resolution_keeps_its_single_in_flight_read_observed`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt`（忽略，不计证据；E17 为预期失败）：等待机密读取后不再校验所有权。完整场景：待验收。
 
 ### T15-C03 明文边界
 
@@ -80,7 +80,7 @@
 - 必须断言：I/O 前有确切 staging 责任；旧任务不能装入新 allocation；等待后副作用受当前 fence 控制。
 - 反向控制：删掉预 I/O staging reservation 或只检查最后插入时 root，应使测试失败。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`t16_c01_native_http_preparation_is_staged_before_io_and_fenced_after_the_wait`、`t16_c01_io_before_staging_reservation_is_detected`、`t16_c01_platform_relay_provision_is_staged_before_io_and_never_published_late`、`t16_c01_native_worker_held_resolution_is_fenced_before_connect`、`t16_c01_acp_worker_relay_resolution_is_fenced_before_relay_start`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `t16_c01_platform_relay_route_minted_in_the_window_keeps_a_cleanup_owner`（忽略，不计证据；E17 为预期失败）：窗口内铸造的 PlatformRelay 路由没有清理所有者（无 revoke、过期被丢弃）。完整场景：待验收。
 
 | 维度 | 必须覆盖值 | 适用规则 |
 | --- | --- | --- |
@@ -119,7 +119,7 @@
 - 必须断言：无授权前效果；已开始准备可凭稳定 intent 找回；可发现性不依赖 Session root 存在。
 - 反向控制：只在局部变量保存资源身份的实现必须失败。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`crash_before_or_after_prepare_keeps_identity_for_the_original_intent`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `crash_after_prepare_is_recoverable_without_the_original_caller`（忽略，不计证据；E17 为预期失败）：没有 root 之前的持久 intent，崩溃后只有原调用者能找回已开始的准备。完整场景：待验收。
 
 ### T17-C02 补偿失败
 
@@ -127,7 +127,7 @@
 - 必须断言：持久责任保持 pending/uncertain；幂等重试原补偿；不报告完成或泄露材料。
 - 反向控制：best-effort cleanup 后丢弃错误不能签收。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`compensation_failure_hang_or_lost_response_never_reports_completion`、`failing_compensation_reports_incompleteness_to_its_caller`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `failed_compensation_is_retried_by_a_rebuilt_service`（忽略，不计证据；E17 为预期失败）：补偿失败只记日志，不留下持久的待处理责任。完整场景：待验收。
 
 ### T17-C03 并发重试
 
@@ -135,7 +135,7 @@
 - 必须断言：不创建第二个外部对象；只有原确切对象可发布/清理；冲突重试拒绝。
 - 反向控制：仅验证同一对象上的第二次函数调用不足。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`concurrent_continuations_share_one_external_object`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `compensation_cannot_retire_a_participant_adopted_concurrently`（忽略，不计证据；E17 为预期失败）：补偿先检查后退役，缺少针对并发 adopt 的 fence。完整场景：待验收。
 
 ## T18 archive 与 delete 竞争
 
@@ -151,7 +151,7 @@
 - 必须断言：终态不能复活；只有合法 CAS 顺序胜出；仍受保护引用不被回收。
 - 反向控制：仅顺序调用 archive 再 run 不足以证明竞争。
 - 层级与基质：L2；file SQLite；live PostgreSQL；independent clients/processes where required。需要持久性时真实文件和重开；仅 in-memory SQLite 不足。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`sqlite_archive_races_admission_replacement_and_recovery_through_root_cas`、`postgres_archive_races_admission_replacement_and_recovery_through_root_cas`、`sequential_archive_then_admission_has_no_race_witness`；当前提交本机 Windows 执行（E16），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ### T18-C02 活跃来源保留
 
@@ -242,7 +242,7 @@
 - 必须断言：单一合法 revision 序；终态不可再改；同事务全回滚；重启保留完整历史。
 - 反向控制：create 的回滚测试不能直接代替这两个生产写路径。
 - 层级与基质：L2；file SQLite；live PostgreSQL；independent clients/processes where required。需要持久性时真实文件和重开；仅 in-memory SQLite 不足。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`sqlite_file_update_archive_race_faults_and_reopen_keep_one_legal_history`、`postgres_update_archive_race_faults_and_reopen_keep_one_legal_history`、`sqlite_file_update_child_killed_inside_its_transaction_rolls_back_and_retries_once`、`sqlite_file_archive_child_killed_inside_its_transaction_rolls_back_and_retries_once`、`postgres_archive_child_killed_inside_its_transaction_rolls_back_and_retries_once`；当前提交本机 Windows 执行（E16），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ## T21 Environment 注册投递
 
@@ -356,7 +356,7 @@
 - 必须断言：保留现有受保护输出；成功重建来自一个新完整快照；失败不会发布半快照。
 - 反向控制：只在同一内存对象重复初始化不证明持久恢复。
 - 层级与基质：L2；file SQLite；live PostgreSQL；independent clients/processes where required。需要持久性时真实文件和重开；仅 in-memory SQLite 不足。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`interrupted_snapshot_clone_rebuilds_one_complete_snapshot_and_keeps_protected_output`、`crashed_snapshot_clone_rebuilds_from_durable_state_in_a_new_application`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `interrupted_snapshot_clone_never_exposes_a_half_snapshot`、`failed_snapshot_cleanup_is_reported_or_leaves_no_private_content`（忽略，不计证据；E17 为预期失败）：Dream prepare 在克隆完成前就把快照条目登记为 Active；release_result 吞掉清理错误。完整场景：待验收。
 
 ## T24 Copy 写回与 ABA
 
@@ -388,7 +388,7 @@
 - 必须断言：未成功持久保存冲突前保留原文件和数据责任；成功重试保存一个原身份 proposal。
 - 反向控制：先删除 projection 再保存冲突或用新 proposal id 重试必须失败。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`lost_conflict_preservation_response_retries_with_the_original_proposal_identity`、`nc_projection_removed_before_conflict_preservation_is_detected`；当前提交本机 Windows 执行（E16），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ### T24-C03 FUSE fd 及 rename
 
@@ -428,7 +428,7 @@
 - 必须断言：不暴露部分脱敏；成功重放不恢复被清除内容、不改写原脱敏身份。
 - 反向控制：只重复成功请求而不测试故障窗口不足。
 - 层级与基质：L2；file SQLite；live PostgreSQL；independent clients/processes where required。需要持久性时真实文件和重开；仅 in-memory SQLite 不足。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`sqlite_file_redaction_survives_trigger_failure_and_lost_response`、`postgres_redaction_survives_trigger_failure_and_lost_response`；当前提交本机 Windows 执行（E16），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ## T26 内容回收与保护
 
@@ -460,7 +460,7 @@
 - 必须断言：范围内数据全部清理且其他 store 不变；重复清理幂等；普通 writer 没有 purge 能力。
 - 反向控制：只删除 head 并留敏感 history 或冲突数据必须失败。
 - 层级与基质：L1/L2；Volatile logical model；file SQLite for persistence clauses；live PostgreSQL for supported SQL clauses。只覆盖该操作真实支持的 backend；不凭空要求 Volatile 持久性。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`volatile_purge_removes_exactly_one_store_and_heads_only_purge_is_detected`、`sqlite_file_purge_removes_exactly_one_store_across_handles_and_reopen`、`postgres_purge_removes_exactly_one_store_across_pools_and_reopen`、`memory_writer`；当前提交本机 Windows 执行（E16、E18），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ## T27 Sandbox 能力与同一物理实例
 

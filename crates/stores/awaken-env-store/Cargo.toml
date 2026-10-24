@@ -50,5 +50,9 @@ required-features = ["test-support"]
 name = "env_registry_properties"
 required-features = ["test-support"]
 
+[[test]]
+name = "env_registry_parity"
+required-features = ["test-support"]
+
 [lints]
 workspace = true

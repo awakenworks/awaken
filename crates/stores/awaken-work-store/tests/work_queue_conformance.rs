@@ -59,6 +59,9 @@ fn sqlite_backend_conforms() {
 #[path = "support/work_postgres.rs"]
 mod work_postgres_fixture;
 
+#[path = "work_queue_conformance/lease_acceptance.rs"]
+mod lease_acceptance;
+
 /// Fixture cause/effect table: F1 absent URL -> canonical visible skip;
 /// F2 configured bad URL or schema failure -> hard failure; F3 live URL ->
 /// each backend instance owns a unique schema and the unchanged generic

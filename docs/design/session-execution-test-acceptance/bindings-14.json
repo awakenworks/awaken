@@ -1,0 +1,232 @@
+[
+  {
+    "name": "ack_after_the_lease_lapsed_is_refused",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "line": 651,
+        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T09-C02": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: Work ack does not check lease expiry",
+    "limitation": "Not execution evidence. Follow-up: work-store lease expiry (S)",
+    "id": "B251"
+  },
+  {
+    "name": "incapable_recovery_is_a_typed_actionable_rejection",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-run-executor-a2a/src/tests/reattach_identity.rs",
+        "line": 144,
+        "file_sha256": "a43abbca8c432fd4ef685e1b329d80fd8c6dfe0295527517c18dd48e89010c8e"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T10-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: an adapter without recovery evidence returns an untyped internal execution error",
+    "limitation": "Not execution evidence. Follow-up: run-executor-a2a recovery error (S)",
+    "id": "B252"
+  },
+  {
+    "name": "shutdown_is_bounded_when_a_dependency_never_returns",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-dispatch/tests/pool_memory/slow_consumer.rs",
+        "line": 162,
+        "file_sha256": "aaa7111039deb54abf5d8439e4028f6f7342e1e15defeb504cc1c7738813f6dd"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T38-C02": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: DispatchPool::shutdown has no deadline",
+    "limitation": "Not execution evidence. Follow-up: run-ingress dispatch pool shutdown (S-M)",
+    "id": "B253"
+  },
+  {
+    "name": "live_inbox_applies_backpressure_to_a_stalled_consumer",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-dispatch/tests/pool_memory/slow_consumer.rs",
+        "line": 175,
+        "file_sha256": "aaa7111039deb54abf5d8439e4028f6f7342e1e15defeb504cc1c7738813f6dd"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T38-C02": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: LiveInbox::offer is unbounded",
+    "limitation": "Not execution evidence. Follow-up: runtime live inbox capacity (M)",
+    "id": "B254"
+  },
+  {
+    "name": "t06_c02_lease_expiry_during_lock_wait_is_rechecked",
+    "source_locations": [
+      {
+        "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
+        "line": 410,
+        "file_sha256": "bf3d1a72f3dcb4a6f16699082d81444f0c248b7d8310fa1a2bd68d82ba65e6db"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T06-C02": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: the lease clock is sampled once before the commit-epoch lock wait",
+    "limitation": "Not execution evidence. Follow-up: resource-worker-http read_file_content (S)",
+    "id": "B255"
+  },
+  {
+    "name": "t06_c02_lease_expiry_during_physical_read_releases_no_bytes",
+    "source_locations": [
+      {
+        "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
+        "line": 429,
+        "file_sha256": "bf3d1a72f3dcb4a6f16699082d81444f0c248b7d8310fa1a2bd68d82ba65e6db"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T06-C02": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: the physical read receives no fence and nothing re-checks after it",
+    "limitation": "Not execution evidence. Follow-up: resource-worker-http and resource-application file source (M)",
+    "id": "B256"
+  },
+  {
+    "name": "t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 434,
+        "file_sha256": "43b517de73d9a708aff5bcb334fe199980b0abf2d3cb405eaee63d970b7bdc18"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T15-C02": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: ownership is not re-verified after the awaited secret read",
+    "limitation": "Not execution evidence. Follow-up: credential-materializer claimed materialization (S)",
+    "id": "B257"
+  },
+  {
+    "name": "t16_c01_platform_relay_route_minted_in_the_window_keeps_a_cleanup_owner",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "line": 439,
+        "file_sha256": "76aca1c1805203b33e62a06ec0974a809bf2f30bca6a805afafb81e132abaa51"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T16-C01": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: a PlatformRelay route minted in the window has no cleanup owner (no revoke, expiry discarded)",
+    "limitation": "Not execution evidence. Follow-up: credential-materializer platform egress and session-mcp attachment (M)",
+    "id": "B258"
+  },
+  {
+    "name": "t10_c02_reap_after_leader_exit_does_not_claim_stopped_while_descendant_lives",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "line": 219,
+        "file_sha256": "70cecdb82ecac1a0a682a2df40fa2ca4905f67287a02de618fdcc4f7e66f3cef"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T10-C02": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer asserting the correct behaviour; fails today: LocalProcess has no Windows Job Object and reap treats leader exit as stopped",
+    "limitation": "Not execution evidence. Follow-up: local-process and protocol-acp process tree (L)",
+    "id": "B259"
+  },
+  {
+    "name": "memory_writer",
+    "source_locations": [
+      {
+        "path": "crates/resources/awaken-resource-application/src/authorities.rs",
+        "line": 150,
+        "file_sha256": "8cb42ae998bff58602774cf48529805cc4084f966df8f475b64959b33ac8a545"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/resources/awaken-resource-application/src/authorities.rs",
+        "line": 143
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E18",
+        "case": "crates\\resources\\awaken-resource-application\\src\\authorities.rs - authorities::ResourceAuthorities::memory_writer (line 143) - compile fail",
+        "package": "awaken-resource-application",
+        "target": "doctest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "historical": false,
+        "log_sha256": "2c9266a686e1f116cf56484fed4dc76519c743e8eedd7ea05ba899e8899e3881"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T26-C03": {
+        "oracles": [
+          2
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "compile_fail doctest pinned to E0599: the plain memory writer exposes no purge capability.",
+    "limitation": null,
+    "id": "B260"
+  }
+]

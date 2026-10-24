@@ -448,5 +448,187 @@
     ],
     "role": "product-gap reproducers; documents each recorded gap fails today; not execution evidence for any clause",
     "entry_sha256": "6ec368d4a39c6bf5402c0d79afe1e4fa5a95c584dc88fd738f2386f8a8fb4641"
+  },
+  {
+    "id": "E16",
+    "receipt": "target/session-acceptance-evidence/E16/receipt.json",
+    "receipt_sha256": "2d4f7582ae669b4f85f81bd51ebd951429c94d1ad5dc8c75968201c0d9e3a043",
+    "source": {
+      "head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+      "dirty_digest": "104356b3ab9b16cb920dc1a29f77949a9bb01bd3382f81ac127c9b51d82641dc"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "SQL/all-backends and native-effect batch on native Windows: file SQLite with independent handles, PostgreSQL 16.15 required, real child-process crashes and loopback servers (canonical workspace nextest)",
+    "argv": [
+      "cargo",
+      "nextest",
+      "run",
+      "--workspace",
+      "--locked",
+      "--features",
+      "awaken-cli/container-k8s,awaken-sandbox/hand",
+      "--no-fail-fast",
+      "-E",
+      "(package(=awaken-session-store) & (binary(=independent_clients) | binary(=pause_transaction) | binary(=session_store_parity))) | (package(=awaken-work-store) & binary(=work_queue_parity)) | (package(=awaken-session-application) & test(/concurrent_consumption|pause_transaction|archive_race|retry_identity|prepared_participants/)) | (package(=awaken-work-store) & test(/lease_acceptance/)) | (package(=awaken-dispatch) & (binary(=dispatch_lease_takeover) | binary(=crash_effect_recovery) | test(/slow_consumer/))) | (package(=awaken-dispatch-http) & test(/terminal_work_ack/)) | (package(=awaken-run-executor-a2a) & test(/reattach_identity/)) | (package(=awaken-credential-materializer) & test(/t15_c02|t28_c03/)) | (package(=awaken-resource-worker-http) & test(/t06_c02/)) | (package(=awaken-sandbox-container) & test(/t28_c02/)) | (package(=awaken-session-executor) & test(/t16_c01/)) | (package(=awaken-run-executor-acp) & test(/t10_c02/)) | (package(=awaken-memory-store) & (binary(=purge_isolation) | binary(=redaction_retry) | binary(=capacity_quota))) | (package(=awaken-sandbox-memoryd) & binary(=writeback_faults) & (test(/lost_conflict_preservation_response/) | test(/nc_projection_removed/))) | (package(=awaken-store-sqlite) & binary(=capacity_exhaustion)) | (package(=awaken-env-store) & (binary(=update_archive_faults) | binary(=cancellation) | binary(=env_registry_parity))) | (package(=awaken-coordinator) & test(/rebuild_interruption_tests/))"
+    ],
+    "environment_names": [
+      "AWAKEN_TEST_DATABASE_URL",
+      "AWAKEN_TEST_REQUIRE_POSTGRES",
+      "CARGO_BUILD_BUILD_DIR",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "CARGO_TARGET_DIR",
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 270.6,
+    "executed_count": 95,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694",
+    "historical": false,
+    "entry_sha256": "ec94aff4423d9da3f6c47516af271d4ebf41c2cf0b4d14c035c351f989d78709"
+  },
+  {
+    "id": "E17",
+    "receipt": "target/session-acceptance-evidence/E17/receipt.json",
+    "receipt_sha256": "7fbb7f0ed69b9bd12f1af156d7bf5ccae537e45a3f02c81902904721f141c803",
+    "source": {
+      "head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+      "dirty_digest": "104356b3ab9b16cb920dc1a29f77949a9bb01bd3382f81ac127c9b51d82641dc"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": false,
+    "files_changed_during_run": [],
+    "scope": "SQL/native batch product-gap reproducers with --run-ignored only; every one is expected to fail (documents the gap, never execution evidence)",
+    "argv": [
+      "cargo",
+      "nextest",
+      "run",
+      "--workspace",
+      "--locked",
+      "--features",
+      "awaken-cli/container-k8s,awaken-sandbox/hand",
+      "--no-fail-fast",
+      "--run-ignored",
+      "only",
+      "-E",
+      "(package(=awaken-session-store) & (binary(=independent_clients) | binary(=pause_transaction) | binary(=session_store_parity))) | (package(=awaken-work-store) & binary(=work_queue_parity)) | (package(=awaken-session-application) & test(/concurrent_consumption|pause_transaction|archive_race|retry_identity|prepared_participants/)) | (package(=awaken-work-store) & test(/lease_acceptance/)) | (package(=awaken-dispatch) & (binary(=dispatch_lease_takeover) | binary(=crash_effect_recovery) | test(/slow_consumer/))) | (package(=awaken-dispatch-http) & test(/terminal_work_ack/)) | (package(=awaken-run-executor-a2a) & test(/reattach_identity/)) | (package(=awaken-credential-materializer) & test(/t15_c02|t28_c03/)) | (package(=awaken-resource-worker-http) & test(/t06_c02/)) | (package(=awaken-sandbox-container) & test(/t28_c02/)) | (package(=awaken-session-executor) & test(/t16_c01/)) | (package(=awaken-run-executor-acp) & test(/t10_c02/)) | (package(=awaken-memory-store) & (binary(=purge_isolation) | binary(=redaction_retry) | binary(=capacity_quota))) | (package(=awaken-sandbox-memoryd) & binary(=writeback_faults) & (test(/lost_conflict_preservation_response/) | test(/nc_projection_removed/))) | (package(=awaken-store-sqlite) & binary(=capacity_exhaustion)) | (package(=awaken-env-store) & (binary(=update_archive_faults) | binary(=cancellation) | binary(=env_registry_parity))) | (package(=awaken-coordinator) & test(/rebuild_interruption_tests/))"
+    ],
+    "environment_names": [
+      "AWAKEN_TEST_DATABASE_URL",
+      "AWAKEN_TEST_REQUIRE_POSTGRES",
+      "CARGO_BUILD_BUILD_DIR",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "CARGO_TARGET_DIR",
+      "PYTHONUTF8"
+    ],
+    "exit": 100,
+    "seconds": 41.4,
+    "executed_count": 0,
+    "failed_count": 48,
+    "skipped_count": 0,
+    "log_sha256": "10e51e3c1a128b4c6f069c8a68643e1e19e8e495f324f9fb1b5bb03fda011cac",
+    "historical": false,
+    "expected_failures": [
+      "awaken-coordinator dream::rebuild_interruption_tests::capacity_exhausted_snapshot_clone_has_a_distinct_failure_kind",
+      "awaken-coordinator dream::rebuild_interruption_tests::failed_snapshot_cleanup_is_reported_or_leaves_no_private_content",
+      "awaken-coordinator dream::rebuild_interruption_tests::interrupted_snapshot_clone_never_exposes_a_half_snapshot",
+      "awaken-credential-materializer tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+      "awaken-dispatch::dispatch_lease_takeover work_and_dispatch_epochs_are_distinct_types",
+      "awaken-dispatch::pool_memory slow_consumer::live_inbox_applies_backpressure_to_a_stalled_consumer",
+      "awaken-dispatch::pool_memory slow_consumer::shutdown_is_bounded_when_a_dependency_never_returns",
+      "awaken-resource-worker-http::resource_transports file_content_revocation::t06_c02_lease_expiry_during_lock_wait_is_rechecked",
+      "awaken-resource-worker-http::resource_transports file_content_revocation::t06_c02_lease_expiry_during_physical_read_releases_no_bytes",
+      "awaken-run-executor-a2a tests::reattach_identity::incapable_recovery_is_a_typed_actionable_rejection",
+      "awaken-run-executor-acp::windows_descendant t10_c02_reap_after_leader_exit_does_not_claim_stopped_while_descendant_lives",
+      "awaken-session-application tests::creation::prepared_participants::compensation_cannot_retire_a_participant_adopted_concurrently",
+      "awaken-session-application tests::creation::prepared_participants::crash_after_prepare_is_recoverable_without_the_original_caller",
+      "awaken-session-application tests::creation::prepared_participants::failed_compensation_is_retried_by_a_rebuilt_service",
+      "awaken-session-application tests::creation::prepared_participants::orphaned_prepare_is_found_by_recovery_after_rebuild",
+      "awaken-session-application tests::event_batches::pause_transaction::budget_paused_interrupt_only_batch_is_a_no_op_at_root_admission",
+      "awaken-session-application tests::run_admission::retry_identity::unadmitted_and_unknown_failures_are_classified_apart",
+      "awaken-session-executor host::tests::mcp_preparation_fence::t16_c01_platform_relay_route_minted_in_the_window_keeps_a_cleanup_owner",
+      "awaken-store-sqlite::capacity_exhaustion exhausted_capacity_has_a_distinct_classification",
+      "awaken-store-sqlite::capacity_exhaustion wedged_single_connection_fails_admission_promptly",
+      "awaken-work-store::work_queue_conformance lease_acceptance::ack_after_the_lease_lapsed_is_refused",
+      "awaken-work-store::work_queue_conformance lease_acceptance::retried_ack_replays_the_original_acknowledgement",
+      "awaken-work-store::work_queue_conformance lease_acceptance::retried_stop_after_lost_response_replays",
+      "awaken-work-store::work_queue_conformance lease_acceptance::stale_same_owner_claimer_is_refused_after_reclaim"
+    ],
+    "role": "product-gap reproducers; documents each recorded gap fails today; not execution evidence for any clause",
+    "entry_sha256": "e1c73000933734f365ae7dc1da585ff5e3d48be833aaea0b4ff53c4c40e81c70"
+  },
+  {
+    "id": "E18",
+    "receipt": "target/session-acceptance-evidence/E18/receipt.json",
+    "receipt_sha256": "4b56f80f70319e9d7289ca86c1aa7bd01e717a7afad962a524674a72cdcecc0f",
+    "source": {
+      "head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+      "dirty_digest": "104356b3ab9b16cb920dc1a29f77949a9bb01bd3382f81ac127c9b51d82641dc"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "awaken-resource-application compile_fail doctest: plain memory writer has no purge capability (native Windows)",
+    "argv": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "awaken-resource-application",
+      "--doc",
+      "--",
+      "memory_writer"
+    ],
+    "environment_names": [
+      "AWAKEN_TEST_DATABASE_URL",
+      "AWAKEN_TEST_REQUIRE_POSTGRES",
+      "CARGO_BUILD_BUILD_DIR",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "CARGO_TARGET_DIR",
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 6.3,
+    "executed_count": 1,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "2c9266a686e1f116cf56484fed4dc76519c743e8eedd7ea05ba899e8899e3881",
+    "historical": false,
+    "entry_sha256": "2e4a0f20a9c65f481c1702668f34b7fe4332baec39a484307ef73bf550db519f"
+  },
+  {
+    "id": "E19",
+    "receipt": "target/session-acceptance-evidence/E19/receipt.json",
+    "receipt_sha256": "a3319d159f5715e0e1237c7f0c539f5d8a17f3fa0e58816af779b668832f9ecc",
+    "source": {
+      "head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+      "dirty_digest": "104356b3ab9b16cb920dc1a29f77949a9bb01bd3382f81ac127c9b51d82641dc"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "Session acceptance L0 gate tests on native Windows with the validator's extended markers",
+    "argv": [
+      "python",
+      "scripts/ci/test_session_acceptance.py",
+      "-v"
+    ],
+    "environment_names": [
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 48.5,
+    "executed_count": 13,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "78e390958169982e48ceecd986134c09f33e8fe07efbdb2070a8265d31727d59",
+    "historical": false,
+    "entry_sha256": "95d1c34c3426a23769c7fa23a62db56fbf10bedc5af580a1a84d6ccc9e341aab"
   }
 ]

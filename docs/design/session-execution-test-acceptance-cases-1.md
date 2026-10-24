@@ -168,7 +168,7 @@
 - 必须断言：已准备责任可凭原意图发现并补偿/观察；精确重试保留原身份。
 - 反向控制：仅在同一调用栈执行 best-effort cleanup 不能满足崩溃恢复。
 - 层级与基质：L2；file SQLite；live PostgreSQL；independent clients/processes where required。需要持久性时真实文件和重开；仅 in-memory SQLite 不足。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`sqlite_prepared_participant_survives_root_failure_and_rebuild`、`postgres_prepared_participant_survives_root_failure_and_rebuild`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `orphaned_prepare_is_found_by_recovery_after_rebuild`（忽略，不计证据；E17 为预期失败）：没有持久的准备 intent，root 失败后重建的服务无法凭原意图找回已准备的参与者。完整场景：待验收。
 
 ## T05 Session CAS 与回执重放
 
@@ -184,7 +184,7 @@
 - 必须断言：仅一个合法赢家；root、事实、outbox 和回执一致；输家不产生事实。
 - 反向控制：两个客户端共用测试锁串行化不能证明数据库竞争。
 - 层级与基质：L1/L2；Volatile logical model；file SQLite for persistence clauses；live PostgreSQL for supported SQL clauses。只覆盖该操作真实支持的 backend；不凭空要求 Volatile 持久性。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`sqlite_independent_file_clients_have_one_cas_winner`、`sqlite_shared_handle_serialises_before_the_database`、`volatile_session_store_has_no_independent_clients`、`postgres_independent_pools_have_one_cas_winner`、`postgres_test_lock_serialisation_hides_database_contention`；当前提交本机 Windows 执行（E16），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ### T05-C02 回原提交回执
 
@@ -231,7 +231,7 @@
 - 必须断言：在契约规定的物理授权线性化点再次校验；不使用缓存成功绕过新撤权。
 - 反向控制：把再次校验移到长等待之前的负控必须被检测。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`t06_c02_settlement_during_physical_read_linearizes_after_the_read`、`t06_c02_settlement_during_lock_wait_is_rechecked_and_premature_check_is_detected`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `t06_c02_lease_expiry_during_lock_wait_is_rechecked`、`t06_c02_lease_expiry_during_physical_read_releases_no_bytes`（忽略，不计证据；E17 为预期失败）：锁等待前只采样一次租约时钟；物理读取不带 fence 且读取后不再校验。完整场景：待验收。
 
 ### T06-C03 冻结与动态事实
 
@@ -271,7 +271,7 @@
 - 必须断言：可观察操作以原身份恢复；无法确认的外部效果保留 uncertainty 并拒绝不安全重启。
 - 反向控制：外部超时后一律重试执行不得通过。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`crash_after_commit_before_effect_recovers_without_replay`、`crash_after_effect_before_receipt_keeps_uncertainty_without_replay`；当前提交本机 Windows 执行（E16），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ## T08 Work 与 Run 桥接
 
@@ -295,7 +295,7 @@
 - 必须断言：只重试原 ack；不重新执行模型/工具；保留独立 Run 结果。
 - 反向控制：以 Work ack 成功合成 Run 成功必须失败。
 - 层级与基质：L1/L2；Volatile logical model；file SQLite for persistence clauses；live PostgreSQL for supported SQL clauses。只覆盖该操作真实支持的 backend；不凭空要求 Volatile 持久性。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`terminal_run_work_ack_loss_retries_only_the_original_identity`、`terminal_ack_retries_only_the_original_identity`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `retried_ack_replays_the_original_acknowledgement`、`retried_stop_after_lost_response_replays`（忽略，不计证据；E17 为预期失败）：重试 Work ack 会改写 acknowledged_at；丢响应后重试 stop 返回 412 而非重放。完整场景：待验收。
 
 ### T08-C03 两侧租约与 healthcheck
 
@@ -303,7 +303,7 @@
 - 必须断言：不得互用 epoch 或 lease；旧领取者拒绝；healthcheck 可独立完成。
 - 反向控制：仅测试单侧 lease 或用同一个 epoch 变量不能证明本项。
 - 层级与基质：L1/L2；Volatile logical model；file SQLite for persistence clauses；live PostgreSQL for supported SQL clauses。只覆盖该操作真实支持的 backend；不凭空要求 Volatile 持久性。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`session_and_healthcheck_leases_are_taken_over_independently`、`dispatch_takeover_admits_only_the_current_claim_on_volatile_and_file_sqlite`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `work_and_dispatch_epochs_are_distinct_types`（忽略，不计证据；E17 为预期失败）：Work 与 Dispatch epoch 都是裸 u64，可被互换。完整场景：待验收。
 
 ## T09 租约边界与竞争
 
@@ -327,7 +327,7 @@
 - 必须断言：仅当前 owner 可提交；stale receipt 拒绝；失败不扩权。
 - 反向控制：测试内串行锁掩盖数据库竞争必须拒绝。
 - 层级与基质：L1/L2；Volatile logical model；file SQLite for persistence clauses；live PostgreSQL for supported SQL clauses。只覆盖该操作真实支持的 backend；不凭空要求 Volatile 持久性。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`concurrent_takeover_admits_only_the_current_owner_on_volatile_and_file_sqlite`、`postgres_work_lease_acceptance`、`dispatch_takeover_admits_only_the_current_claim_on_volatile_and_file_sqlite`、`postgres_dispatch_takeover_admits_only_the_current_claim`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `stale_same_owner_claimer_is_refused_after_reclaim`、`ack_after_the_lease_lapsed_is_refused`（忽略，不计证据；E17 为预期失败）：普通 ack/heartbeat/stop 只核对 owner 不核对 epoch；ack 不检查租约过期；epoch 类型可互换。完整场景：待验收。
 
 ### T09-C03 身份跨重建
 
@@ -359,7 +359,7 @@
 - 必须断言：不伪造 stopped/quiesced；保留原操作观察责任和稳定身份。
 - 反向控制：unknown 映射为 stopped 的负控必须失败。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`t10_c02_leader_exit_keeps_identity_and_does_not_hide_a_live_descendant`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `t10_c02_reap_after_leader_exit_does_not_claim_stopped_while_descendant_lives`（忽略，不计证据；E17 为预期失败）：LocalProcess 在 Windows 没有 Job Object，leader 退出即被视为 stopped。完整场景：待验收。
 
 ### T10-C03 恢复原操作
 
@@ -367,7 +367,7 @@
 - 必须断言：仅有能力的适配器重连原操作；不具备能力时给出可操作的拒绝。
 - 反向控制：适配器无证据时启动新操作不能算恢复。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`rebuilt_executor_reattaches_the_original_operation_only_with_committed_evidence`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `incapable_recovery_is_a_typed_actionable_rejection`（忽略，不计证据；E17 为预期失败）：无恢复证据的适配器返回未分类的内部执行错误，没有可操作的拒绝。完整场景：待验收。
 
 ## T11 工具回复接纳与重放
 
@@ -399,7 +399,7 @@
 - 必须断言：合法消费最多一次；相同重试回原回执；冲突结果跨 SQL 后端一致。
 - 反向控制：只在单个进程 Mutex 内串行化不能替代根 CAS。
 - 层级与基质：L2；file SQLite；live PostgreSQL；independent clients/processes where required。需要持久性时真实文件和重开；仅 in-memory SQLite 不足。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`sqlite_independent_clients_consume_one_tool_ticket_at_most_once`、`postgres_independent_clients_consume_one_tool_ticket_identically_to_sqlite`；当前提交本机 Windows 执行（E16），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ## T12 事件批次
 
@@ -431,7 +431,7 @@
 - 必须断言：只接纳既有策略允许动作；同事务记录一起回滚。
 - 反向控制：把暂停处理放入协议 parser 或允许半批次提交必须失败。
 - 层级与基质：L2；file SQLite；live PostgreSQL；independent clients/processes where required。需要持久性时真实文件和重开；仅 in-memory SQLite 不足。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`budget_paused_session_retains_ordinary_batches_without_execution`、`sqlite_mid_write_failure_rolls_back_the_whole_batch_transaction`、`postgres_mid_write_failure_rolls_back_the_whole_batch_transaction`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `budget_paused_interrupt_only_batch_is_a_no_op_at_root_admission`（忽略，不计证据；E17 为预期失败）：仅 interrupt 的预算暂停 no-op 只在协议 parser 中，不在 root 接纳处。完整场景：待验收。
 
 ## T13 预算与动态策略
 

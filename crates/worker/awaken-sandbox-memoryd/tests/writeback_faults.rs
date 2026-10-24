@@ -933,3 +933,282 @@ impl MemoryCopyConflictPreservation for FaultRepository {
         FaultRepository::preserve_copy_conflict(self, s, candidate).await
     }
 }
+
+/// T24-C02 oracle: after a committed-but-unacknowledged conflict preservation
+/// and a retry through a fresh mounter, exactly one candidate exists with the
+/// identity of the first durable save, and the projection survived until Ok.
+fn lost_response_violations(
+    original_id: &str,
+    retained: &[awaken_resource_contract::MemoryCopyConflict],
+    projection_kept_until_ok: bool,
+) -> Vec<&'static str> {
+    let mut violations = Vec::new();
+    if retained.len() != 1 {
+        violations.push("candidate count");
+    }
+    if retained
+        .iter()
+        .any(|candidate| candidate.id() != original_id)
+    {
+        violations.push("proposal id changed");
+    }
+    if !projection_kept_until_ok {
+        violations.push("projection removed before Ok");
+    }
+    violations
+}
+
+/// NC1 mutant: removes the projection BEFORE the durable conflict save, then
+/// delegates to the same gated repository (save commits, ack is lost).
+struct ProjectionFirstRepository {
+    inner: FaultRepository,
+    projection: std::path::PathBuf,
+}
+
+#[async_trait::async_trait]
+impl MemoryQueries for ProjectionFirstRepository {
+    async fn list(&self, s: &str, p: &str) -> Result<Vec<MemoryEntry>, MemErr> {
+        FaultRepository::list(&self.inner, s, p).await
+    }
+    async fn get_by_path(&self, s: &str, p: &str) -> Result<Option<Memory>, MemErr> {
+        FaultRepository::get_by_path(&self.inner, s, p).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemorySnapshotSource for ProjectionFirstRepository {
+    async fn snapshot_heads(&self, s: &str) -> Result<Vec<Memory>, MemErr> {
+        FaultRepository::snapshot_heads(&self.inner, s).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryCopyWriteback for ProjectionFirstRepository {
+    async fn create_as(
+        &self,
+        s: &str,
+        p: &str,
+        c: &str,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        FaultRepository::create_as(&self.inner, s, p, c, actor).await
+    }
+    async fn update_materialized(
+        &self,
+        s: &str,
+        path: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
+        content: &str,
+    ) -> Result<Memory, MemErr> {
+        FaultRepository::update_materialized(&self.inner, s, path, base, content).await
+    }
+    async fn delete_if_match_as(
+        &self,
+        s: &str,
+        p: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
+        actor: Option<&awaken_resource_contract::MemoryActor>,
+    ) -> Result<bool, MemErr> {
+        FaultRepository::delete_if_match_as(&self.inner, s, p, base, actor).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryCopyConflictPreservation for ProjectionFirstRepository {
+    async fn preserve_copy_conflict(
+        &self,
+        s: &str,
+        candidate: &awaken_resource_contract::MemoryCopyConflict,
+    ) -> Result<(), MemErr> {
+        std::fs::remove_dir_all(&self.projection).unwrap();
+        FaultRepository::preserve_copy_conflict(&self.inner, s, candidate).await
+    }
+}
+
+/// What one lost-response run observed, for the shared oracle.
+struct LostResponseRun {
+    original_id: String,
+    projection_kept: bool,
+    retained: Vec<awaken_resource_contract::MemoryCopyConflict>,
+    reopened: Arc<SqliteMemoryRepository>,
+    heads: Vec<Memory>,
+    history: Vec<awaken_resource_contract::MemoryVersion>,
+    _root: tempfile::TempDir,
+}
+
+/// One T24-C02 LR row: the durable preservation commits and its
+/// acknowledgement is lost (error after save); the retry goes through a FRESH
+/// copy_only mounter over a REOPENED file database. `projection_first`
+/// swaps in the NC1 mutant repository.
+async fn lost_conflict_preservation_run(
+    operation: &str,
+    projection_first: bool,
+) -> LostResponseRun {
+    let root = tempfile::tempdir().unwrap();
+    let database = root.path().join("memory.sqlite");
+    let repository = Arc::new(
+        SqliteMemoryRepository::open(database.to_str().unwrap(), awaken_time::system_clock())
+            .await
+            .unwrap(),
+    );
+    if operation != "create" {
+        repository.create("s", "/note.md", "base").await.unwrap();
+    }
+    let projection = root.path().join("projection");
+    let mount = MemoryStoreMounter::copy_only(repository.clone())
+        .mount("s", &projection, MountAccess::ReadWrite)
+        .await
+        .mounted();
+    let evidence =
+        MemoryMaterializationEvidence::new("s", "/memory", mount.materialization_heads().unwrap())
+            .unwrap();
+    if operation == "create" {
+        repository.create("s", "/note.md", "winner").await.unwrap();
+    } else {
+        repository
+            .update("s", &evidence.heads[0].generation(), "winner")
+            .await
+            .unwrap();
+    }
+    let files = if operation == "delete" {
+        std::fs::remove_file(projection.join("note.md")).unwrap();
+        vec![]
+    } else {
+        std::fs::write(projection.join("note.md"), b"loser").unwrap();
+        vec![("note.md".into(), b"loser".to_vec())]
+    };
+    let heads = repository.snapshot_heads("s").await.unwrap();
+    let history = repository.list_versions("s").await.unwrap();
+    let gate = Arc::new(Gate {
+        after: true,
+        error: true,
+        detached: false,
+        completed: tokio::sync::Notify::new(),
+        ordinal: 1,
+        calls: AtomicUsize::new(0),
+        reached: tokio::sync::Notify::new(),
+        release: tokio::sync::Semaphore::new(0),
+    });
+    let faulted = FaultRepository {
+        inner: repository.clone(),
+        gate: gate.clone(),
+    };
+    let mounter = if projection_first {
+        MemoryStoreMounter::copy_only(Arc::new(ProjectionFirstRepository {
+            inner: faulted,
+            projection: projection.clone(),
+        }))
+    } else {
+        MemoryStoreMounter::copy_only(Arc::new(faulted))
+    };
+    let pending = tokio::spawn({
+        let (evidence, files) = (evidence.clone(), files.clone());
+        async move {
+            mounter
+                .reconcile_recovered_copy("s", &evidence, &files, MountAccess::ReadWrite)
+                .await
+        }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), gate.reached.notified())
+        .await
+        .unwrap();
+    let committed = repository.list_copy_conflicts("s").await.unwrap();
+    assert_eq!(
+        committed.len(),
+        1,
+        "{operation}: save committed before loss"
+    );
+    let original_id = committed[0].id();
+    gate.release.add_permits(1);
+    assert!(
+        pending.await.unwrap().is_err(),
+        "{operation}: lost acknowledgement surfaces as an error"
+    );
+    let projection_kept = projection.is_dir()
+        && (operation == "delete"
+            || std::fs::read(projection.join("note.md")).unwrap() == b"loser");
+    drop(mount);
+    drop(repository);
+
+    let reopened = Arc::new(
+        SqliteMemoryRepository::open(database.to_str().unwrap(), awaken_time::system_clock())
+            .await
+            .unwrap(),
+    );
+    MemoryStoreMounter::copy_only(reopened.clone())
+        .reconcile_recovered_copy("s", &evidence, &files, MountAccess::ReadWrite)
+        .await
+        .unwrap();
+    let retained = reopened.list_copy_conflicts("s").await.unwrap();
+    LostResponseRun {
+        original_id,
+        projection_kept,
+        retained,
+        reopened,
+        heads,
+        history,
+        _root: root,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lost_conflict_preservation_response_retries_with_the_original_proposal_identity() {
+    // T24-C02 LR rows: operation={create,update,delete}. One candidate with
+    // the first durable save's id, heads/history unchanged, and the
+    // projection/source bytes present at every failure point. NC2 (re-minted
+    // proposal) runs through the same oracle; NC1 is the mutant test below.
+    for operation in ["create", "update", "delete"] {
+        let run = lost_conflict_preservation_run(operation, false).await;
+        assert!(run.projection_kept, "{operation}: projection kept until Ok");
+        assert_eq!(
+            lost_response_violations(&run.original_id, &run.retained, run.projection_kept),
+            Vec::<&str>::new(),
+            "{operation}"
+        );
+        assert_eq!(
+            run.reopened.snapshot_heads("s").await.unwrap(),
+            run.heads,
+            "{operation}"
+        );
+        assert_eq!(
+            run.reopened.list_versions("s").await.unwrap(),
+            run.history,
+            "{operation}"
+        );
+
+        // NC2: a retry that re-mints the proposal is detected.
+        let mut reminted = run.retained[0].clone();
+        reminted.path = "/note-retry.md".into();
+        run.reopened
+            .preserve_copy_conflict("s", &reminted)
+            .await
+            .unwrap();
+        let violations = lost_response_violations(
+            &run.original_id,
+            &run.reopened.list_copy_conflicts("s").await.unwrap(),
+            true,
+        );
+        assert!(
+            violations.contains(&"candidate count") && violations.contains(&"proposal id changed"),
+            "NC2 {violations:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nc_projection_removed_before_conflict_preservation_is_detected() {
+    // NC1 executed: the production mounter driven over a repository that
+    // deletes the projection before the durable save must fail the oracle.
+    for operation in ["create", "update", "delete"] {
+        let run = lost_conflict_preservation_run(operation, true).await;
+        assert!(
+            !run.projection_kept,
+            "{operation}: the mutant removed the projection"
+        );
+        assert!(
+            lost_response_violations(&run.original_id, &run.retained, run.projection_kept)
+                .contains(&"projection removed before Ok"),
+            "NC1 {operation}"
+        );
+    }
+}
