@@ -67,6 +67,35 @@ pub(crate) fn container_id(handle: &pc::SandboxHandle) -> String {
         .clone()
 }
 
+/// In-container observation run before a test injects `kill -TERM 1` into a
+/// fenced Session Pod's `agent` container.
+///
+/// A fenced create returns once the projection marker is written, but the
+/// agent's PID 1 is still the projection gate until its next 100 ms marker
+/// poll execs the declared keepalive. The gate installs no TERM handler, and
+/// the kernel discards a handler-less signal sent to a PID-namespace init from
+/// inside that namespace, so a TERM landing in that window is lost and the Pod
+/// never terminates. Decision table: C1 PID 1 catches SIGTERM (bit 14 of
+/// `/proc/1/status` SigCgt, set by the keepalive's `trap` and absent from the
+/// gate) -> exit 0, and the keepalive never re-execs, so the fact still holds
+/// when the fault is sent; C2 not yet caught -> poll again; C3 30 s without C1
+/// -> exit 3 before any fault, which the caller asserts. Only shell builtins and
+/// `sleep` are used, the same tools the gate itself requires of the image.
+#[allow(dead_code)] // This shared fixture module is compiled by multiple test binaries.
+pub(crate) const AWAIT_PID1_CATCHES_TERM: [&str; 3] = [
+    "sh",
+    "-c",
+    "attempt=0; \
+     while [ \"$attempt\" -lt 600 ]; do \
+       mask=; \
+       while read -r key value; do [ \"$key\" = SigCgt: ] && mask=$value; done < /proc/1/status; \
+       [ -n \"$mask\" ] && [ $(( 0x$mask >> 14 & 1 )) -eq 1 ] && exit 0; \
+       attempt=$((attempt + 1)); \
+       sleep 0.05; \
+     done; \
+     exit 3",
+];
+
 /// Hold/release only a test-owned finalizer. Preserve production finalizers and
 /// fence the patch against concurrent metadata changes; this is never cleanup.
 #[allow(dead_code)] // This shared fixture module is compiled by multiple test binaries.
