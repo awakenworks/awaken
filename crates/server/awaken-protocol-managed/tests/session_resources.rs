@@ -3119,10 +3119,9 @@ async fn terminal_repository_reclaims_only_its_exact_inline_credential() {
     let repository = support::session_repository("open ephemeral Session store").await;
     let state = std::sync::Arc::new(
         {
-            let session_fixture_runtime = AcceptingFake::default();
             let session_fixture_clock = awaken_time::system_clock();
             awaken_protocol_managed_testkit::managed_state_from_parts(
-                std::sync::Arc::new(session_fixture_runtime),
+                std::sync::Arc::new(AcceptingFake::default()),
                 None,
                 repository.clone(),
                 awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
@@ -5136,6 +5135,7 @@ async fn settle_profiled_session(
     // application boundary rather than being claimed by this exact-owner helper.
     let recovered = state
         .session_application()
+        .run_admissions()
         .recover_session_projection(session_id, Some(workspace_id))
         .await
         .expect("profiled Session projection recovers")

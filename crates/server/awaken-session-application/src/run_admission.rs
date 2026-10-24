@@ -11,6 +11,8 @@
 //! application policy, so it is configured here once for every public protocol.
 
 use crate::{SessionProjectionReads as _, SessionRootReads as _};
+
+mod events;
 use awaken_session_realization_contract::SessionRealizationDriveError;
 use std::sync::Arc;
 
@@ -92,7 +94,72 @@ fn creation_error(error: SessionCreationError) -> RunError {
     }
 }
 
-impl SessionApplication {
+/// Session Run admission: reserve one Run against the durable Session root,
+/// open its activity, activate or observe it through the coordination runtime,
+/// and recover the Session's disposable Runtime projection before that. A
+/// first Run of an unknown Thread creates its default profiled Session.
+///
+/// It holds the CAS kernel and read component, the activity, creation,
+/// Resource reconciliation, realization and Work components a Run admission
+/// passes through, the executable-projection refresh, the execution
+/// observations, and the coordination and Thread runtime roles.
+pub struct SessionRunAdmissions {
+    mutations: Arc<crate::SessionMutations>,
+    queries: Arc<crate::SessionQueries>,
+    activities: Arc<crate::SessionActivities>,
+    creation_commands: Arc<crate::SessionCreationCommands>,
+    resource_reconciliation: Arc<crate::SessionResourceReconciliation>,
+    realizations: Arc<crate::SessionRealizations>,
+    work_assignments: Arc<crate::SessionWorkAssignments>,
+    executable_projections: crate::ExecutableProjections,
+    execution_admission: Arc<crate::SessionExecutionAdmission>,
+    coordination: Arc<dyn awaken_session_runtime_contract::CoordinationRuntime>,
+    thread_reads: Arc<dyn awaken_session_runtime_contract::ThreadReadRuntime>,
+}
+
+/// The collaborators one [`SessionRunAdmissions`] is built from.
+pub(crate) struct SessionRunAdmissionCollaborators {
+    pub(crate) mutations: Arc<crate::SessionMutations>,
+    pub(crate) queries: Arc<crate::SessionQueries>,
+    pub(crate) activities: Arc<crate::SessionActivities>,
+    pub(crate) creation_commands: Arc<crate::SessionCreationCommands>,
+    pub(crate) resource_reconciliation: Arc<crate::SessionResourceReconciliation>,
+    pub(crate) realizations: Arc<crate::SessionRealizations>,
+    pub(crate) work_assignments: Arc<crate::SessionWorkAssignments>,
+    pub(crate) executable_projections: crate::ExecutableProjections,
+    pub(crate) execution_admission: Arc<crate::SessionExecutionAdmission>,
+    pub(crate) runtime: crate::SessionExecutor,
+}
+
+impl SessionRunAdmissions {
+    pub(crate) fn new(collaborators: SessionRunAdmissionCollaborators) -> Self {
+        let SessionRunAdmissionCollaborators {
+            mutations,
+            queries,
+            activities,
+            creation_commands,
+            resource_reconciliation,
+            realizations,
+            work_assignments,
+            executable_projections,
+            execution_admission,
+            runtime,
+        } = collaborators;
+        Self {
+            mutations,
+            queries,
+            activities,
+            creation_commands,
+            resource_reconciliation,
+            realizations,
+            work_assignments,
+            executable_projections,
+            execution_admission,
+            coordination: runtime.coordination.clone(),
+            thread_reads: runtime.thread_reads.clone(),
+        }
+    }
+
     /// Reserve one stable Run, then commit or recover the exact Session activity
     /// receipt before activation. This is the sole durable Session Run admission
     /// boundary used by both public protocols and Event reconciliation.
@@ -162,7 +229,7 @@ impl SessionApplication {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<AdmittedSessionRun, RunError>> + Send + 'a>,
     > {
-        let coordination_runtime = self.runtime().coordination();
+        let coordination_runtime = self.coordination.as_ref();
 
         // Return a boxed future at the application boundary. The admission
         // graph is intentionally deep; boxing here prevents protocol and
@@ -273,7 +340,7 @@ impl SessionApplication {
         command: AdmitSessionRun,
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError> {
-        let coordination_runtime = self.runtime().coordination();
+        let coordination_runtime = self.coordination.as_ref();
 
         let input_message_ids = command.input_message_ids();
         let admitted = Box::pin(self.admit_session_run(command)).await?;
@@ -294,7 +361,7 @@ impl SessionApplication {
         command: AdmitSessionRun,
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError> {
-        let coordination_runtime = self.runtime().coordination();
+        let coordination_runtime = self.coordination.as_ref();
 
         let input_message_ids = command.input_message_ids();
         let admitted = Box::pin(self.admit_session_run_for_owner(owner_scope, command)).await?;
@@ -314,7 +381,7 @@ impl SessionApplication {
         &self,
         admitted: AdmittedSessionRun,
     ) -> Result<awaken_session_runtime_contract::SessionRunActivation, RunError> {
-        let coordination_runtime = self.runtime().coordination();
+        let coordination_runtime = self.coordination.as_ref();
 
         match admitted {
             AdmittedSessionRun::Reserved(delivery)
@@ -351,7 +418,8 @@ impl SessionApplication {
             return Ok(Some(recovered));
         }
         let admission = self
-            .refresh_executable_projections()
+            .executable_projections
+            .refresh()
             .await
             .map_err(|error| {
                 SessionProjectionRecoveryError::Unavailable(format!(
@@ -443,9 +511,8 @@ impl SessionApplication {
             .frozen_baseline()
             .filter(|baseline| baseline.environment.self_hosted)
         {
-            self.environments
-                .assignment
-                .wake_session(
+            self.work_assignments
+                .wake(
                     &baseline.environment.environment_id,
                     &recovered.session.session_id,
                 )
@@ -543,6 +610,63 @@ impl SessionApplication {
     }
 }
 
+#[async_trait::async_trait]
+impl crate::ProfiledSessionCommands for SessionRunAdmissions {
+    async fn accept_profiled_session(
+        &self,
+        command: CreateProfiledSessionCommand,
+    ) -> Result<awaken_session_state_contract::PersistedSession, SessionCreationError> {
+        self.creation_commands
+            .accept_profiled_session(command)
+            .await
+    }
+
+    async fn admit_profiled_session_run(
+        &self,
+        owner_scope: &str,
+        command: AdmitSessionRun,
+    ) -> Result<AdmittedSessionRun, SessionProjectionRecoveryError> {
+        Box::pin(SessionRunAdmissions::admit_profiled_session_run(
+            self,
+            owner_scope,
+            command,
+        ))
+        .await
+    }
+
+    async fn activate_admitted_session_run(
+        &self,
+        admitted: AdmittedSessionRun,
+    ) -> Result<awaken_session_runtime_contract::SessionRunActivation, RunError> {
+        Box::pin(SessionRunAdmissions::activate_admitted_session_run(
+            self, admitted,
+        ))
+        .await
+    }
+
+    async fn session_run_events_after(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_types::SessionId,
+        run_id: &awaken_agent_contract::agent::run::Id,
+        dispatch_after: awaken_run_ingress_contract::DispatchCursor,
+        lifecycle_after: awaken_agent_contract::RunLifecycleCursor,
+        limit: usize,
+    ) -> Result<awaken_run_ingress_contract::SessionRunEventPage, SessionProjectionRecoveryError>
+    {
+        SessionRunAdmissions::session_run_events_after(
+            self,
+            owner_scope,
+            session_id,
+            run_id,
+            dispatch_after,
+            lifecycle_after,
+            limit,
+        )
+        .await
+    }
+}
+
 /// The sole durable Session Run application for all public Run protocols.
 /// The resolvers read the Runtime's installed Session; an unreadable one is
 /// refused, never answered with the local Workspace or the default Agent.
@@ -620,10 +744,11 @@ impl SessionRunApplication {
         command: AdmitSessionRun,
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunApplicationError> {
-        Box::pin(
-            self.sessions
-                .run_admitted_session_for_owner(owner_scope, command, sink),
-        )
+        Box::pin(self.sessions.run_admissions.run_admitted_session_for_owner(
+            owner_scope,
+            command,
+            sink,
+        ))
         .await
     }
 }
@@ -835,10 +960,12 @@ impl awaken_session_application_contract::SessionRunBackgroundApplication
         let owner_scope = (self.workspace)(thread)?;
         let admitted = Box::pin(
             self.sessions
+                .run_admissions
                 .admit_session_run_for_owner(&owner_scope, command),
         )
         .await?;
         self.sessions
+            .run_admissions
             .activate_admitted_session_run(admitted)
             .await?;
         Ok(run_id)

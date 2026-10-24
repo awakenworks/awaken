@@ -519,6 +519,7 @@ impl DreamExecutor for BuiltInDreamAgent {
         );
         let run = self
             .sessions
+            .run_admissions()
             .run_admitted_session_for_owner(
                 &request.workspace_id,
                 AdmitSessionRun {

@@ -302,6 +302,7 @@ mod tests {
         let operation_id = "lifecycle-test-background-run";
         state
             .session_application()
+            .run_admissions()
             .run_admitted_session_for_owner(
                 "default",
                 AdmitSessionRun {

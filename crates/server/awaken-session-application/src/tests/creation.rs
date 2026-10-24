@@ -1910,7 +1910,8 @@ async fn session_application_admits_new_and_existing_protocol_threads() {
     );
     let app = application(repository.clone(), Arc::new(AdmissionEnvironment));
 
-    app.admit_run_session("workspace", "thread", "assistant")
+    app.run_admissions
+        .admit_run_session("workspace", "thread", "assistant")
         .await
         .expect("A1");
     let created = repository
@@ -1920,10 +1921,12 @@ async fn session_application_admits_new_and_existing_protocol_threads() {
     assert!(created.frozen_baseline().is_some(), "A1/E1");
     assert_eq!(created.agent_id(), Some("assistant"), "A1/E1");
 
-    app.admit_run_session("workspace", "thread", "ignored")
+    app.run_admissions
+        .admit_run_session("workspace", "thread", "ignored")
         .await
         .expect("A2/E2");
     let error = app
+        .run_admissions
         .admit_run_session("other-workspace", "thread", "ignored")
         .await
         .expect_err("A3/E3");

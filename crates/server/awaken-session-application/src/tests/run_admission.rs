@@ -734,6 +734,7 @@ async fn cold_replica_recovers_projection_before_reusing_exact_activity_receipt(
         .expect("C1 exact durable activity receipt");
 
     let admitted = application
+        .run_admissions
         .admit_session_run(AdmitSessionRun {
             session_id: "cold-replica-activity".into(),
             agent_id: "agent".into(),
@@ -1616,6 +1617,7 @@ async fn background_activation_uses_the_session_runtime_without_a_second_queue_p
     };
     assert_eq!(
         application
+            .run_admissions
             .activate_admitted_session_run(AdmittedSessionRun::Reserved(delivery.clone()))
             .await
             .expect("R1 activation"),
@@ -1625,6 +1627,7 @@ async fn background_activation_uses_the_session_runtime_without_a_second_queue_p
     assert_eq!(&*runtime.deliveries.lock().unwrap(), &[delivery], "R1/E1");
     assert_eq!(
         application
+            .run_admissions
             .activate_admitted_session_run(AdmittedSessionRun::RecoveryClaimed {
                 session_id: "background-session".into(),
                 run_id: awaken_agent_contract::agent::run::Id("background-run".into()),
@@ -1637,6 +1640,7 @@ async fn background_activation_uses_the_session_runtime_without_a_second_queue_p
     assert_eq!(runtime.deliveries.lock().unwrap().len(), 1, "R2/E2");
     assert_eq!(
         application
+            .run_admissions
             .activate_admitted_session_run(AdmittedSessionRun::Completed {
                 session_id: "background-session".into(),
                 run_id: awaken_agent_contract::agent::run::Id("background-run".into()),
@@ -1691,6 +1695,7 @@ async fn admission_surfaces_dispatch_failure_and_preserves_retryable_intent() {
     assert!(
         matches!(
             application
+                .run_admissions
                 .recover_session_projection("dispatch-admission", Some("workspace"))
                 .await,
             Err(SessionProjectionRecoveryError::Unavailable(_))
@@ -1709,6 +1714,7 @@ async fn admission_surfaces_dispatch_failure_and_preserves_retryable_intent() {
     refresh.fail.store(false, Ordering::SeqCst);
 
     let error = match application
+        .run_admissions
         .recover_session_projection("dispatch-admission", Some("workspace"))
         .await
     {
@@ -1729,6 +1735,7 @@ async fn admission_surfaces_dispatch_failure_and_preserves_retryable_intent() {
 
     environments.recover_for("dispatch-admission");
     let recovered = application
+        .run_admissions
         .recover_session_projection("dispatch-admission", Some("workspace"))
         .await
         .expect("D2/E3 queue recovered")
@@ -1749,6 +1756,7 @@ async fn admission_surfaces_dispatch_failure_and_preserves_retryable_intent() {
         "D2/E3 one stable dispatch identity"
     );
     application
+        .run_admissions
         .admit_run_session("workspace", "dispatch-admission", "ignored")
         .await
         .expect("D2/E3 a driving event wakes the stable Work item");
@@ -1788,6 +1796,7 @@ async fn worker_placed_cloud_session_admits_the_event_that_triggers_realization(
     let application = application(repo.clone(), environments.clone());
 
     application
+        .run_admissions
         .admit_run_session("workspace", "cloud-worker-admission", "ignored")
         .await
         .expect("E1 Worker-owned realization is triggered by this admitted event");
@@ -1829,6 +1838,7 @@ async fn recovered_running_activity_admits_a_fenced_successor() {
     );
 
     application
+        .run_admissions
         .admit_run_session("workspace", "crash-orphaned-activity", "agent")
         .await
         .expect("Running is an execution-ready, epoch-fenced state");

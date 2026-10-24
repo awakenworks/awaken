@@ -341,18 +341,19 @@ impl SessionApplication {
                 Role::User,
                 command.content,
             ));
-            self.admit_session_run(AdmitSessionRun {
-                session_id,
-                agent_id: command.agent_id,
-                operation_id: command.operation_id,
-                run_id: command.run_id,
-                messages,
-                data_subject_id: command.data_subject_id,
-                traceparent: command.traceparent,
-                execution_requirements: Default::default(),
-                replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
-            })
-            .await
+            self.run_admissions
+                .admit_session_run(AdmitSessionRun {
+                    session_id,
+                    agent_id: command.agent_id,
+                    operation_id: command.operation_id,
+                    run_id: command.run_id,
+                    messages,
+                    data_subject_id: command.data_subject_id,
+                    traceparent: command.traceparent,
+                    execution_requirements: Default::default(),
+                    replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
+                })
+                .await
         })
     }
 

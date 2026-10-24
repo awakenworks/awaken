@@ -77,7 +77,7 @@ pub async fn resume_profiled_session_run(
     );
     state
         .roles
-        .profiled
+        .profiled_replies
         .reply_profiled_session_run_for_owner(&owner_scope, command)
         .await
         .map_err(session_projection_error)?;

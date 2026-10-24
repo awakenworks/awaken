@@ -240,26 +240,26 @@ pub trait SessionEventBatches: Send + Sync {
 /// Consumer: the profiled Session create and Run edges.
 #[async_trait]
 pub trait ProfiledSessionCommands: Send + Sync {
-    /// See [`SessionApplication::accept_profiled_session`].
+    /// See [`crate::SessionCreationCommands::accept_profiled_session`].
     async fn accept_profiled_session(
         &self,
         command: CreateProfiledSessionCommand,
     ) -> Result<PersistedSession, SessionCreationError>;
 
-    /// See [`SessionApplication::admit_profiled_session_run`].
+    /// See [`crate::SessionRunAdmissions::admit_profiled_session_run`].
     async fn admit_profiled_session_run(
         &self,
         owner_scope: &str,
         command: AdmitSessionRun,
     ) -> Result<AdmittedSessionRun, SessionProjectionRecoveryError>;
 
-    /// See [`SessionApplication::activate_admitted_session_run`].
+    /// See [`crate::SessionRunAdmissions::activate_admitted_session_run`].
     async fn activate_admitted_session_run(
         &self,
         admitted: AdmittedSessionRun,
     ) -> Result<SessionRunActivation, RunError>;
 
-    /// See [`SessionApplication::session_run_events_after`].
+    /// See [`crate::SessionRunAdmissions::session_run_events_after`].
     async fn session_run_events_after(
         &self,
         owner_scope: &str,
@@ -269,7 +269,13 @@ pub trait ProfiledSessionCommands: Send + Sync {
         lifecycle_after: awaken_agent_contract::RunLifecycleCursor,
         limit: usize,
     ) -> Result<awaken_run_ingress_contract::SessionRunEventPage, SessionProjectionRecoveryError>;
+}
 
+/// Reply to a pending tool request of a profiled Session's primary Run.
+///
+/// Consumer: the profiled Session Run reply edge.
+#[async_trait]
+pub trait ProfiledSessionReplies: Send + Sync {
     /// See [`SessionApplication::reply_profiled_session_run_for_owner`].
     async fn reply_profiled_session_run_for_owner(
         &self,
@@ -498,61 +504,7 @@ impl SessionEventBatches for SessionApplication {
 }
 
 #[async_trait]
-impl ProfiledSessionCommands for SessionApplication {
-    async fn accept_profiled_session(
-        &self,
-        command: CreateProfiledSessionCommand,
-    ) -> Result<PersistedSession, SessionCreationError> {
-        self.creation_commands
-            .accept_profiled_session(command)
-            .await
-    }
-
-    async fn admit_profiled_session_run(
-        &self,
-        owner_scope: &str,
-        command: AdmitSessionRun,
-    ) -> Result<AdmittedSessionRun, SessionProjectionRecoveryError> {
-        Box::pin(SessionApplication::admit_profiled_session_run(
-            self,
-            owner_scope,
-            command,
-        ))
-        .await
-    }
-
-    async fn activate_admitted_session_run(
-        &self,
-        admitted: AdmittedSessionRun,
-    ) -> Result<SessionRunActivation, RunError> {
-        Box::pin(SessionApplication::activate_admitted_session_run(
-            self, admitted,
-        ))
-        .await
-    }
-
-    async fn session_run_events_after(
-        &self,
-        owner_scope: &str,
-        session_id: &SessionId,
-        run_id: &awaken_agent_contract::agent::run::Id,
-        dispatch_after: awaken_run_ingress_contract::DispatchCursor,
-        lifecycle_after: awaken_agent_contract::RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<awaken_run_ingress_contract::SessionRunEventPage, SessionProjectionRecoveryError>
-    {
-        SessionApplication::session_run_events_after(
-            self,
-            owner_scope,
-            session_id,
-            run_id,
-            dispatch_after,
-            lifecycle_after,
-            limit,
-        )
-        .await
-    }
-
+impl ProfiledSessionReplies for SessionApplication {
     async fn reply_profiled_session_run_for_owner(
         &self,
         owner_scope: &str,

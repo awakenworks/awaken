@@ -433,6 +433,7 @@ pub struct SessionApplication {
     resource_reconciliation: Arc<crate::SessionResourceReconciliation>,
     resource_manifests: Arc<crate::SessionResourceManifests>,
     creation_commands: Arc<crate::SessionCreationCommands>,
+    run_admissions: Arc<crate::SessionRunAdmissions>,
     /// One complete set of immutable execution observations.
     execution_admission: Arc<SessionExecutionAdmission>,
     runtime_incarnation: String,
@@ -743,6 +744,11 @@ impl SessionApplication {
     #[must_use]
     pub fn creation_commands(&self) -> Arc<crate::SessionCreationCommands> {
         self.creation_commands.clone()
+    }
+
+    #[must_use]
+    pub fn run_admissions(&self) -> Arc<crate::SessionRunAdmissions> {
+        self.run_admissions.clone()
     }
 
     #[cfg(any(test, feature = "test-support"))]

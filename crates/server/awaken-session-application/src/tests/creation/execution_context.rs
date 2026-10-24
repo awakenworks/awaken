@@ -35,7 +35,11 @@ async fn profiled_context_admission_freezes_once_and_rejects_invalid_authoring()
             });
             command
         };
-        let created = app.accept_profiled_session(command()).await.unwrap();
+        let created = app
+            .creation_commands
+            .accept_profiled_session(command())
+            .await
+            .unwrap();
         let baseline = created.frozen_baseline().unwrap().clone();
         let seed = SessionContextSeed::from_prompts(&baseline.prompts).unwrap();
         assert_eq!(seed.timezone(), zone.unwrap_or("UTC"), "E1");
@@ -51,7 +55,11 @@ async fn profiled_context_admission_freezes_once_and_rejects_invalid_authoring()
                 .count(),
             1
         );
-        let replay = app.accept_profiled_session(command()).await.unwrap();
+        let replay = app
+            .creation_commands
+            .accept_profiled_session(command())
+            .await
+            .unwrap();
         assert_eq!(
             replay.frozen_baseline(),
             Some(&baseline),
@@ -85,7 +93,7 @@ async fn profiled_context_admission_freezes_once_and_rejects_invalid_authoring()
                 .insert("awaken.timezone".into(), "invalid/zone".into());
         }
         assert!(
-            matches!(app.accept_profiled_session(command).await, Err(SessionCreationError::Rejected(error))
+            matches!(app.creation_commands.accept_profiled_session(command).await, Err(SessionCreationError::Rejected(error))
             if error.kind == awaken_session_types::RunErrorKind::BadRequest),
             "E2"
         );

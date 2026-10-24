@@ -107,7 +107,8 @@ impl SessionApplication {
             .await
             .map_err(crate::SessionActivityError::mutation)
             .map_err(crate::SessionActivityError::run_error)?;
-        self.admit_run_session(&owner_scope, session_id.as_str(), agent_id)
+        self.run_admissions
+            .admit_run_session(&owner_scope, session_id.as_str(), agent_id)
             .await?;
         self.activities
             .begin_activity_for_operation_with_policy(

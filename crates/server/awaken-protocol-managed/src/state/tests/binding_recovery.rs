@@ -1090,6 +1090,7 @@ async fn protocol_defaults_preparer_rehydrates_the_exact_durable_baseline() {
 
     restarted
         .session_application()
+        .run_admissions()
         .admit_run_session("workspace-a", "external-thread", "ignored-on-recovery")
         .await
         .expect("prepare existing protocol thread");

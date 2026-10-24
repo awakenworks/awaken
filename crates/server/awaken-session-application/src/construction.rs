@@ -363,6 +363,20 @@ impl SessionAssembly {
                 runtime: self.runtime.clone(),
             },
         ));
+        let run_admissions = Arc::new(crate::SessionRunAdmissions::new(
+            crate::run_admission::SessionRunAdmissionCollaborators {
+                mutations: kernel.mutations.clone(),
+                queries: foundation.queries.clone(),
+                activities: lease.activities.clone(),
+                creation_commands: creation_commands.clone(),
+                resource_reconciliation: resource_reconciliation.clone(),
+                realizations: lease.realizations.clone(),
+                work_assignments: foundation.work_assignments.clone(),
+                executable_projections: foundation.executable_projections.clone(),
+                execution_admission: kernel.execution_admission.clone(),
+                runtime: self.runtime.clone(),
+            },
+        ));
         let SessionKernel {
             #[cfg(any(test, feature = "test-support"))]
             store,
@@ -417,6 +431,7 @@ impl SessionAssembly {
             resource_reconciliation,
             resource_manifests,
             creation_commands,
+            run_admissions,
             execution_admission,
             runtime_incarnation,
             event_batch_cutover_validation,
@@ -589,6 +604,7 @@ pub(crate) fn reassemble(
             Arc::strong_count(&application.resource_reconciliation),
             Arc::strong_count(&application.resource_manifests),
             Arc::strong_count(&application.creation_commands),
+            Arc::strong_count(&application.run_admissions),
         ]
     };
     let unshared = application.fixture_assembly.clone().assemble(kernel());

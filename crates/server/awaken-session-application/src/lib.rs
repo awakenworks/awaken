@@ -212,7 +212,6 @@ mod resource_lowering;
 mod resource_reconciliation;
 mod roles;
 mod run_admission;
-mod run_events;
 mod runtime_commands;
 pub use awaken_session_realization_driver::{
     SessionTerminalCleanupDriveOutcome, drive_session_realization, drive_session_terminal_cleanup,
@@ -235,12 +234,13 @@ pub use resource_manifests::{
 };
 pub use resource_reconciliation::{SessionResourcePurgeGuard, SessionResourceReconciliation};
 pub use roles::{
-    DeploymentSessionEnvironment, ProfiledSessionCommands, SessionCreation,
+    DeploymentSessionEnvironment, ProfiledSessionCommands, ProfiledSessionReplies, SessionCreation,
     SessionCredentialCommands, SessionEventBatches, SessionObservation, SessionProjectionReads,
     SessionResourceCommands, SessionRootReads, SessionTermination, SessionUpdates,
 };
 pub use run_admission::{
-    RecoveredSessionProjection, SessionProjectionRecoveryError, SessionRunApplication,
+    RecoveredSessionProjection, SessionProjectionRecoveryError, SessionRunAdmissions,
+    SessionRunApplication,
 };
 pub use runtime_commands::{
     SessionExecutionObservation, SessionModelRequestObservation, SessionRunExecutionObservation,
