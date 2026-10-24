@@ -343,11 +343,52 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/test_native_services.py
 
+    native-recovery-laws:
+      # >>> generated glob from test_native_recovery.py INPUT_GLOBS — do not edit
+      glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**}"
+      # <<< generated glob
+      run: python3 scripts/ci/test_native_recovery.py
+
+    native-recording-laws:
+      # >>> generated glob from test_native_recording.py INPUT_GLOBS — do not edit
+      glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**}"
+      # <<< generated glob
+      run: python3 scripts/ci/test_native_recording.py
+
+    postgres-storage-selection:
+      # >>> generated glob from test_postgres_storage.py INPUT_GLOBS — do not edit
+      glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**}"
+      # <<< generated glob
+      run: python3 scripts/ci/test_postgres_storage.py
+
+    postgres-resource-selection:
+      # >>> generated glob from test_postgres_resources.py INPUT_GLOBS — do not edit
+      glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**}"
+      # <<< generated glob
+      run: python3 scripts/ci/test_postgres_resources.py
+
+    native-postgres-e2e-laws:
+      # >>> generated glob from test_native_postgres_e2e.py INPUT_GLOBS — do not edit
+      glob: "{.github/workflows/windows-native-services.yml,e2e/**,scripts/ci/**}"
+      # <<< generated glob
+      run: python3 scripts/ci/test_native_postgres_e2e.py
+
     full-gate-admission:
       # >>> generated glob from test_full_gate_admission.py INPUT_GLOBS — do not edit
       glob: "{scripts/ci/_deadline.sh,scripts/ci/check-all.sh,scripts/ci/deadline.py,scripts/ci/test_full_gate_admission.py}"
       # <<< generated glob
+      # Existing host capability regressions remain separate from the source matrix.
       run: python3 scripts/ci/test_full_gate_admission.py
+
+    windows-test-matrix:
+      # >>> generated glob from check_windows_test_matrix.py INPUT_GLOBS — do not edit
+      glob: "{.cargo/**,.config/**,.github/workflows/**,Cargo.lock,Cargo.toml,crates/server/awaken-dispatch/**,crates/server/awaken-worker-registry/**,docs/windows-*-20261023.json,docs/windows-remaining-test-matrix.json,e2e/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_windows_test_matrix.py --self-test
+
+    native-postgres-bundle-laws:
+      glob: "e2e/**"
+      run: node --test e2e/native_postgres_build.test.mjs e2e/harness_home.test.mjs
 
     # Generated wire artifacts are derived from the admin-config and Managed
     # DTOs; a DTO edit without regeneration is refused here, not at release.

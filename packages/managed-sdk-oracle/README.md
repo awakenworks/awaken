@@ -127,7 +127,8 @@ evidence from drifting from the external expectation:
   `test/managed-bash-contract.test.mjs`, because the official implementation
   launches `/bin/bash`. Native Windows runs delegate these four contracts to
   the WSL distribution selected by `AWAKEN_TEST_WSL_DISTRO` (Linux Node.js 22+);
-  a missing runtime or any failed/skipped delegated contract fails the gate.
+  without it the delegated test is reported as skipped (not executed), and any
+  failed/skipped delegated contract inside a selected runtime fails the gate.
   The remaining helpers execute natively on every platform. Recovery records
   are created privately before writing: POSIX mode `0600`, or a protected
   Windows DACL granting only the current owner access. Atomic no-replace hard

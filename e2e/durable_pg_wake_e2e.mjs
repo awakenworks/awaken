@@ -17,9 +17,8 @@
 //     node e2e/durable_pg_wake_e2e.mjs
 
 import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { E2E_HOME_ROOT, runCleanupSteps, spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38795);
 const THREAD = 'durable-pg-wake-1';
@@ -41,7 +40,7 @@ const ENV = {
   SESSION_DEPLOYMENT_DATABASE_URL: DB_URL,
   SESSION_DEPLOYMENT_WAKE: 'pg-notify',
   SESSION_DEPLOYMENT_WAKE_CHANNEL: 'awaken_dispatch_wake',
-  SESSION_DEPLOYMENT_STORAGE_DIR: mkdtempSync(path.join(tmpdir(), 'awaken-pg-wake-')),
+  SESSION_DEPLOYMENT_STORAGE_DIR: mkdtempSync(path.join(E2E_HOME_ROOT, 'awaken-pg-wake-')),
 };
 
 async function submitBackground(text) {
@@ -78,6 +77,7 @@ async function waitForAssistant(minCount, timeoutMs = 30_000) {
 }
 
 async function main() {
+  const failures = [];
   // Cause/effect decision table for background reservation ownership:
   // P1 cold admission + local pool => enqueue first, then the claim owner alone
   //    realizes and commits one Environment identity.
@@ -96,8 +96,10 @@ async function main() {
 
     const { assistants } = await waitForAssistant(1);
     pass(`the pool (spawned with PgNotifyWake) drove the durable run to completion (reply: ${JSON.stringify(assistants[0].text)})`);
+  } catch (error) {
+    failures.push(error);
   } finally {
-    await stopServer(server);
+    await runCleanupSteps([() => stopServer(server, { requireCleanExit: failures.length === 0 })], failures);
   }
   pass('first process stopped — Dispatch lives in Postgres and history in the retained local commit store');
 
@@ -115,8 +117,10 @@ async function main() {
     await submitBackground('after restart');
     const { assistants } = await waitForAssistant(2);
     pass(`the pg-notify-wired pool drained a fresh run after the restart (${assistants.length} assistant replies committed)`);
+  } catch (error) {
+    failures.push(error);
   } finally {
-    await stopServer(server);
+    await runCleanupSteps([() => stopServer(server, { requireCleanExit: failures.length === 0 })], failures);
   }
 
   console.log('\nDURABLE PG WAKE E2E PASS: background runs driven by the process pool over a shared Postgres queue with the pg_notify cross-node wake, surviving a restart.');

@@ -258,6 +258,8 @@ run static "native physical recovery decision tables" python3 scripts/ci/test_na
 run static "native PostgreSQL storage selection" python3 scripts/ci/test_postgres_storage.py
 run static "native PostgreSQL resource selection" python3 scripts/ci/test_postgres_resources.py
 run static "native service evidence first-cause tests" python3 scripts/ci/test_native_recording.py
+run static "native served PostgreSQL runner laws" python3 scripts/ci/test_native_postgres_e2e.py
+run static "Windows remaining test matrix" python3 scripts/ci/check_windows_test_matrix.py --self-test
 run static "postgres harness self-test" scripts/ci/pg_tests.sh --self-test
 run static "k3d harness self-test" e2e/k3d/harness.sh --self-test
 run static "distributed role rollout self-test" e2e/k3d/distributed_control_e2e.sh --self-test

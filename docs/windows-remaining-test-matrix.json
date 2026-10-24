@@ -1,0 +1,1181 @@
+{
+  "schema_version": 1,
+  "status": "source-reviewed-design",
+  "platform": "Windows/MSVC",
+  "full_gate": false,
+  "source_base": "8ffc6be5c9bd913ba09a73b185278b67cf8b2a08",
+  "new_compilation_dispatched": false,
+  "interpretation": "源码锚点用于防止测试设计漂移，不是编译后 inventory、执行证据或行覆盖率。所有 deferred 需要重新 prepare/list/run/reconcile，历史回执不升级为当前通过。",
+  "ownership": {
+    "this_session": "CI/native fixture/E2E/hook/准入和测试矩阵；owned worktree container-boundary-review-20261020",
+    "宽接口": "Session / ManagedState / MCP / Environment / Host / Memory 的业务实现与领域断言；本轮不修改这些文件"
+  },
+  "tiers": {
+    "L0": "每次变更：静态、Python 决策表、明确选取的免编译 Node 测试；不得混入 cargo fixture。",
+    "L1": "每次受影响 crate：内存/SQLite/纯领域规律和并发状态机；需要已有或新编译产物，本轮延后。",
+    "L2": "每次后端相关变更：原生真实服务 conformance/准入/重开/故障注入；一个服务身份归一个 owner。",
+    "L3": "接口/部署变更：真实 production/scenario 进程 E2E 与事务跨层边界；复用同源执行包。",
+    "L4": "明确触发或定期：冷缓存/全量 CI 与独立 scale；隔离资源预算，不重复编译同一执行包。"
+  },
+  "execution_policy": {
+    "new_compilation_allowed": false,
+    "linux_validation_allowed": false,
+    "public_publication_allowed": false,
+    "cargo_entries": "仅为 owned native fixture 内的选择规范，不得脱离 required 环境直接运行并据退出 0 宣称通过。",
+    "full_ci": "不能直接调用当前 full check-all；须先补齐 Windows host admission，逐条保留不支持/未验证项。"
+  },
+  "closed_profiles": [
+    {
+      "profile": "postgres-core/nats/s3",
+      "receipt": "docs/windows-native-service-extension-20261023.json",
+      "meaning": "历史原生后端回执，明确旧 source；不重标为本轮完整通过。"
+    },
+    {
+      "profile": "storage",
+      "receipt": "docs/windows-postgres-storage-20261023.json",
+      "meaning": "既有 8 组与 6 个独立重观察；保持原证据范围。"
+    },
+    {
+      "profile": "resources",
+      "receipt": "docs/windows-postgres-resources-20261023.json",
+      "meaning": "最近已发布批次 9 组/96 次命名执行，包含共享纯测试，不是 96 个独立 PG SQL 场景。"
+    }
+  ],
+  "acceptance": [
+    "编译前拒绝缺失 companion、错误 PE/服务身份、资源不足。",
+    "同一源码 digest 绑定锁文件、index/working/untracked、实际二进制及角色；首个 child 失败优先于日志/记录/cleanup 故障。",
+    "每组必选 floor 之外仍对账完整实际 inventory；missing/duplicate/skip/ignored/错 package/错 source 均拒绝。",
+    "required 未配、空值、不可达必须在实际子用例失败；live 必须观测业务事实。",
+    "清理全部 owned 子进程，即使其中一步失败；静态源码存在与历史通过都不能签发新的执行回执。"
+  ],
+  "rows": [
+    {
+      "id": "worker-registry",
+      "tier": "L2",
+      "priority": "P0",
+      "conditions": [
+        "新旧 incarnation、创建账本、进程退出回执；跨连接竞争和重开；两个已发布迁移流 × generation 1/7 × DDL 阻塞/重试"
+      ],
+      "assertions": [
+        "历史 incarnation 不能复活；过期竞争只有一个权威转换；回执和历史重开后保留；失败迁移不留下半个 schema/ledger"
+      ],
+      "cases": [
+        {
+          "package": "awaken-worker-registry",
+          "target": "lib",
+          "name": "postgres::tests::connection_budget_is_the_explicit_composition_input",
+          "source": "crates/server/awaken-worker-registry/src/postgres.rs"
+        },
+        {
+          "package": "awaken-worker-registry",
+          "target": "conformance",
+          "name": "postgres_registry_conforms_when_configured",
+          "source": "crates/server/awaken-worker-registry/tests/conformance.rs"
+        },
+        {
+          "package": "awaken-worker-registry",
+          "target": "lib",
+          "name": "schema::history_tests::postgres_retained_history_migrates_both_published_streams",
+          "source": "crates/server/awaken-worker-registry/src/schema/history_tests.rs"
+        }
+      ],
+      "entry": {
+        "state": "existing-legacy-selection-not-dispatched",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "awaken-worker-registry",
+          "--features",
+          "test-support",
+          "--lib",
+          "--test",
+          "conformance"
+        ]
+      },
+      "execution": "deferred",
+      "remaining": [
+        "两处原始 URL 读取尚未接入 shared required/optional admission；缺少各自真实子测试准入表。",
+        "迁移 admin/schema 连接需使用现有有界连接 helper；新增 dev dependency 和 Rust 回归须等待恢复编译。",
+        "原始 pg_tests 默认调用存在；native distributed 严格选择及独立回执尚未接线。"
+      ]
+    },
+    {
+      "id": "lease-epoch",
+      "tier": "L2",
+      "priority": "P0",
+      "conditions": [
+        "当前/过期 lease × guard 持有/释放 × reclaim 提前返回 None/释放后完成；旧/新 epoch；物理 attempt 仍活跃/已静止"
+      ],
+      "assertions": [
+        "guard 持有时禁止接管；释放后 epoch 严格增加；returned epoch 不复用；物理身份冻结；never-replay 策略保留；以数据库时钟判定"
+      ],
+      "cases": [
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "lease_renewal_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "physical_attempt_admission_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "physical_attempt_admission_uses_the_postgres_authority_clock",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "postgres_epoch_guard_prevents_reclaim_until_commit_returns",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "postgres_execution_binding_is_frozen_with_the_physical_slot",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "postgres_physical_thread_constraint_survives_bypassed_admission",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_replay_policy",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "postgres_returned_attempt_epoch_is_not_reused",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "relinquish_claim_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "lease_semantics",
+          "name": "native_worker_freezes_binding_before_tool_entry_and_clears_on_return",
+          "source": "crates/server/awaken-dispatch/tests/lease_semantics.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "lease_semantics",
+          "name": "physical_ack_waits_for_all_participants_memory",
+          "source": "crates/server/awaken-dispatch/tests/lease_semantics.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "lease_semantics",
+          "name": "physical_ack_waits_for_all_participants_sqlite",
+          "source": "crates/server/awaken-dispatch/tests/lease_semantics.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "lease_semantics",
+          "name": "killed_process_does_not_fabricate_physical_quiescence_on_sqlite_reopen",
+          "source": "crates/server/awaken-dispatch/tests/lease_semantics.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "lease_semantics",
+          "name": "native_cancelled_external_future_does_not_acknowledge_physical_return",
+          "source": "crates/server/awaken-dispatch/tests/lease_semantics.rs"
+        }
+      ],
+      "entry": {
+        "state": "planned-owned-fixture-selection",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "awaken-dispatch",
+          "--features",
+          "test-support",
+          "--",
+          "--test-threads=1",
+          "--show-output"
+        ]
+      },
+      "execution": "deferred",
+      "remaining": [
+        "沿用 BlockingCommit/Notify/数据库时钟见证；不要用固定 sleep 或时间阈值替代状态断言。",
+        "共享 assert_lease_renewal 已含 LR1-LR8，但到期边界 renew/reclaim 的两个强制并发先后次序仍需独立 PostgreSQL 连接和 barrier 用例。"
+      ],
+      "backend_scope": "该组 PG 用例证明权威数据库行为；lease_semantics 中 Memory/SQLite 用例补充跨层真实执行/取消/物理 ACK 规则，不能合计为纯 PG 测试数量。",
+      "decision_rules": [
+        {
+          "id": "LR-current",
+          "when": "当前精确 Run/owner/epoch renew，原租期已过但新 deadline 尚未过",
+          "expect": "Current；另一 owner claim=None",
+          "existing_case": "lease_renewal_on_postgres"
+        },
+        {
+          "id": "LR-unreclaimed-expired",
+          "when": "旧 deadline 已过且 claim_is_current=false，但未发生 successor claim；精确 claim renew(0)",
+          "expect": "仍是 Current（行 CAS 语义）；不能改为仅按 Lease::is_live_at 拒绝",
+          "existing_case": "lease_renewal_on_postgres"
+        },
+        {
+          "id": "LR-reused-owner",
+          "when": "相同 owner 字符串重新 claim 后，旧 epoch renew 或 settle",
+          "expect": "旧 epoch Lost/拒绝；replacement 不变",
+          "existing_case": "lease_renewal_on_postgres"
+        },
+        {
+          "id": "LR-guard",
+          "when": "commit guard 持有，回收请求在 guard 释放前完成或仍等待",
+          "expect": "释放前不得获得 row；释放后可 claim 且 epoch 增加",
+          "existing_case": "postgres_epoch_guard_prevents_reclaim_until_commit_returns"
+        },
+        {
+          "id": "LR-physical",
+          "when": "外部执行 Future 未返回/已返回且记录了精确 quiescence",
+          "expect": "未返回不能 ACK 清槽；已静止后按 NeverReplay 生成一个 Indeterminate 终态，不重放工具",
+          "existing_case": "postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_replay_policy",
+          "companion_cases": [
+            "physical_ack_waits_for_all_participants_memory",
+            "physical_ack_waits_for_all_participants_sqlite",
+            "killed_process_does_not_fabricate_physical_quiescence_on_sqlite_reopen",
+            "native_cancelled_external_future_does_not_acknowledge_physical_return"
+          ]
+        }
+      ],
+      "planned_regressions": [
+        {
+          "id": "renew-before-reclaim",
+          "implementation": "deferred-rust",
+          "when": "真实 PostgreSQL 两个独立连接，在过期同一行上用 barrier 使 renew 先取得 row lock；renew 使用正 TTL",
+          "expect": "renew Current；随后 reclaim None；权威记录保持原 epoch 且 deadline 更新"
+        },
+        {
+          "id": "reclaim-before-renew",
+          "implementation": "deferred-rust",
+          "when": "相同行过期边界，使另一连接 reclaim 先提交 successor epoch，再释放旧 renew",
+          "expect": "successor 恰好一个；旧 renew Lost；旧 settle 不改变 successor 或提交历史"
+        }
+      ]
+    },
+    {
+      "id": "claim-races",
+      "tier": "L2",
+      "priority": "P0",
+      "conditions": [
+        "同 Thread 两个候选 × 两个独立连接；不兼容前页 × 恰好跨页尾 × 并发消费；不同 Thread"
+      ],
+      "assertions": [
+        "同 Thread 只有一个 running；不同 Thread 各获独立 lease；不兼容前页不能饿死后页；精确尾部不丢失"
+      ],
+      "cases": [
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "defer_claim_is_request_local_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "postgres_candidate_page_boundary_preserves_the_exact_tail_under_contention",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "postgres_candidate_pages_reach_work_after_incompatible_front_page",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "postgres_one_running_per_thread_under_concurrent_claimers",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "two_workers_claim_distinct_runs_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        }
+      ],
+      "entry": {
+        "state": "planned-owned-fixture-selection",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "awaken-dispatch",
+          "--features",
+          "test-support",
+          "--",
+          "--test-threads=1",
+          "--show-output"
+        ]
+      },
+      "execution": "deferred",
+      "remaining": [
+        "已有领域用例保留；缺口在 required-case floor、原生选择、实际 list/run 对账，不能以全包退出零替代。"
+      ]
+    },
+    {
+      "id": "pending-idempotency",
+      "tier": "L2",
+      "priority": "P0",
+      "conditions": [
+        "相同/冲突消息 ID；pending revision 匹配/陈旧/耗尽；同 Run/跨 Thread；时间截断边界"
+      ],
+      "assertions": [
+        "重放幂等；冲突被拒且权威数据不变；先锁 revision 再产生副作用；跨 Thread outbox 不丢失"
+      ],
+      "cases": [
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "message_idempotency_conflicts_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "millis_boundaries_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "pending_revision_cas_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "postgres_append_is_idempotent_and_stale_input_is_dropped",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "postgres_pending_mutations_lock_revision_before_effect_and_preserve_exhaustion",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "supersession_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        }
+      ],
+      "entry": {
+        "state": "planned-owned-fixture-selection",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "awaken-dispatch",
+          "--features",
+          "test-support",
+          "--",
+          "--test-threads=1",
+          "--show-output"
+        ]
+      },
+      "execution": "deferred",
+      "remaining": [
+        "保留原断言；为严格 native distributed 选择列明这些 case，重开和错误分支都须执行。"
+      ]
+    },
+    {
+      "id": "checkpoint-corruption",
+      "tier": "L2",
+      "priority": "P0",
+      "conditions": [
+        "合法/损坏载荷；完整/缺口提交前缀；checkpoint 重开/覆盖/删除/不可用"
+      ],
+      "assertions": [
+        "坏行不污染健康后缀；不完整前缀不可见；损坏或不可用 checkpoint 保持 Unknown，不能伪造已同步"
+      ],
+      "cases": [
+        {
+          "package": "awaken-dispatch",
+          "target": "dispatch_queries",
+          "name": "postgres_corrupt_summary_does_not_poison_identity_pages",
+          "source": "crates/server/awaken-dispatch/tests/dispatch_queries.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "postgres_operational_feed_waits_for_the_complete_committed_prefix",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "reconciliation_scan",
+          "name": "postgres_scan_counts_corrupt_payload_and_reaches_healthy_suffix",
+          "source": "crates/server/awaken-dispatch/tests/reconciliation_scan.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "postgres_stream_checkpoint_corruption_and_unavailability_stay_unknown",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "postgres_stream_checkpoint_survives_restart_overwrites_and_deletes",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        }
+      ],
+      "entry": {
+        "state": "planned-owned-fixture-selection",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "awaken-dispatch",
+          "--features",
+          "test-support",
+          "--",
+          "--test-threads=1",
+          "--show-output"
+        ]
+      },
+      "execution": "deferred",
+      "remaining": [
+        "纳入独立 required inventory，要求实际运行而非只编译。"
+      ]
+    },
+    {
+      "id": "scheduling-recovery",
+      "tier": "L2",
+      "priority": "P0",
+      "conditions": [
+        "due 前/等于/后；预算/TTL 边界；优先级、dedupe、GC；并发恢复和取消"
+      ],
+      "assertions": [
+        "恢复只有一个 winner；未到期不交付；预算和 TTL 可达终态；取消和 GC 不破坏其他 Run"
+      ],
+      "cases": [
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "cancel_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "concurrent_recovery_yields_one_winner_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "dead_letter_budget_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "dead_letter_ttl_gc_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "priority_dedupe_gc_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "scheduled_delivery_due_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        }
+      ],
+      "entry": {
+        "state": "planned-owned-fixture-selection",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "awaken-dispatch",
+          "--features",
+          "test-support",
+          "--",
+          "--test-threads=1",
+          "--show-output"
+        ]
+      },
+      "execution": "deferred",
+      "remaining": [
+        "已有 PG 领域断言；补 native 所有权和 required 选择，不能只运行 memory adapter。"
+      ]
+    },
+    {
+      "id": "ingress-parity",
+      "tier": "L2",
+      "priority": "P0",
+      "conditions": [
+        "新建/已迁移/重开；共享后端适配器；真实 commit/restart；required URL 缺失/错误/有效"
+      ],
+      "assertions": [
+        "同一 conformance 适用于 PostgreSQL；启动后端和 wake 配对；错误配置不得返回 passing SKIP；历史重启可恢复"
+      ],
+      "cases": [
+        {
+          "package": "awaken-dispatch",
+          "target": "any_store",
+          "name": "any_postgres_connect_and_claim",
+          "source": "crates/server/awaken-dispatch/tests/any_store.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "units",
+          "name": "configured_postgres_failure_cannot_pass_as_a_skipped_test",
+          "source": "crates/server/awaken-dispatch/tests/units.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "cross_thread_outbox_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "durable_submit_awaits_then_delivered_decision_resumes_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "idle_thread_inbox_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "list_dispatches_on_postgres",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "sandbox_binding",
+          "name": "postgres_backend_binds_and_recovers",
+          "source": "crates/server/awaken-dispatch/tests/sandbox_binding.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "dispatch_queries",
+          "name": "postgres_bounded_dispatch_queries_conform",
+          "source": "crates/server/awaken-dispatch/tests/dispatch_queries.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "runtime_postgres",
+          "name": "postgres_commit_backs_execute_resume_and_survives_restart",
+          "source": "crates/server/awaken-dispatch/tests/runtime_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "durable_postgres",
+          "name": "postgres_connect_applies_migrations_and_claim_recovers_a_lease",
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "dispatch_conformance",
+          "name": "postgres_dispatch_conforms",
+          "source": "crates/server/awaken-dispatch/tests/dispatch_conformance.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "any_store",
+          "name": "postgres_factory_pairs_the_selected_store_with_its_wake",
+          "source": "crates/server/awaken-dispatch/tests/any_store.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "dispatch_conformance",
+          "name": "postgres_refines_the_same_crash_recovery_history",
+          "source": "crates/server/awaken-dispatch/tests/dispatch_conformance.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "attempt_inventory",
+          "name": "postgres_scoped_admission_inventory_preserves_original_selection",
+          "source": "crates/server/awaken-dispatch/tests/attempt_inventory.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "dispatch_conformance",
+          "name": "postgres_session_reply_activity_rotation_conforms",
+          "source": "crates/server/awaken-dispatch/tests/dispatch_conformance.rs"
+        }
+      ],
+      "entry": {
+        "state": "planned-owned-fixture-selection",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "awaken-dispatch",
+          "--features",
+          "test-support",
+          "--",
+          "--test-threads=1",
+          "--show-output"
+        ]
+      },
+      "execution": "deferred",
+      "remaining": [
+        "默认命令只开 test-support，不证明 NATS；拆出明确的 broker 层。",
+        "native distributed 选择器和严格回执尚未实现；沿用 check_rust_test_execution 的 prepare/list/run/reconcile 机制。"
+      ]
+    },
+    {
+      "id": "pg-notify",
+      "tier": "L2",
+      "priority": "P0",
+      "conditions": [
+        "waiter 返回/恐慌/超时；独立连接发布；无 waiter；先证明交付→终止本用例 listener→再证明交付；共享 owner/最后 owner shutdown/drop/等待池连接"
+      ],
+      "assertions": [
+        "超时 waiter 被 abort 并 reap；断连后真实 hint 继续交付；无监听发布成功；最后 owner 释放唯一连接且不关闭共享 pool"
+      ],
+      "cases": [
+        {
+          "package": "awaken-dispatch",
+          "target": "pg_notify_wake",
+          "name": "delivery_observation_requires_completion_and_reaps_a_timed_out_waiter",
+          "source": "crates/server/awaken-dispatch/tests/pg_notify_wake.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "pg_notify_wake",
+          "name": "publish_wakes_a_waiter_on_another_connection",
+          "source": "crates/server/awaken-dispatch/tests/pg_notify_wake.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "pg_notify_wake",
+          "name": "publish_is_ok_with_no_waiter",
+          "source": "crates/server/awaken-dispatch/tests/pg_notify_wake.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "pg_notify_wake",
+          "name": "listener_reconnects_after_its_connection_is_dropped",
+          "source": "crates/server/awaken-dispatch/tests/pg_notify_wake.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "pg_notify_wake",
+          "name": "listener_ownership_releases_connection_on_shutdown_and_last_drop",
+          "source": "crates/server/awaken-dispatch/tests/pg_notify_wake.rs"
+        }
+      ],
+      "entry": {
+        "state": "planned-owned-fixture-selection",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "awaken-dispatch",
+          "--features",
+          "test-support",
+          "--test",
+          "pg_notify_wake",
+          "--",
+          "--test-threads=1",
+          "--show-output"
+        ]
+      },
+      "execution": "deferred",
+      "remaining": [
+        "raw pg_url 影响 4 个外部服务用例（含 listener 生命周期），全部应接 shared URL admission + 各自真实子测试表。",
+        "现有重连和交付断言已足够具体；保留，不另写仅测 LISTEN 可见或 sleep 后成功的重复用例。"
+      ]
+    },
+    {
+      "id": "nats-delivery",
+      "tier": "L2",
+      "priority": "P0",
+      "conditions": [
+        "optional/required × 缺失/空/不可达/有效 URL；同连接 SUB→自发布屏障→另一连接发布；独立真实消息观察"
+      ],
+      "assertions": [
+        "配置错误失败；两个确切 case 都运行；必须出现 VERIFIED live NATS fixture；wait 的轮询 fallback 不能代替 broker 消息"
+      ],
+      "cases": [
+        {
+          "package": "awaken-dispatch",
+          "target": "lib",
+          "name": "wake::nats_tests::nats_fixture_absence_and_configured_failure_are_distinct",
+          "source": "crates/server/awaken-dispatch/tests/support/nats.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "lib",
+          "name": "wake::nats_tests::nats_wake_signal_notifies_a_waiter",
+          "source": "crates/server/awaken-dispatch/tests/support/nats.rs"
+        }
+      ],
+      "entry": {
+        "state": "planned-owned-fixture-selection",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "awaken-dispatch",
+          "--features",
+          "test-support,nats",
+          "--lib",
+          "--",
+          "--test-threads=1",
+          "--show-output"
+        ]
+      },
+      "execution": "deferred",
+      "remaining": [
+        "独立 native NATS lane 已存在，但新 distributed 组合还需原生 NATS companion、身份验证、两个服务清理的故障表。",
+        "test-support 不包含 nats；严格选择必须显式开启 test-support,nats。"
+      ],
+      "fixtures": [
+        "owned-native-postgres-16",
+        "owned-native-nats"
+      ]
+    },
+    {
+      "id": "dispatch-scale",
+      "tier": "L4",
+      "priority": "P1",
+      "conditions": [
+        "20,000 runnable 行；5,000 不兼容前缀；同数据库和 pool；1/8/32/128 个 barrier 后启动的持久 claimer；整个窗口 300s"
+      ],
+      "assertions": [
+        "每个 eligible Run 恰好一个当前 epoch winner；无重复和丢失；捕获 rows/n/pool/claimers/window/p50/p95/p99；不足样本明确标记"
+      ],
+      "cases": [
+        {
+          "package": "awaken-dispatch",
+          "target": "dispatch_claim_perf",
+          "name": "broad_pending_queue_claim_latency",
+          "source": "crates/server/awaken-dispatch/tests/dispatch_claim_perf.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "dispatch_claim_perf",
+          "name": "incompatible_front_queue_claim_latency",
+          "source": "crates/server/awaken-dispatch/tests/dispatch_claim_perf.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "dispatch_claim_perf",
+          "name": "concurrent_incompatible_front_claim_throughput",
+          "source": "crates/server/awaken-dispatch/tests/dispatch_claim_perf.rs"
+        }
+      ],
+      "entry": {
+        "state": "planned-owned-fixture-selection",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "awaken-dispatch",
+          "--features",
+          "test-support",
+          "--test",
+          "dispatch_claim_perf",
+          "--",
+          "--ignored",
+          "--test-threads=1",
+          "--show-output"
+        ]
+      },
+      "execution": "deferred",
+      "remaining": [
+        "独立 ignored-only profile 尚未接入 native controller。默认广域选择必须仅排除这 3 个 exact ignored case；禁止吞掉其它私有见证。",
+        "固定验收清除以下 override；保留开发者可调入口。计时只作本机观察，不作为生产容量或优化收益证明。"
+      ],
+      "clear_environment": [
+        "AWAKEN_DISPATCH_PERF_ROWS",
+        "AWAKEN_DISPATCH_PERF_ROUNDS",
+        "AWAKEN_DISPATCH_PERF_DEPTH_ROUNDS",
+        "AWAKEN_DISPATCH_PERF_INCOMPATIBLE_ROWS",
+        "AWAKEN_DISPATCH_PERF_CONCURRENT_CLAIMS"
+      ]
+    },
+    {
+      "id": "scale-reporting",
+      "tier": "L1",
+      "priority": "P1",
+      "conditions": [
+        "N=0/1/9/19/20/99/100/usizeMAX；percent=0/1/50/95/99/100/101"
+      ],
+      "assertions": [
+        "nearest rank 无溢出；p95<20/p99<100 明确 insufficient_samples，不能把最大值当合格尾延迟"
+      ],
+      "cases": [
+        {
+          "package": "awaken-dispatch",
+          "target": "dispatch_claim_perf",
+          "name": "percentile_reporting_covers_empty_bounds_and_exact_integer_ranks",
+          "source": "crates/server/awaken-dispatch/tests/dispatch_claim_perf.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "dispatch_claim_perf",
+          "name": "sparse_samples_never_report_a_qualified_numeric_tail",
+          "source": "crates/server/awaken-dispatch/tests/dispatch_claim_perf.rs"
+        }
+      ],
+      "entry": {
+        "state": "planned-owned-fixture-selection",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "awaken-dispatch",
+          "--features",
+          "test-support",
+          "--test",
+          "dispatch_claim_perf",
+          "--",
+          "--test-threads=1",
+          "--show-output"
+        ]
+      },
+      "execution": "deferred",
+      "remaining": [
+        "本轮不运行 Rust；恢复编译后随普通 correctness 跑这 2 个纯领域用例。"
+      ]
+    },
+    {
+      "id": "served-postgres",
+      "tier": "L3",
+      "priority": "P0",
+      "conditions": [
+        "新生产/scenario/hand 同源快照；fresh 本地目录重启；pool 重启；commit guard 持锁时租期过期；旧 claim settle"
+      ],
+      "assertions": [
+        "PG commit 历史跨 fresh 本地目录恢复；重启后继续完成；持锁时禁止 reclaim；旧 epoch 被 fence；只提交一次；每个 server 正常退出"
+      ],
+      "cases": [
+        {
+          "package": "e2e",
+          "target": "node",
+          "name": "DURABLE PG COMMIT E2E PASS:",
+          "source": "e2e/durable_pg_commit_e2e.mjs"
+        },
+        {
+          "package": "e2e",
+          "target": "node",
+          "name": "DURABLE PG WAKE E2E PASS:",
+          "source": "e2e/durable_pg_wake_e2e.mjs"
+        },
+        {
+          "package": "e2e",
+          "target": "node",
+          "name": "POSTGRES CLAIMED-COMMIT GUARD TS E2E PASS:",
+          "source": "e2e/postgres_claimed_commit_guard_e2e.ts"
+        }
+      ],
+      "entry": {
+        "state": "implemented-pending-native-execution",
+        "argv": [
+          "python",
+          "scripts/ci/check_native_postgres_e2e.py",
+          "--postgres-bin",
+          "<native-pg-bin>",
+          "--temp-root",
+          "<short-owned-temp>",
+          "--output",
+          "<fresh-output>"
+        ]
+      },
+      "execution": "deferred",
+      "remaining": [
+        "controller 和构建组装 pure 回归已准备；生产/scenario/hand 构建及这 3 个实际 served case 未执行。",
+        "单进程 pool 完成只证明接线和进度；pg-notify 行单独证明跨连接 hint 交付与重连。"
+      ]
+    },
+    {
+      "id": "native-sql-observation",
+      "tier": "L2",
+      "priority": "P0",
+      "conditions": [
+        "带引号的 database identity、UTF-8 bytes、多行、只读事务、错误 SQL"
+      ],
+      "assertions": [
+        "实际 psql 执行精确 1 条 Node law 且 tests=pass=1/fail=cancelled=skipped=0"
+      ],
+      "cases": [
+        {
+          "package": "e2e",
+          "target": "node",
+          "name": "Postgres observation preserves rows, quoted identity, bytes, and read-only authority",
+          "source": "e2e/postgres.test.mjs"
+        }
+      ],
+      "entry": {
+        "state": "implemented-pending-native-execution",
+        "argv": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "e2e/postgres.test.mjs"
+        ]
+      },
+      "execution": "deferred",
+      "remaining": [
+        "前一批已有单独原生实测；不等同于 served E2E 或当前变更后的全量验证。"
+      ]
+    },
+    {
+      "id": "windows-host-admission",
+      "tier": "L4",
+      "priority": "P0",
+      "conditions": [
+        "PATH 首位原生 cargo；observer 与 policy 匹配/不匹配；拒绝 75；等待时长大于执行预算；父级 GIT/index/timing 污染"
+      ],
+      "assertions": [
+        "拒绝发生在 child 前；保留真实退出码；queue 时间不消费 admitted 执行预算；真实 full gate 只准入一次；隔离父坐标"
+      ],
+      "cases": [
+        {
+          "package": "ci",
+          "target": "python",
+          "name": "test_fixture_detaches_parent_git_cargo_and_full_gate_coordinates",
+          "source": "scripts/ci/test_full_gate_admission.py"
+        },
+        {
+          "package": "ci",
+          "target": "python",
+          "name": "test_native_cargo_first_still_waits_for_admission_and_preserves_outcome",
+          "source": "scripts/ci/test_full_gate_admission.py"
+        },
+        {
+          "package": "ci",
+          "target": "python",
+          "name": "test_explicit_observer_override_selects_its_matching_host_entry",
+          "source": "scripts/ci/test_full_gate_admission.py"
+        },
+        {
+          "package": "ci",
+          "target": "python",
+          "name": "test_missing_or_different_host_cargo_refuses_before_any_command",
+          "source": "scripts/ci/test_full_gate_admission.py"
+        },
+        {
+          "package": "ci",
+          "target": "python",
+          "name": "test_real_full_gate_entry_admits_once_when_native_cargo_is_first",
+          "source": "scripts/ci/test_full_gate_admission.py"
+        },
+        {
+          "package": "ci",
+          "target": "python",
+          "name": "test_host_resource_refusal_retains_75_without_starting_child",
+          "source": "scripts/ci/test_full_gate_admission.py"
+        }
+      ],
+      "entry": {
+        "state": "implemented-but-windows-skips",
+        "argv": [
+          "python",
+          "scripts/ci/test_full_gate_admission.py"
+        ]
+      },
+      "execution": "deferred",
+      "remaining": [
+        "这 6 个现有测试在 Windows 整类 skip；需复用现有 native PE launcher 替换 POSIX fixture，恢复编译后验证。",
+        "外部 Windows host admission capability 仍未具备；禁止伪造通过 marker、移除 skip 或以子集替代 full gate。"
+      ]
+    },
+    {
+      "id": "cold-and-full-ci",
+      "tier": "L4",
+      "priority": "P0",
+      "conditions": [
+        "全新 Git/Cargo stores；锁定依赖公开可达；Windows MSVC 冷 target；缓存冷热分别记录；真实 PG/NATS/S3；完整仓库/SDK/E2E"
+      ],
+      "assertions": [
+        "同一实际提交的 prepare/list/run/source/二进制 hash 可追溯；所有 required identity 执行；任一步失败或跳过均不能签发 full_gate"
+      ],
+      "cases": [
+        {
+          "package": "ci",
+          "target": "python",
+          "name": "verify",
+          "source": "scripts/ci/check_dependency_fetch.py"
+        }
+      ],
+      "entry": {
+        "state": "deferred-policy-and-host-admission",
+        "argv": [
+          "python",
+          "scripts/ci/check_dependency_fetch.py",
+          "--output",
+          "<fresh-output>"
+        ]
+      },
+      "execution": "deferred",
+      "remaining": [
+        "只允许本地 Windows 与内网 origin；不发布公开 GitHub，不调度 Linux。",
+        "完整 CI、冷缓存、新环境、compiled fixture、Windows host admission 当前未完成；资源就绪并恢复编译授权后再执行。"
+      ]
+    }
+  ],
+  "shared_admission_design": {
+    "targets": [
+      "worker-registry conformance",
+      "worker-registry retained history",
+      "PgNotify publish_wakes_a_waiter_on_another_connection",
+      "PgNotify publish_is_ok_with_no_waiter",
+      "PgNotify listener_reconnects_after_its_connection_is_dropped",
+      "PgNotify listener_ownership_releases_connection_on_shutdown_and_last_drop"
+    ],
+    "owner": "复用 awaken_reliability_testkit::postgres_fixture_url / assert_postgres_fixture_child_contract / postgres_fixture_pool；不另造 fixture SPI。",
+    "implementation": "deferred-rust",
+    "rules": [
+      {
+        "required": false,
+        "url": "absent",
+        "expect": "显式 optional SKIPPED；不算 live execution"
+      },
+      {
+        "required": true,
+        "url": "absent",
+        "expect": "真实子用例失败且原因是 required fixture missing"
+      },
+      {
+        "required": true,
+        "url": "empty",
+        "expect": "真实子用例失败，不得走 optional skip"
+      },
+      {
+        "required": true,
+        "url": "unreachable",
+        "expect": "在共享连接 deadline 内失败，不得报告 SKIPPED"
+      },
+      {
+        "required": true,
+        "url": "owned-live",
+        "expect": "实际业务断言执行且无 SKIPPED；list/run/required inventory 一致"
+      },
+      {
+        "required": false,
+        "url": "empty",
+        "expect": "已配置空值必须失败，不得被 optional 开关吞掉"
+      },
+      {
+        "required": false,
+        "url": "unreachable",
+        "expect": "已配置端点在共享连接 deadline 内失败，不得报告 SKIPPED"
+      },
+      {
+        "required": false,
+        "url": "owned-live",
+        "expect": "实际业务断言执行且无 SKIPPED"
+      }
+    ]
+  },
+  "admission_owner_reference": "shared_admission_design 的 missing/empty/unreachable/live 表还需用于 distributed 双服务清理和 child-cause 选择回执；不能只测 URL 字符串解析。",
+  "trigger_rules": [
+    {
+      "id": "always",
+      "when": "每次变更运行相关静态和纯测试；pure Node 入口必须与会编译 fixture 的完整 runner 区分。",
+      "required": [
+        "L0"
+      ]
+    },
+    {
+      "id": "rust",
+      "when": "Rust owner 与所有传递 consumer（含 dev dependencies）由现有 Cargo graph planner 选择；doctest 不由 nextest 替代。",
+      "required": [
+        "L0",
+        "L1",
+        "L2",
+        "L3"
+      ]
+    },
+    {
+      "id": "service-process",
+      "when": "API、部署、consumer、harness 或 E2E 改动保留真实服务和进程边界断言；纯测试不替代实际交付。",
+      "required": [
+        "L0",
+        "L2",
+        "L3"
+      ]
+    },
+    {
+      "id": "global",
+      "when": "manifest/lock/toolchain/Cargo 配置/feature profile/CI 或 hook 改动保留 whole Rust graph，并补冷缓存验证。",
+      "required": [
+        "L0",
+        "L1",
+        "L2",
+        "L3",
+        "L4-cold"
+      ]
+    },
+    {
+      "id": "scale",
+      "when": "Ingress 候选查询、迁移或规模目标变化，额外运行三个 exact ignored scale case，单独资源预算与回执。",
+      "required": [
+        "L4-scale"
+      ]
+    },
+    {
+      "id": "unknown",
+      "when": "无法映射到已知所有权的输入，扩大为全层，不能因为快速路径未选中而跳过。",
+      "required": [
+        "L0",
+        "L1",
+        "L2",
+        "L3",
+        "L4-cold",
+        "L4-scale"
+      ]
+    },
+    {
+      "id": "qualification",
+      "when": "发布/明确全量验收独立于 changed-file 过滤，要求全层以及每层当前源码的实际执行回执。",
+      "required": [
+        "L0",
+        "L1",
+        "L2",
+        "L3",
+        "L4-cold",
+        "L4-scale"
+      ]
+    }
+  ],
+  "trigger_entry": "python scripts/ci/check_windows_test_matrix.py --plan-base origin/main；完整验收再加 --qualification。只生成义务清单，不生成通过回执。"
+}

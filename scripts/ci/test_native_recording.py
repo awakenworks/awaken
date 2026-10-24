@@ -94,6 +94,20 @@ class NativeRecordingTests(unittest.TestCase):
                 self.assertTrue(all(row["status"]=="running" for row in snapshots))
                 service.close.assert_called_once()
 
+    def test_interruption_cannot_record_pass_and_original_status_survives_cleanup(self):
+        for cause,status in ((KeyboardInterrupt(),130),(SystemExit(29),29),(SystemExit(0),1),(GeneratorExit(),1)):
+            for cleanup_fails in (False,True):
+                with self.subTest(cause=type(cause).__name__,cleanup=cleanup_fails),tempfile.TemporaryDirectory() as directory:
+                    stack,args,service=self.fixture(Path(directory),0)
+                    if cleanup_fails:service.close.side_effect=RuntimeError("controlled shutdown failure")
+                    with stack,mock.patch.object(gate.subprocess,"run",side_effect=cause),contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(gate.worker(args),status)
+                    value=json.loads((args.output/"result.json").read_text())
+                    self.assertEqual(value["status"],"failed")
+                    self.assertEqual(value["exit_code"],status)
+                    self.assertIsNot(value.get("source_unchanged"),True)
+                    service.close.assert_called_once()
+
     def test_initial_record_failure_refuses_before_service_construction(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);args=gate.parser().parse_args(["--service","nats","--nats-bin","unused","--output",str(root/"out")])

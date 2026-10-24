@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "status": "passed-with-explicit-scope",
+  "platform": "Windows/MSVC",
+  "linux_verification_allowed": false,
+  "public_publication_allowed": false,
+  "full_gate": false,
+  "scope": "Three real served PostgreSQL scenarios, one real native read-only SQL observation, and isolated decision tables; not full workspace, cold-cache or hosted CI.",
+  "base_commit": "8ffc6be5c9bd913ba09a73b185278b67cf8b2a08",
+  "working_source_digest": "9df1f8ba78fefc5fb6eb1486afb19ceae9d337a8d64a95e8b95e1cf3bf9eb2d3",
+  "source_files": {
+    ".github/workflows/windows-native-services.yml": "0380cf21b411ec3ed90f65f9b4b255456a52b66afe9f67523f3843864382ce69",
+    "docs/windows-remaining-test-matrix.json": "78eb3905e74e5ae14301ce228d756c4188dcb3cd38088af2b813e99acd639930",
+    "e2e/durable_pg_commit_e2e.mjs": "6b2bed4dd0e6f7ead201a9ff42e046b12dd3fc58f05a82bf30493a0e3fbb490d",
+    "e2e/durable_pg_wake_e2e.mjs": "4d2647eeef0bfdfea04c9c81fc29cf9f2a75adfc43e7b82f287ad195bd061717",
+    "e2e/harness.mjs": "d1841518d80ed4b1bb03af10055c5b384b3609139dd8ecf6f8b658a730123f25",
+    "e2e/harness_home.test.mjs": "7c5adbe00329ca91a133ef474daa935422d1c47a4e9b34c1c49dc849c377eaaf",
+    "e2e/native_postgres_build.mjs": "0b340eade35adb55e5f7041f1a32e0445b5a236d17df918db2c4a05aad34638f",
+    "e2e/native_postgres_build.test.mjs": "d7189cb5475e68054bdd0a81d263943d100f151b26786f3fe2a58092a79236df",
+    "e2e/package.json": "508fb9e0fa6a611efd729f0af1ee9c909cf7684ecefb1ee377315ffc09f50694",
+    "e2e/postgres_claimed_commit_guard_e2e.ts": "f8252265c63d411220fdde2d3d50dc6765f4b23fea3ea305291e75a2e6406a7b",
+    "lefthook.yml": "07e5af7c2753c685e6886426b811fc967ca0ddb1a8a57e4a97260cfe084f6e91",
+    "scripts/ci/check-all.sh": "da2727566183b24af2cb5506d45cc5df537148f85ff6e7f360589505ebb1728b",
+    "scripts/ci/check_native_postgres_e2e.py": "7af953cc7214599036d1f075afb2b7e96b3f984d982e55ca32f398dd179d2ead",
+    "scripts/ci/check_native_services.py": "563d120e6edf696659ab689eee361f5ccb9ed3062c9869413497c9a79f7ca094",
+    "scripts/ci/check_windows_test_matrix.py": "8863c5d1c73c6736c3776d399480ed3a0ee1d8b50c1dc176ddab0ec731c26d7c",
+    "scripts/ci/test_native_postgres_e2e.py": "bc3bfda81b178b719e95974d2d30264d43642eb007ea17cc4fc9fe7085469f20",
+    "scripts/ci/test_native_recording.py": "38be27c8d33cbf3e987bcad168dc7fa6a134f46203bba972cb1ef0f3b991ce3b"
+  },
+  "design": [
+    "Fresh native HOME roots cannot erase another fixture instance or a pre-existing sibling.",
+    "Build production, scenario host and hand through the existing Cargo snapshot owner before PostgreSQL starts.",
+    "Require native AMD64 executables, current source and unchanged binary hashes.",
+    "Own fresh SCRAM PostgreSQL, actual served assertions, clean server exit and empty per-case temporary roots.",
+    "Reject optional skips, duplicate pass markers, missing cases, source drift and tampered logs.",
+    "Preserve the original child error through recording and cleanup failure; interruption can never report pass.",
+    "The existing native service worker now requires actual completion and records interruption as failure before owned cleanup."
+  ],
+  "working_units": [
+    {
+      "stage": "working-test_native_postgres_e2e",
+      "exit_code": 0,
+      "seconds": 1.0098641999647953,
+      "log": "postgres-e2e-v2-working-test_native_postgres_e2e.log",
+      "sha256": "29cbf3752daf4991750bb8aec15d8ffdeedc7fe425248231aa915c52ed00da42",
+      "tests": 12
+    },
+    {
+      "stage": "working-test_native_recording",
+      "exit_code": 0,
+      "seconds": 0.46083609998458996,
+      "log": "postgres-e2e-v2-working-test_native_recording.log",
+      "sha256": "c464cddbadc85966518bc3f4acf0462bfdbd71dee58678a37bddb642e13b266c",
+      "tests": 5
+    },
+    {
+      "stage": "working-test_native_services",
+      "exit_code": 0,
+      "seconds": 1.3133982000290416,
+      "log": "postgres-e2e-v2-working-test_native_services.log",
+      "sha256": "8b8c53c6ad312652fbeff21c8131a57e8bb67181825a39fdf8d3c3da4c9663d7",
+      "tests": 26
+    },
+    {
+      "stage": "working-test_native_recovery",
+      "exit_code": 0,
+      "seconds": 1.2447504000156187,
+      "log": "postgres-e2e-v2-working-test_native_recovery.log",
+      "sha256": "a9c9f4cfe7f7e740dbff48ed9a6326094154403855032b280ad39e6f3ed11985",
+      "tests": 16
+    },
+    {
+      "stage": "working-test_postgres_storage",
+      "exit_code": 0,
+      "seconds": 2.4778254000120796,
+      "log": "postgres-e2e-v2-working-test_postgres_storage.log",
+      "sha256": "fd758496cf88445a75fb57e3a3093001435643c911fb4683cfce84d416866b02",
+      "tests": 9
+    },
+    {
+      "stage": "working-test_postgres_resources",
+      "exit_code": 0,
+      "seconds": 1.523056700010784,
+      "log": "postgres-e2e-v2-working-test_postgres_resources.log",
+      "sha256": "7b287e47e16a39f4b511e46495b75433afe89db77c7ee731f9805356522220c1",
+      "tests": 7
+    },
+    {
+      "stage": "working-check_windows_test_matrix",
+      "exit_code": 0,
+      "seconds": 0.8475585000123829,
+      "log": "postgres-e2e-v2-working-check_windows_test_matrix.log",
+      "sha256": "3457e4e94ec333d32a58715946cf2b5fa68fb774ae1ebb57383a017c9fb1f8e6",
+      "tests": 5
+    },
+    {
+      "stage": "working-node-laws",
+      "exit_code": 0,
+      "seconds": 4.173515500035137,
+      "log": "postgres-e2e-v2-working-node-laws.log",
+      "sha256": "2bd571a254e184f84092708e6ec80683beedb8c51052e1e8328c808f2ed9c01c",
+      "tests": 16,
+      "executed": 13,
+      "explicit_posix_skips": 3
+    }
+  ],
+  "working_qualification": {
+    "path": "F:\\Codes\\awaken-1.0.0-dev\\target\\native-root-c07-20261022\\test-timings\\native-postgres-served-working-20261023-v2\\result.json",
+    "sha256": "bb8fdc3814d8b2485f78e37421cbabb7807e6fd2d1bbcb2deee566f30958f938",
+    "served_cases": [
+      {
+        "case": "durable-commit",
+        "source": "e2e/durable_pg_commit_e2e.mjs",
+        "source_sha256": "6b2bed4dd0e6f7ead201a9ff42e046b12dd3fc58f05a82bf30493a0e3fbb490d",
+        "marker": "DURABLE PG COMMIT E2E PASS:",
+        "status": "passed",
+        "temporary_removed": true
+      },
+      {
+        "case": "notify-wake",
+        "source": "e2e/durable_pg_wake_e2e.mjs",
+        "source_sha256": "4d2647eeef0bfdfea04c9c81fc29cf9f2a75adfc43e7b82f287ad195bd061717",
+        "marker": "DURABLE PG WAKE E2E PASS:",
+        "status": "passed",
+        "temporary_removed": true
+      },
+      {
+        "case": "claimed-commit-guard",
+        "source": "e2e/postgres_claimed_commit_guard_e2e.ts",
+        "source_sha256": "f8252265c63d411220fdde2d3d50dc6765f4b23fea3ea305291e75a2e6406a7b",
+        "marker": "POSTGRES CLAIMED-COMMIT GUARD TS E2E PASS:",
+        "status": "passed",
+        "temporary_removed": true
+      }
+    ],
+    "sql_probe": {
+      "status": "passed",
+      "source": "e2e/postgres.test.mjs",
+      "source_sha256": "12fc66d5d7b1a54050449a8a6f2e44ac02d79781886989dba2325b33a0bb5945"
+    }
+  },
+  "publication_rule": "Normal commit, fetch/rebase, actual committed-head re-execution, normal hooks-enabled internal-origin push and exact remote equality.",
+  "remaining": [
+    "Distributed WorkerRegistry/Ingress and explicit scale qualification.",
+    "Current full Windows Rust, static, support and fresh-environment CI.",
+    "Platform-exclusive Linux checks and public hosted CI remain unexecuted."
+  ]
+}
