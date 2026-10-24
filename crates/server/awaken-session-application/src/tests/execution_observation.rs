@@ -447,6 +447,7 @@ async fn native_run_reply_rejects_foreign_owner_mode_and_nonprimary_or_unfenced_
     assert!(
         matches!(
             application
+                .coordination
                 .reply_profiled_session_run_for_owner("foreign", command.clone())
                 .await,
             Err(crate::SessionProjectionRecoveryError::NotFound)
@@ -458,6 +459,7 @@ async fn native_run_reply_rejects_foreign_owner_mode_and_nonprimary_or_unfenced_
     assert!(
         matches!(
             application
+                .coordination
                 .reply_profiled_session_run_for_owner("workspace", managed)
                 .await,
             Err(crate::SessionProjectionRecoveryError::NotFound)
@@ -494,6 +496,7 @@ async fn native_run_reply_rejects_foreign_owner_mode_and_nonprimary_or_unfenced_
         assert!(
             matches!(
                 application
+                    .coordination
                     .reply_profiled_session_run_for_owner("workspace", invalid)
                     .await,
                 Err(crate::SessionProjectionRecoveryError::Rejected(_))

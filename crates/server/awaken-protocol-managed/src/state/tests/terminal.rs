@@ -432,6 +432,7 @@ async fn child_thread_archive_rejects_a_committed_running_child() {
     .expect("A2 committed coordination prefix");
     let admission = state
         .session_application()
+        .coordination()
         .admit_session_run_activity(
             &awaken_session_types::SessionId::from(&session.id),
             "researcher",

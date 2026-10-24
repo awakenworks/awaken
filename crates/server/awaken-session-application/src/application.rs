@@ -434,6 +434,7 @@ pub struct SessionApplication {
     creation_commands: Arc<crate::SessionCreationCommands>,
     run_admissions: Arc<crate::SessionRunAdmissions>,
     observations: Arc<crate::SessionObservations>,
+    coordination: Arc<crate::SessionCoordination>,
     /// One complete set of immutable execution observations.
     execution_admission: Arc<SessionExecutionAdmission>,
     runtime_incarnation: String,
@@ -754,6 +755,11 @@ impl SessionApplication {
     #[must_use]
     pub fn observations(&self) -> Arc<crate::SessionObservations> {
         self.observations.clone()
+    }
+
+    #[must_use]
+    pub fn coordination(&self) -> Arc<crate::SessionCoordination> {
+        self.coordination.clone()
     }
 
     #[cfg(any(test, feature = "test-support"))]

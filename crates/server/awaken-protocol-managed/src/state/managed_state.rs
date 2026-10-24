@@ -51,7 +51,7 @@ impl SessionApplicationRoles {
             projection: application.queries(),
             events: application.clone(),
             profiled: application.run_admissions(),
-            profiled_replies: application.clone(),
+            profiled_replies: application.coordination(),
             termination: application.termination_commands(),
             updates: application.update_commands(),
             resources: application.resource_manifests(),

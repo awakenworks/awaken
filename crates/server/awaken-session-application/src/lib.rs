@@ -181,6 +181,7 @@ pub use lifecycle_outbox_relay::{
 };
 mod continuation;
 mod coordination;
+pub use coordination::SessionCoordination;
 mod creation;
 mod session_input;
 pub use continuation::{SessionContinuationError, SessionContinuations};

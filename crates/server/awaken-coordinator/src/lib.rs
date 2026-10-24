@@ -1079,7 +1079,7 @@ async fn mount_with_managed_over_and_models(
             terminal_cleanup: session_application.terminal_cleanups(),
             session_preparation: session_application.realizations(),
             session_environment_bindings: session_application.environment_binding_sink(),
-            coordination: session_application.clone(),
+            coordination: session_application.coordination(),
             session_work: session_application.work_assignments(),
             authenticator: worker_authenticator.clone(),
             recovery: execution.worker_recovery.clone(),

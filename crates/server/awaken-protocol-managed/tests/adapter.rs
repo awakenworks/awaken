@@ -4356,14 +4356,14 @@ async fn hitl_await_confirm_resume() {
     let finalize_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     for _ in 0..2 {
         awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
-            application.as_ref(),
+            application.coordination().as_ref(),
             boundary.clone(),
         )
         .await
         .unwrap();
         loop {
             match awaken_session_runtime_contract::SessionAgentCoordination::finalize_session_agent_boundary(
-                application.as_ref(),
+                application.coordination().as_ref(),
                 boundary.clone(),
             )
             .await

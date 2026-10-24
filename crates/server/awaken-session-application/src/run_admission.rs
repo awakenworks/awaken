@@ -29,7 +29,7 @@ use awaken_session_types::RunError;
 use awaken_session_types::SessionRevision;
 
 use crate::{
-    CreateProfiledSessionCommand, SessionApplication, SessionCreationError, SessionMutationError,
+    CreateProfiledSessionCommand, SessionCreationError, SessionMutationError,
     SessionPreparationError, session_repository_error,
 };
 
@@ -682,7 +682,8 @@ type ProjectedAgentResolver = dyn Fn(&str) -> Result<Option<String>, RunError> +
 
 pub struct SessionRunApplication {
     runtime: Arc<dyn RunApplication>,
-    sessions: Arc<SessionApplication>,
+    admissions: Arc<SessionRunAdmissions>,
+    coordination: Arc<crate::SessionCoordination>,
     workspace: Arc<WorkspaceResolver>,
     projected_agent: Arc<ProjectedAgentResolver>,
 }
@@ -691,13 +692,15 @@ impl SessionRunApplication {
     #[must_use]
     pub fn new(
         runtime: Arc<dyn RunApplication>,
-        sessions: Arc<SessionApplication>,
+        admissions: Arc<SessionRunAdmissions>,
+        coordination: Arc<crate::SessionCoordination>,
         workspace: impl Fn(&str) -> Result<String, RunError> + Send + Sync + 'static,
         projected_agent: impl Fn(&str) -> Result<Option<String>, RunError> + Send + Sync + 'static,
     ) -> Self {
         Self {
             runtime,
-            sessions,
+            admissions,
+            coordination,
             workspace: Arc::new(workspace),
             projected_agent: Arc::new(projected_agent),
         }
@@ -751,11 +754,10 @@ impl SessionRunApplication {
         command: AdmitSessionRun,
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunApplicationError> {
-        Box::pin(self.sessions.run_admissions.run_admitted_session_for_owner(
-            owner_scope,
-            command,
-            sink,
-        ))
+        Box::pin(
+            self.admissions
+                .run_admitted_session_for_owner(owner_scope, command, sink),
+        )
         .await
     }
 }
@@ -887,7 +889,7 @@ impl OwnerScopedRunApplication for SessionRunApplication {
         tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunApplicationError> {
-        self.sessions
+        self.coordination
             .resume_session_run_for_owner(
                 owner_scope,
                 operation_id,
@@ -906,7 +908,7 @@ impl OwnerScopedRunApplication for SessionRunApplication {
         resume: RunResume,
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunApplicationError> {
-        self.sessions
+        self.coordination
             .resume_session_run_streaming_for_owner(
                 owner_scope,
                 operation_id,
@@ -966,13 +968,11 @@ impl awaken_session_application_contract::SessionRunBackgroundApplication
         let run_id = command.run_id.clone();
         let owner_scope = (self.workspace)(thread)?;
         let admitted = Box::pin(
-            self.sessions
-                .run_admissions
+            self.admissions
                 .admit_session_run_for_owner(&owner_scope, command),
         )
         .await?;
-        self.sessions
-            .run_admissions
+        self.admissions
             .activate_admitted_session_run(admitted)
             .await?;
         Ok(run_id)

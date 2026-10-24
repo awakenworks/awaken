@@ -1391,7 +1391,7 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
         // must wake publication for this exact pending primary input.
         assert!(
             awaken_session_runtime_contract::SessionAgentCoordination::admit_session_model_request(
-                &app,
+                app.coordination.as_ref(),
                 &SessionId::from(session_id),
                 &ThreadId(session_id.into()),
                 &RunId("not-the-current-run".into()),
@@ -1400,7 +1400,7 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
             .is_err()
         );
         awaken_session_runtime_contract::SessionAgentCoordination::admit_session_model_request(
-            &app,
+            app.coordination.as_ref(),
             &SessionId::from(session_id),
             &ThreadId("event-child".into()),
             &run_id,
@@ -1417,7 +1417,7 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
             "neither an invalid Run nor a child request may wake the primary input"
         );
         awaken_session_runtime_contract::SessionAgentCoordination::admit_session_model_request(
-            &app,
+            app.coordination.as_ref(),
             &SessionId::from(session_id),
             &ThreadId(session_id.into()),
             &run_id,
@@ -1452,7 +1452,7 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
         );
         if has_input {
             awaken_session_runtime_contract::SessionAgentCoordination::admit_session_model_request(
-                &app,
+                app.coordination.as_ref(),
                 &SessionId::from(session_id),
                 &ThreadId(session_id.into()),
                 &run_id,

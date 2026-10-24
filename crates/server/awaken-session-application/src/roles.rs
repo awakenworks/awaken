@@ -504,17 +504,6 @@ impl SessionEventBatches for SessionApplication {
 }
 
 #[async_trait]
-impl ProfiledSessionReplies for SessionApplication {
-    async fn reply_profiled_session_run_for_owner(
-        &self,
-        owner_scope: &str,
-        command: awaken_session_runtime_contract::SessionThreadToolReplyCommand,
-    ) -> Result<(), SessionProjectionRecoveryError> {
-        SessionApplication::reply_profiled_session_run_for_owner(self, owner_scope, command).await
-    }
-}
-
-#[async_trait]
 impl SessionTermination for crate::SessionTerminationCommands {
     async fn archive_session(
         &self,

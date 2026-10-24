@@ -1123,7 +1123,7 @@ impl SessionApplication {
                     });
                 let accompanying_system = adjacent_system_input(session, &batch_id, &operation_id);
                 SessionAgentCoordination::reply_session_thread_tool(
-                    self,
+                    self.coordination.as_ref(),
                     reply.delivery_command(&session.session_id, accompanying_system),
                 )
                 .await?;
@@ -1169,7 +1169,7 @@ impl SessionApplication {
                         }
                         SessionThreadTarget::Child(child_thread_id) => {
                             SessionAgentCoordination::interrupt_session_thread(
-                                self,
+                                self.coordination.as_ref(),
                                 &session.session_id,
                                 child_thread_id,
                             )

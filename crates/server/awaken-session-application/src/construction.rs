@@ -299,6 +299,91 @@ impl SessionAssembly {
     pub(crate) fn assemble(self, kernel: SessionKernel) -> SessionApplication {
         let foundation = self.foundation(&kernel);
         let lease = self.lease_protocol(&kernel, &foundation);
+        let UseCases {
+            update_commands,
+            termination_commands,
+            resource_reconciliation,
+            resource_manifests,
+            creation_commands,
+            run_admissions,
+            coordination,
+        } = self.use_cases(&kernel, &foundation, &lease);
+        let SessionKernel {
+            #[cfg(any(test, feature = "test-support"))]
+            store,
+            #[cfg(not(any(test, feature = "test-support")))]
+                store: _,
+            clock,
+            mutations,
+            lifecycle,
+            environment_binding_sink,
+            execution_admission,
+            runtime_incarnation,
+            event_batch_cutover_validation,
+        } = kernel;
+        let Foundation {
+            credentials,
+            observations,
+            queries,
+            inputs,
+            resource_effect_authorization,
+            resource_references: _,
+            work_assignments,
+            repository_participants,
+            executable_projections,
+        } = foundation;
+        let LeaseProtocol {
+            realizations,
+            terminal_cleanups,
+            continuations,
+            activities,
+        } = lease;
+        SessionApplication {
+            clock,
+            configuration: self.configuration.clone(),
+            runtime: self.runtime.clone(),
+            credentials,
+            environments: self.environments.clone(),
+            work_assignments,
+            repository_participants,
+            mutations,
+            lifecycle,
+            queries,
+            inputs,
+            resource_effect_authorization,
+            environment_binding_sink,
+            executable_projections,
+            realizations,
+            terminal_cleanups,
+            continuations,
+            activities,
+            termination_commands,
+            update_commands,
+            resource_reconciliation,
+            resource_manifests,
+            creation_commands,
+            run_admissions,
+            observations,
+            coordination,
+            execution_admission,
+            runtime_incarnation,
+            event_batch_cutover_validation,
+            #[cfg(any(test, feature = "test-support"))]
+            store,
+            #[cfg(any(test, feature = "test-support"))]
+            fixture_assembly: self,
+        }
+    }
+
+    /// The Session use cases built on the shared components and the lease
+    /// protocol: update, termination, Resource commands, creation, Run
+    /// admission and Agent coordination.
+    fn use_cases(
+        &self,
+        kernel: &SessionKernel,
+        foundation: &Foundation,
+        lease: &LeaseProtocol,
+    ) -> UseCases {
         let update_commands = Arc::new(crate::SessionUpdateCommands::new(
             crate::update::SessionUpdateCollaborators {
                 mutations: kernel.mutations.clone(),
@@ -377,69 +462,26 @@ impl SessionAssembly {
                 runtime: self.runtime.clone(),
             },
         ));
-        let SessionKernel {
-            #[cfg(any(test, feature = "test-support"))]
-            store,
-            #[cfg(not(any(test, feature = "test-support")))]
-                store: _,
-            clock,
-            mutations,
-            lifecycle,
-            environment_binding_sink,
-            execution_admission,
-            runtime_incarnation,
-            event_batch_cutover_validation,
-        } = kernel;
-        let Foundation {
-            credentials,
-            observations,
-            queries,
-            inputs,
-            resource_effect_authorization,
-            resource_references: _,
-            work_assignments,
-            repository_participants,
-            executable_projections,
-        } = foundation;
-        let LeaseProtocol {
-            realizations,
-            terminal_cleanups,
-            continuations,
-            activities,
-        } = lease;
-        SessionApplication {
-            clock,
-            configuration: self.configuration.clone(),
-            runtime: self.runtime.clone(),
-            credentials,
-            environments: self.environments.clone(),
-            work_assignments,
-            repository_participants,
-            mutations,
-            lifecycle,
-            queries,
-            inputs,
-            resource_effect_authorization,
-            environment_binding_sink,
-            executable_projections,
-            realizations,
-            terminal_cleanups,
-            continuations,
-            activities,
-            termination_commands,
+        let coordination = Arc::new(crate::SessionCoordination::new(
+            crate::coordination::SessionCoordinationCollaborators {
+                mutations: kernel.mutations.clone(),
+                lifecycle: kernel.lifecycle.clone(),
+                queries: foundation.queries.clone(),
+                activities: lease.activities.clone(),
+                run_admissions: run_admissions.clone(),
+                realizations: lease.realizations.clone(),
+                observations: foundation.observations.clone(),
+                runtime: self.runtime.clone(),
+            },
+        ));
+        UseCases {
             update_commands,
+            termination_commands,
             resource_reconciliation,
             resource_manifests,
             creation_commands,
             run_admissions,
-            observations,
-            execution_admission,
-            runtime_incarnation,
-            event_batch_cutover_validation,
-            #[cfg(any(test, feature = "test-support"))]
-            store,
-            #[cfg(any(test, feature = "test-support"))]
-            fixture_assembly: self,
+            coordination,
         }
     }
 
@@ -574,6 +616,17 @@ struct Foundation {
     executable_projections: crate::ExecutableProjections,
 }
 
+/// The Session use-case components.
+struct UseCases {
+    update_commands: Arc<crate::SessionUpdateCommands>,
+    termination_commands: Arc<crate::SessionTerminationCommands>,
+    resource_reconciliation: Arc<crate::SessionResourceReconciliation>,
+    resource_manifests: Arc<crate::SessionResourceManifests>,
+    creation_commands: Arc<crate::SessionCreationCommands>,
+    run_admissions: Arc<crate::SessionRunAdmissions>,
+    coordination: Arc<crate::SessionCoordination>,
+}
+
 /// The realization lease protocol and the components built directly on it.
 struct LeaseProtocol {
     realizations: Arc<crate::SessionRealizations>,
@@ -616,6 +669,7 @@ pub(crate) fn reassemble(
             Arc::strong_count(&application.creation_commands),
             Arc::strong_count(&application.run_admissions),
             Arc::strong_count(&application.observations),
+            Arc::strong_count(&application.coordination),
         ]
     };
     let unshared = application.fixture_assembly.clone().assemble(kernel());

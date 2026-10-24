@@ -458,6 +458,7 @@ async fn accepted_followup_running_keeps_its_get_cursor_when_child_run_commits_l
     support::drive_retained_session_events(&state, &id).await;
     let admitted = state
         .session_application()
+        .coordination()
         .admit_session_run_activity(
             &awaken_session_types::SessionId::from(&id),
             "researcher",
@@ -1013,6 +1014,7 @@ async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report(
     // Session activity receipt.
     let admitted = state
         .session_application()
+        .coordination()
         .admit_session_run_activity(
             &awaken_session_types::SessionId::from(&id),
             "researcher",

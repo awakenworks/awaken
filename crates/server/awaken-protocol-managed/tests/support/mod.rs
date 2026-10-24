@@ -273,11 +273,13 @@ pub async fn finalize_applied_user_dispatch(
     use awaken_session_runtime_contract::SessionAgentCoordination;
     let application = state.session_application();
     application
+        .coordination()
         .settle_session_agent_boundary(boundary.clone())
         .await
         .expect("fixture pre-Dispatch boundary");
     for _ in 0..2 {
         application
+            .coordination()
             .finalize_session_agent_boundary(boundary.clone())
             .await
             .expect("fixture applied Dispatch boundary");
