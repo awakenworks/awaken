@@ -14,6 +14,9 @@
   capability evidence); [ADR-0088](0088-bounded-context-map-and-sdk-platform-contract.md)
   (contexts and the SDK–Platform contract); [ADR-0089](0089-session-realization-single-owner.md)
   and [ADR-0090](0090-session-state-model.md) (one decision point per state machine).
+- Amended: 2026-10-24 (rules established by the crate-boundary program: Coordinator
+  composition, translating protocol adapters, failure disposition, poisoned locks,
+  Environment transitions, Session use-case components, the word "runtime", linear `main`)
 - Amends: [ADR-0081](0081-contract-layering-and-ratchet-guardrails.md) §7 (size is
   measured per module), §8 (bundle traits) and §9 (no optional run-time role discovery);
   the [ADR-0088](0088-bounded-context-map-and-sdk-platform-contract.md) amendment of
@@ -287,3 +290,114 @@ with the same context and reject a disappeared boundary as an absent target,
 rather than accepting it as a completed pending merge. This amendment changes
 the plan and guard only; Rust APIs, dependency manifests, serialized values,
 effect fencing and physical ownership do not change.
+
+## Amendment — 2026-10-24: rules established by the crate-boundary program
+
+The crate-boundary program (plan v4) settled eight further rules. Each is
+stated once here with its reason and the guard that holds it; the design
+documents linked below own the detail. A guard without a baseline holds its
+count at zero.
+
+1. **The Coordinator consumes the executor only through ports.**
+   `awaken-coordinator` receives the executor's roles as one root-selected
+   `ExecutionPorts` value (`crates/server/awaken-coordinator/src/execution_ports.rs`),
+   so a Coordinator-only deployment links no Worker-side implementation (D5,
+   D6). `scripts/ci/_dispatch_boundary_fitness.py` rule `D3` refuses the
+   Session executor or any Worker-side crate in the crate's normal closure;
+   rule `D4` checks the closure of the package that declares the Coordinator
+   binary (`awaken-coordinator-process`), because Cargo links every target of
+   a package with that package's closure. The crates that closure still
+   reaches are reviewed transitions in
+   `scripts/ci/coordinator_binary_closure_baseline.json` (9 today); a new
+   reach is refused and a transition leaves with `--tighten`. The co-located
+   root (`awaken-cli`) is the root meant to link executor and realization
+   together ([Coordinator-only composition](../design/runtime-interface-boundaries.md#coordinator-only-composition)).
+
+2. **Protocol adapters only translate.** A protocol crate lowers wire requests
+   into application commands and projects results; the decision belongs to
+   the Session application and its aggregate, so it exists once.
+   `scripts/ci/_protocol_translation_fitness.py` refuses in production
+   protocol code: `T1` reaching `awaken-session-repository-contract`; `T2`
+   constructing durable write vocabulary (`IdempotencyRecord`,
+   `SessionMutation`, `SessionMutationPayload::`, `SessionTombstone`,
+   `ManagedLifecycleFact`); `T3` calling an aggregate decision function
+   (`transition_environment`, `transition_execution`, `realization_lease_*`,
+   `realization_generation_authorizes`); `T4` selecting behaviour from a raw
+   lifecycle variant (`SessionExecutionState`, `ActivationState`,
+   `SessionEnvironmentPhase`, `McpAttachmentState`) or reading
+   `mutation_policy`; `T5` editing a Resource manifest. Domain predicates and
+   wire spellings remain projection.
+
+3. **One failure disposition per boundary.** Every realization failure has one
+   answer, `RealizationError::disposition` (`Retry`, `Defer`, `Terminal`,
+   `Rejected`), and the pool picks the claim release from the failure class
+   alone (`awaken-dispatch-execution` `Error::claim_release`), so no caller
+   re-classifies and no failure is retried without bound. `Defer` spends no
+   budget; `Retry` spends one dispatch attempt through
+   `DispatchExecution::retry_claim`, and the attempt that exhausts the budget
+   ends `Indeterminate` through `claim_retry_exhausted`. A pending sandbox is
+   bounded by its provider's provisioning deadline: `Defer` before it, `Retry`
+   after it or without one. A conflict projects `RunErrorKind::Conflict`, which
+   adapters answer with HTTP 409. The decision tables are
+   `each_failure_class_has_one_disposition_on_the_synchronizer_and_driver_paths`
+   and `a_repository_binding_conflict_projects_a_run_conflict`
+   (`awaken-session-realization`), `only_a_failed_attempt_spends_the_retry_budget`
+   (`awaken-dispatch-execution`) and `a_provisioning_wait_defers_only_before_the_providers_deadline`
+   with its Kani proof `provisioning_defers_only_before_the_providers_deadline`
+   (`awaken-session-realization-contract`); the budget is
+   [ADR-0015](0015-crash-retry-budget-and-dead-letter.md)'s 2026-10-18
+   amendments.
+
+4. **A poisoned lock is a typed error.** A lock whose holder panicked guards
+   possibly half-written state; the executor and the realization answer it
+   with a typed refusal (`RealizationLock`, `ExecutorLock`) or a documented
+   fail-closed answer, never a panic. `scripts/ci/_poisoned_lock_fitness.py`
+   refuses `L1` (`.lock()`/`.read()`/`.write()` followed by
+   `.expect`/`.unwrap`) and `L2` (an `.expect` naming the poison) in their
+   production code, found by the crates' `authority` metadata.
+
+5. **The Session aggregate decides every Environment transition.** Changes go
+   through `transition_environment` in `awaken-session-state-contract`, or a
+   law or `SessionEnvironmentOperations` call that decides through it
+   ([ADR-0090](0090-session-state-model.md),
+   [transition](../design/session-environment-transition.md)).
+   `scripts/ci/_single_owner_fitness.py` rule `environment-rewrite` counts
+   every other rewrite (a `&mut SessionEnvironmentState`, an undecided law on
+   `.environment`, an assignment to `.environment`); its baseline is only the
+   test-support `awaken-store-conformance` fixtures. Rule
+   `terminal-cleanup-orchestration` holds at zero any function outside
+   `awaken-session-realization-driver` that orchestrates terminal cleanup
+   ([ADR-0089](0089-session-realization-single-owner.md) D1).
+
+6. **Session use cases are components.** Each use case owns its collaborators
+   and implements only the roles its callers use, over the one
+   `SessionMutations` CAS kernel (`awaken-session-application`
+   `src/mutation.rs`); `SessionApplication` is a thin composition product
+   that holds the component set, implements no role and decides nothing
+   ([Session capabilities](../design/session-aggregate-and-dispatch-capabilities.md)).
+   Sharing one kernel keeps one retry policy, one receipt replay and one
+   fence. `scripts/ci/_session_state_ownership_fitness.py` refuses a mutable
+   `PersistedSession` borrow or a direct aggregate field write in the
+   application, Managed protocol and Session store; `scripts/ci/_modularity_fitness.py`
+   rule `impl-spread` holds `SessionApplication`'s inherent surface to a
+   shrink-only entry. No guard yet refuses a role `impl` on
+   `SessionApplication`; review holds that part.
+
+7. **"Runtime" names the SDK engine.** It is used only for the SDK agent
+   engine and qualified container engines (D7.2). `scripts/ci/_naming_fitness.py`
+   rules `crate-name` (a non-SDK crate name with `runtime` or a mechanism
+   word) and `runtime-word` (a non-SDK public type named with `Runtime`) are
+   shrink-only, beside `bare-runtime`. The crate renames and the remaining
+   baselines are recorded in
+   [ADR-0088](0088-bounded-context-map-and-sdk-platform-contract.md)'s
+   2026-10-24 amendment.
+
+8. **`main` is linear and has one writer.** History stays reviewable and no
+   lane overwrites another's integration. The standalone `reference-transaction`
+   hook installed by `scripts/ci/install_receive_hooks.py --install` runs
+   `scripts/ci/check_main_linear.py`, which refuses a deletion (`L3`), a
+   non-fast-forward (`L4`), a merge commit (`L5`) and any change of main
+   outside the worktree named by `git config awaken.mainWriter` (`L12`).
+   Baseline growth in any guard needs the complete review record
+   `{reason, approved_by, date, remove_when}` of D8, admitted by
+   `scripts/ci/_architecture_ratchet.py` `baseline_cli`.
