@@ -1001,3 +1001,28 @@ impl crate::SessionCreation for SessionCreationCommands {
         SessionCreationCommands::runtime_incarnation(self)
     }
 }
+
+#[async_trait::async_trait]
+impl crate::DeploymentSessionEnvironment for SessionCreationCommands {
+    async fn deployment_environment(
+        &self,
+        environment_id: &str,
+    ) -> Result<
+        Option<awaken_environment_contract::EnvItem>,
+        awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError,
+    > {
+        self.environment_projection.get(environment_id).await
+    }
+
+    fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
+        self.queries.agent_unavailable(workspace_id, agent_id)
+    }
+
+    fn deployment_unavailable_delegate(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<String> {
+        self.queries.unavailable_delegate(workspace_id, agent_id)
+    }
+}

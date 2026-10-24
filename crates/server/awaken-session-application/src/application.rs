@@ -12,7 +12,7 @@ use awaken_session_state_contract::{
     SessionEnvironmentEffectAuthorization, SessionEnvironmentEffectIntent,
     SessionEnvironmentReceipt, SessionEnvironmentReceiptError,
     SessionEnvironmentReceiptRecoveryAction, SessionEnvironmentState, SessionMutationResult,
-    SessionRepositoryError, SessionTerminalCleanupAction,
+    SessionRepositoryError,
 };
 use awaken_time::WallClockExt;
 /// Invoke the Runtime's pure provider-effective Sandbox-layout gate after the
@@ -169,8 +169,10 @@ impl SessionPersistence {
 /// fn existing_query(queries: &SessionQueries) -> bool {
 ///     queries.agent_unavailable("workspace", "agent")
 /// }
-/// fn selected_role(application: &SessionApplication) -> &dyn DeploymentSessionEnvironment {
-///     application
+/// fn selected_role(
+///     application: &SessionApplication,
+/// ) -> std::sync::Arc<dyn DeploymentSessionEnvironment> {
+///     application.creation_commands()
 /// }
 /// ```
 ///
@@ -411,10 +413,9 @@ impl SessionPersistence {
 pub struct SessionApplication {
     clock: Arc<dyn awaken_time::WallClock>,
     configuration: SessionApplicationConfiguration,
-    runtime: crate::SessionExecutor,
     credentials: Arc<crate::SessionCredentials>,
-    environments: SessionEnvironments,
     work_assignments: Arc<crate::SessionWorkAssignments>,
+    worker_occupancy: Arc<crate::SessionWorkerOccupancy>,
     repository_participants: Arc<crate::SessionRepositoryParticipants>,
     mutations: Arc<crate::SessionMutations>,
     lifecycle: Arc<crate::SessionLifecycle>,
@@ -422,9 +423,6 @@ pub struct SessionApplication {
     inputs: Arc<crate::SessionInputs>,
     resource_effect_authorization: Arc<crate::SessionResourceEffectAuthorization>,
     environment_binding_sink: Arc<dyn SessionEnvironmentBindingSink>,
-    /// The one process-owned high-water reconciler, invoked at lifecycle
-    /// admission boundaries. Query reads never drive it.
-    executable_projections: ExecutableProjections,
     realizations: Arc<crate::SessionRealizations>,
     terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
     continuations: Arc<crate::SessionContinuations>,
@@ -484,139 +482,10 @@ impl SessionApplication {
         self.clock.clone()
     }
 
-    #[must_use]
-    pub(crate) fn runtime(&self) -> &crate::SessionExecutor {
-        &self.runtime
-    }
-
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn session_repository(&self) -> &dyn SessionRepository {
         self.mutations.repository().as_ref()
-    }
-
-    /// One complete Worker-owned Session read. Normal occupancy never depends
-    /// on provider availability. Explicit retirement preserves occupancy and
-    /// additionally qualifies each original source (terminal or live Resident) without effects,
-    /// lease changes, installed projections or cleanup receipts.
-    pub async fn observe_worker_realizations(
-        &self,
-        read: crate::WorkerRealizationRead<'_>,
-    ) -> Result<crate::WorkerRealizationObservation, RunError> {
-        let (worker_id, identity) = match read {
-            crate::WorkerRealizationRead::Occupancy(worker_id) => (worker_id, None),
-            crate::WorkerRealizationRead::Retirement(identity) => {
-                (identity.worker_id.as_str(), Some(identity))
-            }
-        };
-        if worker_id.trim().is_empty() {
-            return Err(RunError::bad_request("Worker realization owner is empty"));
-        }
-        if identity.is_some_and(|identity| {
-            identity.incarnation_id.trim().is_empty() || identity.generation == 0
-        }) {
-            return Err(RunError::bad_request(
-                "exact Worker realization identity is required",
-            ));
-        }
-        let sessions =
-            crate::recovery_scan::worker_realizations(self.session_repository(), worker_id)
-                .await
-                .map_err(session_repository_error)?;
-        let mut occupied = false;
-        let blocked = crate::WorkerRealizationObservation {
-            occupied: true,
-            sources_retained: false,
-        };
-        for scoped in sessions {
-            let session = scoped.session;
-            if !session
-                .has_unfinished_worker_realization()
-                .map_err(|error| RunError::unavailable(error.to_string()))?
-            {
-                continue;
-            }
-            occupied = true;
-            let Some(identity) = identity else {
-                return Ok(blocked);
-            };
-            let lease = session
-                .realization
-                .as_ref()
-                .ok_or_else(|| RunError::unavailable("Worker realization owner missing"))?;
-            if lease.runtime_incarnation != identity.lease_owner()
-                || session.has_incomplete_event_batches()
-            {
-                return Ok(blocked);
-            }
-            let prepared = if session.is_terminal() {
-                let Some(action) = session
-                    .terminal_cleanup_work_action()
-                    .map_err(|error| RunError::unavailable(error.to_string()))?
-                else {
-                    return Ok(blocked);
-                };
-                if matches!(action, SessionTerminalCleanupAction::Waiting) {
-                    return Ok(blocked);
-                }
-                if awaken_session_state_contract::session_has_terminal_no_create_evidence(&session)
-                    || crate::archive_intent::unattempted_profiled_archive_witness(
-                        self.session_repository(),
-                        &scoped.workspace_id,
-                        &session,
-                    )
-                    .await
-                    .map_err(session_repository_error)?
-                {
-                    continue;
-                }
-                if !matches!(
-                    self.runtime()
-                        .coordination_reads()
-                        .source_dispatch_observation(&session)
-                        .await,
-                    awaken_session_runtime_contract::SessionSourceDispatchObservation::Settled
-                ) {
-                    return Ok(blocked);
-                }
-                matches!(action, SessionTerminalCleanupAction::Dispose { .. })
-            } else {
-                // Data retention permits Actor replacement, never completion
-                // of this live Session or its original Run. Registry/physical/
-                // Work admission remains the Worker-domain owner's prerequisite.
-                // is_terminal already covers every disposition denying activity.
-                if session.frozen_baseline().is_none()
-                    || !matches!(
-                        session.execution,
-                        SessionExecutionState::Idle
-                            | SessionExecutionState::Running
-                            | SessionExecutionState::Rescheduling
-                    )
-                    || !matches!(
-                        session.environment,
-                        SessionEnvironmentState::Resident { .. }
-                    )
-                {
-                    return Ok(blocked);
-                }
-                false
-            };
-            let projection = self
-                .queries
-                .frozen_session_projection(scoped.workspace_id, &session, false)
-                .await?;
-            if !self
-                .runtime()
-                .terminal_cleanup()
-                .observe_terminal_cleanup_retention(&session.session_id, &projection, prepared)
-                .await?
-            {
-                return Ok(blocked);
-            }
-        }
-        Ok(crate::WorkerRealizationObservation {
-            occupied,
-            sources_retained: identity.is_some(),
-        })
     }
 
     /// Clone the durable aggregate port for Coordinator-side claim-fenced
@@ -648,6 +517,11 @@ impl SessionApplication {
     #[must_use]
     pub fn local_realization_owner(&self) -> &str {
         &self.configuration.local_realization_owner
+    }
+
+    #[must_use]
+    pub fn worker_occupancy(&self) -> Arc<crate::SessionWorkerOccupancy> {
+        self.worker_occupancy.clone()
     }
 
     #[must_use]
@@ -691,14 +565,6 @@ impl SessionApplication {
         }
         crate::construction::reassemble(self, |assembly| assembly.refresh = Some(refresh));
         Ok(())
-    }
-
-    /// Advance the injected executable projections, or no-op in an AllInOne
-    /// composition where the authoritative catalogs are process-local.
-    pub async fn refresh_executable_projections(
-        &self,
-    ) -> Result<awaken_session_application_contract::ExecutableProjectionAdmission, String> {
-        self.executable_projections.refresh().await
     }
 
     #[must_use]

@@ -22,7 +22,7 @@
     },
     "awaken-session-application::SessionApplication": {
       "files": 1,
-      "methods": 43,
+      "methods": 40,
       "reason": "W21: one application service per use case, composed by a facade"
     },
     "awaken-session-executor::ExecutorComponents": {
@@ -378,7 +378,7 @@
     },
     "awaken-session-application": {
       "deps": 23,
-      "lines": 20772,
+      "lines": 20797,
       "reason": "W21 (plan 9.12): split by use case around one SessionMutations core; if it stays one aggregate after W21, record that review here"
     },
     "awaken-session-executor": {

@@ -332,8 +332,9 @@ impl SessionAssembly {
             resource_effect_authorization,
             resource_references: _,
             work_assignments,
+            worker_occupancy,
             repository_participants,
-            executable_projections,
+            executable_projections: _,
         } = foundation;
         let LeaseProtocol {
             realizations,
@@ -344,10 +345,9 @@ impl SessionAssembly {
         SessionApplication {
             clock,
             configuration: self.configuration.clone(),
-            runtime: self.runtime.clone(),
             credentials,
-            environments: self.environments.clone(),
             work_assignments,
+            worker_occupancy,
             repository_participants,
             mutations,
             lifecycle,
@@ -355,7 +355,6 @@ impl SessionAssembly {
             inputs,
             resource_effect_authorization,
             environment_binding_sink,
-            executable_projections,
             realizations,
             terminal_cleanups,
             continuations,
@@ -543,7 +542,13 @@ impl SessionAssembly {
             &self.runtime,
             self.profiles.clone(),
         ));
+        let worker_occupancy = Arc::new(crate::SessionWorkerOccupancy::new(
+            kernel.mutations.repository().clone(),
+            queries.clone(),
+            &self.runtime,
+        ));
         Foundation {
+            worker_occupancy,
             observations: Arc::new(crate::SessionObservations::new(
                 kernel.mutations.clone(),
                 kernel.clock.clone(),
@@ -650,6 +655,7 @@ struct Foundation {
     inputs: Arc<crate::SessionInputs>,
     resource_effect_authorization: Arc<crate::SessionResourceEffectAuthorization>,
     resource_references: Arc<crate::SessionResourceReferences>,
+    worker_occupancy: Arc<crate::SessionWorkerOccupancy>,
     work_assignments: Arc<crate::SessionWorkAssignments>,
     repository_participants: Arc<crate::SessionRepositoryParticipants>,
     executable_projections: crate::ExecutableProjections,
@@ -701,6 +707,7 @@ pub(crate) fn reassemble(
             Arc::strong_count(&application.inputs),
             Arc::strong_count(&application.resource_effect_authorization),
             Arc::strong_count(&application.work_assignments),
+            Arc::strong_count(&application.worker_occupancy),
             Arc::strong_count(&application.repository_participants),
             Arc::strong_count(&application.realizations),
             Arc::strong_count(&application.terminal_cleanups),

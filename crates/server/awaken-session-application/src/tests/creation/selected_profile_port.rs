@@ -293,7 +293,7 @@ async fn selected_profile_port_reads_the_live_handle_and_custom_delegate_without
     );
     assert_eq!(
         crate::DeploymentSessionEnvironment::deployment_unavailable_delegate(
-            &app,
+            app.creation_commands().as_ref(),
             "workspace",
             "profiled"
         ),

@@ -19,7 +19,6 @@ use awaken_session_configuration_contract::EnvironmentSnapshot;
 use awaken_session_repository_contract::SessionRepository;
 use awaken_session_runtime_contract::{McpAttachmentRealizer, SessionEnvironmentBindingSink};
 use awaken_session_state_contract::SessionEnvironmentFacts;
-use awaken_session_state_contract::SessionExecutionState;
 use awaken_session_types::RunError;
 use {
     awaken_session_state_contract::{PersistedSession, SessionScan},
@@ -209,6 +208,8 @@ pub use lifecycle::{BudgetSettlementOutcome, SessionDeleteCommand, SessionLifecy
 mod recovery;
 pub use queries::SessionQueries;
 pub use recovery::SessionRecovery;
+mod worker_occupancy;
+pub use worker_occupancy::SessionWorkerOccupancy;
 mod mcp;
 mod realization;
 mod resource_lowering;

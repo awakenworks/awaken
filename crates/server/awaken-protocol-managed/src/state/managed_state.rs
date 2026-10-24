@@ -56,7 +56,7 @@ impl SessionApplicationRoles {
             updates: application.update_commands(),
             resources: application.resource_manifests(),
             observation: application.observations(),
-            deployments: application.clone(),
+            deployments: application.creation_commands(),
             clock: application.clock(),
         }
     }

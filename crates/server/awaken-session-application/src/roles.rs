@@ -45,7 +45,7 @@ use awaken_session_types::SessionId;
 
 use crate::{
     CommittedSessionFacts, CreateProfiledSessionCommand, ProjectionThreadSnapshots,
-    RecoveredSessionProjection, SessionApplication, SessionArchiveWithRepositoryPublicationCommand,
+    RecoveredSessionProjection, SessionArchiveWithRepositoryPublicationCommand,
     SessionArchiveWithRepositoryPublicationError, SessionArchiveWithRepositoryPublicationOutcome,
     SessionCreateProtocol, SessionCreateRequest, SessionCreateRequestError, SessionCreationError,
     SessionDeleteCommand, SessionDispositionMutation, SessionEventBatchIdempotency,
@@ -515,28 +515,6 @@ impl SessionResourceCommands for crate::SessionResourceManifests {
             self, session_id, binding_id,
         ))
         .await
-    }
-}
-
-#[async_trait]
-impl DeploymentSessionEnvironment for SessionApplication {
-    async fn deployment_environment(
-        &self,
-        environment_id: &str,
-    ) -> Result<Option<EnvItem>, ExecutableEnvironmentRegistrationError> {
-        self.environments.projection.get(environment_id).await
-    }
-
-    fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
-        self.queries.agent_unavailable(workspace_id, agent_id)
-    }
-
-    fn deployment_unavailable_delegate(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-    ) -> Option<String> {
-        self.queries.unavailable_delegate(workspace_id, agent_id)
     }
 }
 
