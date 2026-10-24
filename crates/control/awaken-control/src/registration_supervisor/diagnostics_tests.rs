@@ -284,7 +284,6 @@ async fn degraded_registration_health_is_observable_secret_free_and_leaks_are_de
 }
 
 #[tokio::test]
-#[ignore = "product gap: registration supervisor logs raw recovery error strings (credential URL/token reach tracing)"]
 async fn degraded_registration_diagnostics_never_contain_the_secret_canary() {
     let (_, events) = degraded_pass().await;
     assert!(events.len() >= 2, "diagnostics emitted: {events:?}");
@@ -292,7 +291,6 @@ async fn degraded_registration_diagnostics_never_contain_the_secret_canary() {
 }
 
 #[tokio::test]
-#[ignore = "product gap: registration supervisor diagnostics carry no stable code, domain identity or recovery direction"]
 async fn degraded_registration_diagnostics_carry_stable_code_identity_and_recovery() {
     let (_, events) = degraded_pass().await;
     assert!(events.len() >= 2, "diagnostics emitted: {events:?}");
