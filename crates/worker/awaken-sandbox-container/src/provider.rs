@@ -91,7 +91,7 @@ pub struct ContainerProvider<R: ContainerRuntime> {
     pub(super) default_image: String,
     /// Optional connectivity proxy for unrestricted traffic. It is never treated
     /// as network-policy enforcement.
-    pub(super) forward_proxy: Option<ForwardProxy>,
+    pub(super) forward_proxy: Option<awaken_container_contract::ForwardProxy>,
     /// Capability issuer plus proxy coordinate. Presence is not enough to
     /// advertise support: the runtime must independently attest that direct
     /// workload egress cannot bypass this proxy.
@@ -228,7 +228,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
 
     /// Configure a conventional forward proxy for unrestricted traffic.
     #[must_use]
-    pub fn with_forward_proxy(mut self, proxy: ForwardProxy) -> Self {
+    pub fn with_forward_proxy(mut self, proxy: awaken_container_contract::ForwardProxy) -> Self {
         self.forward_proxy = Some(proxy);
         self
     }

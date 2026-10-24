@@ -8,8 +8,7 @@
 use super::terminal_evidence::unmaterialized_absence_shape_is_closed;
 use super::{
     K8sRuntime, PodProcessObserver, PodReadiness, api_not_found, backend, checkpoint, continuation,
-    creation, egress_label, live_inputs, names, participants, pod_readiness, restore,
-    sandbox_control,
+    creation, egress_label, live_inputs, participants, pod_readiness, restore, sandbox_control,
 };
 use super::{guarded_claim, observation, process, terminal_evidence};
 use async_trait::async_trait;
@@ -736,8 +735,9 @@ impl ContainerRuntime for K8sRuntime {
         // object is addressable without the durable handle it never produced.
         // Absent is success: the create may have been dropped before the API
         // server ever saw it.
-        let pod_name =
-            awaken_worker_fleet_kubernetes::managed_names::pod_name(&names::k8s_runtime_id(scope)?);
+        let pod_name = awaken_worker_fleet_kubernetes::managed_names::pod_name(
+            &awaken_worker_fleet_kubernetes::managed_names::k8s_runtime_id(scope)?,
+        );
         let observed = match self.pods().get(&pod_name).await {
             Ok(pod) => pod,
             Err(error) if api_not_found(&error) => return Ok(()),

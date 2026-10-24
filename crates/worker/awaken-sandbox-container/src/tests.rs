@@ -4551,7 +4551,7 @@ fn base_provider(runtime: Arc<FakeRuntime>) -> ContainerProvider<FakeRuntime> {
     // recovery. The conventional proxy supplies connectivity without claiming to
     // enforce a host allowlist.
     ContainerProvider::for_test(runtime, "ghcr.io/awaken/sandbox:latest").with_forward_proxy(
-        ForwardProxy {
+        awaken_container_contract::ForwardProxy {
             url: "http://gw.internal:8888".into(),
         },
     )
@@ -6354,7 +6354,7 @@ async fn allowlist_fails_before_runtime_with_or_without_a_forward_proxy() {
             .with_blob("file-1", b"in-bytes".to_vec())
             .with_blob("res-9", b"work-bytes".to_vec());
         let result = if with_proxy {
-            base.with_forward_proxy(ForwardProxy {
+            base.with_forward_proxy(awaken_container_contract::ForwardProxy {
                 url: "http://gw.internal:8888".into(),
             })
             .create(&request)

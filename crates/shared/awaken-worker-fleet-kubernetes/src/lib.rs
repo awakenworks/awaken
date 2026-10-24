@@ -20,10 +20,13 @@
 mod api_error;
 mod client;
 mod create_ledger;
+mod create_transport;
+mod network_labels;
 mod process_termination;
 
 pub mod api_defaults;
 pub mod managed_names;
+pub mod object_realization;
 pub mod pod_metadata;
 
 pub use api_error::{KubernetesFailure, api_conflict, api_not_found, backend, get_optional};
@@ -32,6 +35,8 @@ pub use create_ledger::{
     K8sWorkerCreateLedger, WorkerCreateLedgerState, original_guard_release_required,
     release_original_guard, verify_pod_isolation,
 };
+pub use create_transport::{K8sCreateTransport, brokered_client};
+pub use network_labels::sandbox_network_labels;
 pub use process_termination::{
     CONTINUATION_CLEANUP_FINALIZER, ObservedPodProcessExit, PodProcessBinding, PodProcessObserver,
     PodProcessStopper, PodProcessTermination, WORKER_PROCESS_EVIDENCE_FINALIZER,

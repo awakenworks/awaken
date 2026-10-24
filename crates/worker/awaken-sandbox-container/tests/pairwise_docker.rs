@@ -27,11 +27,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use awaken_container_contract::ForwardProxy;
 use awaken_memory_store::{MemoryWriter, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::docker::DockerRuntime;
-use awaken_sandbox_container::{ContainerProvider, ForwardProxy, command_of};
+use awaken_sandbox_container::{ContainerProvider, command_of};
 use awaken_sandbox_memoryd::MemoryStoreMounter;
 use common::memory_mount;
 

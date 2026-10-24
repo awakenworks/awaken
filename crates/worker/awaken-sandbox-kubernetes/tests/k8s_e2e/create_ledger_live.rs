@@ -6,7 +6,7 @@ use awaken_container_contract::{
 };
 use awaken_container_contract::{K8sCreateRequest, K8sCreateResponse};
 
-use awaken_sandbox_kubernetes::K8sCreateTransport;
+use awaken_worker_fleet_kubernetes::K8sCreateTransport;
 use awaken_worker_fleet_kubernetes::K8sWorkerCreateLedger;
 
 const GUARDED_CLAIM_GROUP: &str = "guarded-claim-effect";

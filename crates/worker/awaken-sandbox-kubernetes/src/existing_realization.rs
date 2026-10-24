@@ -101,7 +101,7 @@ pub(super) async fn existing_realizations(
         .metadata
         .labels
         .as_ref()
-        .and_then(|labels| labels.get(awaken_sandbox_container::engine::MANAGED_SANDBOX_LABEL))
+        .and_then(|labels| labels.get(awaken_container_contract::MANAGED_SANDBOX_LABEL))
         .map(String::as_str)
         != Some("1")
     {

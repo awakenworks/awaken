@@ -34,7 +34,7 @@ pub struct ContainerTierPolicy {
     /// One signed, independent Create executor selected by the Worker before
     /// provider construction and bound to its Registry identity before Ready.
     #[cfg(feature = "k8s")]
-    pub k8s_create_transport: Option<Arc<dyn awaken_sandbox_kubernetes::K8sCreateTransport>>,
+    pub k8s_create_transport: Option<Arc<dyn awaken_worker_fleet_kubernetes::K8sCreateTransport>>,
 }
 
 impl std::fmt::Debug for ContainerTierPolicy {
@@ -159,7 +159,7 @@ async fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
         .as_deref()
         .filter(|url| !url.trim().is_empty())
     {
-        provider = provider.with_forward_proxy(awaken_sandbox_container::ForwardProxy {
+        provider = provider.with_forward_proxy(awaken_container_contract::ForwardProxy {
             url: url.to_owned(),
         });
     }
@@ -317,7 +317,7 @@ async fn k8s_runtime_for_realization(
 #[cfg(feature = "k8s")]
 async fn k8s_package_provisioner(
     settings: &awaken_deployment_config::SandboxSettings,
-    create_transport: Option<Arc<dyn awaken_sandbox_kubernetes::K8sCreateTransport>>,
+    create_transport: Option<Arc<dyn awaken_worker_fleet_kubernetes::K8sCreateTransport>>,
 ) -> Result<Option<Arc<dyn awaken_container_contract::PackageImageProvisioner>>, String> {
     let Some(builder) = settings.package_image_builder else {
         return Ok(None);
@@ -344,7 +344,7 @@ async fn k8s_package_provisioner(
         }
         awaken_deployment_config::PackageImageBuilder::Kubernetes => {
             let mut provisioner =
-                awaken_sandbox_kubernetes::K8sPackageImageProvisioner::connect_with_create_transport(
+                awaken_package_image::K8sPackageImageProvisioner::connect_with_create_transport(
                     settings.k8s_namespace.clone(),
                     registry,
                     settings.k8s_image_pull_secrets.clone(),
@@ -361,7 +361,7 @@ async fn k8s_package_provisioner(
                 .filter(|url| !url.trim().is_empty())
             {
                 provisioner = provisioner
-                    .with_forward_proxy(awaken_sandbox_container::ForwardProxy {
+                    .with_forward_proxy(awaken_container_contract::ForwardProxy {
                         url: url.to_owned(),
                     })
                     .map_err(|error| format!("Kubernetes package builder: {error}"))?;

@@ -103,14 +103,18 @@ async fn observe(
         .annotations
         .as_ref()
         .and_then(|annotations| {
-            annotations.get(crate::package_realization::RESOLVED_IMAGE_ANNOTATION)
+            annotations.get(awaken_package_image::package_realization::RESOLVED_IMAGE_ANNOTATION)
         })
         .filter(|image| !image.is_empty())
         .ok_or_else(|| backend("Kubernetes restore Pod has no resolved image evidence"))?;
     let mut desired_plan = plan.clone();
     desired_plan.image.clone_from(resolved_image);
     let mut desired = runtime.pod(&runtime_id, &desired_plan);
-    crate::package_realization::stamp_sandbox_release_annotations(&mut desired, id, resolved_image);
+    awaken_package_image::package_realization::stamp_sandbox_release_annotations(
+        &mut desired,
+        id,
+        resolved_image,
+    );
     if let Some(claim) = claim.as_ref() {
         continuation::bind_claim_uid(&mut desired, &continuation::claim_uid(claim)?);
     }

@@ -16,10 +16,7 @@ use crate::resident_hand::ResidentHandConfig;
 
 use awaken_provisioning_contract::SandboxEffectFence;
 
-/// Stable label every managed Sandbox container/pod carries. The wire value is
-/// retained for compatibility with existing resources; it is discovery evidence,
-/// never disposal authorization.
-pub const MANAGED_SANDBOX_LABEL: &str = "awaken.sandbox";
+pub(crate) use awaken_container_contract::MANAGED_SANDBOX_LABEL;
 /// Immutable execution-floor revision included in backend realization evidence.
 /// A pre-hardening object cannot be silently adopted under the new floor.
 pub const CONTAINER_HARDENING_REVISION: &str = "linux-workload-hardening-v1";

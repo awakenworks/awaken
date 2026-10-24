@@ -38,7 +38,7 @@ fn image_daemonsets(
     policy.validate().map_err(backend)?;
     let images = images.iter().collect::<BTreeSet<_>>();
     for image in &images {
-        crate::package_realization::immutable_image(image)
+        awaken_package_image::package_realization::immutable_image(image)
             .map_err(|error| backend(error.to_string()))?;
     }
     let policy_id = policy_identity(policy, secrets);

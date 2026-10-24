@@ -26,6 +26,7 @@ mod create_ticket;
 mod host;
 mod k8s_capacity;
 mod package_image;
+mod package_recipe;
 mod policy;
 mod runtime_error;
 
@@ -38,9 +39,10 @@ pub use k8s_capacity::{
     kubernetes_refusal_is_capacity,
 };
 pub use package_image::PackageImageProvisioner;
+pub use package_recipe::{package_containerfile, package_image_recipe};
 pub use policy::{
-    K8sContinuationVolume, K8sImagePrewarm, LIVE_INPUTS_ROOT, REPOSITORY_GATEWAY_CA_PATH,
-    live_input_relative_path,
+    ForwardProxy, K8sContinuationVolume, K8sImagePrewarm, LIVE_INPUTS_ROOT, MANAGED_SANDBOX_LABEL,
+    REPOSITORY_GATEWAY_CA_PATH, live_input_relative_path,
 };
 pub use runtime_error::RuntimeError;
 

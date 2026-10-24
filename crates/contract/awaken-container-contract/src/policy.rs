@@ -117,3 +117,18 @@ mod tests {
         }
     }
 }
+
+/// An optional conventional forward proxy for unrestricted container traffic.
+///
+/// This is a connectivity preference, not a security boundary: arbitrary
+/// workload code can remove proxy environment variables and dial directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForwardProxy {
+    /// The forward-proxy URL cooperative clients use (e.g. `http://proxy:8888`).
+    pub url: String,
+}
+
+/// Stable label every managed Sandbox container/pod carries. The wire value is
+/// retained for compatibility with existing resources; it is discovery evidence,
+/// never disposal authorization.
+pub const MANAGED_SANDBOX_LABEL: &str = "awaken.sandbox";

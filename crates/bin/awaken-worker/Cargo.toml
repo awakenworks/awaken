@@ -37,7 +37,6 @@ container-podman = ["awaken-execution-composition/podman"]
 container-k8s = [
     "awaken-execution-composition/k8s",
     "awaken-worker-transport-security/kubernetes",
-    "dep:awaken-sandbox-kubernetes",
     "dep:awaken-worker-fleet-kubernetes",
 ]
 
@@ -71,9 +70,8 @@ awaken-lease-contract.workspace = true
 awaken-credential-materializer.workspace = true
 awaken-ext-builtin-tools.workspace = true
 awaken-sandbox-container.workspace = true
-# The Kubernetes engine the brokered Create client serves.
-awaken-sandbox-kubernetes = { workspace = true, optional = true }
-# Observation and stop of this Worker's own Pod process.
+# Observation and stop of this Worker's own Pod process, and the brokered
+# Create client port its Sandbox and package-image Pods are created through.
 awaken-worker-fleet-kubernetes = { workspace = true, optional = true }
 awaken-tool-relay.workspace = true
 awaken-authority-clock.workspace = true
