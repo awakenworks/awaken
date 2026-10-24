@@ -14,11 +14,11 @@ use awaken_dispatch::{
     WorkerProcessStopStatus, WorkerRegistration,
 };
 use awaken_dispatch::{NativeAttemptFootprint, NativeAttemptTermination};
-use awaken_sandbox_kubernetes::{
+use awaken_worker_contract::{WorkerRelayTargetError, WorkerRelayTargetObserver};
+use awaken_worker_fleet_kubernetes::{
     K8sWorkerCreateLedger, PodProcessBinding, PodProcessObserver, PodProcessStopper,
     PodProcessTermination,
 };
-use awaken_worker_contract::{WorkerRelayTargetError, WorkerRelayTargetObserver};
 use awaken_worker_transport_security::kubernetes::{
     KubernetesPodIdentity, KubernetesWorkerAuthenticator,
 };

@@ -7,8 +7,8 @@
 
 use super::{
     ContinuationObservationDisposition, K8sRuntime, SANDBOX_ATTEMPT_ANNOTATION, api_not_found,
-    backend, continuation, continuation_claim_for_pod, create_ledger, lifecycle,
-    observed_pod_incarnation, participants,
+    backend, continuation, continuation_claim_for_pod, lifecycle, observed_pod_incarnation,
+    participants,
 };
 use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract as pc;
@@ -98,7 +98,7 @@ pub(super) async fn remove_bound(
         observed_pod.as_ref(),
         effect_fenced,
     )?;
-    let guarded_original = create_ledger::original_guard_release_required(
+    let guarded_original = awaken_worker_fleet_kubernetes::original_guard_release_required(
         observed_pod.as_ref(),
         release_original_guard,
     )?;

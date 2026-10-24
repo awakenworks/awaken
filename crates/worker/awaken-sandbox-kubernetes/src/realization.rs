@@ -11,8 +11,8 @@ use kube::{Api, Resource, ResourceExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::error::{api_conflict, backend};
 use awaken_container_contract::RuntimeError;
+use awaken_worker_fleet_kubernetes::{api_conflict, backend};
 
 const REALIZATION_DIGEST_ANNOTATION: &str = "awaken.dev/realization-digest";
 const POD_READY_TIMEOUT: Duration = Duration::from_secs(120);

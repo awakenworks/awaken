@@ -27,6 +27,9 @@ isolates = ["k8s-openapi", "kube"]
 # which also brings the warm pool.
 awaken-sandbox-container = { workspace = true, features = ["connection"] }
 awaken-container-contract.workspace = true
+# The Create ledger, Pod process observation and the Kubernetes API boundary
+# this engine shares with the Worker fleet.
+awaken-worker-fleet-kubernetes.workspace = true
 awaken-environment-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-time.workspace = true
@@ -47,12 +50,11 @@ tokio = { workspace = true, features = ["sync", "rt", "io-util", "time", "net"] 
 kube = { workspace = true, features = ["client", "http-proxy", "rustls-tls", "ws"] }
 k8s-openapi.workspace = true
 http = "1"
-http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
-# A process-incarnation nonce: uniqueness, not time.
-uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+uuid = { version = "1", features = ["v4"] }
+awaken-worker-fleet-kubernetes = { workspace = true, features = ["test-support"] }
 awaken-agent-contract.workspace = true
 # The provider's shared Session fixtures, and the exec admission the
 # integration suites need because they drive the runtime port directly.

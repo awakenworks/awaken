@@ -17,8 +17,8 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 use kube::Api;
 use kube::api::ListParams;
 
-use super::error::backend;
 use awaken_container_contract::RuntimeError;
+use awaken_worker_fleet_kubernetes::backend;
 
 const SANDBOX_DENY_POLICY: &str = "awaken-sandbox-default-deny";
 const SANDBOX_OPEN_POLICY: &str = "awaken-sandbox-open-egress";

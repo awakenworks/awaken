@@ -11,7 +11,7 @@ use awaken_container_contract::RuntimeError;
 /// already-rendered detail) stay [`RuntimeError::Backend`]. A new API call
 /// therefore cannot silently blanket a 404/409/401/403 into a retryable
 /// backend failure.
-pub(crate) trait KubernetesFailure {
+pub trait KubernetesFailure {
     fn into_runtime_error(self) -> RuntimeError;
 }
 
@@ -32,7 +32,6 @@ mechanism_failure!(
     std::io::Error,
     serde_json::Error,
     pc::SandboxError,
-    awaken_connection_plan::ConnectError,
     kube::config::InferConfigError,
 );
 
@@ -55,24 +54,21 @@ impl KubernetesFailure for kube::Error {
     }
 }
 
-pub(crate) fn backend(error: impl KubernetesFailure) -> RuntimeError {
+pub fn backend(error: impl KubernetesFailure) -> RuntimeError {
     error.into_runtime_error()
 }
 
-pub(crate) fn api_conflict(error: &kube::Error) -> bool {
+pub fn api_conflict(error: &kube::Error) -> bool {
     matches!(error, kube::Error::Api(response) if response.code == 409)
 }
 
-pub(super) fn api_not_found(error: &kube::Error) -> bool {
+pub fn api_not_found(error: &kube::Error) -> bool {
     matches!(error, kube::Error::Api(response) if response.code == 404)
 }
 
 /// An incomplete Status cannot be collapsed into object absence by the SDK.
 /// Every optional Sandbox read uses this one existing API/error boundary.
-pub(crate) async fn get_optional<K>(
-    api: &kube::Api<K>,
-    name: &str,
-) -> Result<Option<K>, RuntimeError>
+pub async fn get_optional<K>(api: &kube::Api<K>, name: &str) -> Result<Option<K>, RuntimeError>
 where
     K: Clone + serde::de::DeserializeOwned + std::fmt::Debug,
 {

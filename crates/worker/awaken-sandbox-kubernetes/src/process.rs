@@ -411,7 +411,7 @@ pub(super) async fn open_agent_channel(
         None => TokioChannelFactory
             .connect(&ConnectionPlan::tcp_dial(runtime.agent_addr.to_string()))
             .await
-            .map_err(backend),
+            .map_err(|error| backend(error.to_string())),
     }
 }
 

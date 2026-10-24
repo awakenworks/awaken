@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::backend;
+use crate::backend;
 
 const VERSION: u8 = 1;
 const MAX_TICKETS: usize = 2048;

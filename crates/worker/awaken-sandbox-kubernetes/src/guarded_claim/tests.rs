@@ -1,13 +1,16 @@
-use super::*;
+use super::{GuardedClaimPhysical, guarded_claim_physical_state, remove_guarded_claim};
 use crate::K8sRuntime;
-use crate::guarded_claim::{
-    GuardedClaimPhysical, guarded_claim_physical_state, remove_guarded_claim,
-};
 use awaken_container_contract::K8sContinuationVolume;
 use awaken_container_contract::{CreateTicketRequest, TicketResult, TicketStatus};
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxEffectFence;
 use awaken_sandbox_container::KubernetesGuardedClaimHandle;
+use awaken_worker_fleet_kubernetes::test_support::{
+    IsolationApi as Fixture, isolate_guard_pod as isolate_pod, isolation_api as client,
+    isolation_ticket as ticket,
+};
+use awaken_worker_fleet_kubernetes::verify_pod_isolation as verify_reservation;
+use std::sync::{Arc, Mutex};
 
 #[tokio::test]
 async fn guarded_claim_disposal_requires_live_policy_exact_uid_and_current_authority() {
@@ -37,7 +40,9 @@ async fn guarded_claim_disposal_requires_live_policy_exact_uid_and_current_autho
         storage_class_name: None,
         size: "1Gi".into(),
     });
-    let guard_name = crate::names::pod_name(&runtime.realization_runtime_id("scope").unwrap());
+    let guard_name = awaken_worker_fleet_kubernetes::managed_names::pod_name(
+        &runtime.realization_runtime_id("scope").unwrap(),
+    );
     let mut guard = ticket();
     guard.request = CreateTicketRequest::new(
         "group",

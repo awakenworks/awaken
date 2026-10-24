@@ -6,7 +6,8 @@ use awaken_container_contract::{
 };
 use awaken_container_contract::{K8sCreateRequest, K8sCreateResponse};
 
-use awaken_sandbox_kubernetes::{K8sCreateTransport, K8sWorkerCreateLedger};
+use awaken_sandbox_kubernetes::K8sCreateTransport;
+use awaken_worker_fleet_kubernetes::K8sWorkerCreateLedger;
 
 const GUARDED_CLAIM_GROUP: &str = "guarded-claim-effect";
 
@@ -247,7 +248,7 @@ async fn first_pod_create_verifies_the_live_api_defaulted_projection() {
     use kube::api::{DeleteParams, ListParams, Preconditions};
     use kube::{Api, ResourceExt};
 
-    let client = awaken_sandbox_kubernetes::connect_control_client()
+    let client = awaken_worker_fleet_kubernetes::connect_control_client()
         .await
         .unwrap();
     let pods: Api<Pod> = Api::namespaced(client, "default");
@@ -351,7 +352,7 @@ async fn worker_create_ledger_joins_api_requests_and_rejects_recreated_uid() {
     use kube::api::{DeleteParams, PostParams, Preconditions};
     use kube::{Api, ResourceExt};
 
-    let client = awaken_sandbox_kubernetes::connect_control_client()
+    let client = awaken_worker_fleet_kubernetes::connect_control_client()
         .await
         .unwrap();
     let namespaces: Api<Namespace> = Api::all(client.clone());
@@ -535,7 +536,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
                 .starts_with("k3d-"),
         "isolation live test requires a dedicated k3d context"
     );
-    let client = awaken_sandbox_kubernetes::connect_control_client()
+    let client = awaken_worker_fleet_kubernetes::connect_control_client()
         .await
         .unwrap();
     // C0 incomplete aggregated discovery blocks Namespace finalization; E0
@@ -1227,7 +1228,7 @@ async fn original_create_guard_keeps_a_deleted_pod_visible_until_exact_release()
     use std::io;
     use std::time::Duration;
 
-    let client = awaken_sandbox_kubernetes::connect_control_client()
+    let client = awaken_worker_fleet_kubernetes::connect_control_client()
         .await
         .unwrap();
     let namespaces: Api<Namespace> = Api::all(client.clone());
@@ -1359,7 +1360,7 @@ async fn guarded_deleting_original_runs_authorized_pvc_disposal() {
     use k8s_openapi::api::core::v1::{Namespace, PersistentVolumeClaim, Pod};
     use kube::api::{DeleteParams, PostParams, Preconditions};
     use kube::{Api, ResourceExt};
-    let client = awaken_sandbox_kubernetes::connect_control_client()
+    let client = awaken_worker_fleet_kubernetes::connect_control_client()
         .await
         .unwrap();
     require_namespace_finalization_discovery(&client).await;

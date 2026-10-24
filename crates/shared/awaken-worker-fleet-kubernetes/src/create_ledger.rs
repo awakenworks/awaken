@@ -14,11 +14,11 @@ use awaken_container_contract::{CreateReplyProfile, K8sLedgerBinding, RequestJoi
 mod broker_effects;
 mod capacity;
 mod capture;
-mod isolation;
+pub(crate) mod isolation;
 mod state;
-pub(crate) use isolation::original_guard_release_required;
-pub(crate) use isolation::release_original_guard;
-pub(crate) use isolation::verify_reservation as verify_pod_isolation;
+pub use isolation::original_guard_release_required;
+pub use isolation::release_original_guard;
+pub use isolation::verify_reservation as verify_pod_isolation;
 
 pub use state::WorkerCreateLedgerState;
 
@@ -29,8 +29,8 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::PostParams;
 use kube::{Api, Client, ResourceExt};
 
-use super::PodProcessBinding;
-use super::error::{api_conflict, backend};
+use crate::PodProcessBinding;
+use crate::{api_conflict, backend};
 
 const CONTRACT: &str = "awaken.dev/create-ledger-contract";
 const PROVIDER: &str = "awaken.dev/create-ledger-provider";
