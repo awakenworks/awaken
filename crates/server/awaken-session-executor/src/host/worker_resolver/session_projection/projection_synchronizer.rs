@@ -696,8 +696,8 @@ mod tests {
                 || host
                     .run_assembly
                     .installed_sessions
-                    .read(thread, |slot| slot.run.context.is_none()
-                        && !slot.realization.environment().owner.is_resident())
+                    .read(thread, |installed| installed.run.context.is_none()
+                        && !installed.realization.environment().owner.is_resident())
                     .expect("installed Sessions")
                     .unwrap_or(false),
             "DH1/C2 revocation clears R1 and hides Retiring A"
@@ -705,7 +705,7 @@ mod tests {
 
         // CR4 projection publication now carries the actual Dispatch claim.
         // Use its authoritative queue row, not a fabricated tuple that would
-        // bypass the deferred binding fence when the slot had no claim.
+        // bypass the deferred binding fence when the installed Session had no claim.
 
         let dispatch = host
             .run_assembly
@@ -857,12 +857,13 @@ mod tests {
             );
             host.run_assembly
                 .installed_sessions
-                .read(thread, |slot| {
-                    assert!(matches!(&slot.realization.environment().owner,
+                .read(thread, |installed| {
+                    assert!(matches!(&installed.realization.environment().owner,
                     crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring)
                     if Arc::ptr_eq(&retiring.owned.environment(), &original)));
                     assert_eq!(
-                        slot.realization
+                        installed
+                            .realization
                             .execution()
                             .authority
                             .lease()
@@ -870,7 +871,7 @@ mod tests {
                             .epoch,
                         1
                     );
-                    assert!(slot.run.context.is_none());
+                    assert!(installed.run.context.is_none());
                 })
                 .unwrap();
             assert_eq!(
@@ -1142,12 +1143,14 @@ mod tests {
         assert!(
             host.run_assembly
                 .installed_sessions
-                .read(thread, |slot| slot.run.context.as_ref().is_some_and(
-                    |runtime| {
+                .read(thread, |installed| installed
+                    .run
+                    .context
+                    .as_ref()
+                    .is_some_and(|runtime| {
                         Arc::ptr_eq(runtime, &fresh_runtime)
-                            && slot.realization.environment().owner.is_resident()
-                    }
-                ))
+                            && installed.realization.environment().owner.is_resident()
+                    }))
                 .expect("installed Sessions")
                 .unwrap_or(false),
             "DH1/E4 fresh Runtime and Resident are published together"
@@ -1481,12 +1484,15 @@ mod tests {
             .unwrap();
         host.run_assembly
             .installed_sessions
-            .read(thread, |slot| {
-                assert!(slot.inputs.baseline.is_none(), "OR1 C3 no Managed baseline");
-                assert!(!slot.run.session_dispatch, "OR1 C3 ordinary Run");
+            .read(thread, |installed| {
+                assert!(
+                    installed.inputs.baseline.is_none(),
+                    "OR1 C3 no Managed baseline"
+                );
+                assert!(!installed.run.session_dispatch, "OR1 C3 ordinary Run");
                 assert!(
                     matches!(
-                        &slot.realization.execution().authority,
+                        &installed.realization.execution().authority,
                         crate::realization_state::SessionRealizationAuthority::Uninstalled
                     ),
                     "OR1 C3 no fabricated realization lease"
@@ -1574,7 +1580,7 @@ mod tests {
     }
 
     /// Remote claimed-realization cause/effect graph: C1 a claimed rebuild
-    /// carries an A2A-only publication; C2 the slot retains an exact Ready,
+    /// carries an A2A-only publication; C2 the installed Session retains an exact Ready,
     /// revoked local LegacyDirect owner; C3 neither the aggregate projection nor
     /// raw delivery cache supplies a local binding. Effects: E1 classify the
     /// conflict before legacy disposal, projection/Resource installation, or MCP
@@ -1628,19 +1634,20 @@ mod tests {
         let cached = host
             .run_assembly
             .installed_sessions
-            .read(thread, |slot| {
+            .read(thread, |installed| {
                 (
-                    slot.inputs.published_snapshot.clone(),
-                    slot.realization.execution().authority.lease().cloned(),
-                    slot.inputs
+                    installed.inputs.published_snapshot.clone(),
+                    installed.realization.execution().authority.lease().cloned(),
+                    installed
+                        .inputs
                         .environment_projection
                         .as_ref()
                         .map(|projection| projection.fingerprint.clone()),
-                    slot.realization.staging().mcp.projection_count(),
+                    installed.realization.staging().mcp.projection_count(),
                 )
             })
             .expect("installed Sessions")
-            .expect("RA1 retained slot caches");
+            .expect("RA1 retained installed Session caches");
         let cached_resources = host
             .realization_executor
             .staging()
@@ -1725,15 +1732,16 @@ mod tests {
         assert_eq!(
             host.run_assembly
                 .installed_sessions
-                .read(thread, |slot| {
+                .read(thread, |installed| {
                     (
-                        slot.inputs.published_snapshot.clone(),
-                        slot.realization.execution().authority.lease().cloned(),
-                        slot.inputs
+                        installed.inputs.published_snapshot.clone(),
+                        installed.realization.execution().authority.lease().cloned(),
+                        installed
+                            .inputs
                             .environment_projection
                             .as_ref()
                             .map(|projection| projection.fingerprint.clone()),
-                        slot.realization.staging().mcp.projection_count(),
+                        installed.realization.staging().mcp.projection_count(),
                     )
                 })
                 .expect("installed Sessions"),

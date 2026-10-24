@@ -61,7 +61,7 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
     // forwarding method cannot add a grant or change these original effects.
 
     // Causes: C1 registered/direct topology; C2 Worker live/zero/closed;
-    // C3 Session live/expired/closed/uninstalled/absent; C4 captured slot's two
+    // C3 Session live/expired/closed/uninstalled/absent; C4 captured installed Session's two
     // allocation identities unchanged; C5 exact owner/incarnation/epoch and
     // operation; C6 expiry nondecreasing from initial through asserted/current.
     // Effect E1 = return the unchanged current Control fence iff every relevant
@@ -272,8 +272,8 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
 }
 
 #[tokio::test]
-async fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity() {
-    // P3 missing slot or invalid operation -> capture error, with no slot
+async fn provider_fence_source_capture_rejects_absent_installed_session_and_invalid_identity() {
+    // P3 missing installed Session or invalid operation -> capture error, with no installed Session
     // creation. Empty identity is independent of existence: test both states.
     let host = host().await;
     let valid = lease().sandbox_effect_fence("create").unwrap();
@@ -291,14 +291,14 @@ async fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity(
             .is_none()
     );
     // An effect fence with an incomplete identity never reaches capture: the
-    // one admission refuses it before a value exists, installed slot or not.
+    // one admission refuses it before a value exists, installed Session or not.
     assert!(
         valid.with_persisted(|w| w.operation_id.clear()).is_err(),
         "blank operation identity is refused at construction"
     );
     install(&host, lease());
 
-    // C1 slot exists; C2 the capture has an installed live-kind lease;
+    // C1 installed Session exists; C2 the capture has an installed live-kind lease;
     // C3 initial generation matches; C4 initial expiry does not exceed it.
     // Each false row rejects at capture, before any operation can use a port.
     // This is distinct from the late replacement table above.
@@ -348,7 +348,7 @@ async fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity(
 async fn provider_fence_source_cannot_retain_the_host_or_authorize_after_its_drop() {
     // W1 capture a source while the exact Session exists; W2 drop its Host.
     // Both the fence query and synchronous effect must deny, with zero effects.
-    // Owned opaque return + Weak slot reference makes this a real drop check,
+    // Owned opaque return + Weak installed Session reference makes this a real drop check,
     // not a source that merely borrows a Host kept alive by the test itself.
     let host = host().await;
     install(&host, lease());
@@ -368,7 +368,7 @@ async fn provider_fence_source_cannot_retain_the_host_or_authorize_after_its_dro
 }
 
 #[tokio::test]
-async fn provider_fence_source_waiting_for_worker_rechecks_slot_after_revocation() {
+async fn provider_fence_source_waiting_for_worker_rechecks_installed_session_after_revocation() {
     // Temporal P4: request captured -> blocked acquiring Worker guard -> Session
     // closes/recreates -> Worker guard released -> callback must reject. P5 the
     // identical ordering with a same-generation renewal returns its new fence.
@@ -663,7 +663,7 @@ impl awaken_provisioning_contract::SandboxProvider for ProjectionProbe {
 #[tokio::test]
 async fn adoption_forwards_original_authority_across_observation_and_provider_waits() {
     // H1-H14: direct/registered x observation/adoption Pending x Session close,
-    // same-byte slot ABA, renewal, or registered Worker exhaustion. C1 authority
+    // same-byte installed Session ABA, renewal, or registered Worker exhaustion. C1 authority
     // must be captured BEFORE observation. E1 renewal alone reaches one current
     // projection with original Control coordinates; E2 loss/ABA reaches zero.
     // The probe deliberately returns an error after recording, so no physical
@@ -957,7 +957,7 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
 #[tokio::test]
 async fn environment_receipt_refreshes_only_the_captured_live_generation() {
     // Cause/effect graph: C1 direct/registered Worker; C2 exact/renewed lease;
-    // C3 owner/incarnation/epoch/expiry changed; C4 closed/removed/ABA slot;
+    // C3 owner/incarnation/epoch/expiry changed; C4 closed/removed/ABA installed Session;
     // C5 Worker closed/zero. E1 exact or monotonic renewal => original receipt,
     // identical effect/binding/context; E2 all loss/reassignment rows => reject.
     // R1 exact, R2 renewed (old Control expiry can already be stale), R3 each

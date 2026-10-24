@@ -7,8 +7,8 @@ use awaken_tool_contract::tool::{
     ToolCall, ToolError, ToolExecutor, ToolOutput, ToolRecoveryCapability,
 };
 
-/// Held in the Session's installed slot, so it reaches the slot registry and
-/// the realization executor weakly: the slot must not keep its own owners alive.
+/// Held in the Session's installed Session, so it reaches the installed Session registry and
+/// the realization executor weakly: the installed Session must not keep its own owners alive.
 pub(crate) struct DeferredSandboxExecutor {
     installed_sessions: Weak<crate::InstalledSessions>,
     realization_executor: Weak<crate::realization_executor::RealizationExecutor>,
@@ -24,9 +24,9 @@ pub(crate) fn bind_deferred_executor(
 ) -> Result<(), crate::realization_error::RealizationLock> {
     let needed = host
         .installed_sessions
-        .read(thread, |slot| {
-            slot.run.deferred_executor.is_none()
-                && slot
+        .read(thread, |installed| {
+            installed.run.deferred_executor.is_none()
+                && installed
                     .inputs
                     .environment_projection
                     .as_ref()
@@ -87,8 +87,8 @@ impl ToolExecutor for DeferredSandboxExecutor {
             let args = awaken_tool_contract::tool::parse_tool_args(call.arguments.clone())?;
             if self
                 .installed_sessions()?
-                .read(&self.thread, |slot| {
-                    crate::skills::read_pinned_skill(slot, &args)
+                .read(&self.thread, |installed| {
+                    crate::skills::read_pinned_skill(installed, &args)
                 })
                 .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
                 .flatten()
@@ -141,8 +141,8 @@ impl ToolExecutor for DeferredSandboxExecutor {
                 awaken_tool_contract::tool::parse_tool_args(call.arguments.clone())?;
             if let Some(result) = self
                 .installed_sessions()?
-                .read(&self.thread, |slot| {
-                    crate::skills::read_pinned_skill(slot, &args)
+                .read(&self.thread, |installed| {
+                    crate::skills::read_pinned_skill(installed, &args)
                 })
                 .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
                 .flatten()

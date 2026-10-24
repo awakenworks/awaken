@@ -229,12 +229,14 @@ async fn retained_configured_mcp_effects_release_unrelated_session_owners() {
         .unwrap();
     let effects = RunMcpEffects::new(host.run_assembly.clone());
     let assembly = Arc::downgrade(&host.run_assembly);
-    let slots = Arc::downgrade(&host.run_assembly.installed_sessions);
+    let installed_sessions = Arc::downgrade(&host.run_assembly.installed_sessions);
     let cached = Arc::downgrade(&context);
     drop(context);
     drop(host);
     assert!(
-        assembly.upgrade().is_none() && slots.upgrade().is_none() && cached.upgrade().is_none()
+        assembly.upgrade().is_none()
+            && installed_sessions.upgrade().is_none()
+            && cached.upgrade().is_none()
     );
     let stage = request("released-configured-mcp", "http://127.0.0.1:9/mcp");
     for result in [
@@ -269,7 +271,7 @@ async fn retained_configured_mcp_effects_release_unrelated_session_owners() {
         "mcp_projection_owner_released",
         "missing original state is not an empty projection"
     );
-    assert!(slots.upgrade().is_none());
+    assert!(installed_sessions.upgrade().is_none());
 }
 
 #[tokio::test]
@@ -283,10 +285,10 @@ async fn retained_direct_mcp_effects_keep_required_execution_owner_until_drained
     .unwrap();
     let effects = RunMcpEffects::new(host.run_assembly.clone());
     let assembly = Arc::downgrade(&host.run_assembly);
-    let slots = Arc::downgrade(&host.run_assembly.installed_sessions);
+    let installed_sessions = Arc::downgrade(&host.run_assembly.installed_sessions);
     drop(host);
     assert!(
-        assembly.upgrade().is_some() && slots.upgrade().is_some(),
+        assembly.upgrade().is_some() && installed_sessions.upgrade().is_some(),
         "owned Direct execution still needs its original context"
     );
     let (url, seen) = crate::test_mcp::start(None).await;
@@ -318,7 +320,7 @@ async fn retained_direct_mcp_effects_keep_required_execution_owner_until_drained
     );
     drop(effects);
     assert!(
-        assembly.upgrade().is_none() && slots.upgrade().is_none(),
+        assembly.upgrade().is_none() && installed_sessions.upgrade().is_none(),
         "last genuine execution role releases its original owners"
     );
 }

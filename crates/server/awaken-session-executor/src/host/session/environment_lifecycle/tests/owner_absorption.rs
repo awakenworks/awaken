@@ -114,7 +114,7 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
     // Sandbox plus one File path and the same generation; C3 a foreign
     // generation claims those bytes. R1=C1+C2 => decode/validate B2 but do
     // not borrow old B1 as an exact Resident; the old Arc remains Retiring.
-    // R2=C1+C3 => reject before provider observation or any slot mutation.
+    // R2=C1+C3 => reject before provider observation or any installed Session mutation.
     // Exact physical equality or an authorized monotonic successor admits the
     // original target; neither condition admits a foreign generation. The
     // retained-source fallback is a pure precomputed reference, so eager
@@ -1112,7 +1112,7 @@ fn owner_after_projection_derives_a_new_owner_and_keeps_the_held_one() {
     // state; effects: A1 Unmaterialized projects Vacant; A2 a Resident with
     // effect and generation projects an exact durable adoption; A3 a
     // generation without its effect is refused (fail closed); A4 in every row
-    // the held owner is unchanged, because installing waits for the slot lock.
+    // the held owner is unchanged, because installing waits for the installed Session lock.
     let thread = "after-projection";
     let held = SessionEnvironmentOwner::Vacant;
     let unmaterialized = awaken_session_state_contract::SessionEnvironmentState::Unmaterialized;

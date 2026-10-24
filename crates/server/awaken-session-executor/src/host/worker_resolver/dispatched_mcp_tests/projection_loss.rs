@@ -69,7 +69,7 @@ impl SessionRealizationSource for RemoveAfterReadyRead {
                 visit(access);
             });
         // The original lookup, callback and mutex release really completed.
-        // The original public removal then destroys that exact installed slot.
+        // The original public removal then destroys that exact installed Session.
         // Never alter the returned ready result or fabricate an absent callback.
         if result.is_ok()
             && session == self.session
@@ -294,6 +294,6 @@ async fn managed_claim_projection_loss_never_enters_ordinary_mcp_staging() {
             .read(session, |_| ())
             .expect("installed Sessions")
             .is_none(),
-        "E2 no replacement root or Direct slot was manufactured"
+        "E2 no replacement root or Direct installed Session was manufactured"
     );
 }

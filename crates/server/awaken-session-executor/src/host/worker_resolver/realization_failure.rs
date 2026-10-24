@@ -179,12 +179,20 @@ mod tests {
         assert!(
             host.run_assembly
                 .installed_sessions
-                .read("session-container", |slot| slot.run.context.is_none()
-                    && slot.run.dispatch_claim.as_ref() == Some(&claim)
-                    && !slot.run.session_dispatch
-                    && slot.inputs.baseline.is_none()
-                    && slot.realization.execution().authority.lease().is_none()
-                    && slot.realization.execution().frozen_receipt.is_none())
+                .read("session-container", |installed| installed
+                    .run
+                    .context
+                    .is_none()
+                    && installed.run.dispatch_claim.as_ref() == Some(&claim)
+                    && !installed.run.session_dispatch
+                    && installed.inputs.baseline.is_none()
+                    && installed
+                        .realization
+                        .execution()
+                        .authority
+                        .lease()
+                        .is_none()
+                    && installed.realization.execution().frozen_receipt.is_none())
                 .unwrap()
                 .unwrap_or(false),
             "C3 original ordinary inputs/claim remain, without a complete context or Managed authority/receipt"

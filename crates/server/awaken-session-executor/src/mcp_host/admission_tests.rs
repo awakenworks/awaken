@@ -7,7 +7,7 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
     // Table: unknown root -> Assigned rejects, Direct may stage; live original
     // root -> Assigned can replay the exact receipt; closed root -> both reject.
     // Keep the real transport and its original projection visible to the test:
-    // no replacement slot, fabricated root, or alternate material store exists.
+    // no replacement installed Session, fabricated root, or alternate material store exists.
     let host = crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::NoModelConfiguredExecutor),
         "stub",

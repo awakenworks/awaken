@@ -4,7 +4,7 @@ use super::*;
 // root remains live => forward through the original capability, no restaging.
 // R2 a foreign incarnation/epoch asserts even a future expiry => reject.
 // R3 current root expires => reject; R4 Host disappears => reject. All failures
-// R5 invalidation / slot removal => reject even a still-live route assertion.
+// R5 invalidation / installed Session removal => reject even a still-live route assertion.
 // must leave the real upstream call count unchanged. Canonical drain/cancel
 // coverage remains in mcp_relay's existing shared-call-fence tests.
 #[tokio::test]

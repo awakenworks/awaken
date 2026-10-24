@@ -81,14 +81,19 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     assert!(Arc::ptr_eq(cached.env.as_ref().unwrap(), &environment));
     host.run_assembly
         .installed_sessions
-        .read(thread, |slot| {
+        .read(thread, |installed| {
             assert!(
-                slot.inputs.baseline.is_none(),
+                installed.inputs.baseline.is_none(),
                 "RR1 ordinary, no Root projection"
             );
-            assert!(!slot.run.session_dispatch, "RR1 no Managed grant");
+            assert!(!installed.run.session_dispatch, "RR1 no Managed grant");
             assert!(
-                slot.realization.execution().authority.lease().is_none(),
+                installed
+                    .realization
+                    .execution()
+                    .authority
+                    .lease()
+                    .is_none(),
                 "RR1 no fake lease"
             );
         })
@@ -192,7 +197,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         ready_host
             .run_assembly
             .installed_sessions
-            .read(ready_thread, |slot| slot
+            .read(ready_thread, |installed| installed
                 .inputs
                 .published_snapshot
                 .is_none())

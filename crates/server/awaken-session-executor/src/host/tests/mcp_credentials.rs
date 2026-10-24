@@ -403,7 +403,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     let staging_request = recovered_projection.request.clone();
     // H28: cleanup and a heartbeat can occur between failed activation and
-    // retry. A Removed slot owns no effect. A later expiry with the same
+    // retry. A Removed installed Session owns no effect. A later expiry with the same
     // immutable binding must use ordinary staging, not fail the active-renewal
     // gate or fabricate an already-staged receipt. H15/H16/H25 retain changed
     // binding, equal-expiry/new-key and in-flight Stage rejection coverage.
@@ -423,7 +423,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     renewed_removed.stage_idempotency_key = "retry-after-heartbeat".into();
     // H29: any changed immutable coordinate OR a non-increasing expiry with
     // changed attempt key => retain the removed owner. Only H28's strictly
-    // renewed binding may remove it. Every rejected row leaves the same slot.
+    // renewed binding may remove it. Every rejected row leaves the same installed Session.
     for changed in [
         "workspace",
         "attachment",

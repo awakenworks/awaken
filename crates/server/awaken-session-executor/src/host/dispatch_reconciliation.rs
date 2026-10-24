@@ -102,7 +102,7 @@ mod tests {
         // M0 one injected Ingress adapter crosses the neutral idle leaf; its
         // explicit terminal role shares the same Source Arc and is not invoked
         // by idle maintenance. Host has no production Ingress implementation edge;
-        // Causes: C1 expired exact registration; C2 no Dispatch slot; C3
+        // Causes: C1 expired exact registration; C2 no Dispatch installed Session; C3
         // independent process exit; C4 first provider release fails; C5 later
         // Worker waits; C6 retry after Registry already stored exit.
         // Effects: E1 exact exit is durable before release, E2 failed release
@@ -256,7 +256,7 @@ mod tests {
             awaken_dispatch::WorkerProcessStopStatus,
             awaken_session_execution_contract::ApplicationError,
         > {
-            panic!("no Dispatch slot exists")
+            panic!("no Dispatch installed Session exists")
         }
     }
 
@@ -384,7 +384,7 @@ mod tests {
     #[tokio::test]
     async fn closed_idle_worker_without_process_evidence_keeps_provider_retention() {
         // Causes: C1 exact Registry lease expires; C2 Dispatch has no physical
-        // slot; C3 selected independent provider returns Unknown exit.
+        // installed Session; C3 selected independent provider returns Unknown exit.
         // Effects: E1 Registry closes admission, E2 no process-exit receipt,
         // E3 provider retention remains. Rule U1=C1+C2+C3=>E1+E2+E3;
         // empty Dispatch alone cannot become a physical proof.
@@ -475,7 +475,7 @@ mod tests {
         // identity is live; U4 an unbound physical attempt remains occupied.
         // Effects: E1 U1+U2 closes only Registry admission; E2 U1+U3 preserves
         // the live identity; E3 no provider call/exit receipt is invented; E4
-        // U4 keeps the exact original slot. One injected Ingress release
+        // U4 keeps the exact original installed Session. One injected Ingress release
         // adapter owns the optional provider action; the Host only scans and
         // expires the Registry. Rules UE1=U1+U2=>E1+E3+E4;
         // UE2=U1+U3=>E2+E3. This uses normal registration/claim/admission APIs,
@@ -532,7 +532,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(before.binding.is_none(), "U4 historical unbound slot");
+        assert!(
+            before.binding.is_none(),
+            "U4 historical unbound installed Session"
+        );
         let host = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::host::MemoryHostModel),
             "fixture",
@@ -591,7 +594,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_terminal_scan_closes_original_occupancy_without_a_successor_or_environment() {
-        // Causes: C1 exact committed Ended; C2 original bound occupied slot;
+        // Causes: C1 exact committed Ended; C2 original bound occupied installed Session;
         // C3 expired/closed original Worker; C4 same trusted startup source;
         // C5 full domain evidence. C4 is the explicit neutral terminal role;
         // private proof construction remains in its Ingress adapter/kernel.
@@ -599,7 +602,7 @@ mod tests {
         // WorkerAssignment; merely spelling its lease-owner string does not
         // authorize a bound physical attempt. The original binding law stays.
         // Effects: E0 no stop or mutation; E1 local
-        // exit persists but Unknown domain keeps exact closing slot; E2 full
+        // exit persists but Unknown domain keeps exact closing installed Session; E2 full
         // evidence atomically retires old then ordinary terminal claim settles
         // Done, no execution/Environment. E3 later cadence retries same old
         // binding, never new Worker/source coordinates. No successor is claimed
@@ -608,7 +611,7 @@ mod tests {
         // | O0 | no | yes | yes | yes | yes | E0 |
         // | O1 | yes | yes | live | yes | yes | E0 |
         // | O2 | yes | yes | yes | absent | yes | E0 |
-        // O2e absent role + canonical Ended + empty slot => original fenced
+        // O2e absent role + canonical Ended + empty installed Session => original fenced
         // terminal claim/settle only (the existing empty legacy case below).
         // Missing role is not a fake provider or an independent exit receipt;
         // concurrent hidden occupancy still makes the Store claim fail closed.

@@ -269,13 +269,17 @@ mod tests {
         assert!(
             host.run_assembly
                 .installed_sessions
-                .read(thread, |slot| {
-                    slot.run.context.is_none()
-                        && !slot.realization.environment().owner.has_local_environment()
-                        && slot.inputs.workspace.is_none()
-                        && slot.realization.staging().manifest.is_none()
-                        && slot.realization.staging().memory_bindings.is_empty()
-                        && slot.realization.staging().memory.is_none()
+                .read(thread, |installed| {
+                    installed.run.context.is_none()
+                        && !installed
+                            .realization
+                            .environment()
+                            .owner
+                            .has_local_environment()
+                        && installed.inputs.workspace.is_none()
+                        && installed.realization.staging().manifest.is_none()
+                        && installed.realization.staging().memory_bindings.is_empty()
+                        && installed.realization.staging().memory.is_none()
                 })
                 .expect("installed Sessions")
                 .unwrap_or(true),
@@ -715,7 +719,7 @@ mod tests {
         // retain the child logical Thread/Run identity; E4 commit alone creates no
         // extraction; E5 authenticated settlement completes one extraction in the
         // frozen store using the effective candidate; E6 realize no Runtime,
-        // Environment, Resource, or selected-Memory state and create no child slot or
+        // Environment, Resource, or selected-Memory state and create no child installed Session or
         // physical partition; E7 exact replay is duplicate and creates no second
         // extraction attempt or Memory version. Constraints: the RunDispatch is built
         // by the production child dispatch owner and accepted only through
@@ -949,7 +953,7 @@ mod tests {
                 .read(child_thread, |_| ())
                 .expect("installed Sessions")
                 .is_none(),
-            "R4-R6 E6 logical child has no resident Session slot"
+            "R4-R6 E6 logical child has no resident installed Session"
         );
         assert_no_resident_session_projection(&host, parent_thread, "R4-R6 E6");
 
@@ -1042,7 +1046,7 @@ mod tests {
         // creates exactly one extraction/version using the effective candidate.
         // R2 manifestless enabled: missing original resident binding is an error.
         // R3 extraction disabled and R4 plugin absent: no extraction. R5 foreign frozen binding:
-        // reject before extraction. Every row must release the actual slot table.
+        // reject before extraction. Every row must release the actual installed Session table.
         for rule in ["frozen", "legacy", "disabled", "absent", "foreign-binding"] {
             let parent = format!("released-memory-parent-{rule}");
             let child = format!("released-memory-child-{rule}");
@@ -1144,7 +1148,7 @@ mod tests {
             );
             let observer = host.worker_memory_settlement_observer();
             let facade = Arc::downgrade(&host);
-            let slots = Arc::downgrade(&host.run_assembly.installed_sessions);
+            let installed_sessions = Arc::downgrade(&host.run_assembly.installed_sessions);
             let assembly = Arc::downgrade(&host.run_assembly);
             let authority = host.run_assembly.authority.clone();
             drop(service);
@@ -1155,8 +1159,8 @@ mod tests {
                 "{rule}: selected settlement services must release the Host"
             );
             assert!(
-                slots.upgrade().is_none(),
-                "{rule}: selected settlement services must release the slot table"
+                installed_sessions.upgrade().is_none(),
+                "{rule}: selected settlement services must release the installed Session table"
             );
             assert!(
                 assembly.upgrade().is_none(),
@@ -1246,8 +1250,8 @@ mod tests {
                 "{rule}: no child physical partition"
             );
             assert!(
-                slots.upgrade().is_none(),
-                "{rule}: settlement cannot resurrect a Session slot"
+                installed_sessions.upgrade().is_none(),
+                "{rule}: settlement cannot resurrect a installed Session"
             );
         }
     }

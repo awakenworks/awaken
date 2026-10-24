@@ -158,7 +158,7 @@ mod tests {
         // closure; C3 no parent Runtime is resident. Effects: E1 resolve the child
         // from its own empty exact closure; E2 materialize/reuse only the parent's
         // Environment and commit substrate; E3 never construct parent plugins or
-        // a child Session slot. Rule S1=C1+C2+C3=>E1+E2+E3. The absent parent-only
+        // a child installed Session. Rule S1=C1+C2+C3=>E1+E2+E3. The absent parent-only
         // auxiliary makes any accidental full parent context construction fail.
         // C4 installs the parent's complete Runtime projection and the child
         // dispatch's exact empty-Resource envelope through their canonical ports;
@@ -235,10 +235,10 @@ mod tests {
         let physical = host
             .run_assembly
             .installed_sessions
-            .read(parent_thread, |slot| {
+            .read(parent_thread, |installed| {
                 (
-                    slot.realization.environment().owner.is_resident(),
-                    slot.run.context.is_some(),
+                    installed.realization.environment().owner.is_resident(),
+                    installed.run.context.is_some(),
                 )
             })
             .expect("installed Sessions")

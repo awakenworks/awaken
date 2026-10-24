@@ -38,7 +38,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordina
         let command_fingerprint = command.command_fingerprint();
         let input = command.messages.clone();
         // The Session application's Run reservation enters this host for the
-        // Session: its install path, so the Session-dispatch mark has a slot.
+        // Session: its install path, so the Session-dispatch mark has an installed Session.
         self.installed_sessions
             .install(command.session_id.as_str())
             .map_err(crate::installed_session::registry_run_error)?;

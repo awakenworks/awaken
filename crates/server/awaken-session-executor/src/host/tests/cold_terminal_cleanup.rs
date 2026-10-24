@@ -145,7 +145,7 @@ async fn ordinary_attempt_acknowledgement_releases_source_without_claiming_globa
     // removes the current row -> terminal source access is Settled. The same
     // original journal retains only an Acknowledgement, never independent
     // closure. A full-history/independent-closure gate here would regress every
-    // normal cleanup. O2 before that return -> Pending, with its slot retained.
+    // normal cleanup. O2 before that return -> Pending, with its installed Session retained.
     use crate::host::worker_resolver::test_support::test_activation;
     use awaken_dispatch_contract::{
         DispatchAttemptRecordReads as _, DispatchClaims as _, DispatchEnqueue as _,
@@ -459,7 +459,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     // assignment and its canonical driver blocks after aggregate authorization;
     // C2 that terminal generation and another ordinary Session owned by the
     // Worker are both due for renewal; C3 the terminal authorization is later
-    // released. Effects: E1 C1 uniquely installs and retains the terminal slot;
+    // released. Effects: E1 C1 uniquely installs and retains the terminal installed Session;
     // E2 both Sessions reach the sole aggregate lease-renewal port and install
     // monotonic same-generation readback before C3; E3 no resident scan, second
     // cleanup driver, or local work queue is introduced; E4 the old asserted
@@ -615,7 +615,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
             .expect("installed Sessions")
             .flatten(),
         Some(requested_expiry_unix_ms),
-        "R1/E2 terminal slot installs authoritative renewal readback"
+        "R1/E2 terminal installed Session installs authoritative renewal readback"
     );
 
     cleanup_release.notify_one();
@@ -689,7 +689,7 @@ async fn cold_terminal_cleanup_replenishes_a_slot_while_one_sibling_is_blocked()
     // Cause/effect graph: C1 five distinct terminal assignments are offered by
     // the sole Control queue; C2 the first canonical work poll blocks; C3 one
     // sibling poll fails; C4 the first is released. E1 the other three polls
-    // proceed while C2 is blocked; E2 a freed slot claims and completes the
+    // proceed while C2 is blocked; E2 a freed installed Session claims and completes the
     // fifth assignment before C4; E3 the failure does not cancel sibling work;
     // E4 the sweep reports the error after C4; E5 the report names the failed
     // sibling even though another Session was blocked and the rest succeeded.
@@ -989,7 +989,7 @@ async fn cold_terminal_recovery_rejects_a_nonadvancing_legacy_cursor_reply() {
 async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path() {
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
-    // Cause/effect graph: C1 a terminal Session has no process-local slot after
+    // Cause/effect graph: C1 a terminal Session has no process-local installed Session after
     // Worker replacement; C2 claim-next returns a typed routing assignment with
     // the frozen projection, an active Repository manifest, and a newly fenced
     // lease but no Run claim; C3 the first Control poll classifies the terminal
@@ -998,13 +998,13 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     // sole installer of the exact baseline and lease before C5, without
     // re-materializing the Resource being destroyed; E2 it durably records
     // source preparation before projecting typed physical disposal; E3 the
-    // exact disposal receipt returns through Control and removes the slot only
+    // exact disposal receipt returns through Control and removes the installed Session only
     // after aggregate completion; E4 claim-next then returns empty and the
     // bounded recovery scan stops without a Worker-local queue or duplicate
     // cleanup path. Constraint: a claim never installs a projection or carries
     // commands; the driver installs current readback before source I/O.
     //
-    // | Rule | local slot | Control boundary | Effect |
+    // | Rule | local installed Session | Control boundary | Effect |
     // |---|---|---|---|
     // | C1 | absent | before claim | remains absent |
     // | C2 | installed | authorization admitted | E1 before source I/O |

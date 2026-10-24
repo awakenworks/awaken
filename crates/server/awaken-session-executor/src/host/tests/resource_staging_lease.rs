@@ -7,11 +7,11 @@ use awaken_session_realization::peers::EnvironmentPeer as _;
 // B1-B4: after the synchronous close, remove/recreate the SAME Session id with
 // the SAME closed lease (or Closed(None)); its new owner lock may even be held.
 // Effects: stale cleanup neither waits on new locks nor consumes the replacement
-// claim/slot; its own later selection remains usable. Cross both captured owner
+// claim/installed Session; its own later selection remains usable. Cross both captured owner
 // locks with leased/uninstalled projections. Equality of lease bytes alone is
-// deliberately insufficient here; real production slot allocations own the ABA.
+// deliberately insufficient here; real production installed Session allocations own the ABA.
 #[tokio::test]
-async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
+async fn realization_revocation_selection_fences_removed_and_recreated_installed_sessions() {
     for lifecycle in [false, true] {
         for leased in [false, true] {
             let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
@@ -60,15 +60,15 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
             };
             host.run_assembly
                 .installed_sessions
-                .install_with(SESSION, |slot| {
+                .install_with(SESSION, |installed| {
                     if leased {
-                        slot.realization.install_lease(
+                        installed.realization.install_lease(
                             awaken_session_realization::test_support::test_observed_lease(
                                 lease.clone(),
                             ),
                         );
                     }
-                    slot.run.dispatch_claim = Some(claim.clone());
+                    installed.run.dispatch_claim = Some(claim.clone());
                 })
                 .expect("installed Sessions");
             let replacement = host
@@ -116,7 +116,7 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
     }
 }
 
-// W1-W3: all slots are closed atomically BEFORE drain/lock waits. One Session
+// W1-W3: all installed Sessions are closed atomically BEFORE drain/lock waits. One Session
 // holds its realization lock while another is free; independent cleanup must
 // progress regardless of HashMap order. Caller cancellation retains the closed
 // pending owner and a fresh selection finishes it. Empty retry is a no-op.
@@ -244,7 +244,7 @@ async fn worker_revocation_error_does_not_short_circuit_other_sessions() {
             .install_with(id, |_| ())
             .expect("installed Sessions");
     }
-    // As in W2, make the first selected slot fail, independently of the
+    // As in W2, make the first selected installed Session fail, independently of the
     // HashMap seed. A short-circuit implementation must leave the peer behind.
     let ids = host
         .run_assembly
@@ -532,9 +532,9 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 assert_eq!(
                     host.run_assembly
                         .installed_sessions
-                        .read(SESSION, |slot| (
-                            slot.realization.execution().authority.lease().cloned(),
-                            slot.run.dispatch_claim.clone(),
+                        .read(SESSION, |installed| (
+                            installed.realization.execution().authority.lease().cloned(),
+                            installed.run.dispatch_claim.clone(),
                         ))
                         .expect("installed Sessions"),
                     Some((Some(extended), Some(claim))),
@@ -651,17 +651,22 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
             f.host
                 .run_assembly
                 .installed_sessions
-                .read(SESSION, |slot| slot.inputs.workspace.is_none()
-                    && slot.inputs.agent_id.is_none()
-                    && slot.inputs.published_snapshot.is_none()
-                    && slot.inputs.environment_projection.is_none()
-                    && slot.inputs.environment_snapshot.is_none()
-                    && slot.inputs.baseline.is_none()
-                    && slot.realization.execution().frozen_receipt.is_none()
-                    && slot.realization.staging().transition.is_none()
-                    && !slot.run.session_dispatch
-                    && slot.inputs.request_context.is_empty()
-                    && slot.realization.execution().authority.lease().is_none())
+                .read(SESSION, |installed| installed.inputs.workspace.is_none()
+                    && installed.inputs.agent_id.is_none()
+                    && installed.inputs.published_snapshot.is_none()
+                    && installed.inputs.environment_projection.is_none()
+                    && installed.inputs.environment_snapshot.is_none()
+                    && installed.inputs.baseline.is_none()
+                    && installed.realization.execution().frozen_receipt.is_none()
+                    && installed.realization.staging().transition.is_none()
+                    && !installed.run.session_dispatch
+                    && installed.inputs.request_context.is_empty()
+                    && installed
+                        .realization
+                        .execution()
+                        .authority
+                        .lease()
+                        .is_none())
                 .expect("installed Sessions")
                 .unwrap(),
             "R1/R2 no partial complete projection"
@@ -774,38 +779,43 @@ impl StagingFixture {
     // R3/R5: blocked, failed, cancelled or obsolete compilation leaves every
     // correlated Frozen/Resource/Memory/Skill/key field unpublished. The
     // existing S1-S13 cases exercise the actual IO and lease causes; this
-    // assertion observes the one installed Slot, never a parallel cache.
+    // assertion observes the one installed Session, never a parallel cache.
     fn assert_unpublished(&self) {
         assert!(
             self.host
                 .run_assembly
                 .installed_sessions
-                .read(SESSION, |slot| {
-                    slot.inputs.baseline.is_none()
-                        && slot.realization.execution().frozen_receipt.is_none()
-                        && slot.run.context.is_none()
-                        && !slot.run.session_dispatch
-                        && slot.realization.staging().transition.is_none()
-                        && slot.inputs.workspace.is_none()
-                        && slot.realization.staging().resources.mounts.is_empty()
-                        && slot.realization.staging().resources.prompts.is_empty()
-                        && slot
+                .read(SESSION, |installed| {
+                    installed.inputs.baseline.is_none()
+                        && installed.realization.execution().frozen_receipt.is_none()
+                        && installed.run.context.is_none()
+                        && !installed.run.session_dispatch
+                        && installed.realization.staging().transition.is_none()
+                        && installed.inputs.workspace.is_none()
+                        && installed.realization.staging().resources.mounts.is_empty()
+                        && installed.realization.staging().resources.prompts.is_empty()
+                        && installed
                             .realization
                             .staging()
                             .resources
                             .resource_prompts
                             .is_empty()
-                        && slot
+                        && installed
                             .realization
                             .staging()
                             .resources
                             .binding_checks
                             .is_empty()
-                        && slot.realization.staging().resources.repositories.is_empty()
-                        && slot.realization.staging().memory_bindings.is_empty()
-                        && slot.realization.staging().memory.is_none()
-                        && slot.realization.staging().skills.is_none()
-                        && slot.realization.staging().effect_key.is_none()
+                        && installed
+                            .realization
+                            .staging()
+                            .resources
+                            .repositories
+                            .is_empty()
+                        && installed.realization.staging().memory_bindings.is_empty()
+                        && installed.realization.staging().memory.is_none()
+                        && installed.realization.staging().skills.is_none()
+                        && installed.realization.staging().effect_key.is_none()
                 })
                 .expect("installed Sessions")
                 .unwrap_or(true),
@@ -906,13 +916,14 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
         f.host
             .run_assembly
             .installed_sessions
-            .read(SESSION, |slot| {
+            .read(SESSION, |installed| {
                 assert!(
-                    slot.inputs.baseline.is_some()
-                        && slot.realization.execution().frozen_receipt.is_some(),
+                    installed.inputs.baseline.is_some()
+                        && installed.realization.execution().frozen_receipt.is_some(),
                     "E1"
                 );
-                slot.realization
+                installed
+                    .realization
                     .staging()
                     .transition
                     .as_ref()
@@ -990,20 +1001,20 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
         }
         host.run_assembly
             .installed_sessions
-            .read(rule, |slot| {
+            .read(rule, |installed| {
                 assert_eq!(
-                    slot.realization.execution().authority.lease(),
+                    installed.realization.execution().authority.lease(),
                     (rule != "L5").then_some(&lease),
                     "{rule}"
                 );
                 assert_eq!(
-                    slot.realization.staging().mcp.has_frozen_attachment(),
+                    installed.realization.staging().mcp.has_frozen_attachment(),
                     rule == "L2"
                 );
                 assert!(
-                    slot.inputs.baseline.is_none()
-                        && slot.realization.staging().transition.is_none()
-                        && !slot.run.session_dispatch,
+                    installed.inputs.baseline.is_none()
+                        && installed.realization.staging().transition.is_none()
+                        && !installed.run.session_dispatch,
                     "{rule}/lease only"
                 );
             })
@@ -1270,12 +1281,12 @@ impl awaken_provisioning_contract::CurrentExecutionAuthority for WorkerProofGate
 
 #[tokio::test]
 async fn worker_root_denies_fresh_and_replaced_projection_before_resource_io() {
-    // Receiver migration keeps the original Worker -> slot callback boundary:
+    // Receiver migration keeps the original Worker -> installed Session callback boundary:
     // closed Worker proof denies both fresh/replaced publication before IO,
     // while a direct local Host keeps its existing absence-of-registry meaning.
     // No closure or error rule moves to another authority during consolidation.
 
-    // Cause/effect table: root closed; absent/existing slot; File/no Resource.
+    // Cause/effect table: root closed; absent/existing installed Session; File/no Resource.
     // | A1 | absent | File | deny preparation; no read or installed lease |
     // | A2 | absent | none | deny complete publication |
     // | A3 | existing old generation | File | cannot install replacement |
@@ -1385,7 +1396,7 @@ async fn worker_root_close_during_preparation_prevents_completion_and_reentry() 
 
 #[tokio::test]
 async fn worker_root_denies_renewal_even_before_cohort_close() {
-    // A6 root proof is closed while the slot still has a live lease. A successful
+    // A6 root proof is closed while the installed Session still has a live lease. A successful
     // Control response is not sufficient to apply renewal; the canonical due
     // scheduler rejects and revokes only this projection. No global close here,
     // so this test detects a scheduler that consults ONLY the Session lease.
@@ -1510,12 +1521,17 @@ async fn failed_or_cancelled_resource_preparation_drops_only_its_unpublished_lea
             f.host
                 .run_assembly
                 .installed_sessions
-                .read(SESSION, |slot| {
-                    slot.realization.execution().authority.lease().is_none()
-                        && slot.realization.staging().preparation.is_none()
-                        && slot.inputs.workspace.is_none()
-                        && slot.realization.staging().skills.is_none()
-                        && slot.realization.staging().effect_key.is_none()
+                .read(SESSION, |installed| {
+                    installed
+                        .realization
+                        .execution()
+                        .authority
+                        .lease()
+                        .is_none()
+                        && installed.realization.staging().preparation.is_none()
+                        && installed.inputs.workspace.is_none()
+                        && installed.realization.staging().skills.is_none()
+                        && installed.realization.staging().effect_key.is_none()
                 })
                 .expect("installed Sessions")
                 .unwrap()
@@ -1649,9 +1665,9 @@ async fn resource_preparation_expires_even_without_another_renewal_sweep() {
     );
 }
 
-// S8/S9/S10: generation replacement / exact invalidation / slot removal while
+// S8/S9/S10: generation replacement / exact invalidation / installed Session removal while
 // File I/O is blocked => cancel without a late publication. Dropping the old
-// preparation must neither erase the replacement nor recreate a removed slot.
+// preparation must neither erase the replacement nor recreate a removed installed Session.
 #[tokio::test]
 async fn obsolete_resource_preparation_cannot_publish_or_erase_a_successor() {
     for mutation in ["replace", "invalidate", "remove"] {
@@ -1706,7 +1722,7 @@ async fn obsolete_resource_preparation_cannot_publish_or_erase_a_successor() {
                 .expect("healthy registry");
             assert!(
                 !f.host.run_assembly.installed_sessions.contains(SESSION),
-                "invalidation cannot resurrect a removed slot"
+                "invalidation cannot resurrect a removed installed Session"
             );
         }
     }
@@ -1803,8 +1819,8 @@ async fn many_cold_resource_reads_share_the_existing_renewal_scheduler() {
         f.host
             .run_assembly
             .installed_sessions
-            .read(&format!("cold-{index}"), |slot| {
-                slot.inputs.baseline.is_none() && !slot.run.session_dispatch
+            .read(&format!("cold-{index}"), |installed| {
+                installed.inputs.baseline.is_none() && !installed.run.session_dispatch
             })
             .expect("installed Sessions")
             .unwrap()
@@ -1849,7 +1865,7 @@ async fn worker_revocation_cancels_blocked_resource_preparation() {
 }
 
 // S15: crossing the initial deadline after a successful renewal is not lease
-// loss. The preparation watchdog follows notifications from the current slot,
+// loss. The preparation watchdog follows notifications from the current installed Session,
 // not a frozen timeout copied from the original Control response.
 #[tokio::test]
 async fn renewed_preparation_survives_its_original_deadline() {
@@ -1884,7 +1900,7 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
     // I/O. R17 a second renewal returns first => preserve its longer expiry;
     // R18 takeover installs a different generation => cancel old staging.
     // Deliver the original successful response last, then release File bytes.
-    // The canonical slot must neither regress nor publish the obsolete input.
+    // The canonical installed Session must neither regress nor publish the obsolete input.
     for takeover in [false, true] {
         let f = StagingFixture::new().await;
         let preparation = f.start().await;
@@ -1962,9 +1978,9 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
                 f.host
                     .run_assembly
                     .installed_sessions
-                    .read(SESSION, |slot| slot.inputs.baseline.is_some()
-                        && slot.run.session_dispatch
-                        && slot.realization.staging().preparation.is_none())
+                    .read(SESSION, |installed| installed.inputs.baseline.is_some()
+                        && installed.run.session_dispatch
+                        && installed.realization.staging().preparation.is_none())
                     .expect("installed Sessions")
                     .unwrap()
             );
@@ -2028,12 +2044,12 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
                 f.host
                     .run_assembly
                     .installed_sessions
-                    .read(&format!("soak-{index:02}"), |slot| slot
+                    .read(&format!("soak-{index:02}"), |installed| installed
                         .inputs
                         .baseline
                         .is_none()
-                        && slot.realization.staging().preparation.is_some()
-                        && slot
+                        && installed.realization.staging().preparation.is_some()
+                        && installed
                             .realization
                             .execution()
                             .authority

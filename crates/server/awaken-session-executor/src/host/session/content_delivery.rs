@@ -126,8 +126,8 @@ impl crate::RunAssembly {
         let read_enabled =
             self.session_allows_repository_skill_discovery(thread, published_snapshot)?;
         // A Managed cold recovery may carry its complete Session tool policy in
-        // the durable slot without a catalog-backed publication snapshot. The
-        // slot policy remains sufficient authority. Direct callers retain the
+        // the durable installed Session without a catalog-backed publication snapshot. The
+        // installed Session policy remains sufficient authority. Direct callers retain the
         // legacy rule that only a published Agent admits repository roots.
         let repository_discovery =
             read_enabled && (managed_session || published_snapshot.is_some());
@@ -302,16 +302,16 @@ impl crate::RunAssembly {
         let filesystem_delivery =
             self.session_allows_filesystem_tools(thread, published_snapshot)?;
         let selected_skills = published_skill_ids(published_snapshot);
-        let (managed_session, slot_requires, frozen_has_selected) = self
-            .installed_sessions
-            .read(thread, |slot| {
-                let is_selected = |id: &str| {
-                    selected_skills
-                        .as_ref()
-                        .is_none_or(|selected| selected.contains(id))
-                };
-                let frozen_has_selected =
-                    slot.realization
+        let (managed_session, installed_session_requires, frozen_has_selected) =
+            self.installed_sessions
+                .read(thread, |installed| {
+                    let is_selected = |id: &str| {
+                        selected_skills
+                            .as_ref()
+                            .is_none_or(|selected| selected.contains(id))
+                    };
+                    let frozen_has_selected = installed
+                        .realization
                         .staging()
                         .skills
                         .as_ref()
@@ -320,52 +320,55 @@ impl crate::RunAssembly {
                                 .iter()
                                 .any(|version| is_selected(version.skill_id.as_str()))
                         });
-                // Managed attached bundles are immutable Resource bytes. The
-                // deferred `read` executor can disclose them before Hand exists;
-                // executing scripts still follows ordinary Sandbox demand.
-                // Direct semantic/fork compatibility retains its eager rule.
-                let frozen_requires = !slot.run.session_dispatch
-                    && slot
-                        .realization
-                        .staging()
-                        .skills
-                        .as_ref()
-                        .is_some_and(|versions| {
-                            versions.iter().any(|version| {
-                                is_selected(version.skill_id.as_str())
-                                    && crate::skills::version_requires_environment(version)
-                            })
+                    // Managed attached bundles are immutable Resource bytes. The
+                    // deferred `read` executor can disclose them before Hand exists;
+                    // executing scripts still follows ordinary Sandbox demand.
+                    // Direct semantic/fork compatibility retains its eager rule.
+                    let frozen_requires = !installed.run.session_dispatch
+                        && installed.realization.staging().skills.as_ref().is_some_and(
+                            |versions| {
+                                versions.iter().any(|version| {
+                                    is_selected(version.skill_id.as_str())
+                                        && crate::skills::version_requires_environment(version)
+                                })
+                            },
+                        );
+                    let mount_requires_environment =
+                        |mount: &awaken_provisioning_contract::MountRequirement| {
+                            filesystem_delivery
+                                || !matches!(
+                                    mount.source,
+                                    awaken_provisioning_contract::MountSource::MemoryStore { .. }
+                                )
+                        };
+                    let baseline_requires =
+                        installed.inputs.baseline.as_ref().is_some_and(|baseline| {
+                            baseline.mounts.iter().any(mount_requires_environment)
+                                || !baseline.env.is_empty()
                         });
-                let mount_requires_environment =
-                    |mount: &awaken_provisioning_contract::MountRequirement| {
-                        filesystem_delivery
-                            || !matches!(
-                                mount.source,
-                                awaken_provisioning_contract::MountSource::MemoryStore { .. }
-                            )
-                    };
-                let baseline_requires = slot.inputs.baseline.as_ref().is_some_and(|baseline| {
-                    baseline.mounts.iter().any(mount_requires_environment)
-                        || !baseline.env.is_empty()
-                });
-                let slot_requires = !slot.inputs.delegates.is_empty()
-                    || slot
-                        .realization
-                        .staging()
-                        .resources
-                        .mounts
-                        .iter()
-                        .any(mount_requires_environment)
-                    || !slot.realization.staging().resources.repositories.is_empty()
-                    || baseline_requires
-                    || frozen_requires;
-                (
-                    slot.run.session_dispatch,
-                    slot_requires,
-                    frozen_has_selected,
-                )
-            })?
-            .unwrap_or((false, false, false));
+                    let installed_session_requires = !installed.inputs.delegates.is_empty()
+                        || installed
+                            .realization
+                            .staging()
+                            .resources
+                            .mounts
+                            .iter()
+                            .any(mount_requires_environment)
+                        || !installed
+                            .realization
+                            .staging()
+                            .resources
+                            .repositories
+                            .is_empty()
+                        || baseline_requires
+                        || frozen_requires;
+                    (
+                        installed.run.session_dispatch,
+                        installed_session_requires,
+                        frozen_has_selected,
+                    )
+                })?
+                .unwrap_or((false, false, false));
         let workspace = self.capabilities.thread_workspace(thread)?;
         let filesystem_skill_projection = !managed_session
             && filesystem_delivery
@@ -375,7 +378,7 @@ impl crate::RunAssembly {
                     .tools
                     .skills
                     .has_selected_in(&workspace, selected_skills.as_ref())?);
-        Ok(slot_requires
+        Ok(installed_session_requires
             || filesystem_skill_projection
             || (!managed_session
                 && self
@@ -409,24 +412,24 @@ impl crate::RunAssembly {
                 .is_some_and(crate::sandbox_projection::environment_free_inference)
             && self
                 .installed_sessions
-                .read(thread, |slot| {
-                    !slot.run.session_dispatch
-                        && slot.inputs.environment_snapshot.is_none()
-                        && slot
+                .read(thread, |installed| {
+                    !installed.run.session_dispatch
+                        && installed.inputs.environment_snapshot.is_none()
+                        && installed
                             .realization
                             .staging()
-                            .run_manifest(slot.run.session_dispatch)
+                            .run_manifest(installed.run.session_dispatch)
                             .is_none()
                 })?
                 .unwrap_or(true);
         if inference_only_claim {
             return Ok(true);
         }
-        let slot_allows = self
+        let installed_session_allows = self
             .installed_sessions
-            .read(thread, |slot| {
-                slot.run.deferred_executor.is_some()
-                    && slot
+            .read(thread, |installed| {
+                installed.run.deferred_executor.is_some()
+                    && installed
                         .inputs
                         .environment_projection
                         .as_ref()
@@ -470,7 +473,7 @@ impl crate::RunAssembly {
         // exact parent environment and its lifecycle fence. Keep that fact in the
         // sole eager-vs-deferred classifier instead of accepting deferral here and
         // rejecting the same snapshot later while the Runtime is being wired.
-        Ok(slot_allows
+        Ok(installed_session_allows
             && !self.session_has_local_environment_inputs(thread, published_snapshot)?
             && !published_backend_is_acp
             && !selected_backend_is_acp

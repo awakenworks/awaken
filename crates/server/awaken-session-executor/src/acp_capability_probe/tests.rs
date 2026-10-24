@@ -376,7 +376,7 @@ async fn probe_composition(base: &Path) -> Arc<crate::ExecutorComponents> {
 #[tokio::test]
 async fn retained_acp_probe_releases_unrelated_session_owners() {
     // A1 idle Context installed + retained negotiator + composition dropped =>
-    // original Assembly, slots and Context are released. A2 retained negotiator
+    // original Assembly, installed Sessions and Context are released. A2 retained negotiator
     // still probes through the selected provider and the original task registry,
     // then physically disposes its own Workdir scope.
     let base = tempfile::tempdir().unwrap();
@@ -399,12 +399,14 @@ async fn retained_acp_probe_releases_unrelated_session_owners() {
         "same original task registry"
     );
     let assembly = Arc::downgrade(&host.run_assembly);
-    let slots = Arc::downgrade(&host.run_assembly.installed_sessions);
+    let installed_sessions = Arc::downgrade(&host.run_assembly.installed_sessions);
     let cached = Arc::downgrade(&context);
     drop(context);
     drop(host);
     assert!(
-        assembly.upgrade().is_none() && slots.upgrade().is_none() && cached.upgrade().is_none()
+        assembly.upgrade().is_none()
+            && installed_sessions.upgrade().is_none()
+            && cached.upgrade().is_none()
     );
     let argv = probe_argv();
     probe
@@ -418,8 +420,8 @@ async fn retained_acp_probe_releases_unrelated_session_owners() {
         "original exact-handle cleanup disposed the scope"
     );
     assert!(
-        slots.upgrade().is_none(),
-        "probe does not recreate Session slots"
+        installed_sessions.upgrade().is_none(),
+        "probe does not recreate installed Sessions"
     );
 }
 
@@ -440,7 +442,7 @@ impl AcpCapabilityHandshake for EnteredHandshake {
 #[tokio::test]
 async fn cancelled_acp_probe_joins_cleanup_after_composition_release() {
     // B1 real Environment + stdin-bound process exist at handshake entry.
-    // B2 release the process composition => unrelated slots are released while
+    // B2 release the process composition => unrelated installed Sessions are released while
     // the original owned probe continues. B3 abort its caller => the original
     // BackgroundRuns joins the exact process/environment cleanup tail.
     let base = tempfile::tempdir().unwrap();
@@ -461,9 +463,9 @@ async fn cancelled_acp_probe_joins_cleanup_after_composition_release() {
         .expect("real process reached handshake");
     assert!(base.path().join(&scope).exists());
     let assembly = Arc::downgrade(&host.run_assembly);
-    let slots = Arc::downgrade(&host.run_assembly.installed_sessions);
+    let installed_sessions = Arc::downgrade(&host.run_assembly.installed_sessions);
     drop(host);
-    assert!(assembly.upgrade().is_none() && slots.upgrade().is_none());
+    assert!(assembly.upgrade().is_none() && installed_sessions.upgrade().is_none());
     caller.abort();
     assert!(caller.await.unwrap_err().is_cancelled());
     assert!(
@@ -471,5 +473,5 @@ async fn cancelled_acp_probe_joins_cleanup_after_composition_release() {
         "original cleanup task is joined"
     );
     assert!(!base.path().join(scope).exists());
-    assert!(slots.upgrade().is_none());
+    assert!(installed_sessions.upgrade().is_none());
 }

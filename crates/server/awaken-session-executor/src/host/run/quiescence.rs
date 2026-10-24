@@ -135,9 +135,9 @@ impl crate::SessionRuns {
                 // Scope discovery needs an absorbing logical write boundary,
                 // not a physical-stop receipt. An exact committed Ended Run
                 // cannot expand its Thread prefix, even when Dispatch still
-                // retains its old executor slot. Live or missing Run truth
+                // retains its old executor installed Session. Live or missing Run truth
                 // keeps the ordinary bounded wait below. Source I/O separately
-                // observes those same retained slots before preparation.
+                // observes those same retained installed Sessions before preparation.
                 let deadline =
                     awaken_time::mono::MonoDeadline::after(std::time::Duration::from_secs(10));
                 let mut inspect_expired_physical = !expired_physical.is_empty();
@@ -294,7 +294,7 @@ mod terminal_scope_tests {
         // store's absorbing write fence, not proof that external effects ended.
         // Resource preparation/disposal and Work's business-effect decision
         // retain their independent prerequisites; this tests only scope discovery.
-        // Negative controls L2/L3 keep the same expired slot with missing or
+        // Negative controls L2/L3 keep the same expired installed Session with missing or
         // Running Run truth: neither cancellation nor expiry may freeze scope.
         use crate::host::worker_resolver::test_support::{adoption_host_over, test_activation};
         for disposition in [
