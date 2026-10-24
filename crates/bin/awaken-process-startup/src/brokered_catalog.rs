@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use awaken_admin_config_api::BrokeredCatalogDiscovery;
-use awaken_credential_materializer::brokered_inference::{
+use awaken_inference_endpoint::brokered_inference::{
     BrokeredModelCatalogClient, HttpBrokeredInferenceClient, fetch_brokered_catalog,
 };
 use awaken_model_catalog::{ApiDialect, BrokeredCatalogProjection, BrokeredModelProjection};
@@ -79,9 +79,7 @@ async fn project_catalog(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_credential_materializer::brokered_inference::{
-        BrokeredInferenceError, BrokeredModel,
-    };
+    use awaken_inference_endpoint::brokered_inference::{BrokeredInferenceError, BrokeredModel};
     use awaken_lease_testkit::ManualClock;
     use std::collections::BTreeSet;
 

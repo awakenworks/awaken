@@ -139,7 +139,8 @@ pub use crate::host::{
 };
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
-use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialMaterializer};
+use awaken_credential_contract::CredentialRefreshFactory;
+use awaken_credential_materializer::PinnedCredentialMaterializer;
 pub(crate) use awaken_deployment_config::{
     DispatchPoolSizing, ExecutionTopology, LocalExecution, RunIngress,
 };

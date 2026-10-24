@@ -61,12 +61,12 @@ pub use worker_transport::WorkerTransport;
 use std::sync::Arc;
 
 use awaken_config_service::ManagementAuditPlane;
+use awaken_control::ExtMcpProbe;
 use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::LlmExecutor;
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_executor::ExecutorComponents;
 use awaken_session_executor::SessionExecutorBuilder;
-use awaken_session_mcp::ExtMcpProbe;
 use axum::Router;
 #[cfg(any(test, feature = "test-support"))]
 use exact_host_model::ExactHostModelPublicationResolver;
@@ -631,7 +631,7 @@ fn runtime_model_wiring(
     credential_materializer: &awaken_credential_materializer::PinnedCredentialMaterializer,
     cloud_models_enabled: bool,
     brokered_client: Option<
-        &Arc<awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient>,
+        &Arc<awaken_inference_endpoint::brokered_inference::HttpBrokeredInferenceClient>,
     >,
 ) -> RuntimeModelWiring {
     match runtime {

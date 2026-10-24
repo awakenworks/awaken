@@ -244,22 +244,22 @@
     "name": "t28_c03_sent_native_request_stays_unknown_and_is_never_resent",
     "source_locations": [
       {
-        "path": "crates/server/awaken-credential-materializer/src/brokered_inference/tests/sent_effect_unknown.rs",
+        "path": "crates/server/awaken-inference-endpoint/src/brokered_inference/tests/sent_effect_unknown.rs",
         "line": 198,
         "file_sha256": "ef89a08f33a2ef21919aabe54193e71ad550ced949d71bf15028dedd0aabbe0a"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-credential-materializer/src/brokered_inference/tests/sent_effect_unknown.rs",
+        "path": "crates/server/awaken-inference-endpoint/src/brokered_inference/tests/sent_effect_unknown.rs",
         "line": 222
       },
       {
-        "path": "crates/server/awaken-credential-materializer/src/brokered_inference/tests/sent_effect_unknown.rs",
+        "path": "crates/server/awaken-inference-endpoint/src/brokered_inference/tests/sent_effect_unknown.rs",
         "line": 224
       },
       {
-        "path": "crates/server/awaken-credential-materializer/src/brokered_inference/tests/sent_effect_unknown.rs",
+        "path": "crates/server/awaken-inference-endpoint/src/brokered_inference/tests/sent_effect_unknown.rs",
         "line": 228
       }
     ],

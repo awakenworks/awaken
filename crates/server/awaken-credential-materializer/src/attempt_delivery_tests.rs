@@ -106,7 +106,7 @@ mod tests {
         let keys = root.path().join("keys.json");
         key_document(&keys, &holder);
         let issuer = Arc::new(
-            crate::recipient_envelope::RecipientKeyEnvelope::open(
+            awaken_credential_envelope::RecipientKeyEnvelope::open(
                 &keys,
                 awaken_time::system_clock(),
             )

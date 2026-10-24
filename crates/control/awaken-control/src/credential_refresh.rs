@@ -9,8 +9,8 @@ use std::sync::Arc;
 use awaken_agent_contract::RedactedString;
 use awaken_agent_contract::credential::{AuthChallenge, Credential, CredentialRefresher};
 use awaken_agent_contract::credential::{CredentialRefreshAccess, TokenEndpointAuth};
+use awaken_credential_contract::CredentialRefreshFactory;
 use awaken_credential_contract::CredentialSourceId;
-use awaken_credential_materializer::CredentialRefreshFactory;
 use awaken_credential_vault::repo::{
     CredentialMaterialPatch, CredentialRepo, rotate_credential_materials_exact,
 };

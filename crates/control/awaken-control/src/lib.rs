@@ -24,11 +24,13 @@
 pub mod admin_assistant;
 mod application_mcp_credentials;
 mod mcp_catalog;
+mod mcp_probe;
 pub use mcp_catalog::McpCatalogService;
 #[cfg(feature = "schema")]
 pub use mcp_catalog::{
     contract_paths as mcp_contract_paths, contract_schemas as mcp_contract_schemas,
 };
+pub use mcp_probe::ExtMcpProbe;
 pub mod authz;
 mod component;
 pub mod control_stores;

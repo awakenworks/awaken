@@ -1,4 +1,5 @@
-//! Process-boundary guard against provider SDK environment fallback.
+//! Process-boundary guard against provider SDK environment fallback: the
+//! process environment a Deployment admits names no ambient provider API key.
 
 use std::ffi::OsString;
 

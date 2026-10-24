@@ -29,7 +29,7 @@ pub(super) async fn control_component_for_process(
     web_search_publication_resolver: Arc<dyn awaken_config_service::PluginPublicationResolver>,
     web_search_providers: &awaken_ext_builtin_tools::WebSearchProviderRegistry,
     brokered_client: Option<
-        Arc<awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient>,
+        Arc<awaken_inference_endpoint::brokered_inference::HttpBrokeredInferenceClient>,
     >,
     injected_brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
     model_supply: awaken_admin_config_api::ModelSupplyCapabilityView,

@@ -80,6 +80,7 @@ use serde::Deserialize;
 
 // This Scenario platform depends on each authoritative owner directly.
 pub use awaken_config_service::ConfigService;
+pub use awaken_control::ExtMcpProbe;
 pub use awaken_control::{capabilities_router, config_router};
 pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_protocol_managed::{
@@ -89,7 +90,6 @@ pub use awaken_session_executor::{
     ExecutorComponents, HostResume, SessionExecutorBuilder, ThreadEvent, ThreadEventHub,
     advertised_tools,
 };
-pub use awaken_session_mcp::ExtMcpProbe;
 
 /// One tool-free ACP stand-in that can act as either Outcome Worker or Judge.
 /// Its prompt classification makes the Worker/Grader backend matrix observable
@@ -560,7 +560,7 @@ fn normalize_anthropic_compatible_base(base_url: &str) -> String {
 fn anthropic_messages_executor(base_url: &str, api_key: String) -> Arc<dyn LlmExecutor> {
     let credential = awaken_agent_contract::RedactedString::new(api_key);
     let base_url = normalize_anthropic_compatible_base(base_url);
-    awaken_credential_materializer::executor_from_materialized_endpoint(
+    awaken_inference_endpoint::executor_from_materialized_endpoint(
         "anthropic_messages",
         "anthropic",
         Some(&base_url),

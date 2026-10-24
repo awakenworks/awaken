@@ -36,6 +36,7 @@ use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::RedactedString;
 use awaken_agent_contract::credential::{CredentialRefreshAccess, TokenEndpointAuth};
+use awaken_control::ExtMcpProbe;
 use awaken_control::VaultRefresher;
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
@@ -50,7 +51,6 @@ use awaken_scenario_host::McpToolModel;
 use awaken_session_configuration_contract::{
     McpProbe, McpProbeFailure, McpProbeStatus, ProbeHttpResponse,
 };
-use awaken_session_mcp::ExtMcpProbe;
 
 // This test drives the REAL management router but needs a deterministic model that
 // calls the MCP tool on `add <a> <b>` — that is a test concern, so it injects the
