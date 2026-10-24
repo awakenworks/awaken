@@ -4,21 +4,49 @@
     "source_locations": [
       {
         "path": "crates/bin/awaken-worker/src/tests/restore_capability.rs",
-        "line": 312,
-        "file_sha256": "4ec7aa0a6e32d157e346678ed12c72c636b5b7da985a3bf0248e77c696ebaa45"
+        "line": 311,
+        "file_sha256": "237ef0cca83e41c1a685489662e1a6fbb0b9ab1fa7aeba5474cd5c58cc9f8c12"
       }
     ],
-    "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "execution_witnesses": [
+      {
+        "evidence": "E40",
+        "case": "awaken-worker tests::restore_capability::restore_enabled_worker_with_unsupported_restoration_is_refused_at_construction",
+        "package": "awaken-worker",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "ee1dbae1e65f7ddff997ad0f4b9ceb52d0eb8cce",
+        "historical": false,
+        "log_sha256": "614dd007ed3753951cabf770d532f57641bdbc29ef35bc8efd5135f1349a1545"
+      }
+    ],
+    "relation": "covers_case_clauses",
     "covers": {
       "T27-C01": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: WorkerNodeBuilder::build never consults the provider restoration capability",
-    "limitation": "Not execution evidence. Follow-up: awaken-worker build topology validation (S)",
-    "id": "B146"
+    "review": "Builds a restore-enabled Worker over a provider whose restore rung is Unsupported and asserts a stable construction refusal with zero external creates.",
+    "limitation": null,
+    "id": "B146",
+    "assertion_locations": [
+      {
+        "path": "crates/bin/awaken-worker/src/tests/restore_capability.rs",
+        "line": 322
+      },
+      {
+        "path": "crates/bin/awaken-worker/src/tests/restore_capability.rs",
+        "line": 332
+      },
+      {
+        "path": "crates/bin/awaken-worker/src/tests/restore_capability.rs",
+        "line": 333
+      }
+    ]
   },
   {
     "name": "foreign_instance_with_differing_identity_is_refused_and_logical_id_check_is_insufficient",
@@ -74,21 +102,49 @@
     "source_locations": [
       {
         "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 111,
-        "file_sha256": "bcba856be485cafff578214713ec64ac2fc781a2ec2aa11b933c4f0bbc298837"
+        "line": 110,
+        "file_sha256": "f0f599c0302c0fa976dee6942eb1959b8a4be6c3ba4a6255ad405150da3eb462"
       }
     ],
-    "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "execution_witnesses": [
+      {
+        "evidence": "E40",
+        "case": "awaken-session-environment tests::foreign_instance::foreign_instance_with_equal_handle_cannot_rebind_another_providers_environment",
+        "package": "awaken-session-environment",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "ee1dbae1e65f7ddff997ad0f4b9ceb52d0eb8cce",
+        "historical": false,
+        "log_sha256": "614dd007ed3753951cabf770d532f57641bdbc29ef35bc8efd5135f1349a1545"
+      }
+    ],
+    "relation": "covers_case_clauses",
     "covers": {
       "T27-C02": {
-        "oracles": [],
+        "oracles": [
+          1
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: rebind_retained compares only SandboxHandle values, so another provider instance with an equal handle is accepted",
-    "limitation": "Not execution evidence. Follow-up: session-environment instance-bound provider identity (M)",
-    "id": "B148"
+    "review": "Rebinds provider A's Environment through provider B with a byte-equal handle and asserts a Conflict with zero adopts, creates or disposals.",
+    "limitation": null,
+    "id": "B148",
+    "assertion_locations": [
+      {
+        "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
+        "line": 118
+      },
+      {
+        "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
+        "line": 123
+      },
+      {
+        "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
+        "line": 140
+      }
+    ]
   },
   {
     "name": "degraded_registration_health_is_observable_secret_free_and_leaks_are_detected",
@@ -144,42 +200,94 @@
     "source_locations": [
       {
         "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
-        "line": 288,
-        "file_sha256": "9b59a782188a03b20ff91ec53a3dc6a9fda9c2dac4dbddc35d3d77fb76d2f809"
+        "line": 287,
+        "file_sha256": "39d6a6f6ec58704f4376d32a5010f1b33c511ade383a1e6695fc915cde4e9e55"
       }
     ],
-    "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "execution_witnesses": [
+      {
+        "evidence": "E40",
+        "case": "awaken-control registration_supervisor::diagnostics_tests::degraded_registration_diagnostics_never_contain_the_secret_canary",
+        "package": "awaken-control",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "ee1dbae1e65f7ddff997ad0f4b9ceb52d0eb8cce",
+        "historical": false,
+        "log_sha256": "614dd007ed3753951cabf770d532f57641bdbc29ef35bc8efd5135f1349a1545"
+      }
+    ],
+    "relation": "covers_case_clauses",
     "covers": {
       "T41-C01": {
-        "oracles": [],
+        "oracles": [
+          1
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: the registration supervisor logs raw error strings including credential URLs",
-    "limitation": "Not execution evidence. Follow-up: awaken-control supervisor redacted error class (S)",
-    "id": "B150"
+    "review": "Runs one degraded supervisor pass whose recovery errors carry a credential URL and token canary and asserts no captured diagnostic field contains it.",
+    "limitation": null,
+    "id": "B150",
+    "assertion_locations": [
+      {
+        "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
+        "line": 289
+      },
+      {
+        "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
+        "line": 290
+      }
+    ]
   },
   {
     "name": "degraded_registration_diagnostics_carry_stable_code_identity_and_recovery",
     "source_locations": [
       {
         "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
-        "line": 296,
-        "file_sha256": "9b59a782188a03b20ff91ec53a3dc6a9fda9c2dac4dbddc35d3d77fb76d2f809"
+        "line": 294,
+        "file_sha256": "39d6a6f6ec58704f4376d32a5010f1b33c511ade383a1e6695fc915cde4e9e55"
       }
     ],
-    "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "execution_witnesses": [
+      {
+        "evidence": "E40",
+        "case": "awaken-control registration_supervisor::diagnostics_tests::degraded_registration_diagnostics_carry_stable_code_identity_and_recovery",
+        "package": "awaken-control",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "ee1dbae1e65f7ddff997ad0f4b9ceb52d0eb8cce",
+        "historical": false,
+        "log_sha256": "614dd007ed3753951cabf770d532f57641bdbc29ef35bc8efd5135f1349a1545"
+      }
+    ],
+    "relation": "covers_case_clauses",
     "covers": {
       "T41-C01": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: supervisor diagnostics carry no stable code, domain identity or recovery direction",
-    "limitation": "Not execution evidence. Follow-up: awaken-control supervisor structured diagnostics (S)",
-    "id": "B151"
+    "review": "Asserts every degraded supervisor diagnostic carries a stable code, its domain identity and a recovery direction, and both pending domains are identified.",
+    "limitation": null,
+    "id": "B151",
+    "assertion_locations": [
+      {
+        "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
+        "line": 296
+      },
+      {
+        "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
+        "line": 297
+      },
+      {
+        "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
+        "line": 302
+      }
+    ]
   },
   {
     "name": "sqlite_independent_file_clients_have_one_cas_winner",

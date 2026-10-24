@@ -35,8 +35,8 @@
       "source_binding_only": 6,
       "historical_subset": 12,
       "aggregate_subset_only": 1,
-      "current_clause_complete": 21,
-      "product_gap": 26
+      "current_clause_complete": 26,
+      "product_gap": 21
     }
   },
   "scope_rules": {

@@ -873,7 +873,7 @@
           "B150",
           "B151"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -891,14 +891,6 @@
           "unaccepted": [
             "L2 real adapters and process crash are separate scenarios",
             "T35 platform gate open"
-          ]
-        },
-        "product_gap": {
-          "reason": "健康快照不含机密，但 supervisor 日志直接输出原始错误（含凭据 URL），且没有稳定 code、领域身份或恢复方向",
-          "follow_up": "awaken-control registration supervisor：结构化、脱敏诊断（S）",
-          "reproducers": [
-            "degraded_registration_diagnostics_never_contain_the_secret_canary",
-            "degraded_registration_diagnostics_carry_stable_code_identity_and_recovery"
           ]
         }
       },
