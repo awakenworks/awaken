@@ -485,8 +485,12 @@
           ],
           "scope": "实际启用模式；内核、引擎或物理恢复额外需要 L4"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B221",
+          "B253",
+          "B254"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -496,7 +500,23 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        },
+        "product_gap": {
+          "reason": "DispatchPool::shutdown 没有期限；LiveInbox::offer 无界",
+          "follow_up": "run-ingress 关闭期限（S–M）、live inbox 容量（M）",
+          "reproducers": [
+            "shutdown_is_bounded_when_a_dependency_never_returns",
+            "live_inbox_applies_backpressure_to_a_stalled_consumer"
+          ]
+        }
       },
       {
         "id": "T38-C03",
@@ -522,8 +542,15 @@
           ],
           "scope": "实际启用模式；内核、引擎或物理恢复额外需要 L4"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B178",
+          "B179",
+          "B180",
+          "B242",
+          "B243",
+          "B244"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -533,7 +560,24 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        },
+        "product_gap": {
+          "reason": "磁盘满归入通用 Rejected；Dream 把 AtCapacity 映射为 internal_error；连接卡死时接纳最长等待 24h",
+          "follow_up": "store-sqlite/coordinator 错误类型（M）、Dream 映射（S）、sqlite-pool 接纳等待（S–M）",
+          "reproducers": [
+            "exhausted_capacity_has_a_distinct_classification",
+            "wedged_single_connection_fails_admission_promptly",
+            "capacity_exhausted_snapshot_clone_has_a_distinct_failure_kind"
+          ]
+        }
       }
     ],
     "risk": "P0",
