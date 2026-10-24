@@ -22,7 +22,6 @@ mod inference;
 mod platform_egress;
 mod platform_relay;
 pub mod recipient_envelope;
-mod refresh;
 mod secret_broker;
 
 #[cfg(test)]
@@ -42,20 +41,17 @@ pub use inference::CredentialInferenceMaterializer;
 pub use platform_egress::{
     MediatedMcpRoute, PlatformMcpEgressProvisioner, PlatformMcpEgressRequest,
 };
-pub use refresh::CredentialRefreshFactory;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::Mutex;
 
 mod admission;
-mod ambient_environment;
 #[cfg(all(test, feature = "authority"))]
 mod attempt_delivery_tests;
 mod claimed_materialization;
 mod material_capabilities;
 use admission::{ExpectedProviderTarget, admit_exact_adapter};
-pub use ambient_environment::{AmbientApiKeyEnvironmentError, reject_ambient_api_key_environment};
 use awaken_time::WallClockExt as _;
 
 #[cfg(all(test, feature = "authority"))]

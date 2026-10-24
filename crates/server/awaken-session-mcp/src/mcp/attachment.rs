@@ -13,9 +13,8 @@ use awaken_agent_contract::credential::{CredentialUsage, ModelExposurePolicy};
 use awaken_credential_contract::CredentialAccessAdmission;
 use std::sync::{Arc, Weak};
 
-use awaken_credential_materializer::{
-    CredentialRefreshFactory, PinnedCredentialMaterializer, PlatformMcpEgressProvisioner,
-};
+use awaken_credential_contract::CredentialRefreshFactory;
+use awaken_credential_materializer::{PinnedCredentialMaterializer, PlatformMcpEgressProvisioner};
 use awaken_session_types::RunError;
 
 use crate::mcp::credential_target::exact_credential_realization_target;

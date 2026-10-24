@@ -99,6 +99,9 @@ CREDENTIAL_INFERENCE_SOURCE = (
 )
 CONTROL_MODEL_PUBLICATION = "crates/control/awaken-control/src/model_publication.rs"
 CONTROL_CREDENTIAL_REFRESH_SOURCE = "crates/control/awaken-control/src/credential_refresh.rs"
+# The neutral refresh port: implemented by Control, consumed by credential
+# realization, so neither links the other.
+CREDENTIAL_REFRESH_PORT_SOURCE = "crates/contract/awaken-credential-contract/src/credential_refresh.rs"
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -1227,13 +1230,16 @@ def coordinator_control_authority_dependency_violations(manifest: dict) -> list[
 
 
 def credential_refresh_authority_violations(
-    materializer_source: str, control_source: str, coordinator_source: str
+    port_source: str, materializer_source: str, control_source: str, coordinator_source: str
 ) -> list[str]:
-    """One neutral factory port, one Control-owned Vault implementation."""
+    """One neutral factory port in the credential contract, one Control-owned
+    Vault implementation, and no copy in credential realization."""
 
     errors: list[str] = []
-    if materializer_source.count("trait CredentialRefreshFactory") != 1:
-        errors.append("Credential materializer must own one neutral `trait CredentialRefreshFactory`")
+    if port_source.count("trait CredentialRefreshFactory") != 1:
+        errors.append("The credential contract must own one neutral `trait CredentialRefreshFactory`")
+    if "trait CredentialRefreshFactory" in materializer_source:
+        errors.append("Credential materializer duplicates the neutral credential refresh factory port")
     if "trait CredentialRefreshFactory" in control_source:
         errors.append("Control duplicates the neutral credential refresh factory port")
     for required in ("struct VaultRefreshFactory", "struct VaultRefresher"):
@@ -1473,6 +1479,7 @@ def check_all(repo_root: Path) -> list[str]:
     ):
         errors.append(f"Control model publication: {error}")
     for error in credential_refresh_authority_violations(
+        (repo_root / CREDENTIAL_REFRESH_PORT_SOURCE).read_text(encoding="utf-8"),
         "\n".join(
             _crate_boundary_workspace.production_rust(path.read_text(encoding="utf-8"))
             for path in sorted((repo_root / CREDENTIAL_INFERENCE_SOURCE).parent.rglob("*.rs"))

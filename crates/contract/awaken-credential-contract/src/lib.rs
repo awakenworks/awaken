@@ -39,11 +39,13 @@ pub struct MaterialEntry {
 }
 
 mod access;
+mod credential_refresh;
 pub use access::{
     CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialInput,
     CredentialMaterialRetirementCommand, CredentialMaterialRotationCommand, CredentialPlaintext,
     SessionCredentialAccessRequest, SessionCredentialSource,
 };
+pub use credential_refresh::CredentialRefreshFactory;
 
 mod attempt;
 pub use attempt::{

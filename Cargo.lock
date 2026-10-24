@@ -615,7 +615,6 @@ dependencies = [
  "awaken-config-service",
  "awaken-config-store",
  "awaken-credential-contract",
- "awaken-credential-materializer",
  "awaken-credential-store",
  "awaken-credential-vault",
  "awaken-data-governance-contract",
@@ -1005,6 +1004,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-session-environment-contract",
  "awaken-tool-contract",
+ "thiserror",
  "uuid",
 ]
 

@@ -1,10 +1,13 @@
-//! Exact revision-bound credential refresh factory port.
+//! Exact revision-bound credential refresh factory port. Control implements it
+//! over its Vault (`VaultRefreshFactory`) and the Worker's credential
+//! realization consumes it, so the port is named here and Control links no
+//! Worker-side crate.
 
 use std::sync::Arc;
 
+use crate::CredentialSourceId;
 use awaken_agent_contract::credential::CredentialRefreshAccess;
 use awaken_agent_contract::credential::CredentialRefresher;
-use awaken_credential_contract::CredentialSourceId;
 
 /// Factory for one exact credential revision's challenge recovery. Runtime
 /// carries only the resulting transport refresher and never receives a

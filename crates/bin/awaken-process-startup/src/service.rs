@@ -119,7 +119,7 @@ async fn run_service_with_adapters(
     )>,
     colocated: Option<Arc<dyn crate::ColocatedWorkerPreparation>>,
 ) -> Result<(), String> {
-    awaken_credential_materializer::reject_ambient_api_key_environment()
+    awaken_deployment_config::reject_ambient_api_key_environment()
         .map_err(|error| error.to_string())?;
     let deployment_role = role.deployment_role();
     // Config admission, the optional local ACP Worker and the eventual

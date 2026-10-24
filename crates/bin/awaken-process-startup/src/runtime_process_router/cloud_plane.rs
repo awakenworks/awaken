@@ -26,7 +26,7 @@ pub(super) struct CloudPlane {
     pub(super) credential_materializer:
         Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
     pub(super) credential_refresh_factory:
-        Option<Arc<dyn awaken_credential_materializer::CredentialRefreshFactory>>,
+        Option<Arc<dyn awaken_credential_contract::CredentialRefreshFactory>>,
     pub(super) attempt_credential_deliveries:
         Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
     pub(super) web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
@@ -110,7 +110,7 @@ async fn brokered_cloud_client(
 
 struct CredentialPlane {
     materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
-    refresh_factory: Option<Arc<dyn awaken_credential_materializer::CredentialRefreshFactory>>,
+    refresh_factory: Option<Arc<dyn awaken_credential_contract::CredentialRefreshFactory>>,
     attempt_deliveries:
         Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
 }
@@ -150,8 +150,7 @@ fn credential_plane(base: &mut ProcessBase) -> CredentialPlane {
                     control.credentials.clone(),
                     control.secrets.clone(),
                     stores.clock.clone(),
-                ))
-                    as Arc<dyn awaken_credential_materializer::CredentialRefreshFactory>
+                )) as Arc<dyn awaken_credential_contract::CredentialRefreshFactory>
             })
         })
         .flatten();
