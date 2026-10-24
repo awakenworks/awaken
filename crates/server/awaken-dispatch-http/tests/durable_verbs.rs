@@ -146,8 +146,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     // the queue deterministically and then assert the host verbs route to it.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let mem = Arc::new(MemoryDispatchStore::new(clock.clock()));
-    let any =
-        Arc::new(awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(mem.clone()));
+    let any = Arc::new(awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(mem.clone()));
     let host = (awaken_session_executor_testkit::volatile_dependencies(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(any))
@@ -298,8 +297,7 @@ async fn monitoring_reads_committed_dispatches_without_materializing_a_session()
      * Superseded. The non-durable C1=false => 400 rule remains below. */
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let mem = Arc::new(MemoryDispatchStore::new(clock.clock()));
-    let any =
-        Arc::new(awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(mem.clone()));
+    let any = Arc::new(awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(mem.clone()));
     let host = (awaken_session_executor_testkit::volatile_dependencies(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(any))

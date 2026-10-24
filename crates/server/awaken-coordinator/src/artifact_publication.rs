@@ -3,11 +3,11 @@
 
 use std::sync::{Arc, OnceLock};
 
+use awaken_dispatch::DispatchCommitAuthority;
 use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
     ArtifactRecovery,
 };
-use awaken_dispatch::DispatchCommitAuthority;
 use awaken_session_realization_contract::ResourceOperationFence;
 
 use awaken_time::WallClockExt as _;

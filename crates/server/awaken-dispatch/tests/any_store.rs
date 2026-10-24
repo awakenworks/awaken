@@ -773,12 +773,10 @@ async fn postgres_factory_pairs_the_selected_store_with_its_wake() {
     let Some(pool) = harness::schema_pool("t_any_factory_wake").await else {
         return;
     };
-    let (store, wake) = awaken_dispatch::with_postgres_dispatch_pool_and_wake(
-        pool,
-        "t_any_factory_wake_channel",
-    )
-    .await
-    .expect("W2 factory pairs the PostgreSQL store and wake");
+    let (store, wake) =
+        awaken_dispatch::with_postgres_dispatch_pool_and_wake(pool, "t_any_factory_wake_channel")
+            .await
+            .expect("W2 factory pairs the PostgreSQL store and wake");
     store
         .enqueue(RunDispatch::new(activation("wake-run")))
         .await

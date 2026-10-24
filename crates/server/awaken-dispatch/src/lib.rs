@@ -4,7 +4,7 @@
 //! Durable run dispatch: the dispatch/server host above the runtime core.
 //!
 //! Direct attempts and durable delivery are intentionally different shapes
-//! (G5). The runtime ships `DirectAttemptDriver`; the run-ingress contract owns
+//! (G5). The runtime ships `DirectAttemptDriver`; the dispatch contract owns
 //! `RunDispatch` and the queue ports, this crate owns the Coordinator's
 //! SQLite/PostgreSQL dispatch adapters and claimed-commit application, and
 //! `awaken-dispatch-execution` owns the sole `DispatchWorker`/`DispatchPool`.

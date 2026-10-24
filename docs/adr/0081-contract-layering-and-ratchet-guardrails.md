@@ -353,7 +353,7 @@ authoritative suites follow the owner and lifecycle they exercise:
 | Port family | Canonical suite owner | Why it is not duplicated |
 |---|---|---|
 | Thread commit/read, Work, Environment registry, Session/Deployment persistence, Worker directory, Resource registry | `awaken-store-conformance` | These backends share the same store-level lifecycle and trait-generic fixtures. Session and Deployment already share `session_store`; adding another Session suite would be a competing authority. |
-| Dispatch/Inbox/Outbox | `awaken-dispatch-testkit` | Its claim clock, lease, reservation and continuation rules are Run-ingress behavior, not generic storage behavior. |
+| Dispatch/Inbox/Outbox | `awaken-run-ingress-testkit` | Its claim clock, lease, reservation and continuation rules are Run-ingress behavior, not generic storage behavior. |
 | Memory repository | `awaken-memory-store` shared conformance module | It owns path/generation/CAS/copy-conflict semantics and is already reused by its in-memory, filesystem, SQLite and Postgres adapters. |
 | Skill repository | `awaken-skill-store` shared conformance function | Its binary bundle/version/tombstone lifecycle is crate-local and shared by its implementations. |
 

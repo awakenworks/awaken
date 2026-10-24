@@ -69,8 +69,7 @@ pub struct CoordinatorDependencies {
     pub worker_authenticator: Arc<dyn WorkerRequestAuthenticator>,
     pub worker_placement_policy: Option<Arc<dyn awaken_worker_contract::PlacementPolicy>>,
     /// Trusted provider composition, not Worker-authored manifest metadata.
-    pub worker_execution_bindings:
-        Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
+    pub worker_execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     pub worker_execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
     pub worker_relay_targets: Option<Arc<dyn awaken_worker_contract::WorkerRelayTargetObserver>>,
     /// The signed provider Create executor is mounted only on the private

@@ -110,7 +110,7 @@ It grants no commit, checkpoint, or settlement authority.
 The physical-slot transition kernel in `awaken-run-ingress-contract` is the
 single rule owner. Continuation handoff reuses ordinary admission and changes
 only `Blocked` to `Replace`; it cannot bypass stale-claim or corrupt-slot
-rejection. The backend-neutral adapter in `awaken-dispatch::dispatch` owns
+rejection. The backend-neutral adapter in `awaken-run-ingress::dispatch` owns
 the mapping to admission/settlement outcomes and corruption errors. Memory,
 SQLite and PostgreSQL load one locked snapshot, call that adapter, and apply the
 returned mutation within their existing lock or transaction. Their clocks and
@@ -943,7 +943,7 @@ same selection owner for migration and external-schema verification.
   holds for Memory and SQLite. On PostgreSQL, claims of every mode, due-time
   checks, lease renewal and ownership checks sample database time inside the
   transaction, as the later paragraph of this ADR says
-  (`crates/server/awaken-dispatch/src/postgres_helpers.rs:16-25`,
+  (`crates/server/awaken-run-ingress/src/postgres_helpers.rs:16-25`,
   `postgres/claim.rs:258,381,434`, `postgres/dispatch_queue.rs:714`). The edge
   clock still drives renewal cadence and local proof deadlines.
 

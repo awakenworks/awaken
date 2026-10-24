@@ -146,9 +146,9 @@ mod tests {
     use crate::host::worker_resolver::test_support::{
         AdoptionModel, eager_environment, empty_frozen_projection_for_snapshot, test_activation,
     };
+    use awaken_dispatch::WorkerResolver as _;
     use awaken_dispatch_contract::DispatchClaims;
     use awaken_dispatch_contract::DispatchEnqueue;
-    use awaken_dispatch::WorkerResolver as _;
     use awaken_runtime_contract::resolved::ModelBinding;
 
     #[tokio::test]

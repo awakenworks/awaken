@@ -9,6 +9,7 @@ use awaken_dispatch_testkit::worker_http as support;
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_dispatch::{MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity};
 use awaken_resource_contract::RepositoryBindingVerifier as _;
 use awaken_resource_contract::{ConfigVersion, LiveResourceBindingVerifier, ResourceRegistryError};
 use awaken_resource_worker_http::HttpRepositoryBindingVerifier;
@@ -16,7 +17,6 @@ use awaken_resource_worker_http::{
     RepositoryTransportAuthority, RepositoryTransportAuthorization, RepositoryTransportAuthorizer,
     WorkerRepositoryBindingService, worker_repository_binding_router,
 };
-use awaken_dispatch::{MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity};
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 

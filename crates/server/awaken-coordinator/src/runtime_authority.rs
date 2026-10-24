@@ -23,12 +23,12 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleFeed, RunLifecycleFeedError, RunLifecyclePage,
 };
+use awaken_dispatch::AnyCoordinatorDispatch;
 use awaken_dispatch_contract::WakeSignal;
 use awaken_dispatch_erasure::{
     LocalCommit, LocalCommitAdapter, LocalCommitQueries, RuntimeAuthority, RuntimeAuthorityError,
 };
 use awaken_dispatch_execution::{CoordinatorStorage, DispatchBackend, StoreKind, Wake};
-use awaken_dispatch::AnyCoordinatorDispatch;
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_postgres::PostgresCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;
@@ -415,9 +415,7 @@ async fn open_nats_dispatch(
         .ok_or_else(|| "NATS dispatch wake requires runtime.nats_url".to_owned())?;
     let store = match schema {
         SchemaAccess::Migrate => awaken_dispatch::with_postgres_dispatch_pool(pool).await?,
-        SchemaAccess::Verify => {
-            awaken_dispatch::with_existing_postgres_dispatch_pool(pool).await?
-        }
+        SchemaAccess::Verify => awaken_dispatch::with_existing_postgres_dispatch_pool(pool).await?,
     };
     let wake: Arc<dyn WakeSignal> = Arc::new(
         awaken_dispatch::NatsWakeSignal::connect(nats_url, storage.wake_channel.clone())

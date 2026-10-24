@@ -780,11 +780,11 @@ mod tests {
         // B2=C1+C2+C4+C5+C6+dead(C3)=>E1+E3. The real queue, commit, factory,
         // Runtime terminalization and existing coordination fixture own this
         // observation; no shadow claim model or physical executor is involved.
-        use awaken_dispatch_execution::session_execution::CommitBoundaryWorkers as _;
         use awaken_dispatch::{
             DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _,
             DispatchReads as _,
         };
+        use awaken_dispatch_execution::session_execution::CommitBoundaryWorkers as _;
 
         for owner_live in [true, false] {
             let now = awaken_time::system_clock().now().as_epoch_ms();

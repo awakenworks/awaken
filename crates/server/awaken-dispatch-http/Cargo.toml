@@ -9,7 +9,7 @@ context = "coordinator"
 product = "platform"
 bounded_context = "dispatch"
 layer = "interface"
-authority = "run-ingress-http"
+authority = "dispatch-http"
 separation = "isolation"
 isolates = ["axum"]
 

@@ -163,14 +163,14 @@ Verified state after the 2026-08-04 cut:
   operation, while control/read operations address committed Thread truth directly.
   Coordinator only assembles these ports; Runtime Host executes the admitted Run and never
   creates, recovers, or owns the lifecycle of a Session.
-- **Coordinator runtime interface** — `awaken-dispatch-http` owns durable-operation
+- **Coordinator runtime interface** — `awaken-run-ingress-http` owns durable-operation
   HTTP routing. Neutral durable-control methods remain on `SharedHost` as its application API.
 - **Worker runtime interface** — `awaken-coordinator-client` owns registration, heartbeat,
   drain, and claim-fenced Session-control clients. `awaken-runtime-host` no longer exports
   those Worker transport adapters.
 - **Dispatch execution (2026-10-02)** — `awaken-dispatch-execution` owns the sole
   `DispatchWorker`, process `DispatchPool`, renewal guard, recovery projection,
-  process-local capacity, and neutral wake port. `awaken-dispatch` retains
+  process-local capacity, and neutral wake port. `awaken-run-ingress` retains
   Coordinator-only SQLite/PostgreSQL dispatch adapters, PG/NATS wake transports,
   and the claimed-commit application; `awaken-run-ingress-contract` owns queue
   and claim vocabulary, while its application port has its own bounded contract.

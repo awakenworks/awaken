@@ -15,7 +15,7 @@
 ## Context
 
 ADR-0009 shipped `DurableRunIngress` (the durable half of the `RunIngress` seam,
-G5) inside `awaken-dispatch`, and ADR-0011/0015/0020/0022 supplemented it with
+G5) inside `awaken-run-ingress`, and ADR-0011/0015/0020/0022 supplemented it with
 an autonomous dispatch service, a crash-retry terminal budget with manual quarantine,
 scheduled actions, and epoch supersession. Until now none of this was reachable
 from `awaken-coordinator-local`: the server executed every Run through a direct
@@ -65,9 +65,9 @@ explicit, stable ids" rather than the ergonomic in-process counter.
 The four supplements — reconcile (ADR-0011), retry terminalization/manual quarantine
 (ADR-0015), scheduled
 wake (ADR-0020), and epoch supersession (ADR-0022) — are implemented in
-`awaken-dispatch` and their deep state machine is verified deterministically
+`awaken-run-ingress` and their deep state machine is verified deterministically
 **on the server's exact concrete persistence stack**, `SqliteDispatchStore` +
-`SqliteCommitCoordinator`, by `crates/awaken-dispatch/tests/sqlite_dispatch.rs`
+`SqliteCommitCoordinator`, by `crates/awaken-run-ingress/tests/sqlite_dispatch.rs`
 (`durable_loop_runs_entirely_on_sqlite`, `dead_letter_budget_on_sqlite`,
 `dead_letter_ttl_gc_on_sqlite`, `scheduled_delivery_due_on_sqlite`,
 `supersession_on_sqlite`, …). Slice E makes each **reachable and exercised through
@@ -157,14 +157,14 @@ D1–D3 are history; these names no longer match the code:
   durable delivery is the private delivery value of the 2026-09-01 amendment.
   The "fails closed with 400 unless `AWAKEN_INGRESS=durable`" sentence in D3 is
   obsolete.
-- The operational verbs live in `crates/server/awaken-dispatch-http/src/durable_ops.rs`,
+- The operational verbs live in `crates/server/awaken-run-ingress-http/src/durable_ops.rs`,
   composed by `crates/server/awaken-coordinator/src/lib.rs:1557`
   (`durable_ops_router_with_session_admission`).
 - `RunIngress` / `DurableRunIngress` were removed by the 2026-09-01 amendment to
   [ADR-0009](0009-durable-run-ingress-slice.md); the operations port is
   `DurableRunOperations` (`crates/contract/awaken-session-execution-contract/src/durable_run_operations.rs`).
 - `awaken-coordinator-local` is now `awaken-coordinator`; the SQLite suite is
-  `crates/server/awaken-dispatch/tests/sqlite_dispatch.rs`.
+  `crates/server/awaken-run-ingress/tests/sqlite_dispatch.rs`.
 
 ## Amendment 2026-10-19: one product durable command entry
 
@@ -196,7 +196,7 @@ Platform source migration:
 
 | Removed entry | Existing authoritative replacement |
 |---|---|
-| `durable_ops_router(operations, clock)`, including Coordinator/scenario convenience exports | Import `awaken_dispatch_http::durable_ops_router_with_session_admission` and pass the same existing Session application through its background/replacement roles |
+| `durable_ops_router(operations, clock)`, including Coordinator/scenario convenience exports | Import `awaken_run_ingress_http::durable_ops_router_with_session_admission` and pass the same existing Session application through its background/replacement roles |
 | `DurableRunOperations::submit_background` and `SessionRuns::submit_background_async` | `SessionRunBackgroundApplication::submit_session_run_background` on the existing `SessionRunApplication` |
 | `DurableRunOperations::supersede`, `DurableSupersedeResult` and `SessionRuns::supersede_run` | `SessionRunReplacementApplication::supersede_session_run`, followed by the unchanged operational superseded projection |
 

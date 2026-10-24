@@ -521,9 +521,7 @@ async fn legacy_closed_idle_worker_without_a_frozen_create_ledger_never_retires_
             store
                 .enqueue(
                     awaken_dispatch::RunDispatch::new(model_only_activation("idle-retirement"))
-                        .with_placement(
-                            awaken_dispatch::PlacementRequirements::remote_required(),
-                        ),
+                        .with_placement(awaken_dispatch::PlacementRequirements::remote_required()),
                 )
                 .await
                 .unwrap();

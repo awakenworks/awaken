@@ -272,7 +272,7 @@ fenced cleanup path. No grace period, second renewal loop, or recovery queue is
 introduced.
 
 The attached cause/effect tables in `host/tests/resource_staging_lease.rs` and
-`awaken-dispatch/tests/any_store/resolution_failure.rs` cover the read/renewal
+`awaken-run-ingress/tests/any_store/resolution_failure.rs` cover the read/renewal
 and terminal-commit failure boundaries. `SessionRealizationMutex` checks the
 bounded preparation/renewal/cancellation ordering; `SessionRunProtocolResolution`
 uses the existing Run/Session/Work kernels for conflict exclusion and committed

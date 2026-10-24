@@ -421,8 +421,7 @@ async fn pre_start_cancellation_acknowledges_only_a_freshly_installed_slot() {
         .await
         .unwrap();
     assert_eq!(local.events.len(), 1, "R1 one original ACK observation");
-    let awaken_dispatch::AttemptPhysicalFact::Acknowledgement { record } =
-        &local.events[0].record
+    let awaken_dispatch::AttemptPhysicalFact::Acknowledgement { record } = &local.events[0].record
     else {
         panic!("R1 no independent termination kind")
     };

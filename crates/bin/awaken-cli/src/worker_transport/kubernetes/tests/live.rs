@@ -105,10 +105,7 @@ async fn ready(client: &WorkerControlClient, identity: &WorkerIdentity, sequence
         )
         .await
         .unwrap();
-    assert_eq!(
-        receipt.mutation,
-        awaken_dispatch::RegistryMutation::Applied
-    );
+    assert_eq!(receipt.mutation, awaken_dispatch::RegistryMutation::Applied);
 }
 
 struct Server {

@@ -1362,10 +1362,7 @@ async fn settle(
                     (
                         awaken_dispatch::DispatchOutcome::Awaiting,
                         RunState::Awaiting
-                    ) | (
-                        awaken_dispatch::DispatchOutcome::Done,
-                        RunState::Ended(_)
-                    )
+                    ) | (awaken_dispatch::DispatchOutcome::Done, RunState::Ended(_))
                 );
                 if !state_matches || session_activity_epoch == 0 {
                     return Err(RealizationHttpError::from(ApplicationError::invalid(

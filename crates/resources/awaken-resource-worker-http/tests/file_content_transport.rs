@@ -14,6 +14,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
+use awaken_dispatch::{MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity};
 use awaken_file_store::FileStore as _;
 use awaken_resource_application::ApplicationFileContentSource;
 use awaken_resource_contract::FileCatalog as _;
@@ -21,7 +22,6 @@ use awaken_resource_contract::FileContentSource as _;
 use awaken_resource_contract::{FileReadPurpose, ResolvedFileContent};
 use awaken_resource_worker_http::HttpFileContentSource;
 use awaken_resource_worker_http::{WorkerFileContentService, worker_file_content_router};
-use awaken_dispatch::{MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity};
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_realization_contract::SessionFileReadAuthorization as _;
 use awaken_session_repository_contract::{

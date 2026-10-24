@@ -1283,8 +1283,7 @@ impl awaken_dispatch_contract::DispatchCommitAuthority for FlakyDispatchStore {
     async fn lock_commit_epoch(
         &self,
         claim: &awaken_dispatch::RunClaim,
-    ) -> Result<Option<awaken_dispatch::CommitEpochGuard>, awaken_dispatch::DispatchError>
-    {
+    ) -> Result<Option<awaken_dispatch::CommitEpochGuard>, awaken_dispatch::DispatchError> {
         self.inner.lock_commit_epoch(claim).await
     }
 }
@@ -2074,9 +2073,7 @@ pub async fn assert_dead_letter<
 /// Shared spec for durable cancel: intent is retained and claimable until a
 /// fenced Done settlement, including across a running lease's expiry. Every
 /// backend must match.
-pub async fn assert_cancel<
-    S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads,
->(
+pub async fn assert_cancel<S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -2484,10 +2481,7 @@ pub async fn assert_list_dispatches<
 
     assert!(
         store
-            .bind_sandbox(
-                &awaken_dispatch::RunClaim::from(&claimed.lease),
-                "opaque"
-            )
+            .bind_sandbox(&awaken_dispatch::RunClaim::from(&claimed.lease), "opaque")
             .await
             .unwrap()
             .applied()
@@ -3593,10 +3587,7 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::ControlDispatch>(
     clock.set(replacement_at.saturating_add(2));
     assert_eq!(
         store
-            .renew_lease(
-                &awaken_dispatch::RunClaim::from(&cancellation.lease),
-                100,
-            )
+            .renew_lease(&awaken_dispatch::RunClaim::from(&cancellation.lease), 100,)
             .await
             .unwrap(),
         awaken_dispatch::LeaseRenewalOutcome::Current,

@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::stream::sink::Sink;
-use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{DispatchTestHarness, DispatchWorker, MemoryDispatchStore, RunDispatch};
+use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::control::Error as ControlError;
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 use awaken_time::system_clock;

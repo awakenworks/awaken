@@ -94,7 +94,7 @@ lockfile already resolves rusqlite 0.32.1, and awaken-cloud pins
    - **Then the stores, smallest first.** Each crate is one commit with its
      existing SQLite tests and the shared `awaken-store-conformance` suites green.
    - **Dispatch and session last.** The dispatch and session stores
-     (`awaken-dispatch`, `awaken-work-store`, `awaken-session-store`) come
+     (`awaken-run-ingress`, `awaken-work-store`, `awaken-session-store`) come
      last, because their claim and lease semantics carry the most behavior.
    - **Then the foundation switch.** Finally, migrations move to the foundation
      `sqlite` feature, and rusqlite and the `awaken-sql-storage` bridges are

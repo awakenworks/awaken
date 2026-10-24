@@ -4,9 +4,9 @@
 //! application retries, not an attempt to bypass the signature nonce cache.
 mod postgres_support;
 
-use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{MemoryDispatchStore, WorkerDirectory, WorkerManifest};
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_lease_testkit::ManualClock;
 use awaken_worker_registry::{
     MemoryWorkerDirectory, PostgresWorkerDirectory, SqliteWorkerDirectory,
 };

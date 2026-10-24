@@ -295,9 +295,7 @@ impl ResolvedDeployment {
             dispatch_poll_interval: file
                 .dispatch_poll_interval_ms
                 .map(std::time::Duration::from_millis)
-                .unwrap_or_else(|| {
-                    awaken_dispatch::DispatchServiceConfig::default().poll_interval
-                }),
+                .unwrap_or_else(|| awaken_dispatch::DispatchServiceConfig::default().poll_interval),
             sample_dispatch_queue_depth: true,
             sandbox_tier: runtime_settings.sandbox_tier,
             sandbox_dir: file.sandbox_dir.clone(),

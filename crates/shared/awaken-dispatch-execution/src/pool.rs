@@ -1566,8 +1566,8 @@ mod in_flight_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use awaken_agent_contract::agent::run::EndCause;
-    use awaken_lease_testkit::ManualClock;
     use awaken_dispatch::MemoryDispatchStore;
+    use awaken_lease_testkit::ManualClock;
 
     #[test]
     fn pool_admission_transition_is_total_and_drain_absorbing() {

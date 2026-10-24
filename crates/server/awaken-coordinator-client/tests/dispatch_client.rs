@@ -22,11 +22,11 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
-use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
 use awaken_dispatch::{
     AttemptAdmission, ClaimedStreamPublisher, DispatchError, DispatchOutcome, MemoryDispatchStore,
     RunClaim, RunDispatch, SettleOutcome, StreamObservationRequest, SubmitOptions, WorkerIdentity,
 };
+use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,

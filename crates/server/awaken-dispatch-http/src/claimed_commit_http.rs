@@ -4,8 +4,8 @@
 
 use std::sync::Arc;
 
-use awaken_dispatch_contract::MAX_CLAIMED_COMMIT_BODY_BYTES;
 use awaken_dispatch::{ClaimedCommitRequest, ClaimedCommitService, WorkerDirectory};
+use awaken_dispatch_contract::MAX_CLAIMED_COMMIT_BODY_BYTES;
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, authenticate_worker_request,
     verify_current_worker_identity,
