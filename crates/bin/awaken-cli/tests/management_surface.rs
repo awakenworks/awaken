@@ -112,14 +112,14 @@ async fn assert_selected_memory_content(
     let selected = awaken_resource_persistence::open_embedded(
         &selected_root,
         clock.clone(),
-        Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default()),
+        Arc::new(awaken_resource_contract::LocalInvalidator::default()),
     )
     .await
     .unwrap();
     let sentinel = awaken_resource_persistence::open_embedded(
         &sentinel_root,
         clock,
-        Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default()),
+        Arc::new(awaken_resource_contract::LocalInvalidator::default()),
     )
     .await
     .unwrap();

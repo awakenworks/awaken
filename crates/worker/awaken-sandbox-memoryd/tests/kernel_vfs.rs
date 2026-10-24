@@ -181,7 +181,7 @@ fn independent_mounter_projections_invalidate_peer_caches_and_teardown_independe
     rt.block_on(backend.create(store, "/x.md", "one")).unwrap();
     let mounter = {
         let backend = backend.clone();
-        let bus = Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default());
+        let bus = Arc::new(awaken_resource_contract::LocalInvalidator::default());
         let memory = Arc::new(
             awaken_resource_application::memory::InvalidatingMemoryRepository::new(
                 backend,

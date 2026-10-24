@@ -24,8 +24,8 @@ use libc::{EAGAIN, EEXIST, EINVAL, EIO, ENOENT, ENOSPC, ENOSYS, ENOTEMPTY, O_TRU
 use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
 
-use crate::invalidate::Invalidation;
 use crate::{FuseError, immediate_children, splice_bytes};
+use awaken_resource_contract::Invalidation;
 
 /// Poll cadence for the peer-projection invalidation listener (ADR-0053 D5). An
 /// invalidation only prompts a cache refetch, so sub-frame latency is unnecessary;
@@ -265,7 +265,7 @@ pub fn spawn_mount(
 
 /// Like [`spawn_mount`], but the mount also drains `invalidations` and drops stale
 /// paths from its cache so a write through a peer projection is reflected here.
-/// Pass a [`LocalInvalidator`](crate::LocalInvalidator) subscription for same-process
+/// Pass a [`LocalInvalidator`](awaken_resource_contract::LocalInvalidator) subscription for same-process
 /// coherence; a distributed adapter can feed the same broadcast receiver.
 pub(crate) fn spawn_mount_with_invalidations(
     fs: Arc<dyn MemoryFilesystem>,

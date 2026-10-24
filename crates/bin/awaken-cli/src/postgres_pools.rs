@@ -298,7 +298,7 @@ mod tests {
                 awaken_resource_persistence::SchemaMode::Verify,
                 None,
                 awaken_time::system_clock(),
-                std::sync::Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default()),
+                std::sync::Arc::new(awaken_resource_contract::LocalInvalidator::default()),
             )
             .await
             .is_err()
