@@ -34,6 +34,7 @@ use awaken_tenancy::ScopeId;
 mod a2a_remote;
 mod acp_configuration;
 mod acp_publication;
+mod auto_publication;
 mod composition;
 mod credential_publication;
 mod offering_resolution;
@@ -250,6 +251,9 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
                     .resolve_brokered_offering(resolver.as_ref(), workspace, offering, fallbacks)
                     .await;
             }
+        }
+        if selection.is_auto() {
+            return auto_publication::resolve_auto_models(self, &catalog, workspace).await;
         }
         let (primary_binding, fallback_bindings) =
             self.selected_bindings(&catalog, selection, fallbacks)?;
@@ -575,6 +579,81 @@ mod tests {
 
     async fn resolver(models: &[&str]) -> CatalogModelPublicationResolver {
         resolver_for_catalog(catalog(models)).await
+    }
+
+    /// A catalog whose first active offering belongs to a provider with no
+    /// active credential (an archived key), followed by a usable OpenAI one.
+    fn catalog_led_by_an_unusable_provider() -> ProviderCatalog {
+        let mut catalog = catalog(&["usable"]);
+        catalog.providers.insert(
+            "retired".into(),
+            Provider {
+                id: ProviderId::new("retired"),
+                slug: "retired".into(),
+                display_name: "Retired".into(),
+                version: 1,
+            },
+        );
+        catalog.endpoints.insert(
+            "ep-retired".into(),
+            ProtocolEndpoint {
+                workspace_id: None,
+                id: ProtocolEndpointId::new("ep-retired"),
+                provider_id: ProviderId::new("retired"),
+                dialect: ApiDialect::OpenAiChat,
+                base_url: Some("https://retired.invalid/v1".into()),
+                timeout_secs: 30,
+                display_name: "Retired".into(),
+                version: 1,
+            },
+        );
+        catalog
+            .offerings
+            .insert(0, offering("stale", "retired", "ep-retired"));
+        catalog
+    }
+
+    #[tokio::test]
+    async fn auto_skips_an_offering_without_an_active_credential() {
+        // A1 Auto + first offering unusable + later offering usable -> publish
+        // the usable one; the unusable one is neither primary nor fallback.
+        let resolved = resolver_for_catalog(catalog_led_by_an_unusable_provider())
+            .await
+            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .await
+            .unwrap();
+        assert_eq!(resolved.primary.binding().identity().1, "usable");
+        assert!(resolved.candidates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn auto_without_any_usable_offering_and_pinned_unusable_fail_closed() {
+        // A2 Auto + no usable offering -> the candidate refusal, not a silent
+        // binding. A3 an explicit Pinned selection of the unusable model stays strict.
+        let mut only_stale = catalog_led_by_an_unusable_provider();
+        only_stale
+            .offerings
+            .retain(|offering| offering.model_id == "stale");
+        let auto = resolver_for_catalog(only_stale)
+            .await
+            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .await;
+        assert!(matches!(
+            auto,
+            Err(PublicationResolutionError::CandidateUnavailable { .. })
+        ));
+        let pinned = resolver_for_catalog(catalog_led_by_an_unusable_provider())
+            .await
+            .resolve_models(
+                &ScopeId::from("workspace-a"),
+                &ModelSelection::Pinned(ModelBinding::parse("retired", "stale", "genai").unwrap()),
+                &[],
+            )
+            .await;
+        assert!(matches!(
+            pinned,
+            Err(PublicationResolutionError::CandidateUnavailable { .. })
+        ));
     }
 
     #[tokio::test]
