@@ -1003,7 +1003,7 @@ mod tests {
         let selected = (dependencies().await.with_authority(
             crate::UpstreamAuthority::default().with_dispatch_binding(
                 awaken_dispatch_erasure::DispatchBinding::remote(
-                    Arc::new(awaken_worker_runtime::HttpDispatchQueue::new(
+                    Arc::new(awaken_coordinator_client::HttpDispatchQueue::new(
                         "http://127.0.0.1:9",
                         awaken_dispatch_contract::WorkerIdentity::new("fixture", "fixture-boot", 1),
                     )),

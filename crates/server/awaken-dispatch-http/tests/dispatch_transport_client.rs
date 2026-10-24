@@ -20,6 +20,7 @@ use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpoi
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_coordinator_client::HttpDispatchQueue;
 use awaken_credential_contract::{
     AttemptCredentialBinding, AttemptCredentialDelivery, AttemptCredentialDeliveryRequest,
     AttemptCredentialDeliverySource,
@@ -42,7 +43,6 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
-use awaken_worker_runtime::HttpDispatchQueue;
 use awaken_worker_transport_security::{FixedWorkerLeasePolicy, HeaderWorkerAuthenticator};
 
 fn activation(run: &str, thread: &str) -> RunActivation {
@@ -414,7 +414,7 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
         let delivery_request = refresh_request(&claimed.credential_bindings[0], candidate);
         let worker_dispatch = DispatchBinding::remote(
             queue.clone(),
-            Arc::new(awaken_worker_runtime::RemoteClaimedRunCommit::new(
+            Arc::new(awaken_coordinator_client::RemoteClaimedRunCommit::new(
                 format!("http://{addr}"),
                 WorkerIdentity::new("worker-1", "boot-1", 1),
             )),

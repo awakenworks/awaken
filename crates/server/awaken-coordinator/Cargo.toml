@@ -160,7 +160,7 @@ kube = { workspace = true, features = ["client", "rustls-tls", "http-proxy"] }
 awaken-sandbox-memoryd.workspace = true
 # The erasure regression retains the real portable ACP filesystem store.
 awaken-run-executor-acp.workspace = true
-awaken-worker-runtime.workspace = true
+awaken-coordinator-client.workspace = true
 # Cross-component closure cases select the actual existing transport and keep
 # all original Registry/Dispatch/ledger assertions at the broker decision owner.
 awaken-cli = { workspace = true, features = ["container-k8s", "test-support"] }

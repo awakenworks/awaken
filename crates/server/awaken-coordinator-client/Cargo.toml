@@ -1,5 +1,5 @@
 [package]
-name = "awaken-worker-runtime"
+name = "awaken-coordinator-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ context = "worker"
 product = "platform"
 bounded_context = "dispatch"
 layer = "infrastructure"
-authority = "worker-runtime-transport"
+authority = "coordinator-client"
 separation = "isolation"
 isolates = ["reqwest"]
 

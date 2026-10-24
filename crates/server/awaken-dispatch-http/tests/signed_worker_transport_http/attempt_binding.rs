@@ -422,7 +422,7 @@ async fn registration_retention_failure_retries_the_same_durable_identity_before
             credential,
             f.clock.clone(),
         )));
-    let control = awaken_worker_runtime::WorkerControlClient::new(upstream);
+    let control = awaken_coordinator_client::WorkerControlClient::new(upstream);
     let mut manifest = WorkerManifest::default();
     manifest.runtime_protocol.min = 1;
     manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
@@ -437,9 +437,7 @@ async fn registration_retention_failure_retries_the_same_durable_identity_before
             control
                 .register_classified("retention-boot", manifest.clone())
                 .await,
-            Err(awaken_worker_runtime::WorkerRegistrationError::Unavailable(
-                _
-            ))
+            Err(awaken_coordinator_client::WorkerRegistrationError::Unavailable(_))
         ),
         "R0 preparation failure is retryable"
     );
@@ -455,9 +453,7 @@ async fn registration_retention_failure_retries_the_same_durable_identity_before
             control
                 .register_classified("retention-boot", manifest.clone())
                 .await,
-            Err(awaken_worker_runtime::WorkerRegistrationError::Unavailable(
-                _
-            ))
+            Err(awaken_coordinator_client::WorkerRegistrationError::Unavailable(_))
         ),
         "R1 exact retryable outcome"
     );
@@ -865,7 +861,7 @@ use awaken_dispatch_contract::{
 /// The signed physical-attempt protocol family belongs beside its original
 /// binding/Registry tests; all P1-P5/U1-U4 assertions move intact from parent.
 pub(super) async fn verify_ordinary_return_compatibility(
-    queue: &awaken_worker_runtime::HttpDispatchQueue,
+    queue: &awaken_coordinator_client::HttpDispatchQueue,
     upstream: &WorkerUpstream,
     directory: &TestWorkerDirectory,
     dispatch: &MemoryDispatchStore,
@@ -896,7 +892,7 @@ pub(super) async fn verify_ordinary_return_compatibility(
         AttemptAdmission::AlreadyApplied,
         "P2 exact durable-continuation retry"
     );
-    let mismatched_queue = awaken_worker_runtime::dispatch_transport_with_upstream(
+    let mismatched_queue = awaken_coordinator_client::dispatch_transport_with_upstream(
         upstream,
         WorkerIdentity::new("signed-http-worker", "different-boot", 2),
     );

@@ -221,11 +221,11 @@ mod tests {
             runtime,
             &scheduler(
                 DispatchBinding::remote(
-                    Arc::new(awaken_worker_runtime::HttpDispatchQueue::new(
+                    Arc::new(awaken_coordinator_client::HttpDispatchQueue::new(
                         "http://127.0.0.1:9",
                         awaken_dispatch_contract::WorkerIdentity::new("child", "boot", 1),
                     )),
-                    Arc::new(awaken_worker_runtime::RemoteClaimedRunCommit::new(
+                    Arc::new(awaken_coordinator_client::RemoteClaimedRunCommit::new(
                         "http://127.0.0.1:9",
                         awaken_dispatch_contract::WorkerIdentity::new("child", "boot", 1),
                     )),

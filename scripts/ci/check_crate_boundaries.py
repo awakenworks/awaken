@@ -651,7 +651,7 @@ DIRECT_TRANSPORT_EXEMPTIONS = {
         "the signed `RequestBuilder` seam and the private-CA client; it still "
         "takes its provider selection from awaken-outbound-http"
     ),
-    "awaken-worker-runtime": (
+    "awaken-coordinator-client": (
         "implements the Worker-to-Coordinator signing seam, whose port is "
         "defined over `reqwest::RequestBuilder` by the transport authority above"
     ),

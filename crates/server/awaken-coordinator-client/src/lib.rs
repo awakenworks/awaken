@@ -1,4 +1,5 @@
-//! Worker-owned attempt context and transport adapters behind the neutral Host.
+//! The Worker's authenticated HTTP clients of the Coordinator: dispatch queue,
+//! claimed commits, Worker lifecycle and Session control.
 
 mod claimed_commit_client;
 mod dispatch_client;

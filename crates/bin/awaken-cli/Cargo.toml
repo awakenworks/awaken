@@ -211,7 +211,7 @@ awaken-sqlite-pool.workspace = true
 sha2 = "0.10"
 awaken-ext-goal.workspace = true
 k8s-openapi = { workspace = true }
-awaken-worker-runtime.workspace = true
+awaken-coordinator-client.workspace = true
 awaken-dispatch-testkit.workspace = true
 awaken-worker-registry = { workspace = true, features = ["test-support"] }
 awaken-dispatch = { workspace = true, features = ["test-support"] }

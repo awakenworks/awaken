@@ -114,10 +114,10 @@ pub type RegisteredMemoryMounterFactory = Arc<
         + Sync,
 >;
 
+use awaken_coordinator_client::WorkerControlClient;
 use awaken_credential_materializer::InferenceExecutorMaterializer;
 use awaken_session_executor::ExecutorComponents;
 use awaken_worker_contract::{RegistryMutation, WorkerManifest};
-use awaken_worker_runtime::WorkerControlClient;
 use awaken_worker_transport_security::WorkerUpstream;
 
 /// Completion of the one Worker preparation lane. A timeout or task failure
@@ -1468,8 +1468,8 @@ impl WorkerNode {
             match attempt {
                 Ok(registration) => break registration,
                 Err(
-                    error @ (awaken_worker_runtime::WorkerRegistrationError::SlotOccupied(_)
-                    | awaken_worker_runtime::WorkerRegistrationError::Unavailable(_)),
+                    error @ (awaken_coordinator_client::WorkerRegistrationError::SlotOccupied(_)
+                    | awaken_coordinator_client::WorkerRegistrationError::Unavailable(_)),
                 ) => {
                     if registration_wait_attempts.is_multiple_of(10) {
                         eprintln!("worker registration waiting for Coordinator: {error}");
@@ -1543,7 +1543,7 @@ impl WorkerNode {
             None => None,
         };
         // Route the dispatch pool's claim/settle over HTTP to the cell server.
-        let (dispatch, stream_publisher) = awaken_worker_runtime::worker_transports_with_upstream(
+        let (dispatch, stream_publisher) = awaken_coordinator_client::worker_transports_with_upstream(
             &upstream,
             registration.snapshot.identity.clone(),
         );
@@ -1579,12 +1579,12 @@ impl WorkerNode {
         };
         // Claimed Runs commit back to the Coordinator under this registered
         // identity; the Host holds only the neutral claim-fenced port.
-        let claimed_commit = awaken_worker_runtime::remote_claimed_commit(&upstream)?;
+        let claimed_commit = awaken_coordinator_client::remote_claimed_commit(&upstream)?;
         // Every registered Worker realizes the already-frozen Session projection
         // through Control; the same client projects the one durable Environment
         // root authorization before provider I/O and hands out cold terminal
         // cleanup. WorkQueue remains the sole Session ownership path.
-        let session_control = Arc::new(awaken_worker_runtime::WorkerControlSessionClient::new(
+        let session_control = Arc::new(awaken_coordinator_client::WorkerControlSessionClient::new(
             control.clone(),
             registration.snapshot.identity.clone(),
         ));

@@ -98,7 +98,7 @@ async fn non_postgres_wrapper_does_not_fabricate_a_checkpoint_authority() {
     // by `any_postgres_connect_and_claim`); R2 SQLite -> None so the host must bind
     // its durable FS checkpoint; R3 a Worker projection cannot discover a local
     // checkpoint at all (compile-fail docs). Required remote transport identity
-    // is checked by awaken-worker-runtime's composition tests and HTTP E2E.
+    // is checked by awaken-coordinator-client's composition tests and HTTP E2E.
     assert!(
         any_in_memory().await.stream_checkpoint_store().is_none(),
         "R2"

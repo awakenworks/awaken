@@ -102,7 +102,7 @@ WORKER_PUBLICATION_ROUTE = (
     "worker_dispatch/terminal_repository_publication.rs"
 )
 WORKER_CONTROL_CLIENT = (
-    "crates/server/awaken-worker-runtime/src/worker_control_client.rs"
+    "crates/server/awaken-coordinator-client/src/worker_control_client.rs"
 )
 WORKER_RUNTIME = "crates/bin/awaken-worker/src/lib.rs"
 ARTIFACT_HARVEST = "crates/server/awaken-session-realization/src/artifact_harvest.rs"

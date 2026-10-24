@@ -477,11 +477,11 @@ fn remote_projection_is_the_single_awaiting_resume_reader() {
     let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let identity = awaken_dispatch_contract::WorkerIdentity::new("worker", "boot", 1);
     let binding = awaken_dispatch_erasure::DispatchBinding::remote(
-        Arc::new(awaken_worker_runtime::HttpDispatchQueue::new(
+        Arc::new(awaken_coordinator_client::HttpDispatchQueue::new(
             "http://127.0.0.1:9",
             identity.clone(),
         )),
-        Arc::new(awaken_worker_runtime::RemoteClaimedRunCommit::new(
+        Arc::new(awaken_coordinator_client::RemoteClaimedRunCommit::new(
             "http://127.0.0.1:9",
             identity,
         )),
@@ -931,11 +931,11 @@ fn remote_constructors_install_one_required_snapshot_target() {
     for combined in [false, true] {
         let identity = awaken_dispatch_contract::WorkerIdentity::new("worker", "boot", 1);
         let binding = awaken_dispatch_erasure::DispatchBinding::remote(
-            Arc::new(awaken_worker_runtime::HttpDispatchQueue::new(
+            Arc::new(awaken_coordinator_client::HttpDispatchQueue::new(
                 "http://127.0.0.1:9",
                 identity.clone(),
             )),
-            Arc::new(awaken_worker_runtime::RemoteClaimedRunCommit::new(
+            Arc::new(awaken_coordinator_client::RemoteClaimedRunCommit::new(
                 "http://127.0.0.1:9",
                 identity,
             )),

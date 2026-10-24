@@ -121,7 +121,7 @@ awaken-session-repository-contract.workspace = true
 awaken-environment-application.workspace = true
 awaken-executable-environment-catalog.workspace = true
 awaken-work-store = { workspace = true, features = ["test-support"] }
-awaken-worker-runtime.workspace = true
+awaken-coordinator-client.workspace = true
 # MCP relay tests call the relay over plain loopback HTTP.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 # The in-process MCP server fixture and the relay/state fixture hooks.

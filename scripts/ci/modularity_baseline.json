@@ -242,7 +242,7 @@
     "awaken-worker",
     "awaken-worker-contract",
     "awaken-worker-registry",
-    "awaken-worker-runtime",
+    "awaken-coordinator-client",
     "awaken-worker-transport-security"
   ],
   "long-function": {

@@ -108,7 +108,7 @@ fn installed_worker_credential_capabilities(
 /// Worker HTTP transport supplies execution and claim-bound RPC roles only.
 /// Local authority is rejected by the type checker before any request.
 /// ```compile_fail,E0599
-/// use awaken_worker_runtime::HttpDispatchQueue;
+/// use awaken_coordinator_client::HttpDispatchQueue;
 /// use awaken_dispatch_contract::DispatchAdministration;
 /// use awaken_agent_contract::agent::run::Id;
 /// async fn cancel_peer(worker: &HttpDispatchQueue) {
@@ -116,55 +116,55 @@ fn installed_worker_credential_capabilities(
 /// }
 /// ```
 /// ```compile_fail
-/// use awaken_worker_runtime::HttpDispatchQueue;
+/// use awaken_coordinator_client::HttpDispatchQueue;
 /// use awaken_dispatch_contract::DispatchAdministration;
 /// fn required<T: DispatchAdministration>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
 /// ```compile_fail
-/// use awaken_worker_runtime::HttpDispatchQueue;
+/// use awaken_coordinator_client::HttpDispatchQueue;
 /// use awaken_dispatch_contract::Inbox;
 /// fn required<T: Inbox>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
 /// ```compile_fail
-/// use awaken_worker_runtime::HttpDispatchQueue;
+/// use awaken_coordinator_client::HttpDispatchQueue;
 /// use awaken_dispatch_contract::Outbox;
 /// fn required<T: Outbox>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
 /// ```compile_fail
-/// use awaken_worker_runtime::HttpDispatchQueue;
+/// use awaken_coordinator_client::HttpDispatchQueue;
 /// use awaken_dispatch_contract::DispatchMaintenance;
 /// fn required<T: DispatchMaintenance>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
 /// ```compile_fail
-/// use awaken_worker_runtime::HttpDispatchQueue;
+/// use awaken_coordinator_client::HttpDispatchQueue;
 /// use awaken_dispatch_contract::DispatchReads;
 /// fn required<T: DispatchReads>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
 /// ```compile_fail
-/// use awaken_worker_runtime::HttpDispatchQueue;
+/// use awaken_coordinator_client::HttpDispatchQueue;
 /// use awaken_dispatch_contract::DispatchCommitAuthority;
 /// fn required<T: DispatchCommitAuthority>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
 /// ```compile_fail
-/// use awaken_worker_runtime::HttpDispatchQueue;
+/// use awaken_coordinator_client::HttpDispatchQueue;
 /// use awaken_dispatch_contract::DispatchControlReads;
 /// fn required<T: DispatchControlReads>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
 /// ```compile_fail
-/// use awaken_worker_runtime::HttpDispatchQueue;
+/// use awaken_coordinator_client::HttpDispatchQueue;
 /// use awaken_dispatch_contract::DispatchControlClaims;
 /// fn required<T: DispatchControlClaims>() {}
 /// required::<HttpDispatchQueue>();
 /// ```
 /// ```compile_fail
-/// use awaken_worker_runtime::HttpDispatchQueue;
+/// use awaken_coordinator_client::HttpDispatchQueue;
 /// use awaken_dispatch_contract::SessionReservationAuthority;
 /// fn required<T: SessionReservationAuthority>() {}
 /// required::<HttpDispatchQueue>();

@@ -119,7 +119,7 @@ TRANSLATED_TRANSPORT = {
         "Err is 'the transport failed', which is ignorance, and the translation below "
         "is the only place that decides what that means"
     ),
-    "crates/server/awaken-worker-runtime/src/dispatch_client.rs": (
+    "crates/server/awaken-coordinator-client/src/dispatch_client.rs": (
         "the HTTP client implements that same transport declaration; its Err is an "
         "HTTP failure, which the single translation turns into Unknown(Storage)"
     ),
@@ -403,7 +403,7 @@ class ObservationCollapseTests(unittest.TestCase):
             "crates/runtime/awaken-runtime/src/engine/resume.rs",
             "crates/runtime/awaken-runtime/src/engine/inference.rs",
             "crates/contract/awaken-dispatch-contract/src/worker_transport.rs",
-            "crates/server/awaken-worker-runtime/src/dispatch_client.rs",
+            "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
         ):
             self.assertIn(path, self.sources, "R4")
 

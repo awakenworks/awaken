@@ -189,7 +189,7 @@ FAIL_OPEN_READ_EXEMPTIONS: dict[str, str] = {
         "beside it). Both halves therefore degrade identically, and no caller "
         "can distinguish the two"
     ),
-    "crates/server/awaken-worker-runtime/src/dispatch_client.rs": (
+    "crates/server/awaken-coordinator-client/src/dispatch_client.rs": (
         "the defaulted read is the body of a response already known to be an "
         "error; an unreadable body makes the detail string empty, and the error "
         "itself is raised either way"

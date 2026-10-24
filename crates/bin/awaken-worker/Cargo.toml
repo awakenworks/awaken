@@ -62,7 +62,7 @@ awaken-installation-workspace.workspace = true
 awaken-resource-contract.workspace = true
 awaken-resource-worker-http.workspace = true
 awaken-sandbox-memoryd.workspace = true
-awaken-worker-runtime.workspace = true
+awaken-coordinator-client.workspace = true
 awaken-service-lifecycle.workspace = true
 awaken-runtime-contract = { workspace = true }
 awaken-lease-contract.workspace = true

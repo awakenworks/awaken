@@ -52,7 +52,7 @@ DISPATCH_OWNERS = (
     "crates/shared/awaken-dispatch-erasure/src/lib.rs",
 )
 for role in WORKER_DISPATCH_ROLES:
-    AUTHORITY_IMPLS[role] = (*DISPATCH_OWNERS, "crates/server/awaken-worker-runtime/src/dispatch_client.rs")
+    AUTHORITY_IMPLS[role] = (*DISPATCH_OWNERS, "crates/server/awaken-coordinator-client/src/dispatch_client.rs")
 for role in COORDINATOR_DISPATCH_ROLES:
     AUTHORITY_IMPLS[role] = DISPATCH_OWNERS
 
@@ -240,7 +240,7 @@ def selftest() -> None:
         "crates/server/awaken-dispatch/src/sqlite.rs", "DispatchCommitAuthority"
     ) == []  # R1
     assert implementation_violation(
-        "crates/server/awaken-worker-runtime/src/dispatch_client.rs", "DispatchClaims"
+        "crates/server/awaken-coordinator-client/src/dispatch_client.rs", "DispatchClaims"
     ) == []  # R2
     assert implementation_violation(
         "crates/shared/awaken-dispatch-erasure/src/lib.rs", "DispatchCommitAuthority"
@@ -276,7 +276,7 @@ def selftest() -> None:
     assert "Fake" not in stripped  # R4
     assert "live" in stripped  # R5
     for role in COORDINATOR_DISPATCH_ROLES:
-        assert implementation_violation("crates/server/awaken-worker-runtime/src/dispatch_client.rs", role)
+        assert implementation_violation("crates/server/awaken-coordinator-client/src/dispatch_client.rs", role)
         assert dispatch_projection_violations(f"impl {role} for AnyDispatchStore {{}}")
         assert dispatch_projection_violations(f"impl awaken_dispatch_contract::{role} for AnyDispatchStore {{}}")
         assert not dispatch_projection_violations(f"impl {role} for AnyCoordinatorDispatch {{}}")
