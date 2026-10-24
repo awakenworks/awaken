@@ -109,7 +109,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let other_root = tempfile::tempdir().unwrap();
         let config = tempfile::tempdir().unwrap();
-        let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+        let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
         deployment.acp_session_blob_root = Some(root.path().to_path_buf());
         let launch = || {
             LaunchSource::Fixed(Box::new(awaken_run_executor_acp::AcpLaunch::custom(

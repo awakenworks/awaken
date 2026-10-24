@@ -1235,12 +1235,12 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
                 memory: awaken_resource_contract::MemoryExecutionContent::new(memory),
             }
         },
-        crate::DeploymentConfig::ephemeral()
-            .session_execution_process(
-                ExecutorComponents::mint_local_workspace(),
-                awaken_time::system_clock(),
-            )
-            .expect("ephemeral process"),
+        crate::SessionExecutionProcess::from_deployment(
+            &awaken_deployment_config::DeploymentConfig::ephemeral(),
+            ExecutorComponents::mint_local_workspace(),
+            awaken_time::system_clock(),
+        )
+        .expect("ephemeral process"),
         crate::host::test_upstream_authority(),
         awaken_dispatch_contract::RegisteredCapacity::of(
             &awaken_dispatch_contract::WorkerManifest::default(),

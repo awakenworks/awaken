@@ -95,12 +95,26 @@ pub struct DispatchServiceConfig {
     pub sample_dispatch_queue_depth: bool,
 }
 
+impl DispatchServiceConfig {
+    /// Project the recovery bound and depth observer of the process topology
+    /// into the one dispatch service schedule shared by local pools and
+    /// coordinator-only repair.
+    pub(crate) fn for_topology(topology: &awaken_deployment_config::ExecutionTopology) -> Self {
+        Self {
+            poll_interval: topology.lost_wake_recovery_bound,
+            sample_dispatch_queue_depth: topology.queue_depth
+                == awaken_deployment_config::QueueDepthSource::BuiltInSampler,
+            ..Self::default()
+        }
+    }
+}
+
 impl Default for DispatchServiceConfig {
     fn default() -> Self {
         Self {
             // Cross-node wake drives prompt work; fallback reads need not hit
             // the durable queue twenty times per second while it is idle.
-            poll_interval: Duration::from_millis(500),
+            poll_interval: awaken_deployment_config::DEFAULT_DISPATCH_POLL_INTERVAL,
             max_attempts: 5,
             dead_letter_ttl: None,
             terminal_reconciliation_interval: Some(Duration::from_secs(30)),
@@ -479,5 +493,56 @@ mod maintenance_schedule_tests {
                 assert_eq!(schedule.reconciles_terminals(), scan, "R4-R5/E4");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod topology_schedule_tests {
+    use super::DispatchServiceConfig;
+    use awaken_deployment_config::{
+        ExecutionTopology, LeaseOwnerId, LocalExecution, QueueDepthSource, RunIngress,
+    };
+
+    /// A standalone process: direct ingress, CPU-sized pool, built-in sampler.
+    fn standalone() -> ExecutionTopology {
+        ExecutionTopology {
+            ingress: RunIngress::Direct,
+            local: LocalExecution::in_process_pool(),
+            lease_owner: LeaseOwnerId::new("node-a").unwrap(),
+            lost_wake_recovery_bound: std::time::Duration::from_millis(250),
+            queue_depth: QueueDepthSource::BuiltInSampler,
+        }
+    }
+
+    #[test]
+    fn admitted_recovery_bound_reaches_the_dispatch_schedule() {
+        // C1 an admitted bound within 60s. E1 the same value reaches the shared
+        // local-pool/reconciler schedule. The admission rows (zero, over 60s)
+        // are owned by the Deployment configuration's topology validation.
+        let mut topology = standalone();
+        topology.lost_wake_recovery_bound = std::time::Duration::from_millis(750);
+        topology.validate().expect("C1 valid");
+        assert_eq!(
+            DispatchServiceConfig::for_topology(&topology).poll_interval,
+            topology.lost_wake_recovery_bound,
+            "C1/E1"
+        );
+    }
+
+    #[test]
+    fn hosted_depth_observation_choice_reaches_the_one_dispatch_schedule() {
+        // C1 a standalone process keeps the built-in sampler; C2 a hosting
+        // composition names an external observer. E1 the sampler stays on; E2
+        // pool and coordinator-only reconciliation both receive it disabled
+        // through their shared DispatchServiceConfig. No lease setting changes.
+        let mut topology = standalone();
+        assert!(
+            DispatchServiceConfig::for_topology(&topology).sample_dispatch_queue_depth,
+            "C1/E1"
+        );
+        topology.queue_depth = QueueDepthSource::External;
+        let config = DispatchServiceConfig::for_topology(&topology);
+        assert!(!config.sample_dispatch_queue_depth, "C2/E2");
+        assert_eq!(config.poll_interval, topology.lost_wake_recovery_bound);
     }
 }

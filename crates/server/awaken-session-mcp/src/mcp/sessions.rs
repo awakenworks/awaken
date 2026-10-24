@@ -132,7 +132,7 @@ pub struct McpSessions {
     pub(crate) relay: Arc<tokio::sync::OnceCell<McpRelay>>,
     /// Deployment-owned exposure of the relay to isolated container networks;
     /// `None` keeps the relay on Worker loopback.
-    relay_exposure: Option<crate::ContainerMcpRelayExposure>,
+    relay_exposure: Option<awaken_session_environment_contract::ContainerMcpRelayExposure>,
     /// Installed only by a deployment that exposes this relay to isolated
     /// containers. It issues existing Gateway CONNECT capabilities per call.
     outbound_proxy: Option<Arc<dyn McpRelayOutboundProxy>>,
@@ -146,7 +146,7 @@ pub struct McpSessions {
 impl McpSessions {
     #[must_use]
     pub fn new(
-        relay_exposure: Option<crate::ContainerMcpRelayExposure>,
+        relay_exposure: Option<awaken_session_environment_contract::ContainerMcpRelayExposure>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
@@ -161,7 +161,10 @@ impl McpSessions {
     /// Fixtures replace a constructed Host's deployment, and its relay
     /// exposure with it.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn set_relay_exposure(&mut self, exposure: Option<crate::ContainerMcpRelayExposure>) {
+    pub fn set_relay_exposure(
+        &mut self,
+        exposure: Option<awaken_session_environment_contract::ContainerMcpRelayExposure>,
+    ) {
         self.relay_exposure = exposure;
     }
 
@@ -177,7 +180,9 @@ impl McpSessions {
     }
 
     #[must_use]
-    pub fn relay_exposure(&self) -> Option<&crate::ContainerMcpRelayExposure> {
+    pub fn relay_exposure(
+        &self,
+    ) -> Option<&awaken_session_environment_contract::ContainerMcpRelayExposure> {
         self.relay_exposure.as_ref()
     }
 

@@ -205,7 +205,7 @@ impl McpRelay {
     /// admitted only while `authority` holds the current Session root.
     pub async fn for_authority(
         authority: std::sync::Weak<dyn crate::mcp::McpGenerationAuthority>,
-        exposure: Option<&crate::ContainerMcpRelayExposure>,
+        exposure: Option<&awaken_session_environment_contract::ContainerMcpRelayExposure>,
         clock: Arc<dyn awaken_time::WallClock>,
         outbound_proxy: Option<Arc<dyn McpRelayOutboundProxy>>,
     ) -> std::io::Result<Self> {
@@ -232,7 +232,10 @@ impl McpRelay {
         .await
     }
 
-    pub fn matches_exposure(&self, exposure: &crate::ContainerMcpRelayExposure) -> bool {
+    pub fn matches_exposure(
+        &self,
+        exposure: &awaken_session_environment_contract::ContainerMcpRelayExposure,
+    ) -> bool {
         self.advertised_origin == exposure.advertised_origin().as_str().trim_end_matches('/')
     }
 
@@ -259,14 +262,14 @@ impl McpRelay {
 
     async fn start_with_authority_and_exposure(
         authority: GenerationAuthority,
-        exposure: Option<&crate::ContainerMcpRelayExposure>,
+        exposure: Option<&awaken_session_environment_contract::ContainerMcpRelayExposure>,
         clock: Arc<dyn awaken_time::WallClock>,
         outbound_proxy: Option<Arc<dyn McpRelayOutboundProxy>>,
     ) -> std::io::Result<Self> {
         let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
         let bind = exposure.map_or_else(
             || "127.0.0.1:0".parse().expect("literal MCP relay address"),
-            crate::ContainerMcpRelayExposure::bind,
+            awaken_session_environment_contract::ContainerMcpRelayExposure::bind,
         );
         let listener = tokio::net::TcpListener::bind(bind).await?;
         let addr = listener.local_addr()?;
@@ -859,7 +862,7 @@ mod tests {
         let reservation = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
         let port = reservation.local_addr().unwrap().port();
         drop(reservation);
-        let exposure = crate::ContainerMcpRelayExposure::new(
+        let exposure = awaken_session_environment_contract::ContainerMcpRelayExposure::new(
             format!("0.0.0.0:{port}").parse().unwrap(),
             "http://awaken-worker.awaken-cloud.svc:8081",
         )

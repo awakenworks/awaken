@@ -258,7 +258,7 @@ impl SessionExecutorBuilder {
         Self::ephemeral_with_deployment(
             llm,
             model_ref,
-            crate::deployment_config::DeploymentConfig::ephemeral(),
+            awaken_deployment_config::DeploymentConfig::ephemeral(),
         )
         .await
     }
@@ -270,7 +270,7 @@ impl SessionExecutorBuilder {
     pub async fn ephemeral_with_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        deployment: crate::DeploymentConfig,
+        deployment: awaken_deployment_config::DeploymentConfig,
     ) -> Self {
         // A test fixture is its own composition: it chooses the host clock and
         // selects the volatile Runtime authority here.
@@ -288,12 +288,12 @@ impl SessionExecutorBuilder {
                 worker_content: None,
                 extraction_repository: Some(extraction_repository),
             },
-            deployment
-                .session_execution_process(
-                    ExecutorComponents::mint_local_workspace(),
-                    clock.clone(),
-                )
-                .expect("a unit-test fixture selects a valid process"),
+            crate::SessionExecutionProcess::from_deployment(
+                &deployment,
+                ExecutorComponents::mint_local_workspace(),
+                clock.clone(),
+            )
+            .expect("a unit-test fixture selects a valid process"),
             Arc::new(crate::LocalAuthority::new(Arc::new(
                 crate::EphemeralRuntimeAuthority::new(clock),
             ))),

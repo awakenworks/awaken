@@ -193,7 +193,7 @@ pub async fn build_memory_resource_router() -> Router {
 /// consumes the same typed Deployment environment selector as other
 /// provider-backed scenarios. `AWAKEN_MODEL_MODE=git-repo`.
 pub async fn build_git_repo_router(
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
 ) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::GitRepoModel), "git-repo");
     mount_platform(runtime_resource_host_with_deployment(model, model_ref, deployment).await).await
@@ -214,7 +214,7 @@ pub async fn build_full_chain_router() -> Router {
 /// local tier while the process entry point keeps the configured production
 /// tier; both paths consume the same Runtime/resource composition.
 pub async fn build_full_chain_router_with_deployment(
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
 ) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "full-chain");
     let host = runtime_resource_host_with_deployment(model, model_ref, deployment).await;
@@ -441,7 +441,7 @@ pub async fn build_unmounted_dependencies(
 pub async fn build_unmounted_dependencies_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
 ) -> SessionExecutorBuilder {
     resource_host_with_deployment(llm, model_ref, deployment)
         .await
@@ -525,7 +525,7 @@ pub(crate) async fn build_router_and_host_with_model_publication_resolver(
 pub async fn build_router_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
 ) -> Router {
     let host = resource_host_with_deployment(llm, model_ref, deployment).await;
     mount_platform(host).await

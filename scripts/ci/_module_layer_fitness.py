@@ -133,7 +133,6 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "acp_tool_export",
         "agent_catalog",
         "config",
-        "deployment_config",
         "inference_routing",
         "model_content_materializer",
         "no_model",

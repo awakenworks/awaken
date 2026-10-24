@@ -484,9 +484,9 @@ async fn scenario(
         executor,
         awaken_runtime_contract::resolved::ModelBinding::parse("default", model_name, "genai")
             .unwrap(),
-        awaken_session_executor::DeploymentConfig {
-            sandbox_tier: awaken_session_executor::SandboxTier::Local,
-            ..awaken_session_executor::DeploymentConfig::ephemeral()
+        awaken_deployment_config::DeploymentConfig {
+            sandbox_tier: awaken_deployment_config::SandboxTier::Local,
+            ..awaken_deployment_config::DeploymentConfig::ephemeral()
         },
         None,
         |host| host,

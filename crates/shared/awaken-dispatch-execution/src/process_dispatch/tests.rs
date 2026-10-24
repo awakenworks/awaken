@@ -206,11 +206,11 @@ fn coordinator_fixture() -> CoordinatorFixture {
     let owner = Arc::new(AnyCoordinatorDispatch::from_durable_dispatch(store.clone()));
     let dispatch = ProcessDispatch::new(
         ExecutionTopology {
-            ingress: crate::RunIngress::Durable,
-            local: crate::LocalExecution::RemoteWorkersOnly,
-            lease_owner: crate::LeaseOwnerId::new("coordinator").unwrap(),
+            ingress: awaken_deployment_config::RunIngress::Durable,
+            local: awaken_deployment_config::LocalExecution::RemoteWorkersOnly,
+            lease_owner: awaken_deployment_config::LeaseOwnerId::new("coordinator").unwrap(),
             lost_wake_recovery_bound: std::time::Duration::from_millis(5),
-            queue_depth: crate::QueueDepthSource::External,
+            queue_depth: awaken_deployment_config::QueueDepthSource::External,
         },
         clock,
         Arc::new(NoCompletion),

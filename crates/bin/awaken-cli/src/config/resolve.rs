@@ -193,7 +193,7 @@ impl ResolvedDeployment {
                     .ok_or_else(|| "postgres_max_connections must be greater than zero".to_owned())
             })
             .transpose()?
-            .unwrap_or_else(awaken_session_executor::default_postgres_max_connections);
+            .unwrap_or_else(awaken_deployment_config::default_postgres_max_connections);
         for (field, value) in [
             ("otlp_protocol", file.otlp_protocol.as_deref()),
             ("otlp_traces_protocol", file.otlp_traces_protocol.as_deref()),

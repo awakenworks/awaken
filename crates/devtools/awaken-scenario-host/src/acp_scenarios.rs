@@ -115,7 +115,7 @@ pub async fn build_acp_jsonrpc_router() -> Router {
 /// scenario entry point remains the sole environment-reading boundary and
 /// delegates here, matching the sandboxed and gateway ACP fixtures.
 pub async fn build_acp_jsonrpc_router_with_deployment(
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
 ) -> Router {
     // One catalog-driven route set owns every production ACP identity. Only the
     // acquisition command is replaced by the canonical deterministic fixture;
@@ -206,7 +206,7 @@ pub async fn build_acp_permission_router() -> Router {
 
 /// Build the permission scenario against one explicit typed deployment.
 pub async fn build_acp_permission_router_with_deployment(
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
 ) -> Router {
     let launch = awaken_run_executor_acp::AcpLaunch::custom(
         scenario_shell_argv(FAKE_ACP_PERMISSION_SCRIPT),
@@ -605,7 +605,7 @@ pub async fn build_acp_gateway_router() -> Router {
 /// Typed-deployment gateway variant used by topology tests. Keeping this seam
 /// beside the sandboxed variant prevents a second backend-owned workdir path.
 pub async fn build_acp_gateway_router_with_deployment(
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
 ) -> Router {
     let resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver> =
         Arc::new(acp_gateway::ScenarioEnvAcpModel);
@@ -626,7 +626,7 @@ pub async fn build_acp_gateway_router_with_deployment(
 /// scenario entry point above remains fail-closed when its requested namespace
 /// cannot be created; callers must explicitly select `Local` to run unsandboxed.
 pub async fn build_acp_sandboxed_router_with_deployment(
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
 ) -> Router {
     // The launch env is the ONLY env projected into the agent command; the probe
     // port (when the e2e sets one) must cross into the sandbox explicitly.
@@ -656,7 +656,7 @@ pub async fn build_acp_sandboxed_router_with_deployment(
 /// publication. Constraint: neither backend kind nor fixture mode may select a
 /// second sandbox or publication path.
 async fn build_acp_session_environment_router(
-    mut deployment: awaken_session_executor::DeploymentConfig,
+    mut deployment: awaken_deployment_config::DeploymentConfig,
     source: awaken_execution_composition::LaunchSource,
     secret_broker: Option<Arc<dyn awaken_run_executor_acp::SecretBroker>>,
 ) -> Router {
@@ -757,11 +757,11 @@ pub async fn build_acp_container_router() -> Router {
         .sandbox_dir
         .get_or_insert_with(|| storage_dir.join("sandboxes"));
     deployment.sandbox_tier = match std::env::var("SESSION_ENVIRONMENT_TIER").as_deref() {
-        Ok("local") => awaken_session_executor::SandboxTier::Local,
-        Ok("namespace") | Err(_) => awaken_session_executor::SandboxTier::Namespace,
-        Ok("docker") => awaken_session_executor::SandboxTier::Docker,
-        Ok("podman") => awaken_session_executor::SandboxTier::Podman,
-        Ok("k8s") | Ok("kubernetes") => awaken_session_executor::SandboxTier::K8s,
+        Ok("local") => awaken_deployment_config::SandboxTier::Local,
+        Ok("namespace") | Err(_) => awaken_deployment_config::SandboxTier::Namespace,
+        Ok("docker") => awaken_deployment_config::SandboxTier::Docker,
+        Ok("podman") => awaken_deployment_config::SandboxTier::Podman,
+        Ok("k8s") | Ok("kubernetes") => awaken_deployment_config::SandboxTier::K8s,
         Ok(other) => panic!("unsupported scenario Session environment tier: {other}"),
     };
     deployment.container_image = std::env::var("AWAKEN_CONTAINER_IMAGE")
@@ -777,18 +777,18 @@ pub async fn build_acp_container_router() -> Router {
         std::env::var_os("AWAKEN_PACKAGE_REGISTRY_AUTH_FILE").map(std::path::PathBuf::from);
     deployment.sandbox.package_image_builder =
         match std::env::var("AWAKEN_PACKAGE_IMAGE_BUILDER").as_deref() {
-            Ok("docker") => Some(awaken_session_executor::PackageImageBuilder::Docker),
-            Ok("podman") => Some(awaken_session_executor::PackageImageBuilder::Podman),
+            Ok("docker") => Some(awaken_deployment_config::PackageImageBuilder::Docker),
+            Ok("podman") => Some(awaken_deployment_config::PackageImageBuilder::Podman),
             Ok("k8s") | Ok("kubernetes") => {
-                Some(awaken_session_executor::PackageImageBuilder::Kubernetes)
+                Some(awaken_deployment_config::PackageImageBuilder::Kubernetes)
             }
             Ok(other) => panic!("unsupported scenario package image builder: {other}"),
             Err(_) => None,
         };
     let delivered_skill_name = match deployment.sandbox_tier {
-        awaken_session_executor::SandboxTier::Docker
-        | awaken_session_executor::SandboxTier::Podman
-        | awaken_session_executor::SandboxTier::K8s => "delivered-container",
+        awaken_deployment_config::SandboxTier::Docker
+        | awaken_deployment_config::SandboxTier::Podman
+        | awaken_deployment_config::SandboxTier::K8s => "delivered-container",
         _ => "delivered-namespace",
     };
     let skills = vec![awaken_agent_contract::AgentSkillBinding::custom(

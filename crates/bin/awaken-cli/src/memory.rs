@@ -17,9 +17,9 @@ enum PlatformMemoryProjection {
 }
 
 fn platform_memory_projection(
-    tier: awaken_session_executor::SandboxTier,
+    tier: awaken_deployment_config::SandboxTier,
 ) -> PlatformMemoryProjection {
-    use awaken_session_executor::SandboxTier;
+    use awaken_deployment_config::SandboxTier;
 
     match tier {
         // Both run in a host-visible mount namespace. Namespace binds the host
@@ -44,7 +44,7 @@ fn platform_memory_projection(
 #[must_use]
 pub fn with_platform_memory_data_plane(
     dependencies: SessionExecutorBuilder,
-    tier: awaken_session_executor::SandboxTier,
+    tier: awaken_deployment_config::SandboxTier,
     source: MemoryMountSource,
     invalidator: Arc<awaken_sandbox_memoryd::LocalInvalidator>,
 ) -> SessionExecutorBuilder {
@@ -70,7 +70,7 @@ pub fn with_platform_memory_data_plane(
 #[cfg(test)]
 mod platform_memory_projection_tests {
     use super::{PlatformMemoryProjection, platform_memory_projection};
-    use awaken_session_executor::SandboxTier;
+    use awaken_deployment_config::SandboxTier;
 
     /// Cause/effect graph: C1 host-visible projection namespace (Local/Namespace)
     /// produces E1 FUSE-preferred write-through; C2 OCI boundary (Docker/Podman)

@@ -62,7 +62,7 @@ reason = "Host-identity support is an immutable SandboxBackend composition fact.
 evidence = "e2e/acp_projected_local_e2e.mjs; e2e/acp_projected_container_e2e.mjs; cargo test -p awaken-execution-composition sandbox_source"
 
 [[waiver]]
-path = "crates/server/awaken-session-executor/src/deployment_config.rs"
+path = "crates/shared/awaken-deployment-config/src/lib.rs"
 ranges = ["99-104"]
 reason = "Only the startup acquisition service can install resolved ACP argv, and it supplies a catalog-selected id plus a non-empty absolute wrapper/direct command. The served configuration API has no operation that mutates a Worker's launch registry."
-evidence = "e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-session-executor deployment_config"
+evidence = "e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-deployment-config"

@@ -1,0 +1,31 @@
+[package]
+name = "awaken-deployment-config"
+description = "The typed Deployment configuration an execution process is started with"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "shared"
+product = "platform"
+bounded_context = "execution"
+layer = "domain"
+authority = "deployment-config"
+separation = "sole-in-layer"
+
+# One typed value every composition root reads (Coordinator, Worker, AllInOne,
+# scenario hosts). It names the dispatch topology and storage, the Sandbox
+# settings, the content-capture ceiling and the ACP profile, and links no
+# executor, realization or Sandbox adapter, so an executor-free Coordinator
+# startup can resolve the same file.
+[dependencies]
+awaken-acp-contract.workspace = true
+awaken-container-contract.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-session-environment-contract.workspace = true
+awaken-tool-contract.workspace = true
+uuid = { version = "1", features = ["v4"] }
+
+[lints]
+workspace = true

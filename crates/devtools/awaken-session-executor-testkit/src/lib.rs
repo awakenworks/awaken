@@ -9,6 +9,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use awaken_deployment_config::DeploymentConfig;
 use awaken_ext_memory::MemoryExtractionRepository;
 use awaken_resource_application::{
     ResourceAuthorities, StoreSkillBundleSource, StoreSkillCatalogApplication,
@@ -16,8 +17,7 @@ use awaken_resource_application::{
 use awaken_resource_contract::SkillStore;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_session_executor::{
-    DeploymentConfig, ExecutorComponents, LocalResourcePorts, LocalSkillPorts,
-    SessionExecutorBuilder,
+    ExecutorComponents, LocalResourcePorts, LocalSkillPorts, SessionExecutorBuilder,
 };
 use awaken_time::WallClock;
 
@@ -123,7 +123,7 @@ pub async fn volatile_dependencies_with_deployment(
     model_ref: impl Into<String>,
     deployment: DeploymentConfig,
 ) -> SessionExecutorBuilder {
-    let base = awaken_session_executor::session_sandbox_base(&deployment);
+    let base = awaken_deployment_config::session_sandbox_base(&deployment);
     with_workdir_fallback(
         unconfigured_dependencies_with_deployment(llm, model_ref, deployment).await,
         base,
@@ -163,9 +163,12 @@ pub async fn unconfigured_dependencies_with_deployment(
     let extraction_repository = memory_extraction_repository(None).await;
     let local_workspace = ExecutorComponents::mint_local_workspace();
     let model_ref: String = model_ref.into();
-    let process = deployment
-        .session_execution_process(local_workspace, clock)
-        .expect("a local fixture selects a valid process");
+    let process = awaken_session_executor::SessionExecutionProcess::from_deployment(
+        &deployment,
+        local_workspace,
+        clock,
+    )
+    .expect("a local fixture selects a valid process");
     SessionExecutorBuilder::for_local_resources(
         llm,
         model_ref,
@@ -307,12 +310,12 @@ mod tests {
             Arc::ptr_eq(&ports.memory.queries(), &authorities.memory_queries()),
             "P1 the same Memory authority"
         );
-        let process = DeploymentConfig::ephemeral()
-            .session_execution_process(
-                ExecutorComponents::mint_local_workspace(),
-                authorities.clock(),
-            )
-            .expect("a local fixture selects a valid process");
+        let process = awaken_session_executor::SessionExecutionProcess::from_deployment(
+            &DeploymentConfig::ephemeral(),
+            ExecutorComponents::mint_local_workspace(),
+            authorities.clock(),
+        )
+        .expect("a local fixture selects a valid process");
         let dependencies = SessionExecutorBuilder::for_local_resources(
             Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
             awaken_session_executor::UNCONFIGURED_MODEL_REF,

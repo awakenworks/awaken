@@ -24,6 +24,10 @@ awaken-tool-contract.workspace = true
 awaken-agent-channel.workspace = true
 awaken-acp-contract.workspace = true
 awaken-runtime-contract.workspace = true
+# The deployment-owned container exposure of the Worker MCP relay normalizes
+# allowlist hosts and validates its advertised origin.
+awaken-container-contract.workspace = true
+url.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 

@@ -2,10 +2,10 @@
 //! This extends the existing isolated-cluster case, not its process-exit claim.
 
 use super::*;
+use awaken_deployment_config::DeploymentConfig;
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_session_environment_contract::ContainerHandResidency;
-use awaken_session_executor::DeploymentConfig;
 use k8s_openapi::api::core::v1::PersistentVolumeClaim;
 use kube::api::ObjectMeta;
 
@@ -108,7 +108,7 @@ pub(super) async fn assert_original_sources_remain_observable(
     ] {
         let mut deployment = DeploymentConfig::ephemeral();
         deployment.disable_local_pool = true;
-        deployment.sandbox_tier = awaken_session_executor::SandboxTier::K8s;
+        deployment.sandbox_tier = awaken_deployment_config::SandboxTier::K8s;
         deployment.container_image = Some(image.clone());
         deployment.sandbox.k8s_namespace = namespace.into();
         deployment.sandbox.warm_pool_size = 0;

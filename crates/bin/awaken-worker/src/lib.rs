@@ -133,7 +133,7 @@ async fn preparation_drained_before(
 struct WorkerProcessConfig {
     /// The embedded Worker process's one wall clock.
     clock: Arc<dyn awaken_time::WallClock>,
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
     manifest: StandardManifestConfig,
     admin_listen: Option<String>,
     graceful_drain: std::time::Duration,
@@ -147,7 +147,7 @@ impl WorkerProcessConfig {
     fn embedded_defaults(clock: Arc<dyn awaken_time::WallClock>) -> Self {
         Self {
             clock,
-            deployment: awaken_session_executor::DeploymentConfig::ephemeral(),
+            deployment: awaken_deployment_config::DeploymentConfig::ephemeral(),
             manifest: StandardManifestConfig::default(),
             admin_listen: None,
             graceful_drain: grace_window(true, None),
@@ -179,7 +179,7 @@ pub struct WorkerNodeBuilder {
     clock: Arc<dyn awaken_time::WallClock>,
     preselected_incarnation_id: Option<String>,
     manifest: ManifestSelection,
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
     standard_manifest_config: StandardManifestConfig,
     application: WorkerApplicationSource,
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
@@ -230,16 +230,16 @@ enum WorkerRealizationScopeSource {
 /// realization. Keeping this decision closed and pure prevents deployment
 /// manifests from inventing a second Workspace marker for Kubernetes Workers.
 const fn worker_realization_scope_source(
-    sandbox_tier: awaken_session_executor::SandboxTier,
+    sandbox_tier: awaken_deployment_config::SandboxTier,
 ) -> WorkerRealizationScopeSource {
     match sandbox_tier {
-        awaken_session_executor::SandboxTier::K8s => {
+        awaken_deployment_config::SandboxTier::K8s => {
             WorkerRealizationScopeSource::KubernetesNamespace
         }
-        awaken_session_executor::SandboxTier::Local
-        | awaken_session_executor::SandboxTier::Namespace
-        | awaken_session_executor::SandboxTier::Docker
-        | awaken_session_executor::SandboxTier::Podman => {
+        awaken_deployment_config::SandboxTier::Local
+        | awaken_deployment_config::SandboxTier::Namespace
+        | awaken_deployment_config::SandboxTier::Docker
+        | awaken_deployment_config::SandboxTier::Podman => {
             WorkerRealizationScopeSource::PersistedLocalWorkspace
         }
     }
@@ -258,17 +258,17 @@ fn worker_realization_scope_source_is_total_and_exact() {
     let index: u8 = kani::any();
     kani::assume(index < 5);
     let tier = match index {
-        0 => awaken_session_executor::SandboxTier::Local,
-        1 => awaken_session_executor::SandboxTier::Namespace,
-        2 => awaken_session_executor::SandboxTier::Docker,
-        3 => awaken_session_executor::SandboxTier::Podman,
-        4 => awaken_session_executor::SandboxTier::K8s,
+        0 => awaken_deployment_config::SandboxTier::Local,
+        1 => awaken_deployment_config::SandboxTier::Namespace,
+        2 => awaken_deployment_config::SandboxTier::Docker,
+        3 => awaken_deployment_config::SandboxTier::Podman,
+        4 => awaken_deployment_config::SandboxTier::K8s,
         _ => unreachable!(),
     };
     let source = worker_realization_scope_source(tier);
     assert_eq!(
         source == WorkerRealizationScopeSource::KubernetesNamespace,
-        tier == awaken_session_executor::SandboxTier::K8s
+        tier == awaken_deployment_config::SandboxTier::K8s
     );
 }
 
@@ -281,7 +281,7 @@ fn worker_realization_scope_source_is_total_and_exact() {
 /// Downstream process roots reuse this same installation projection when they
 /// decorate the canonical container provider; it grants no execution authority.
 pub fn worker_realization_namespace(
-    deployment: &awaken_session_executor::DeploymentConfig,
+    deployment: &awaken_deployment_config::DeploymentConfig,
 ) -> Result<awaken_sandbox_container::ContainerRealizationNamespace, WorkerNodeBuildError> {
     let installation_scope = match worker_realization_scope_source(deployment.sandbox_tier) {
         WorkerRealizationScopeSource::KubernetesNamespace => {
@@ -317,7 +317,7 @@ impl WorkerNodeBuilder {
             clock,
             preselected_incarnation_id: None,
             manifest: ManifestSelection::Unset,
-            deployment: awaken_session_executor::DeploymentConfig::ephemeral(),
+            deployment: awaken_deployment_config::DeploymentConfig::ephemeral(),
             standard_manifest_config: StandardManifestConfig::default(),
             application: WorkerApplicationSource::default(),
             tool_gate: None,
@@ -410,7 +410,7 @@ impl WorkerNodeBuilder {
     #[must_use]
     pub fn with_deployment_config(
         mut self,
-        deployment: awaken_session_executor::DeploymentConfig,
+        deployment: awaken_deployment_config::DeploymentConfig,
     ) -> Self {
         self.deployment = deployment;
         self.prepared_local_sandbox = None;
@@ -752,7 +752,7 @@ impl WorkerNodeBuilder {
             return Ok(self);
         }
         #[cfg(feature = "container-k8s")]
-        if self.deployment.sandbox_tier == awaken_session_executor::SandboxTier::K8s
+        if self.deployment.sandbox_tier == awaken_deployment_config::SandboxTier::K8s
             && self.k8s_create_client.is_none()
         {
             self.k8s_create_client =
@@ -869,7 +869,7 @@ impl WorkerNodeBuilder {
                     .to_string(),
             ));
         }
-        if self.deployment.sandbox_tier == awaken_session_executor::SandboxTier::Namespace
+        if self.deployment.sandbox_tier == awaken_deployment_config::SandboxTier::Namespace
             && self.deployment.sandbox.allow_local_fallback
             && self.session_container_provider.is_none()
             && self.enclosing_sandbox_boundary.is_none()
@@ -1047,7 +1047,7 @@ impl WorkerNodeBuilder {
 
 fn validate_worker_manifest(
     manifest: &WorkerManifest,
-    deployment: &awaken_session_executor::DeploymentConfig,
+    deployment: &awaken_deployment_config::DeploymentConfig,
 ) -> Result<(), WorkerNodeBuildError> {
     if manifest.build_digest.trim().is_empty() {
         return Err(WorkerNodeBuildError(
@@ -1117,7 +1117,7 @@ pub struct WorkerNode {
     clock: Arc<dyn awaken_time::WallClock>,
     preselected_incarnation_id: Option<String>,
     manifest: WorkerManifest,
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
     application: WorkerApplicationSource,
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
@@ -1283,13 +1283,13 @@ fn remote_content_adapters(
 }
 
 fn configured_container_acp_targets(
-    deployment: &awaken_session_executor::DeploymentConfig,
+    deployment: &awaken_deployment_config::DeploymentConfig,
 ) -> Result<Vec<acp_capability::ConfiguredAcpCapabilityTarget>, String> {
     if !matches!(
         deployment.sandbox_tier,
-        awaken_session_executor::SandboxTier::Docker
-            | awaken_session_executor::SandboxTier::Podman
-            | awaken_session_executor::SandboxTier::K8s
+        awaken_deployment_config::SandboxTier::Docker
+            | awaken_deployment_config::SandboxTier::Podman
+            | awaken_deployment_config::SandboxTier::K8s
     ) {
         return Ok(Vec::new());
     }
@@ -1323,7 +1323,7 @@ fn configured_container_acp_targets(
 }
 
 fn configured_container_acp_capability_source(
-    deployment: &awaken_session_executor::DeploymentConfig,
+    deployment: &awaken_deployment_config::DeploymentConfig,
     host: Arc<ExecutorComponents>,
 ) -> Result<Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>, String> {
     let targets = configured_container_acp_targets(deployment)?;
@@ -1380,7 +1380,7 @@ impl WorkerNode {
         let policy = awaken_execution_composition::ContainerTierPolicy::default();
         #[cfg(feature = "container-k8s")]
         {
-            if self.deployment.sandbox_tier == awaken_session_executor::SandboxTier::K8s
+            if self.deployment.sandbox_tier == awaken_deployment_config::SandboxTier::K8s
                 && self.k8s_create_client.is_none()
             {
                 return Err(std::io::Error::other(
@@ -1601,8 +1601,7 @@ impl WorkerNode {
             Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
             "worker",
             remote_content,
-            deployment
-                .session_execution_process(local_workspace, self.clock.clone())
+            awaken_session_executor::SessionExecutionProcess::from_deployment(&deployment, local_workspace, self.clock.clone())
                 .map_err(std::io::Error::other)?,
             authority,
             registered_capacity,
