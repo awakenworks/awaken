@@ -18,6 +18,8 @@
   public paths that moved and their awaken-cloud impact)
 - Amended: 2026-10-11 (provider checkpoint capture input has its own name;
   Session authorization and checkpoint object bytes are unchanged)
+- Amended: 2026-10-24 (crate names follow the context vocabulary: `run-ingress-*`
+  becomes `dispatch-*` and non-SDK `runtime` crate names are renamed; awaken-cloud impact)
 
 ## Context
 
@@ -763,3 +765,88 @@ claim that old-pin Flow compiles against this new Platform API. Flow/Cloud Git
 pins, locks, full consumers and deployment qualification remain independent.
 No HTTP route, wire field, persisted representation or SDK22 release surface
 changes in this cut.
+
+## Amendment — 2026-10-24: crate names follow the context vocabulary
+
+ADR-0091 D7 names a crate by context and responsibility and keeps "runtime"
+for the SDK engine and qualified container engines. Seven workspace crates did
+not, and their names are visible to awaken-cloud, so ADR-0091 D9 requires them
+to change together and to be recorded here. Each rename moves the crate
+directory, package name, every reference and every guard baseline or registry
+keyed by the crate name; no alias or forwarding crate remains.
+
+| Before | After | Responsibility the name states |
+|---|---|---|
+| `awaken-run-ingress-contract` | `awaken-dispatch-contract` | the Dispatch boundary: queue, claim, lease and settlement ports and values |
+| `awaken-run-ingress` | `awaken-dispatch` | the Coordinator's durable dispatch queue (SQLite / PostgreSQL / NATS wake) and claimed-commit application |
+| `awaken-run-ingress-http` | `awaken-dispatch-http` | the Coordinator's dispatch, durable-operation and claimed-commit HTTP interface |
+| `awaken-run-ingress-testkit` | `awaken-dispatch-testkit` | the `DispatchQueue` conformance suite |
+| `awaken-session-runtime-contract` | `awaken-session-execution-contract` | the Session ↔ execution boundary |
+| `awaken-worker-runtime` | `awaken-coordinator-client` | the Worker's authenticated HTTP clients of the Coordinator |
+| `awaken-store-runtime` | `awaken-sql-storage` | the SQL storage primitives every SQL store shares (exact BIGINT codec, PostgreSQL checkout policy) |
+
+`awaken-dispatch` pairs with `awaken-dispatch-contract` (`<x>` ↔
+`<x>-contract`). It does not collide with the two existing shared crates:
+`awaken-dispatch-execution` is the one Worker/Pool execution path of an
+already-claimed Run (bounded context Execution) and `awaken-dispatch-erasure`
+binds the required dispatch roles once at process startup; neither owns the
+queue. `awaken-coordinator-client` is named for the process it calls
+(D7.4: `Coordinator` is the Coordinator process); its server side is
+`awaken-dispatch-http`. `awaken-sql-storage` is not `awaken-store-<medium>`
+(D7.1 reserves that for storage-medium backends) and not `awaken-postgres-pool`,
+because its codec is shared with the SQLite stores. The crates'
+`metadata.awaken.authority` labels follow the names (`durable-dispatch`,
+`dispatch`, `dispatch-http`, `session-execution`, `coordinator-client`).
+
+Also renamed in the same delivery, inside the Platform only: the Session
+executor's `slot` / `slots` wording for an installed Session becomes
+`installed` / `installed_sessions` (plan v4 D9); a genuine capacity or physical
+attempt slot keeps its name. Twenty test functions were renamed and recorded in
+the test inventory ledger. The unused hidden re-export
+`awaken_worker_runtime::{claimed_stream, execution_capacity, worker_context}`
+is deleted; those modules are imported from `awaken_dispatch_execution`.
+
+Unchanged: no wire field, route, persisted byte, SQL object, environment
+variable or CLI flag contains these crate names. Names that keep an old word
+on purpose: the formal obligation ids `run_ingress.*` (the formal ledger's
+stable identities), the design document `run-ingress-message-delivery.md` and
+ADR-0009's title (historical names), the Kubernetes service account and
+RoleBinding `worker-runtime` / `awaken-worker-runtime` in `deploy/k3d`
+(deployed resource names), and the persisted golden fixture
+`session_runtime_projection.json` with the types `SessionRuntimeProjection` /
+`SessionRuntimeEnvelope`. Tracing targets derive from crate paths, so a log
+filter such as `awaken_run_ingress=debug` must be written `awaken_dispatch=debug`.
+
+The naming guard now holds two more ratchets (`_naming_fitness.py`):
+`crate-name` (a non-SDK crate name with `runtime`, or a mechanism word outside
+a composition root; baseline `awaken-mcp-server-core`, `awaken-scenario-host`)
+and `runtime-word` (a non-SDK public type whose name has the word `Runtime`,
+other than a qualified container engine; baseline 39). The remaining
+`XxxRuntime` Session roles and `Runtime*` capability types are renamed when
+their code moves (ADR-0091 D9), not in a separate sweep.
+
+Not done here: `SessionEnvironmentProvider` (the record of Session environment
+role handles) and its adapter `SandboxEnvironmentProvider` are not yet merged
+into `SandboxProvider`. That merge removes the five Session environment role
+traits in favour of the one supply abstraction; it is a design change across
+the realization and executor crates, not a rename, and is made with that code.
+
+awaken-cloud must, when it moves its Native pin past this amendment, rename the
+dependency keys and `use` paths as follows (read from its `main` branch; Cargo
+lock files regenerate):
+
+| awaken-cloud path | Change |
+|---|---|
+| `Cargo.toml` | `awaken-run-ingress-contract` → `awaken-dispatch-contract` |
+| `crates/awaken-cloud-billing/Cargo.toml`, `src/compute_metering.rs` (3) | `awaken[-_]run[-_]ingress[-_]contract` → `awaken[-_]dispatch[-_]contract` |
+| `crates/awaken-hosted-run/Cargo.toml`, `src/completion.rs`, `src/lib.rs`, `src/state_model.rs`, `tests/hosted_run.rs` | same contract rename |
+| `crates/awaken-model-access/Cargo.toml`, `src/inference_candidate.rs`, `src/lib.rs`, `tests/materialize.rs` | same contract rename |
+| `crates/awaken-hosting-durable/Cargo.toml` | `awaken-run-ingress` → `awaken-dispatch`, `awaken-run-ingress-contract` → `awaken-dispatch-contract`, `awaken-run-ingress-http` → `awaken-dispatch-http` |
+| `crates/awaken-hosting-durable/src/{completion,compute,lib,placement,query_consumption,telemetry,worker_model_access}.rs` | `awaken_run_ingress[_contract]` → `awaken_dispatch[_contract]` |
+| `crates/awaken-hosting-durable/tests/{deployed_cluster_causal,phase1_cross_process}.rs`, `tests/support/retained_session.rs` | same |
+| `Cargo.lock`, `crates/{awaken-cloud-management,awaken-hosting-durable,awaken-model-access,awaken-pro}/Cargo.lock` | regenerate (they also list `awaken-session-runtime-contract`, `awaken-store-runtime`, `awaken-worker-runtime` transitively) |
+| `docs/adr/0021-…`, `docs/adr/0022-…`, `docs/design/open-seam-contract.md` | historical text; links only if they must resolve |
+
+awaken-cloud source imports none of `awaken_session_runtime_contract`,
+`awaken_store_runtime` or `awaken_worker_runtime` directly. This source review
+does not certify an awaken-cloud build at a new pin.
