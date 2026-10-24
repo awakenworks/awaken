@@ -17,7 +17,10 @@ async fn fixture(role: Role) -> (ProcessStores, ProcessStartup, Arc<dyn SessionS
         (in_memory_process_stores().await, None)
     };
     let sessions = stores.coordinator.as_ref().unwrap().sessions.clone();
-    let mut process = crate::exact_host_model::local_test_process_options(&stores);
+    let mut process = crate::exact_host_model::local_test_process_options(
+        &stores,
+        std::sync::Arc::new(crate::colocated_worker::WorkdirExecution),
+    );
     process.role = role;
     process.control_service = control_service;
     (stores, process, sessions)

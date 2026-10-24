@@ -71,7 +71,6 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
     ));
     // The process's one wall clock: Worker assertions, stores and every
     // Coordinator component built below judge time with this handle.
-    let process_clock = clock.clone();
     let worker_transport = worker_transport_security::select(
         deployment,
         coordinator_services.worker_authenticator,
@@ -137,7 +136,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         seal_key: key,
         role,
         postgres_schema,
-        clock,
+        clock: clock.clone(),
     })
     .await?;
     // Store startup has already opened the canonical Session authority and
@@ -211,6 +210,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
             service_lifecycle: service_lifecycle.clone(),
             deployment: Some(deployment.runtime.clone()),
             namespace_hand_path: None,
+            colocated_execution: coordinator_services.colocated_execution,
             content_capture_ceiling: deployment.runtime.content_capture.level,
             org_id: Some(deployment.org_id.clone()),
             enrollment_signing_key: key
@@ -261,7 +261,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         coordinator_authorities,
         worker_authenticator: prepared.worker_authenticator,
         admin_tools: prepared.admin_tools,
-        clock: process_clock,
+        clock,
     })
 }
 

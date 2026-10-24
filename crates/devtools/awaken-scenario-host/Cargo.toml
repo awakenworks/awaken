@@ -129,6 +129,8 @@ awaken-worker = { workspace = true }
 # to the process startup's library (Stage B2). Dev-dep cycle-free: the startup dev-depends back
 # on this crate for the mock models its moved integration tests drive.
 awaken-process-startup = { workspace = true, features = ["test-support"] }
+# The co-located execution the AllInOne scenario routers run Sessions with.
+awaken-cli = { workspace = true, features = ["test-support"] }
 # The authoring plane (Stage B2): the config-router scenario mode seeds the admin
 # assistant + builds its tool executables through awaken-control's ports.
 awaken-control = { workspace = true }

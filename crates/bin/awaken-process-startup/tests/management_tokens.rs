@@ -60,7 +60,12 @@ async fn shared_secured_all_in_one_router(
     let deployment = SHARED_SECURED_DEPLOYMENT
         .get_or_init(|| async {
             let directory = tempfile::tempdir().expect("shared deployment directory");
-            let (app, iam) = build_isolated_secured_all_in_one_router(directory.path(), key).await;
+            let (app, iam) = build_isolated_secured_all_in_one_router(
+                directory.path(),
+                key,
+                std::sync::Arc::new(awaken_cli::LocalExecution),
+            )
+            .await;
             let admin_token = admin_token(directory.path());
             SharedSecuredDeployment {
                 app,
@@ -171,7 +176,12 @@ async fn mint_http(
 fn the_org_bootstrap_binding_rejects_an_unregistered_workspace() {
     run_local_deployment(async {
         let dir = tempfile::tempdir().unwrap();
-        let (app, _iam) = build_isolated_secured_all_in_one_router(dir.path(), &KEY).await;
+        let (app, _iam) = build_isolated_secured_all_in_one_router(
+            dir.path(),
+            &KEY,
+            std::sync::Arc::new(awaken_cli::LocalExecution),
+        )
+        .await;
         let bootstrap = admin_token(dir.path());
 
         // The bootstrap is Org-bound, but wrkspc_two is not registered below that
@@ -419,7 +429,12 @@ fn revocation_is_immediate_and_survives_a_restart() {
         let revoked_cleartext;
         let keeper_cleartext;
         {
-            let (app, _iam) = build_isolated_secured_all_in_one_router(dir.path(), &KEY).await;
+            let (app, _iam) = build_isolated_secured_all_in_one_router(
+                dir.path(),
+                &KEY,
+                std::sync::Arc::new(awaken_cli::LocalExecution),
+            )
+            .await;
             bootstrap = admin_token(dir.path());
             let (revoked, revoked_id) =
                 mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "workspace_admin").await;
@@ -480,7 +495,12 @@ fn revocation_is_immediate_and_survives_a_restart() {
 
         // Restart over the same dir: the revocation hydrated from the rewritten
         // row — still 401 — and the untouched tokens still authenticate.
-        let (app, _iam) = build_isolated_secured_all_in_one_router(dir.path(), &KEY).await;
+        let (app, _iam) = build_isolated_secured_all_in_one_router(
+            dir.path(),
+            &KEY,
+            std::sync::Arc::new(awaken_cli::LocalExecution),
+        )
+        .await;
         let (s, _) = call(
             &app,
             "GET",
@@ -508,7 +528,12 @@ fn revocation_is_immediate_and_survives_a_restart() {
 fn the_bootstrap_token_rotates_to_a_minted_successor() {
     run_local_deployment(async {
         let dir = tempfile::tempdir().unwrap();
-        let (app, _iam) = build_isolated_secured_all_in_one_router(dir.path(), &KEY).await;
+        let (app, _iam) = build_isolated_secured_all_in_one_router(
+            dir.path(),
+            &KEY,
+            std::sync::Arc::new(awaken_cli::LocalExecution),
+        )
+        .await;
         let bootstrap = admin_token(dir.path());
 
         // Mint the successor with the FULL admin role, then use the successor to

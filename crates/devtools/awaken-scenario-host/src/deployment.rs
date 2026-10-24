@@ -54,7 +54,7 @@ impl ScenarioPlatform {
         awaken_resource_application::ResourcesApplication,
     ) {
         (
-            awaken_process_startup::with_platform_memory_data_plane(
+            awaken_cli::with_platform_memory_data_plane(
                 self.dependencies,
                 self.deployment.sandbox_tier,
                 self.resources.authorities().memory_mount_source(),

@@ -351,6 +351,7 @@ async fn exact_http_policy_reaches_session_and_kubernetes_pod_requests() {
         ModelBinding::new("host", "echo", "genai"),
         deployment,
         None,
+        std::sync::Arc::new(awaken_cli::LocalExecution),
         move |host| {
             awaken_execution_composition::install_container_provider(
                 host,

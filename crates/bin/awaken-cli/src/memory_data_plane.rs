@@ -3,7 +3,7 @@
 // @formal reason: deployment tier and the original Resources source, bus and clock. Resource
 // @formal reason: authorization, consistency and mount effects remain with their existing owners;
 // @formal reason: this link is not a direct formal-proof claim.
-//! Product-process selection of the existing Memory projection adapter.
+//! Selection of the Memory mount data plane a co-located execution installs.
 
 use std::sync::Arc;
 
@@ -39,8 +39,9 @@ fn platform_memory_projection(
 /// selected one (an explicitly injected Worker adapter is preserved). `tier`
 /// is the Session sandbox tier the composition's Deployment selected.
 /// Authorization has already selected workspace/store/access before this adapter
-/// sees an opaque store id; no IAM vocabulary crosses this seam. Every
-/// process composition selects it before building the Session executor.
+/// sees an opaque store id; no IAM vocabulary crosses this seam. The
+/// co-located execution ([`crate::LocalExecution`]) and the scenario host
+/// select it before building the Session executor.
 #[must_use]
 pub fn with_platform_memory_data_plane(
     dependencies: SessionExecutorBuilder,
@@ -101,7 +102,7 @@ mod platform_memory_projection_tests {
         }
     }
 
-    #[cfg(all(not(target_os = "linux"), feature = "test-support"))]
+    #[cfg(not(target_os = "linux"))]
     #[tokio::test]
     async fn default_mount_degrades_to_copy_and_harvests_off_linux() {
         use awaken_provisioning_contract::{MemoryMounter as _, MountAccess, Realization};

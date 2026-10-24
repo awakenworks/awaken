@@ -173,6 +173,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 model,
                 model_ref,
                 management_scenario_adapters(mode == "management-rate-limit"),
+                std::sync::Arc::new(awaken_cli::LocalExecution),
             )
             .await
         }
@@ -181,6 +182,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 std::sync::Arc::new(awaken_scenario_host::RegistryDelegatingModel),
                 "management-agents".to_string(),
                 awaken_process_startup::ManagedServiceAdapters::default(),
+                std::sync::Arc::new(awaken_cli::LocalExecution),
             )
             .await
         }
@@ -192,6 +194,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 std::sync::Arc::new(awaken_scenario_host::ProbeModel),
                 "management-probe".to_string(),
                 awaken_process_startup::ManagedServiceAdapters::default(),
+                std::sync::Arc::new(awaken_cli::LocalExecution),
             )
             .await
         }
@@ -201,7 +204,12 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Production model supply for provider/BYOK/brokered e2e: no
         // deterministic Host executor is installed, so publications resolve from
         // the authored catalog and execute through the real materializer.
-        Ok("management-providers") => awaken_process_startup::build_all_in_one_router().await,
+        Ok("management-providers") => {
+            awaken_process_startup::build_all_in_one_router(std::sync::Arc::new(
+                awaken_cli::LocalExecution,
+            ))
+            .await
+        }
         Ok("distributed-provider") => awaken_scenario_host::build_distributed_provider_router(),
         // The production management deployment (durable stores + config plane +
         // resource PEP) with only its deterministic fallback model replaced. Used
@@ -211,6 +219,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 std::sync::Arc::new(awaken_scenario_host::SkillDrivingModel),
                 "management-skills".to_string(),
                 awaken_process_startup::ManagedServiceAdapters::default(),
+                std::sync::Arc::new(awaken_cli::LocalExecution),
             )
             .await
         }
