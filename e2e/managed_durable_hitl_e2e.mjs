@@ -1,7 +1,7 @@
 // Durable HITL: under SESSION_DEPLOYMENT_INGRESS=durable a run awaits on a tool needing
 // approval, and after the client sends the confirmation the DISPATCH WORKER
 // resumes the awaiting run (not a foreground request). Drives the durable resume
-// path — engine::resume_run / resume_into_messages, SharedHost::resume, and the
+// path — engine::resume_run / resume_into_messages, SessionRuns::resume, and the
 // worker's resume branch — that the direct-ingress HITL e2e does not reach.
 // Deterministic, CI-safe (probe model).
 

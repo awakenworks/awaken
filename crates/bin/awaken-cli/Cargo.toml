@@ -59,7 +59,7 @@ awaken-coordinator = { workspace = true }
 # The production Worker executor: the Worker role delegates lifecycle to it while
 # this CLI startup still supplies the selected Credential/Resource adapters.
 awaken-worker = { workspace = true }
-# The service layer: ExecutorComponents / ManagedHost / ConfigService / ConfigPlane and the
+# The service layer: ExecutorComponents / ConfigService / ConfigPlane and the
 # durable session repositories the startup opens.
 awaken-session-executor.workspace = true
 # The live MCP credential probe and the container MCP relay exposure value.

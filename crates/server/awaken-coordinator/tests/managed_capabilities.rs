@@ -4,7 +4,7 @@
 //! confirmation-gated tools `always_ask`), client tools become `custom` definitions,
 //! only versioned catalog skills become `custom` skill references, and a delegate
 //! roster becomes a `coordinator` multiagent object. This drives the full
-//! `ManagedHost::capabilities` → host accessors → `project` wiring over the public
+//! `ExecutorComponents::capabilities` → `RunCapabilities` → `project` wiring over the public
 //! wire.
 
 use std::sync::Arc;

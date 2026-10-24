@@ -1,6 +1,6 @@
 // Three-wire thread continuity e2e (scenario #2 extended to A2A): A2A addresses a
 // thread by `contextId`; AI-SDK/AG-UI by their URL thread id. All three project the
-// same `rt.history(thread)` over one `SharedHost`. So a turn committed via A2A is
+// same `rt.history(thread)` over one the executor. So a turn committed via A2A is
 // readable through AI-SDK and AG-UI, and a subsequent AI-SDK turn on the same id is
 // visible back through A2A `tasks/get`.
 //
@@ -96,7 +96,7 @@ async function main() {
     const hist = JSON.stringify(got);
     assert.ok(hist.includes(ALPHA), 'A2A tasks/get still carries turn 1');
     assert.ok(!hist.includes(BETA), 'the A2A task projection remains the immutable A2A turn snapshot');
-    pass('three-wire continuity: A2A <-> AI-SDK <-> AG-UI over one SharedHost thread');
+    pass('three-wire continuity: A2A <-> AI-SDK <-> AG-UI over one executor thread');
   });
 
   console.log('E2E PASS: three-wire thread continuity (A2A <-> AI-SDK <-> AG-UI).');

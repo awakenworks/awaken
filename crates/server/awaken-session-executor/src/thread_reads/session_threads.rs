@@ -572,7 +572,7 @@ mod tests {
         // cumulative usage, and a resume ticket. Effects: E1 no Run returns None without creating
         // child storage and projects zero usage; E2 one recovery read returns a mutually consistent child
         // prefix; E3 the snapshot retains the backend-wide cursor while excluding
-        // unrelated logical facts; E4 ManagedHost delegates to this same read;
+        // unrelated logical facts; E4 the executor's ThreadReads serve this same read;
         // E5 the registered-Worker recovery adapter preserves the guarded parent
         // partition while retaining the child's logical identity; E6 usage is
         // projected from the same committed State authority, never a process-local
@@ -741,7 +741,7 @@ mod tests {
                 &child_id.0,
             )
             .await
-            .expect("R2 ManagedHost read")
+            .expect("R2 ThreadReads read")
             .expect("R2 committed child Run");
         assert_eq!(snapshot.thread_id, child_id, "R2/E2 logical Thread");
         assert_eq!(snapshot.claimed_run_id, child_run, "R2/E2 claimed Run");
@@ -779,7 +779,7 @@ mod tests {
                 &child_run,
             )
             .await
-            .expect("R2 ManagedHost exact read")
+            .expect("R2 ThreadReads exact read")
             .expect("R2 exact committed child Run");
         let usage = managed
             .budget()
@@ -788,7 +788,7 @@ mod tests {
                 &child_id.0,
             )
             .await
-            .expect("R2 ManagedHost usage read");
+            .expect("R2 ThreadReads usage read");
         assert_eq!(usage.input_tokens, 13, "R2/E6 authoritative usage");
         assert_eq!(usage.output_tokens, 5, "R2/E6 authoritative usage");
         assert_eq!(
