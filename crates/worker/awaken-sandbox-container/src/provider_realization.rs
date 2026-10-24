@@ -82,17 +82,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                         ));
                     }
                 };
-                plan.image = if let Some(provisioner) = &self.package_provisioner {
-                    provisioner
-                        .prepare_package_image(&base_image, &plan.packages, &spec.network)
-                        .await
-                        .map_err(pc::SandboxError::from)?
-                } else {
-                    self.runtime
-                        .prepare_package_image(&base_image, &plan.packages, &spec.network)
-                        .await
-                        .map_err(pc::SandboxError::from)?
-                };
+                plan.image = self
+                    .package_image_provisioner()?
+                    .prepare_package_image(&base_image, &plan.packages, &spec.network)
+                    .await
+                    .map_err(pc::SandboxError::from)?;
                 plan.rootfs = RootfsPlan::Image(plan.image.clone());
             }
             if self.runtime.uses_host_live_input_bind() {

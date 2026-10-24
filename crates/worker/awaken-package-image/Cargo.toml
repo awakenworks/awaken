@@ -9,8 +9,9 @@ license.workspace = true
 workspace = true
 
 [package.metadata.awaken]
-# Environment package images behind the package-image build port: Kubernetes
-# rootless BuildKit Jobs and kubelet image checks with the versioned,
+# Environment package images behind the package-image build port: Docker
+# Engine and rootless Podman builds, Kubernetes rootless BuildKit Jobs and
+# kubelet image checks with the versioned,
 # read-only evidence that binds a built image to the Sandbox Pod that runs it.
 # A crate of its own so the Coordinator's Environment image build stage and
 # a Worker's Session realization share one builder per engine without linking
@@ -37,6 +38,15 @@ thiserror.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
+# The Docker builder (Engine API), linked only by the `docker` feature.
+base64 = { version = "0.22", optional = true }
+bollard = { version = "0.18", optional = true }
+futures-util = { version = "0.3", optional = true }
+tar = { version = "0.4", optional = true }
+# The Podman builder shares the Podman Sandbox adapter's canonical child
+# process environment; linked only by the `podman` feature.
+awaken-local-process = { workspace = true, optional = true }
+tempfile = { version = "3", optional = true }
 # The Kubernetes builder, linked only by the `k8s` feature.
 awaken-worker-fleet-kubernetes = { workspace = true, optional = true }
 blake3 = { version = "1", optional = true }
@@ -45,9 +55,14 @@ k8s-openapi = { workspace = true, optional = true }
 kube = { workspace = true, features = ["client", "http-proxy", "rustls-tls"], optional = true }
 
 [features]
+docker = ["dep:base64", "dep:bollard", "dep:futures-util", "dep:tar"]
+podman = ["dep:awaken-local-process", "dep:tempfile", "tokio/process"]
 k8s = ["dep:awaken-worker-fleet-kubernetes", "dep:blake3", "dep:http", "dep:k8s-openapi", "dep:kube"]
 
 [dev-dependencies]
+tempfile = "3"
+# Selects the Kubernetes API version the outbound HTTP test client links.
+k8s-openapi.workspace = true
 awaken-outbound-http = { workspace = true, features = ["kubernetes"] }
 tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "test-util"] }

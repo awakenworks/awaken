@@ -1519,25 +1519,6 @@ pub trait ContainerRuntime: Send + Sync {
         Ok(true)
     }
 
-    fn supports_package_provisioning(&self) -> bool {
-        false
-    }
-
-    async fn prepare_package_image(
-        &self,
-        base_image: &str,
-        packages: &awaken_environment_contract::PackageRequirements,
-        _network: &pc::NetworkPolicy,
-    ) -> Result<String, RuntimeError> {
-        if packages.is_empty() {
-            Ok(base_image.to_string())
-        } else {
-            Err(RuntimeError::Backend(
-                "container runtime cannot provision package requirements".into(),
-            ))
-        }
-    }
-
     fn has_native_memory_mounts(&self) -> bool {
         false
     }

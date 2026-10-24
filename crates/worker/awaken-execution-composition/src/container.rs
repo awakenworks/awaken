@@ -179,93 +179,26 @@ async fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
 }
 
 #[cfg(feature = "docker")]
-fn configure_docker_runtime(
-    mut runtime: awaken_sandbox_container::docker::DockerRuntime,
-    settings: &awaken_deployment_config::SandboxSettings,
-) -> Result<awaken_sandbox_container::docker::DockerRuntime, String> {
-    if let Some(registry) = &settings.package_image_registry {
-        runtime = runtime.with_package_registry(registry);
-    }
-    if let Some(path) = &settings.package_registry_auth_file {
-        runtime = runtime
-            .with_package_registry_auth_file(path)
-            .map_err(|error| format!("docker registry authentication: {error}"))?;
-    }
-    Ok(runtime
-        .with_package_build_host_network(settings.package_build_host_network)
-        .with_package_cache_ttl(std::time::Duration::from_secs(
-            settings.package_local_cache_ttl_secs,
-        )))
-}
-
-#[cfg(feature = "docker")]
-fn docker_runtime(
-    settings: &awaken_deployment_config::SandboxSettings,
-) -> Result<awaken_sandbox_container::docker::DockerRuntime, String> {
-    configure_docker_runtime(
-        awaken_sandbox_container::docker::DockerRuntime::connect_local(8080)
-            .map_err(|error| format!("docker runtime: {error}"))?,
-        settings,
-    )
-}
-
-#[cfg(feature = "docker")]
 fn docker_runtime_for_realization(
     realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
-    settings: &awaken_deployment_config::SandboxSettings,
 ) -> Result<awaken_sandbox_container::docker::DockerRuntime, String> {
-    let runtime = awaken_sandbox_container::docker::DockerRuntime::connect_local_for_realization(
+    awaken_sandbox_container::docker::DockerRuntime::connect_local_for_realization(
         realization_namespace,
         8080,
     )
-    .map_err(|error| format!("docker runtime: {error}"))?;
-    configure_docker_runtime(runtime, settings)
-}
-
-#[cfg(feature = "podman")]
-fn configure_podman_runtime(
-    mut runtime: awaken_sandbox_container::podman::PodmanRuntime,
-    settings: &awaken_deployment_config::SandboxSettings,
-) -> Result<awaken_sandbox_container::podman::PodmanRuntime, String> {
-    if let Some(registry) = &settings.package_image_registry {
-        runtime = runtime.with_package_registry(registry);
-    }
-    if let Some(path) = &settings.package_registry_auth_file {
-        runtime = runtime
-            .with_package_registry_auth_file(path)
-            .map_err(|error| format!("podman registry authentication: {error}"))?;
-    }
-    Ok(runtime
-        .with_package_build_host_network(settings.package_build_host_network)
-        .with_package_cache_ttl(std::time::Duration::from_secs(
-            settings.package_local_cache_ttl_secs,
-        )))
-}
-
-#[cfg(feature = "podman")]
-fn podman_runtime(
-    settings: &awaken_deployment_config::SandboxSettings,
-) -> Result<awaken_sandbox_container::podman::PodmanRuntime, String> {
-    configure_podman_runtime(
-        awaken_sandbox_container::podman::PodmanRuntime::with_bin(
-            8080,
-            settings.podman_bin.clone(),
-        ),
-        settings,
-    )
+    .map_err(|error| format!("docker runtime: {error}"))
 }
 
 #[cfg(feature = "podman")]
 fn podman_runtime_for_realization(
     realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
     settings: &awaken_deployment_config::SandboxSettings,
-) -> Result<awaken_sandbox_container::podman::PodmanRuntime, String> {
-    let runtime = awaken_sandbox_container::podman::PodmanRuntime::with_bin_for_realization(
+) -> awaken_sandbox_container::podman::PodmanRuntime {
+    awaken_sandbox_container::podman::PodmanRuntime::with_bin_for_realization(
         realization_namespace,
         8080,
         settings.podman_bin.clone(),
-    );
-    configure_podman_runtime(runtime, settings)
+    )
 }
 
 #[cfg(feature = "k8s")]
@@ -314,84 +247,52 @@ async fn k8s_runtime_for_realization(
     Ok(runtime)
 }
 
-#[cfg(feature = "k8s")]
-async fn k8s_package_provisioner(
+/// The package-image builder of `tier`'s Session environment
+/// (`SandboxSettings::package_image_builder_for`). A deployment whose builder
+/// engine this build does not link is refused by name.
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+async fn tier_package_provisioner(
+    tier: SandboxTier,
     settings: &awaken_deployment_config::SandboxSettings,
-    create_transport: Option<Arc<dyn awaken_worker_fleet_kubernetes::K8sCreateTransport>>,
+    policy: &ContainerTierPolicy,
 ) -> Result<Option<Arc<dyn awaken_container_contract::PackageImageProvisioner>>, String> {
-    let Some(builder) = settings.package_image_builder else {
+    use awaken_deployment_config::PackageImageBuilder;
+    let Some(builder) = settings.package_image_builder_for(tier) else {
         return Ok(None);
     };
-    let registry = settings.package_image_registry.as_deref().ok_or_else(|| {
-        "a Kubernetes package builder requires package_image_registry".to_string()
-    })?;
-    match builder {
+    let build = settings.package_image_build_settings();
+    let provisioner: Arc<dyn awaken_container_contract::PackageImageProvisioner> = match builder {
         #[cfg(feature = "docker")]
-        awaken_deployment_config::PackageImageBuilder::Docker => {
-            Ok(Some(Arc::new(docker_runtime(settings)?)))
-        }
+        PackageImageBuilder::Docker => Arc::new(
+            awaken_package_image::docker_package_image_provisioner(&build)?,
+        ),
         #[cfg(not(feature = "docker"))]
-        awaken_deployment_config::PackageImageBuilder::Docker => {
-            Err("package_image_builder=docker needs the `container-docker` feature".into())
+        PackageImageBuilder::Docker => {
+            return Err("package_image_builder=docker needs the `container-docker` feature".into());
         }
         #[cfg(feature = "podman")]
-        awaken_deployment_config::PackageImageBuilder::Podman => {
-            Ok(Some(Arc::new(podman_runtime(settings)?)))
-        }
+        PackageImageBuilder::Podman => Arc::new(
+            awaken_package_image::podman_package_image_provisioner(&build)?,
+        ),
         #[cfg(not(feature = "podman"))]
-        awaken_deployment_config::PackageImageBuilder::Podman => {
-            Err("package_image_builder=podman needs the `container-podman` feature".into())
+        PackageImageBuilder::Podman => {
+            return Err("package_image_builder=podman needs the `container-podman` feature".into());
         }
-        awaken_deployment_config::PackageImageBuilder::Kubernetes => {
-            let mut provisioner =
-                awaken_package_image::K8sPackageImageProvisioner::connect_with_create_transport(
-                    settings.k8s_namespace.clone(),
-                    registry,
-                    settings.k8s_image_pull_secrets.clone(),
-                    settings.package_registry_insecure,
-                    create_transport,
-                )
-                .await
-                .map_err(|error| format!("Kubernetes package builder: {error}"))?
-                .with_buildkit_image(settings.k8s_buildkit_image.clone())
-                .map_err(|error| format!("Kubernetes package builder: {error}"))?;
-            if let Some(url) = settings
-                .container_forward_proxy
-                .as_deref()
-                .filter(|url| !url.trim().is_empty())
-            {
-                provisioner = provisioner
-                    .with_forward_proxy(awaken_container_contract::ForwardProxy {
-                        url: url.to_owned(),
-                    })
-                    .map_err(|error| format!("Kubernetes package builder: {error}"))?;
-            }
-            Ok(Some(Arc::new(provisioner)))
-        }
-    }
-}
-
-/// Construct the raw package-image provisioner shared by Session realization
-/// and Coordinator's one Environment build-job state machine. It deliberately
-/// owns no journal, lease, or Environment-domain state.
-pub async fn package_image_provisioner(
-    deployment: &awaken_deployment_config::DeploymentConfig,
-) -> Result<Option<Arc<dyn awaken_container_contract::PackageImageProvisioner>>, String> {
-    match deployment.sandbox_tier {
-        #[cfg(feature = "docker")]
-        SandboxTier::Docker => Ok(Some(Arc::new(docker_runtime(&deployment.sandbox)?))),
-        #[cfg(feature = "podman")]
-        SandboxTier::Podman => Ok(Some(Arc::new(podman_runtime(&deployment.sandbox)?))),
         #[cfg(feature = "k8s")]
-        SandboxTier::K8s => k8s_package_provisioner(&deployment.sandbox, None).await,
-        SandboxTier::Local | SandboxTier::Namespace => Ok(None),
-        #[cfg(not(feature = "docker"))]
-        SandboxTier::Docker => Ok(None),
-        #[cfg(not(feature = "podman"))]
-        SandboxTier::Podman => Ok(None),
+        PackageImageBuilder::Kubernetes => Arc::new(
+            awaken_package_image::kubernetes_package_image_provisioner(
+                &build,
+                policy.k8s_create_transport.clone(),
+            )
+            .await?,
+        ),
         #[cfg(not(feature = "k8s"))]
-        SandboxTier::K8s => Ok(None),
-    }
+        PackageImageBuilder::Kubernetes => {
+            let _ = policy;
+            return Err("package_image_builder=k8s needs the `container-k8s` feature".into());
+        }
+    };
+    Ok(Some(provisioner))
 }
 
 /// Build the one provider used by both Native tools and ACP attempts in a Session,
@@ -425,33 +326,20 @@ pub async fn build_container_environment_for_realization(
         SandboxTier::Docker => {
             let runtime = Arc::new(docker_runtime_for_realization(
                 realization_namespace.clone(),
-                settings,
             )?);
-            finish(
-                runtime.clone(),
-                image,
-                settings,
-                policy,
-                Some(runtime),
-                clock,
-            )
-            .await?
+            let package_provisioner =
+                tier_package_provisioner(SandboxTier::Docker, settings, policy).await?;
+            finish(runtime, image, settings, policy, package_provisioner, clock).await?
         }
         #[cfg(feature = "podman")]
         SandboxTier::Podman => {
             let runtime = Arc::new(podman_runtime_for_realization(
                 realization_namespace.clone(),
                 settings,
-            )?);
-            finish(
-                runtime.clone(),
-                image,
-                settings,
-                policy,
-                Some(runtime),
-                clock,
-            )
-            .await?
+            ));
+            let package_provisioner =
+                tier_package_provisioner(SandboxTier::Podman, settings, policy).await?;
+            finish(runtime, image, settings, policy, package_provisioner, clock).await?
         }
         #[cfg(feature = "k8s")]
         SandboxTier::K8s => {
@@ -466,7 +354,7 @@ pub async fn build_container_environment_for_realization(
                 .await?,
             );
             let package_provisioner =
-                k8s_package_provisioner(settings, policy.k8s_create_transport.clone()).await?;
+                tier_package_provisioner(SandboxTier::K8s, settings, policy).await?;
             finish(runtime, image, settings, policy, package_provisioner, clock).await?
         }
         SandboxTier::Local | SandboxTier::Namespace => {
@@ -642,33 +530,6 @@ mod tests {
             assert!(error.contains(expected), "S1/S2: {error}");
         }
         temporary.close().unwrap();
-    }
-
-    #[test]
-    fn realization_runtime_validates_package_write_credentials() {
-        // RC1 a configured registry credential file that is missing refuses
-        // the realization runtime with its exact configuration error before
-        // any engine probe. No credential bytes or daemon are supplied.
-        let temporary = tempfile::tempdir().unwrap();
-        let settings = awaken_deployment_config::SandboxSettings {
-            podman_bin: temporary
-                .path()
-                .join("missing-podman")
-                .to_string_lossy()
-                .into_owned(),
-            package_image_registry: Some("registry.invalid/packages".into()),
-            package_registry_auth_file: Some(temporary.path().join("missing-registry-auth")),
-            ..Default::default()
-        };
-        let namespace =
-            awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
-                "observation-credential-independence",
-            ])
-            .unwrap();
-        let error = podman_runtime_for_realization(namespace, &settings)
-            .err()
-            .expect("RC1 execution still validates configured write credentials");
-        assert!(error.contains("registry authentication"), "{error}");
     }
 
     /// L7 (warm-capacity lease table in `awaken_sandbox_container::pool::lease`):

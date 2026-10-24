@@ -213,6 +213,52 @@ impl Default for SandboxSettings {
     }
 }
 
+impl SandboxSettings {
+    /// The builder of this deployment's package images on `tier`.
+    ///
+    /// | Rule | tier | `package_image_builder` | Builder |
+    /// |---|---|---|---|
+    /// | P1 | Docker | any | Docker: the execution engine builds |
+    /// | P2 | Podman | any | Podman: the execution engine builds |
+    /// | P3 | K8s | none | none: Pods cannot use a node-local image |
+    /// | P4 | K8s | Docker/Podman/Kubernetes | that builder, publishing to the registry |
+    /// | P5 | Local/Namespace | any | none: no image rootfs |
+    #[must_use]
+    pub fn package_image_builder_for(&self, tier: SandboxTier) -> Option<PackageImageBuilder> {
+        match tier {
+            SandboxTier::Docker => Some(PackageImageBuilder::Docker),
+            SandboxTier::Podman => Some(PackageImageBuilder::Podman),
+            SandboxTier::K8s => self.package_image_builder,
+            SandboxTier::Local | SandboxTier::Namespace => None,
+        }
+    }
+
+    /// How that builder builds and publishes.
+    #[must_use]
+    pub fn package_image_build_settings(
+        &self,
+    ) -> awaken_container_contract::PackageImageBuildSettings {
+        awaken_container_contract::PackageImageBuildSettings {
+            podman_bin: self.podman_bin.clone(),
+            registry: self.package_image_registry.clone(),
+            registry_auth_file: self.package_registry_auth_file.clone(),
+            registry_insecure: self.package_registry_insecure,
+            build_host_network: self.package_build_host_network,
+            local_cache_ttl: std::time::Duration::from_secs(self.package_local_cache_ttl_secs),
+            cluster_namespace: self.k8s_namespace.clone(),
+            image_pull_secrets: self.k8s_image_pull_secrets.clone(),
+            buildkit_image: self.k8s_buildkit_image.clone(),
+            forward_proxy: self
+                .container_forward_proxy
+                .as_deref()
+                .filter(|url| !url.trim().is_empty())
+                .map(|url| awaken_container_contract::ForwardProxy {
+                    url: url.to_owned(),
+                }),
+        }
+    }
+}
+
 const K8S_UNSCHEDULABLE_WAIT_DEFAULT_SECS: u64 =
     awaken_container_contract::DEFAULT_K8S_UNSCHEDULABLE_WAIT.as_secs();
 const K8S_UNSCHEDULABLE_WAIT_MAX_SECS: u64 = 24 * 60 * 60;
@@ -933,6 +979,54 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn each_tier_selects_its_package_image_builder() {
+        // The decision table on `SandboxSettings::package_image_builder_for`,
+        // and the build settings every builder shares.
+        let mut settings = SandboxSettings {
+            package_image_registry: Some("registry.internal".into()),
+            container_forward_proxy: Some(" ".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            settings.package_image_builder_for(SandboxTier::Docker),
+            Some(PackageImageBuilder::Docker),
+            "P1"
+        );
+        assert_eq!(
+            settings.package_image_builder_for(SandboxTier::Podman),
+            Some(PackageImageBuilder::Podman),
+            "P2"
+        );
+        assert_eq!(
+            settings.package_image_builder_for(SandboxTier::K8s),
+            None,
+            "P3"
+        );
+        for builder in [
+            PackageImageBuilder::Docker,
+            PackageImageBuilder::Podman,
+            PackageImageBuilder::Kubernetes,
+        ] {
+            settings.package_image_builder = Some(builder);
+            assert_eq!(
+                settings.package_image_builder_for(SandboxTier::K8s),
+                Some(builder),
+                "P4"
+            );
+            for tier in [SandboxTier::Local, SandboxTier::Namespace] {
+                assert_eq!(settings.package_image_builder_for(tier), None, "P5");
+            }
+        }
+        let build = settings.package_image_build_settings();
+        assert_eq!(build.registry.as_deref(), Some("registry.internal"));
+        assert_eq!(build.forward_proxy, None, "a blank proxy is no proxy");
+        assert_eq!(
+            build.local_cache_ttl,
+            std::time::Duration::from_secs(settings.package_local_cache_ttl_secs)
+        );
+    }
 
     fn base() -> DeploymentConfig {
         DeploymentConfig {

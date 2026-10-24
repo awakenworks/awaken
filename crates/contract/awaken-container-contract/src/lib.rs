@@ -38,7 +38,7 @@ pub use k8s_capacity::{
     k8s_pod_age, k8s_pod_provisioning_deadline_ms, k8s_pod_unschedulable, k8s_pod_wait,
     kubernetes_refusal_is_capacity,
 };
-pub use package_image::PackageImageProvisioner;
+pub use package_image::{PackageImageBuildSettings, PackageImageProvisioner};
 pub use package_recipe::{package_containerfile, package_image_recipe};
 pub use policy::{
     ForwardProxy, K8sContinuationVolume, K8sImagePrewarm, LIVE_INPUTS_ROOT, MANAGED_SANDBOX_LABEL,

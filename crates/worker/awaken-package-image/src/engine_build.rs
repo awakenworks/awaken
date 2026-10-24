@@ -1,24 +1,21 @@
 //! The network and deadline of one Docker or Podman package image build. The
 //! recipe itself is `awaken_container_contract::package_image_recipe`.
 
-#![cfg(any(feature = "docker", feature = "podman"))]
-
 use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract as pc;
 
 /// Package resolution may depend on an external registry, but it must never
 /// occupy an Environment activation forever. Keep this aligned with the
 /// Kubernetes BuildKit Job deadline.
-#[cfg(any(feature = "docker", feature = "podman"))]
 pub(crate) const PACKAGE_BUILD_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(30 * 60);
 
-/// The network one package image build is given. Every tier asks the same
-/// question, so it is answered once here and each adapter only renders the
-/// answer in its own vocabulary. A tier that decided this for itself would be
-/// the second mapping this module exists to prevent, and the two would drift:
-/// the host opt-in reached Docker builds and silently never reached Podman's.
-#[cfg(any(feature = "docker", feature = "podman"))]
+/// The network one package image build is given. Every engine asks the same
+/// question, so it is answered once here and each builder only renders the
+/// answer in its own vocabulary. An engine that decided this for itself would
+/// be the second mapping this module exists to prevent, and the two would
+/// drift: the host opt-in reached Docker builds and silently never reached
+/// Podman's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PackageBuildNetwork {
     /// The engine's own build network. Reachable, and bounded by the engine.
@@ -41,7 +38,6 @@ pub(crate) enum PackageBuildNetwork {
 /// B4 is a refusal rather than a narrowing because an image build that cannot
 /// enforce the allowlist would reach hosts the Environment denies; failing the
 /// activation closed is the only answer that preserves the egress boundary.
-#[cfg(any(feature = "docker", feature = "podman"))]
 pub(crate) fn package_build_network(
     network: &pc::NetworkPolicy,
     host_opt_in: bool,
@@ -57,4 +53,9 @@ pub(crate) fn package_build_network(
             "package image build has no no-bypass allowlist network".into(),
         )),
     }
+}
+
+/// A local mechanism failure (I/O, codec, rendered detail) of an engine build.
+pub(crate) fn backend(error: impl std::fmt::Display) -> RuntimeError {
+    RuntimeError::Backend(error.to_string())
 }

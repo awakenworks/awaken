@@ -39,7 +39,7 @@ awaken-container-contract.workspace = true
 awaken-sandbox-kubernetes = { workspace = true, optional = true }
 # The brokered Create client port the Kubernetes engine creates Pods through.
 awaken-worker-fleet-kubernetes = { workspace = true, optional = true }
-# The Kubernetes package-image builder of that tier.
+# The package-image builder of each container tier.
 awaken-package-image = { workspace = true, optional = true }
 # The Workdir sandboxes auxiliary Agent Runs use on every process root.
 awaken-sandbox-local.workspace = true
@@ -58,8 +58,8 @@ uuid = { version = "1", features = ["v4"] }
 test-support = ["awaken-sandbox-local/test-support"]
 # Container Session tiers (AWAKEN_SANDBOX_TIER=docker|podman|k8s). Off by default:
 # a build without them fails closed when the deployment names a container backend.
-docker = ["awaken-sandbox-container/docker"]
-podman = ["awaken-sandbox-container/podman"]
+docker = ["awaken-sandbox-container/docker", "dep:awaken-package-image", "awaken-package-image/docker"]
+podman = ["awaken-sandbox-container/podman", "dep:awaken-package-image", "awaken-package-image/podman"]
 k8s = ["dep:awaken-sandbox-kubernetes", "dep:awaken-worker-fleet-kubernetes", "dep:awaken-package-image", "awaken-package-image/k8s"]
 
 [dev-dependencies]

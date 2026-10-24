@@ -39,3 +39,34 @@ pub trait PackageImageProvisioner: Send + Sync {
         Ok(false)
     }
 }
+
+/// How a deployment's package image builder builds and publishes: the one
+/// value the Coordinator's Environment image build stage and a Worker's
+/// Session realization both construct their builder from, so the two cannot
+/// build the same deployment's images against different registries or
+/// policies. Which engine builds is the deployment's choice, not this value's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageImageBuildSettings {
+    /// The deployment-selected Podman executable.
+    pub podman_bin: String,
+    /// The shared OCI registry built images are published to, if any. A
+    /// cluster build requires it: its Pods pull from it.
+    pub registry: Option<String>,
+    /// The Docker/containers authentication file for that registry.
+    pub registry_auth_file: Option<std::path::PathBuf>,
+    /// Whether a cluster build reaches the registry over plain HTTP.
+    pub registry_insecure: bool,
+    /// Whether a local engine build may use the host network; the
+    /// Environment's network policy still bounds it.
+    pub build_host_network: bool,
+    /// Age after which unused Awaken-derived images leave the local engine cache.
+    pub local_cache_ttl: std::time::Duration,
+    /// The cluster namespace builder Jobs run in.
+    pub cluster_namespace: String,
+    /// Image pull secrets of the builder Pods.
+    pub image_pull_secrets: Vec<String>,
+    /// The rootless BuildKit image of the builder Pods.
+    pub buildkit_image: String,
+    /// Connectivity proxy for the builder's unrestricted traffic.
+    pub forward_proxy: Option<crate::ForwardProxy>,
+}
