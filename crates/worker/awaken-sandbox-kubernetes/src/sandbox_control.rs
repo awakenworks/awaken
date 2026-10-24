@@ -75,7 +75,7 @@ pub(super) fn pod_incarnation(
         .as_ref()
         .ok_or_else(|| backend("Kubernetes Sandbox control Pod has no specification"))?;
     if spec.automount_service_account_token != Some(false)
-        || super::has_forbidden_sandbox_namespace_shape(spec)
+        || awaken_worker_fleet_kubernetes::has_forbidden_sandbox_namespace_shape(spec)
     {
         return Err(backend(
             "Kubernetes Sandbox control Pod has a forbidden token or namespace shape",

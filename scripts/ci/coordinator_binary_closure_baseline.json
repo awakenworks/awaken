@@ -26,10 +26,10 @@
       "remove_when": "the execution composition leaves the Coordinator closure"
     },
     "awaken-sandbox-kubernetes": {
-      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; the startup authenticates, observes and stops Kubernetes Worker Pods through it, and the execution composition reaches it; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; reviewed at integration (record restated after the Coordinator binary left awaken-cli)",
+      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; after the Kubernetes Worker fleet left for awaken-worker-fleet-kubernetes the crate is reached only through the execution composition's optional Kubernetes engine; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
+      "approved_by": "pending: v4-coord-closure2 for integrator review",
       "date": "2026-10-24",
-      "remove_when": "the Kubernetes Worker fleet adapters leave the Sandbox adapter crate"
+      "remove_when": "the execution composition leaves the Coordinator closure"
     },
     "awaken-sandbox-local": {
       "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; reached through the execution composition; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",

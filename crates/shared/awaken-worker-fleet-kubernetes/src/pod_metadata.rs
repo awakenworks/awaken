@@ -6,11 +6,10 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::Api;
 use kube::api::PostParams;
 
-use super::backend;
-use super::error::{api_conflict, api_not_found};
+use crate::{api_conflict, api_not_found, backend};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ExactFinalizerAdmission {
+pub enum ExactFinalizerAdmission {
     Retain,
     Remove,
     Complete,
@@ -19,7 +18,7 @@ pub(super) enum ExactFinalizerAdmission {
 /// Update one finalizer through the exact Pod's resourceVersion. Domain owners
 /// supply admission and metadata cleanup; the shared Pod loop alone owns
 /// GET/replace, conflict retry and post-write verification.
-pub(super) async fn update_exact_pod_finalizer(
+pub async fn update_exact_pod_finalizer(
     pods: &Api<Pod>,
     name: &str,
     finalizer: &str,
@@ -84,7 +83,7 @@ pub(super) async fn update_exact_pod_finalizer(
 /// None preserves the old owner-transfer interface's absence of an effect
 /// callback; it proves no expiry check. Existing finalizer/publish callbacks
 /// remain Some and run on the same pre/post-I/O sides as before.
-pub(super) async fn update_pod_metadata(
+pub async fn update_pod_metadata(
     pods: &Api<Pod>,
     name: &str,
     mut initial: Option<Pod>,

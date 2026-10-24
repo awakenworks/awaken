@@ -254,7 +254,7 @@ impl K8sPackageImageProvisioner {
         registry_insecure: bool,
         transport: Option<Arc<dyn K8sCreateTransport>>,
     ) -> Result<Self, RuntimeError> {
-        let client = crate::connect_control_client().await?;
+        let client = awaken_worker_fleet_kubernetes::connect_control_client().await?;
         let client = match transport {
             Some(broker) => brokered_client(client, broker),
             None => client,

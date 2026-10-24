@@ -1029,7 +1029,7 @@ mod tests {
             (422, "invalid", "Backend"),
         ];
         let class = |error: kube::Error| match crate::pc::SandboxError::from(
-            super::super::error::backend(error),
+            awaken_worker_fleet_kubernetes::backend(error),
         ) {
             crate::pc::SandboxError::CapacityUnavailable(_) => "CapacityUnavailable",
             crate::pc::SandboxError::Unauthorized(_) => "Unauthorized",

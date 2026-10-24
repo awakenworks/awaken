@@ -14,7 +14,7 @@ fn normalize_empty<T>(items: &mut Option<Vec<T>>) {
     *items = items.take().filter(|items| !items.is_empty());
 }
 
-pub(crate) fn normalize_volume(volume: &mut Volume) {
+pub fn normalize_volume(volume: &mut Volume) {
     if let Some(claim) = volume.persistent_volume_claim.as_mut() {
         clear_default(&mut claim.read_only, false);
     }
@@ -30,7 +30,7 @@ pub(crate) fn normalize_volume(volume: &mut Volume) {
     }
 }
 
-pub(crate) fn normalize_container(container: &mut Container) {
+pub fn normalize_container(container: &mut Container) {
     // Image defaulting is shared by restore, package and control projections.
     // Digest or non-latest tag => IfNotPresent; untagged/latest => Always.
     let image = container.image.as_deref().unwrap_or_default();
@@ -86,13 +86,13 @@ pub(crate) fn normalize_container(container: &mut Container) {
 
 /// Preserve a declared or retained node assignment exactly; ignore only the
 /// scheduler output absent from the expected projection.
-pub(crate) fn normalize_pod_pair(expected: &mut PodSpec, observed: &mut PodSpec) {
+pub fn normalize_pod_pair(expected: &mut PodSpec, observed: &mut PodSpec) {
     let ignore_assigned_node = expected.node_name.is_none();
     normalize_pod_spec(expected, false);
     normalize_pod_spec(observed, ignore_assigned_node);
 }
 
-pub(crate) fn normalize_pod_spec(spec: &mut PodSpec, ignore_assigned_node: bool) {
+pub fn normalize_pod_spec(spec: &mut PodSpec, ignore_assigned_node: bool) {
     normalize_empty(&mut spec.init_containers);
     normalize_empty(&mut spec.ephemeral_containers);
     normalize_empty(&mut spec.volumes);

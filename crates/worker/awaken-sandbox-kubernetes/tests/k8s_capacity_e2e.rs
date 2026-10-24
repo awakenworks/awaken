@@ -119,7 +119,7 @@ async fn a_namespace_quota_refusal_returns_capacity_and_succeeds_once_raised() {
     if !requested() {
         return;
     }
-    let client = awaken_sandbox_kubernetes::connect_control_client()
+    let client = awaken_worker_fleet_kubernetes::connect_control_client()
         .await
         .expect("kube client");
     let namespace = ScratchNamespace::create(client.clone(), "quota").await;
@@ -196,7 +196,7 @@ async fn an_unschedulable_pod_is_disposed_and_returns_capacity_after_the_bound()
     if !requested() {
         return;
     }
-    let client = awaken_sandbox_kubernetes::connect_control_client()
+    let client = awaken_worker_fleet_kubernetes::connect_control_client()
         .await
         .expect("kube client");
     let namespace = ScratchNamespace::create(client, "unschedulable").await;

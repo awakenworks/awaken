@@ -34,11 +34,11 @@ use std::sync::Arc;
 
 #[cfg(feature = "container-k8s")]
 async fn request_registered_kubernetes_pod_replacement(worker_id: &str) -> Result<(), String> {
-    use awaken_sandbox_kubernetes::{PodProcessObserver, PodProcessStopper};
+    use awaken_worker_fleet_kubernetes::{PodProcessObserver, PodProcessStopper};
     use awaken_worker_transport_security::kubernetes::KubernetesPodIdentity;
 
     let pod = KubernetesPodIdentity::from_worker_id(worker_id)?;
-    let client = awaken_sandbox_kubernetes::connect_control_client()
+    let client = awaken_worker_fleet_kubernetes::connect_control_client()
         .await
         .map_err(|error| error.to_string())?;
     let observer =

@@ -91,7 +91,7 @@ pub(crate) async fn transfer_runtime_owner(
     };
     // This original four-argument API has no effect callback. Preserve that
     // boundary for prepare/restore/control; do not invent expiry authority.
-    super::super::finalizer::update_pod_metadata(
+    awaken_worker_fleet_kubernetes::pod_metadata::update_pod_metadata(
         api,
         &name,
         Some(pod.clone()),

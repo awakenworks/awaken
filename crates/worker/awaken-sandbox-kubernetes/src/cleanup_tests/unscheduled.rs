@@ -598,7 +598,10 @@ async fn unscheduled_cleanup_keeps_nonempty_participants_when_delete_response_lo
             let pod = state.pod.as_ref().unwrap();
             assert_eq!(pod.metadata.uid.as_deref(), Some("pod-uid"));
             assert!(pod.metadata.deletion_timestamp.is_some());
-            assert!(create_ledger::original_guard_release_required(Some(pod), true).unwrap());
+            assert!(
+                awaken_worker_fleet_kubernetes::original_guard_release_required(Some(pod), true)
+                    .unwrap()
+            );
         }
         if change == 'c' {
             task.abort();
@@ -640,7 +643,10 @@ async fn unscheduled_cleanup_keeps_nonempty_participants_when_delete_response_lo
         assert_eq!(state.claim, original_claim, "NL1 PVC retained");
         let pod = state.pod.as_ref().unwrap();
         assert!(pod.metadata.deletion_timestamp.is_some());
-        assert!(create_ledger::original_guard_release_required(Some(pod), true).unwrap());
+        assert!(
+            awaken_worker_fleet_kubernetes::original_guard_release_required(Some(pod), true)
+                .unwrap()
+        );
     }
 }
 
@@ -705,7 +711,10 @@ async fn unscheduled_cleanup_keeps_the_original_guard_while_a_projected_uid_has_
                 pod.metadata.deletion_timestamp.is_some(),
                 "NF1/NF2 exact Pod deletion intent accepted first"
             );
-            assert!(create_ledger::original_guard_release_required(Some(pod), true).unwrap());
+            assert!(
+                awaken_worker_fleet_kubernetes::original_guard_release_required(Some(pod), true)
+                    .unwrap()
+            );
             assert_eq!(state.claim, original_claim);
         }
         state.lock().unwrap().projected.remove(name);

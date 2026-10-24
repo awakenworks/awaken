@@ -121,14 +121,17 @@ pub(super) async fn accept_reverse(
         &awaken_connection_plan::ConnectionPlan::tcp_listen(addr.to_string()),
     )
     .await
-    .map_err(super::backend)?;
+    .map_err(|error| super::backend(error.to_string()))?;
     accept_reverse_on(listen).await
 }
 
 pub(super) async fn accept_reverse_on(
     listen: awaken_connection_plan::TcpHandListener,
 ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
-    listen.accept().await.map_err(super::backend)
+    listen
+        .accept()
+        .await
+        .map_err(|error| super::backend(error.to_string()))
 }
 
 pub(super) async fn open_pod_channel(

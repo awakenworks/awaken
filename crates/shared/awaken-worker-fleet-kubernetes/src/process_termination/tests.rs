@@ -109,8 +109,7 @@ fn completed_init_is_enrolled_and_continuation_retention_stays_with_its_owner() 
     // admission => Unknown. Reusing retention grants no right to release the
     // Session's harvest/PVC finalizer (stop adapter separately tests that edge).
     let mut pod = running();
-    pod["metadata"]["finalizers"] =
-        json!([super::super::continuation::CONTINUATION_CLEANUP_FINALIZER]);
+    pod["metadata"]["finalizers"] = json!([CONTINUATION_CLEANUP_FINALIZER]);
     let mut init = pod["spec"]["containers"][0].clone();
     init["name"] = json!("project-inputs");
     pod["spec"]["initContainers"] = json!([init]);
@@ -541,5 +540,55 @@ fn all_containers_must_match_the_frozen_set_and_exit_independently_of_list_order
             PodProcessTermination::Unknown,
             "R14 duplicate {pointer}"
         );
+    }
+}
+
+type PodSpecMutation = (&'static str, fn(&mut k8s_openapi::api::core::v1::PodSpec));
+
+#[test]
+fn sandbox_namespace_predicate_rejects_only_boundary_weakening_shapes() {
+    /* Namespace-shape decision table: C1=host network/PID/IPC requested;
+     * C2=process namespace shared; C3=one ephemeral container injected;
+     * C4=fields absent, explicitly false, and ephemeral list empty.
+     * E1=C1|C2|C3 rejects the private Sandbox shape; E2=C4 remains
+     * compatible with Kubernetes defaulting. Rules PS1 C1=>E1;
+     * PS2 C2=>E1; PS3 C3=>E1; PS4 C4=>E2.
+     */
+    let mut compatible = k8s_openapi::api::core::v1::PodSpec {
+        containers: Vec::new(),
+        host_network: Some(false),
+        host_pid: Some(false),
+        host_ipc: Some(false),
+        share_process_namespace: Some(false),
+        ephemeral_containers: Some(Vec::new()),
+        ..Default::default()
+    };
+    assert!(
+        !has_forbidden_sandbox_namespace_shape(&compatible),
+        "PS4/E2"
+    );
+
+    let mutations: [PodSpecMutation; 5] = [
+        ("host network", |spec| spec.host_network = Some(true)),
+        ("host PID", |spec| spec.host_pid = Some(true)),
+        ("host IPC", |spec| spec.host_ipc = Some(true)),
+        ("shared process namespace", |spec| {
+            spec.share_process_namespace = Some(true)
+        }),
+        ("ephemeral container", |spec| {
+            spec.ephemeral_containers = Some(vec![Default::default()])
+        }),
+    ];
+    for (cause, mutate) in mutations {
+        mutate(&mut compatible);
+        assert!(
+            has_forbidden_sandbox_namespace_shape(&compatible),
+            "PS1-3/E1 {cause}"
+        );
+        compatible.host_network = Some(false);
+        compatible.host_pid = Some(false);
+        compatible.host_ipc = Some(false);
+        compatible.share_process_namespace = Some(false);
+        compatible.ephemeral_containers = Some(Vec::new());
     }
 }

@@ -6,17 +6,19 @@
 use super::{
     PendingClaimDeletion, absent_pod_claim_deletion, await_claim_deletion, initiate_claim_deletion,
 };
-use crate::finalizer::{ExactFinalizerAdmission, update_exact_pod_finalizer};
 use crate::{K8sRuntime, backend, participants};
 use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::KubernetesProjectedParticipants;
+use awaken_worker_fleet_kubernetes::pod_metadata::{
+    ExactFinalizerAdmission, update_exact_pod_finalizer,
+};
 use k8s_openapi::api::core::v1::Pod;
 use kube::Api;
 use kube::api::PostParams;
 
 pub(crate) const CLAIM_UID_ANNOTATION: &str = "awaken.dev/continuation-claim-uid";
-pub(crate) const CONTINUATION_CLEANUP_FINALIZER: &str = "awaken.dev/continuation-cleanup";
+pub(crate) use awaken_worker_fleet_kubernetes::CONTINUATION_CLEANUP_FINALIZER;
 const CONTINUATION_CLEANUP_GATE_ANNOTATION: &str = "awaken.dev/continuation-cleanup-gate";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -510,7 +512,8 @@ pub(crate) async fn release_bound_guards(
         release_pod_cleanup_gate(pods, pending, admit).await?;
     }
     if original && !pending.is_some_and(PendingPodCleanup::releases_original_guard) {
-        crate::create_ledger::release_original_guard(pods, container_id, pod_uid, admit).await?;
+        awaken_worker_fleet_kubernetes::release_original_guard(pods, container_id, pod_uid, admit)
+            .await?;
     }
     Ok(())
 }

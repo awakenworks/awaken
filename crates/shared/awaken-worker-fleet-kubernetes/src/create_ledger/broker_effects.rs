@@ -101,7 +101,7 @@ impl K8sCreateBrokerEffects for K8sWorkerCreateLedger {
         };
         // Runtime owns the realization-namespace projection. Re-encoding raw
         // scope here would target another Pod/PVC name after process loss.
-        let claim_name = crate::names::continuation_claim_for_pod(expected_pod_name)?;
+        let claim_name = crate::managed_names::continuation_claim_for_pod(expected_pod_name)?;
         let mut claim_uid = None;
         for ticket in tickets {
             match &ticket.status {

@@ -37,8 +37,9 @@ awaken-execution-composition.workspace = true
 awaken-run-executor-a2a.workspace = true
 awaken-protocol-a2a.workspace = true
 # Deployment-file PVC policy is owned by the existing container substrate.
-# The Kubernetes engine: the control client that authenticates Pod Workers.
-awaken-sandbox-kubernetes = { workspace = true, optional = true }
+# The Kubernetes Worker fleet: the control client that authenticates Pod
+# Workers, their Create ledger and Pod process observation and stop.
+awaken-worker-fleet-kubernetes = { workspace = true, optional = true }
 awaken-sandbox-memoryd.workspace = true
 kube = { workspace = true, features = ["client", "rustls-tls", "http-proxy"], optional = true }
 awaken-protocol-mcp.workspace = true
@@ -184,7 +185,7 @@ test-support = [
 # deployment runs its agents on. Off by default — the namespace tier needs no feature.
 container-docker = ["awaken-execution-composition/docker"]
 container-podman = ["awaken-execution-composition/podman"]
-container-k8s = ["awaken-coordinator/container-k8s", "awaken-execution-composition/k8s", "awaken-worker-transport-security/kubernetes", "dep:awaken-sandbox-kubernetes", "dep:kube"]
+container-k8s = ["awaken-coordinator/container-k8s", "awaken-execution-composition/k8s", "awaken-worker-transport-security/kubernetes", "dep:awaken-worker-fleet-kubernetes", "dep:kube"]
 
 [build-dependencies]
 awaken-ui-artifact.workspace = true
@@ -196,6 +197,8 @@ sha2 = "0.10"
 awaken-worker = { workspace = true, features = ["container-k8s"] }
 # Runtime codecs/planning are used by CLI fixtures; production uses its composition root.
 awaken-sandbox-container.workspace = true
+# The live Worker transport tests create Sandbox Pods through the brokered Create transport.
+awaken-sandbox-kubernetes.workspace = true
 awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
 awaken-sqlite-pool.workspace = true

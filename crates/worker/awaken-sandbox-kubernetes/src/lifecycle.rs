@@ -4,8 +4,8 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::api::{DeleteParams, Preconditions};
 use kube::{Api, Resource};
 
-use super::error::api_not_found;
 use super::{K8sRuntime, backend};
+use awaken_worker_fleet_kubernetes::api_not_found;
 
 /// Observe disappearance of one previously authorized incarnation. A DELETE
 /// response only establishes intent; a valid replacement UID or 404 ends this

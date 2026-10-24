@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use awaken_container_contract::TicketResult;
 
 pub(super) const RESULT_BYTES: usize = 8192;
-use crate::error::backend;
+use crate::backend;
 use awaken_container_contract::RuntimeError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

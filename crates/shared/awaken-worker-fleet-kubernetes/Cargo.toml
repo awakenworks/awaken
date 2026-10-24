@@ -1,0 +1,53 @@
+[package]
+name = "awaken-worker-fleet-kubernetes"
+description = "Kubernetes control of the Worker fleet: the Create ledger, Pod process observation and stop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.awaken]
+# The Kubernetes Pod control the Coordinator holds over its Worker fleet: the
+# provider-owned Create request ledger and its isolation guard, exact Pod
+# process observation and stop, and the Kubernetes API boundary they share
+# (status classification, the Pod metadata CAS loop, API-default
+# normalization, managed Pod/claim names). The Coordinator and the Worker
+# reach it without the Sandbox adapter; the Kubernetes Sandbox adapter
+# (awaken-sandbox-kubernetes) reuses the same ledger, guard and API boundary
+# for Sandbox Pods instead of keeping a second copy. It belongs to the sandbox
+# context because Worker Pods and Sandbox Pods share this one Kubernetes Pod
+# substrate; the name keeps it out of the `sandbox-*` provider family.
+context = "shared"
+product = "platform"
+bounded_context = "sandbox"
+layer = "infrastructure"
+authority = "worker-fleet-kubernetes"
+separation = "isolation"
+isolates = ["k8s-openapi", "kube"]
+
+[dependencies]
+awaken-container-contract.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-outbound-http = { workspace = true, features = ["kubernetes"] }
+async-trait.workspace = true
+blake3 = "1"
+http = "1"
+http-body-util = "0.1"
+k8s-openapi.workspace = true
+kube = { workspace = true, features = ["client", "http-proxy", "rustls-tls"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+tower = { version = "0.5", features = ["util"] }
+uuid = { version = "1", features = ["v4"] }
+
+[features]
+# The in-process Kubernetes API of the isolation guard, for the Sandbox
+# adapter's guarded-claim tests.
+test-support = []
+
+[dev-dependencies]
+serde-saphyr.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "test-util"] }

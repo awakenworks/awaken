@@ -25,15 +25,15 @@ use serde_json::json;
 use super::state::valid_isolation_id;
 
 use crate::api_defaults;
-use crate::error::{api_conflict, backend};
+use crate::{api_conflict, backend};
 use awaken_container_contract::RuntimeError;
 
 const FINALIZER: &str = ISOLATION_LABEL;
 const PVC_PROTECTION_FINALIZER: &str = "kubernetes.io/pvc-protection";
 const GATE: &str = "awaken.dev/create-isolation";
-const POLICY: &str = "awaken-create-isolation";
+pub(crate) const POLICY: &str = "awaken-create-isolation";
 
-fn expected_policy_spec() -> ValidatingAdmissionPolicySpec {
+pub(crate) fn expected_policy_spec() -> ValidatingAdmissionPolicySpec {
     serde_json::from_value(json!({
         "failurePolicy": "Fail",
         "matchConstraints": {
@@ -64,7 +64,7 @@ fn expected_policy_spec() -> ValidatingAdmissionPolicySpec {
     .expect("fixed admission policy contract is valid")
 }
 
-fn expected_binding_spec() -> ValidatingAdmissionPolicyBindingSpec {
+pub(crate) fn expected_binding_spec() -> ValidatingAdmissionPolicyBindingSpec {
     serde_json::from_value(json!({
         "policyName": POLICY,
         "validationActions": ["Deny"]
@@ -267,7 +267,7 @@ async fn deletion_is_denied(api: &Api<Pod>, name: &str, uid: &str) -> Result<boo
     deletion_denial(api.delete(name, &delete_probe_params(uid)).await)
 }
 
-pub(crate) async fn verify_reservation(
+pub async fn verify_reservation(
     client: &Client,
     ticket: &CreateTicket,
     uid: &str,
@@ -289,7 +289,7 @@ pub(crate) async fn verify_reservation(
 /// Create. Kubernetes's same-name uniqueness linearizes these two POSTs. A
 /// conflict must be read back as this exact reservation or this exact stamped
 /// original; all foreign and disappearing objects remain Unknown.
-pub(super) async fn isolate_pod(
+pub(crate) async fn isolate_pod(
     client: &Client,
     ticket: &CreateTicket,
 ) -> Result<Option<TicketResult>, RuntimeError> {
@@ -324,7 +324,7 @@ pub(super) async fn isolate_pod(
 
 mod non_pod;
 
-pub(crate) fn original_guard_release_required(
+pub fn original_guard_release_required(
     observed: Option<&Pod>,
     release_original_guard: bool,
 ) -> Result<bool, RuntimeError> {
@@ -356,13 +356,13 @@ pub(super) async fn isolate(
 /// Release only the broker's original-Create guard, through the existing
 /// exact-UID/resourceVersion finalizer CAS. The caller has already initiated
 /// UID-fenced terminal Pod deletion under its original cleanup authority.
-pub(crate) async fn release_original_guard(
+pub async fn release_original_guard(
     pods: &Api<Pod>,
     name: &str,
     uid: &str,
     checkpoint: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<(), RuntimeError> {
-    use crate::finalizer::{ExactFinalizerAdmission, update_exact_pod_finalizer};
+    use crate::pod_metadata::{ExactFinalizerAdmission, update_exact_pod_finalizer};
     update_exact_pod_finalizer(
         pods,
         name,
@@ -397,47 +397,10 @@ pub(crate) async fn release_original_guard(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_container_contract::{CreateTicketRequest, TicketStatus};
-
-    use http::{Method, Request, Response};
-    use kube::client::Body;
-    use serde_json::Value;
+    use crate::test_support::{
+        IsolationApi as Fixture, isolation_api as client, isolation_ticket as ticket,
+    };
     use std::sync::{Arc, Mutex};
-
-    #[path = "guarded_claim_tests.rs"]
-    mod guarded_claim_tests;
-
-    #[derive(Default)]
-    struct Fixture {
-        pod: Option<Pod>,
-        claim: Option<k8s_openapi::api::core::v1::PersistentVolumeClaim>,
-        claim_deletes: usize,
-        claim_delete_response_lost: bool,
-        policy: bool,
-        policy_tampered: bool,
-        binding_tampered: bool,
-        policy_lagged: bool,
-        delete_denied: bool,
-        denial_code: u16,
-        creates: usize,
-    }
-
-    fn ticket() -> CreateTicket {
-        CreateTicket {
-            request: CreateTicketRequest::new(
-                "group",
-                "pods",
-                "sandbox-ns",
-                "sandbox-pod",
-                "a".repeat(64),
-            )
-            .unwrap(),
-            status: TicketStatus::InFlight,
-            origin: Default::default(),
-            isolation_id: "0123456789abcdef0123456789abcdef".into(),
-            isolation_pending: true,
-        }
-    }
 
     #[test]
     fn original_metadata_field_law_keeps_isolation_purpose_and_unknown_uid() {
@@ -564,13 +527,6 @@ mod tests {
         }
     }
 
-    fn response(code: u16, body: Value) -> Response<Body> {
-        Response::builder()
-            .status(code)
-            .body(Body::from(serde_json::to_vec(&body).unwrap()))
-            .unwrap()
-    }
-
     #[test]
     fn deployment_policy_matches_the_runtime_attestation_contract() {
         // Causes: C1 the six-kind VAP/binding selector, operation or
@@ -677,180 +633,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    fn client(state: Arc<Mutex<Fixture>>) -> Client {
-        let service = tower::service_fn(move |request: Request<Body>| {
-            let state = state.clone();
-            async move {
-                let path = request.uri().path().to_owned();
-                let requested_pod = path
-                    .rsplit_once("/pods/")
-                    .map(|(_, name)| name)
-                    .filter(|name| !name.is_empty() && !name.contains('/'));
-                let result = if path
-                    .ends_with("validatingadmissionpolicies/awaken-create-isolation")
-                {
-                    if !state.lock().unwrap().policy {
-                        response(
-                            404,
-                            json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"NotFound","message":"policy not found","code":404}),
-                        )
-                    } else {
-                        let mut spec = expected_policy_spec();
-                        if state.lock().unwrap().policy_tampered {
-                            spec.failure_policy = Some("Ignore".into());
-                        }
-                        let observed_generation = if state.lock().unwrap().policy_lagged {
-                            0
-                        } else {
-                            1
-                        };
-                        let policy = ValidatingAdmissionPolicy {
-                            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-                                name: Some(POLICY.into()), generation: Some(1), ..Default::default()
-                            },
-                            spec: Some(spec),
-                            status: Some(k8s_openapi::api::admissionregistration::v1::ValidatingAdmissionPolicyStatus {
-                                observed_generation: Some(observed_generation), ..Default::default()
-                            }),
-                        };
-                        response(200, serde_json::to_value(policy).unwrap())
-                    }
-                } else if path
-                    .ends_with("validatingadmissionpolicybindings/awaken-create-isolation")
-                {
-                    let mut spec = expected_binding_spec();
-                    if state.lock().unwrap().binding_tampered {
-                        spec.validation_actions = Some(vec!["Warn".into()]);
-                    }
-                    let binding = ValidatingAdmissionPolicyBinding {
-                        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-                            name: Some(POLICY.into()),
-                            ..Default::default()
-                        },
-                        spec: Some(spec),
-                    };
-                    response(200, serde_json::to_value(binding).unwrap())
-                } else if path.ends_with("/pods") && request.method() == Method::POST {
-                    let bytes = request.into_body().collect_bytes().await.unwrap();
-                    let mut state = state.lock().unwrap();
-                    state.creates += 1;
-                    if state.pod.is_some() {
-                        response(409, json!({"reason":"AlreadyExists","code":409}))
-                    } else {
-                        let mut pod: Pod = serde_json::from_slice(&bytes).unwrap();
-                        pod.metadata.uid = Some("sentinel-uid".into());
-                        state.pod = Some(pod.clone());
-                        response(201, serde_json::to_value(pod).unwrap())
-                    }
-                } else if requested_pod.is_some() && request.method() == Method::GET {
-                    match &state.lock().unwrap().pod {
-                        Some(pod) if pod.metadata.name.as_deref() == requested_pod => {
-                            response(200, serde_json::to_value(pod).unwrap())
-                        }
-                        None => response(
-                            404,
-                            json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"NotFound","message":"Pod not found","code":404}),
-                        ),
-                        Some(_) => response(
-                            404,
-                            json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"NotFound","message":"foreign Pod name","code":404}),
-                        ),
-                    }
-                } else if requested_pod.is_some() && request.method() == Method::PUT {
-                    let bytes = request.into_body().collect_bytes().await.unwrap();
-                    let mut replacement: Pod = serde_json::from_slice(&bytes).unwrap();
-                    let mut state = state.lock().unwrap();
-                    let current = state.pod.as_ref().unwrap();
-                    assert_eq!(current.metadata.name.as_deref(), requested_pod);
-                    if replacement.metadata.uid != current.metadata.uid
-                        || replacement.metadata.resource_version
-                            != current.metadata.resource_version
-                    {
-                        response(
-                            409,
-                            json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"Conflict","code":409}),
-                        )
-                    } else {
-                        replacement.metadata.resource_version = Some("2".into());
-                        state.pod = Some(replacement.clone());
-                        response(200, serde_json::to_value(replacement).unwrap())
-                    }
-                } else if requested_pod.is_some() && request.method() == Method::DELETE {
-                    assert_eq!(
-                        state
-                            .lock()
-                            .unwrap()
-                            .pod
-                            .as_ref()
-                            .unwrap()
-                            .metadata
-                            .name
-                            .as_deref(),
-                        requested_pod
-                    );
-                    let body = request.into_body().collect_bytes().await.unwrap();
-                    let options: Value = serde_json::from_slice(&body).unwrap();
-                    assert_eq!(
-                        options["dryRun"],
-                        json!(["All"]),
-                        "isolation probe must never perform a real DELETE"
-                    );
-                    assert_eq!(options["preconditions"]["uid"], "sentinel-uid");
-                    if state.lock().unwrap().delete_denied {
-                        let code = state.lock().unwrap().denial_code;
-                        let code = if code == 0 { 422 } else { code };
-                        response(
-                            code,
-                            json!({"reason":"Invalid","code":code,"message":format!("denied by {POLICY}")}),
-                        )
-                    } else {
-                        response(200, json!({"kind":"Status","status":"Success","code":200}))
-                    }
-                } else if path.contains("/persistentvolumeclaims/")
-                    && request.method() == Method::GET
-                {
-                    match &state.lock().unwrap().claim {
-                        Some(claim) => response(200, serde_json::to_value(claim).unwrap()),
-                        None => response(
-                            404,
-                            json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"NotFound","message":"PVC not found","code":404}),
-                        ),
-                    }
-                } else if path.contains("/persistentvolumeclaims/")
-                    && request.method() == Method::DELETE
-                {
-                    let bytes = request.into_body().collect_bytes().await.unwrap();
-                    let options: Value = serde_json::from_slice(&bytes).unwrap();
-                    let mut state = state.lock().unwrap();
-                    let claim = state.claim.as_ref().expect("exact original PVC exists");
-                    assert_eq!(options["preconditions"]["uid"], json!(claim.metadata.uid));
-                    assert_eq!(
-                        options["preconditions"]["resourceVersion"],
-                        json!(claim.metadata.resource_version)
-                    );
-                    state.claim_deletes += 1;
-                    state.claim = None;
-                    if state.claim_delete_response_lost {
-                        response(
-                            500,
-                            json!({"reason":"InternalError","code":500,"message":"response lost after accepted PVC DELETE"}),
-                        )
-                    } else {
-                        response(200, json!({"kind":"Status","status":"Success","code":200}))
-                    }
-                } else {
-                    panic!(
-                        "unexpected isolation API request: {} {}",
-                        request.method(),
-                        path
-                    )
-                };
-                Ok::<_, std::io::Error>(result)
-            }
-        });
-        Client::new(service, "sandbox-ns")
     }
 
     #[tokio::test]

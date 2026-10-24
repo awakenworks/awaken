@@ -741,7 +741,6 @@ dependencies = [
  "awaken-run-executor-acp",
  "awaken-runtime",
  "awaken-runtime-contract",
- "awaken-sandbox-kubernetes",
  "awaken-scenario-host",
  "awaken-scoped-migration",
  "awaken-service-auth-contract",
@@ -774,6 +773,7 @@ dependencies = [
  "awaken-work-store",
  "awaken-worker",
  "awaken-worker-contract",
+ "awaken-worker-fleet-kubernetes",
  "awaken-worker-registry",
  "awaken-worker-transport-security",
  "axum",
@@ -2090,6 +2090,7 @@ dependencies = [
  "awaken-work-store",
  "awaken-worker",
  "awaken-worker-contract",
+ "awaken-worker-fleet-kubernetes",
  "awaken-worker-registry",
  "awaken-worker-transport-security",
  "axum",
@@ -2792,9 +2793,9 @@ dependencies = [
  "awaken-time",
  "awaken-tool-contract",
  "awaken-tool-relay",
+ "awaken-worker-fleet-kubernetes",
  "blake3",
  "http",
- "http-body-util",
  "k8s-openapi",
  "kube",
  "serde",
@@ -3833,6 +3834,7 @@ dependencies = [
  "awaken-tool-contract",
  "awaken-tool-relay",
  "awaken-worker-contract",
+ "awaken-worker-fleet-kubernetes",
  "awaken-worker-transport-security",
  "axum",
  "futures-util",
@@ -3863,6 +3865,27 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "awaken-worker-fleet-kubernetes"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-container-contract",
+ "awaken-outbound-http",
+ "awaken-provisioning-contract",
+ "blake3",
+ "http",
+ "http-body-util",
+ "k8s-openapi",
+ "kube",
+ "serde",
+ "serde-saphyr",
+ "serde_json",
+ "tokio",
+ "tower",
+ "uuid",
 ]
 
 [[package]]

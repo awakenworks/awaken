@@ -1,11 +1,11 @@
 // @formal surface requirement=worker.remote_execution.remote_protocol
 // @formal reason: This source implements the repository-controlled remote worker product boundary and is
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
-use super::backend;
 use awaken_container_contract::RuntimeError;
+use awaken_worker_fleet_kubernetes::backend;
+use awaken_worker_fleet_kubernetes::managed_names::{K8S_DNS_SUBDOMAIN_MAX_LEN, pod_name};
 
 const K8S_DNS_LABEL_MAX_LEN: usize = 63;
-const K8S_DNS_SUBDOMAIN_MAX_LEN: usize = 253;
 const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
 
 /// Encode the opaque Sandbox scope as an adapter-local Kubernetes identity.
@@ -69,36 +69,6 @@ fn base32(bytes: &[u8]) -> String {
     output
 }
 
-/// `id` is the already encoded adapter-local runtime identity.
-pub(crate) fn pod_name(id: &str) -> String {
-    format!("awaken-{id}")
-}
-
-/// Deterministic active-state claim for the same encoded Sandbox realization.
-/// `awc-` is deliberately shorter than the Pod prefix so even the bounded
-/// hashed runtime id remains within the 63-byte DNS-label limit.
-pub(super) fn continuation_claim_name(id: &str) -> String {
-    format!("awc-{id}")
-}
-
-/// Project the canonical retained claim from a managed Pod locator. This is
-/// the inverse owned by the same module as the forward Pod/claim projections;
-/// callers must not reconstruct either prefix independently.
-pub(super) fn continuation_claim_for_pod(pod_name: &str) -> Result<String, RuntimeError> {
-    let runtime_id = pod_name
-        .strip_prefix("awaken-")
-        .ok_or_else(|| backend("invalid managed Kubernetes Pod identity"))?;
-    Ok(continuation_claim_name(runtime_id))
-}
-
-/// Inverse of the same canonical Pod/PVC projection, used only to derive
-/// possible capacity obligations. It grants no resource ownership.
-pub(super) fn pod_for_continuation_claim(claim: &str) -> Option<String> {
-    let id = claim.strip_prefix("awc-").filter(|id| !id.is_empty())?;
-    let pod = pod_name(id);
-    (pod.len() <= K8S_DNS_SUBDOMAIN_MAX_LEN).then_some(pod)
-}
-
 /// Deterministic ConfigMap name for the i-th inline-content mount.
 pub(super) fn configmap_name(id: &str, i: usize) -> String {
     format!("{}-cfg-{i}", pod_name(id))
@@ -116,6 +86,9 @@ pub(super) fn cfg_owner_label(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_worker_fleet_kubernetes::managed_names::{
+        continuation_claim_for_pod, continuation_claim_name,
+    };
 
     fn is_dns_name(value: &str, max_len: usize) -> bool {
         !value.is_empty()
@@ -203,20 +176,8 @@ mod tests {
             claim,
             "N6 exact inverse"
         );
-        // N7/C8-C10: capacity inverse uses this same canonical naming owner,
-        // not a second prefix rule or a membership/cleanup grant.
-        assert_eq!(pod_for_continuation_claim(&claim), Some(pod.clone()));
-        assert_eq!(pod_for_continuation_claim("unclassified"), None);
-        assert_eq!(pod_for_continuation_claim("awc-"), None);
-        assert_eq!(
-            pod_for_continuation_claim(&format!("awc-{}", "x".repeat(253))),
-            None
-        );
-
-        assert!(
-            continuation_claim_for_pod("foreign-session").is_err(),
-            "N6 foreign prefix"
-        );
+        // N6 foreign prefixes and N7 the capacity inverse are decided by the
+        // naming owner, awaken_worker_fleet_kubernetes::managed_names.
 
         assert!(k8s_runtime_id("").is_err(), "N4");
 

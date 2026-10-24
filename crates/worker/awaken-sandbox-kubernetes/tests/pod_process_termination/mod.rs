@@ -1,6 +1,6 @@
 // @formal evidence sandbox.k8s_process_observation_requires_complete_exit
 use super::*;
-use awaken_sandbox_kubernetes::{
+use awaken_worker_fleet_kubernetes::{
     ObservedPodProcessExit, PodProcessBinding, PodProcessObserver, PodProcessStopper,
     PodProcessTermination, WORKER_PROCESS_EVIDENCE_FINALIZER,
 };
@@ -30,7 +30,7 @@ async fn deployment_restart_policy_requires_actual_closed_exit_evidence() {
     );
     let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
     let name = format!("worker-process-policy-{}", std::process::id());
-    let client = awaken_sandbox_kubernetes::connect_control_client()
+    let client = awaken_worker_fleet_kubernetes::connect_control_client()
         .await
         .unwrap();
     let pods: kube::Api<k8s_openapi::api::core::v1::Pod> =
@@ -255,7 +255,7 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
         .await
         .expect("create exact test process domain");
     let pod = pod_of(&sandbox);
-    let client = awaken_sandbox_kubernetes::connect_control_client()
+    let client = awaken_worker_fleet_kubernetes::connect_control_client()
         .await
         .unwrap();
     let pods: kube::Api<k8s_openapi::api::core::v1::Pod> =
@@ -283,7 +283,7 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
     let current = pods.get(&pod).await.unwrap();
     hard_stop_container(&cluster, &current, "agent");
     let observer = PodProcessObserver::new(
-        awaken_sandbox_kubernetes::connect_control_client()
+        awaken_worker_fleet_kubernetes::connect_control_client()
             .await
             .unwrap(),
         &namespace,
@@ -291,7 +291,7 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
     .unwrap();
     let stopper = PodProcessStopper::new(
         PodProcessObserver::new(
-            awaken_sandbox_kubernetes::connect_control_client()
+            awaken_worker_fleet_kubernetes::connect_control_client()
                 .await
                 .unwrap(),
             &namespace,

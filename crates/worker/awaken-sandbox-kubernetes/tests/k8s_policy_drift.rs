@@ -21,7 +21,7 @@ async fn additive_sandbox_egress_drift_revokes_runtime_readiness() {
         .await
         .expect("D1 canonical policy graph");
     let policies = kube::Api::<NetworkPolicy>::namespaced(
-        awaken_sandbox_kubernetes::connect_control_client()
+        awaken_worker_fleet_kubernetes::connect_control_client()
             .await
             .expect("kube client"),
         "default",

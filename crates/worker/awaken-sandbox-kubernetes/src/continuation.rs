@@ -17,12 +17,14 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::Api;
 use kube::api::{DeleteParams, Preconditions};
 
-use super::error::api_not_found;
-use super::names::{continuation_claim_for_pod, continuation_claim_name};
 use super::pod_projection::CONTINUATION_VOLUME;
 use super::{
     ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent, K8sRuntime,
     SandboxEffectFence, backend, stamp_effect_fence, stamp_realization,
+};
+use awaken_worker_fleet_kubernetes::api_not_found;
+use awaken_worker_fleet_kubernetes::managed_names::{
+    continuation_claim_for_pod, continuation_claim_name,
 };
 
 pub(super) const ORPHANED_LIVE_CLAIM_ERROR: &str =

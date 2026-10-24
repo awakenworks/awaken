@@ -18,7 +18,7 @@ use k8s_openapi::api::core::v1::{
 use k8s_openapi::api::core::v1::{ContainerPort, ExecAction, Probe};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 
-use super::names::{cfg_owner_label, configmap_name, credential_secret_name, pod_name};
+use super::names::{cfg_owner_label, configmap_name, credential_secret_name};
 use super::pod_security::{
     egress_label, hardened_security_context, pod_resources, sandbox_network_labels,
 };
@@ -26,6 +26,7 @@ use super::{K8sRepositoryGatewayTrust, lifecycle, live_inputs, memory, projectio
 use awaken_provisioning_contract::SandboxEffectFence;
 use awaken_sandbox_container::engine::{WritableRootTopology, writable_root_topology};
 use awaken_sandbox_container::{BindPlan, ContainerPlan};
+use awaken_worker_fleet_kubernetes::managed_names::pod_name;
 
 pub const DEFAULT_REPOSITORY_GIT_CONTROL_PORT: u16 = 7778;
 pub(super) const SANDBOX_CONTROL_CONTAINER: &str = "sandbox-control";

@@ -60,18 +60,14 @@ use awaken_sandbox_container::{
     ContainerRealizationNamespace,
 };
 
-pub(crate) mod api_defaults;
 mod channel;
 mod checkpoint;
 mod client;
 mod continuation;
 mod continuation_observation;
-mod create_ledger;
 mod create_transport;
 mod creation;
-mod error;
 mod existing_realization;
-mod finalizer;
 mod guarded_claim;
 mod image_warmup;
 mod lifecycle;
@@ -90,7 +86,6 @@ mod pod_projection;
 mod pod_removal;
 mod pod_security;
 mod process;
-mod process_termination;
 mod projection;
 mod projection_verification;
 pub(crate) mod realization;
@@ -99,19 +94,20 @@ mod restore;
 mod runtime_contract;
 mod sandbox_control;
 mod terminal_evidence;
+pub(crate) use awaken_worker_fleet_kubernetes::managed_names::{
+    continuation_claim_for_pod, pod_name,
+};
+use awaken_worker_fleet_kubernetes::{PodProcessObserver, api_defaults, api_not_found};
+pub(crate) use awaken_worker_fleet_kubernetes::{backend, get_optional};
 #[cfg(test)]
 use channel::accept_reverse_on;
 use client::K8sClients;
-pub use client::connect_control_client;
 use continuation::{rebuild_claim_admission, rebuild_continuation_expectation};
 use continuation_observation::{
     ContinuationObservationDisposition, ContinuationObservationEvidence,
     continuation_claim_observation_required, continuation_observation_disposition,
 };
-use error::api_not_found;
-pub(crate) use error::{backend, get_optional};
-use names::continuation_claim_for_pod;
-pub(crate) use names::{k8s_runtime_id, pod_name};
+pub(crate) use names::k8s_runtime_id;
 use pod_evidence::{
     SANDBOX_ADOPTION_ANNOTATION, SANDBOX_ATTEMPT_ANNOTATION, SANDBOX_REALIZATION_ANNOTATION,
     observed_pod, observed_pod_incarnation, observed_pod_phase, pod_effect_fence,
@@ -134,22 +130,17 @@ pub use pod_projection::{
 use pod_projection::{build_pod_with_continuation, content_binds};
 #[cfg(test)]
 use pod_security::pod_resources;
+pub(crate) use pod_security::sandbox_network_labels;
 use pod_security::{
     admit_network, egress_label, hardened_security_context, unenforceable_k8s_limit,
 };
-pub(crate) use pod_security::{has_forbidden_sandbox_namespace_shape, sandbox_network_labels};
 #[cfg(test)]
 use process::{K8sExecProcess, K8sExecState, k8s_exec_argv, k8s_live_file_result};
 #[cfg(test)]
 use process::{k8s_exit_status, signal_effect_is_complete};
-pub use process_termination::{
-    ObservedPodProcessExit, PodProcessBinding, PodProcessObserver, PodProcessStopper,
-    PodProcessTermination, WORKER_PROCESS_EVIDENCE_FINALIZER,
-};
 use realization::{PodReadiness, create_or_verify, pod_readiness, stamp_pod_realization};
 pub(crate) use realization::{create_or_verify_exact, stamp_realization};
 
-pub use create_ledger::{K8sWorkerCreateLedger, WorkerCreateLedgerState};
 pub use create_transport::K8sCreateTransport;
 pub(crate) use create_transport::brokered_client;
 pub use package_image::K8sPackageImageProvisioner;

@@ -13,10 +13,11 @@ use awaken_dispatch::{
     AttemptAdmission, RunClaim, RunDispatch, SqliteDispatchStore, WorkerHeartbeat,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
-use awaken_sandbox_kubernetes::{K8sCreateTransport, K8sWorkerCreateLedger, PodProcessObserver};
+use awaken_sandbox_kubernetes::K8sCreateTransport;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_time::WallClockExt;
 use awaken_worker::WorkerK8sCreateClient;
+use awaken_worker_fleet_kubernetes::{K8sWorkerCreateLedger, PodProcessObserver};
 use awaken_worker_registry::SqliteWorkerDirectory;
 use awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer;
 use awaken_worker_transport_security::{FixedWorkerLeasePolicy, WorkerUpstream};
@@ -27,7 +28,7 @@ use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use std::time::Duration;
 
 const TTL: u64 = 60_000;
-const FINALIZER: &str = awaken_sandbox_kubernetes::WORKER_PROCESS_EVIDENCE_FINALIZER;
+const FINALIZER: &str = awaken_worker_fleet_kubernetes::WORKER_PROCESS_EVIDENCE_FINALIZER;
 
 mod source_retention;
 
@@ -206,7 +207,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         String::from_utf8(context.stdout).unwrap().trim(),
         format!("k3d-{cluster}")
     );
-    let client = awaken_sandbox_kubernetes::connect_control_client()
+    let client = awaken_worker_fleet_kubernetes::connect_control_client()
         .await
         .unwrap();
     let namespaces: kube::Api<Namespace> = kube::Api::all(client.clone());
@@ -542,7 +543,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     std::fs::remove_file(&old_token).unwrap();
     clock.set(100 + TTL + 1);
     let transport = WorkerTransport::kubernetes(
-        awaken_sandbox_kubernetes::connect_control_client()
+        awaken_worker_fleet_kubernetes::connect_control_client()
             .await
             .unwrap(),
         name,
