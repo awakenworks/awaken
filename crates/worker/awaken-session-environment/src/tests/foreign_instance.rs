@@ -107,7 +107,6 @@ async fn foreign_instance_with_differing_identity_is_refused_and_logical_id_chec
 }
 
 #[tokio::test]
-#[ignore = "product gap: rebind_retained compares SandboxHandle values only, so provider B binds its Hand to provider A's equal-handle Environment"]
 async fn foreign_instance_with_equal_handle_cannot_rebind_another_providers_environment() {
     let provider_a = Arc::new(FakeContainerProvider::default());
     let provider_b = Arc::new(FakeContainerProvider::default());
