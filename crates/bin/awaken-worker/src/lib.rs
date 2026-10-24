@@ -93,9 +93,7 @@ pub use attempt_decorator::{
     RegisteredAttemptDecoratorFactory, RegisteredWorkerApplicationFactory, RegisteredWorkerContext,
     WorkerApplicationCapabilities, WorkerApplicationDependencies,
 };
-pub use bootstrap::{
-    WorkerBootstrap, WorkerBootstrapInput, WorkerDaemonConfig, WorkerUpstreamSecurity,
-};
+pub use bootstrap::{WorkerDaemonConfig, WorkerUpstreamSecurity, worker_upstream};
 pub use credential_files::WorkerCredentialFileResolver;
 #[cfg(feature = "container-k8s")]
 pub use k8s_create_client::WorkerK8sCreateClient;
@@ -834,7 +832,7 @@ impl WorkerNodeBuilder {
                     .to_string(),
             ));
         }
-        credential_liveness::validate_observation_timing(
+        awaken_worker_contract::validate_observation_timing(
             self.credential_probe_interval,
             self.credential_observation_ttl,
             None,
@@ -1764,7 +1762,7 @@ impl WorkerNode {
                     .lease_ttl_ms
                     .expect("WorkerControlClient validates applied heartbeat TTL"),
             );
-        credential_liveness::validate_observation_timing(
+        awaken_worker_contract::validate_observation_timing(
             self.credential_probe_interval,
             self.credential_observation_ttl,
             Some(heartbeat_timing),

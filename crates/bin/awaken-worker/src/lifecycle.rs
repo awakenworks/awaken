@@ -546,7 +546,7 @@ async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u6
                     .expect("WorkerControlClient validates applied heartbeat TTL");
                 let previous_ttl = timing.lease_ttl().as_millis() as u64;
                 let timing = AuthorityLeaseTiming::from_ttl_ms(receipt_ttl);
-                if let Err(error) = crate::credential_liveness::validate_observation_timing(
+                if let Err(error) = awaken_worker_contract::validate_observation_timing(
                     lifecycle.probe_interval,
                     lifecycle.observation_ttl,
                     Some(timing),

@@ -138,8 +138,8 @@ impl ResolvedDeployment {
             );
         }
         worker_bootstrap::validate_file_ownership(role, mode, &file)?;
-        let worker = WorkerBootstrap::resolve(
-            awaken_worker::WorkerBootstrapInput {
+        let worker = awaken_worker_transport_security::WorkerBootstrap::resolve(
+            awaken_worker_transport_security::WorkerBootstrapInput {
                 worker_id: file.worker_id.clone(),
                 request_credential_file: file.worker_request_credential_file.clone(),
                 kubernetes_identity_directory: file.worker_kubernetes_identity_directory.clone(),

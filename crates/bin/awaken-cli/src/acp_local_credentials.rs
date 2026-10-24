@@ -148,7 +148,8 @@ fn configured_worker_upstream(
     deployment: &crate::config::ResolvedDeployment,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<awaken_worker_transport_security::WorkerUpstream, String> {
-    deployment.worker.upstream(
+    awaken_worker::worker_upstream(
+        &deployment.worker,
         upstream,
         awaken_worker::WorkerUpstreamSecurity::Local,
         clock,

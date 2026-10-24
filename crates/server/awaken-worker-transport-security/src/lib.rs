@@ -7,6 +7,8 @@
 //! with WorkerLease/mTLS verification without changing dispatch semantics.
 
 pub mod kubernetes;
+mod worker_bootstrap;
+pub use worker_bootstrap::{WorkerBootstrap, WorkerBootstrapInput};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
