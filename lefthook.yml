@@ -382,7 +382,7 @@ pre-commit:
 
     test-layer-matrix:
       # >>> generated glob from check_test_layers.py INPUT_GLOBS — do not edit
-      glob: "{.cargo/**,.config/**,.github/workflows/**,Cargo.lock,Cargo.toml,crates/server/awaken-run-ingress/**,crates/server/awaken-worker-registry/**,docs/windows-*-20261023.json,docs/design/test-layer-matrix.json,e2e/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**}"
+      glob: "{.cargo/**,.config/**,.github/workflows/**,Cargo.lock,Cargo.toml,crates/server/awaken-dispatch/**,crates/server/awaken-worker-registry/**,docs/windows-*-20261023.json,docs/design/test-layer-matrix.json,e2e/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**}"
       # <<< generated glob
       run: python3 scripts/ci/check_test_layers.py --self-test
 

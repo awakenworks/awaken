@@ -12,7 +12,7 @@ import unittest
 
 INPUT_GLOBS = (
     "docs/design/test-layer-matrix.json", "docs/windows-*-20261023.json",
-    "crates/server/awaken-run-ingress/**", "crates/server/awaken-worker-registry/**",
+    "crates/server/awaken-dispatch/**", "crates/server/awaken-worker-registry/**",
     "e2e/**", "scripts/ci/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
     ".cargo/**", ".config/**", ".github/workflows/**", "lefthook.yml",
 )
@@ -47,7 +47,7 @@ def required_layers(paths: list[str], *, qualification: bool = False) -> dict:
         elif path.startswith(("crates/", "apps/", "tests/", "xtask/", "fuzz/")):
             layers.update(("L1", "L2", "L3"))
             reasons.append(path + ": affected owners plus transitive consumers; service and process laws remain separate")
-            if ("awaken-run-ingress/" in path and ("/migrations/" in path or "/src/postgres" in path
+            if ("awaken-dispatch/" in path and ("/migrations/" in path or "/src/postgres" in path
                     or path.endswith("/dispatch_claim_perf.rs"))):
                 layers.add("L4"); scale = True
         elif path.startswith(("e2e/", "web/", "packages/", "contracts/", "deploy/")):
@@ -113,7 +113,7 @@ def validate(value: dict, root: Path = ROOT) -> None:
         raise ValueError("scale must execute exactly three ignored observations with captured output")
     # Inspect the source inventory, not compiler inventory. In particular, a
     # fourth live lifecycle case must not disappear behind the old three-case plan.
-    notify = root / "crates/server/awaken-run-ingress/tests/pg_notify_wake.rs"
+    notify = root / "crates/server/awaken-dispatch/tests/pg_notify_wake.rs"
     notify_names = set(re.findall(r"#\[tokio::test[^\]]*\]\s*async fn (\w+)\(", notify.read_text(encoding="utf-8")))
     if {case["name"] for case in by_id["pg-notify"]["cases"]} != notify_names:
         raise ValueError("PgNotify source test inventory drifted")
@@ -219,10 +219,10 @@ class MatrixTests(unittest.TestCase):
         # qualification. None can be certified by affected Rust alone.
         for paths,layers,cold,scale in [
             (["docs/design/test-validation.md"], {"L0"}, False, False),
-            (["crates/server/awaken-run-ingress/src/lease.rs"], {"L0","L1","L2","L3"}, False, False),
-            (["crates/server/awaken-run-ingress/Cargo.toml"], {"L0","L1","L2","L3","L4"}, True, False),
+            (["crates/server/awaken-dispatch/src/lease.rs"], {"L0","L1","L2","L3"}, False, False),
+            (["crates/server/awaken-dispatch/Cargo.toml"], {"L0","L1","L2","L3","L4"}, True, False),
             (["e2e/harness.mjs"], {"L0","L2","L3"}, False, False),
-            (["crates/server/awaken-run-ingress/src/postgres_claim.rs"], {"L0","L1","L2","L3","L4"}, False, True),
+            (["crates/server/awaken-dispatch/src/postgres_claim.rs"], {"L0","L1","L2","L3","L4"}, False, True),
             (["new-build-input"], {"L0","L1","L2","L3","L4"}, True, True),
         ]:
             with self.subTest(paths=paths):
