@@ -51,7 +51,8 @@ pub(crate) struct DomainState {
     pub(crate) dispatch: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
     pub(crate) environments:
         Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
-    pub(crate) sessions: Arc<awaken_session_application::SessionApplication>,
+    pub(crate) session_queries: Arc<awaken_session_application::SessionQueries>,
+    pub(crate) worker_occupancy: Arc<awaken_session_application::SessionWorkerOccupancy>,
     pub(crate) relay_targets: Option<Arc<dyn awaken_worker_contract::WorkerRelayTargetObserver>>,
     pub(crate) bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     pub(crate) clock: Arc<dyn awaken_time::WallClock>,
@@ -177,7 +178,7 @@ async fn handle_bootstrap_close(
         return status.into_response();
     }
     match state
-        .sessions
+        .worker_occupancy
         .observe_worker_realizations(
             awaken_session_application::WorkerRealizationRead::Occupancy(&request.worker_id),
         )
@@ -196,7 +197,7 @@ async fn handle_bootstrap_close(
     .await
     {
         Ok(observation) => match state
-            .sessions
+            .worker_occupancy
             .observe_worker_realizations(
                 awaken_session_application::WorkerRealizationRead::Occupancy(
                     &observation.worker_id,
@@ -278,7 +279,7 @@ async fn handle_relay_destination(
     };
     let now = awaken_time::WallClockExt::now_ms(state.clock.as_ref());
     let session_id = awaken_session_types::SessionId::from(query.session_id);
-    let session = match state.sessions.queries().session(&session_id).await {
+    let session = match state.session_queries.session(&session_id).await {
         Ok(session) => session,
         Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
             return StatusCode::NOT_FOUND.into_response();
@@ -500,7 +501,11 @@ async fn handle_domain(
         } else {
             awaken_session_application::WorkerRealizationRead::Occupancy(&identity.worker_id)
         };
-    let sessions = match state.sessions.observe_worker_realizations(read).await {
+    let sessions = match state
+        .worker_occupancy
+        .observe_worker_realizations(read)
+        .await
+    {
         Ok(observed) => observed,
         Err(error) => return domain_read_failure(&identity, "session_realizations", error),
     };

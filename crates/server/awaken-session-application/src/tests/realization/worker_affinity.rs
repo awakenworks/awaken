@@ -504,6 +504,7 @@ async fn worker_realization_owner_read_keeps_expired_unfinished_session_occupied
     let application = application(repo, Arc::new(RecordingEnvironmentSource::default()));
     assert!(
         application
+            .worker_occupancy()
             .observe_worker_realizations(crate::WorkerRealizationRead::Occupancy("worker-affinity"))
             .await
             .unwrap()
@@ -512,6 +513,7 @@ async fn worker_realization_owner_read_keeps_expired_unfinished_session_occupied
     );
     assert!(
         !application
+            .worker_occupancy()
             .observe_worker_realizations(crate::WorkerRealizationRead::Occupancy("other-worker"))
             .await
             .unwrap()
@@ -520,6 +522,7 @@ async fn worker_realization_owner_read_keeps_expired_unfinished_session_occupied
     );
     assert!(
         application
+            .worker_occupancy()
             .observe_worker_realizations(crate::WorkerRealizationRead::Occupancy(""))
             .await
             .is_err(),
@@ -533,6 +536,7 @@ async fn worker_realization_owner_read_keeps_expired_unfinished_session_occupied
         .expect("R3 retained Session");
     assert!(
         !application
+            .worker_occupancy()
             .observe_worker_realizations(crate::WorkerRealizationRead::Occupancy(
                 "worker-completed"
             ))

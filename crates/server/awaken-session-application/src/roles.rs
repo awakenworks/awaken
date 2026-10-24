@@ -45,7 +45,7 @@ use awaken_session_types::SessionId;
 
 use crate::{
     CommittedSessionFacts, CreateProfiledSessionCommand, ProjectionThreadSnapshots,
-    RecoveredSessionProjection, SessionApplication, SessionArchiveWithRepositoryPublicationCommand,
+    RecoveredSessionProjection, SessionArchiveWithRepositoryPublicationCommand,
     SessionArchiveWithRepositoryPublicationError, SessionArchiveWithRepositoryPublicationOutcome,
     SessionCreateProtocol, SessionCreateRequest, SessionCreateRequestError, SessionCreationError,
     SessionDeleteCommand, SessionDispositionMutation, SessionEventBatchIdempotency,
@@ -419,102 +419,6 @@ pub trait DeploymentSessionEnvironment: Send + Sync {
 }
 
 #[async_trait]
-impl SessionEventBatches for SessionApplication {
-    async fn append_and_drive_session_event_batch_idempotent(
-        &self,
-        session_id: &SessionId,
-        inputs: Vec<SessionEventInput>,
-        data_subject_id: Option<String>,
-        traceparent: Option<String>,
-        idempotency: Option<(String, String)>,
-    ) -> Result<(SessionEventBatch, Option<RunError>), RunError> {
-        SessionApplication::append_and_drive_session_event_batch_idempotent(
-            self,
-            session_id,
-            inputs,
-            data_subject_id,
-            traceparent,
-            idempotency,
-        )
-        .await
-    }
-
-    async fn append_session_event_batch_idempotent(
-        &self,
-        session_id: &SessionId,
-        inputs: Vec<SessionEventInput>,
-        data_subject_id: Option<String>,
-        traceparent: Option<String>,
-        idempotency: Option<(String, String)>,
-    ) -> Result<SessionEventBatch, RunError> {
-        SessionApplication::append_session_event_batch_idempotent(
-            self,
-            session_id,
-            inputs,
-            data_subject_id,
-            traceparent,
-            idempotency,
-        )
-        .await
-    }
-
-    async fn session_event_batch_idempotency(
-        &self,
-        session_id: &SessionId,
-        key: &str,
-        request_fingerprint: &str,
-    ) -> Result<SessionEventBatchIdempotency, RunError> {
-        SessionApplication::session_event_batch_idempotency(
-            self,
-            session_id,
-            key,
-            request_fingerprint,
-        )
-        .await
-    }
-
-    async fn close_session_event_admission(
-        &self,
-        owner_scope: &str,
-        session_id: &SessionId,
-        key: String,
-        request_fingerprint: String,
-    ) -> Result<SessionEventAdmission, RunError> {
-        SessionApplication::close_session_event_admission(
-            self,
-            owner_scope,
-            session_id,
-            key,
-            request_fingerprint,
-        )
-        .await
-    }
-
-    fn agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
-        self.queries.agent_unavailable(workspace_id, agent_id)
-    }
-
-    async fn supports_mid_conversation_system(&self, thread: &str) -> Result<bool, RunError> {
-        let streaming_runtime = self.runtime().streaming_runs();
-
-        streaming_runtime
-            .supports_mid_conversation_system(thread)
-            .await
-    }
-}
-
-#[async_trait]
-impl ProfiledSessionReplies for SessionApplication {
-    async fn reply_profiled_session_run_for_owner(
-        &self,
-        owner_scope: &str,
-        command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<(), SessionProjectionRecoveryError> {
-        SessionApplication::reply_profiled_session_run_for_owner(self, owner_scope, command).await
-    }
-}
-
-#[async_trait]
 impl SessionTermination for crate::SessionTerminationCommands {
     async fn archive_session(
         &self,
@@ -611,28 +515,6 @@ impl SessionResourceCommands for crate::SessionResourceManifests {
             self, session_id, binding_id,
         ))
         .await
-    }
-}
-
-#[async_trait]
-impl DeploymentSessionEnvironment for SessionApplication {
-    async fn deployment_environment(
-        &self,
-        environment_id: &str,
-    ) -> Result<Option<EnvItem>, ExecutableEnvironmentRegistrationError> {
-        self.environments.projection.get(environment_id).await
-    }
-
-    fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
-        self.queries.agent_unavailable(workspace_id, agent_id)
-    }
-
-    fn deployment_unavailable_delegate(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-    ) -> Option<String> {
-        self.queries.unavailable_delegate(workspace_id, agent_id)
     }
 }
 

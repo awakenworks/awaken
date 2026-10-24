@@ -609,6 +609,7 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
         .unwrap();
     let user = warm
         .application
+        .event_batches()
         .append_session_event_batch(
             &session.id,
             vec![SessionEventInput::UserMessage {
@@ -637,6 +638,7 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
     );
     let interrupt = warm
         .application
+        .event_batches()
         .append_session_event_batch(
             &session.id,
             vec![SessionEventInput::Interrupt(SessionEventInterrupt {
@@ -1039,6 +1041,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
     let fingerprint = awaken_agent_contract::stable_fingerprint(&(&request, &data_subject_id));
     let accepted = state
         .application
+        .event_batches()
         .append_session_event_batch_idempotent(
             &SessionId::from(&session.id),
             vec![SessionEventInput::UserMessage {
@@ -1206,6 +1209,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
         let batch = if winner == "closed" {
             state
                 .application
+                .event_batches()
                 .close_session_event_admission(
                     "default",
                     &SessionId::from(&session.id),
@@ -1221,6 +1225,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
             Some(
                 state
                     .application
+                    .event_batches()
                     .append_session_event_batch_idempotent(
                         &SessionId::from(&session.id),
                         vec![SessionEventInput::UserMessage {
@@ -2746,6 +2751,7 @@ async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
                 awaken_agent_contract::stable_fingerprint(&(&request, &None::<String>));
             let retained = state
                 .application
+                .event_batches()
                 .append_session_event_batch_idempotent(
                     &SessionId::from(&session_id),
                     validated.inputs,
@@ -2894,6 +2900,7 @@ async fn retained_unprocessed_tool_reply_queues_a_followup_user_message() {
         .expect("AR2 exact confirmation");
     state
         .application
+        .event_batches()
         .append_session_event_batch(&session_id, accepted_reply.inputs, None, None)
         .await
         .expect("AR2 retain reply without driving it");
@@ -4634,6 +4641,7 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
         .expect("C2 opens the durable aggregate interval");
     let retained = warm
         .application
+        .event_batches()
         .append_session_event_batch(
             &session.id,
             vec![SessionEventInput::UserMessage {
@@ -5119,6 +5127,7 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
 
             let first_batch = warm
                 .application
+                .event_batches()
                 .append_session_event_batch(
                     &session.id,
                     vec![SessionEventInput::UserMessage {
@@ -5144,6 +5153,7 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
             let first_run = first_run.clone();
             let overlapping_batch = warm
                 .application
+                .event_batches()
                 .append_session_event_batch(
                     &session.id,
                     vec![SessionEventInput::UserMessage {
@@ -5293,6 +5303,7 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
     Box::pin(async move {
         let second_batch = warm
             .application
+            .event_batches()
             .append_session_event_batch(
                 &session_id,
                 vec![SessionEventInput::UserMessage {
@@ -5608,6 +5619,7 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
         .unwrap();
     let batch = warm
         .application
+        .event_batches()
         .append_session_event_batch(
             &session.id,
             vec![SessionEventInput::UserMessage {
@@ -5672,6 +5684,7 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
         .id
         .clone();
     warm.application
+        .event_batches()
         .drive_session_event_batches(&SessionId::from(&session.id), None)
         .await
         .unwrap();
@@ -5738,6 +5751,7 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
         "V3"
     );
     cold.application
+        .event_batches()
         .drive_session_event_batches(&SessionId::from(&session.id), None)
         .await
         .unwrap();
@@ -5794,6 +5808,7 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
         .unwrap();
     let batch = state
         .application
+        .event_batches()
         .append_session_event_batch(
             &session.id,
             vec![SessionEventInput::UserMessage {
@@ -12471,6 +12486,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                     .unwrap();
                 let retained = state
                     .application
+                    .event_batches()
                     .append_session_event_batch(
                         &session.id,
                         vec![SessionEventInput::UserMessage {
@@ -12564,7 +12580,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                     1,
                     "R5 first opening must be issued, first_has_running={first_has_running}"
                 );
-                let reply = state.application.append_session_event_batch(&session.id,
+                let reply = state.application.event_batches().append_session_event_batch(&session.id,
                     vec![SessionEventInput::ToolReply(awaken_session_event_contract::SessionEventToolReply {
                         tool_request_event_id: first_issued.iter().find(|event| event.type_str() == "agent.tool_use").unwrap().id.clone(),
                         target: awaken_session_execution_contract::SessionThreadTarget::Primary,

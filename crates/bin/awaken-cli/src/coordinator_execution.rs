@@ -59,7 +59,8 @@ pub fn coordinator_execution(
     let agent_host = host.clone();
     let session_runs = Arc::new(SessionRunApplication::new(
         runs,
-        sessions.clone(),
+        sessions.run_admissions(),
+        sessions.coordination(),
         move |thread| Ok(workspace_host.capabilities().thread_workspace(thread)?),
         move |thread| Ok(agent_host.capabilities().thread_agent_projection(thread)?),
     ));
@@ -100,7 +101,7 @@ fn install_managed_agent_coordination(
         .verify_dispatch(&dispatch)
         .map_err(|_| AgentCoordinationInstallError::DispatchObservationMismatch)?;
     let coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
-        application.clone();
+        application.coordination();
     let bindings = host.session_application_bindings();
     bindings
         .bind_agent_coordination(coordination)

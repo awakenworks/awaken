@@ -29,7 +29,9 @@ use awaken_session_state_contract::{PersistedSession, SessionEventHistory as Eve
 use awaken_session_types::{RunError, SessionRevision};
 use awaken_time::WallClockExt as _;
 
-use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
+use std::sync::Arc;
+
+use super::{SessionMutationError, mutation::repository_failure};
 
 mod selection;
 
@@ -234,7 +236,69 @@ fn committed_message_anchor<'a>(
     )))
 }
 
-impl SessionApplication {
+/// Session Event batches: append a batch of user, system, tool-reply,
+/// Outcome and interrupt events through the root CAS with its exact
+/// idempotency, then drive each committed event to its effect and settle it,
+/// both on request and from recovery.
+///
+/// It holds the CAS kernel, the clock and lifecycle signal, the read, Run
+/// admission, activity and coordination components an event drives, and the Thread,
+/// coordination, streaming and Outcome runtime roles.
+pub struct SessionEventBatchCommands {
+    mutations: Arc<crate::SessionMutations>,
+    clock: Arc<dyn awaken_time::WallClock>,
+    lifecycle: Arc<crate::SessionLifecycle>,
+    queries: Arc<crate::SessionQueries>,
+    activities: Arc<crate::SessionActivities>,
+    run_admissions: Arc<crate::SessionRunAdmissions>,
+    coordination: Arc<crate::SessionCoordination>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
+    coordination_runtime: Arc<dyn awaken_session_execution_contract::CoordinationRuntime>,
+    coordination_reads: Arc<dyn awaken_session_execution_contract::SessionCoordinationReads>,
+    streaming_runs: Arc<dyn awaken_session_execution_contract::StreamingRunRuntime>,
+    outcomes: Arc<dyn awaken_session_execution_contract::OutcomeRuntime>,
+}
+
+/// The collaborators one [`SessionEventBatchCommands`] is built from.
+pub(crate) struct SessionEventBatchCollaborators {
+    pub(crate) mutations: Arc<crate::SessionMutations>,
+    pub(crate) clock: Arc<dyn awaken_time::WallClock>,
+    pub(crate) lifecycle: Arc<crate::SessionLifecycle>,
+    pub(crate) queries: Arc<crate::SessionQueries>,
+    pub(crate) activities: Arc<crate::SessionActivities>,
+    pub(crate) run_admissions: Arc<crate::SessionRunAdmissions>,
+    pub(crate) coordination: Arc<crate::SessionCoordination>,
+    pub(crate) runtime: crate::SessionExecutor,
+}
+
+impl SessionEventBatchCommands {
+    pub(crate) fn new(collaborators: SessionEventBatchCollaborators) -> Self {
+        let SessionEventBatchCollaborators {
+            mutations,
+            clock,
+            lifecycle,
+            queries,
+            activities,
+            run_admissions,
+            coordination,
+            runtime,
+        } = collaborators;
+        Self {
+            mutations,
+            clock,
+            lifecycle,
+            queries,
+            activities,
+            run_admissions,
+            coordination,
+            thread_reads: runtime.thread_reads.clone(),
+            coordination_runtime: runtime.coordination.clone(),
+            coordination_reads: runtime.coordination_reads.clone(),
+            streaming_runs: runtime.streaming_runs.clone(),
+            outcomes: runtime.outcomes.clone(),
+        }
+    }
+
     /// Observe the Session root's one retained Event-batch retry coordinate.
     /// This read exists so a protocol retry can recover its original receipt
     /// before current pending-tool admission; it does not own another receipt.
@@ -264,7 +328,7 @@ impl SessionApplication {
         run_id: &awaken_agent_contract::agent::run::Id,
         message_id: &MessageId,
     ) -> Result<SessionEventProjectionAnchor, RunError> {
-        let thread_reads = self.runtime().thread_reads();
+        let thread_reads = self.thread_reads.as_ref();
 
         let snapshot = thread_reads
             .session_thread_run_recovery_snapshot(session_id, thread_id, run_id)
@@ -288,7 +352,7 @@ impl SessionApplication {
         thread_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<SessionEventProjectionAnchor, RunError> {
-        let thread_reads = self.runtime().thread_reads();
+        let thread_reads = self.thread_reads.as_ref();
 
         let snapshot = thread_reads
             .session_thread_run_recovery_snapshot(session_id, thread_id, run_id)
@@ -460,7 +524,8 @@ impl SessionApplication {
         request_fingerprint: String,
     ) -> Result<awaken_session_application_contract::SessionEventAdmission, RunError> {
         if let Some(deleted) = self
-            .session_repository()
+            .mutations
+            .repository()
             .deleted_event_admissions(owner_scope, session_id)
             .await
             .map_err(repository_failure)
@@ -499,7 +564,8 @@ impl SessionApplication {
                 // Delete may win between the live lookup and root CAS. Read
                 // the SAME owner-bound deletion authority before classifying.
                 match self
-                    .session_repository()
+                    .mutations
+                    .repository()
                     .deleted_event_admissions(owner_scope, session_id)
                     .await
                     .map_err(repository_failure)
@@ -525,7 +591,7 @@ impl SessionApplication {
         wake_after_accept: bool,
     ) -> Result<SessionEventBatch, RunError> {
         let mutations = &self.mutations;
-        let thread_reads = self.runtime().thread_reads();
+        let thread_reads = self.thread_reads.as_ref();
 
         for attempt in 0..ROOT_CAS_ATTEMPTS {
             let owner = mutations
@@ -672,7 +738,7 @@ impl SessionApplication {
     #[cfg(test)]
     pub(crate) async fn reconcile_event_batches(&self) -> EventBatchReconciliation {
         let candidates = match super::recovery_scan::recovery_candidates(
-            self.session_repository(),
+            self.mutations.repository().as_ref(),
             self.clock.as_ref(),
             true,
         )
@@ -690,7 +756,7 @@ impl SessionApplication {
         self.reconcile_event_batches_from(&candidates).await
     }
 
-    pub(super) async fn reconcile_event_batches_from(
+    pub(crate) async fn reconcile_event_batches_from(
         &self,
         candidates: &super::SessionRecoveryCandidates,
     ) -> EventBatchReconciliation {
@@ -783,7 +849,8 @@ impl SessionApplication {
             let session = match initial_session.take() {
                 Some(session) => session,
                 None => self
-                    .session_repository()
+                    .mutations
+                    .repository()
                     .get(session_id)
                     .await
                     .map_err(repository_failure)
@@ -820,7 +887,8 @@ impl SessionApplication {
                     // The normal selector remains retained-order FIFO; this is
                     // a recovery escape, not an alternate event scheduler.
                     let fresh = self
-                        .session_repository()
+                        .mutations
+                        .repository()
                         .get(session_id)
                         .await
                         .map_err(repository_failure)
@@ -922,9 +990,9 @@ impl SessionApplication {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<EventBatchProgress, RunError>> + Send + 'a>,
     > {
-        let coordination_runtime = self.runtime().coordination();
+        let coordination_runtime = self.coordination_runtime.as_ref();
 
-        let thread_reads = self.runtime().thread_reads();
+        let thread_reads = self.thread_reads.as_ref();
 
         // This reconciliation is polled by the lifecycle supervisor, whose
         // recovery future is already deep. Select the exact Event kind before
@@ -1081,8 +1149,7 @@ impl SessionApplication {
                 max_iterations,
             } => Box::pin(async move {
                 let source_commit_cursor = match self
-                    .runtime()
-                    .outcomes()
+                    .outcomes
                     .prepare_outcome(
                         session.session_id.as_str(),
                         &outcome_id,
@@ -1123,7 +1190,7 @@ impl SessionApplication {
                     });
                 let accompanying_system = adjacent_system_input(session, &batch_id, &operation_id);
                 SessionAgentCoordination::reply_session_thread_tool(
-                    self,
+                    self.coordination.as_ref(),
                     reply.delivery_command(&session.session_id, accompanying_system),
                 )
                 .await?;
@@ -1162,14 +1229,13 @@ impl SessionApplication {
                 for target in &targets {
                     let result = match target {
                         SessionThreadTarget::Primary => {
-                            self.runtime()
-                                .streaming_runs()
+                            self.streaming_runs
                                 .interrupt(session.session_id.as_str())
                                 .await
                         }
                         SessionThreadTarget::Child(child_thread_id) => {
                             SessionAgentCoordination::interrupt_session_thread(
-                                self,
+                                self.coordination.as_ref(),
                                 &session.session_id,
                                 child_thread_id,
                             )
@@ -1265,8 +1331,8 @@ impl SessionApplication {
         run_id: &awaken_agent_contract::agent::run::Id,
         content: &[awaken_agent_contract::agent::content::ContentBlock],
     ) -> Result<Option<EventBatchProgress>, RunError> {
-        let coordination_reads = self.runtime().coordination_reads();
-        let thread_reads = self.runtime().thread_reads();
+        let coordination_reads = self.coordination_reads.as_ref();
+        let thread_reads = self.thread_reads.as_ref();
 
         let Some(state) = coordination_reads
             .session_run_state(&session.session_id, run_id)
@@ -1423,7 +1489,7 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
         target_run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<bool, RunError> {
-        let thread_reads = self.runtime().thread_reads();
+        let thread_reads = self.thread_reads.as_ref();
 
         let Some(snapshot) = thread_reads
             .session_thread_recovery_snapshot(session_id, session_id.as_str())
@@ -1488,6 +1554,91 @@ fn mutation_run_error(error: SessionMutationError) -> RunError {
             RunError::internal("Session Event mutation identity changed payload")
         }
         SessionMutationError::Unavailable(message) => RunError::unavailable(message),
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::SessionEventBatches for SessionEventBatchCommands {
+    async fn append_and_drive_session_event_batch_idempotent(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        inputs: Vec<SessionEventInput>,
+        data_subject_id: Option<String>,
+        traceparent: Option<String>,
+        idempotency: Option<(String, String)>,
+    ) -> Result<(SessionEventBatch, Option<RunError>), RunError> {
+        SessionEventBatchCommands::append_and_drive_session_event_batch_idempotent(
+            self,
+            session_id,
+            inputs,
+            data_subject_id,
+            traceparent,
+            idempotency,
+        )
+        .await
+    }
+
+    async fn append_session_event_batch_idempotent(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        inputs: Vec<SessionEventInput>,
+        data_subject_id: Option<String>,
+        traceparent: Option<String>,
+        idempotency: Option<(String, String)>,
+    ) -> Result<SessionEventBatch, RunError> {
+        SessionEventBatchCommands::append_session_event_batch_idempotent(
+            self,
+            session_id,
+            inputs,
+            data_subject_id,
+            traceparent,
+            idempotency,
+        )
+        .await
+    }
+
+    async fn session_event_batch_idempotency(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        key: &str,
+        request_fingerprint: &str,
+    ) -> Result<SessionEventBatchIdempotency, RunError> {
+        SessionEventBatchCommands::session_event_batch_idempotency(
+            self,
+            session_id,
+            key,
+            request_fingerprint,
+        )
+        .await
+    }
+
+    async fn close_session_event_admission(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_types::SessionId,
+        key: String,
+        request_fingerprint: String,
+    ) -> Result<awaken_session_application_contract::SessionEventAdmission, RunError> {
+        SessionEventBatchCommands::close_session_event_admission(
+            self,
+            owner_scope,
+            session_id,
+            key,
+            request_fingerprint,
+        )
+        .await
+    }
+
+    fn agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
+        self.queries.agent_unavailable(workspace_id, agent_id)
+    }
+
+    async fn supports_mid_conversation_system(&self, thread: &str) -> Result<bool, RunError> {
+        let streaming_runtime = self.streaming_runs.as_ref();
+
+        streaming_runtime
+            .supports_mid_conversation_system(thread)
+            .await
     }
 }
 

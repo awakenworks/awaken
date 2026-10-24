@@ -4,7 +4,7 @@
 // @formal evidence session_event_batch.run_reservation_precedes_distinct_activity_receipt
 // @formal evidence session_execution.initial_event_path_reaches_idle_only_after_full_settlement
 // @formal evidence tool_result.one_pending_occurrence_has_one_admitted_reply
-// awaken-allow(file-limit-ceiling): 6395 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 5853 (legacy oversized test file: split, never grow)
 use awaken_session_execution_contract::{
     CoordinationRuntime as _, SessionCoordinationReads as _, StreamingRunRuntime as _,
     ThreadReadRuntime as _,
@@ -1132,6 +1132,7 @@ async fn preferred_user_drive_accelerates_only_the_canonical_fifo_head() {
             Arc::new(RecordingEnvironmentSource::default()),
         );
         let (_preferred, drive_error) = app
+            .event_batches
             .append_and_drive_session_event_batch_idempotent(
                 &SessionId::from(session_id),
                 vec![SessionEventInput::UserMessage {
@@ -1197,6 +1198,7 @@ async fn preferred_user_drive_failure_retains_receipt_and_recovery_wake() {
     );
 
     let (accepted, drive_error) = app
+        .event_batches
         .append_and_drive_session_event_batch_idempotent(
             &SessionId::from(session_id),
             vec![SessionEventInput::UserMessage {
@@ -1391,7 +1393,7 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
         // must wake publication for this exact pending primary input.
         assert!(
             awaken_session_execution_contract::SessionAgentCoordination::admit_session_model_request(
-                &app,
+                app.coordination.as_ref(),
                 &SessionId::from(session_id),
                 &ThreadId(session_id.into()),
                 &RunId("not-the-current-run".into()),
@@ -1400,7 +1402,7 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
             .is_err()
         );
         awaken_session_execution_contract::SessionAgentCoordination::admit_session_model_request(
-            &app,
+            app.coordination.as_ref(),
             &SessionId::from(session_id),
             &ThreadId("event-child".into()),
             &run_id,
@@ -1417,7 +1419,7 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
             "neither an invalid Run nor a child request may wake the primary input"
         );
         awaken_session_execution_contract::SessionAgentCoordination::admit_session_model_request(
-            &app,
+            app.coordination.as_ref(),
             &SessionId::from(session_id),
             &ThreadId(session_id.into()),
             &run_id,
@@ -1430,7 +1432,8 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
         )
         .await
         .expect("model admission must wake the existing supervisor before completion");
-        app.drive_session_event_batches(&SessionId::from(session_id), None)
+        app.event_batches
+            .drive_session_event_batches(&SessionId::from(session_id), None)
             .await
             .unwrap();
         let first = repository.get(&SessionId::from(session_id)).await.unwrap();
@@ -1442,7 +1445,8 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
         assert!(entries.iter().all(|entry| !entry.processed));
         assert!(entries[1].projection_anchor.is_none());
         assert!(runtime.activated.lock().unwrap().is_empty());
-        app.drive_session_event_batches(&SessionId::from(session_id), None)
+        app.event_batches
+            .drive_session_event_batches(&SessionId::from(session_id), None)
             .await
             .unwrap();
         let replay = repository.get(&SessionId::from(session_id)).await.unwrap();
@@ -1452,7 +1456,7 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
         );
         if has_input {
             awaken_session_execution_contract::SessionAgentCoordination::admit_session_model_request(
-                &app,
+                app.coordination.as_ref(),
                 &SessionId::from(session_id),
                 &ThreadId(session_id.into()),
                 &run_id,
@@ -1470,7 +1474,8 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
             );
             runtime.end(&run_id);
             let reads_before_terminal_drive = runtime.run_state_reads.load(Ordering::SeqCst);
-            app.drive_session_event_batches(&SessionId::from(session_id), None)
+            app.event_batches
+                .drive_session_event_batches(&SessionId::from(session_id), None)
                 .await
                 .unwrap();
             assert_eq!(
@@ -1547,6 +1552,7 @@ async fn unreplayed_user_run_anchors_its_receipt_without_inventing_a_message() {
         );
 
         let result = app
+            .event_batches
             .drive_session_event_batches(&SessionId::from(session_id), None)
             .await;
         assert!(result.is_ok(), "U1-U6 reconciliation remains retryable");
@@ -1565,6 +1571,7 @@ async fn unreplayed_user_run_anchors_its_receipt_without_inventing_a_message() {
         );
         assert!(
             recovered
+                .event_batches
                 .drive_session_event_batches(&SessionId::from(session_id), None)
                 .await
                 .is_ok()
@@ -1670,6 +1677,7 @@ async fn running_input_requires_exact_content_and_a_valid_committed_coordinate()
             Arc::new(RecordingEnvironmentSource::default()),
         );
         let outcome = app
+            .event_batches
             .drive_session_event_batches(&SessionId::from(session_id), None)
             .await;
         assert_eq!(
@@ -1759,6 +1767,7 @@ async fn running_input_anchor_recovers_root_write_faults_without_reexecution() {
             _ => {}
         }
         let first = app
+            .event_batches
             .drive_session_event_batches(&SessionId::from(session_id), None)
             .await;
         assert_eq!(first.is_err(), fault == "unavailable", "R1-R3/{fault}");
@@ -1776,8 +1785,10 @@ async fn running_input_anchor_recovers_root_write_faults_without_reexecution() {
         );
         let joined_session = SessionId::from(session_id);
         let (a, b) = tokio::join!(
-            app.drive_session_event_batches(&joined_session, None),
-            cold.drive_session_event_batches(&joined_session, None)
+            app.event_batches
+                .drive_session_event_batches(&joined_session, None),
+            cold.event_batches
+                .drive_session_event_batches(&joined_session, None)
         );
         a.unwrap();
         b.unwrap();
@@ -1802,7 +1813,8 @@ async fn running_input_anchor_recovers_root_write_faults_without_reexecution() {
                 && runtime.activated.lock().unwrap().is_empty(),
             "R4 no duplicate or successor execution"
         );
-        cold.drive_session_event_batches(&SessionId::from(session_id), None)
+        cold.event_batches
+            .drive_session_event_batches(&SessionId::from(session_id), None)
             .await
             .unwrap();
         assert_eq!(
@@ -1811,7 +1823,8 @@ async fn running_input_anchor_recovers_root_write_faults_without_reexecution() {
             "R4/E3"
         );
         runtime.await_run(&run_id);
-        cold.drive_session_event_batches(&SessionId::from(session_id), None)
+        cold.event_batches
+            .drive_session_event_batches(&SessionId::from(session_id), None)
             .await
             .unwrap();
         let completed = repository.get(&SessionId::from(session_id)).await.unwrap();
@@ -1909,6 +1922,7 @@ async fn unreplayed_receipt_requires_its_exact_terminal_user_run() {
                 Arc::new(RecordingEnvironmentSource::default()),
             );
             let result = app
+                .event_batches
                 .drive_session_event_batches(&SessionId::from(session_id), None)
                 .await;
             assert!(result.is_ok(), "A1-A4 remain retryable before Dispatch");
@@ -1982,6 +1996,7 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let first = app
+        .event_batches
         .append_session_event_batch_idempotent(
             &SessionId::from("event-idempotency"),
             input.clone(),
@@ -1997,6 +2012,7 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
         .unwrap()
         .revision;
     let replay = app
+        .event_batches
         .append_session_event_batch_idempotent(
             &SessionId::from("event-idempotency"),
             input.clone(),
@@ -2021,6 +2037,7 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
     );
     assert_eq!(
         restarted
+            .event_batches
             .session_event_batch_idempotency(
                 &SessionId::from("event-idempotency"),
                 "key-1",
@@ -2032,6 +2049,7 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
         "I2/E2 restart replay"
     );
     let cold_replay = restarted
+        .event_batches
         .append_session_event_batch_idempotent(
             &SessionId::from("event-idempotency"),
             input.clone(),
@@ -2049,6 +2067,7 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
     assert_eq!(cold_snapshot.revision, accepted_revision, "I2/E2 stutters");
     assert_eq!(cold_snapshot.event_batches.len(), 1, "I2/E2 appends once");
     let conflict = restarted
+        .event_batches
         .append_session_event_batch_idempotent(
             &SessionId::from("event-idempotency"),
             input.clone(),
@@ -2061,6 +2080,7 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
     assert_eq!(conflict.code, "idempotency_conflict", "I3/E3");
 
     let later = restarted
+        .event_batches
         .append_session_event_batch_idempotent(
             &SessionId::from("event-idempotency"),
             input,
@@ -2100,6 +2120,7 @@ async fn event_batch_lost_cas_ack_reloads_the_retained_admission_plan() {
     );
 
     let admitted = app
+        .event_batches
         .append_session_event_batch_idempotent(
             &SessionId::from("event-lost-ack"),
             vec![SessionEventInput::UserMessage {
@@ -2151,17 +2172,19 @@ async fn final_event_admission_close_is_absorbing_across_restart_and_late_delive
         }];
         let key = Some(("key".to_owned(), "fingerprint".to_owned()));
         if accept_first {
-            app.append_session_event_batch_idempotent(
-                &SessionId::from(session),
-                input.clone(),
-                None,
-                None,
-                key.clone(),
-            )
-            .await
-            .unwrap();
+            app.event_batches
+                .append_session_event_batch_idempotent(
+                    &SessionId::from(session),
+                    input.clone(),
+                    None,
+                    None,
+                    key.clone(),
+                )
+                .await
+                .unwrap();
         }
         let first = app
+            .event_batches
             .close_session_event_admission(
                 "workspace",
                 &SessionId::from(session),
@@ -2200,6 +2223,7 @@ async fn final_event_admission_close_is_absorbing_across_restart_and_late_delive
             Arc::new(RecordingEnvironmentSource::default()),
         );
         let replay = restarted
+            .event_batches
             .close_session_event_admission(
                 "workspace",
                 &SessionId::from(session),
@@ -2210,6 +2234,7 @@ async fn final_event_admission_close_is_absorbing_across_restart_and_late_delive
             .unwrap();
         assert_eq!(first, replay, "F3 stable receipt after reconstruction");
         let late = restarted
+            .event_batches
             .append_session_event_batch_idempotent(
                 &SessionId::from(session),
                 input,
@@ -2240,6 +2265,7 @@ async fn final_event_admission_close_is_absorbing_across_restart_and_late_delive
                 "F2 no unfinished execution intent"
             );
             restarted
+                .event_batches
                 .drive_session_event_batches(&SessionId::from(session), None)
                 .await
                 .unwrap();
@@ -2249,6 +2275,7 @@ async fn final_event_admission_close_is_absorbing_across_restart_and_late_delive
             );
         }
         let conflict = restarted
+            .event_batches
             .close_session_event_admission(
                 "workspace",
                 &SessionId::from(session),
@@ -2291,7 +2318,7 @@ async fn final_event_admission_close_competes_atomically_with_acceptance() {
     );
     let joined_session = SessionId::from("admission-race");
     let (accepted, resolved) = tokio::join!(
-        a.append_session_event_batch_idempotent(
+        a.event_batches.append_session_event_batch_idempotent(
             &joined_session,
             vec![SessionEventInput::UserMessage {
                 content: vec![ContentBlock::text("one request")],
@@ -2300,7 +2327,7 @@ async fn final_event_admission_close_competes_atomically_with_acceptance() {
             None,
             Some(("key".into(), "fingerprint".into()))
         ),
-        b.close_session_event_admission(
+        b.event_batches.close_session_event_admission(
             "workspace",
             &joined_session,
             "key".into(),
@@ -2403,14 +2430,14 @@ async fn competing_tool_reply_admission_table(
         }
         let joined_session = SessionId::from(session);
         let (ra, rb) = tokio::join!(
-            a.append_session_event_batch_idempotent(
+            a.event_batches.append_session_event_batch_idempotent(
                 &joined_session,
                 vec![left.clone()],
                 None,
                 None,
                 Some(("a".into(), "fa".into()))
             ),
-            b.append_session_event_batch_idempotent(
+            b.event_batches.append_session_event_batch_idempotent(
                 &joined_session,
                 vec![right.clone()],
                 None,
@@ -2438,28 +2465,30 @@ async fn competing_tool_reply_admission_table(
         let outbox = repository.pending_lifecycle().await.unwrap();
         assert_eq!(before.event_batches.len(), 1);
         assert_eq!(
-            &a.append_session_event_batch_idempotent(
-                &SessionId::from(session),
-                vec![input],
-                None,
-                None,
-                Some((key.into(), fp.into()))
-            )
-            .await
-            .unwrap(),
+            &a.event_batches
+                .append_session_event_batch_idempotent(
+                    &SessionId::from(session),
+                    vec![input],
+                    None,
+                    None,
+                    Some((key.into(), fp.into()))
+                )
+                .await
+                .unwrap(),
             winner,
             "R3 exact receipt"
         );
         assert!(
-            b.append_session_event_batch_idempotent(
-                &SessionId::from(session),
-                vec![left],
-                None,
-                None,
-                Some(("late".into(), "fl".into()))
-            )
-            .await
-            .is_err(),
+            b.event_batches
+                .append_session_event_batch_idempotent(
+                    &SessionId::from(session),
+                    vec![left],
+                    None,
+                    None,
+                    Some(("late".into(), "fl".into()))
+                )
+                .await
+                .is_err(),
             "R4 occupied"
         );
         assert_eq!(
@@ -2515,20 +2544,24 @@ async fn concurrent_event_batch_idempotency_converges_under_root_cas() {
 
     let joined_session = SessionId::from("event-race-equal");
     let (equal_a, equal_b) = tokio::join!(
-        replica_a.append_session_event_batch_idempotent(
-            &joined_session,
-            input.clone(),
-            None,
-            None,
-            Some(("shared-key".into(), "same-fingerprint".into())),
-        ),
-        replica_b.append_session_event_batch_idempotent(
-            &joined_session,
-            input.clone(),
-            None,
-            None,
-            Some(("shared-key".into(), "same-fingerprint".into())),
-        ),
+        replica_a
+            .event_batches
+            .append_session_event_batch_idempotent(
+                &joined_session,
+                input.clone(),
+                None,
+                None,
+                Some(("shared-key".into(), "same-fingerprint".into())),
+            ),
+        replica_b
+            .event_batches
+            .append_session_event_batch_idempotent(
+                &joined_session,
+                input.clone(),
+                None,
+                None,
+                Some(("shared-key".into(), "same-fingerprint".into())),
+            ),
     );
     let equal_a = equal_a.expect("C1/E1 replica A");
     let equal_b = equal_b.expect("C1/E1 replica B");
@@ -2546,20 +2579,24 @@ async fn concurrent_event_batch_idempotency_converges_under_root_cas() {
 
     let joined_session = SessionId::from("event-race-conflict");
     let (different_a, different_b) = tokio::join!(
-        replica_a.append_session_event_batch_idempotent(
-            &joined_session,
-            input.clone(),
-            None,
-            None,
-            Some(("shared-key".into(), "fingerprint-a".into())),
-        ),
-        replica_b.append_session_event_batch_idempotent(
-            &joined_session,
-            input,
-            None,
-            None,
-            Some(("shared-key".into(), "fingerprint-b".into())),
-        ),
+        replica_a
+            .event_batches
+            .append_session_event_batch_idempotent(
+                &joined_session,
+                input.clone(),
+                None,
+                None,
+                Some(("shared-key".into(), "fingerprint-a".into())),
+            ),
+        replica_b
+            .event_batches
+            .append_session_event_batch_idempotent(
+                &joined_session,
+                input,
+                None,
+                None,
+                Some(("shared-key".into(), "fingerprint-b".into())),
+            ),
     );
     let outcomes = [different_a, different_b];
     assert_eq!(
@@ -2718,7 +2755,7 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
             let outbox =
                 serde_json::to_value(repository.pending_lifecycle().await.unwrap()).unwrap();
             if cleanup == "fenced" {
-                let report = app.reconcile_event_batches().await;
+                let report = app.event_batches.reconcile_event_batches().await;
                 assert!(report.failures.is_empty(), "T1/{fault}");
                 assert_eq!(report.settled, 0, "T1/{fault}");
                 assert_eq!(
@@ -2765,7 +2802,7 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
                 "lost_ack" => faulting.commit_then_conflict_once("resolve-terminal-event-batches"),
                 _ => {}
             }
-            let report = app.reconcile_event_batches().await;
+            let report = app.event_batches.reconcile_event_batches().await;
             let first_time = if fault == "unavailable" {
                 assert_eq!(report.failures.len(), 1, "T3 exact failed root CAS");
                 assert!(
@@ -2784,7 +2821,7 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
                     "T3 outbox frame"
                 );
                 clock.set(200);
-                let retry = app.reconcile_event_batches().await;
+                let retry = app.event_batches.reconcile_event_batches().await;
                 assert!(
                     retry.failures.is_empty(),
                     "T3 recovery: {:?}",
@@ -2831,10 +2868,11 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
             )
             .build()
             .expect("valid fixture Store/Clock composition");
-            let replay = cold.reconcile_event_batches().await;
+            let replay = cold.event_batches.reconcile_event_batches().await;
             assert!(replay.failures.is_empty(), "T4 cold scan");
             assert_eq!(replay.settled, 0, "T4 no unfinished batch");
-            cold.drive_session_event_batches(&SessionId::from(&session_id), None)
+            cold.event_batches
+                .drive_session_event_batches(&SessionId::from(&session_id), None)
                 .await
                 .unwrap();
             assert_eq!(
@@ -2947,7 +2985,7 @@ async fn deleting_tombstone_waits_for_terminal_batch_provenance_case() {
         "D1/E1 provenance survives the resource-first pass"
     );
 
-    let events = Box::pin(app.reconcile_event_batches()).await;
+    let events = Box::pin(app.event_batches.reconcile_event_batches()).await;
     assert!(events.failures.is_empty(), "D2/E2: {:?}", events.failures);
     let resolved = repository
         .get(&SessionId::from("deleting-batch"))
@@ -3013,6 +3051,7 @@ async fn immediate_commands_bypass_queued_user_and_reply_system_observation_is_n
     );
 
     let reply_batch = app
+        .event_batches
         .append_session_event_batch(
             "receipt-priority",
             vec![
@@ -3030,6 +3069,7 @@ async fn immediate_commands_bypass_queued_user_and_reply_system_observation_is_n
         .await
         .expect("P1 reply batch");
     let interrupt_batch = app
+        .event_batches
         .append_session_event_batch(
             "receipt-priority",
             vec![SessionEventInput::Interrupt(SessionEventInterrupt {
@@ -3045,6 +3085,7 @@ async fn immediate_commands_bypass_queued_user_and_reply_system_observation_is_n
         .await
         .expect("P1 interrupt batch");
     let outcome_batch = app
+        .event_batches
         .append_session_event_batch(
             "receipt-priority",
             vec![SessionEventInput::DefineOutcome {
@@ -3060,7 +3101,8 @@ async fn immediate_commands_bypass_queued_user_and_reply_system_observation_is_n
         .await
         .expect("P1 outcome batch");
 
-    app.drive_session_event_batches(&SessionId::from("receipt-priority"), None)
+    app.event_batches
+        .drive_session_event_batches(&SessionId::from("receipt-priority"), None)
         .await
         .expect("P1-P2 opportunistic drive");
     let effect_order = runtime
@@ -3129,7 +3171,8 @@ async fn immediate_commands_bypass_queued_user_and_reply_system_observation_is_n
     }
 
     runtime.commit_staged_system_messages();
-    app.drive_session_event_batches(&SessionId::from("receipt-priority"), None)
+    app.event_batches
+        .drive_session_event_batches(&SessionId::from("receipt-priority"), None)
         .await
         .expect("P3 committed System observation");
     let durable = repository
@@ -3171,6 +3214,7 @@ async fn recover_failed_reply_with_interrupt() -> (
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let reply = warm
+        .event_batches
         .append_session_event_batch(
             "cold-interrupt-priority",
             vec![
@@ -3187,6 +3231,7 @@ async fn recover_failed_reply_with_interrupt() -> (
     let reply_activity_operation =
         tool_reply_activity_operation_id("cold-interrupt-priority", &reply);
     let interrupt = warm
+        .event_batches
         .append_session_event_batch(
             "cold-interrupt-priority",
             vec![SessionEventInput::Interrupt(SessionEventInterrupt {
@@ -3208,6 +3253,7 @@ async fn recover_failed_reply_with_interrupt() -> (
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let error = cold
+        .event_batches
         .drive_session_event_batches(&SessionId::from("cold-interrupt-priority"), None)
         .await
         .expect_err("CR1/E2 reply failure remains independent");
@@ -3280,7 +3326,8 @@ async fn recover_failed_reply_with_interrupt() -> (
         awaken_session_state_contract::SessionExecutionState::Idle,
         "CR1/E4 recovery cannot leave a Running aggregate without pending work"
     );
-    cold.drive_session_event_batches(&SessionId::from("cold-interrupt-priority"), None)
+    cold.event_batches
+        .drive_session_event_batches(&SessionId::from("cold-interrupt-priority"), None)
         .await
         .expect("CR1/E4 second cold scan has no damaged backlog");
     assert_eq!(runtime.tool_reply_calls.load(Ordering::SeqCst), 1, "CR1/E4");
@@ -3313,6 +3360,7 @@ async fn cold_recovery_interrupt_is_not_starved_by_an_older_failed_tool_reply() 
     // production Runtime stack or duplicating either state machine.
     let (repository, cold) = recover_failed_reply_with_interrupt().await;
     let follow_up = cold
+        .event_batches
         .append_session_event_batch(
             "cold-interrupt-priority",
             vec![SessionEventInput::UserMessage {
@@ -3374,6 +3422,7 @@ async fn cold_recovery_interrupt_failure_preserves_failed_reply_and_activity() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let reply = warm
+        .event_batches
         .append_session_event_batch(
             "cold-interrupt-failure",
             vec![
@@ -3390,6 +3439,7 @@ async fn cold_recovery_interrupt_failure_preserves_failed_reply_and_activity() {
     let reply_activity_operation =
         tool_reply_activity_operation_id("cold-interrupt-failure", &reply);
     let interrupt = warm
+        .event_batches
         .append_session_event_batch(
             "cold-interrupt-failure",
             vec![SessionEventInput::Interrupt(SessionEventInterrupt {
@@ -3407,6 +3457,7 @@ async fn cold_recovery_interrupt_failure_preserves_failed_reply_and_activity() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let error = cold
+        .event_batches
         .drive_session_event_batches(&SessionId::from("cold-interrupt-failure"), None)
         .await
         .expect_err("CR2 Interrupt failure must remain observable");
@@ -3481,6 +3532,7 @@ async fn cold_recovery_interrupt_must_include_the_failed_reply_target() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let reply = app
+        .event_batches
         .append_session_event_batch(
             "interrupt-target-fence",
             vec![
@@ -3498,6 +3550,7 @@ async fn cold_recovery_interrupt_must_include_the_failed_reply_target() {
         .await
         .expect("TF1 reply");
     let interrupt = app
+        .event_batches
         .append_session_event_batch(
             "interrupt-target-fence",
             vec![SessionEventInput::Interrupt(SessionEventInterrupt {
@@ -3511,6 +3564,7 @@ async fn cold_recovery_interrupt_must_include_the_failed_reply_target() {
         .expect("TF1 unrelated Interrupt");
 
     let error = app
+        .event_batches
         .drive_session_event_batches(&SessionId::from("interrupt-target-fence"), None)
         .await
         .expect_err("TF1/E2 reply failure cannot yield to another Thread's Interrupt");
@@ -3576,6 +3630,7 @@ async fn legacy_processed_interrupt_without_anchor_cannot_starve_later_recovery(
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let reply = app
+        .event_batches
         .append_session_event_batch(
             "legacy-interrupt-anchor",
             vec![
@@ -3592,6 +3647,7 @@ async fn legacy_processed_interrupt_without_anchor_cannot_starve_later_recovery(
     let reply_activity_operation =
         tool_reply_activity_operation_id("legacy-interrupt-anchor", &reply);
     let legacy_interrupt = app
+        .event_batches
         .append_session_event_batch(
             "legacy-interrupt-anchor",
             vec![SessionEventInput::Interrupt(SessionEventInterrupt {
@@ -3604,6 +3660,7 @@ async fn legacy_processed_interrupt_without_anchor_cannot_starve_later_recovery(
         .await
         .expect("LA1 legacy Interrupt");
     let valid_interrupt = app
+        .event_batches
         .append_session_event_batch(
             "legacy-interrupt-anchor",
             vec![SessionEventInput::Interrupt(SessionEventInterrupt {
@@ -3653,6 +3710,7 @@ async fn legacy_processed_interrupt_without_anchor_cannot_starve_later_recovery(
         .store(true, Ordering::SeqCst);
 
     let error = app
+        .event_batches
         .drive_session_event_batches(&SessionId::from("legacy-interrupt-anchor"), None)
         .await
         .expect_err("LA1 preserves the failed reply signal after recovery");
@@ -3745,6 +3803,7 @@ async fn cold_recovery_reuses_a_processed_interrupt_anchor_to_close_the_failed_r
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let reply = warm
+        .event_batches
         .append_session_event_batch(
             "processed-interrupt-recovery",
             vec![
@@ -3761,6 +3820,7 @@ async fn cold_recovery_reuses_a_processed_interrupt_anchor_to_close_the_failed_r
     let reply_activity_operation =
         tool_reply_activity_operation_id("processed-interrupt-recovery", &reply);
     let interrupt = warm
+        .event_batches
         .append_session_event_batch(
             "processed-interrupt-recovery",
             vec![SessionEventInput::Interrupt(SessionEventInterrupt {
@@ -3772,12 +3832,13 @@ async fn cold_recovery_reuses_a_processed_interrupt_anchor_to_close_the_failed_r
         )
         .await
         .expect("PA1 Interrupt");
-    warm.drive_session_event_batches(
-        &SessionId::from("processed-interrupt-recovery"),
-        Some(&interrupt.batch_id),
-    )
-    .await
-    .expect("PA1 crash occurs after the request-local Interrupt anchor");
+    warm.event_batches
+        .drive_session_event_batches(
+            &SessionId::from("processed-interrupt-recovery"),
+            Some(&interrupt.batch_id),
+        )
+        .await
+        .expect("PA1 crash occurs after the request-local Interrupt anchor");
     assert_eq!(runtime.primary_interrupt_calls.load(Ordering::SeqCst), 1);
     runtime
         .fail_tool_reply_after_stage_once
@@ -3789,6 +3850,7 @@ async fn cold_recovery_reuses_a_processed_interrupt_anchor_to_close_the_failed_r
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let error = cold
+        .event_batches
         .drive_session_event_batches(&SessionId::from("processed-interrupt-recovery"), None)
         .await
         .expect_err("PA1 original reply delivery still reports its failure");
@@ -3842,7 +3904,8 @@ async fn cold_recovery_reuses_a_processed_interrupt_anchor_to_close_the_failed_r
         awaken_session_state_contract::SessionExecutionState::Idle,
         "PA1/E3 processed-anchor replay cannot leak Running"
     );
-    cold.drive_session_event_batches(&SessionId::from("processed-interrupt-recovery"), None)
+    cold.event_batches
+        .drive_session_event_batches(&SessionId::from("processed-interrupt-recovery"), None)
         .await
         .expect("PA1/E3 second cold scan is settled");
 }
@@ -3884,6 +3947,7 @@ async fn failed_interrupt_root_cas_cannot_supersede_the_failed_reply() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let reply = app
+        .event_batches
         .append_session_event_batch(
             "interrupt-cas-failure",
             vec![
@@ -3900,6 +3964,7 @@ async fn failed_interrupt_root_cas_cannot_supersede_the_failed_reply() {
     let reply_activity_operation =
         tool_reply_activity_operation_id("interrupt-cas-failure", &reply);
     let interrupt = app
+        .event_batches
         .append_session_event_batch(
             "interrupt-cas-failure",
             vec![SessionEventInput::Interrupt(SessionEventInterrupt {
@@ -3914,6 +3979,7 @@ async fn failed_interrupt_root_cas_cannot_supersede_the_failed_reply() {
     faulting.fail_once("mark-event-processed");
 
     let error = app
+        .event_batches
         .drive_session_event_batches(&SessionId::from("interrupt-cas-failure"), None)
         .await
         .expect_err("CF1 root-CAS outage must remain observable");
@@ -3969,6 +4035,7 @@ async fn failed_interrupt_root_cas_cannot_supersede_the_failed_reply() {
         .fail_tool_reply_after_stage_once
         .store(true, Ordering::SeqCst);
     let retry_error = app
+        .event_batches
         .drive_session_event_batches(&SessionId::from("interrupt-cas-failure"), None)
         .await
         .expect_err("CF2 keeps the exact reply retry signal after repair");
@@ -4043,6 +4110,7 @@ async fn failed_reply_activity_settlement_cannot_close_pending_supersession() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let reply = app
+        .event_batches
         .append_session_event_batch(
             "interrupt-settle-failure",
             vec![
@@ -4059,6 +4127,7 @@ async fn failed_reply_activity_settlement_cannot_close_pending_supersession() {
     let reply_activity_operation =
         tool_reply_activity_operation_id("interrupt-settle-failure", &reply);
     let interrupt = app
+        .event_batches
         .append_session_event_batch(
             "interrupt-settle-failure",
             vec![SessionEventInput::Interrupt(SessionEventInterrupt {
@@ -4073,6 +4142,7 @@ async fn failed_reply_activity_settlement_cannot_close_pending_supersession() {
     faulting.fail_once("settle-activity");
 
     let error = app
+        .event_batches
         .drive_session_event_batches(&SessionId::from("interrupt-settle-failure"), None)
         .await
         .expect_err("SF1 exact activity settlement outage is observable");
@@ -4121,6 +4191,7 @@ async fn failed_reply_activity_settlement_cannot_close_pending_supersession() {
         .fail_tool_reply_after_stage_once
         .store(true, Ordering::SeqCst);
     let retry_error = app
+        .event_batches
         .drive_session_event_batches(&SessionId::from("interrupt-settle-failure"), None)
         .await
         .expect_err("SF2 original reply error remains after repair");
@@ -4199,6 +4270,7 @@ async fn preferred_interrupt_does_not_reenter_an_older_active_outcome() {
     );
 
     let outcome = app
+        .event_batches
         .append_session_event_batch(
             "outcome-interrupt-priority",
             vec![SessionEventInput::DefineOutcome {
@@ -4214,6 +4286,7 @@ async fn preferred_interrupt_does_not_reenter_an_older_active_outcome() {
         .await
         .expect("OI1 older Outcome");
     let interrupt = app
+        .event_batches
         .append_session_event_batch(
             "outcome-interrupt-priority",
             vec![SessionEventInput::Interrupt(SessionEventInterrupt {
@@ -4226,12 +4299,13 @@ async fn preferred_interrupt_does_not_reenter_an_older_active_outcome() {
         .await
         .expect("OI1 preferred Interrupt");
 
-    app.drive_session_event_batches(
-        &SessionId::from("outcome-interrupt-priority"),
-        Some(&interrupt.batch_id),
-    )
-    .await
-    .expect("OI1 request-local drive");
+    app.event_batches
+        .drive_session_event_batches(
+            &SessionId::from("outcome-interrupt-priority"),
+            Some(&interrupt.batch_id),
+        )
+        .await
+        .expect("OI1 request-local drive");
 
     assert!(
         runtime.outcome_prepare_calls.lock().unwrap().is_empty(),
@@ -4308,16 +4382,18 @@ async fn reply_stage_response_loss_replays_one_durable_effect_after_restart() {
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    warm.append_session_event_batch(
-        "reply-replay",
-        vec![tool_reply_input("reply-replay-tool")],
-        None,
-        None,
-    )
-    .await
-    .expect("R1 append");
+    warm.event_batches
+        .append_session_event_batch(
+            "reply-replay",
+            vec![tool_reply_input("reply-replay-tool")],
+            None,
+            None,
+        )
+        .await
+        .expect("R1 append");
 
     let interrupted = warm
+        .event_batches
         .drive_session_event_batches(&SessionId::from("reply-replay"), None)
         .await;
     assert!(
@@ -4346,7 +4422,8 @@ async fn reply_stage_response_loss_replays_one_durable_effect_after_restart() {
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    cold.drive_session_event_batches(&SessionId::from("reply-replay"), None)
+    cold.event_batches
+        .drive_session_event_batches(&SessionId::from("reply-replay"), None)
         .await
         .expect("R2 cold replay");
     assert_eq!(runtime.tool_reply_calls.load(Ordering::SeqCst), 2, "R2/E2");
@@ -4377,7 +4454,8 @@ async fn reply_stage_response_loss_replays_one_durable_effect_after_restart() {
         Some(777),
         "R2/C5 freezes the answered Awaiting boundary across response loss"
     );
-    cold.drive_session_event_batches(&SessionId::from("reply-replay"), None)
+    cold.event_batches
+        .drive_session_event_batches(&SessionId::from("reply-replay"), None)
         .await
         .expect("R3 replay skip");
     assert_eq!(runtime.tool_reply_calls.load(Ordering::SeqCst), 2, "R3/E4");
@@ -4422,23 +4500,25 @@ async fn interrupt_frozen_targets_recover_idempotently_after_partial_failure() {
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    warm.append_session_event_batch(
-        "interrupt-replay",
-        vec![SessionEventInput::Interrupt(SessionEventInterrupt {
-            requested_target: None,
-            targets: vec![
-                SessionThreadTarget::Primary,
-                SessionThreadTarget::Child(ThreadId("event-child".into())),
-            ],
-        })],
-        None,
-        None,
-    )
-    .await
-    .expect("I1 append");
+    warm.event_batches
+        .append_session_event_batch(
+            "interrupt-replay",
+            vec![SessionEventInput::Interrupt(SessionEventInterrupt {
+                requested_target: None,
+                targets: vec![
+                    SessionThreadTarget::Primary,
+                    SessionThreadTarget::Child(ThreadId("event-child".into())),
+                ],
+            })],
+            None,
+            None,
+        )
+        .await
+        .expect("I1 append");
 
     assert!(
-        warm.drive_session_event_batches(&SessionId::from("interrupt-replay"), None)
+        warm.event_batches
+            .drive_session_event_batches(&SessionId::from("interrupt-replay"), None)
             .await
             .is_err(),
         "I1/E1"
@@ -4458,7 +4538,8 @@ async fn interrupt_frozen_targets_recover_idempotently_after_partial_failure() {
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    cold.drive_session_event_batches(&SessionId::from("interrupt-replay"), None)
+    cold.event_batches
+        .drive_session_event_batches(&SessionId::from("interrupt-replay"), None)
         .await
         .expect("I2 recovery");
     assert_eq!(
@@ -4505,7 +4586,8 @@ async fn interrupt_frozen_targets_recover_idempotently_after_partial_failure() {
             .processed,
         "I2/E4"
     );
-    cold.drive_session_event_batches(&SessionId::from("interrupt-replay"), None)
+    cold.event_batches
+        .drive_session_event_batches(&SessionId::from("interrupt-replay"), None)
         .await
         .expect("I3 processed skip");
     assert_eq!(
@@ -4538,22 +4620,24 @@ async fn interrupt_frozen_targets_recover_idempotently_after_partial_failure() {
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    warm.append_session_event_batch(
-        "interrupt-primary-replay",
-        vec![SessionEventInput::Interrupt(SessionEventInterrupt {
-            requested_target: None,
-            targets: vec![
-                SessionThreadTarget::Primary,
-                SessionThreadTarget::Child(ThreadId("event-child".into())),
-            ],
-        })],
-        None,
-        None,
-    )
-    .await
-    .expect("I4 append");
+    warm.event_batches
+        .append_session_event_batch(
+            "interrupt-primary-replay",
+            vec![SessionEventInput::Interrupt(SessionEventInterrupt {
+                requested_target: None,
+                targets: vec![
+                    SessionThreadTarget::Primary,
+                    SessionThreadTarget::Child(ThreadId("event-child".into())),
+                ],
+            })],
+            None,
+            None,
+        )
+        .await
+        .expect("I4 append");
     assert!(
-        warm.drive_session_event_batches(&SessionId::from("interrupt-primary-replay"), None)
+        warm.event_batches
+            .drive_session_event_batches(&SessionId::from("interrupt-primary-replay"), None)
             .await
             .is_err(),
         "I4/E1"
@@ -4593,7 +4677,8 @@ async fn interrupt_frozen_targets_recover_idempotently_after_partial_failure() {
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    cold.drive_session_event_batches(&SessionId::from("interrupt-primary-replay"), None)
+    cold.event_batches
+        .drive_session_event_batches(&SessionId::from("interrupt-primary-replay"), None)
         .await
         .expect("I4 then I2 recovery");
     assert_eq!(
@@ -4707,7 +4792,7 @@ async fn user_system_batch_case() {
         Arc::new(RecordingEnvironmentSource::default()),
     ));
 
-    let first = app.reconcile_event_batches().await;
+    let first = app.event_batches.reconcile_event_batches().await;
     assert!(first.failures.is_empty(), "R1: {:?}", first.failures);
     assert_eq!(runtime.reserved.lock().unwrap().len(), 1, "R1/E1");
     runtime.end(&run_ids[0]);
@@ -4724,7 +4809,7 @@ async fn user_system_batch_case() {
     assert!(partially_settled.event_batches[0].events[0].processed);
     assert!(!partially_settled.event_batches[0].events[1].processed);
 
-    let second = app.reconcile_event_batches().await;
+    let second = app.event_batches.reconcile_event_batches().await;
     assert!(second.failures.is_empty(), "R2: {:?}", second.failures);
     assert_eq!(runtime.reserved.lock().unwrap().len(), 2, "R2/E1");
     let target_command = runtime
@@ -4775,8 +4860,10 @@ async fn user_system_batch_case() {
     ));
     let warm_app = Arc::clone(&app);
     let cold_app = Arc::clone(&restarted);
-    let warm_task = tokio::spawn(async move { warm_app.reconcile_event_batches().await });
-    let cold_task = tokio::spawn(async move { cold_app.reconcile_event_batches().await });
+    let warm_task =
+        tokio::spawn(async move { warm_app.event_batches.reconcile_event_batches().await });
+    let cold_task =
+        tokio::spawn(async move { cold_app.event_batches.reconcile_event_batches().await });
     let warm = warm_task.await.expect("R3 warm supervisor");
     let cold = cold_task.await.expect("R3 cold supervisor");
     assert!(
@@ -4788,7 +4875,7 @@ async fn user_system_batch_case() {
 
     runtime.end(&run_ids[1]);
     finalize_applied_user_dispatch(&restarted, &runtime, "initial-user-system", &run_ids[1]).await;
-    let completed = restarted.reconcile_event_batches().await;
+    let completed = restarted.event_batches.reconcile_event_batches().await;
     assert!(completed.failures.is_empty(), "R4/E4");
     assert_eq!(
         completed.settled, 0,
@@ -4862,6 +4949,7 @@ async fn fresh_user_reservation_snapshots_the_recovered_resource_generation() {
     let run_id = RunId("generation-run".into());
 
     let admission = app
+        .event_batches
         .admit_session_user_run(SessionUserRunCommand {
             session_id: "generation-before-reservation".into(),
             agent_id: "agent".into(),
@@ -4957,6 +5045,7 @@ async fn exact_activity_receipt_precedes_fresh_budget_policy() {
         traceparent: None,
     };
     let first = app
+        .event_batches
         .admit_session_user_run(command.clone())
         .await
         .expect("P1 fresh admission");
@@ -4995,6 +5084,7 @@ async fn exact_activity_receipt_precedes_fresh_budget_policy() {
         .count();
 
     let replay = app
+        .event_batches
         .admit_session_user_run(command)
         .await
         .expect("P2 exact response-loss replay");
@@ -5084,6 +5174,7 @@ async fn user_run_admission_preserves_typed_recovery_and_one_activity_receipt() 
     };
 
     let first = app
+        .event_batches
         .admit_session_user_run(command("op-a", "run-a"))
         .await
         .expect("A1");
@@ -5094,6 +5185,7 @@ async fn user_run_admission_preserves_typed_recovery_and_one_activity_receipt() 
     assert!(matches!(first, AdmittedSessionRun::Reserved(_)), "A1");
 
     let replay = app
+        .event_batches
         .admit_session_user_run(command("op-a", "run-a"))
         .await
         .expect("A2");
@@ -5123,6 +5215,7 @@ async fn user_run_admission_preserves_typed_recovery_and_one_activity_receipt() 
         .unwrap()
         .revision;
     let activated = app
+        .event_batches
         .admit_session_user_run(command("op-a", "run-a"))
         .await
         .expect("A3");
@@ -5154,6 +5247,7 @@ async fn user_run_admission_preserves_typed_recovery_and_one_activity_receipt() 
         .unwrap()
         .revision;
     let recovery = app
+        .event_batches
         .admit_session_user_run(command("op-b", "run-b"))
         .await
         .expect("A4");
@@ -5182,6 +5276,7 @@ async fn user_run_admission_preserves_typed_recovery_and_one_activity_receipt() 
         .unwrap()
         .revision;
     let completed = app
+        .event_batches
         .admit_session_user_run(command("op-c", "run-c"))
         .await
         .expect("A5");
@@ -5240,17 +5335,18 @@ async fn user_run_activity_rejects_a_root_changed_after_projection_recovery() {
     let admission = {
         let app = app.clone();
         tokio::spawn(async move {
-            app.admit_session_user_run(SessionUserRunCommand {
-                session_id: session_id.into(),
-                agent_id: "agent".into(),
-                operation_id: "projection-race-operation".into(),
-                run_id: RunId("projection-race-run".into()),
-                content: vec![ContentBlock::text("do not execute stale projection")],
-                accompanying_system: None,
-                data_subject_id: None,
-                traceparent: None,
-            })
-            .await
+            app.event_batches
+                .admit_session_user_run(SessionUserRunCommand {
+                    session_id: session_id.into(),
+                    agent_id: "agent".into(),
+                    operation_id: "projection-race-operation".into(),
+                    run_id: RunId("projection-race-run".into()),
+                    content: vec![ContentBlock::text("do not execute stale projection")],
+                    accompanying_system: None,
+                    data_subject_id: None,
+                    traceparent: None,
+                })
+                .await
         })
     };
     entered.wait().await;
@@ -5332,7 +5428,7 @@ async fn rejected_user_reservation_cannot_orphan_an_accompanying_system_case() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
 
-    let report = app.reconcile_event_batches().await;
+    let report = app.event_batches.reconcile_event_batches().await;
     assert_eq!(report.failures.len(), 1, "S1/E1");
     let trace = runtime.trace.lock().unwrap().clone();
     let projection = trace
@@ -5436,7 +5532,7 @@ async fn activity_repair_replays_the_same_complete_system_user_reservation_case(
         Arc::new(RecordingEnvironmentSource::default()),
     );
 
-    let interrupted = warm.reconcile_event_batches().await;
+    let interrupted = warm.event_batches.reconcile_event_batches().await;
     assert_eq!(interrupted.failures.len(), 1, "C1");
     let after_interruption = repository
         .get(&SessionId::from("system-reservation-repair"))
@@ -5468,7 +5564,7 @@ async fn activity_repair_replays_the_same_complete_system_user_reservation_case(
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let repaired = cold.reconcile_event_batches().await;
+    let repaired = cold.event_batches.reconcile_event_batches().await;
     assert!(repaired.failures.is_empty(), "C2: {:?}", repaired.failures);
     assert_eq!(runtime.reserved.lock().unwrap().len(), 1, "C2/E3");
     assert_eq!(runtime.activity_epoch(&run_id), run_epoch, "C2/E3");
@@ -5496,7 +5592,7 @@ async fn activity_repair_replays_the_same_complete_system_user_reservation_case(
 
     runtime.end(&run_id);
     finalize_applied_user_dispatch(&cold, &runtime, "system-reservation-repair", &run_id).await;
-    let completed = cold.reconcile_event_batches().await;
+    let completed = cold.event_batches.reconcile_event_batches().await;
     assert_eq!(
         completed.settled, 0,
         "C2/E4 post-Dispatch aggregate CAS already settled User+System"
@@ -5555,6 +5651,7 @@ async fn event_traceparent_survives_root_persistence_and_crash_recovery_case() {
             Arc::new(RecordingEnvironmentSource::default()),
         );
         let admitted = warm
+            .event_batches
             .append_session_event_batch(
                 &session_id,
                 vec![SessionEventInput::UserMessage {
@@ -5573,7 +5670,7 @@ async fn event_traceparent_survives_root_persistence_and_crash_recovery_case() {
         };
         assert_eq!(admitted.traceparent, expected_traceparent, "T1/T2/E1");
 
-        let interrupted = warm.reconcile_event_batches().await;
+        let interrupted = warm.event_batches.reconcile_event_batches().await;
         assert_eq!(interrupted.failures.len(), 1, "T1/T2/C3");
         assert_eq!(
             runtime
@@ -5592,7 +5689,7 @@ async fn event_traceparent_survives_root_persistence_and_crash_recovery_case() {
             repository.clone(),
             Arc::new(RecordingEnvironmentSource::default()),
         );
-        let recovered = cold.reconcile_event_batches().await;
+        let recovered = cold.event_batches.reconcile_event_batches().await;
         assert!(
             recovered.failures.is_empty(),
             "T1/T2/E2: {:?}",
@@ -5645,6 +5742,7 @@ async fn ordinary_active_active_append_is_atomic_revision_ordered_and_activity_f
     let second_app = Arc::clone(&app);
     let first = tokio::spawn(async move {
         first_app
+            .event_batches
             .append_session_event_batch(
                 "ordinary-atomic",
                 vec![
@@ -5662,6 +5760,7 @@ async fn ordinary_active_active_append_is_atomic_revision_ordered_and_activity_f
     });
     let second = tokio::spawn(async move {
         second_app
+            .event_batches
             .append_session_event_batch(
                 "ordinary-atomic",
                 vec![SessionEventInput::UserMessage {
@@ -5740,585 +5839,7 @@ async fn ordinary_active_active_append_is_atomic_revision_ordered_and_activity_f
     );
 }
 
-#[test]
-fn outcome_crosses_awaiting_user_while_next_user_stays_queued_after_restart() {
-    // Coverage rationale: the async case below owns Q1-Q3. The shared executor
-    // changes stack placement only and does not add another recovery oracle.
-    run_composed_async_test(
-        outcome_crosses_awaiting_user_while_next_user_stays_queued_after_restart_case,
-    );
-}
-
-#[test]
-fn queued_user_before_awaiting_boundary_must_not_hide_required_tool_action() {
-    run_composed_async_test(queued_user_before_awaiting_boundary_case);
-}
-
-async fn queued_user_before_awaiting_boundary_case() {
-    for legacy in [false, true] {
-        queued_input_before_awaiting_boundary(false, legacy).await;
-        queued_input_before_awaiting_boundary(true, legacy).await;
-    }
-}
-
-async fn queued_input_before_awaiting_boundary(with_system: bool, legacy: bool) {
-    // Live Classroom regression: C1 first User is executing; C2 a later User
-    // is accepted BEFORE first Awaiting settlement; C3 first Dispatch settles;
-    // C4 a cold supervisor reconciles the same root. Effects: E1 first input
-    // processed with no active epoch; E2 later User unprocessed/unreserved;
-    // E3 Session Idle exposes the exact required action instead of withholding
-    // it until that blocked later User executes. Rule AQ1 C1+C2+C3+C4=>E1-E3.
-    // C5 later User carries/does not carry its paired System input; both remain
-    // unprocessed together. A System after a ToolReply is not this partition.
-    // The existing outcome-crosses-awaiting test covers the opposite order
-    // (C2 AFTER C3); both orders must retain the same actionability and queue.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("AQ1 repository"),
-    );
-    let id = "queued-before-awaiting";
-    create(repository.as_ref(), persisted(id, false, "idle")).await;
-    let runtime = Arc::new(EventBatchRuntime::default());
-    let app = application_with_runtime(
-        runtime.clone(),
-        repository.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-    for (key, content) in [("first", "first"), ("later", "queued")] {
-        let mut inputs = vec![SessionEventInput::UserMessage {
-            content: vec![ContentBlock::text(content)],
-        }];
-        if key == "later" && with_system {
-            inputs.push(SessionEventInput::SystemMessage {
-                content: vec![ContentBlock::text("paired later context")],
-            });
-        }
-        app.append_session_event_batch(id, inputs, Some(key.into()), None)
-            .await
-            .expect("AQ1 append");
-        assert!(app.reconcile_event_batches().await.failures.is_empty());
-    }
-    let run = runtime
-        .latest_run
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("AQ1 first Run");
-    assert_eq!(
-        runtime.reserved.lock().unwrap().len(),
-        1,
-        "AQ1 later stays queued"
-    );
-    runtime.await_run(&run);
-    if legacy {
-        // AQ2 reproduces the old policy (no Awaiting-specific closure) through
-        // its conservative Completed branch, then reopens the SQLite-backed
-        // application against the real fixture's Awaiting Run. The exact
-        // Dispatch receipt/interval remain durable; no SQL repair is used.
-        let epoch = runtime.activity_epoch(&run);
-        app.lifecycle()
-            .settle_user_event_dispatch_observed(
-                &SessionId::from(id),
-                epoch,
-                awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                    activity_epoch: epoch,
-                    thread_id: ThreadId(id.into()),
-                    run_id: run.clone(),
-                    lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor(epoch),
-                    source_commit_cursor: 1,
-                },
-                &run,
-                awaken_session_execution_contract::SessionAgentRunBoundary::Completed,
-            )
-            .await
-            .expect("AQ2 old conservative settlement");
-        assert_eq!(
-            repository
-                .get(&SessionId::from(id))
-                .await
-                .unwrap()
-                .execution,
-            awaken_session_state_contract::SessionExecutionState::Running,
-            "AQ2 stranded legacy shape"
-        );
-    } else {
-        finalize_applied_user_dispatch(&app, &runtime, id, &run).await;
-    }
-    let cold = application_with_runtime(
-        runtime.clone(),
-        repository.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-    assert!(cold.reconcile_event_batches().await.failures.is_empty());
-    let root = repository
-        .get(&SessionId::from(id))
-        .await
-        .expect("AQ1 durable root");
-    assert!(root.event_batches[0].events[0].processed, "AQ1/E1");
-    assert!(root.active_activity_epochs.is_empty(), "AQ1/E1");
-    assert!(!root.event_batches[1].events[0].processed, "AQ1/E2");
-    assert!(
-        root.event_batches[1]
-            .events
-            .iter()
-            .all(|entry| !entry.processed),
-        "AQ1/E2 paired System stays queued"
-    );
-    assert_eq!(runtime.reserved.lock().unwrap().len(), 1, "AQ1/E2");
-    assert_eq!(
-        root.execution,
-        awaken_session_state_contract::SessionExecutionState::Idle,
-        "AQ1/E3 queued successor cannot hide the first Run's required action"
-    );
-    // AQ3 exact repeated recovery is a complete root stutter; AQ4 a later
-    // active epoch must survive an old callback. Compare the whole serialized
-    // aggregate, not merely status, so receipts and timestamps cannot drift.
-    let stable = serde_json::to_value(&root).unwrap();
-    assert!(cold.reconcile_event_batches().await.failures.is_empty());
-    assert_eq!(
-        serde_json::to_value(repository.get(&SessionId::from(id)).await.unwrap()).unwrap(),
-        stable,
-        "AQ3"
-    );
-    let (_, newer_epoch) = cold
-        .activities
-        .begin_activity_for_operation(&SessionId::from(id), "newer-execution")
-        .await
-        .unwrap();
-    assert!(newer_epoch > runtime.activity_epoch(&run));
-    let newer = serde_json::to_value(repository.get(&SessionId::from(id)).await.unwrap()).unwrap();
-    finalize_applied_user_dispatch(&cold, &runtime, id, &run).await;
-    assert_eq!(
-        serde_json::to_value(repository.get(&SessionId::from(id)).await.unwrap()).unwrap(),
-        newer,
-        "AQ4 old callback cannot close a newer activity"
-    );
-}
-
-async fn outcome_crosses_awaiting_user_while_next_user_stays_queued_after_restart_case() {
-    // Eligibility/recovery decision table. C1 first User is Running/Awaiting;
-    // C2 a later batch contains User then DefineOutcome; C3 one/two restarted
-    // supervisors race. Effects: E1 Running User remains unprocessed; E2
-    // Awaiting proves that User processed and its activity settles; E3 Outcome
-    // exact prepare crosses the queued User and is processed on receipt; E4 the
-    // later User remains queued with no reservation/activity. Rules Q1 Running
-    // =>E1; Q2 Awaiting+later Outcome=>E2+E3+E4; Q3 active-active replay=>one
-    // Outcome aggregate and the same retained flags.
-    // Causes: C1-C3 select Running/Awaiting, later User+Outcome, and restarted
-    // supervisor races. Constraint/Invariant: Outcome may cross only proven
-    // Awaiting User truth; the later User keeps queue order. Decision rule:
-    // execute Q1-Q3 and require one Outcome plus retained later User.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("test repository"),
-    );
-    create(
-        repository.as_ref(),
-        persisted("ordinary-eligibility", false, "idle"),
-    )
-    .await;
-    let runtime = Arc::new(EventBatchRuntime::default());
-    let warm = Arc::new(application_with_runtime(
-        runtime.clone(),
-        repository.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    ));
-    warm.append_session_event_batch(
-        "ordinary-eligibility",
-        vec![SessionEventInput::UserMessage {
-            content: vec![ContentBlock::text("first")],
-        }],
-        Some("subject-first".into()),
-        None,
-    )
-    .await
-    .unwrap();
-    let running = warm.reconcile_event_batches().await;
-    assert!(running.failures.is_empty(), "Q1");
-    let first_run = runtime.latest_run.lock().unwrap().clone().expect("Q1 Run");
-    assert!(
-        !repository
-            .get(&SessionId::from("ordinary-eligibility"))
-            .await
-            .unwrap()
-            .event_batches[0]
-            .events[0]
-            .processed,
-        "Q1/E1"
-    );
-
-    runtime.await_run(&first_run);
-    finalize_applied_user_dispatch(&warm, &runtime, "ordinary-eligibility", &first_run).await;
-    warm.append_session_event_batch(
-        "ordinary-eligibility",
-        vec![
-            SessionEventInput::UserMessage {
-                content: vec![ContentBlock::text("queued")],
-            },
-            SessionEventInput::DefineOutcome {
-                description: "ship".into(),
-                rubric: SessionOutcomeRubric::Text {
-                    content: "correct".into(),
-                },
-                max_iterations: Some(2),
-            },
-        ],
-        Some("subject-queued".into()),
-        None,
-    )
-    .await
-    .unwrap();
-
-    let cold_one = Arc::new(application_with_runtime(
-        runtime.clone(),
-        repository.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    ));
-    let cold_two = Arc::new(application_with_runtime(
-        runtime.clone(),
-        repository.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    ));
-    let left = tokio::spawn(async move { cold_one.reconcile_event_batches().await });
-    let right = tokio::spawn(async move { cold_two.reconcile_event_batches().await });
-    let left = left.await.unwrap();
-    let right = right.await.unwrap();
-    assert!(left.failures.is_empty() && right.failures.is_empty(), "Q3");
-
-    let durable = repository
-        .get(&SessionId::from("ordinary-eligibility"))
-        .await
-        .unwrap();
-    assert!(durable.event_batches[0].events[0].processed, "Q2/E2");
-    assert!(!durable.event_batches[1].events[0].processed, "Q2/E4");
-    assert!(durable.event_batches[1].events[1].processed, "Q2/E3");
-    assert_eq!(runtime.outcomes.lock().unwrap().len(), 1, "Q3/E3");
-    assert_eq!(runtime.reserved.lock().unwrap().len(), 1, "Q2/E4");
-    assert!(durable.active_activity_epochs.is_empty(), "Q2/E4");
-    assert_eq!(
-        durable.execution,
-        awaken_session_state_contract::SessionExecutionState::Idle,
-        "Q2/E2+E4"
-    );
-}
-
-#[tokio::test]
-async fn outcome_receipt_is_processed_on_stable_prepare_and_cold_replay_skips_it() {
-    // Constraint/Invariant: the authoritative Session inputs and repository CAS
-    // documented here remain the only decision source; no parallel ledger is admitted.
-    // Decision rule: execute every reachable cause partition documented here and
-    // require its stated effects, including each fail-closed outcome.
-    // Outcome receipt cause/effect table. C1 the stable Outcome aggregate is
-    // absent/present; C2 process is warm/restarted; C3 create wake is active.
-    // Effects: E1 exact prepare once; E2 mark the retained entry processed on
-    // prepare receipt with its exact durable cursor; E3 settle create wake immediately; E4 never hold receipt
-    // completion on Outcome evaluation/continue. Rules O1 absent+warm=>E1-E4;
-    // O2 present+processed+cold=>skip every effect and retain provenance.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("test repository"),
-    );
-    let runtime = Arc::new(EventBatchRuntime::default());
-    let session = planned_session(
-        "initial-outcome",
-        vec![SessionEventInput::DefineOutcome {
-            description: "ship".into(),
-            rubric: SessionOutcomeRubric::Text {
-                content: "FINAL".into(),
-            },
-            max_iterations: Some(2),
-        }],
-    );
-    let (batch_epoch, expected_outcome_id) = {
-        let batch = session.event_batches.first().expect("batch");
-        let awaken_session_event_contract::SessionEventCommand::DefineOutcome {
-            outcome_id, ..
-        } = &batch.events[0].event
-        else {
-            panic!("Outcome Event")
-        };
-        (
-            batch.wake_activity_epoch.expect("create wake"),
-            outcome_id.clone(),
-        )
-    };
-    create(repository.as_ref(), session).await;
-    let warm = application_with_runtime(
-        runtime.clone(),
-        repository.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-    let completed = warm.reconcile_event_batches().await;
-    assert!(completed.failures.is_empty(), "O1/E1");
-    assert_eq!(completed.settled, 1, "O1/E2");
-    assert_eq!(runtime.outcomes.lock().unwrap().len(), 1, "O1/E1");
-    let durable = repository
-        .get(&SessionId::from("initial-outcome"))
-        .await
-        .unwrap();
-    assert!(durable.event_batches[0].events[0].processed, "O1/E2");
-    assert_eq!(
-        durable.event_batches[0].events[0]
-            .projection_anchor
-            .map(|anchor| anchor.source_commit_cursor),
-        Some(1),
-        "O1/E2 exact Outcome prepare cursor"
-    );
-    assert!(
-        !durable.active_activity_epochs.contains(&batch_epoch),
-        "O1/E3"
-    );
-
-    let cold = application_with_runtime(
-        runtime.clone(),
-        repository.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-    let replay = cold.reconcile_event_batches().await;
-    assert!(replay.failures.is_empty(), "O2");
-    assert_eq!(replay.settled, 0, "O2");
-    assert_eq!(runtime.outcomes.lock().unwrap().len(), 1, "O2/E1");
-    assert!(
-        runtime
-            .outcome_prepare_calls
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|id| id == &expected_outcome_id),
-        "O1/E1 stable id"
-    );
-}
-
-#[tokio::test]
-async fn outcome_busy_is_retryable_and_cannot_mark_the_root_entry_processed() {
-    // Constraint/Invariant: the authoritative Session inputs and repository CAS
-    // documented here remain the only decision source; no parallel ledger is admitted.
-    // Decision rule: execute every reachable cause partition documented here and
-    // require its stated effects, including each fail-closed outcome.
-    // Cause/effect graph: C1 the stable DefineOutcome command is unprocessed;
-    // C2 another Outcome owns the Thread aggregate; C3 that owner later clears.
-    // Effects: E1 Busy is retryable rather than a reconciliation failure; E2
-    // root provenance remains unprocessed during C2; E3 C3 prepares exactly the
-    // retained id and only then commits processed=true.
-    //
-    // | Rule | Root command | Aggregate | Effect |
-    // | B1 | unprocessed | busy | E1 + E2 |
-    // | B2 | same retained command | available | E3 |
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("test repository"),
-    );
-    let runtime = Arc::new(EventBatchRuntime::default());
-    runtime.outcome_busy.store(true, Ordering::SeqCst);
-    create(
-        repository.as_ref(),
-        planned_session(
-            "outcome-busy",
-            vec![SessionEventInput::DefineOutcome {
-                description: "ship".into(),
-                rubric: SessionOutcomeRubric::Text {
-                    content: "correct".into(),
-                },
-                max_iterations: None,
-            }],
-        ),
-    )
-    .await;
-    let app = application_with_runtime(
-        runtime.clone(),
-        repository.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-
-    let busy = app.reconcile_event_batches().await;
-    assert!(busy.failures.is_empty(), "B1/E1");
-    assert_eq!(busy.pending, 1, "B1/E1");
-    assert!(
-        !repository
-            .get(&SessionId::from("outcome-busy"))
-            .await
-            .unwrap()
-            .event_batches[0]
-            .events[0]
-            .processed,
-        "B1/E2"
-    );
-
-    runtime.outcome_busy.store(false, Ordering::SeqCst);
-    let prepared = app.reconcile_event_batches().await;
-    assert!(prepared.failures.is_empty(), "B2/E3");
-    assert!(
-        repository
-            .get(&SessionId::from("outcome-busy"))
-            .await
-            .unwrap()
-            .event_batches[0]
-            .events[0]
-            .processed,
-        "B2/E3"
-    );
-}
-
-#[test]
-fn initial_outcome_reconciliation_does_not_wait_for_its_own_first_run() {
-    // Cause/effect graph: C1 retained DefineOutcome is processed; C2 Session is
-    // Idle or awaiting initial realization; C3 an activity still owns a Run.
-    // R1 C1+C2+!C3 -> select the existing Outcome continuation, whose normal Run
-    // admission owns realization. R2 !C1 -> no drive before durable preparation.
-    // R3 C3 -> no duplicate Worker Run. R4 Running/Rescheduling/terminal -> no
-    // competing driver. The live Managed initial_events probe exposed R1 at
-    // Preparing: no first Run could be created while the selector required Idle.
-    use awaken_session_state_contract::SessionExecutionState as State;
-    for state in [
-        State::Preparing,
-        State::Activating,
-        State::Idle,
-        State::Running,
-        State::Rescheduling,
-        State::ActivationFailed,
-        State::Terminated,
-    ] {
-        for processed in [false, true] {
-            for active in [false, true] {
-                let mut session = planned_session(
-                    "initial-outcome-selection",
-                    vec![SessionEventInput::DefineOutcome {
-                        description: "ship".into(),
-                        rubric: SessionOutcomeRubric::Text {
-                            content: "verified artifact".into(),
-                        },
-                        max_iterations: Some(3),
-                    }],
-                );
-                session.execution = state;
-                session.active_activity_epochs.clear();
-                if active {
-                    session.active_activity_epochs.insert(1);
-                }
-                session.event_batches[0].events[0].processed = processed;
-                let expected = processed
-                    && !active
-                    && matches!(state, State::Preparing | State::Activating | State::Idle);
-                assert_eq!(
-                    session.needs_outcome_reconciliation(),
-                    expected,
-                    "state={state:?}, processed={processed}, active={active}"
-                );
-            }
-        }
-    }
-}
-
-#[tokio::test]
-async fn cold_supervisor_continues_only_the_thread_owned_outcome_truth() {
-    // Constraint/Invariant: the authoritative Session inputs and repository CAS
-    // documented here remain the only decision source; no parallel ledger is admitted.
-    // Decision rule: execute every reachable cause partition documented here and
-    // require its stated effects, including each fail-closed outcome.
-    // Crash/recovery cause/effect graph: C1 root prepare is durably processed;
-    // C2 the process stops before Outcome continuation; C3 the Thread aggregate
-    // is active/terminal/inactive. Effects: E1 a cold supervisor selects the
-    // Thread from retained root provenance; E2 Awaiting remains pending; E3 a
-    // completed aggregate settles once; E4 inactive truth performs no effect.
-    // The conservative root selector stores no active/terminal shadow.
-    //
-    // | Rule | Root provenance | Thread truth | Effect |
-    // | C1 | retained+processed | active | E1 + E2 |
-    // | C2 | retained+processed | terminal transition | E3 |
-    // | C3 | retained+processed | inactive | E4 |
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("test repository"),
-    );
-    let runtime = Arc::new(EventBatchRuntime::default());
-    create(
-        repository.as_ref(),
-        planned_session(
-            "outcome-cold-continuation",
-            vec![SessionEventInput::DefineOutcome {
-                description: "ship".into(),
-                rubric: SessionOutcomeRubric::File {
-                    file_id: "file_rubric".into(),
-                },
-                max_iterations: None,
-            }],
-        ),
-    )
-    .await;
-    let warm = application_with_runtime(
-        runtime.clone(),
-        repository.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-    let prepared = warm.reconcile_event_batches().await;
-    assert!(prepared.failures.is_empty(), "C1 prepare");
-    let durable = repository
-        .get(&SessionId::from("outcome-cold-continuation"))
-        .await
-        .unwrap();
-    assert!(
-        matches!(
-            &durable.event_batches[0].events[0].event,
-            awaken_session_event_contract::SessionEventCommand::DefineOutcome {
-                rubric: SessionOutcomeRubric::File { file_id },
-                max_iterations: None,
-                ..
-            } if file_id == "file_rubric"
-        ),
-        "C1/E1 exact public provenance"
-    );
-    assert_eq!(
-        runtime.outcomes.lock().unwrap().values().next().cloned(),
-        Some(("ship".into(), "file_rubric".into(), 3)),
-        "C1/E1 execution lowering applies the existing default only at effect time"
-    );
-    let mut in_flight = durable.clone();
-    in_flight.execution = awaken_session_state_contract::SessionExecutionState::Running;
-    assert!(
-        !in_flight.needs_outcome_reconciliation(),
-        "C1: a retained Outcome cannot replay its stable Worker Run while Session activity is in flight"
-    );
-    drop(warm);
-
-    let cold = application_with_runtime(
-        runtime.clone(),
-        repository,
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-    runtime.dispatch_projection_installs.lock().unwrap().clear();
-    let awaiting = cold.reconcile_outcome_continuations().await;
-    assert_eq!(awaiting.pending, 1, "C1/E1+E2");
-    assert_eq!(runtime.outcome_continue_calls.load(Ordering::SeqCst), 1);
-    // C4/E5 a replacement process must restore this Session's exact frozen
-    // dispatch projection before continuing its Outcome. Without it Session
-    // admission would fall back to the flat-protocol `assistant` identity and
-    // the Outcome would pin and grade an Agent that was never published.
-    assert_eq!(
-        runtime
-            .dispatch_projection_installs
-            .lock()
-            .unwrap()
-            .as_slice(),
-        ["outcome-cold-continuation"],
-        "C4/E5 exactly one restore of the continued Session precedes its Outcome"
-    );
-
-    runtime.outcome_completed.store(true, Ordering::SeqCst);
-    let completed = cold.reconcile_outcome_continuations().await;
-    assert_eq!(completed.settled, 1, "C2/E3");
-    let inactive = cold.reconcile_outcome_continuations().await;
-    assert_eq!(
-        inactive,
-        super::super::outcome_reconciliation::OutcomeReconciliation::default(),
-        "C3/E4"
-    );
-    assert_eq!(runtime.outcome_continue_calls.load(Ordering::SeqCst), 3);
-}
+mod outcome_reconciliation;
 
 mod resumed_dispatch;
 

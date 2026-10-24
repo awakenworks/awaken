@@ -14,7 +14,9 @@ use awaken_session_execution_contract::OutcomeDrive;
 
 #[cfg(test)]
 use super::mutation::repository_failure;
-use super::{SessionApplication, SessionRecoveryCandidates};
+use std::sync::Arc;
+
+use super::SessionRecoveryCandidates;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct OutcomeReconciliation {
@@ -24,14 +26,22 @@ pub(crate) struct OutcomeReconciliation {
     pub quarantined: usize,
 }
 
-impl SessionApplication {
+/// Recovery of committed Thread Outcomes whose continuation has not yet been
+/// admitted: re-install the Session projection and continue the Outcome.
+pub struct SessionOutcomeReconciliation {
+    mutations: Arc<crate::SessionMutations>,
+    realizations: Arc<crate::SessionRealizations>,
+    outcomes: Arc<dyn awaken_session_execution_contract::OutcomeRuntime>,
+}
+
+#[cfg(test)]
+impl crate::SessionApplication {
     /// Continue every possible Outcome through the sole lifecycle supervisor.
     /// Candidate selection is deliberately conservative because copying an
     /// active/terminal marker into the Session root would create a second truth.
-    #[cfg(test)]
     pub(crate) async fn reconcile_outcome_continuations(&self) -> OutcomeReconciliation {
         let candidates = match super::recovery_scan::recovery_candidates(
-            self.session_repository(),
+            self.mutations.repository().as_ref(),
             self.clock.as_ref(),
             true,
         )
@@ -46,21 +56,35 @@ impl SessionApplication {
                 return report;
             }
         };
-        self.reconcile_outcome_continuations_from(&candidates).await
+        self.outcome_reconciliation.continue_from(&candidates).await
+    }
+}
+
+impl SessionOutcomeReconciliation {
+    pub(crate) fn new(
+        mutations: Arc<crate::SessionMutations>,
+        realizations: Arc<crate::SessionRealizations>,
+        runtime: &crate::SessionExecutor,
+    ) -> Self {
+        Self {
+            mutations,
+            realizations,
+            outcomes: runtime.outcomes.clone(),
+        }
     }
 
-    pub(super) async fn reconcile_outcome_continuations_from(
+    pub(crate) async fn continue_from(
         &self,
         candidates: &SessionRecoveryCandidates,
     ) -> OutcomeReconciliation {
-        let outcome_runtime = self.runtime().outcomes();
+        let outcome_runtime = self.outcomes.as_ref();
 
         let mut report = OutcomeReconciliation {
             quarantined: candidates.quarantined.len(),
             ..Default::default()
         };
         for candidate in &candidates.sessions {
-            let session = match self.session_repository().get(&candidate.session_id).await {
+            let session = match self.mutations.repository().get(&candidate.session_id).await {
                 Ok(session) => session,
                 Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => continue,
                 Err(error) => {

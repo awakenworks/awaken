@@ -37,6 +37,7 @@ use crate::work_assignments::reconcile_work_dispatches;
 use awaken_agent_contract::McpTarget;
 use awaken_session_configuration_contract::validate_sandbox_provisioning_runtime;
 use awaken_session_repository_contract::SessionRepositoryReads;
+use awaken_session_state_contract::SessionExecutionState;
 
 /// Execute the canonical complete-projection effects for a Session Application
 /// test double. Domain mode decisions come from `SessionProjectionInstallMode`;
@@ -4974,6 +4975,7 @@ mod event_batch_cutover_validation;
 mod event_batches;
 mod execution_observation;
 pub(crate) mod realization;
+mod recovery;
 mod recovery_scan;
 mod recovery_sweep;
 mod resource_commands;

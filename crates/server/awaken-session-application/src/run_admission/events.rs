@@ -9,7 +9,7 @@ use awaken_agent_contract::{RunLifecycleCursor, ThreadId};
 use awaken_dispatch_contract::{DispatchCursor, DispatchPage, SessionRunEventPage};
 use awaken_session_types::{RunError, SessionId};
 
-use crate::{SessionApplication, SessionProjectionRecoveryError};
+use crate::SessionProjectionRecoveryError;
 use awaken_session_execution_contract::session_run_activity_operation_id;
 
 fn rejected_projection(error: impl std::fmt::Display) -> SessionProjectionRecoveryError {
@@ -159,39 +159,5 @@ impl crate::SessionRunAdmissions {
             usage: (!usage.is_empty())
                 .then(|| serde_json::to_value(usage).expect("ThreadUsage serializes")),
         })
-    }
-}
-
-impl SessionApplication {
-    /// Authorize the native primary-Run reply, then delegate the exact command
-    /// to the existing Session activity/continuation/receipt owner.
-    pub async fn reply_profiled_session_run_for_owner(
-        &self,
-        owner_scope: &str,
-        command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<(), SessionProjectionRecoveryError> {
-        use awaken_session_execution_contract::{SessionAgentCoordination, SessionThreadTarget};
-        self.run_admissions
-            .require_profiled_run_owner(owner_scope, &command.session_id)
-            .await?;
-        if command.target != SessionThreadTarget::Primary
-            || command
-                .expected_thread_version
-                .is_none_or(|version| version == 0)
-            || command
-                .tool_request_event_id
-                .as_ref()
-                .is_none_or(|id| id.trim().is_empty())
-            || command.accompanying_system.is_some()
-        {
-            return Err(SessionProjectionRecoveryError::Rejected(
-                RunError::bad_request(
-                    "native Run reply requires one primary Run, exact version and stable operation",
-                ),
-            ));
-        }
-        SessionAgentCoordination::reply_session_thread_tool(self, command)
-            .await
-            .map_err(SessionProjectionRecoveryError::Rejected)
     }
 }

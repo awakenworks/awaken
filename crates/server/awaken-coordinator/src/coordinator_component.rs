@@ -174,7 +174,10 @@ pub(crate) fn register_session_lifecycle(
     session_application: Arc<SessionApplication>,
 ) {
     service_lifecycle.spawn("coordinator-session-lifecycle", move |cancel| async move {
-        session_application.run_lifecycle_supervisor(cancel).await
+        session_application
+            .recovery()
+            .run_lifecycle_supervisor(cancel)
+            .await
     });
 }
 
@@ -350,7 +353,8 @@ pub async fn build_coordinator_component(
                 directory: worker_directory.clone(),
                 dispatch: execution.coordinator_dispatch.clone(),
                 environments: environments.clone(),
-                sessions: session_application.clone(),
+                session_queries: session_application.queries(),
+                worker_occupancy: session_application.worker_occupancy(),
                 relay_targets: worker_relay_targets.clone(),
                 bindings: worker_execution_bindings.clone(),
                 clock: clock.clone(),

@@ -1662,6 +1662,7 @@ async fn inactive_live_steer_has_the_existing_durable_event_fallback() {
     .await;
     assert_eq!(status, StatusCode::OK, "F2: {body}");
     session_application
+        .event_batches()
         .drive_session_event_batches(&SessionId::from(&session), None)
         .await
         .expect("F2 lifecycle drive");

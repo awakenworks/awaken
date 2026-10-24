@@ -289,6 +289,7 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
     );
     let stored = state
         .session_application()
+        .event_batches()
         .session_event_batch_idempotency(&SessionId::from(id), "foreign-key", "any")
         .await
         .unwrap();
@@ -3952,6 +3953,7 @@ async fn outcome_send_returns_the_root_receipt_before_lifecycle_execution() {
     let supervisor = tokio::spawn(
         state
             .session_application()
+            .recovery()
             .run_lifecycle_supervisor(cancellation.clone()),
     );
     tokio::task::yield_now().await;
@@ -4039,6 +4041,7 @@ async fn outcome_loop_projects_evaluations() {
     let supervisor = tokio::spawn(
         state
             .session_application()
+            .recovery()
             .run_lifecycle_supervisor(cancellation.clone()),
     );
     tokio::task::yield_now().await;
@@ -4356,14 +4359,14 @@ async fn hitl_await_confirm_resume() {
     let finalize_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     for _ in 0..2 {
         awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-            application.as_ref(),
+            application.coordination().as_ref(),
             boundary.clone(),
         )
         .await
         .unwrap();
         loop {
             match awaken_session_execution_contract::SessionAgentCoordination::finalize_session_agent_boundary(
-                application.as_ref(),
+                application.coordination().as_ref(),
                 boundary.clone(),
             )
             .await

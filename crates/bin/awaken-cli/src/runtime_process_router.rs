@@ -761,8 +761,9 @@ fn assemble_session_plane(
     let session_application = builder.build().map_err(|error| error.to_string())?;
     let session_application = Arc::new(session_application);
     bind_session_lifecycle_hooks(base, host, &session_application)?;
-    let event_batch_cutover_validation =
-        session_application.session_event_batch_cutover_validation_source();
+    let event_batch_cutover_validation = session_application
+        .recovery()
+        .session_event_batch_cutover_validation_source();
     let coordinator_execution = crate::coordinator_execution(&host.host, &session_application)
         .map_err(|error| error.to_string())?;
     // The Session `content_capture` projection decides with the Host's own

@@ -27,7 +27,9 @@ use awaken_session_execution_contract::{
 };
 use awaken_session_types::RunError;
 
-use crate::SessionApplication;
+use std::sync::Arc;
+
+use crate::SessionProjectionRecoveryError;
 
 struct ResolvedRosterMember {
     entry: SessionAgentRosterEntry,
@@ -40,7 +42,7 @@ struct ResolvedRosterMember {
 const MAX_UNARCHIVED_AGENT_CHILD_THREADS: usize = 24;
 
 async fn admit_fresh_agent_report(
-    app: &SessionApplication,
+    app: &SessionCoordination,
     owner: &str,
     settled: awaken_session_state_contract::PersistedSession,
     observation: awaken_session_state_contract::SessionRuntimeIntervalObservation,
@@ -67,8 +69,7 @@ async fn admit_fresh_agent_report(
     let session_id = continuation.session_id.clone();
     let epoch = continuation.session_activity_epoch;
     let continued = app
-        .runtime()
-        .coordination()
+        .coordination
         .continue_session_agent_report(continuation)
         .await;
     app.settle_definitive_coordination_rejection(session_id.as_str(), epoch, &continued)
@@ -76,7 +77,65 @@ async fn admit_fresh_agent_report(
     continued
 }
 
-impl SessionApplication {
+/// Asynchronous Agent coordination within one Session: the frozen Agent
+/// roster, messages between coordinated Threads and their boundary reports,
+/// tool replies, Thread interrupts and the resumption of a paused Run, each
+/// admitted against the durable Session root and its activity fence.
+///
+/// It holds the CAS kernel, the lifecycle signal, the read, activity, Run
+/// admission, realization and observation components it passes through, and
+/// the coordination and Thread runtime roles.
+pub struct SessionCoordination {
+    mutations: Arc<crate::SessionMutations>,
+    lifecycle: Arc<crate::SessionLifecycle>,
+    queries: Arc<crate::SessionQueries>,
+    activities: Arc<crate::SessionActivities>,
+    run_admissions: Arc<crate::SessionRunAdmissions>,
+    realizations: Arc<crate::SessionRealizations>,
+    observations: Arc<crate::SessionObservations>,
+    coordination: Arc<dyn awaken_session_execution_contract::CoordinationRuntime>,
+    coordination_reads: Arc<dyn awaken_session_execution_contract::SessionCoordinationReads>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
+}
+
+/// The collaborators one [`SessionCoordination`] is built from.
+pub(crate) struct SessionCoordinationCollaborators {
+    pub(crate) mutations: Arc<crate::SessionMutations>,
+    pub(crate) lifecycle: Arc<crate::SessionLifecycle>,
+    pub(crate) queries: Arc<crate::SessionQueries>,
+    pub(crate) activities: Arc<crate::SessionActivities>,
+    pub(crate) run_admissions: Arc<crate::SessionRunAdmissions>,
+    pub(crate) realizations: Arc<crate::SessionRealizations>,
+    pub(crate) observations: Arc<crate::SessionObservations>,
+    pub(crate) runtime: crate::SessionExecutor,
+}
+
+impl SessionCoordination {
+    pub(crate) fn new(collaborators: SessionCoordinationCollaborators) -> Self {
+        let SessionCoordinationCollaborators {
+            mutations,
+            lifecycle,
+            queries,
+            activities,
+            run_admissions,
+            realizations,
+            observations,
+            runtime,
+        } = collaborators;
+        Self {
+            mutations,
+            lifecycle,
+            queries,
+            activities,
+            run_admissions,
+            realizations,
+            observations,
+            coordination: runtime.coordination.clone(),
+            coordination_reads: runtime.coordination_reads.clone(),
+            thread_reads: runtime.thread_reads.clone(),
+        }
+    }
+
     /// Open the activity of a Run admitted for this Agent. An exact committed
     /// receipt is recovery truth and is re-read before fresh admission policy,
     /// so a response-loss repair recovers its original epoch even after the
@@ -135,8 +194,7 @@ impl SessionApplication {
         )
         .map_err(|error| RunError::unavailable(error.to_string()))?;
         let receipt = self
-            .runtime()
-            .coordination_reads()
+            .coordination_reads
             .coordinated_admission_receipt(command)
             .await
             .map_err(|error| RunError::unavailable(error.message))?;
@@ -209,7 +267,7 @@ impl SessionApplication {
         ),
         RunError,
     > {
-        let thread_reads = self.runtime().thread_reads();
+        let thread_reads = self.thread_reads.as_ref();
 
         let snapshot = thread_reads
             .session_thread_run_recovery_snapshot(
@@ -244,7 +302,7 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
         child_thread_id: &ThreadId,
     ) -> Result<(), RunError> {
-        let coordination_reads = self.runtime().coordination_reads();
+        let coordination_reads = self.coordination_reads.as_ref();
 
         if child_thread_id.0 == session_id {
             return Err(RunError::bad_request(
@@ -386,13 +444,13 @@ impl SessionApplication {
     }
 }
 
-impl SessionApplication {
+impl SessionCoordination {
     async fn prepare_session_thread_tool_reply(
         &self,
         command: SessionThreadToolReplyCommand,
     ) -> Result<(String, Option<u64>, SessionThreadToolReplyDelivery), RunError> {
-        let coordination_reads = self.runtime().coordination_reads();
-        let thread_reads = self.runtime().thread_reads();
+        let coordination_reads = self.coordination_reads.as_ref();
+        let thread_reads = self.thread_reads.as_ref();
 
         if !command.has_complete_coordinates() {
             return Err(RunError::bad_request(
@@ -523,8 +581,8 @@ impl SessionApplication {
         resume: RunResume,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError> {
-        let coordination_runtime = self.runtime().coordination();
-        let thread_reads = self.runtime().thread_reads();
+        let coordination_runtime = self.coordination.as_ref();
+        let thread_reads = self.thread_reads.as_ref();
 
         if operation_id.trim().is_empty() {
             return Err(RunError::bad_request(
@@ -610,7 +668,7 @@ impl SessionApplication {
 }
 
 #[async_trait::async_trait]
-impl SessionAgentCoordination for SessionApplication {
+impl SessionAgentCoordination for SessionCoordination {
     async fn admit_session_run_activity(
         &self,
         session_id: &awaken_session_types::SessionId,
@@ -661,7 +719,7 @@ impl SessionAgentCoordination for SessionApplication {
         thread_id: &ThreadId,
         run_id: &RunId,
     ) -> Result<bool, RunError> {
-        let thread_reads = self.runtime().thread_reads();
+        let thread_reads = self.thread_reads.as_ref();
 
         let session = self
             .queries
@@ -737,10 +795,10 @@ impl SessionAgentCoordination for SessionApplication {
         &self,
         command: SessionAgentMessageCommand,
     ) -> Result<SessionAgentMessageReceipt, RunError> {
-        let coordination_runtime = self.runtime().coordination();
+        let coordination_runtime = self.coordination.as_ref();
 
-        let coordination_reads = self.runtime().coordination_reads();
-        let thread_reads = self.runtime().thread_reads();
+        let coordination_reads = self.coordination_reads.as_ref();
+        let thread_reads = self.thread_reads.as_ref();
 
         command.validate_coordinates()?;
         let command = coordination_reads
@@ -898,7 +956,7 @@ impl SessionAgentCoordination for SessionApplication {
         &self,
         command: SessionAgentBoundaryCommand,
     ) -> Result<(), RunError> {
-        let coordination_runtime = self.runtime().coordination();
+        let coordination_runtime = self.coordination.as_ref();
 
         if command.session_activity_epoch == 0 {
             return Err(RunError::bad_request(
@@ -1090,7 +1148,7 @@ impl SessionAgentCoordination for SessionApplication {
         session_id: &awaken_session_types::SessionId,
         child_thread_id: &ThreadId,
     ) -> Result<(), RunError> {
-        let coordination_runtime = self.runtime().coordination();
+        let coordination_runtime = self.coordination.as_ref();
 
         self.validate_coordinated_thread(session_id, child_thread_id)
             .await?;
@@ -1103,7 +1161,7 @@ impl SessionAgentCoordination for SessionApplication {
         &self,
         command: SessionThreadToolReplyCommand,
     ) -> Result<(), RunError> {
-        let coordination_runtime = self.runtime().coordination();
+        let coordination_runtime = self.coordination.as_ref();
 
         let (session_id, session_activity_epoch, delivery) =
             self.prepare_session_thread_tool_reply(command).await?;
@@ -1115,6 +1173,41 @@ impl SessionAgentCoordination for SessionApplication {
                 .await?;
         }
         result
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::ProfiledSessionReplies for SessionCoordination {
+    /// Authorize the native primary-Run reply, then delegate the exact command
+    /// to the existing Session activity/continuation/receipt owner.
+    async fn reply_profiled_session_run_for_owner(
+        &self,
+        owner_scope: &str,
+        command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
+    ) -> Result<(), SessionProjectionRecoveryError> {
+        use awaken_session_execution_contract::{SessionAgentCoordination, SessionThreadTarget};
+        self.run_admissions
+            .require_profiled_run_owner(owner_scope, &command.session_id)
+            .await?;
+        if command.target != SessionThreadTarget::Primary
+            || command
+                .expected_thread_version
+                .is_none_or(|version| version == 0)
+            || command
+                .tool_request_event_id
+                .as_ref()
+                .is_none_or(|id| id.trim().is_empty())
+            || command.accompanying_system.is_some()
+        {
+            return Err(SessionProjectionRecoveryError::Rejected(
+                RunError::bad_request(
+                    "native Run reply requires one primary Run, exact version and stable operation",
+                ),
+            ));
+        }
+        SessionAgentCoordination::reply_session_thread_tool(self, command)
+            .await
+            .map_err(SessionProjectionRecoveryError::Rejected)
     }
 }
 

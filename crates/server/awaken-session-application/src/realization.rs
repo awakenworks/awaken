@@ -26,21 +26,19 @@ use awaken_session_state_contract::{
 };
 use awaken_session_types::RunError;
 
-use super::{SessionApplication, SessionMutationError};
+use super::SessionMutationError;
 use crate::{creation::DurableSessionRoot, projection};
 
 mod authority;
 mod control;
 mod local_lock;
 mod publication;
-pub(super) mod recovery_backoff;
 
 use publication::{draining_generations, publication_action, publication_generations};
 
 use authority::{exact_generation_key, generation_set_authorizes, verify_lease};
 use control::RefreshedSessionRealizationControl;
 pub(crate) use local_lock::LocalRealizationLocks;
-use recovery_backoff::SessionRecoveryTrigger;
 
 /// One timing policy for every realization owned by the co-located Runtime.
 /// Terminal cleanup uses the same lease horizon but renews at one third of it
@@ -184,212 +182,6 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             .invalidate_session_realization_lease(session_id.as_str(), lease)
             .await
             .map_err(Into::into)
-    }
-}
-
-impl SessionApplication {
-    #[cfg(test)]
-    pub(crate) async fn reconcile_pending_session_state(
-        self: std::sync::Arc<Self>,
-    ) -> SessionRecoveryCycle {
-        self.reconcile_pending_session_state_for(
-            SessionRecoveryTrigger::Scheduled,
-            &mut super::recovery_scan::ContinuationDiagnostics::default(),
-        )
-        .await
-    }
-
-    pub(super) async fn reconcile_pending_session_state_for(
-        self: std::sync::Arc<Self>,
-        trigger: SessionRecoveryTrigger,
-        diagnostics: &mut super::recovery_scan::ContinuationDiagnostics,
-    ) -> SessionRecoveryCycle {
-        let cycle_started = awaken_time::mono::Stopwatch::start();
-        let candidates = match diagnostics
-            .scan(&self, trigger == SessionRecoveryTrigger::Scheduled)
-            .await
-        {
-            Ok(candidates) => candidates,
-            Err(error) => {
-                tracing::warn!(error = ?error, "Session recovery candidate scan failed");
-                return SessionRecoveryCycle {
-                    retryable_failures: 1,
-                    settled: 0,
-                    elapsed: cycle_started.elapsed(),
-                };
-            }
-        };
-        // EOF is proven before any diagnostic is consumed. The supervisor
-        // owns this value across sequential cycles, so an older concurrent
-        // status/phase scan cannot overwrite a newer diagnostic view.
-        let scan_elapsed = cycle_started.elapsed();
-        let resources = self
-            .resource_reconciliation
-            .reconcile_resource_activations_from(&candidates)
-            .await;
-        let resources_elapsed = cycle_started.elapsed();
-        let resource_failure_count = resources.failures.len();
-        let pending = resources.pending;
-        let quarantined = resources.quarantined.len();
-        let settled_resources = resources.settled.len();
-        for failure in resources.failures {
-            tracing::warn!(
-                session = %failure.session_id,
-                error = %failure.message,
-                "Session Resource reconciliation remains pending"
-            );
-        }
-        if !resources.settled.is_empty() {
-            tracing::info!(
-                reconciled_resources = resources.settled.len(),
-                "reconciled durable Session Resource activations"
-            );
-        }
-        for isolation in resources.quarantined {
-            tracing::error!(
-                session = %isolation.session_id,
-                reason = %isolation.reason,
-                "corrupt durable Session remains quarantined"
-            );
-        }
-        let continuation_failure_count = self
-            .continuations
-            .reconcile_environment_continuations_from(&candidates, self.clock.now_ms())
-            .await;
-        let continuations_elapsed = cycle_started.elapsed();
-        let realizations = self
-            .realizations
-            .reconcile_session_realizations_from(&candidates)
-            .await;
-        let realizations_elapsed = cycle_started.elapsed();
-        let realization_failure_count = realizations.failures.len();
-        let settled_realizations = realizations.settled.len();
-        for failure in realizations.failures {
-            tracing::warn!(
-                session = %failure.session_id,
-                error = %failure.message,
-                "Session realization reconciliation remains pending"
-            );
-        }
-        if !realizations.settled.is_empty() {
-            tracing::info!(
-                reconciled_realizations = realizations.settled.len(),
-                "reconciled durable Session Runtime projections"
-            );
-        }
-        let event_batches =
-            super::lifecycle_supervisor::reconcile_event_batch_recovery_task(&self, &candidates)
-                .await;
-        let event_batches_elapsed = cycle_started.elapsed();
-        let event_batch_failure_count = event_batches.failures.len();
-        let event_batches_settled = event_batches.settled;
-        for (session_id, error) in event_batches.failures {
-            tracing::warn!(
-                session = %session_id,
-                %error,
-                "Session Event reconciliation remains pending"
-            );
-        }
-        if event_batches.settled != 0 {
-            tracing::info!(
-                reconciled_event_batches = event_batches.settled,
-                "reconciled durable Session Event batches"
-            );
-        }
-        let outcomes = self.reconcile_outcome_continuations_from(&candidates).await;
-        let outcomes_elapsed = cycle_started.elapsed();
-        let outcome_failure_count = outcomes.failures.len();
-        let outcomes_settled = outcomes.settled;
-        for (session_id, error) in outcomes.failures {
-            tracing::warn!(
-                session = %session_id,
-                %error,
-                "Thread Outcome reconciliation remains pending"
-            );
-        }
-        if outcomes.settled != 0 {
-            tracing::info!(
-                reconciled_outcomes = outcomes.settled,
-                "reconciled durable Thread Outcomes"
-            );
-        }
-        let final_scan_failure_count = match self
-            .refresh_event_batch_cutover_validation(event_batch_failure_count)
-            .await
-        {
-            Ok(snapshot) => {
-                tracing::info!(
-                    validation_generation = snapshot.generation,
-                    terminal_with_incomplete_event_batches =
-                        snapshot.terminal_with_incomplete_event_batches,
-                    event_batch_failures = snapshot.event_batch_failures,
-                    quarantined_sessions = snapshot.quarantined,
-                    "Session Event-batch cutover validation scan completed"
-                );
-                0
-            }
-            Err(error) => {
-                tracing::warn!(
-                    error = ?error,
-                    "Session Event-batch cutover validation scan remains pending"
-                );
-                1
-            }
-        };
-        let retryable_failures = resource_failure_count
-            + continuation_failure_count
-            + realization_failure_count
-            + event_batch_failure_count
-            + outcome_failure_count
-            + final_scan_failure_count;
-        tracing::info!(
-            pending_sessions = pending
-                .max(realizations.pending)
-                .max(event_batches.pending)
-                .max(outcomes.pending),
-            quarantined_sessions = quarantined
-                .max(realizations.quarantined.len())
-                .max(event_batches.quarantined)
-                .max(outcomes.quarantined),
-            retryable_failures,
-            scan_ms = scan_elapsed.as_millis(),
-            resources_ms = (resources_elapsed - scan_elapsed).as_millis(),
-            continuations_ms = (continuations_elapsed - resources_elapsed).as_millis(),
-            realizations_ms = (realizations_elapsed - continuations_elapsed).as_millis(),
-            event_batches_ms = (event_batches_elapsed - realizations_elapsed).as_millis(),
-            outcomes_ms = (outcomes_elapsed - event_batches_elapsed).as_millis(),
-            validation_ms = (cycle_started.elapsed() - outcomes_elapsed).as_millis(),
-            elapsed_ms = cycle_started.elapsed().as_millis(),
-            "Session recovery scan completed"
-        );
-        SessionRecoveryCycle {
-            retryable_failures,
-            settled: settled_resources
-                + settled_realizations
-                + event_batches_settled
-                + outcomes_settled,
-            elapsed: cycle_started.elapsed(),
-        }
-    }
-
-    /// Run the sole Session lifecycle supervisor for this application instance.
-    /// The process startup owns spawning, cancellation, readiness, and join;
-    /// this application owns only the convergence sequence and one-shot fence.
-    pub async fn run_lifecycle_supervisor(
-        self: std::sync::Arc<Self>,
-        cancellation: awaken_runtime_contract::CancellationToken,
-    ) -> Result<(), String> {
-        if !self.lifecycle.claim_supervisor() {
-            return Err("Session lifecycle supervisor was already claimed".into());
-        }
-        // Observe cancellation during initialization and a whole recovery pass,
-        // not only between passes. Dropping the loop also drops its owned
-        // JoinSets; durable lease/physical-quiescence authority is unchanged.
-        tokio::select! {
-            biased;
-            () = cancellation.cancelled() => Ok(()),
-            result = super::lifecycle_supervisor::run_lifecycle_loop(self, cancellation.clone()) => result,
-        }
     }
 }
 
@@ -959,18 +751,4 @@ impl SessionRealizations {
             crate::mutation::aggregate_from_snapshot(session).map_err(repository_control)?,
         ))
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct SessionRecoveryCycle {
-    pub(crate) retryable_failures: usize,
-    /// How many durable items this scan actually moved forward. A scan that
-    /// settled nothing is the only one whose successor hint is plausibly
-    /// redundant, so this is what arms the external-wake coalescing window.
-    pub(crate) settled: usize,
-    /// What this scan cost. An empty hint-driven scan is charged its own
-    /// duration as the coalescing window, so scanning cannot exceed half the
-    /// supervisor's time and a later hint never inherits more delay than a
-    /// scan actually takes.
-    pub(crate) elapsed: std::time::Duration,
 }

@@ -229,6 +229,7 @@ pub async fn drive_retained_session_events(
     let mut task = tokio::task::JoinSet::new();
     task.spawn(async move {
         application
+            .event_batches()
             .drive_session_event_batches(&SessionId::from(session_id), None)
             .await
     });
@@ -273,11 +274,13 @@ pub async fn finalize_applied_user_dispatch(
     use awaken_session_execution_contract::SessionAgentCoordination;
     let application = state.session_application();
     application
+        .coordination()
         .settle_session_agent_boundary(boundary.clone())
         .await
         .expect("fixture pre-Dispatch boundary");
     for _ in 0..2 {
         application
+            .coordination()
             .finalize_session_agent_boundary(boundary.clone())
             .await
             .expect("fixture applied Dispatch boundary");
