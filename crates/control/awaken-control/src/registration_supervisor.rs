@@ -102,6 +102,11 @@ impl RegistrationHealth {
     }
 }
 
+/// Stable diagnostic code for a registration domain that stays pending.
+const REGISTRATION_RECOVERY_PENDING: &str = "registration_recovery_pending";
+/// The supervisor retries the domain itself; operators need not resubmit.
+const RETRY_WITH_BACKOFF: &str = "retry_with_backoff";
+
 pub struct StaticRegistrationSupervisor {
     health: Arc<RegistrationHealth>,
     wake: tokio::sync::watch::Sender<u64>,
@@ -143,21 +148,35 @@ impl StaticRegistrationSupervisor {
                         environments.recover_registration_intents().await
                     }
                 };
-                let (agent_result, environment_result) = tokio::join!(
-                    agents.recover_registrations(),
-                    environment_recovery
-                );
+                let (agent_result, environment_result) =
+                    tokio::join!(agents.recover_registrations(), environment_recovery);
                 if environment_result.is_ok() {
                     environment_projection_recovered = true;
                 }
                 let pending =
                     usize::from(agent_result.is_err()) + usize::from(environment_result.is_err());
                 task_health.record(pending);
-                if let Err(error) = agent_result {
-                    tracing::warn!(error, "Agent registration recovery remains pending");
+                // Recovery errors can carry store URLs and credentials, so
+                // diagnostics name only the stable code, the pending domain and
+                // the recovery direction, never the raw error text.
+                let attempt = failures.saturating_add(1);
+                if agent_result.is_err() {
+                    tracing::warn!(
+                        code = REGISTRATION_RECOVERY_PENDING,
+                        domain = "agent",
+                        recovery = RETRY_WITH_BACKOFF,
+                        attempt,
+                        "Agent registration recovery remains pending"
+                    );
                 }
-                if let Err(error) = environment_result {
-                    tracing::warn!(error = %error, "Environment registration recovery remains pending");
+                if environment_result.is_err() {
+                    tracing::warn!(
+                        code = REGISTRATION_RECOVERY_PENDING,
+                        domain = "environment",
+                        recovery = RETRY_WITH_BACKOFF,
+                        attempt,
+                        "Environment registration recovery remains pending"
+                    );
                 }
                 let delay = if pending == 0 {
                     failures = 0;
