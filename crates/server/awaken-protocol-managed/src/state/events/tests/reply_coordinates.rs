@@ -438,7 +438,6 @@ async fn application_append_rejects_forged_reply_coordinates() {
 }
 
 #[tokio::test]
-#[ignore = "product gap: a new ToolReply without expected_thread_version is retained, and the executor fence (host/coordination.rs) then skips the Thread-version check"]
 async fn application_append_rejects_version_less_new_reply() {
     let (runtime, state, session_id, before, outcome) =
         Box::pin(forged_application_reply(|reply| {

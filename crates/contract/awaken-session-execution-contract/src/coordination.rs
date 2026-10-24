@@ -227,6 +227,97 @@ pub fn coordinated_thread_is_interruptible(
     latest_state.is_none_or(|state| !coordinated_thread_closed(target.kind(), state))
 }
 
+/// Child Threads named by the Interrupt inputs of one Event batch, each once.
+#[must_use]
+pub fn interrupt_child_targets(
+    inputs: &[awaken_session_event_contract::SessionEventInput],
+) -> Vec<&ThreadId> {
+    let mut children = Vec::new();
+    for input in inputs {
+        let awaken_session_event_contract::SessionEventInput::Interrupt(interrupt) = input else {
+            continue;
+        };
+        for target in interrupt.requested_target.iter().chain(&interrupt.targets) {
+            if let SessionThreadTarget::Child(thread_id) = target
+                && !children.contains(&thread_id)
+            {
+                children.push(thread_id);
+            }
+        }
+    }
+    children
+}
+
+/// The Thread topology rule every Event admission applies to an Interrupt: it
+/// may name only a coordinated child of this Session that is still
+/// interruptible. Link membership is the topology authority; committed
+/// disposition and latest Run state decide whether the child is terminal. A
+/// link whose child has no snapshot yet is a valid cancellable target.
+pub fn validate_interrupt_children(
+    session_id: &SessionId,
+    children: &[&ThreadId],
+    links: &[CoordinatedThreadLink],
+    snapshots: &crate::ProjectionThreadSnapshots,
+) -> Result<(), crate::RunError> {
+    for child in children {
+        let link = links
+            .iter()
+            .find(|link| link.session_id == *session_id && link.thread_id == **child)
+            .ok_or_else(|| {
+                crate::RunError::bad_request_classified(
+                    "interrupt_target_unknown",
+                    "session_thread_id does not name a thread in this session",
+                )
+            })?;
+        let Some(snapshot) = snapshots.get(&child.0) else {
+            continue;
+        };
+        let disposition =
+            awaken_agent_contract::thread_disposition_from_committed_state(&snapshot.state)
+                .map_err(|error| crate::RunError::internal(error.to_string()))?;
+        let latest = snapshot
+            .current_run()
+            .map_err(|error| crate::RunError::internal(error.to_string()))?;
+        if !coordinated_thread_is_interruptible(
+            &link.target,
+            disposition,
+            latest.map(|run| &run.state),
+        ) {
+            return Err(crate::RunError::bad_request_classified(
+                "interrupt_target_terminal",
+                "an archived or terminated session thread cannot be interrupted",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Read the coordinated links and child snapshots one Event batch's
+/// Interrupts name, then apply [`validate_interrupt_children`]. A batch
+/// without a child target reads nothing.
+pub async fn admit_interrupt_topology(
+    coordination: &dyn crate::SessionCoordinationReads,
+    threads: &dyn crate::ThreadReadRuntime,
+    session_id: &SessionId,
+    inputs: &[awaken_session_event_contract::SessionEventInput],
+) -> Result<(), crate::RunError> {
+    let children = interrupt_child_targets(inputs);
+    if children.is_empty() {
+        return Ok(());
+    }
+    let links = coordination.coordinated_threads(session_id, None).await?;
+    let mut snapshots = crate::ProjectionThreadSnapshots::new();
+    for child in &children {
+        if let Some(snapshot) = threads
+            .session_thread_recovery_snapshot(session_id, &child.0)
+            .await?
+        {
+            snapshots.insert(child.0.clone(), snapshot);
+        }
+    }
+    validate_interrupt_children(session_id, &children, &links, &snapshots)
+}
+
 /// Logical position of the claimed Run inside Agent-message settlement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionAgentBoundaryRole {
