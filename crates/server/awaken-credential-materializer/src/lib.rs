@@ -32,9 +32,6 @@ impl awaken_runtime_contract::llm::DeltaSink for NoopDeltaSink {
     async fn on_text(&self, _: &str) {}
 }
 
-/// The Provider executor factory awaken-cloud imports from this path; its
-/// owner is `awaken-inference-endpoint`.
-pub use awaken_inference_endpoint::executor_from_materialized_endpoint_for_provider;
 pub use http_credential::materialized_http_credential;
 pub use inference::CredentialInferenceMaterializer;
 pub use platform_egress::{
