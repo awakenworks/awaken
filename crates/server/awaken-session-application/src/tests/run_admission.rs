@@ -359,7 +359,9 @@ impl awaken_session_execution_contract::CoordinationRuntime for ActivationOnlySe
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::SessionCoordinationReads for ActivationOnlySessionRunRuntime {
+impl awaken_session_execution_contract::SessionCoordinationReads
+    for ActivationOnlySessionRunRuntime
+{
     async fn source_dispatch_observation(
         &self,
         _session: &awaken_session_state_contract::PersistedSession,
@@ -1311,8 +1313,10 @@ impl awaken_session_execution_contract::CoordinationRuntime for BlockingSessionR
     async fn activate_session_run(
         &self,
         delivery: awaken_session_execution_contract::SessionRunDelivery,
-    ) -> Result<awaken_session_execution_contract::SessionRunActivation, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_execution_contract::SessionRunActivation,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .activate_session_run(delivery)
             .await

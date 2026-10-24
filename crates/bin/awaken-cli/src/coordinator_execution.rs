@@ -19,11 +19,11 @@ use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
 use awaken_dispatch::ClaimedOperationCoordinatorResolver;
 use awaken_session_application::{SessionApplication, SessionRunApplication};
 use awaken_session_application_contract::{RunApplication, SessionRunBackgroundApplication};
+use awaken_session_execution_contract::ApplicationError;
 use awaken_session_executor::{
     AgentCoordinationInstallError, CoordinatorRoles, ExecutorComponents,
     SessionApplicationBindingError,
 };
-use awaken_session_execution_contract::ApplicationError;
 
 /// Why the Coordinator could not be composed over this executor.
 #[derive(Debug, thiserror::Error)]

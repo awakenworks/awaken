@@ -1036,7 +1036,8 @@ impl awaken_session_execution_contract::OutcomeRuntime for EventBatchRuntime {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<awaken_session_execution_contract::OutcomeDrive, awaken_session_types::RunError> {
+    ) -> Result<awaken_session_execution_contract::OutcomeDrive, awaken_session_types::RunError>
+    {
         let outcome_id = awaken_session_event_contract::session_outcome_convenience_id(
             thread,
             description,

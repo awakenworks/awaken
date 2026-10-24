@@ -292,7 +292,9 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Respon
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::SessionEnvironmentBindingSink for MovingRealizationFenceSink {
+impl awaken_session_execution_contract::SessionEnvironmentBindingSink
+    for MovingRealizationFenceSink
+{
     async fn authorize(
         &self,
         intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,

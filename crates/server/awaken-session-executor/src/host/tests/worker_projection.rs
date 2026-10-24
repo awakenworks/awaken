@@ -1229,13 +1229,14 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         )],
         data_subject_id: None,
         traceparent: None,
-        execution_requirements: awaken_session_execution_contract::SessionRunExecutionRequirements {
-            tool_capability_narrowing:
-                awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
-            required_worker_capabilities: std::collections::BTreeSet::from([
-                "application:test-session-envelope/v1".to_string(),
-            ]),
-        },
+        execution_requirements:
+            awaken_session_execution_contract::SessionRunExecutionRequirements {
+                tool_capability_narrowing:
+                    awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
+                required_worker_capabilities: std::collections::BTreeSet::from([
+                    "application:test-session-envelope/v1".to_string(),
+                ]),
+            },
         replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
     };
     let expected_fingerprint = command.command_fingerprint();

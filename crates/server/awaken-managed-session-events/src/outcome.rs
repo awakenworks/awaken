@@ -9,7 +9,9 @@
 use std::collections::HashMap;
 
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
-use awaken_session_execution_contract::{CommittedOutcomeProjection, outcome_terminal_commit_cursor};
+use awaken_session_execution_contract::{
+    CommittedOutcomeProjection, outcome_terminal_commit_cursor,
+};
 
 use crate::{
     DerivedSessionEvent, EventIdentity, FactProvenance, ManagedEventType, OutcomeVerdict,
@@ -303,22 +305,24 @@ mod tests {
             }
         };
         let projection = |iterations: &[(u32, &str)]| {
-            CommittedOutcomeProjection::Completed(awaken_session_execution_contract::OutcomeReport {
-                iterations: iterations
-                    .iter()
-                    .map(
-                        |(iteration, result)| awaken_session_execution_contract::OutcomeIteration {
-                            messages: Vec::new(),
-                            outcome_id: outcome_id.into(),
-                            description: "ship".into(),
-                            iteration: *iteration,
-                            result: (*result).into(),
-                            explanation: "test".into(),
-                            usage: None,
-                        },
-                    )
-                    .collect(),
-            })
+            CommittedOutcomeProjection::Completed(
+                awaken_session_execution_contract::OutcomeReport {
+                    iterations: iterations
+                        .iter()
+                        .map(|(iteration, result)| {
+                            awaken_session_execution_contract::OutcomeIteration {
+                                messages: Vec::new(),
+                                outcome_id: outcome_id.into(),
+                                description: "ship".into(),
+                                iteration: *iteration,
+                                result: (*result).into(),
+                                explanation: "test".into(),
+                                usage: None,
+                            }
+                        })
+                        .collect(),
+                },
+            )
         };
         let select = |terminal, snapshot| {
             CommittedOutcome::select(outcome_id.into(), terminal, Some(snapshot)).unwrap()

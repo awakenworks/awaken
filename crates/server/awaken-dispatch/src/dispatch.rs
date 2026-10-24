@@ -1245,9 +1245,9 @@ pub(crate) fn validate_session_resume_target(
         Some(awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
             ..
         }) => session_activity_epoch.is_some(),
-        Some(awaken_session_execution_contract::SessionThreadToolReplyActivity::ThreadExtension) => {
-            session_activity_epoch.is_none() && prior_session_activity_epoch.is_none()
-        }
+        Some(
+            awaken_session_execution_contract::SessionThreadToolReplyActivity::ThreadExtension,
+        ) => session_activity_epoch.is_none() && prior_session_activity_epoch.is_none(),
         None => false,
     };
     if !ownership_matches {

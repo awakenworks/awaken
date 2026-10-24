@@ -32,8 +32,8 @@ use awaken_dispatch_erasure::AnyCoordinatorDispatch;
 use awaken_dispatch_execution::{ProcessDispatch, ProcessDispatchLifecycle};
 use awaken_resource_contract::FileContentSource;
 use awaken_session_application::SessionRunApplication;
-use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_execution_contract::DurableRunOperations;
+use awaken_session_realization_contract::ResourceOperationFence;
 
 /// The executor's ports the Coordinator consumes, each given once at
 /// construction. Consumers: [`crate::build_coordinator_component`] and the

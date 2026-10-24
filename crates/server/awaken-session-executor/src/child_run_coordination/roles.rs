@@ -307,7 +307,8 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ChildRunCoo
     async fn coordinated_admission_receipt(
         &self,
         command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
-    ) -> Result<Option<awaken_session_execution_contract::SessionAgentMessageReceipt>, RunError> {
+    ) -> Result<Option<awaken_session_execution_contract::SessionAgentMessageReceipt>, RunError>
+    {
         use awaken_dispatch_contract::SessionRunAdmissionObservation;
         if command.activity_epoch() == Some(0)
             || matches!(command, awaken_session_execution_contract::CoordinatedAdmissionRef::Report(_, baseline)

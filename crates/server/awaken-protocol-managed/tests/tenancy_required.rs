@@ -303,8 +303,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for AcceptingFake {
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await

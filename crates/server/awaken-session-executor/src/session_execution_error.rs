@@ -3,8 +3,8 @@
 //! failure enters it in exactly one place, `From<RealizationError>`, through
 //! the realization's own Run projection, so its disposition survives.
 
-use awaken_session_mcp::{McpError, McpErrorKind};
 use awaken_session_execution_contract::ApplicationError;
+use awaken_session_mcp::{McpError, McpErrorKind};
 use awaken_session_types::RunError;
 
 /// A Session execution failure classified by fault: `BadRequest` is the caller's (bad id,

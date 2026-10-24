@@ -564,8 +564,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for PreparingFake {
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await
@@ -989,8 +991,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for HotRuntime {
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await

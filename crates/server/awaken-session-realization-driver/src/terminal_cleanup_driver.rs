@@ -297,11 +297,11 @@ pub(crate) mod tests {
     use super::*;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_session_application_contract::StepOutcome;
+    use awaken_session_execution_contract::SessionRuntime;
+    use awaken_session_execution_contract::ToolPermissionDecision;
     use awaken_session_realization_contract::{
         FrozenSessionProjection, SessionTerminalCleanupAssignment, SessionTerminalCleanupWork,
     };
-    use awaken_session_execution_contract::SessionRuntime;
-    use awaken_session_execution_contract::ToolPermissionDecision;
     use awaken_session_state_contract::{
         SessionCleanupCommand, SessionCleanupDisposalReceipt, SessionCleanupOperation,
     };

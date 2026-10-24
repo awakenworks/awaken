@@ -131,8 +131,10 @@ fn require_primary_session_claim(
 
 fn session_coordination(
     service: &WorkerDispatchService,
-) -> Result<&Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>, RealizationHttpError>
-{
+) -> Result<
+    &Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
+    RealizationHttpError,
+> {
     service.session_coordination.as_ref().ok_or_else(|| {
         RealizationHttpError::from(ApplicationError::internal(
             "Session coordination control is not configured",

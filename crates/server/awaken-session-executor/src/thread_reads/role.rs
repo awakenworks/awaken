@@ -74,7 +74,8 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ThreadReads {
         &self,
         thread: &str,
         outcome_id: &str,
-    ) -> Result<Option<awaken_session_execution_contract::CommittedOutcomeProjection>, RunError> {
+    ) -> Result<Option<awaken_session_execution_contract::CommittedOutcomeProjection>, RunError>
+    {
         self.committed_outcome(thread, outcome_id)
             .await
             .map(|terminal| terminal.map(crate::outcome_report::committed_projection))

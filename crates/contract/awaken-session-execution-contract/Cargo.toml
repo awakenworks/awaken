@@ -10,7 +10,7 @@ product = "platform"
 bounded_context = "session"
 layer = "contract"
 kinds = ["types", "spi", "api", "remote"]
-authority = "session-runtime"
+authority = "session-execution"
 separation = "contract"
 
 [dependencies]

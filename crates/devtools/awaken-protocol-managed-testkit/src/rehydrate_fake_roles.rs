@@ -579,7 +579,9 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
                 continue;
             }
             match projection {
-                awaken_session_execution_contract::CommittedOutcomeProjection::Completed(report) => {
+                awaken_session_execution_contract::CommittedOutcomeProjection::Completed(
+                    report,
+                ) => {
                     for iteration in &report.iterations {
                         state.push(awaken_agent_contract::agent::state::Command::set(
                             awaken_agent_contract::agent::state::Scope::Thread,
@@ -774,7 +776,8 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
         &self,
         thread: &str,
         outcome_id: &str,
-    ) -> Result<Option<awaken_session_execution_contract::CommittedOutcomeProjection>, RunError> {
+    ) -> Result<Option<awaken_session_execution_contract::CommittedOutcomeProjection>, RunError>
+    {
         self.reads
             .on_read("outcome")
             .await
@@ -908,8 +911,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for RehydrateFake {
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await

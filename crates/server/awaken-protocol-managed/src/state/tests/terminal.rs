@@ -1,7 +1,7 @@
 use super::*;
 pub(in crate::state) use awaken_protocol_managed_testkit::sample_persisted;
-use awaken_session_repository_contract::{LifecycleOutbox as _, SessionRepositoryReads};
 use awaken_session_execution_contract::ToolPermissionDecision;
+use awaken_session_repository_contract::{LifecycleOutbox as _, SessionRepositoryReads};
 use awaken_session_types::SessionId;
 use awaken_tool_contract::tool_batch::ToolBatch;
 
@@ -2052,8 +2052,10 @@ impl awaken_session_execution_contract::CoordinationRuntime for EndSessionFailer
     async fn activate_session_run(
         &self,
         delivery: awaken_session_execution_contract::SessionRunDelivery,
-    ) -> Result<awaken_session_execution_contract::SessionRunActivation, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_execution_contract::SessionRunActivation,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .activate_session_run(delivery)
             .await
@@ -2550,8 +2552,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for EndSessionFailer {
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await

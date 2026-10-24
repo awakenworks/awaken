@@ -895,7 +895,9 @@ mod tests {
                 },
                 "original-config",
             )
-            .map_err(|e| awaken_session_execution_contract::ApplicationError::internal(e.to_string()))
+            .map_err(|e| {
+                awaken_session_execution_contract::ApplicationError::internal(e.to_string())
+            })
         }
         async fn binding_for(
             &self,

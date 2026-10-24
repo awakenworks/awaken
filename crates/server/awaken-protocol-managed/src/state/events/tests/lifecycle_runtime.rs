@@ -225,8 +225,10 @@ impl awaken_session_execution_contract::CoordinationRuntime for LifecycleRuntime
     async fn activate_session_run(
         &self,
         delivery: awaken_session_execution_contract::SessionRunDelivery,
-    ) -> Result<awaken_session_execution_contract::SessionRunActivation, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_execution_contract::SessionRunActivation,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .activate_session_run(delivery)
             .await
@@ -795,7 +797,8 @@ impl awaken_session_execution_contract::ThreadReadRuntime for LifecycleRuntime {
         &self,
         _thread: &str,
         outcome_id: &str,
-    ) -> Result<Option<awaken_session_execution_contract::CommittedOutcomeProjection>, RunError> {
+    ) -> Result<Option<awaken_session_execution_contract::CommittedOutcomeProjection>, RunError>
+    {
         let projection = self
             .outcome_projections
             .lock()
@@ -850,8 +853,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for LifecycleRuntime {
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await
