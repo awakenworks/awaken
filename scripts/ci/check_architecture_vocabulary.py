@@ -6,10 +6,12 @@ current design documents own the replacement vocabulary; navigation and wiki
 documents may link to those owners but may not revive a retired implementation
 path.
 
-This checker reads documents only. Code identifiers are covered by
+This checker reads documents only. Code names are covered by
 `_naming_fitness.py` (ADR-0091 D7: mechanism words outside composition roots,
 bare `Runtime`/`Provider`/`Coordinator`/`Host`, the noun `Turn` outside protocol
-adapters), which `check_crate_boundaries.py` runs.
+adapters, crate names with `runtime` outside the SDK or a mechanism word, and
+public type names with the word `Runtime` outside the SDK), which
+`check_crate_boundaries.py` runs.
 """
 
 from __future__ import annotations

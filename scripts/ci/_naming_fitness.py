@@ -21,6 +21,15 @@ scanned); a type is any `struct`, `enum`, `trait`, `type` or `union` declaration
   run loop speaks Thread, Run and Step (ADR-0064 D1).
   The letters inside another word (`return`, `Return`) are not the word. Keyed
   `crate::identifier`.
+* `crate-name`: a workspace crate whose name has the word `runtime` outside the
+  SDK (D7.2), or a mechanism word (`MECHANISM_WORDS`, compared case-blind with
+  each hyphen-separated word) outside a composition root (D7.3). Keyed by
+  crate name.
+* `runtime-word`: a `pub` type whose name has the CamelCase word `Runtime`
+  outside the SDK, other than the bare name (`bare-runtime`) and a qualified
+  container engine (`ContainerRuntime`, `DockerRuntime`, `PodmanRuntime`,
+  `K8sRuntime`; D7.2). Such a type is renamed when its code moves (D9). Keyed
+  `crate::Type`.
 
 Every ratchet is held at or below `naming_baseline.json`; see
 `_architecture_ratchet.py` for how a fall is recorded
@@ -47,6 +56,7 @@ MECHANISM_WORDS = frozenset({
 })
 TEST_DOUBLE_PREFIXES = ("Fake", "Mock", "Stub", "Dummy", "Spy", "Test")
 BARE_NAMES = frozenset({"Provider", "Coordinator", "Host"})
+CONTAINER_RUNTIMES = frozenset({"ContainerRuntime", "DockerRuntime", "PodmanRuntime", "K8sRuntime"})
 TURN_WORDS = frozenset({"turn", "turns"})
 PROTOCOL_ADAPTER_PREFIX = "awaken-protocol-"
 # Crates outside the prefix whose `turn` words are an external protocol's own
@@ -65,9 +75,14 @@ RULES = (
          "Coordinator process (ADR-0091 D7.4)"),
     Rule("turn-noun", "use Thread, Run or Step (ADR-0064 D1); `turn` belongs to protocol DTOs and adapters "
          "(ADR-0091 D7.0)"),
+    Rule("crate-name", "name the crate for its context and responsibility: `runtime` is the SDK engine and "
+         "mechanism words belong to composition roots (ADR-0091 D7.1-D7.3)"),
+    Rule("runtime-word", "\"Runtime\" means the SDK engine or a qualified container engine; name the type for "
+         "its responsibility when its code moves (ADR-0091 D7.2, D9)"),
 )
 
 _DECLARATION = re.compile(r"\b(?:struct|enum|trait|type|union)\s+([A-Z]\w*)")
+_PUBLIC_DECLARATION = re.compile(r"\bpub\s+(?:struct|enum|trait|type|union)\s+([A-Z]\w*)")
 _IDENTIFIER = re.compile(r"\b[A-Za-z_]\w*\b")
 _WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
 
@@ -84,6 +99,16 @@ def is_mechanism_name(name: str) -> bool:
 
 def has_turn_noun(identifier: str) -> bool:
     return any(word.lower() in TURN_WORDS for word in words(identifier))
+
+
+def crate_name_violation(name: str, *, sdk: bool, composition: bool) -> bool:
+    parts = name.split("-")
+    return (not sdk and "runtime" in parts) or (
+        not composition and any(part.capitalize() in MECHANISM_WORDS for part in parts))
+
+
+def is_runtime_word(name: str) -> bool:
+    return "Runtime" in words(name) and name != "Runtime" and name not in CONTAINER_RUNTIMES
 
 
 def composition_root(crate: _architecture_ratchet.CrateSource) -> bool:
@@ -105,8 +130,17 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
             crate.name.startswith(PROTOCOL_ADAPTER_PREFIX)
             or crate.name in PROTOCOL_ADAPTER_CRATES
         )
+        if crate_name_violation(crate.name, sdk=sdk, composition=mechanism_allowed):
+            manifest = crate.directory / "Cargo.toml"
+            record("crate-name", crate.name,
+                   (manifest.relative_to(root) if root in manifest.parents else manifest).as_posix())
         for path, syntax in crate.syntax.items():
             relative = (path.relative_to(root) if root in path.parents else path).as_posix()
+            if not sdk:
+                for match in _PUBLIC_DECLARATION.finditer(syntax):
+                    if is_runtime_word(match.group(1)):
+                        record("runtime-word", f"{crate.name}::{match.group(1)}",
+                               f"{relative}:{_architecture_ratchet.line_of(syntax, match.start())}")
             for match in _DECLARATION.finditer(syntax):
                 name, where = match.group(1), f"{relative}:{_architecture_ratchet.line_of(syntax, match.start())}"
                 if not mechanism_allowed and is_mechanism_name(name):
@@ -151,6 +185,10 @@ def selftest() -> None:
     | N4   | type named `Provider`, `Coordinator`, `Host` anywhere; `ModelProvider` | counted; not counted |
     | N5   | identifier with the word turn: `TurnId`, `max_turns`, `END_TURN`       | counted once per file |
     | N6   | `return`, `Return`, `turnover`, a string or comment, a protocol adapter | not counted |
+    | N7   | crate `awaken-x-runtime` outside the SDK; `awaken-scenario-host` outside a root | counted by crate |
+    | N8   | crate `awaken-runtime*` in the SDK; `-host` in a root; `awaken-service-auth` | not counted |
+    | N9   | `pub` type `SessionRuntime` outside the SDK                            | counted |
+    | N10  | `DockerRuntime`, bare `Runtime`, a private type, any type in the SDK   | not counted |
     """
     assert words("HTTPSharedHost_turn_id") == ["HTTP", "Shared", "Host", "turn", "id"], "words"
     assert is_mechanism_name("SharedHost") and is_mechanism_name("ResourcePorts"), "N1"
@@ -182,6 +220,28 @@ def selftest() -> None:
     assert set(counts["turn-noun"]) == {f"{name}::{identifier}" for name in ("awaken-x", "awaken-cli", "awaken-sdk")
                                         for identifier in ("turn_id", "TurnId")}, f"N5/N6 {counts['turn-noun']}"
     assert places["turn-noun"]["awaken-x::turn_id"] == ["crates/server/awaken-x/src/lib.rs:8"], "N5 once per file"
+    assert crate_name_violation("awaken-worker-runtime", sdk=False, composition=False), "N7 runtime"
+    assert crate_name_violation("awaken-scenario-host", sdk=False, composition=False), "N7 mechanism"
+    assert not crate_name_violation("awaken-runtime-contract", sdk=True, composition=False), "N8 SDK"
+    assert not crate_name_violation("awaken-cli-host", sdk=False, composition=True), "N8 root"
+    assert not crate_name_violation("awaken-service-auth-contract", sdk=False, composition=False), "N8 word"
+    assert is_runtime_word("SessionRuntime") and is_runtime_word("RuntimeCapability"), "N9"
+    assert not is_runtime_word("DockerRuntime") and not is_runtime_word("Runtime"), "N10"
+    runtime_code = "pub struct SessionRuntime;\nstruct PrivateRuntime;\npub enum DockerRuntime {}\n"
+
+    def manifest_crate(name, directory, **metadata):
+        return _architecture_ratchet.CrateSource(name, metadata, Path(directory),
+                                                 {Path(directory) / "src/lib.rs": runtime_code})
+
+    counts, places = measure((
+        manifest_crate("awaken-worker-runtime", "/w/crates/server/awaken-worker-runtime", product="platform"),
+        manifest_crate("awaken-runtime", "/w/crates/runtime/awaken-runtime", product="sdk"),
+        manifest_crate("awaken-host", "/w/crates/bin/awaken-host", product="apps", layer="bootstrap"),
+    ), Path("/w"))
+    assert counts["crate-name"] == {"awaken-worker-runtime": 1}, f"N7/N8 {counts['crate-name']}"
+    assert places["crate-name"]["awaken-worker-runtime"] == ["crates/server/awaken-worker-runtime/Cargo.toml"], "N7"
+    assert counts["runtime-word"] == {"awaken-worker-runtime::SessionRuntime": 1,
+                                      "awaken-host::SessionRuntime": 1}, f"N9/N10 {counts['runtime-word']}"
     print("_naming_fitness selftest: the decision tables hold")
 
 
