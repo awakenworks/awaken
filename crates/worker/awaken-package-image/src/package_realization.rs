@@ -19,8 +19,9 @@ use k8s_openapi::api::core::v1::{ConfigMap, Pod, PodSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use serde::{Deserialize, Serialize};
 
-use crate::api_defaults::normalize_pod_spec;
 use awaken_container_contract::RuntimeError;
+use awaken_worker_fleet_kubernetes::api_defaults::normalize_pod_spec;
+use awaken_worker_fleet_kubernetes::managed_names::{k8s_runtime_id, pod_name};
 
 pub const K8S_PACKAGE_REALIZATION_CONTRACT_VERSION: &str = "v1";
 pub const PACKAGE_REALIZATION_CONTRACT_ANNOTATION: &str = "awaken.dev/package-realization-contract";
@@ -351,9 +352,9 @@ fn sandbox_result(
     session_id: &str,
 ) -> Result<(String, String), K8sPackageRealizationError> {
     require_contract(&pod.metadata)?;
-    let runtime_id = crate::k8s_runtime_id(session_id)
+    let runtime_id = k8s_runtime_id(session_id)
         .map_err(|error| K8sPackageRealizationError::invalid(error.to_string()))?;
-    let expected_name = crate::pod_name(&runtime_id);
+    let expected_name = pod_name(&runtime_id);
     if !object_namespace(&pod.metadata, namespace)
         || pod.metadata.deletion_timestamp.is_some()
         || !has_no_owner_references(&pod.metadata)
@@ -362,7 +363,7 @@ fn sandbox_result(
             .metadata
             .labels
             .as_ref()
-            .and_then(|labels| labels.get(awaken_sandbox_container::engine::MANAGED_SANDBOX_LABEL))
+            .and_then(|labels| labels.get(awaken_container_contract::MANAGED_SANDBOX_LABEL))
             .map(String::as_str)
             != Some("1")
         || annotation(&pod.metadata, SANDBOX_SCOPE_ANNOTATION)? != session_id
@@ -476,9 +477,9 @@ pub fn verify_k8s_package_realization(
     unique_snapshot_uids("Job", evidence.jobs, |value| &value.metadata)?;
     unique_snapshot_uids("Pod", evidence.pods, |value| &value.metadata)?;
 
-    let runtime_id = crate::k8s_runtime_id(evidence.session_id)
+    let runtime_id = k8s_runtime_id(evidence.session_id)
         .map_err(|error| K8sPackageRealizationError::invalid(error.to_string()))?;
-    let expected_sandbox_name = crate::pod_name(&runtime_id);
+    let expected_sandbox_name = pod_name(&runtime_id);
     let sandbox_candidates = evidence
         .pods
         .iter()
@@ -681,16 +682,17 @@ mod identity;
 mod projection;
 
 use facts::*;
-pub(crate) use identity::immutable_image;
+pub use identity::immutable_image;
 use identity::{
     annotation, bounded_text, destination_repository, has_no_owner_references, image_id,
     metadata_uid, object_namespace, runtime_error, valid_fingerprint,
 };
+pub use projection::stamp_sandbox_release_annotations;
 use projection::*;
 pub(crate) use projection::{
     bind_package_job_to_config, package_build_name, package_config_annotations,
-    package_image_check_name, stamp_package_config_map, stamp_sandbox_release_annotations,
-    verify_exact_package_config_map, verify_exact_package_job,
+    package_image_check_name, stamp_package_config_map, verify_exact_package_config_map,
+    verify_exact_package_job,
 };
 
 #[cfg(test)]

@@ -9,12 +9,12 @@ use super::{
     projection, projection_verification, realization, rebuild_claim_admission,
     rebuild_continuation_expectation, stamp_pod_realization, stamp_realization,
 };
-use crate::package_realization::stamp_sandbox_release_annotations;
+use awaken_container_contract::RuntimeError;
+use awaken_package_image::package_realization::stamp_sandbox_release_annotations;
 #[cfg(test)]
-use crate::package_realization::{
+use awaken_package_image::package_realization::{
     PACKAGE_REALIZATION_CONTRACT_ANNOTATION, RESOLVED_IMAGE_ANNOTATION, SANDBOX_SCOPE_ANNOTATION,
 };
-use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::{SandboxCreateAttempt, SandboxEffectFence};
 use awaken_sandbox_container::{
@@ -647,7 +647,9 @@ mod tests {
             annotations
                 .get(PACKAGE_REALIZATION_CONTRACT_ANNOTATION)
                 .map(String::as_str),
-            Some(crate::package_realization::K8S_PACKAGE_REALIZATION_CONTRACT_VERSION),
+            Some(
+                awaken_package_image::package_realization::K8S_PACKAGE_REALIZATION_CONTRACT_VERSION
+            ),
             "SR2 exact contract version"
         );
         assert!(

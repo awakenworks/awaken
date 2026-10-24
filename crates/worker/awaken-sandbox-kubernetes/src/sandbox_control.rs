@@ -52,7 +52,7 @@ pub(super) fn pod_incarnation(
         .as_ref()
         .ok_or_else(|| backend("Kubernetes Sandbox control Pod has no ownership labels"))?;
     if labels
-        .get(awaken_sandbox_container::engine::MANAGED_SANDBOX_LABEL)
+        .get(awaken_container_contract::MANAGED_SANDBOX_LABEL)
         .map(String::as_str)
         != Some("1")
     {
@@ -329,7 +329,7 @@ mod tests {
         pod.metadata.uid = Some("pod-uid-a".into());
         let labels = pod.metadata.labels.get_or_insert_with(Default::default);
         labels.insert(
-            awaken_sandbox_container::engine::MANAGED_SANDBOX_LABEL.into(),
+            awaken_container_contract::MANAGED_SANDBOX_LABEL.into(),
             "1".into(),
         );
         labels.insert(

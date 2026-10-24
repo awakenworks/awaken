@@ -13,10 +13,10 @@ use awaken_dispatch::{
     AttemptAdmission, RunClaim, RunDispatch, SqliteDispatchStore, WorkerHeartbeat,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
-use awaken_sandbox_kubernetes::K8sCreateTransport;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_time::WallClockExt;
 use awaken_worker::WorkerK8sCreateClient;
+use awaken_worker_fleet_kubernetes::K8sCreateTransport;
 use awaken_worker_fleet_kubernetes::{K8sWorkerCreateLedger, PodProcessObserver};
 use awaken_worker_registry::SqliteWorkerDirectory;
 use awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer;

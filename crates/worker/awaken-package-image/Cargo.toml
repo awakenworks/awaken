@@ -1,0 +1,53 @@
+[package]
+name = "awaken-package-image"
+description = "Environment package-image builds on Docker, Podman and Kubernetes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.awaken]
+# Environment package images behind the package-image build port: Kubernetes
+# rootless BuildKit Jobs and kubelet image checks with the versioned,
+# read-only evidence that binds a built image to the Sandbox Pod that runs it.
+# A crate of its own so the Coordinator's Environment image build stage and
+# a Worker's Session realization share one builder per engine without linking
+# the Sandbox adapters; the Kubernetes Sandbox adapter stamps and verifies the
+# same evidence. Each engine is a feature, like the container Sandbox tiers.
+# The Kubernetes builder shares the Kubernetes Pod substrate (API boundary,
+# object realization fence, brokered Create, NetworkPolicy labels) with the
+# Sandbox adapter and the Worker fleet.
+context = "worker"
+product = "platform"
+bounded_context = "sandbox"
+layer = "infrastructure"
+authority = "package-image"
+separation = "isolation"
+isolates = ["k8s-openapi", "kube"]
+
+[dependencies]
+awaken-container-contract.workspace = true
+awaken-environment-contract.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-time.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+# The Kubernetes builder, linked only by the `k8s` feature.
+awaken-worker-fleet-kubernetes = { workspace = true, optional = true }
+blake3 = { version = "1", optional = true }
+http = { version = "1", optional = true }
+k8s-openapi = { workspace = true, optional = true }
+kube = { workspace = true, features = ["client", "http-proxy", "rustls-tls"], optional = true }
+
+[features]
+k8s = ["dep:awaken-worker-fleet-kubernetes", "dep:blake3", "dep:http", "dep:k8s-openapi", "dep:kube"]
+
+[dev-dependencies]
+awaken-outbound-http = { workspace = true, features = ["kubernetes"] }
+tower = { version = "0.5", features = ["util"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "test-util"] }

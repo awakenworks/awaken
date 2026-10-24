@@ -30,7 +30,9 @@ awaken-container-contract.workspace = true
 # The Create ledger, Pod process observation and the Kubernetes API boundary
 # this engine shares with the Worker fleet.
 awaken-worker-fleet-kubernetes.workspace = true
-awaken-environment-contract.workspace = true
+# The package-realization evidence a Sandbox Pod release is stamped and
+# verified with.
+awaken-package-image = { workspace = true, features = ["k8s"] }
 awaken-provisioning-contract.workspace = true
 awaken-time.workspace = true
 awaken-agent-channel.workspace = true

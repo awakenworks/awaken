@@ -37,6 +37,10 @@ awaken-sandbox-container.workspace = true
 awaken-container-contract.workspace = true
 # The Kubernetes engine of that tier, linked only by the `k8s` feature.
 awaken-sandbox-kubernetes = { workspace = true, optional = true }
+# The brokered Create client port the Kubernetes engine creates Pods through.
+awaken-worker-fleet-kubernetes = { workspace = true, optional = true }
+# The Kubernetes package-image builder of that tier.
+awaken-package-image = { workspace = true, optional = true }
 # The Workdir sandboxes auxiliary Agent Runs use on every process root.
 awaken-sandbox-local.workspace = true
 awaken-session-environment-contract.workspace = true
@@ -56,7 +60,7 @@ test-support = ["awaken-sandbox-local/test-support"]
 # a build without them fails closed when the deployment names a container backend.
 docker = ["awaken-sandbox-container/docker"]
 podman = ["awaken-sandbox-container/podman"]
-k8s = ["dep:awaken-sandbox-kubernetes"]
+k8s = ["dep:awaken-sandbox-kubernetes", "dep:awaken-worker-fleet-kubernetes", "dep:awaken-package-image", "awaken-package-image/k8s"]
 
 [dev-dependencies]
 # Test access to the adapters behind the installed role handles (`at_root`).

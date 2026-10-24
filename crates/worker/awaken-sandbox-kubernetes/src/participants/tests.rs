@@ -326,7 +326,11 @@ async fn complete_original_inline_handoff_recovers_only_its_ticket_bound_set() {
                 authority: &authority,
             });
     let mut pod = source.pod_for_effect(&id, &plan, Some(&fence));
-    crate::package_realization::stamp_sandbox_release_annotations(&mut pod, scope, &plan.image);
+    awaken_package_image::package_realization::stamp_sandbox_release_annotations(
+        &mut pod,
+        scope,
+        &plan.image,
+    );
     source.stamp_effect_evidence(&mut pod, &context, &fingerprint);
     declare(&mut pod, &id, &plan).unwrap();
     super::super::stamp_pod_realization(&mut pod).unwrap();
