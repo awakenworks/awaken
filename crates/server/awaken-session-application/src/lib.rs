@@ -195,8 +195,9 @@ pub use creation::{
 pub use session_input::{SessionInputRequest, SessionInputTarget};
 mod credentials;
 mod event_batches;
-pub use event_batches::SessionEventBatchIdempotency;
+pub use event_batches::{SessionEventBatchCommands, SessionEventBatchIdempotency};
 mod outcome_reconciliation;
+pub use outcome_reconciliation::SessionOutcomeReconciliation;
 mod projection;
 mod queries;
 pub use awaken_session_runtime_contract::{

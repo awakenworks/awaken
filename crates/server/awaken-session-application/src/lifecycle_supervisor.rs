@@ -133,11 +133,11 @@ pub(super) async fn reconcile_event_batch_recovery_task(
     // Resource, continuation, and realization recovery. The `JoinSet` keeps
     // the child structurally owned and aborts it if this recovery cycle is
     // cancelled; only its polling stack changes.
-    let application = std::sync::Arc::clone(application);
+    let event_batches = application.event_batches.clone();
     let mut event_task = tokio::task::JoinSet::new();
     let event_candidates = candidates.clone();
     event_task.spawn(async move {
-        application
+        event_batches
             .reconcile_event_batches_from(&event_candidates)
             .await
     });

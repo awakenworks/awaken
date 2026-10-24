@@ -753,6 +753,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
     runtime.reject_interrupt(None);
     state
         .application
+        .event_batches()
         .drive_session_event_batches(&SessionId::from(&session.id), None)
         .await
         .expect("I6 cold-safe retry completes the same retained command");
@@ -778,6 +779,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
     );
     state
         .application
+        .event_batches()
         .drive_session_event_batches(&SessionId::from(&session.id), None)
         .await
         .expect("I6 processed replay is a no-op");

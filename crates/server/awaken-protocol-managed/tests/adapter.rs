@@ -289,6 +289,7 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
     );
     let stored = state
         .session_application()
+        .event_batches()
         .session_event_batch_idempotency(&SessionId::from(id), "foreign-key", "any")
         .await
         .unwrap();

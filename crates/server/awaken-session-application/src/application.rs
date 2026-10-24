@@ -435,6 +435,8 @@ pub struct SessionApplication {
     run_admissions: Arc<crate::SessionRunAdmissions>,
     observations: Arc<crate::SessionObservations>,
     coordination: Arc<crate::SessionCoordination>,
+    event_batches: Arc<crate::SessionEventBatchCommands>,
+    outcome_reconciliation: Arc<crate::SessionOutcomeReconciliation>,
     /// One complete set of immutable execution observations.
     execution_admission: Arc<SessionExecutionAdmission>,
     runtime_incarnation: String,
@@ -760,6 +762,16 @@ impl SessionApplication {
     #[must_use]
     pub fn coordination(&self) -> Arc<crate::SessionCoordination> {
         self.coordination.clone()
+    }
+
+    #[must_use]
+    pub fn event_batches(&self) -> Arc<crate::SessionEventBatchCommands> {
+        self.event_batches.clone()
+    }
+
+    #[must_use]
+    pub fn outcome_reconciliation(&self) -> Arc<crate::SessionOutcomeReconciliation> {
+        self.outcome_reconciliation.clone()
     }
 
     #[cfg(any(test, feature = "test-support"))]

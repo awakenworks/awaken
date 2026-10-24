@@ -296,7 +296,7 @@ impl SessionApplication {
                 "reconciled durable Session Event batches"
             );
         }
-        let outcomes = self.reconcile_outcome_continuations_from(&candidates).await;
+        let outcomes = self.outcome_reconciliation.continue_from(&candidates).await;
         let outcomes_elapsed = cycle_started.elapsed();
         let outcome_failure_count = outcomes.failures.len();
         let outcomes_settled = outcomes.settled;

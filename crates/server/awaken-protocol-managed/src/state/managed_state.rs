@@ -49,7 +49,7 @@ impl SessionApplicationRoles {
             credentials: application.credentials(),
             roots: application.queries(),
             projection: application.queries(),
-            events: application.clone(),
+            events: application.event_batches(),
             profiled: application.run_admissions(),
             profiled_replies: application.coordination(),
             termination: application.termination_commands(),

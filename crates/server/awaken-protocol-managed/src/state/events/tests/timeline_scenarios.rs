@@ -618,6 +618,7 @@ impl Timeline for RootTimeline {
                 let retained = self
                     .warm
                     .application
+                    .event_batches()
                     .append_session_event_batch(
                         &session_id,
                         vec![SessionEventInput::UserMessage {

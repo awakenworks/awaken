@@ -300,6 +300,8 @@ impl SessionAssembly {
         let foundation = self.foundation(&kernel);
         let lease = self.lease_protocol(&kernel, &foundation);
         let UseCases {
+            event_batches,
+            outcome_reconciliation,
             update_commands,
             termination_commands,
             resource_reconciliation,
@@ -365,6 +367,8 @@ impl SessionAssembly {
             run_admissions,
             observations,
             coordination,
+            event_batches,
+            outcome_reconciliation,
             execution_admission,
             runtime_incarnation,
             event_batch_cutover_validation,
@@ -474,7 +478,26 @@ impl SessionAssembly {
                 runtime: self.runtime.clone(),
             },
         ));
+        let event_batches = Arc::new(crate::SessionEventBatchCommands::new(
+            crate::event_batches::SessionEventBatchCollaborators {
+                mutations: kernel.mutations.clone(),
+                clock: kernel.clock.clone(),
+                lifecycle: kernel.lifecycle.clone(),
+                queries: foundation.queries.clone(),
+                activities: lease.activities.clone(),
+                run_admissions: run_admissions.clone(),
+                coordination: coordination.clone(),
+                runtime: self.runtime.clone(),
+            },
+        ));
+        let outcome_reconciliation = Arc::new(crate::SessionOutcomeReconciliation::new(
+            kernel.mutations.clone(),
+            lease.realizations.clone(),
+            &self.runtime,
+        ));
         UseCases {
+            event_batches,
+            outcome_reconciliation,
             update_commands,
             termination_commands,
             resource_reconciliation,
@@ -618,6 +641,8 @@ struct Foundation {
 
 /// The Session use-case components.
 struct UseCases {
+    event_batches: Arc<crate::SessionEventBatchCommands>,
+    outcome_reconciliation: Arc<crate::SessionOutcomeReconciliation>,
     update_commands: Arc<crate::SessionUpdateCommands>,
     termination_commands: Arc<crate::SessionTerminationCommands>,
     resource_reconciliation: Arc<crate::SessionResourceReconciliation>,
@@ -670,6 +695,8 @@ pub(crate) fn reassemble(
             Arc::strong_count(&application.run_admissions),
             Arc::strong_count(&application.observations),
             Arc::strong_count(&application.coordination),
+            Arc::strong_count(&application.event_batches),
+            Arc::strong_count(&application.outcome_reconciliation),
         ]
     };
     let unshared = application.fixture_assembly.clone().assemble(kernel());

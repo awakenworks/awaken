@@ -229,6 +229,7 @@ pub async fn drive_retained_session_events(
     let mut task = tokio::task::JoinSet::new();
     task.spawn(async move {
         application
+            .event_batches()
             .drive_session_event_batches(&SessionId::from(session_id), None)
             .await
     });

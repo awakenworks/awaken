@@ -277,6 +277,7 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
     let error = Box::pin(
         managed
             .sessions
+            .event_batches()
             .drive_session_event_batches(&awaken_session_types::SessionId::from(&session_id), None),
     )
     .await

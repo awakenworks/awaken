@@ -52,7 +52,10 @@ async fn scan_interests_skip_only_phases_absent_from_the_observed_prefix() {
         .await;
     assert!(resources.settled.is_empty(), "H1/E2 resources");
     assert!(resources.failures.is_empty(), "H1/E2 resources");
-    let events = app.reconcile_event_batches_from(&candidates).await;
+    let events = app
+        .event_batches
+        .reconcile_event_batches_from(&candidates)
+        .await;
     assert_eq!((events.pending, events.settled), (0, 0), "H1/E2 events");
     assert_eq!(
         app.continuations
@@ -314,7 +317,10 @@ impl Phase {
     ) -> (usize, usize, usize, Vec<(String, String)>) {
         match self {
             Self::Events => {
-                let report = app.reconcile_event_batches_from(candidates).await;
+                let report = app
+                    .event_batches
+                    .reconcile_event_batches_from(candidates)
+                    .await;
                 (
                     report.pending,
                     report.settled,
@@ -517,7 +523,11 @@ async fn event_sweep_keeps_the_measured_fleet_and_existing_session_in_one_wave()
             .collect(),
         quarantined: Vec::new(),
     };
-    let task = tokio::spawn(async move { app.reconcile_event_batches_from(&candidates).await });
+    let task = tokio::spawn(async move {
+        app.event_batches
+            .reconcile_event_batches_from(&candidates)
+            .await
+    });
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             if observed.observed_gets.lock().unwrap().len() == count {

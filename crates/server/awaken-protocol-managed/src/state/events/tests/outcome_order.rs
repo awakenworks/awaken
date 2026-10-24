@@ -43,6 +43,7 @@ async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_pre
         .unwrap();
     let batch = warm
         .application
+        .event_batches()
         .append_session_event_batch(
             &session.id,
             vec![SessionEventInput::DefineOutcome {
@@ -230,6 +231,7 @@ async fn terminal_committing_between_outcome_query_and_root_read_cannot_backfill
     let session_id = session.id.clone();
     let batch = warm
         .application
+        .event_batches()
         .append_session_event_batch(
             &session_id,
             vec![SessionEventInput::DefineOutcome {
