@@ -30,11 +30,12 @@
     "existing_assertion_scopes_verified": 5,
     "fully_accepted_scenarios": 0,
     "case_evidence_states": {
-      "design_only": 67,
+      "design_only": 60,
       "current_subset": 41,
       "source_binding_only": 6,
       "historical_subset": 12,
-      "aggregate_subset_only": 1
+      "aggregate_subset_only": 1,
+      "current_clause_complete": 7
     }
   },
   "scope_rules": {
@@ -45,7 +46,8 @@
     "skip": "Skipped, ignored, fixture absent and unsupported modes are distinct from passed. A required missing fixture fails qualification.",
     "aggregate_counts": "Suites overlap; do not sum evidence counts into coverage or progress.",
     "formal_case_acceptance": "The old assertion-scope verification is not full acceptance of the expanded case. Its required facets, observable oracles, negative control and common gates must each be signed off. No new scenario is marked fully accepted by this document.",
-    "completeness_method": "For each affected production operation enumerate legal state edges, identities, writes/effects and responsibility transfer; map every applicable fault cut to an oracle and qualified facet. A fixed count of 127 scenarios is not a proof of exhaustive behavior coverage."
+    "completeness_method": "For each affected production operation enumerate legal state edges, identities, writes/effects and responsibility transfer; map every applicable fault cut to an oracle and qualified facet. A fixed count of 127 scenarios is not a proof of exhaustive behavior coverage.",
+    "added_evidence_states": "current_clause_complete: every oracle and the negative control have a named, currently executed assertion binding plus listed executed/unaccepted slices (not acceptance). product_gap: an oracle does not hold in the product; an ignored reproducer asserts the correct behaviour and is never execution evidence. platform_pending: verification needs a platform outside the authorized scope; a written reason is required. Enforced by scripts/ci/check_session_acceptance.py."
   },
   "substrates": {
     "static": {
@@ -177,6 +179,14 @@
       "range": [
         68,
         100
+      ]
+    },
+    {
+      "key": "bindings",
+      "file": "bindings-4.json",
+      "range": [
+        100,
+        114
       ]
     },
     {

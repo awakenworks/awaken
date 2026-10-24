@@ -230,7 +230,7 @@
 - 必须断言：逐条记录已执行切片和未验收切片；不以 suite 总数推断等价。
 - 反向控制：同名 mock 后端、仅 cargo check 或未执行 ignored 用例不能晋级。
 - 层级与基质：L0；source/metadata/static negative controls。静态守卫；不代表运行时效果。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`test_count_only_validator_accepts_what_name_alignment_refuses`、`test_unrun_slice_or_compile_only_run_cannot_be_promoted`；当前提交本机 Windows L0 执行（E11；rebase 到 origin/main 后复跑 E15），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ## T35 平台与执行器资格门禁
 
@@ -278,7 +278,7 @@
 - 必须断言：扩展到真实反向依赖和必要层级；未知信息扩大/拒绝；不静默零用例。
 - 反向控制：只按文件所在 crate 选测试的负控必须失败。
 - 层级与基质：L0；source/metadata/static negative controls。静态守卫；不代表运行时效果。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`test_shared_contract_change_selects_every_real_reverse_dependant`、`test_crate_only_selection_is_detected_as_too_narrow`、`test_unknown_or_global_input_widens_and_never_selects_zero`；当前提交本机 Windows L0 执行（E11；rebase 到 origin/main 后复跑 E15），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ### T36-C02 列出与执行一致
 
@@ -286,7 +286,7 @@
 - 必须断言：逐名和 occurrence 对齐；每个必须用例实际通过；失败和跳过不签收；source 不变。
 - 反向控制：记录总数等于期望数不能替代逐名对齐。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`test_each_misalignment_is_refused_for_its_own_reason`、`test_count_only_validator_accepts_what_name_alignment_refuses`、`test_mutations_at_each_sequence_fence_stop_or_reject_execution`；当前提交本机 Windows L0 执行（E11、E12；rebase 后复跑 E15），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ### T36-C03 历史证明复用
 
@@ -294,7 +294,7 @@
 - 必须断言：保留原 source/命令/日志；逐输入复用审查后才能继承资格；cache 命中与编译成功不是测试证据。
 - 反向控制：把历史 receipt 的 SHA 直接改为当前 HEAD 必须拒绝。
 - 层级与基质：L0；source/metadata/static negative controls。静态守卫；不代表运行时效果。
-- 绑定及状态：待绑定现有用例或新增实现；待绑定或新增，不能据此断言仓库完全无测试。完整场景：待验收。
+- 绑定及状态：`test_unrun_slice_or_compile_only_run_cannot_be_promoted`、`test_historical_receipt_relabelled_as_current_is_refused`；当前提交本机 Windows L0 执行（E11；rebase 到 origin/main 后复跑 E15），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ## T37 持久格式迁移与跨版本恢复
 

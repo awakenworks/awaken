@@ -151,8 +151,12 @@
           ],
           "scope": "静态守卫；不代表运行时效果"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B105",
+          "B106",
+          "B107"
+        ],
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -162,7 +166,16 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, Python 3.13, L0 static guards on the real workspace"
+          ],
+          "unaccepted": [
+            "Owning CI lane wiring beyond check-docs.sh",
+            "T35 platform gate open (Linux/FUSE not run by policy)"
+          ]
+        }
       },
       {
         "id": "T36-C02",
@@ -186,8 +199,12 @@
           ],
           "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B108",
+          "B109",
+          "B114"
+        ],
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -197,7 +214,16 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, Python 3.13, L0 static guards on the real workspace"
+          ],
+          "unaccepted": [
+            "Owning CI lane wiring beyond check-docs.sh",
+            "T35 platform gate open (Linux/FUSE not run by policy)"
+          ]
+        }
       },
       {
         "id": "T36-C03",
@@ -220,8 +246,11 @@
           ],
           "scope": "静态守卫；不代表运行时效果"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B111",
+          "B112"
+        ],
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -231,7 +260,16 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, Python 3.13, L0 static guards on the real workspace"
+          ],
+          "unaccepted": [
+            "Owning CI lane wiring beyond check-docs.sh",
+            "T35 platform gate open (Linux/FUSE not run by policy)"
+          ]
+        }
       }
     ],
     "risk": "P0",
