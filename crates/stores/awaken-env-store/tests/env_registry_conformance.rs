@@ -52,7 +52,7 @@ struct PostgresSuiteFixture {
 
 impl PostgresSuiteFixture {
     async fn connect(url: String) -> Self {
-        let admin = awaken_store_runtime::postgres_pool_options()
+        let admin = awaken_sql_storage::postgres_pool_options()
             .max_connections(1)
             .connect(&url)
             .await
@@ -94,7 +94,7 @@ impl PostgresSuiteFixture {
             .options([("search_path", schema.as_str())]);
         // Keep the original checkout verification; startup options select the
         // schema without replacing the shared after_connect/before_acquire.
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .max_connections(2)
             .connect_with(options)
             .await

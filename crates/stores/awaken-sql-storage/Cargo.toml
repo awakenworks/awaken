@@ -1,5 +1,5 @@
 [package]
-name = "awaken-store-runtime"
+name = "awaken-sql-storage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

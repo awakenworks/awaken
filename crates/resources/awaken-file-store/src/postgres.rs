@@ -114,7 +114,7 @@ pub struct PgFileStore {
 impl PgFileStore {
     /// Connect to `url` and ensure the schema exists.
     pub async fn connect(url: &str) -> Result<Self, FileStoreError> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(e)?;
@@ -125,7 +125,7 @@ impl PgFileStore {
 
     /// Connect to an already-migrated schema without executing DDL.
     pub async fn connect_existing(url: &str) -> Result<Self, FileStoreError> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(e)?;
@@ -283,7 +283,7 @@ impl FileCatalog for PgFileStore {
             }
             capture.verify_files(&records)?;
             sqlx::query("UPDATE file_store_artifact_capture SET revision=$3,file_ids_json=$4,origin_json=$5 WHERE workspace_id=$1 AND session_id=$2")
-                .bind(&capture.workspace_id).bind(&capture.session_id).bind(awaken_store_runtime::StoredU64::try_from(capture.revision).map_err(ce)?.database_value())
+                .bind(&capture.workspace_id).bind(&capture.session_id).bind(awaken_sql_storage::StoredU64::try_from(capture.revision).map_err(ce)?.database_value())
                 .bind(serde_json::to_string(&capture.file_ids).map_err(ce)?)
                 .bind(capture.origin.as_ref().map(serde_json::to_string).transpose().map_err(ce)?)
                 .execute(&mut *transaction).await.map_err(ce)?;

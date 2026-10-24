@@ -89,7 +89,7 @@ awaken-resource-application.workspace = true
 awaken-store-fs.workspace = true
 awaken-store-sqlite.workspace = true
 awaken-sqlite-pool.workspace = true
-awaken-store-runtime = { workspace = true, features = ["postgres"] }
+awaken-sql-storage = { workspace = true, features = ["postgres"] }
 awaken-store-postgres.workspace = true
 awaken-store-inmem = { workspace = true, optional = true }
 # Webhook plane (ADR-0048 / S10): the WebhookLifecycleFactSink bridges the managed

@@ -147,7 +147,7 @@ awaken-iam-client = { git = "https://github.com/awakenworks/awaken-iam.git", rev
 # migrated <data_dir>/iam.sqlite, seeded roles, and one-time browser setup.
 awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "cbfe337b305721391641c35aaa51308b51eb5075", version = "=0.1.2-dev" }
 awaken-store-conformance = { path = "crates/stores/awaken-store-conformance" }
-awaken-store-runtime = { path = "crates/stores/awaken-store-runtime" }
+awaken-sql-storage = { path = "crates/stores/awaken-sql-storage" }
 awaken-sqlite-pool = { path = "crates/stores/awaken-sqlite-pool" }
 awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem", version = "2.0.0" }
 awaken-store-fs = { path = "crates/stores/awaken-store-fs" }

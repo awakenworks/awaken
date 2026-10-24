@@ -15,7 +15,7 @@
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
-pub use awaken_store_runtime::{StoredU64, StoredU64Error};
+pub use awaken_sql_storage::{StoredU64, StoredU64Error};
 
 /// The bundle id for the runtime commit schema. Scoped so it never collides with
 /// another component's migrations in the same database.

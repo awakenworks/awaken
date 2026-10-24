@@ -17,7 +17,7 @@ struct PostgresRecordBackend {
 pub async fn connect_postgres_environment_image_build_store(
     url: &str,
 ) -> Result<Arc<dyn EnvironmentImageBuildStore>, EnvironmentImageBuildError> {
-    let pool = awaken_store_runtime::postgres_pool_options()
+    let pool = awaken_sql_storage::postgres_pool_options()
         .connect(url)
         .await
         .map_err(storage)?;
@@ -39,7 +39,7 @@ pub async fn with_postgres_pool_environment_image_build_store(
 pub async fn connect_existing_postgres_environment_image_build_store(
     url: &str,
 ) -> Result<Arc<dyn EnvironmentImageBuildStore>, EnvironmentImageBuildError> {
-    let pool = awaken_store_runtime::postgres_pool_options()
+    let pool = awaken_sql_storage::postgres_pool_options()
         .connect(url)
         .await
         .map_err(storage)?;

@@ -154,7 +154,7 @@ pub struct PostgresSandboxExecutionPolicyStore {
 
 impl PostgresSandboxExecutionPolicyStore {
     pub async fn connect(url: &str) -> Result<Self, String> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(|error| error.to_string())?;
@@ -183,7 +183,7 @@ impl PostgresSandboxExecutionPolicyStore {
     /// Connect to an already-provisioned schema, verifying its scoped ledger
     /// without executing startup DDL.
     pub async fn connect_existing(url: &str) -> Result<Self, String> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(|error| error.to_string())?;

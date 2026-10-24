@@ -21,7 +21,7 @@ isolates = ["sqlx"]
 # store-unaware (it only sees SkillFile data via its SkillSource port).
 
 [dependencies]
-awaken-store-runtime = { workspace = true, optional = true }
+awaken-sql-storage = { workspace = true, optional = true }
 # Port-only contract: the SkillStore trait + SkillStoreError live here; this crate
 # implements them and re-exports for backward-compatible paths.
 awaken-resource-contract.workspace = true
@@ -49,7 +49,7 @@ default = []
 # Process-local Skill authority and private SQLite databases for tests/scenarios.
 test-support = []
 sqlite = ["dep:sqlx", "dep:awaken-scoped-migration", "dep:awaken-sqlite-pool"]
-postgres = ["dep:sqlx", "dep:awaken-scoped-migration", "dep:awaken-store-runtime", "awaken-store-runtime/postgres"]
+postgres = ["dep:sqlx", "dep:awaken-scoped-migration", "dep:awaken-sql-storage", "awaken-sql-storage/postgres"]
 
 [lints]
 workspace = true

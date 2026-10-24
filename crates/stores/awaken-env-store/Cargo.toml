@@ -14,7 +14,7 @@ separation = "isolation"
 isolates = ["sqlx"]
 
 [dependencies]
-awaken-store-runtime = { workspace = true, features = ["postgres"] }
+awaken-sql-storage = { workspace = true, features = ["postgres"] }
 # The Environment definition roles and neutral EnvItem implemented by this backend
 # (SQLite embedded / Postgres distributed, at parity).
 awaken-environment-contract.workspace = true

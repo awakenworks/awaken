@@ -22,7 +22,7 @@ awaken-memory-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-skill-store = { workspace = true, features = ["postgres"] }
 thiserror.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
-awaken-store-runtime = { workspace = true, features = ["postgres"] }
+awaken-sql-storage = { workspace = true, features = ["postgres"] }
 
 [dev-dependencies]
 awaken-reliability-testkit.workspace = true

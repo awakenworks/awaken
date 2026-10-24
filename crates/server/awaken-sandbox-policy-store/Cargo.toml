@@ -14,7 +14,7 @@ separation = "isolation"
 isolates = ["sqlx"]
 
 [dependencies]
-awaken-store-runtime = { workspace = true, features = ["postgres"] }
+awaken-sql-storage = { workspace = true, features = ["postgres"] }
 awaken-provisioning-contract.workspace = true
 awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] }
 awaken-sqlite-pool.workspace = true

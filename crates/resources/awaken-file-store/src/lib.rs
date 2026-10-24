@@ -60,8 +60,8 @@ fn decode_artifact_capture(
     file_ids_json: &str,
     origin_json: Option<&str>,
 ) -> Result<ArtifactCapture, FileCatalogError> {
-    let revision = awaken_store_runtime::StoredU64::try_from(revision)
-        .map(awaken_store_runtime::StoredU64::domain_value)
+    let revision = awaken_sql_storage::StoredU64::try_from(revision)
+        .map(awaken_sql_storage::StoredU64::domain_value)
         .map_err(|error| FileCatalogError::CorruptData {
             detail: error.to_string(),
         })?;

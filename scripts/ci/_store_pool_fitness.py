@@ -4,7 +4,7 @@ An async SQLite adapter reaches the database only through an sqlx pool opened by
 `awaken_sqlite_pool::EmbeddedSqlite`. Only `awaken-sqlite-pool` may construct
 sqlx SQLite pools or connect options, so no store can drift to its own busy
 wait, journal or admission policy.
-PostgreSQL checkout belongs to awaken-store-runtime, so a standalone adapter
+PostgreSQL checkout belongs to awaken-sql-storage, so a standalone adapter
 cannot bypass its cancellation/health policy with a second pool constructor.
 """
 
@@ -21,9 +21,9 @@ POLICIES = {
     "sqlite": ("awaken-sqlite-pool", re.compile(
         r"\b(SqlitePoolOptions|SqliteConnectOptions|SqlitePool::connect)\b"),
         "awaken_sqlite_pool::EmbeddedSqlite"),
-    "postgres": ("awaken-store-runtime", re.compile(
+    "postgres": ("awaken-sql-storage", re.compile(
         r"\b(?:PgPoolOptions\s*::\s*new|PgPool\s*::\s*connect(?:_with|_lazy|_lazy_with)?)\s*\("),
-        "awaken_store_runtime::postgres_pool_options"),
+        "awaken_sql_storage::postgres_pool_options"),
 }
 POOL_LIFECYCLE = re.compile(r"\.\s*(?:after_connect|before_acquire|after_release|test_before_acquire)\s*\(")
 

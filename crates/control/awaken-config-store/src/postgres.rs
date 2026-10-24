@@ -17,7 +17,7 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
-use awaken_store_runtime::StoredU64;
+use awaken_sql_storage::StoredU64;
 use awaken_tenancy::ScopeId;
 
 use crate::codec::{attach_publication_row, decode_publication_value};
@@ -53,7 +53,7 @@ pub struct PostgresConfigStore {
 impl PostgresConfigStore {
     /// Connect and apply the config migrations.
     pub async fn connect(url: &str) -> Result<Self, StoreError> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(|err| StoreError::Connect(err.to_string()))?;
@@ -67,7 +67,7 @@ impl PostgresConfigStore {
     /// is pending or drifted, so an application process never becomes a second
     /// migration runner.
     pub async fn connect_existing(url: &str) -> Result<Self, StoreError> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(|err| StoreError::Connect(err.to_string()))?;

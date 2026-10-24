@@ -444,7 +444,7 @@ impl PostgresExecutableAgentRegistrar {
         url: &str,
         catalog: Arc<ExecutableAgentCatalog>,
     ) -> Result<Self, ExecutableAgentRegistrationError> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(storage)?;
@@ -471,7 +471,7 @@ impl PostgresExecutableAgentRegistrar {
         url: &str,
         catalog: Arc<ExecutableAgentCatalog>,
     ) -> Result<Self, ExecutableAgentRegistrationError> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(storage)?;

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use awaken_executable_environment_contract::{WorkQueueError, WorkQueueError::Storage};
 use awaken_lease_contract::fence::Epoch;
-use awaken_store_runtime::StoredU64;
+use awaken_sql_storage::StoredU64;
 
 pub(super) fn apply_metadata_patch(
     metadata: &mut BTreeMap<String, String>,

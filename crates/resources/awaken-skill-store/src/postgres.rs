@@ -103,7 +103,7 @@ impl PgSkillStore {
     /// Connect and apply the skill-store migrations under the `skill_store`
     /// namespace (one-step convenience for a store-owned database).
     pub async fn connect(url: &str) -> Result<Self, PgStoreError> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(|e| PgStoreError::Connect(e.to_string()))?;
@@ -114,7 +114,7 @@ impl PgSkillStore {
 
     /// Connect to an already-migrated schema without executing DDL.
     pub async fn connect_existing(url: &str) -> Result<Self, PgStoreError> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(|error| PgStoreError::Connect(error.to_string()))?;

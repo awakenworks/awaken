@@ -15,7 +15,7 @@ isolates = ["sqlx"]
 
 [dependencies]
 awaken-data-governance-contract.workspace = true
-awaken-store-runtime = { workspace = true, optional = true }
+awaken-sql-storage = { workspace = true, optional = true }
 awaken-runtime-contract.workspace = true
 # The one wall-clock port: capture and erasure-fence stamps.
 awaken-time.workspace = true
@@ -37,7 +37,7 @@ uuid = { version = "1", features = ["v4"] }
 default = []
 # Volatile privacy-state authority used only by tests and scenario fixtures.
 test-support = []
-postgres = ["sqlx/postgres", "dep:awaken-store-runtime", "awaken-store-runtime/postgres"]
+postgres = ["sqlx/postgres", "dep:awaken-sql-storage", "awaken-sql-storage/postgres"]
 
 [[test]]
 name = "repo_conformance"

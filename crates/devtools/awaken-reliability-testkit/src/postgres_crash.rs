@@ -25,7 +25,7 @@ pub async fn postgres_crash_pool(identity: &str) -> Option<sqlx::PgPool> {
     }
     let url = crate::postgres_fixture_url().expect("PostgreSQL crash tests require a live fixture");
     let schema = schema_name(identity);
-    let admin = awaken_store_runtime::postgres_pool_options()
+    let admin = awaken_sql_storage::postgres_pool_options()
         .max_connections(1)
         .connect(&url)
         .await
@@ -41,7 +41,7 @@ pub async fn postgres_crash_pool(identity: &str) -> Option<sqlx::PgPool> {
         .expect("parse crash fixture URL")
         .options([("search_path", schema.as_str())]);
     Some(
-        awaken_store_runtime::postgres_pool_options()
+        awaken_sql_storage::postgres_pool_options()
             .max_connections(2)
             .connect_with(options)
             .await

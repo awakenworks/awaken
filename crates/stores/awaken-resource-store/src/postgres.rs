@@ -33,7 +33,7 @@ pub struct PostgresResourceStore {
 impl PostgresResourceStore {
     /// Connect and apply the resource-lifecycle migration bundle.
     pub async fn connect(url: &str) -> Result<Self, ResourcePurgeError> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(|error| storage(format!("connect: {error}")))?;
@@ -44,7 +44,7 @@ impl PostgresResourceStore {
 
     /// Connect to an already-migrated schema without executing DDL.
     pub async fn connect_existing(url: &str) -> Result<Self, ResourcePurgeError> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(|error| storage(format!("connect: {error}")))?;

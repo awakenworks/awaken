@@ -5,7 +5,7 @@
 // @formal entrypoint session_time.root_observations_are_revision_bound_and_replay_stable
 // @formal entrypoint webhook.lifecycle_commit_and_outbox_are_atomic
 use super::*;
-use awaken_store_runtime::postgres_pool_options as pool_options;
+use awaken_sql_storage::postgres_pool_options as pool_options;
 
 /// A Postgres-backed [`SessionRepository`] — the network-DB sibling over
 /// the same `managed` migration scope.

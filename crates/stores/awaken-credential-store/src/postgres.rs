@@ -68,7 +68,7 @@ pub enum StoreError {
 }
 
 async fn connect_migrated(url: &str) -> Result<PgPool, StoreError> {
-    let pool = awaken_store_runtime::postgres_pool_options()
+    let pool = awaken_sql_storage::postgres_pool_options()
         .connect(url)
         .await
         .map_err(|err| StoreError::Connect(err.to_string()))?;
@@ -86,7 +86,7 @@ async fn pool_migrated(pool: PgPool) -> Result<PgPool, StoreError> {
 }
 
 async fn connect_verified(url: &str) -> Result<PgPool, StoreError> {
-    let pool = awaken_store_runtime::postgres_pool_options()
+    let pool = awaken_sql_storage::postgres_pool_options()
         .connect(url)
         .await
         .map_err(|err| StoreError::Connect(err.to_string()))?;

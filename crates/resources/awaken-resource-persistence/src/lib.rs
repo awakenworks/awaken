@@ -112,7 +112,7 @@ pub async fn open_postgres_with_file_store(
     clock: Arc<dyn WallClock>,
     invalidator: Arc<dyn MemoryInvalidator>,
 ) -> Result<ResourcesApplication, ResourcePersistenceError> {
-    let pool = awaken_store_runtime::postgres_pool_options()
+    let pool = awaken_sql_storage::postgres_pool_options()
         .connect(url)
         .await
         .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?;
@@ -216,7 +216,7 @@ pub async fn open_postgres_with_object_store(
     clock: Arc<dyn WallClock>,
     invalidator: Arc<dyn MemoryInvalidator>,
 ) -> Result<ResourcesApplication, ResourcePersistenceError> {
-    let pool = awaken_store_runtime::postgres_pool_options()
+    let pool = awaken_sql_storage::postgres_pool_options()
         .connect(url)
         .await
         .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?;

@@ -58,7 +58,7 @@ impl PostgresAdminStore {
     }
 
     async fn connect_with_mode(url: &str, migrate_schema: bool) -> Result<Self, StoreError> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(|err| StoreError::Connect(err.to_string()))?;

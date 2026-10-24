@@ -570,7 +570,7 @@ pub(crate) fn has_role_owned_local_persistence(deployment: &ResolvedDeployment) 
 }
 
 async fn connect_target(target: &InstallationTarget) -> Result<PgPool, String> {
-    awaken_store_runtime::postgres_pool_options()
+    awaken_sql_storage::postgres_pool_options()
         .max_connections(1)
         .acquire_timeout(Duration::from_secs(5))
         .connect(&target.url)

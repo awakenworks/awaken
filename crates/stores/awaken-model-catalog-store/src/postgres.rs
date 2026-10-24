@@ -45,7 +45,7 @@ pub struct PostgresCatalogRepo {
 impl PostgresCatalogRepo {
     /// Connect and apply the catalog migrations under the `catalog` namespace.
     pub async fn connect(url: &str) -> Result<Self, StoreError> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(|err| StoreError::Connect(err.to_string()))?;
@@ -65,7 +65,7 @@ impl PostgresCatalogRepo {
 
     /// Connect to a schema migrated by the deployment migration phase.
     pub async fn connect_existing(url: &str) -> Result<Self, StoreError> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(|err| StoreError::Connect(err.to_string()))?;

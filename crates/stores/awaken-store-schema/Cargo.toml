@@ -12,7 +12,7 @@ layer = "infrastructure"
 authority = "store-schema"
 
 [dependencies]
-awaken-store-runtime.workspace = true
+awaken-sql-storage.workspace = true
 awaken-scoped-migration.workspace = true
 
 # Dev-only: prove the portable bundle actually APPLIES on both real backends it

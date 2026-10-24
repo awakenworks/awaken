@@ -99,7 +99,7 @@ pub fn postgres_fixture_url() -> Option<String> {
 /// verification run; schema isolation and domain laws remain with the caller.
 #[cfg(feature = "postgres")]
 pub async fn postgres_fixture_pool(url: &str) -> sqlx::PgPool {
-    awaken_store_runtime::postgres_pool_options()
+    awaken_sql_storage::postgres_pool_options()
         .acquire_timeout(std::time::Duration::from_secs(5))
         .connect(url)
         .await

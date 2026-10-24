@@ -71,7 +71,7 @@ pub async fn migrate_postgres_schema(storage: &CoordinatorStorage) -> Result<(),
     let Some(url) = database_url(storage)? else {
         return Ok(());
     };
-    let pool = awaken_store_runtime::postgres_pool_options()
+    let pool = awaken_sql_storage::postgres_pool_options()
         .max_connections(storage.postgres_max_connections.get())
         .connect(url)
         .await
@@ -141,7 +141,7 @@ async fn open_with(
     let postgres_pool = if components.requires_process_pool() {
         let url = database_url.expect("Postgres Coordinator components require database URL");
         Some(
-            awaken_store_runtime::postgres_pool_options()
+            awaken_sql_storage::postgres_pool_options()
                 .max_connections(storage.postgres_max_connections.get())
                 .connect(url)
                 .await

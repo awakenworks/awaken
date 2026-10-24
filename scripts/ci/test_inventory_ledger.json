@@ -8,7 +8,7 @@
     "every_connection_receives_the_same_process_policy": "ADR-0087: the rusqlite bridge it tested was deleted from awaken-sqlite-pool; its decision table is asserted by pool::tests::every_pool_receives_the_same_process_policy (P1/P2)",
     "foreground_control_cannot_be_starved_by_hot_background_reentry": "ADR-0087: the rusqlite bridge it tested was deleted from awaken-sqlite-pool; its decision table is asserted by pool::tests::pool_foreground_control_cannot_be_starved_by_hot_background_reentry (F1)",
     "held_transactions_release_or_drop_without_committing_and_preserve_fifo": "ADR-0087: the rusqlite bridge it tested was deleted from awaken-sqlite-pool; its decision table is asserted by pool::tests::pool_held_transactions_release_or_drop_without_committing_and_preserve_fifo (H1-H3)",
-    "owned_bridge_is_independent_of_a_current_thread_caller": "ADR-0087 item 4: awaken-store-runtime block_on_owned_runtime lost its last caller when the synchronous SQLite ports became async, so the helper and its test were deleted",
+    "owned_bridge_is_independent_of_a_current_thread_caller": "ADR-0087 item 4: awaken-sql-storage block_on_owned_runtime lost its last caller when the synchronous SQLite ports became async, so the helper and its test were deleted",
     "queued_callers_enter_in_exactly_the_order_they_queued": "ADR-0087: the rusqlite bridge it tested was deleted from awaken-sqlite-pool; its decision table is asserted by pool::tests::pool_queued_callers_enter_in_exactly_the_order_they_queued (F2)",
     "transport_opens_when_transparent_and_fails_closed_otherwise": "ADR-0091 D4 (W28): AgentTransport had no production implementation and no user, so the trait and its ChannelError were deleted with this test of a test-only fake"
   },

@@ -8,9 +8,9 @@ POSTGRES_PACKAGES = {
         "awaken-dispatch-http", "awaken-config-store", "awaken-session-store",
         "awaken-credential-store", "awaken-cli", "awaken-cli", "awaken-coordinator"),
     "storage": (
-        "awaken-store-runtime", "awaken-session-store", "awaken-config-store", "awaken-store-postgres",
+        "awaken-sql-storage", "awaken-session-store", "awaken-config-store", "awaken-store-postgres",
         "awaken-env-store", "awaken-file-store", "awaken-store-schema", "awaken-store-sqlite"),
-    "storage-observations": ("awaken-store-runtime", "awaken-store-postgres"),
+    "storage-observations": ("awaken-sql-storage", "awaken-store-postgres"),
     "resources": ('awaken-admin-config-api', 'awaken-resource-store', 'awaken-resource-persistence', 'awaken-session-application', 'awaken-protocol-managed', 'awaken-sandbox-policy-store', 'awaken-executable-agent-catalog', 'awaken-executable-environment-catalog', 'awaken-environment-image-build'),
 }
 

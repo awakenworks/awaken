@@ -15,7 +15,7 @@ mod sqlite;
 #[cfg(any(test, kani))]
 use awaken_agent_config::PublicationWrite;
 use awaken_agent_config::{ManagementEffect, ManagementEffectReceipt};
-use awaken_store_runtime::{StoredU64, StoredU64Error};
+use awaken_sql_storage::{StoredU64, StoredU64Error};
 
 pub use postgres::{PostgresConfigStore, StoreError as PostgresStoreError};
 pub use schema::config_bundle;

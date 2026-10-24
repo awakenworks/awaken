@@ -281,7 +281,7 @@ mod postgres {
 
     async fn schema_pool(schema: &'static str) -> Option<PgPool> {
         let url = awaken_reliability_testkit::postgres_fixture_url()?;
-        let admin = awaken_store_runtime::postgres_pool_options()
+        let admin = awaken_sql_storage::postgres_pool_options()
             .max_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(3))
             .connect(&url)
@@ -307,7 +307,7 @@ mod postgres {
         // Keep production checkout verification on both fresh and reused
         // connections. Startup options select our schema without replacing
         // the shared after_connect or before_acquire hooks.
-        awaken_store_runtime::postgres_pool_options()
+        awaken_sql_storage::postgres_pool_options()
             .max_connections(4)
             .connect_with(options)
             .await

@@ -229,7 +229,7 @@
     "awaken-store-fs",
     "awaken-store-inmem",
     "awaken-store-postgres",
-    "awaken-store-runtime",
+    "awaken-sql-storage",
     "awaken-store-schema",
     "awaken-store-sqlite",
     "awaken-tenancy",

@@ -181,7 +181,7 @@ critical_durability_evidence() {
 storage_observation_evidence() {
   # These six heavy observations are selected explicitly, not silently ignored
   # inside the ordinary correctness lane. Timings do not establish a fleet SLO.
-  pg_required_test --locked -p awaken-store-runtime --features postgres --lib postgres_tests::checkout_health_policy_performance_observation \
+  pg_required_test --locked -p awaken-sql-storage --features postgres --lib postgres_tests::checkout_health_policy_performance_observation \
     --require-case=postgres_tests::checkout_health_policy_performance_observation \
     -- --ignored --exact --test-threads=1 || record_failure "$?"
   pg_required_test --locked -p awaken-store-postgres --test postgres_live \
@@ -264,7 +264,7 @@ resources_evidence() {
 }
 
 storage_evidence() {
-  pg_required_test --locked -p awaken-store-runtime --features postgres --lib postgres_tests \
+  pg_required_test --locked -p awaken-sql-storage --features postgres --lib postgres_tests \
     --require-case=postgres_tests::cancelled_begin_cannot_poison_the_next_recovery_transaction \
     --require-case=postgres_tests::checkout_supports_read_only_role_without_schema_create_permission \
     --require-case=postgres_tests::missing_permission_and_blocked_health_check_fail_within_their_boundary \
@@ -696,7 +696,7 @@ self_test() {
   }
   # P16 live URL + postgres feature + ignored correctness tests -> execute R1-R7
   # in this fixture. The separate performance observation keeps its own opt-in.
-  grep -Fqx '  pg_required_test --locked -p awaken-store-runtime --features postgres --lib postgres_tests \' "$0" || {
+  grep -Fqx '  pg_required_test --locked -p awaken-sql-storage --features postgres --lib postgres_tests \' "$0" || {
     echo "Postgres gate omits explicit shared checkout correctness" >&2
     return 1
   }

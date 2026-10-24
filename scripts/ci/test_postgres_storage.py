@@ -19,7 +19,7 @@ import check_native_services as gate
 from _native_postgres_scopes import postgres_plan
 
 INPUT_GLOBS = ("scripts/ci/**", ".github/workflows/windows-native-services.yml")
-PACKAGES = ("awaken-store-runtime", "awaken-session-store", "awaken-config-store",
+PACKAGES = ("awaken-sql-storage", "awaken-session-store", "awaken-config-store",
             "awaken-store-postgres", "awaken-env-store", "awaken-file-store",
             "awaken-store-schema", "awaken-store-sqlite")
 
@@ -83,7 +83,7 @@ pg_required_test() {
 
     def test_explicit_observations_require_both_domains_all_six_names_and_ignored_execution(self):
         code,rows=self.selection(0,"storage_observation_evidence");self.assertEqual(code,0)
-        self.assertEqual([row[row.index("-p")+1] for row in rows],["awaken-store-runtime","awaken-store-postgres"])
+        self.assertEqual([row[row.index("-p")+1] for row in rows],["awaken-sql-storage","awaken-store-postgres"])
         self.assertEqual([sum(x.startswith("--require-case=") for x in row) for row in rows],[1,5])
         for row in rows:
             self.assertIn("--ignored",row);self.assertNotIn("--nocapture",row);self.assertIn("--locked",row)

@@ -253,7 +253,7 @@ impl DurableRuntimeAuthority {
             || storage.store == StoreKind::Postgres
         {
             Some(
-                awaken_store_runtime::postgres_pool_options()
+                awaken_sql_storage::postgres_pool_options()
                     .max_connections(storage.postgres_max_connections.get())
                     .connect(required_database_url(
                         storage,

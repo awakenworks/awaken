@@ -176,7 +176,7 @@ impl SqliteFileStore {
             .bind(&capture.workspace_id)
             .bind(&capture.session_id)
             .bind(
-                awaken_store_runtime::StoredU64::try_from(capture.revision)
+                awaken_sql_storage::StoredU64::try_from(capture.revision)
                     .map_err(e)?
                     .database_value(),
             )

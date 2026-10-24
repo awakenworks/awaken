@@ -74,7 +74,7 @@ impl ProcessPostgresPools {
             }
             return Ok(pool.clone());
         }
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .max_connections(self.maximum)
             .connect(url)
             .await
@@ -94,7 +94,7 @@ mod tests {
         // P2 closing it -> every clone is closed, no new connection attempt.
         // The invalid host makes any accidental fallback fail this rule.
         let url = "postgres://pool.invalid/database";
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .max_connections(2)
             .connect_lazy(url)
             .unwrap();
@@ -114,7 +114,7 @@ mod tests {
         // -> reject; P4 a duplicate supplied owner or wrong capacity -> reject.
         // No network or second owner is permitted by any rejection rule.
         let url = "postgres://pool.invalid/database";
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .max_connections(2)
             .connect_lazy(url)
             .unwrap();
@@ -179,7 +179,7 @@ mod tests {
             .application_name(&tag)
             .options([("search_path", schema.as_str())]);
         let url = options.to_url_lossy().to_string();
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .max_connections(2)
             .connect_with(options)
             .await

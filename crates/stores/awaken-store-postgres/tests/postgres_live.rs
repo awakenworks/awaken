@@ -72,7 +72,7 @@ async fn schema_pool(schema: &'static str) -> Option<PgPool> {
     // its fresh-connection validation; schema isolation belongs to the existing
     // URL projection rather than an after_connect replacement that erases it.
     Some(
-        awaken_store_runtime::postgres_pool_options()
+        awaken_sql_storage::postgres_pool_options()
             .connect(&database_url_in_schema(schema))
             .await
             .expect("reachable fixture must construct its canonical schema pool"),

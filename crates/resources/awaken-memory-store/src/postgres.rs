@@ -8,7 +8,7 @@
 //! Postgres [`MemoryWriter`] over the crate's `memory_store` migration scope — the
 //! multi-node sibling of the SQLite backend over the same portable bundle.
 
-use awaken_store_runtime::StoredU64;
+use awaken_sql_storage::StoredU64;
 use awaken_time::WallClock;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
@@ -135,7 +135,7 @@ pub struct PostgresMemoryRepository {
 impl PostgresMemoryRepository {
     /// Connect and apply the memory-store migrations (one-step convenience).
     pub async fn connect(url: &str, clock: Arc<dyn WallClock>) -> Result<Self, PgStoreError> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(|e| PgStoreError::Connect(e.to_string()))?;
@@ -149,7 +149,7 @@ impl PostgresMemoryRepository {
         url: &str,
         clock: Arc<dyn WallClock>,
     ) -> Result<Self, PgStoreError> {
-        let pool = awaken_store_runtime::postgres_pool_options()
+        let pool = awaken_sql_storage::postgres_pool_options()
             .connect(url)
             .await
             .map_err(|error| PgStoreError::Connect(error.to_string()))?;
