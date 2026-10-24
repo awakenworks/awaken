@@ -33,17 +33,17 @@ async fn poisoned_host() -> Arc<crate::ExecutorComponents> {
     .await
     .build()
     .expect("validated Host dependencies");
-    let slots = &host.run_assembly.installed_sessions;
-    slots
+    let installed_sessions = &host.run_assembly.installed_sessions;
+    installed_sessions
         .install(SESSION)
         .expect("healthy registry before poison");
     assert!(
         catch_unwind(AssertUnwindSafe(|| {
-            slots.modify(SESSION, |_| -> () { panic!("poison the registry lock") })
+            installed_sessions.modify(SESSION, |_| -> () { panic!("poison the registry lock") })
         }))
         .is_err()
     );
-    assert!(slots.slots.is_poisoned());
+    assert!(installed_sessions.installed_sessions.is_poisoned());
     host
 }
 

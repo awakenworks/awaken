@@ -5,9 +5,9 @@ use awaken_session_realization::test_support::test_observed_lease;
 
 #[test]
 fn dispatch_resource_manifest_has_one_session_generation_selector() {
-    // Ownership move: ResourceStagingState selects from the same locked slot;
+    // Ownership move: ResourceStagingState selects from the same locked installed Session;
     // its input is the existing Run dispatch bit, never a second stored flag.
-    // Cause/effect graph: C1 the slot is ordinary/prepared Session; C2 a
+    // Cause/effect graph: C1 the installed Session is ordinary/prepared Session; C2 a
     // desired transition is absent/present; C3 active is absent/present.
     // Effects: E1 ordinary dispatch selects active only; E2 prepared
     // dispatch selects desired before physical publication; E3 desired
@@ -43,7 +43,7 @@ fn dispatch_resource_manifest_has_one_session_generation_selector() {
         let mut realization = SessionRealization::default();
         realization.staging_mut().manifest = active.clone();
         realization.staging_mut().transition = transition;
-        let slot = InstalledSession {
+        let installed = InstalledSession {
             realization,
             run: SessionRunBinding {
                 session_dispatch,
@@ -53,16 +53,17 @@ fn dispatch_resource_manifest_has_one_session_generation_selector() {
         };
 
         assert_eq!(
-            slot.realization
+            installed
+                .realization
                 .staging()
-                .run_manifest(slot.run.session_dispatch)
+                .run_manifest(installed.run.session_dispatch)
                 .unwrap_or_else(|| panic!("{rule} selected manifest"))
                 .revision,
             expected,
             "{rule} selection",
         );
         assert_eq!(
-            slot.realization.staging().manifest,
+            installed.realization.staging().manifest,
             active,
             "{rule}/E5 active is unchanged"
         );
@@ -75,8 +76,8 @@ fn environment_only_session_lease_remains_supervised() {
     // C2 the Session has no MCP projection; C3 supervision filters on MCP.
     // E1 C1+C2 must still expose the lease for renewal, otherwise C3 lets
     // the durable fence expire before the Environment receipt can commit.
-    let slots = Arc::new(InstalledSessions::default());
-    slots.install_realization("environment-only", |r| {
+    let installed_sessions = Arc::new(InstalledSessions::default());
+    installed_sessions.install_realization("environment-only", |r| {
         assert!(!r.staging().mcp.has_frozen_attachment(), "C2");
         r.execution_mut().authority = crate::realization_state::SessionRealizationAuthority::Live(
             test_observed_lease(crate::session_resource::SessionRealizationLease {
@@ -89,7 +90,9 @@ fn environment_only_session_lease_remains_supervised() {
         );
     });
 
-    let leases = slots.realization_leases().expect("installed Sessions");
+    let leases = installed_sessions
+        .realization_leases()
+        .expect("installed Sessions");
     assert_eq!(leases.len(), 1, "E1");
     assert_eq!(leases[0].0, "environment-only", "E1");
 }
@@ -193,7 +196,7 @@ async fn unpolled_staging_future_drop_releases_drain_without_false_proof() {
 #[test]
 fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
     // Ownership move: SessionRealization receives the Run context-presence bit
-    // from this same slot lock; it retains the original MCP-local-effects and
+    // from this same installed Session lock; it retains the original MCP-local-effects and
     // durable-projection checks. Moving the code must not add a reopen path.
     // Cause graph: C1 exact suspend/source/generation closes admission; C2
     // the same close replays or conflicts; C3 Control projects the old
@@ -211,7 +214,7 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
     // | F4 | exact | same generation + new effect/binding | E4 |
     // | F5 | exact | Unmaterialized + pending source owner | E3 |
     // | F6 | exact | Unmaterialized + Vacant + no local effects | E4 |
-    let slots = Arc::new(InstalledSessions::default());
+    let installed_sessions = Arc::new(InstalledSessions::default());
     let generation = awaken_session_state_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from("mcp-admission"),
         1,
@@ -234,16 +237,18 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
         "source-binding",
         &generation,
     );
-    slots.install("mcp-admission").expect("installed Sessions");
+    installed_sessions
+        .install("mcp-admission")
+        .expect("installed Sessions");
     assert!(
-        slots
+        installed_sessions
             .realizations()
             .close_mcp_realization_admission("mcp-admission", fence.clone())
             .unwrap(),
         "F1/E1"
     );
     assert!(
-        !slots
+        !installed_sessions
             .realizations()
             .close_mcp_realization_admission("mcp-admission", fence.clone())
             .unwrap(),
@@ -252,7 +257,7 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
     let mut foreign = fence.clone();
     foreign.activity_epoch += 1;
     assert!(
-        slots
+        installed_sessions
             .realizations()
             .close_mcp_realization_admission("mcp-admission", foreign)
             .is_err(),
@@ -265,9 +270,9 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
         idle_since_unix_ms: None,
     };
     assert!(
-        !slots
-            .install_with("mcp-admission", |slot| {
-                slot.realization.environment_mut().owner = SessionEnvironmentOwner::Preparing(
+        !installed_sessions
+            .install_with("mcp-admission", |installed| {
+                installed.realization.environment_mut().owner = SessionEnvironmentOwner::Preparing(
                     SessionEnvironmentPreparation::AwaitingAdoption {
                         identity: BoundSessionEnvironmentIdentity::Durable {
                             effect_id: "source-effect".into(),
@@ -276,10 +281,11 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
                         binding: "source-binding".into(),
                     },
                 );
-                slot.realization
+                installed
+                    .realization
                     .reopen_mcp_realization_admission_from_projection(
                         &old_resident,
-                        slot.run.context.is_some(),
+                        installed.run.context.is_some(),
                     )
             })
             .expect("installed Sessions"),
@@ -298,9 +304,9 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
         idle_since_unix_ms: None,
     };
     assert!(
-        !slots
-            .install_with("mcp-admission", |slot| {
-                slot.realization.environment_mut().owner = SessionEnvironmentOwner::Preparing(
+        !installed_sessions
+            .install_with("mcp-admission", |installed| {
+                installed.realization.environment_mut().owner = SessionEnvironmentOwner::Preparing(
                     SessionEnvironmentPreparation::AwaitingAdoption {
                         identity: BoundSessionEnvironmentIdentity::Durable {
                             effect_id: "restore-effect".into(),
@@ -309,10 +315,11 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
                         binding: "restored-binding".into(),
                     },
                 );
-                slot.realization
+                installed
+                    .realization
                     .reopen_mcp_realization_admission_from_projection(
                         &wrong_generation,
-                        slot.run.context.is_some(),
+                        installed.run.context.is_some(),
                     )
             })
             .expect("installed Sessions"),
@@ -325,9 +332,9 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
         idle_since_unix_ms: None,
     };
     assert!(
-        slots
-            .install_with("mcp-admission", |slot| {
-                slot.realization.environment_mut().owner = SessionEnvironmentOwner::Preparing(
+        installed_sessions
+            .install_with("mcp-admission", |installed| {
+                installed.realization.environment_mut().owner = SessionEnvironmentOwner::Preparing(
                     SessionEnvironmentPreparation::AwaitingAdoption {
                         identity: BoundSessionEnvironmentIdentity::Durable {
                             effect_id: "restore-effect".into(),
@@ -336,31 +343,32 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
                         binding: "restored-binding".into(),
                     },
                 );
-                slot.realization
+                installed
+                    .realization
                     .reopen_mcp_realization_admission_from_projection(
                         &restored,
-                        slot.run.context.is_some(),
+                        installed.run.context.is_some(),
                     )
             })
             .expect("installed Sessions"),
         "F4/E4"
     );
     assert!(
-        slots
+        installed_sessions
             .realizations()
             .mcp_realization_admitted("mcp-admission")
             .expect("installed Sessions"),
         "F4/E4"
     );
 
-    slots
+    installed_sessions
         .realizations()
         .close_mcp_realization_admission("mcp-admission", fence.clone())
         .unwrap();
     assert!(
-        !slots
-            .install_with("mcp-admission", |slot| {
-                slot.realization.environment_mut().owner = SessionEnvironmentOwner::Preparing(
+        !installed_sessions
+            .install_with("mcp-admission", |installed| {
+                installed.realization.environment_mut().owner = SessionEnvironmentOwner::Preparing(
                     SessionEnvironmentPreparation::AwaitingAdoption {
                         identity: BoundSessionEnvironmentIdentity::Durable {
                             effect_id: fence.source_effect_id.clone(),
@@ -369,30 +377,32 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
                         binding: fence.source_binding.clone(),
                     },
                 );
-                slot.realization
+                installed
+                    .realization
                     .reopen_mcp_realization_admission_from_projection(
                         &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
-                        slot.run.context.is_some(),
+                        installed.run.context.is_some(),
                     )
             })
             .expect("installed Sessions"),
         "F5/E3 expiry before source disposal"
     );
     assert!(
-        slots
-            .install_with("mcp-admission", |slot| {
-                slot.realization.environment_mut().owner = SessionEnvironmentOwner::Vacant;
-                slot.realization
+        installed_sessions
+            .install_with("mcp-admission", |installed| {
+                installed.realization.environment_mut().owner = SessionEnvironmentOwner::Vacant;
+                installed
+                    .realization
                     .reopen_mcp_realization_admission_from_projection(
                         &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
-                        slot.run.context.is_some(),
+                        installed.run.context.is_some(),
                     )
             })
             .expect("installed Sessions"),
         "F6/E4 exact source-free projection"
     );
     assert!(
-        slots
+        installed_sessions
             .realizations()
             .mcp_realization_admitted("mcp-admission")
             .expect("installed Sessions"),
@@ -435,7 +445,7 @@ fn frozen_inputs_keep_their_agent_publication() {
 
 #[tokio::test]
 async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_writes() {
-    // Cause/effect graph S4: C1 the actual Slot mutex is poisoned by a caught
+    // Cause/effect graph S4: C1 the actual installed Session mutex is poisoned by a caught
     // callback panic; C2 target is present/absent; C3 entry is Source.visit
     // (create=false/true), named publication, or the registry's own
     // read/modify/install. E1 Source denies with the typed poisoned registry
@@ -449,7 +459,7 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
     // | S4b | C1 + either C2 + named action           | E2+E5+E6 |
     // | S4c | C1 + either C2 + read/modify            | E3+E4+E5+E6 |
     // | S4d | C1 + either C2 + install/create         | E3+E4+E5+E6 |
-    // This exercises the canonical Slot mutex, not MCP's active-marker lock.
+    // This exercises the canonical installed Session mutex, not MCP's active-marker lock.
     // Only this test inspects a poisoned guard with into_inner; it never clears
     // poison. Production neither recovers nor reads/writes poisoned state.
     use crate::session_realizations::SessionRealizationSource;
@@ -469,9 +479,11 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
         .await
         .expect("actual Run context");
     crate::host::tests::bind_test_memory(&host, "present", "poison-memory", true);
-    let slots = &host.run_assembly.installed_sessions;
-    let memory = slots
-        .read("present", |slot| slot.realization.staging().memory.clone())
+    let installed_sessions = &host.run_assembly.installed_sessions;
+    let memory = installed_sessions
+        .read("present", |installed| {
+            installed.realization.staging().memory.clone()
+        })
         .expect("installed Sessions")
         .flatten()
         .unwrap();
@@ -535,40 +547,42 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
             credential_pin: None,
         }],
     };
-    slots
-        .install_with("present", |slot| {
-            slot.replace_frozen_with(|next| next.workspace = Some("original-workspace".into()));
-            slot.realization.staging_mut().resources = resources.clone();
-            slot.realization
+    installed_sessions
+        .install_with("present", |installed| {
+            installed
+                .replace_frozen_with(|next| next.workspace = Some("original-workspace".into()));
+            installed.realization.staging_mut().resources = resources.clone();
+            installed
+                .realization
                 .staging_mut()
                 .memory_bindings
                 .insert("original-binding".into(), memory.clone());
-            slot.realization.staging_mut().skills = Some(vec![skill.clone()]);
-            slot.realization.staging_mut().effect_key = Some("original-key".into());
-            slot.run.dispatch_claim = Some(claim.clone());
-            slot.run.session_dispatch = true;
+            installed.realization.staging_mut().skills = Some(vec![skill.clone()]);
+            installed.realization.staging_mut().effect_key = Some("original-key".into());
+            installed.run.dispatch_claim = Some(claim.clone());
+            installed.run.session_dispatch = true;
         })
         .expect("installed Sessions");
-    let frozen = slots
-        .read("present", |slot| slot.inputs.clone())
+    let frozen = installed_sessions
+        .read("present", |installed| installed.inputs.clone())
         .expect("installed Sessions")
         .unwrap();
-    let phase_locks = slots
-        .read("present", |slot| {
+    let phase_locks = installed_sessions
+        .read("present", |installed| {
             (
-                slot.realization.execution().phase.clone(),
-                slot.realization.environment().lifecycle.clone(),
-                slot.realization.staging().projection.clone(),
+                installed.realization.execution().phase.clone(),
+                installed.realization.environment().lifecycle.clone(),
+                installed.realization.staging().projection.clone(),
             )
         })
         .expect("installed Sessions")
         .unwrap();
     let mut poisoning_callbacks = 0;
     assert!(
-        catch_unwind(AssertUnwindSafe(|| slots
+        catch_unwind(AssertUnwindSafe(|| installed_sessions
             .modify("present", |_| {
                 poisoning_callbacks += 1;
-                panic!("poison the actual Slot guard");
+                panic!("poison the actual installed Session guard");
             })
             .expect("installed Sessions")))
         .is_err()
@@ -577,10 +591,10 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
         poisoning_callbacks, 1,
         "R12 callback panic once under actual guard"
     );
-    assert!(slots.slots.is_poisoned());
+    assert!(installed_sessions.installed_sessions.is_poisoned());
     let mut callbacks = 0;
     for target in ["present", "absent"] {
-        // Q8 actual global Slot poison precedes Primary for either adapter;
+        // Q8 actual global installed Session poison precedes Primary for either adapter;
         // the delegated future must remain UNPOLLED, for present and absent ids.
         // Both the registry's own read and the view deny with the typed lock.
         for legacy in [false, true] {
@@ -591,7 +605,7 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
                     target,
                     |id| {
                         if legacy {
-                            Ok(slots
+                            Ok(installed_sessions
                                 .read_run(id, |run| {
                                     run.context
                                         .as_ref()
@@ -602,7 +616,7 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
                             Ok(host
                                 .realization_executor
                                 .sessions()
-                                .modify_session(id, |slot| slot.run.has_active_run())?
+                                .modify_session(id, |installed| installed.run.has_active_run())?
                                 .unwrap_or(false))
                         }
                     },
@@ -616,7 +630,7 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
             .await;
             let denied = refused
                 .expect("Q8 the registry and the view deny instead of panicking")
-                .expect_err("Q8 actual Slot poison must deny");
+                .expect_err("Q8 actual installed Session poison must deny");
             assert_eq!(
                 denied.code,
                 crate::realization_error::POISONED_CODE,
@@ -628,7 +642,7 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
                 "Q8 delegated read never polled"
             );
         }
-        let refused = slots.visit(target, &mut |_| callbacks += 1);
+        let refused = installed_sessions.visit(target, &mut |_| callbacks += 1);
         assert!(
             matches!(
                 refused,
@@ -637,7 +651,7 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
             "S4a {target}"
         );
         let publication = catch_unwind(AssertUnwindSafe(|| {
-            slots.publish_resource_requirements(
+            installed_sessions.publish_resource_requirements(
                 target,
                 "forbidden-workspace",
                 None,
@@ -664,9 +678,13 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
             "S4b {target}"
         );
         let denials = [
-            slots.read(target, |_| callbacks += 1).map(|_| ()),
-            slots.modify(target, |_| callbacks += 1).map(|_| ()),
-            slots.install_with(target, |_| callbacks += 1),
+            installed_sessions
+                .read(target, |_| callbacks += 1)
+                .map(|_| ()),
+            installed_sessions
+                .modify(target, |_| callbacks += 1)
+                .map(|_| ()),
+            installed_sessions.install_with(target, |_| callbacks += 1),
         ];
         for denied in denials {
             assert!(
@@ -679,8 +697,11 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
         }
     }
     assert_eq!(callbacks, 0, "S4a/S4c/S4d no callback entered");
-    assert!(slots.slots.is_poisoned(), "S4/E6 poison remains");
-    let poisoned_guard = match slots.slots.lock() {
+    assert!(
+        installed_sessions.installed_sessions.is_poisoned(),
+        "S4/E6 poison remains"
+    );
+    let poisoned_guard = match installed_sessions.installed_sessions.lock() {
         Err(error) => error.into_inner(),
         Ok(_) => panic!("S4/E6 no recovery or clear_poison"),
     };
@@ -689,61 +710,75 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
         !poisoned_guard.contains_key("absent"),
         "S4 absent remains absent"
     );
-    let slot = &poisoned_guard["present"];
-    assert!(Arc::ptr_eq(&slot.inputs, &frozen), "S4/E5 whole Frozen Arc");
-    assert_eq!(slot.inputs.workspace.as_deref(), Some("original-workspace"));
+    let installed = &poisoned_guard["present"];
+    assert!(
+        Arc::ptr_eq(&installed.inputs, &frozen),
+        "S4/E5 whole Frozen Arc"
+    );
     assert_eq!(
-        slot.realization.staging().resources.mounts,
+        installed.inputs.workspace.as_deref(),
+        Some("original-workspace")
+    );
+    assert_eq!(
+        installed.realization.staging().resources.mounts,
         resources.mounts
     );
     assert_eq!(
-        slot.realization.staging().resources.prompts,
+        installed.realization.staging().resources.prompts,
         resources.prompts
     );
     assert_eq!(
         format!(
             "{:?}",
-            slot.realization.staging().resources.resource_prompts
+            installed.realization.staging().resources.resource_prompts
         ),
         format!("{:?}", resources.resource_prompts)
     );
-    assert_eq!(slot.realization.staging().resources.binding_checks.len(), 1);
+    assert_eq!(
+        installed
+            .realization
+            .staging()
+            .resources
+            .binding_checks
+            .len(),
+        1
+    );
     assert!(
-        matches!(&slot.realization.staging().resources.binding_checks[0], ResourceBindingCheck::MemoryStore {
+        matches!(&installed.realization.staging().resources.binding_checks[0], ResourceBindingCheck::MemoryStore {
         memory_store_id, config_version,
     } if memory_store_id == "poison-memory" && config_version.0 == 3)
     );
-    assert!(slot.realization.staging().resources.repositories == resources.repositories);
-    assert_eq!(slot.realization.staging().memory_bindings.len(), 1);
+    assert!(installed.realization.staging().resources.repositories == resources.repositories);
+    assert_eq!(installed.realization.staging().memory_bindings.len(), 1);
     assert!(Arc::ptr_eq(
-        &slot.realization.staging().memory_bindings["original-binding"],
+        &installed.realization.staging().memory_bindings["original-binding"],
         &memory
     ));
     assert!(Arc::ptr_eq(
-        slot.realization.staging().memory.as_ref().unwrap(),
+        installed.realization.staging().memory.as_ref().unwrap(),
         &memory
     ));
-    assert_eq!(slot.realization.staging().skills, Some(vec![skill]));
+    assert_eq!(installed.realization.staging().skills, Some(vec![skill]));
     assert_eq!(
-        slot.realization.staging().effect_key.as_deref(),
+        installed.realization.staging().effect_key.as_deref(),
         Some("original-key")
     );
     assert!(
-        Arc::ptr_eq(slot.run.context.as_ref().unwrap(), &context),
+        Arc::ptr_eq(installed.run.context.as_ref().unwrap(), &context),
         "S4/E5 Run context"
     );
-    assert_eq!(slot.run.dispatch_claim, Some(claim));
-    assert!(slot.run.session_dispatch);
+    assert_eq!(installed.run.dispatch_claim, Some(claim));
+    assert!(installed.run.session_dispatch);
     assert!(Arc::ptr_eq(
-        &slot.realization.execution().phase,
+        &installed.realization.execution().phase,
         &phase_locks.0
     ));
     assert!(Arc::ptr_eq(
-        &slot.realization.environment().lifecycle,
+        &installed.realization.environment().lifecycle,
         &phase_locks.1
     ));
     assert!(Arc::ptr_eq(
-        &slot.realization.staging().projection,
+        &installed.realization.staging().projection,
         &phase_locks.2
     ));
 }
@@ -751,9 +786,9 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
 #[tokio::test]
 async fn local_activity_combination_keeps_real_poison_fault_order() {
     // Necessary Q9-Q11 fault partitions extend the original S4 setup: create
-    // fresh actual Hosts because neither global Slot nor active-marker poison
+    // fresh actual Hosts because neither global installed Session nor active-marker poison
     // may be cleared/recovered. No fake Source/view, registry or bool adapter.
-    // Q9 two adapters + Primary active + awaiting reader poisons Slot + Open
+    // Q9 two adapters + Primary active + awaiting reader poisons installed Session + Open
     // child -> the registry's and the view's typed Poisoned denial (true
     // Primary never skips either).
     // Q10 two adapters + Primary inactive + same awaited poison + Completed
@@ -800,16 +835,16 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
             let polls = std::sync::atomic::AtomicUsize::new(0);
             let (enter, entry) = tokio::sync::oneshot::channel::<()>();
             let writer = tokio::spawn({
-                let slots = host.run_assembly.installed_sessions.clone();
+                let installed_sessions = host.run_assembly.installed_sessions.clone();
                 let root_id = root_id.clone();
                 async move {
                     if entry.await.is_err() {
                         return false;
                     }
                     catch_unwind(AssertUnwindSafe(|| {
-                        slots
+                        installed_sessions
                             .modify(&root_id, |_| {
-                                panic!("Q9/Q10 actual Slot poison during reader")
+                                panic!("Q9/Q10 actual installed Session poison during reader")
                             })
                             .expect("installed Sessions");
                     }))
@@ -835,7 +870,7 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                             .unwrap_or(false))
                     } else {
                         Ok(view
-                            .modify_session(id, |slot| slot.run.has_active_run())?
+                            .modify_session(id, |installed| installed.run.has_active_run())?
                             .unwrap_or(false))
                     }
                 },
@@ -844,7 +879,7 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                     enter.send(()).expect("Q9 actual delegation reader entry");
                     assert!(
                         (&mut writer).await.expect("Q9 writer joined within reader"),
-                        "Q9 actual caught callback poisoned Slot"
+                        "Q9 actual caught callback poisoned installed Session"
                     );
                     Ok::<_, crate::SessionExecutionError>(vec![relationship(&child_id, status)])
                 },
@@ -862,8 +897,11 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                 "Q9/Q10 true Primary still polls reader"
             );
             assert!(
-                host.run_assembly.installed_sessions.slots.is_poisoned(),
-                "Q9/Q10 actual Slot poison"
+                host.run_assembly
+                    .installed_sessions
+                    .installed_sessions
+                    .is_poisoned(),
+                "Q9/Q10 actual installed Session poison"
             );
             if primary_active {
                 let denied = observed
@@ -877,7 +915,7 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
             } else {
                 assert!(
                     !observed
-                        .expect("Q10 Completed skips poisoned child Slot")
+                        .expect("Q10 Completed skips poisoned child installed Session")
                         .unwrap(),
                     "Q10 local inactive result only"
                 );
@@ -924,8 +962,12 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
             });
             assert!(marker_writer.join().is_err(), "Q11 marker writer joined");
             assert!(
-                !host.run_assembly.installed_sessions.slots.is_poisoned(),
-                "Q11 distinct healthy Slot before query"
+                !host
+                    .run_assembly
+                    .installed_sessions
+                    .installed_sessions
+                    .is_poisoned(),
+                "Q11 distinct healthy installed Session before query"
             );
             let view = host.run_assembly.installed_sessions.realizations();
             let polls = std::sync::atomic::AtomicUsize::new(0);
@@ -945,7 +987,7 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
                             .unwrap_or(false))
                     } else {
                         Ok(view
-                            .modify_session(id, |slot| slot.run.has_active_run())
+                            .modify_session(id, |installed| installed.run.has_active_run())
                             .expect("installed Sessions")
                             .unwrap_or(false))
                     }
@@ -978,12 +1020,12 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
 }
 
 #[test]
-fn only_installation_creates_a_session_slot() {
+fn only_installation_creates_an_installed_session() {
     // Cause/effect graph: C1 the Session is installed or absent; C2 the entry
     // is a read (read/read_run), a change (modify/modify_run) or an install
     // (install/install_with/replace_frozen_with). E1 an absent Session answers
     // `Ok(None)` and stays absent; E2 an installed one is visited; E3 only an
-    // install creates the slot. Poison is covered by the S4 case above.
+    // install creates the installed Session. Poison is covered by the S4 case above.
     //
     // | Rule | C1        | C2      | Effect |
     // |------|-----------|---------|--------|
@@ -992,32 +1034,51 @@ fn only_installation_creates_a_session_slot() {
     // | I3   | absent    | install | E3     |
     // | I4   | installed | read    | E2     |
     // | I5   | installed | change  | E2     |
-    let slots = InstalledSessions::default();
-    assert_eq!(slots.read("s", |_| ()).unwrap(), None, "I1 read");
-    assert_eq!(slots.read_run("s", |_| ()).unwrap(), None, "I1 read_run");
-    assert_eq!(slots.modify("s", |_| ()).unwrap(), None, "I2 modify");
+    let installed_sessions = InstalledSessions::default();
     assert_eq!(
-        slots.modify_run("s", |_| ()).unwrap(),
+        installed_sessions.read("s", |_| ()).unwrap(),
+        None,
+        "I1 read"
+    );
+    assert_eq!(
+        installed_sessions.read_run("s", |_| ()).unwrap(),
+        None,
+        "I1 read_run"
+    );
+    assert_eq!(
+        installed_sessions.modify("s", |_| ()).unwrap(),
+        None,
+        "I2 modify"
+    );
+    assert_eq!(
+        installed_sessions.modify_run("s", |_| ()).unwrap(),
         None,
         "I2 modify_run"
     );
     assert!(
-        slots.session_ids().unwrap().is_empty(),
+        installed_sessions.session_ids().unwrap().is_empty(),
         "I1/I2 nothing created"
     );
-    slots.install("s").unwrap();
+    installed_sessions.install("s").unwrap();
     assert_eq!(
-        slots.session_ids().unwrap(),
+        installed_sessions.session_ids().unwrap(),
         vec!["s".to_string()],
         "I3 install"
     );
-    slots
+    installed_sessions
         .replace_frozen_with("t", |next| next.workspace = Some("w".into()))
         .unwrap();
-    assert!(slots.contains("t"), "I3 frozen replacement is an install");
-    assert_eq!(slots.read("s", |_| 1).unwrap(), Some(1), "I4 read");
+    assert!(
+        installed_sessions.contains("t"),
+        "I3 frozen replacement is an install"
+    );
     assert_eq!(
-        slots
+        installed_sessions.read("s", |_| 1).unwrap(),
+        Some(1),
+        "I4 read"
+    );
+    assert_eq!(
+        installed_sessions
             .modify_run("s", |run| {
                 run.session_dispatch = true;
             })
@@ -1026,7 +1087,9 @@ fn only_installation_creates_a_session_slot() {
         "I5 change"
     );
     assert_eq!(
-        slots.read_run("s", |run| run.session_dispatch).unwrap(),
+        installed_sessions
+            .read_run("s", |run| run.session_dispatch)
+            .unwrap(),
         Some(true)
     );
 }

@@ -1129,8 +1129,8 @@ mod tests {
 
     #[tokio::test]
     async fn session_background_application_composition_is_single_assignment_and_weak() {
-        // Cause/effect decision table: R8 vacant slot + application -> one weak
-        // executable edge; R9 occupied slot + another install -> reject without
+        // Cause/effect decision table: R8 vacant installed Session + application -> one weak
+        // executable edge; R9 occupied installed Session + another install -> reject without
         // replacement; R10 all external strong owners drop -> ExecutorComponents does
         // not retain the Session application. This prevents both a second Run
         // admission owner and an Arc ownership cycle.
@@ -1689,7 +1689,7 @@ mod tests {
     async fn committed_remote_handle_is_polled_without_replaying_start() {
         // Cause/effect decision table: R1 committed Running -> exactly one
         // start_task and a process Wait candidate; R2 candidate is committed as
-        // Waiting -> the same supervisor slot resumes one poll by the saved
+        // Waiting -> the same supervisor installed Session resumes one poll by the saved
         // handle; R3 an arbitrary non-MCP adapter owner is carried opaquely;
         // R4 explicit Completed -> terminal candidate and a distinct attention
         // identity. Constraints: no second start, no adapter/remote id in

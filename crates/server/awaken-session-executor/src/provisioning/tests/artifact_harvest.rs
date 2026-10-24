@@ -666,7 +666,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
 async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_environment() {
     // Cause/effect decision table: H1 ordinary harvest then terminal harvest
     // of identical Session/path/content => one File id with a durable terminal
-    // association; H2 terminal publication committed but its response/slot
+    // association; H2 terminal publication committed but its response/installed Session
     // Environment is lost => root Workspace + File evidence reconstruct the
     // exact receipt; H3 later logical delete => tombstone readback still
     // reconstructs that same creation receipt; H4 env absent under ordinary
@@ -1046,7 +1046,7 @@ async fn terminal_artifact_recovery_requires_the_root_workspace_before_catalog_i
 #[tokio::test]
 async fn retained_artifact_harvester_observes_late_realization_without_retaining_host() {
     // Ownership decision table: R1 a harvester is captured before Session
-    // installation => no outputs; R2 the same Session slot later receives an
+    // installation => no outputs; R2 the same installed Session later receives an
     // Environment => the captured component sees that exact Environment;
     // R3 the Host is dropped => publication still uses the selected authority,
     // without a strong back-reference; R4 replay => one durable File identity.

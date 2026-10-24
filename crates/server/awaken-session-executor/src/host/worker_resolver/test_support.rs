@@ -130,7 +130,7 @@ pub(crate) fn eager_environment() -> awaken_session_configuration_contract::Envi
 /// Shared complete-projection fixture owner. C1 no frozen model publication and
 /// C2 one exact snapshot model publication both produce E1 one immutable
 /// baseline plus E2 the exact empty rev0 Resource transition; callers vary only
-/// the model cause and never reconstruct slot fields independently.
+/// the model cause and never reconstruct installed Session fields independently.
 pub(super) fn empty_frozen_projection(
     workspace_id: &str,
     environment: awaken_session_configuration_contract::EnvironmentSnapshot,

@@ -644,10 +644,10 @@ mod tests {
     #[tokio::test]
     async fn injected_host_clock_decides_the_exact_background_lease_boundary() {
         // Causes: C1 one committed Running attempt and its matching active
-        // process slot; C2 the same injected Host clock reads just before,
+        // process installed Session; C2 the same injected Host clock reads just before,
         // exactly at, and after its persisted expiry. Effects: R1 C1+C2<expiry
         // admits; R2 C1+C2>=expiry loses ownership without changing the
-        // committed cell or process slot. The verifier must never sample an
+        // committed cell or process installed Session. The verifier must never sample an
         // ambient clock that disagrees with the tool's submission stamp.
         let clock = Arc::new(ManualClock::new(1_000));
         let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker", clock.clone()));

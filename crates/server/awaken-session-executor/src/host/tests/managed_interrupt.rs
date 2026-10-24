@@ -10,7 +10,7 @@ use awaken_runtime_contract::resume::ResumeCommand;
 /// `Cancelled`. `hold_after_signal` keeps it inside its physical slot after the
 /// signal until the test releases it. It keeps the default
 /// `RequirePredecessorQuiescence` recovery, so a replacement claim can take over
-/// only an acknowledged slot.
+/// only an acknowledged installed Session.
 struct BlockingManagedAttempt {
     dispatch: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
     executions: AtomicUsize,
@@ -337,7 +337,7 @@ async fn managed_interrupt_signals_the_registered_attempt_only_after_durable_int
         l2.row()
             .await
             .is_some_and(|row| row.physical_attempt_active),
-        "L2 the replacement neither clears the slot nor consumes the dispatch"
+        "L2 the replacement neither clears the installed Session nor consumes the dispatch"
     );
     assert_eq!(
         l2.attempt.executions.load(Ordering::SeqCst),

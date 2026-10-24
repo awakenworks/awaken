@@ -49,7 +49,10 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
         matching
             .run_assembly
             .installed_sessions
-            .read("backend-h1", |slot| slot.inputs.backend_ref.is_none())
+            .read("backend-h1", |installed| installed
+                .inputs
+                .backend_ref
+                .is_none())
             .expect("installed Sessions")
             .unwrap_or(false),
         "H1 default has no redundant projection"
@@ -414,7 +417,7 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
     // toolset defaults disabled; C2 `bash` is explicitly enabled; C3 exact
     // `read` is disabled or enabled; C4 workspace-qualified and legacy-relative
     // resolved Repository mount plans exist; C5 a cold Managed recovery has no
-    // publication snapshot but retains the same slot tool policy.
+    // publication snapshot but retains the same installed Session tool policy.
     // E1 general filesystem delivery remains possible from C2; E2 repository
     // roots are excluded for C3=false and admitted for C3=true.
     //
@@ -454,9 +457,9 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
         };
     host.run_assembly
         .installed_sessions
-        .install_with("repository-policy", |slot| {
-            slot.run.session_dispatch = true;
-            slot.replace_frozen_with(|next| {
+        .install_with("repository-policy", |installed| {
+            installed.run.session_dispatch = true;
+            installed.replace_frozen_with(|next| {
                 next.tools = Some(
                     awaken_session_configuration_contract::SessionToolConfiguration {
                         toolsets: vec![ToolsetPolicy {
@@ -471,7 +474,8 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
                     },
                 )
             });
-            slot.realization
+            installed
+                .realization
                 .staging_mut()
                 .resources
                 .repositories
@@ -512,12 +516,12 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
 
     host.run_assembly
         .installed_sessions
-        .install_with("repository-policy", |slot| {
-            let mut tools = slot.inputs.tools.clone().expect("Session tools");
+        .install_with("repository-policy", |installed| {
+            let mut tools = installed.inputs.tools.clone().expect("Session tools");
             tools.toolsets[0]
                 .overrides
                 .push(ToolPolicyOverride::new("read", enabled));
-            slot.replace_frozen_with(|next| next.tools = Some(tools));
+            installed.replace_frozen_with(|next| next.tools = Some(tools));
         })
         .expect("installed Sessions");
     assert!(
@@ -548,7 +552,7 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
             "legacy-repo/.claude/skills".to_string(),
             "workspace/repo-a/.claude/skills".to_string(),
         ]),
-        "R2c cold Managed recovery uses the durable slot read policy"
+        "R2c cold Managed recovery uses the durable installed Session read policy"
     );
 
     host.run_assembly
@@ -668,9 +672,9 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
 
     host.run_assembly
         .installed_sessions
-        .install_with("managed-denied", |slot| {
-            slot.run.session_dispatch = true;
-            slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
+        .install_with("managed-denied", |installed| {
+            installed.run.session_dispatch = true;
+            installed.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
         })
         .expect("installed Sessions");
     let denied = host
@@ -694,9 +698,9 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     empty_host
         .run_assembly
         .installed_sessions
-        .install_with("managed-no-skill", |slot| {
-            slot.run.session_dispatch = true;
-            slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
+        .install_with("managed-no-skill", |installed| {
+            installed.run.session_dispatch = true;
+            installed.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
         })
         .expect("installed Sessions");
     assert_eq!(
@@ -731,10 +735,11 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     empty_host
         .run_assembly
         .installed_sessions
-        .install_with("managed-memory-path", |slot| {
-            slot.run.session_dispatch = true;
-            slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
-            slot.realization
+        .install_with("managed-memory-path", |installed| {
+            installed.run.session_dispatch = true;
+            installed.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
+            installed
+                .realization
                 .staging_mut()
                 .resources
                 .resource_prompts
@@ -923,10 +928,10 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
 
     host.run_assembly
         .installed_sessions
-        .install_with("semantic-session", |slot| {
-            slot.realization.staging_mut().content_delivery =
+        .install_with("semantic-session", |installed| {
+            installed.realization.staging_mut().content_delivery =
                 Some(ManagedContentDelivery::SemanticTools);
-            slot.replace_frozen_with(|next| {
+            installed.replace_frozen_with(|next| {
                 next.tools = Some(
                     awaken_session_configuration_contract::SessionToolConfiguration {
                         toolsets: vec![ToolsetPolicy {

@@ -70,7 +70,7 @@ impl crate::RunAssembly {
 
     /// Open a session from the executable snapshot carried by a claimed dispatch.
     /// The snapshot is authoritative for the Worker; Environment adoption has
-    /// already completed through the lifecycle owner and is read from the slot.
+    /// already completed through the lifecycle owner and is read from the installed Session.
     pub(crate) async fn ctx_for_snapshot(
         &self,
         thread: &str,

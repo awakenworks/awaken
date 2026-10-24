@@ -32,7 +32,7 @@ impl LlmExecutor for BrainSkillModel {
 }
 
 /// Published-Skill Managed-filesystem cause/effect graph. C1 the immutable
-/// Agent publication selects a Skill; C2 the Session slot contains its exact
+/// Agent publication selects a Skill; C2 the installed Session contains its exact
 /// verified bundle; C3 Runtime owns a Sandbox. Effects: E1 Skill metadata/path
 /// is model-visible without its full body; E2 `SKILL.md` is materialized; E3 no
 /// semantic Skill tools create a parallel activation path.
@@ -342,8 +342,8 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
         ));
     host.run_assembly
         .installed_sessions
-        .install_with(thread, |slot| {
-            slot.replace_frozen_with(|next| {
+        .install_with(thread, |installed| {
+            installed.replace_frozen_with(|next| {
                 next.tools = Some(
                     awaken_session_configuration_contract::SessionToolConfiguration {
                         toolsets: vec![ToolsetPolicy {
@@ -364,7 +364,7 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
                     },
                 )
             });
-            slot.run.deferred_executor = Some(deferred);
+            installed.run.deferred_executor = Some(deferred);
         })
         .expect("installed Sessions");
 

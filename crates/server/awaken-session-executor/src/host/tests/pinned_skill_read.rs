@@ -952,20 +952,20 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
     for mismatch in ["version", "hash", "workspace"] {
         host.run_assembly
             .installed_sessions
-            .install_with("cold", |slot| {
-                slot.realization.staging_mut().skills = Some(vec![v1.clone()]);
-                slot.replace_frozen_with(|next| {
+            .install_with("cold", |installed| {
+                installed.realization.staging_mut().skills = Some(vec![v1.clone()]);
+                installed.replace_frozen_with(|next| {
                     next.workspace = Some(host.run_assembly.local_workspace().into())
                 });
                 match mismatch {
                     "version" => {
-                        slot.realization.staging_mut().skills.as_mut().unwrap()[0].version = 2
+                        installed.realization.staging_mut().skills.as_mut().unwrap()[0].version = 2
                     }
                     "hash" => {
-                        slot.realization.staging_mut().skills.as_mut().unwrap()[0].bundle_sha256 =
-                            "wrong".into()
+                        installed.realization.staging_mut().skills.as_mut().unwrap()[0]
+                            .bundle_sha256 = "wrong".into()
                     }
-                    _ => slot.replace_frozen_with(|next| {
+                    _ => installed.replace_frozen_with(|next| {
                         next.workspace = Some("other-workspace".into())
                     }),
                 }
@@ -989,9 +989,9 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
     }
     host.run_assembly
         .installed_sessions
-        .install_with("cold", |slot| {
-            slot.realization.staging_mut().skills = Some(vec![v1.clone()]);
-            slot.replace_frozen_with(|next| {
+        .install_with("cold", |installed| {
+            installed.realization.staging_mut().skills = Some(vec![v1.clone()]);
+            installed.replace_frozen_with(|next| {
                 next.workspace = Some(host.run_assembly.local_workspace().into())
             });
             let binding = crate::session_resource::ResolvedSkillBinding {
@@ -1009,7 +1009,7 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
                     },
                 ])
                 .unwrap();
-            slot.realization.staging_mut().transition = Some(resource_transition(
+            installed.realization.staging_mut().transition = Some(resource_transition(
                 host.run_assembly.local_workspace(),
                 0,
                 Default::default(),

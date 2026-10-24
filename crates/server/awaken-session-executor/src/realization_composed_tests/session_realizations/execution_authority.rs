@@ -33,7 +33,7 @@ mod tests {
     }
 
     struct Fixture {
-        slots: Arc<InstalledSessions>,
+        installed_sessions: Arc<InstalledSessions>,
         environment: Arc<SessionEnvironment>,
         worker: Arc<Worker>,
         authority: Arc<SessionExecutionAuthority>,
@@ -49,7 +49,7 @@ mod tests {
                 .unwrap();
             let environment =
                 Arc::new(SandboxEnvironment::workdir(sandbox).into_session_environment());
-            let slots = Arc::new(InstalledSessions::default());
+            let installed_sessions = Arc::new(InstalledSessions::default());
             let worker = Arc::new(Worker(Mutex::new(Some(Duration::from_secs(30)))));
             let asserted = SessionRealizationLease {
                 owner: "worker".into(),
@@ -58,8 +58,10 @@ mod tests {
                 expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
                     + 60_000,
             };
-            slots.install("session").expect("installed Sessions");
-            let authority = slots
+            installed_sessions
+                .install("session")
+                .expect("installed Sessions");
+            let authority = installed_sessions
                 .realizations()
                 .update_realization("session", |r| {
                     r.execution_mut().authority = SessionRealizationAuthority::Live(
@@ -69,7 +71,10 @@ mod tests {
                     );
                     r.environment_mut().owner = Self::candidate(environment.clone());
                     Arc::new(SessionExecutionAuthority::for_test(
-                        &ExecutionAuthority::new(slots.realizations(), Some(worker.clone())),
+                        &ExecutionAuthority::new(
+                            installed_sessions.realizations(),
+                            Some(worker.clone()),
+                        ),
                         "session",
                         r,
                         asserted,
@@ -78,7 +83,7 @@ mod tests {
                 })
                 .expect("installed Sessions");
             Self {
-                slots,
+                installed_sessions,
                 environment,
                 worker,
                 authority,
@@ -112,7 +117,7 @@ mod tests {
     async fn execution_authority_intersects_current_owners_and_rejects_every_stale_coordinate() {
         // Cause/effect graph: C1 current positive Worker proof; C2 live Session
         // lease; C3 exact owner/incarnation/epoch + nondecreasing expiry; C4 same
-        // slot allocation; C5 same active Environment Arc. E1 one guarded effect
+        // installed Session allocation; C5 same active Environment Arc. E1 one guarded effect
         // with min(current budgets); E2 denial with zero effects. Constraint:
         // all C are ANDed, so independent false rows provide MC/DC coverage.
         // S1 all true -> E1; S2-S15 falsify one coordinate -> E2. S16 extends
@@ -158,16 +163,16 @@ mod tests {
                 "worker_zero" => *f.worker.0.lock().unwrap() = Some(Duration::ZERO),
                 "renew_worker" => *f.worker.0.lock().unwrap() = Some(Duration::from_secs(5)),
                 "removed" => {
-                    f.slots.remove("session");
+                    f.installed_sessions.remove("session");
                 }
                 "slot_aba" => {
-                    let old = f.slots.remove("session").unwrap();
-                    f.slots.install_realization("session", |r| {
+                    let old = f.installed_sessions.remove("session").unwrap();
+                    f.installed_sessions.install_realization("session", |r| {
                         r.execution_mut().authority = old.realization.execution().authority.clone();
                         r.environment_mut().owner = old.realization.environment().owner.clone();
                     });
                 }
-                _ => f.slots.realizations().update_realization("session", |r| {
+                _ => f.installed_sessions.realizations().update_realization("session", |r| {
                     let mut lease = f.authority.asserted_for_test().clone();
                     match rule {
                         "uninstalled" => {
@@ -273,7 +278,7 @@ mod tests {
     #[tokio::test]
     async fn direct_local_authority_requires_the_real_session_without_a_worker_receipt() {
         // L1 unregistered local Host has no Worker aggregate; live exact Session
-        // plus exact Environment admits one bounded effect under the slot lock.
+        // plus exact Environment admits one bounded effect under the installed Session lock.
         // L2 closing that Session denies with zero further effects. Registered
         // Worker missing/zero/closed proof rows remain in S2/S3 above; absence
         // here is a topology fact, never a synthesized infinite root grant.
@@ -287,14 +292,14 @@ mod tests {
                 calls += 1;
                 assert!(remaining > Duration::ZERO && remaining <= Duration::from_secs(40));
                 assert!(matches!(
-                    f.slots.test_map().try_lock(),
+                    f.installed_sessions.test_map().try_lock(),
                     Err(std::sync::TryLockError::WouldBlock)
                 ));
                 Ok(())
             })
             .unwrap();
         assert_eq!(calls, 1, "L1");
-        f.slots
+        f.installed_sessions
             .close_realization("session", None)
             .expect("installed Sessions");
         assert!(
@@ -310,7 +315,7 @@ mod tests {
 
     #[tokio::test]
     async fn execution_authority_holds_original_guards_and_propagates_effect_failure_once() {
-        // S18 callback under both real mutexes: neither Worker revoke nor slot
+        // S18 callback under both real mutexes: neither Worker revoke nor installed Session
         // replacement can interleave between check and GO. S19 callback failure
         // is propagated once; S20 close after release denies the next callback.
         let f = Fixture::new().await;
@@ -322,14 +327,14 @@ mod tests {
                 Err(std::sync::TryLockError::WouldBlock)
             ));
             assert!(matches!(
-                f.slots.test_map().try_lock(),
+                f.installed_sessions.test_map().try_lock(),
                 Err(std::sync::TryLockError::WouldBlock)
             ));
             Err(io::Error::other("effect failed"))
         });
         assert_eq!(result.unwrap_err().to_string(), "effect failed");
         assert_eq!(calls, 1);
-        f.slots
+        f.installed_sessions
             .close_realization("session", None)
             .expect("installed Sessions");
         assert!(f.current().is_err());
@@ -338,13 +343,13 @@ mod tests {
     #[tokio::test]
     async fn provider_and_execution_targets_share_guards_without_weakening_environment_binding() {
         // Cause/effect decision table: G1 provider/execution target; G2 exact
-        // Environment present/absent; G3 live/closed slot; G4 callback success/
-        // failure. Live provider needs the captured operation/slot but not an
+        // Environment present/absent; G3 live/closed installed Session; G4 callback success/
+        // failure. Live provider needs the captured operation/installed Session but not an
         // Environment; live execution additionally needs the exact Environment.
-        // Both hold ORIGINAL Worker/slot guards through one synchronous callback.
+        // Both hold ORIGINAL Worker/installed Session guards through one synchronous callback.
         // G1 provider+failure returns the error once, without caching a grant;
         // G2 removing only Environment admits provider, denies execution;
-        // G3 closing the slot denies both. An execution target cannot be used
+        // G3 closing the installed Session denies both. An execution target cannot be used
         // as a Container renewal source, even while its own execution is live.
         let f = Fixture::new().await;
         let initial = f
@@ -353,7 +358,7 @@ mod tests {
             .sandbox_effect_fence("create")
             .unwrap();
         let worker: Arc<dyn CurrentExecutionAuthority> = f.worker.clone();
-        let sessions = f.slots.realizations();
+        let sessions = f.installed_sessions.realizations();
         let provider = ExecutionAuthority::new(sessions, Some(worker))
             .provider_effect_authority("session", &initial)
             .unwrap();
@@ -368,14 +373,14 @@ mod tests {
                 Err(std::sync::TryLockError::WouldBlock)
             ));
             assert!(matches!(
-                f.slots.test_map().try_lock(),
+                f.installed_sessions.test_map().try_lock(),
                 Err(std::sync::TryLockError::WouldBlock)
             ));
             Err(io::Error::other("provider effect failed"))
         });
         assert_eq!(failure.unwrap_err().to_string(), "provider effect failed");
         assert_eq!(calls, 1);
-        f.slots
+        f.installed_sessions
             .realizations()
             .update_realization("session", |r| {
                 r.environment_mut().owner = SessionEnvironmentOwner::Vacant
@@ -390,7 +395,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(calls, 2);
-        f.slots
+        f.installed_sessions
             .close_realization("session", None)
             .expect("installed Sessions");
         assert!(
@@ -408,10 +413,10 @@ mod tests {
         // view borrows that same Mutex through the same Source Arc: healthy
         // absence remains absence, while poison remains Internal/zero effects.
         // S32/S33 below retain both fresh-capture and held-callback failures.
-        // Cause/effect table: C1 installed/missing slot; C2 healthy/poisoned
-        // slot lock; C3 poison from a slot writer (S32) or the held effect
+        // Cause/effect table: C1 installed/missing installed Session; C2 healthy/poisoned
+        // installed Session lock; C3 poison from an installed Session writer (S32) or the held effect
         // callback (S33, also poisons Worker). E1 healthy exact capture succeeds;
-        // E2 healthy missing capture reports absence without creating a slot;
+        // E2 healthy missing capture reports absence without creating an installed Session;
         // E3 poison before fresh capture returns Internal, never absence/unwind;
         // E4 poison after capture denies the effect with zero callbacks.
         // Both S32/S33 cover E1-E4. The initiating C3 panic is intentional;
@@ -423,14 +428,17 @@ mod tests {
                 .asserted_for_test()
                 .sandbox_effect_fence("create")
                 .unwrap();
-            let execution = ExecutionAuthority::new(f.slots.realizations(), Some(f.worker.clone()));
+            let execution = ExecutionAuthority::new(
+                f.installed_sessions.realizations(),
+                Some(f.worker.clone()),
+            );
             let provider = execution
                 .provider_effect_authority("session", &initial)
                 .expect("E1 healthy exact capture");
             let absent = execution
                 .provider_effect_authority("missing", &initial)
                 .err()
-                .expect("E2 genuinely absent slot");
+                .expect("E2 genuinely absent installed Session");
             assert!(
                 matches!(
                     absent,
@@ -441,13 +449,16 @@ mod tests {
                 ),
                 "E2 absence is a typed authority loss: {absent}"
             );
-            assert!(!f.slots.contains("missing"), "E2 no slot creation");
+            assert!(
+                !f.installed_sessions.contains("missing"),
+                "E2 no installed Session creation"
+            );
             let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if callback {
                     let _ = f.authority.with_current(&mut |_| panic!("callback failed"));
                 } else {
-                    let _slot = f.slots.test_map().lock().unwrap();
-                    panic!("slot writer failed");
+                    let _installed_session = f.installed_sessions.test_map().lock().unwrap();
+                    panic!("installed Session writer failed");
                 }
             }));
             assert!(unwind.is_err());
@@ -489,7 +500,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execution_authority_does_not_retain_environment_or_slot_owner() {
+    async fn execution_authority_does_not_retain_environment_or_installed_session_owner() {
         // C1 a temporary view captures a Weak Source while the registry lives;
         // C2 all strong registry/Environment owners are dropped. The same Arc
         // registry backs every view, so C1 cannot expire early, and C2 must
@@ -499,10 +510,10 @@ mod tests {
         // the ownership graph alive or authorize work (Weak edges, no cycle).
         let f = Fixture::new().await;
         let environment = Arc::downgrade(&f.environment);
-        let slots = Arc::downgrade(&f.slots);
+        let installed_sessions = Arc::downgrade(&f.installed_sessions);
         let authority = f.authority.clone();
         drop(f);
-        assert!(slots.upgrade().is_none());
+        assert!(installed_sessions.upgrade().is_none());
         assert!(environment.upgrade().is_none());
         assert!(
             authority

@@ -143,9 +143,9 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
     let retained = host
         .run_assembly
         .installed_sessions
-        .read(thread, |slot| {
-            slot.realization.execution().authority.lease() == Some(&successor)
-                && slot
+        .read(thread, |installed| {
+            installed.realization.execution().authority.lease() == Some(&successor)
+                && installed
                     .run
                     .context
                     .as_ref()
@@ -289,8 +289,9 @@ async fn missing_current_terminal_work_retires_original(renew: bool) {
     let closed_and_detached = host
         .run_assembly
         .installed_sessions
-        .read(thread, |slot| {
-            slot.realization.execution().authority.is_closed() && slot.run.context.is_none()
+        .read(thread, |installed| {
+            installed.realization.execution().authority.is_closed()
+                && installed.run.context.is_none()
         })
         .expect("installed Sessions")
         .unwrap_or(true);
@@ -315,7 +316,7 @@ async fn completed_terminal_projection_not_found_cancels_its_original_real_run()
     // Row T1 of the terminal-absence table in application.rs: C1 a real
     // DirectAttemptDriver Run is in inference under lease L; C2 this process
     // holds L's completed terminal-cleanup projection; C3 Control reports the
-    // cleanup work NotFound. E1 the projection is retired (the Session slot is
+    // cleanup work NotFound. E1 the projection is retired (the installed Session is
     // gone) and E2 the Run controls captured before the lookup are signalled,
     // so no Run keeps executing on a retired terminal Session.
     let provider_gate = Arc::new(tokio::sync::Notify::new());
@@ -437,7 +438,7 @@ fn terminal_absence_selection_requires_the_complete_generation_and_original_phas
         "closed-retry",
         "absent",
     ] {
-        let slots = Arc::new(crate::installed_session::InstalledSessions::default());
+        let installed_sessions = Arc::new(crate::installed_session::InstalledSessions::default());
         let current = crate::session_resource::SessionRealizationLease {
             owner: "local".into(),
             runtime_incarnation: "boot".into(),
@@ -449,17 +450,17 @@ fn terminal_absence_selection_requires_the_complete_generation_and_original_phas
         let actual_phase = if rule == "absent" {
             Arc::new(tokio::sync::Mutex::new(()))
         } else {
-            slots
-                .install_with(rule, |slot| {
-                    assert!(slot.realization.install_lease(
+            installed_sessions
+                .install_with(rule, |installed| {
+                    assert!(installed.realization.install_lease(
                         awaken_session_realization::test_support::test_observed_lease(
                             current.clone()
                         ),
                     ));
                     if rule == "closed-retry" {
-                        assert!(slot.realization.close_authority(Some(&current)));
+                        assert!(installed.realization.close_authority(Some(&current)));
                     }
-                    slot.realization.execution().phase.clone()
+                    installed.realization.execution().phase.clone()
                 })
                 .expect("installed Sessions")
         };
@@ -483,12 +484,12 @@ fn terminal_absence_selection_requires_the_complete_generation_and_original_phas
             }
             _ => {}
         }
-        let before = slots.read(rule, |slot| {
+        let before = installed_sessions.read(rule, |installed| {
             crate::session_realizations::SessionRealizationRevocationSelection::from_realization(
-                &slot.realization,
+                &installed.realization,
             )
         }).expect("installed Sessions");
-        let selected = slots
+        let selected = installed_sessions
             .close_realization_generation(rule, &expected, &phase)
             .expect("installed Sessions")
             .map(|closed| closed.root);
@@ -496,10 +497,10 @@ fn terminal_absence_selection_requires_the_complete_generation_and_original_phas
         assert_eq!(selected.is_some(), should_close, "decision row {rule}");
         if let Some(selected) = selected {
             assert!(
-                slots
-                    .read(rule, |slot| {
-                        selected.matches(&slot.realization)
-                            && slot.realization.execution().authority.is_closed()
+                installed_sessions
+                    .read(rule, |installed| {
+                        selected.matches(&installed.realization)
+                            && installed.realization.execution().authority.is_closed()
                     })
                     .expect("installed Sessions")
                     .unwrap(),
@@ -507,15 +508,18 @@ fn terminal_absence_selection_requires_the_complete_generation_and_original_phas
             );
         } else if let Some(before) = before {
             assert!(
-                slots
-                    .read(rule, |slot| before.matches(&slot.realization))
+                installed_sessions
+                    .read(rule, |installed| before.matches(&installed.realization))
                     .expect("installed Sessions")
                     .unwrap(),
                 "{rule}: rejected input preserves the exact root"
             );
         } else {
             assert!(
-                slots.session_ids().expect("installed Sessions").is_empty(),
+                installed_sessions
+                    .session_ids()
+                    .expect("installed Sessions")
+                    .is_empty(),
                 "absence never creates a replacement root"
             );
         }

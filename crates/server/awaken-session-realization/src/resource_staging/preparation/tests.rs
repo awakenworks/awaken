@@ -93,9 +93,9 @@ fn resource_scope_retains_success_and_removes_only_its_unpublished_introduced_le
 }
 
 #[tokio::test]
-async fn resource_scope_cancellation_and_slot_replacement_cannot_erase_a_successor() {
+async fn resource_scope_cancellation_and_installed_session_replacement_cannot_erase_a_successor() {
     // A pending authority wait must wake on cancellation, closure, generation
-    // replacement, token replacement, removal or an ABA-recreated slot. The
+    // replacement, token replacement, removal or an ABA-recreated installed Session. The
     // stale scope cannot finish or clear another preparation, even if its
     // generation bytes equal the predecessor.
     for row in [
@@ -162,7 +162,7 @@ async fn resource_scope_cancellation_and_slot_replacement_cannot_erase_a_success
         match row {
             "remove" => assert!(
                 !source.contains("session"),
-                "Drop cannot recreate a removed slot"
+                "Drop cannot recreate a removed installed Session"
             ),
             "generation" => sessions
                 .read_realization("session", |r| {
@@ -212,7 +212,7 @@ fn resource_scope_denied_worker_never_installs_or_reopens_a_session() {
     assert!(ResourcePreparation::begin(&authority, "session", proof(Epoch::FIRST)).is_err());
     assert!(
         !source.contains("session"),
-        "Worker denies before the canonical slot write"
+        "Worker denies before the canonical installed Session write"
     );
     authority = ExecutionAuthority::new(source.realizations(), None);
     assert!(

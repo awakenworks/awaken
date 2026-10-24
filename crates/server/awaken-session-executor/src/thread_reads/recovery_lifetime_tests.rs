@@ -3,12 +3,12 @@ use super::*;
 use awaken_agent_contract::agent::run::Id as RunId;
 
 #[tokio::test]
-async fn retained_worker_recovery_releases_original_slots_and_idle_context() {
+async fn retained_worker_recovery_releases_original_installed_sessions_and_idle_context() {
     // L1 installed idle Context + retained Worker reader + live composition =>
     // exact original cached adapter. L2 drop the composition and Context => the
-    // actual slot table, Context and realization executor are released while
+    // actual installed Session table, Context and realization executor are released while
     // the reader lives. L3 post-release recovery => same configured committed
-    // prefix, without recreating slots or realizing an Environment.
+    // prefix, without recreating installed Sessions or realizing an Environment.
     let host = crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",
@@ -38,14 +38,14 @@ async fn retained_worker_recovery_releases_original_slots_and_idle_context() {
         .recovery_snapshot(&thread, &run)
         .await
         .expect("original committed prefix");
-    let slots = Arc::downgrade(&host.run_assembly.installed_sessions);
+    let installed_sessions = Arc::downgrade(&host.run_assembly.installed_sessions);
     let realization = Arc::downgrade(&host.realization_executor);
     let cached = Arc::downgrade(&context);
     drop(context);
     drop(host);
     assert!(
-        slots.upgrade().is_none(),
-        "retained reader must release original slots"
+        installed_sessions.upgrade().is_none(),
+        "retained reader must release original installed Sessions"
     );
     assert!(
         cached.upgrade().is_none(),
@@ -68,7 +68,7 @@ async fn retained_worker_recovery_releases_original_slots_and_idle_context() {
             .is_empty()
     );
     assert!(
-        slots.upgrade().is_none(),
+        installed_sessions.upgrade().is_none(),
         "readback must not resurrect Session state"
     );
 }
@@ -126,11 +126,11 @@ async fn retained_recovery_preserves_poison_and_original_source_refusal() {
     .await
     .build()
     .unwrap();
-    let slots = host.run_assembly.installed_sessions.clone();
-    slots.install("poisoned-recovery").unwrap();
+    let installed_sessions = host.run_assembly.installed_sessions.clone();
+    installed_sessions.install("poisoned-recovery").unwrap();
     let reader = ThreadReads::new(
         Arc::new(crate::host::tests::fixtures::test_upstream_authority()),
-        slots.clone(),
+        installed_sessions.clone(),
         host.realization_executor.clone(),
     );
     let thread = ThreadId("poisoned-recovery".into());
@@ -142,7 +142,7 @@ async fn retained_recovery_preserves_poison_and_original_source_refusal() {
         .to_string();
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            slots.modify("poisoned-recovery", |_| -> () {
+            installed_sessions.modify("poisoned-recovery", |_| -> () {
                 panic!("poison original registry")
             })
         }))
@@ -157,15 +157,15 @@ async fn retained_recovery_preserves_poison_and_original_source_refusal() {
         error.code,
         awaken_session_realization::realization_error::POISONED_CODE
     );
-    let weak_slots = Arc::downgrade(&slots);
-    drop(slots);
+    let weak_installed_sessions = Arc::downgrade(&installed_sessions);
+    drop(installed_sessions);
     drop(host);
-    assert!(weak_slots.upgrade().is_none());
+    assert!(weak_installed_sessions.upgrade().is_none());
     let after = reader
         .recovery_snapshot(&thread, &run)
         .await
         .expect_err("original upstream refusal survives owner release")
         .to_string();
     assert_eq!(after, refused);
-    assert!(weak_slots.upgrade().is_none());
+    assert!(weak_installed_sessions.upgrade().is_none());
 }

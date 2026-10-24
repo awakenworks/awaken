@@ -88,7 +88,7 @@ impl crate::SessionRuns {
         thread: &str,
         commit_read: impl std::future::Future<Output = Result<Arc<HostCommit>, SessionExecutionError>>,
     ) -> Result<(), SessionExecutionError> {
-        // Snapshot original controls under the canonical Slot lock before
+        // Snapshot original controls under the canonical installed Session lock before
         // durable I/O. Physical revocation consumes this same selection kernel.
         // An unreadable foreground record refuses the request before any effect.
         let selected = self
@@ -369,7 +369,7 @@ impl crate::SessionRuns {
         Ok(result)
     }
 
-    /// RunResume through the same in-flight identity slot as a fresh foreground
+    /// RunResume through the same in-flight identity installed Session as a fresh foreground
     /// attempt, so `user.interrupt` is backend-independent while a resumed ACP or
     /// A2A task is executing.
     async fn drive_resume(

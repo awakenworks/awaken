@@ -73,7 +73,9 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
     let phase = host
         .run_assembly
         .installed_sessions
-        .read(thread, |slot| slot.realization.execution().phase.clone())
+        .read(thread, |installed| {
+            installed.realization.execution().phase.clone()
+        })
         .expect("installed Sessions")
         .unwrap();
     let first_run = if original_run_active {
@@ -215,9 +217,9 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
     let retained = host
         .run_assembly
         .installed_sessions
-        .read(thread, |slot| {
-            slot.realization.execution().authority.lease() == Some(&successor)
-                && slot
+        .read(thread, |installed| {
+            installed.realization.execution().authority.lease() == Some(&successor)
+                && installed
                     .run
                     .context
                     .as_ref()

@@ -457,7 +457,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
             r.staging().resources.clone()
         })
         .expect("installed Sessions")
-        .expect("R2/E2 staged slot");
+        .expect("R2/E2 staged installed Session");
     let awaken_provisioning_contract::MountSource::MemoryStore {
         materialization_reference,
         ..
@@ -708,7 +708,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     // C2 a miss => canonical full compiler; C3 ingress with claim + exact key
     // still revalidates; C6 the second exact-key read returns the same Memory
     // Arc; C7 compiler failure returns before any publication. R1 unclaimed
-    // ingress replay above skips IO. C4/C5's removal between the two Slot reads
+    // ingress replay above skips IO. C4/C5's removal between the two installed Session reads
     // is a source-level race invariant: no deterministic interleaving hook
     // exists here, so this test does not claim to execute those two schedules.
     let stage = managed.realization_executor.staging();
@@ -896,38 +896,47 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     managed
         .run_assembly
         .installed_sessions
-        .read("awaiting-memory-adoption", |slot| {
+        .read("awaiting-memory-adoption", |installed| {
             assert!(
-                slot.inputs.workspace.is_none(),
+                installed.inputs.workspace.is_none(),
                 "R9 no complete Frozen publication"
             );
             assert_eq!(
-                slot.realization.staging().skills,
+                installed.realization.staging().skills,
                 Some(Vec::new()),
                 "R9 exact empty Skill set"
             );
-            assert!(slot.realization.staging().effect_key.is_none());
-            assert!(slot.realization.staging().resources.mounts.is_empty());
-            assert!(slot.realization.staging().resources.prompts.is_empty());
+            assert!(installed.realization.staging().effect_key.is_none());
+            assert!(installed.realization.staging().resources.mounts.is_empty());
+            assert!(installed.realization.staging().resources.prompts.is_empty());
             assert!(
-                slot.realization
+                installed
+                    .realization
                     .staging()
                     .resources
                     .resource_prompts
                     .is_empty()
             );
             assert!(
-                slot.realization
+                installed
+                    .realization
                     .staging()
                     .resources
                     .binding_checks
                     .is_empty()
             );
-            assert!(slot.realization.staging().resources.repositories.is_empty());
-            assert!(slot.realization.staging().memory_bindings.is_empty());
-            assert!(slot.realization.staging().memory.is_none());
             assert!(
-                slot.realization.staging().manifest.is_none(),
+                installed
+                    .realization
+                    .staging()
+                    .resources
+                    .repositories
+                    .is_empty()
+            );
+            assert!(installed.realization.staging().memory_bindings.is_empty());
+            assert!(installed.realization.staging().memory.is_none());
+            assert!(
+                installed.realization.staging().manifest.is_none(),
                 "R9 no physical completion"
             );
         })
@@ -1278,7 +1287,7 @@ impl awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>
 #[tokio::test]
 async fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
     // Cause/effect graph: C1 a terminal effect was admitted more than 20s ago
-    // and its asserted expiry elapsed; C2 the local slot either has a live
+    // and its asserted expiry elapsed; C2 the local installed Session either has a live
     // monotonic renewal, no renewal, or a successor epoch; C3 the boundary is
     // preparation or destructive disposal. Effects: E1 a same-generation live
     // renewal authorizes both boundaries and projects its current expiry into
@@ -1287,7 +1296,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     // disposal preparation remains unchanged; no provider timer authority is
     // introduced.
     //
-    // | Rule | asserted effect | slot current | boundary | Effect |
+    // | Rule | asserted effect | installed Session current | boundary | Effect |
     // |---|---|---|---|---|
     // | R1 | expired >20s | same generation renewed/live | prepare + dispose | E1 |
     // | R2 | expired >20s | same expired lease | prepare + dispose | E2 |
@@ -1295,7 +1304,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     // R4/R5 separate clock coordinates from proof lifetime: a Control expiry
     // already behind Worker UTC plus a fresh request-relative proof permits
     // both projections; a future UTC expiry plus exhausted proof denies both.
-    // R6 closed/uninstalled slots deny even with matching retained lease bytes.
+    // R6 closed/uninstalled Sessions deny even with matching retained lease bytes.
     // These are Host projection decisions, not async Provider commit grants.
     let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
@@ -1523,10 +1532,10 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
     // E1 Memory receives L1, not the pre-I/O L0 fence; E2 checkpoint receives
     // L2, not L0/L1; E3 provider preparation receives L3, not any predecessor;
     // E4 the receipt keeps work assertion L0 and separately binds provider P=L3.
-    // The slot remains the single lease projection: this test adds no queue,
+    // The installed Session remains the single lease projection: this test adds no queue,
     // lock, timer, or independently advancing provider authority.
     //
-    // | Rule | prior long I/O | current slot at boundary | Effect |
+    // | Rule | prior long I/O | current installed Session at boundary | Effect |
     // |---|---|---|---|
     // | R1 | Artifact under L0 | L1 | Memory receives L1 (E1) |
     // | R2 | Memory under L1 | L2 | checkpoint receives L2 (E2) |

@@ -986,7 +986,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
     // commit authority, and the read-only binding does not drive recovery;
     // E7 the first rehydrate fails closed and the same recovery entry
     // converges on its next resident/cold wake.
-    // Constraints: no child Session slot or physical commit partition exists;
+    // Constraints: no child installed Session or physical commit partition exists;
     // recovery reuses the ordinary BoundMemory/controller/repository path.
     //
     // | Rule | C1 | C2 | C3 | C4 | C5       | C6 | C7        | effects          |

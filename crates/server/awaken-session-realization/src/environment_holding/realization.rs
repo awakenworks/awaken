@@ -741,7 +741,7 @@ impl crate::environment_holding::EnvironmentHolding {
     }
 }
 
-/// Select from explicit frozen inputs without installing a Session slot.
+/// Select from explicit frozen inputs without installing a installed Session.
 pub(super) fn session_environment_provider_for_environment<'a>(
     providers: &'a crate::environment_providers::EnvironmentProviders,
     environment: Option<

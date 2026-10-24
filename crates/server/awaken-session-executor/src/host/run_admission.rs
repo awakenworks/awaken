@@ -48,16 +48,16 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
-    async fn dispatch_model_admission_precedes_frozen_slot_reads() {
+    async fn dispatch_model_admission_precedes_frozen_installed_session_reads() {
         // Cause/effect graph: C1 the immutable activation selects a configured
-        // model; C2 the original installed-slot mutex is poisoned. E1 a missing
-        // model returns the existing guidance before any slot read; E2 an
-        // admitted model uses the original slot owner, whose poisoned lock denies
+        // model; C2 the original installed-Session mutex is poisoned. E1 a missing
+        // model returns the existing guidance before any installed Session read; E2 an
+        // admitted model uses the original installed Session owner, whose poisoned lock denies
         // admission with the typed realization error instead of unwinding. No
         // alternate registry or fallback snapshot is allowed.
         // | Rule | C1 configured | C2 poisoned | Effect |
         // | R1 | no  | no  | E1 BadRequest |
-        // | R2 | no  | yes | E1 BadRequest, no slot access |
+        // | R2 | no  | yes | E1 BadRequest, no installed Session access |
         // | R3 | yes | no  | E2 compiled dispatch |
         // | R4 | yes | yes | E2 typed poison denial, no panic |
         for configured in [false, true] {
@@ -96,7 +96,7 @@ mod tests {
                 }));
                 if !configured {
                     let error = admitted
-                        .expect("R1/R2 model admission precedes slot access")
+                        .expect("R1/R2 model admission precedes installed Session access")
                         .expect_err("R1/R2 reject an unconfigured model");
                     assert!(matches!(
                         error,
@@ -105,8 +105,8 @@ mod tests {
                     assert!(error.to_string().starts_with("No model is configured."));
                 } else if poisoned {
                     let denied = admitted
-                        .expect("R4 a poisoned slot owner denies without unwinding")
-                        .expect_err("R4 retains the original fail-closed slot owner");
+                        .expect("R4 a poisoned installed Session owner denies without unwinding")
+                        .expect_err("R4 retains the original fail-closed installed Session owner");
                     let poisoned_code = crate::realization_error::RealizationError::Poisoned(
                         crate::realization_error::RealizationLock::InstalledSessions,
                     )
@@ -120,7 +120,7 @@ mod tests {
                         "R4 {denied}"
                     );
                 } else {
-                    assert!(admitted.expect("R3 healthy slot").is_ok());
+                    assert!(admitted.expect("R3 healthy installed Session").is_ok());
                 }
             }
         }

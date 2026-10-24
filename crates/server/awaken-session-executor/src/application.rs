@@ -11,7 +11,7 @@
 //! The host remains the sole owner of Session realization. An embedding
 //! application supplies no late desired state: mounts, environment values,
 //! prompts, and MCP generations come only from the frozen Control projection
-//! and are installed into the same Session slot for the Native/ACP backend path.
+//! and are installed into the same Session for the Native/ACP backend path.
 
 mod agent_filesystem_context;
 pub(crate) mod attempt_context;
@@ -38,7 +38,7 @@ use resource_transition::{
 
 /// Already-closed process-local projections awaiting nonterminal cleanup.
 /// Dropping this value cannot reopen admission or certify cleanup. A retry
-/// reselects the retained slot owners through the same Host operation.
+/// reselects the retained installed Session owners through the same Host operation.
 #[must_use = "closed projections still require cleanup or an explicit retry"]
 pub struct SessionRealizationRevocation {
     selected: Vec<(String, crate::installed_session::ClosedSessionRealization)>,
@@ -318,7 +318,7 @@ impl crate::RunAssembly {
             &Arc<tokio::sync::Mutex<()>>,
         )>,
     ) -> Result<bool, crate::SessionExecutionError> {
-        // Close admission under the synchronous slot mutex before waiting for
+        // Close admission under the synchronous installed Session mutex before waiting for
         // either async owner lock. Retain the exact closed projection for the
         // post-lock CAS; neither a renewal reply nor cancellation reopens it.
         let Some(selected) = self
@@ -439,9 +439,11 @@ impl crate::RunAssembly {
     ) -> Result<(), crate::SessionExecutionError> {
         let environment = environment_projection::project_environment(&init.environment);
         self.installed_sessions
-            .install_with(thread, |slot| {
-                slot.inputs.validate_environment(thread, &environment)?;
-                slot.replace_frozen_with(|next| next.lower_session_init(init, environment));
+            .install_with(thread, |installed| {
+                installed
+                    .inputs
+                    .validate_environment(thread, &environment)?;
+                installed.replace_frozen_with(|next| next.lower_session_init(init, environment));
                 Ok(())
             })
             .expect("installed Sessions")
@@ -547,7 +549,7 @@ impl crate::RunAssembly {
         frozen_inputs.validate_environment(thread, &environment_projection)?;
         // Validate the prospective complete layout before publishing any part of
         // a cold projection. The baseline is not resident yet on first install,
-        // so a validator that reads only the current slot would miss a Repository
+        // so a validator that reads only the current installed Session would miss a Repository
         // nested below one of its frozen mounts and could load Skills first. A
         // Worker-owned Dispatch is projection-only on the Coordinator: it uses
         // the same structural kernel without resolving a trusted-host provider
@@ -590,12 +592,17 @@ impl crate::RunAssembly {
         } else {
             let is_realized = self
                 .installed_sessions
-                .read(thread, |slot| {
-                    slot.run
+                .read(thread, |installed| {
+                    installed
+                        .run
                         .context
                         .as_ref()
                         .is_some_and(|context| !context.is_coordination_envelope())
-                        || slot.realization.environment().owner.has_local_environment()
+                        || installed
+                            .realization
+                            .environment()
+                            .owner
+                            .has_local_environment()
                 })?
                 .unwrap_or(false);
             if is_realized {
@@ -659,9 +666,11 @@ impl crate::RunAssembly {
         if let Some(proof) = realization_lease.as_ref() {
             // Reject a foreign durable owner BEFORE retiring a valid execution
             // object. Publication still revalidates this same canonical kernel.
-            self.installed_sessions.install_with(thread, |slot| {
-                let newer = slot.realization.validate_projection_receipt(&receipt)?;
-                slot.realization.environment().owner.after_projection(
+            self.installed_sessions.install_with(thread, |installed| {
+                let newer = installed
+                    .realization
+                    .validate_projection_receipt(&receipt)?;
+                installed.realization.environment().owner.after_projection(
                     thread,
                     &projection.workspace_id,
                     &projection.environment,
@@ -711,15 +720,20 @@ impl crate::RunAssembly {
             preparation.validate()?;
         }
         realization.authority().authorize_worker_effect(|| {
-            self.installed_sessions.install_with(thread, |slot| {
+            self.installed_sessions.install_with(thread, |installed| {
                 // Revalidate fallible coordinates and stage the existing owner
-                // transition under the final slot lock. No correlated field is
+                // transition under the final installed Session lock. No correlated field is
                 // published before the time proof/preparation is admitted.
-                slot.inputs.validate_publication(publication.as_ref())?;
-                slot.inputs
+                installed
+                    .inputs
+                    .validate_publication(publication.as_ref())?;
+                installed
+                    .inputs
                     .validate_environment(thread, &environment_projection)?;
-                let newer = slot.realization.validate_projection_receipt(&receipt)?;
-                let owner = slot.realization.environment().owner.after_projection(
+                let newer = installed
+                    .realization
+                    .validate_projection_receipt(&receipt)?;
+                let owner = installed.realization.environment().owner.after_projection(
                     thread,
                     &projection.workspace_id,
                     &projection.environment,
@@ -727,25 +741,25 @@ impl crate::RunAssembly {
                     pending_resource_reservation,
                 )?;
                 if let Some(preparation) = &preparation {
-                    preparation.finish(&mut slot.realization)?;
+                    preparation.finish(&mut installed.realization)?;
                 } else if let Some(lease) = realization_lease {
-                    if !slot.realization.install_lease(lease) {
+                    if !installed.realization.install_lease(lease) {
                         return Err(crate::SessionExecutionError::internal(
                             "Session realization time proof is not current",
                         ));
                     }
-                    slot.realization.execution().changed.notify_waiters();
+                    installed.realization.execution().changed.notify_waiters();
                 }
                 // This suffix is infallible and holds both Worker authority and
-                // the slot lock: revoke/replacement cannot interleave a partial
+                // the installed Session lock: revoke/replacement cannot interleave a partial
                 // publication between the check above and these writes.
                 if let Some(claim) = claim {
-                    slot.run.dispatch_claim = Some(claim.clone());
+                    installed.run.dispatch_claim = Some(claim.clone());
                 }
-                slot.realization.publish_frozen_projection(
+                installed.realization.publish_frozen_projection(
                     owner,
                     &projection.environment,
-                    slot.run.context.is_some(),
+                    installed.run.context.is_some(),
                     receipt,
                     has_mcp_projection,
                     resource_transition,
@@ -755,11 +769,11 @@ impl crate::RunAssembly {
                 // Rebuild it against the newly frozen baseline on its next
                 // read; it has no executable Environment to preserve.
                 if baseline_to_install.is_some() {
-                    slot.run.drop_coordination_envelope();
+                    installed.run.drop_coordination_envelope();
                 }
                 // One complete next value replaces the frozen inputs. The
                 // validated publication and an installed baseline are kept.
-                slot.replace_frozen_with(|next| {
+                installed.replace_frozen_with(|next| {
                     next.lower_session_init(&init, environment_projection);
                     if let Some(publication) = publication {
                         next.published_snapshot = Some(publication);
@@ -771,11 +785,11 @@ impl crate::RunAssembly {
                 });
                 // The complete frozen projection is the cold Worker's first
                 // observation of Session admission. Publish the existing execution
-                // marker in the same atomic slot update as its baseline and
+                // marker in the same atomic installed Session update as its baseline and
                 // transition; local admission may set it earlier, while revocation
                 // remains authorized to clear it with the rest of live execution
                 // state.
-                slot.run.session_dispatch = true;
+                installed.run.session_dispatch = true;
                 Ok::<_, crate::SessionExecutionError>(())
             })??;
             Ok(())
@@ -837,9 +851,9 @@ impl crate::RunAssembly {
         environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     ) -> Result<(), crate::SessionExecutionError> {
         let projection = environment_projection::project_environment(environment);
-        self.installed_sessions.install_with(thread, |slot| {
-            slot.inputs.validate_environment(thread, &projection)?;
-            slot.replace_frozen_with(|next| next.lower_environment(environment, projection));
+        self.installed_sessions.install_with(thread, |installed| {
+            installed.inputs.validate_environment(thread, &projection)?;
+            installed.replace_frozen_with(|next| next.lower_environment(environment, projection));
             Ok(())
         })?
     }
@@ -968,7 +982,7 @@ mod network_policy_tests {
 pub(crate) mod worker_projection;
 
 /// The installed projection a terminal lookup belongs to: its realization
-/// phase and the local Run controls selected in the same slot read.
+/// phase and the local Run controls selected in the same installed Session read.
 pub struct TerminalRecoveryOrigin {
     phase: Arc<tokio::sync::Mutex<()>>,
     local: Option<crate::host::SelectedAttemptInterruption>,
@@ -1006,14 +1020,15 @@ impl awaken_session_realization_driver::TerminalRecoveryProjections for crate::R
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<Option<TerminalRecoveryOrigin>, awaken_session_types::RunError> {
-        // One read, never creating a slot; an unreadable foreground record
+        // One read, never creating an installed Session; an unreadable foreground record
         // refuses the whole recovery.
         self.installed_sessions
-            .read(session_id.as_str(), |slot| {
-                slot.run
+            .read(session_id.as_str(), |installed| {
+                installed
+                    .run
                     .select_interruption()
                     .map(|selected| TerminalRecoveryOrigin {
-                        phase: slot.realization.execution().phase.clone(),
+                        phase: installed.realization.execution().phase.clone(),
                         local: selected.local,
                     })
             })

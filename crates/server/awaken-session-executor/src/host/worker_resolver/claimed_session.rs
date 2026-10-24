@@ -74,7 +74,7 @@ mod tests {
                 let expected = exact_claim && live_exact_proof;
                 let mut realization = crate::realization_state::SessionRealization::default();
                 realization.execution_mut().authority = authority;
-                let mut slot = InstalledSession {
+                let mut installed = InstalledSession {
                     realization,
                     run: crate::installed_session::SessionRunBinding {
                         dispatch_claim: previous.clone(),
@@ -85,9 +85,9 @@ mod tests {
                 assert_eq!(
                     claimed_realization_continuation(
                         &crate::session_realizations::SessionRealizationAccess {
-                            inputs: &slot.inputs,
-                            realization: &mut slot.realization,
-                            run: &mut slot.run
+                            inputs: &installed.inputs,
+                            realization: &mut installed.realization,
+                            run: &mut installed.run
                         },
                         &claim
                     ),
@@ -295,11 +295,11 @@ mod tests {
         // Claim publication graph: R1 a current realization fence is held ->
         // next claimant publishes neither claim nor Control mutation. R2 an old
         // revocation clears the claim -> the waiter publishes its exact new
-        // claim after release. R3 retirement removes the whole slot -> retry
+        // claim after release. R3 retirement removes the whole installed Session -> retry
         // acquisition on the replacement Arc before publishing. No stale Arc
-        // can lend authority to a newly created Session slot. The admissions below
+        // can lend authority to a newly created installed Session. The admissions below
         // traverse SessionRealizations, the same view used by migrated dispatch.
-        for remove_slot in [false, true] {
+        for remove_installed_session in [false, true] {
             let host = (crate::SessionExecutorBuilder::ephemeral(
                 Arc::new(crate::no_model::NoModelConfiguredExecutor),
                 "stub",
@@ -321,8 +321,8 @@ mod tests {
                 .run_assembly
                 .installed_sessions
                 .realizations()
-                .acquire_realization_with("shared-session", |slot| {
-                    slot.run.install_dispatch_claim(old.clone());
+                .acquire_realization_with("shared-session", |installed| {
+                    installed.run.install_dispatch_claim(old.clone());
                 })
                 .await
                 .expect("installed Sessions");
@@ -336,8 +336,8 @@ mod tests {
                         .run_assembly
                         .installed_sessions
                         .realizations()
-                        .acquire_realization_with("shared-session", |slot| {
-                            slot.run.install_dispatch_claim(claim.clone());
+                        .acquire_realization_with("shared-session", |installed| {
+                            installed.run.install_dispatch_claim(claim.clone());
                         })
                         .await
                         .expect("installed Sessions");
@@ -356,7 +356,7 @@ mod tests {
                 Some(old),
                 "R1"
             );
-            if remove_slot {
+            if remove_installed_session {
                 host.run_assembly
                     .installed_sessions
                     .remove("shared-session");

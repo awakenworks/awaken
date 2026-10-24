@@ -676,15 +676,18 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     let runtime_thread = "mcp-runtime-quiescence";
     let (runtime_host, _runtime_managed) = dispatch_test_host(host_with_process_reaper().await);
     // Physical query causes/effects (the same Runtime marker used by P2-P4):
-    // RQ0 absent Session => no callback, no slot created; RQ1 installed/no
+    // RQ0 absent Session => no callback, no installed Session created; RQ1 installed/no
     // Context => (false,false); RQ2 Context/inactive => (true,false); RQ3
     // Context/active => (true,true); RQ4 settled => (true,false), same owner.
     // holds_context never proves physical activity. The existing view reads
     // under registry -> active_run; MCP uses the same SessionCtx primitive.
     let view = runtime_host.realization_executor.sessions();
     let query = |thread: &str| {
-        view.modify_session(thread, |slot| {
-            (slot.run.holds_context(), slot.run.has_active_run())
+        view.modify_session(thread, |installed| {
+            (
+                installed.run.holds_context(),
+                installed.run.has_active_run(),
+            )
         })
         .expect("installed Sessions")
     };
@@ -696,7 +699,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
             .read("mcp-missing-query", |_| ())
             .expect("installed Sessions")
             .is_none(),
-        "RQ0 never creates a slot"
+        "RQ0 never creates an installed Session"
     );
     runtime_host
         .run_assembly
@@ -730,12 +733,12 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
 
     // Runtime-owner cause/effect decision table:
     // | Rule | C4 active Run | C6 drain cancellation/timeout | Effect |
-    // | P2 | yes | Future cancelled after Draining | same slot Runtime retained; no proof |
+    // | P2 | yes | Future cancelled after Draining | same installed Session Runtime retained; no proof |
     // | P3 | yes | retry reaches timeout | same Runtime + Draining process retained; no proof |
     // | P4 | settled | retry | process Removed + exact proof; outer quiesce still owns Runtime removal |
     // P2/P3 prevent a retry from losing the only active-run fence and turning a
     // failed attempt into false quiescence. P4 preserves the single existing
-    // Session-slot owner until the whole Environment transaction succeeds.
+    // installed-Session owner until the whole Environment transaction succeeds.
     let cancelled_host = runtime_host.clone();
     let cancelled_generation = runtime_generation.clone();
     let cancelled = tokio::spawn(async move {
@@ -853,13 +856,13 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     // never context presence substituted or a false quiescence result: the
     // marker reports the Run active, so every drain keeps refusing.
     // Environment continuation's primary/delegated reads use this same kernel,
-    // preserving their Slot -> foreground lock order and existing Runtime Arc.
+    // preserving their installed Session -> foreground lock order and existing Runtime Arc.
     // Their absent/inactive/active conditions remain RQ0-RQ4; delegated status
-    // still short-circuits a non-occupying dispatch before the Slot read.
-    // This fault proves only the active kernel; the distinct actual Slot S4
+    // still short-circuits a non-occupying dispatch before the installed Session read.
+    // This fault proves only the active kernel; the distinct actual installed Session S4
     // poison regression belongs to installed_session/tests.rs.
     // Poison the same actual Runtime only after all P2-P4 cleanup assertions;
-    // the primitive reads no registry, so this fault does not poison the slot.
+    // the primitive reads no registry, so this fault does not poison the installed Session.
     let poisoned_runtime = runtime.clone();
     let poisoned = std::thread::spawn(move || {
         let _held = poisoned_runtime.foreground.hold_for_test();
@@ -878,14 +881,14 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     assert_eq!(
         query(runtime_thread),
         Some((true, true)),
-        "RQ5 the slot query keeps the Run active"
+        "RQ5 the installed Session query keeps the Run active"
     );
 }
 
 #[tokio::test]
 async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
     // Owner/phase migration: the staging task retains the same registry Arc;
-    // ordinary slot reads borrow it and do not require a Clone registry. The
+    // ordinary installed Session reads borrow it and do not require a Clone registry. The
     // projection, activity and drain Arcs still identify the original owner.
     // S1-S5 below retain the pending-stage/drain/process proof assertions;
     // the MCP activity guard case covers a Future dropped before first poll.
@@ -1303,14 +1306,14 @@ async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epo
 }
 
 #[tokio::test]
-async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
+async fn mcp_projection_renewal_updates_the_same_staged_or_active_installed_session() {
     use awaken_session_configuration_contract::mcp::{McpRealizationReceipt, StageMcpAttachment};
     use awaken_session_mcp::{McpGenerationProjection, McpProjectionState};
 
     /* Runtime renewal cause/effect decision table. C1 the same logical
      * generation/incarnation/epoch and immutable binding exists; C2 its state is
      * Staged or Active; C3 expiry advances. E1 rewrites that one projection and
-     * receipt without reconnecting; E2 no second slot appears. R1 C1+C2(Staged)+
+     * receipt without reconnecting; E2 no second installed appears. R1 C1+C2(Staged)+
      * C3=>E1+E2 closes renewal during first Stage; R2 C1+C2(Active)+C3=>E1+E2
      * covers steady renewal; R3 no matching projection=>no-op. Conflicting
      * bindings and non-monotonic expiry are rejected by the aggregate N2–N5
@@ -1614,12 +1617,12 @@ async fn worker_authority_loss_revokes_every_session_projection() {
 
     // Cause graph: unprovable Worker authority -> enumerate the canonical
     // process-local Session projections -> nonterminal realization revocation ->
-    // route, material, and slot absent while durable environments remain owned
+    // route, material, and installed Session absent while durable environments remain owned
     // by the Session. Repeating the fence is idempotent.
     //
     // | Rule | Authority | Live projections | Effect |
     // |---|---|---|---|
-    // | A1 | lost/unprovable | one | detach + revoke route + remove slot |
+    // | A1 | lost/unprovable | one | detach + revoke route + remove installed Session |
     // | A2 | lost/unprovable | none | zero/no-op |
     let host = host_with_process_reaper().await;
     let generation = crate::test_mcp::mcp_fence(

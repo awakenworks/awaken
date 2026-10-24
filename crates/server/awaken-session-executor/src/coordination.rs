@@ -47,7 +47,7 @@ pub(crate) enum CoordinationEndpoint {
     Local(Weak<dyn SessionAgentCoordination>),
     Remote {
         control: Arc<ClaimedCoordination>,
-        slots: Weak<crate::installed_session::InstalledSessions>,
+        installed_sessions: Weak<crate::installed_session::InstalledSessions>,
     },
 }
 
@@ -67,7 +67,7 @@ impl crate::RunCapabilities {
                 .as_ref()
                 .map(|control| CoordinationEndpoint::Remote {
                     control: control.clone(),
-                    slots: Arc::downgrade(&self.installed_sessions),
+                    installed_sessions: Arc::downgrade(&self.installed_sessions),
                 })
         })
     }
@@ -84,14 +84,14 @@ impl crate::RunCapabilities {
 
 impl CoordinationEndpoint {
     fn current_claim(
-        slots: &Weak<crate::installed_session::InstalledSessions>,
+        installed_sessions: &Weak<crate::installed_session::InstalledSessions>,
         session_id: &str,
         source_run_id: &str,
     ) -> Result<(Arc<crate::installed_session::InstalledSessions>, RunClaim), ToolError> {
-        let slots = slots.upgrade().ok_or_else(|| {
+        let installed_sessions = installed_sessions.upgrade().ok_or_else(|| {
             ToolError::DefinitiveFailure("Session coordination owner is unavailable".into())
         })?;
-        let claim = slots
+        let claim = installed_sessions
             .read_run(session_id, |run| run.dispatch_claim.clone())
             .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
             .flatten()
@@ -106,7 +106,7 @@ impl CoordinationEndpoint {
                     .to_string(),
             ));
         }
-        Ok((slots, claim))
+        Ok((installed_sessions, claim))
     }
 
     async fn list(
@@ -125,10 +125,13 @@ impl CoordinationEndpoint {
                 .list_session_agents(session_id)
                 .await
                 .map_err(tool_error),
-            Self::Remote { control, slots } => {
+            Self::Remote {
+                control,
+                installed_sessions,
+            } => {
                 // Retain the original owner until this control future finishes.
                 let (_owner, claim) =
-                    Self::current_claim(slots, session_id.as_str(), source_run_id)?;
+                    Self::current_claim(installed_sessions, session_id.as_str(), source_run_id)?;
                 control
                     .list_session_agents(&claim, session_id.as_str())
                     .await
@@ -231,10 +234,16 @@ impl CoordinationEndpoint {
                 .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
                 .map_err(tool_error)
             }
-            Self::Remote { control, slots } => {
+            Self::Remote {
+                control,
+                installed_sessions,
+            } => {
                 // Retain the original owner until this control future finishes.
-                let (_owner, claim) =
-                    Self::current_claim(slots, command.session_id.as_str(), source_run_id)?;
+                let (_owner, claim) = Self::current_claim(
+                    installed_sessions,
+                    command.session_id.as_str(),
+                    source_run_id,
+                )?;
                 control
                     .send_session_agent_message(&claim, command)
                     .await
@@ -973,9 +982,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claimed_model_gate_uses_each_run_claim_despite_a_shared_session_slot() {
+    async fn claimed_model_gate_uses_each_run_claim_despite_a_shared_installed_session() {
         // Causes: C1 parent and child Runs overlap in one Session; C2 the
-        // Session slot holds the other Run's claim; C3 a request names a Run
+        // installed Session holds the other Run's claim; C3 a request names a Run
         // other than the gate's bound claim; C4 an unclaimed remote context.
         // Effects: E1 parent/child model requests carry their own exact claim;
         // E2 C3/C4 fail before the remote control is entered. Decision rules:
@@ -991,14 +1000,14 @@ mod tests {
             owner: "worker".into(),
             epoch: 2,
         };
-        let slots = Arc::new(crate::installed_session::InstalledSessions::default());
+        let installed_sessions = Arc::new(crate::installed_session::InstalledSessions::default());
         let control = Arc::new(RemoteControl::default());
         let endpoint = CoordinationEndpoint::Remote {
             control: control.clone(),
-            slots: Arc::downgrade(&slots),
+            installed_sessions: Arc::downgrade(&installed_sessions),
         };
         let factory = claimed_model_request_gate_factory(endpoint.clone(), "session");
-        slots.install_run("session", |run| run.dispatch_claim = Some(parent.clone()));
+        installed_sessions.install_run("session", |run| run.dispatch_claim = Some(parent.clone()));
         assert_eq!(
             factory(&child)
                 .admit_model_request(ModelRequestAdmissionRequest {
@@ -1008,9 +1017,9 @@ mod tests {
                 .await
                 .unwrap(),
             ModelRequestAdmission::Admit,
-            "R1 child ignores parent slot"
+            "R1 child ignores parent installed Session"
         );
-        slots.install_run("session", |run| run.dispatch_claim = Some(child.clone()));
+        installed_sessions.install_run("session", |run| run.dispatch_claim = Some(child.clone()));
         assert_eq!(
             factory(&parent)
                 .admit_model_request(ModelRequestAdmissionRequest {
@@ -1020,7 +1029,7 @@ mod tests {
                 .await
                 .unwrap(),
             ModelRequestAdmission::Admit,
-            "R1 parent ignores child slot"
+            "R1 parent ignores child installed Session"
         );
         assert!(
             factory(&child)
@@ -1040,7 +1049,7 @@ mod tests {
                 })
                 .await
                 .is_err(),
-            "R3 remote execution cannot borrow a slot claim"
+            "R3 remote execution cannot borrow an installed Session claim"
         );
         assert_eq!(
             *control.calls.lock().unwrap(),

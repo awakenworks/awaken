@@ -204,7 +204,7 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
             .read(&child.0, |_| ())
             .expect("installed Sessions")
             .is_none(),
-        "E1/E2 no child Session slot or Root is constructed"
+        "E1/E2 no child installed Session or Root is constructed"
     );
 }
 
@@ -414,9 +414,9 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
             let physical_only = host.upgrade().is_some_and(|host| {
                 host.run_assembly
                     .installed_sessions
-                    .read(thread, |slot| {
-                        slot.realization.environment().owner.is_resident()
-                            && slot.run.context.is_none()
+                    .read(thread, |installed| {
+                        installed.realization.environment().owner.is_resident()
+                            && installed.run.context.is_none()
                     })
                     .expect("installed Sessions")
                     .unwrap_or(false)
@@ -858,9 +858,9 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     };
     host.run_assembly
         .installed_sessions
-        .install_with("ordinary-remote", |slot| {
-            slot.run.dispatch_claim = Some(predecessor.clone());
-            slot.realization.execution_mut().authority =
+        .install_with("ordinary-remote", |installed| {
+            installed.run.dispatch_claim = Some(predecessor.clone());
+            installed.realization.execution_mut().authority =
                 crate::realization_state::SessionRealizationAuthority::Live(
                     awaken_session_realization::test_support::test_observed_lease(
                         crate::session_resource::SessionRealizationLease {
@@ -905,13 +905,13 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     let installed = host
         .run_assembly
         .installed_sessions
-        .read("ordinary-remote", |slot| {
+        .read("ordinary-remote", |installed| {
             assert_eq!(
-                slot.run.dispatch_claim,
+                installed.run.dispatch_claim,
                 Some(ingress::RunClaim::from(&claimed.lease)),
                 "CR2"
             );
-            slot.realization.execution().authority.lease().cloned()
+            installed.realization.execution().authority.lease().cloned()
         })
         .expect("installed Sessions")
         .flatten()
@@ -930,9 +930,9 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     assert!(
         host.run_assembly
             .installed_sessions
-            .read("ordinary-remote", |slot| {
-                slot.inputs.baseline.is_some()
-                    && slot
+            .read("ordinary-remote", |installed| {
+                installed.inputs.baseline.is_some()
+                    && installed
                         .realization
                         .execution()
                         .authority
@@ -1297,16 +1297,16 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     let before_mismatch = host
         .run_assembly
         .installed_sessions
-        .read(mismatched_thread, |slot| {
+        .read(mismatched_thread, |installed| {
             (
-                slot.realization.staging().transition.clone(),
-                slot.realization.staging().effect_key.clone(),
-                slot.inputs.workspace.clone(),
-                slot.realization.staging().manifest.clone(),
+                installed.realization.staging().transition.clone(),
+                installed.realization.staging().effect_key.clone(),
+                installed.inputs.workspace.clone(),
+                installed.realization.staging().manifest.clone(),
             )
         })
         .expect("installed Sessions")
-        .expect("R3 producer slot");
+        .expect("R3 producer installed Session");
     let error = host
         .realization_executor
         .install_dispatched_resources(mismatched_thread, &revision_two, None)
@@ -1316,12 +1316,12 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     assert_eq!(
         host.run_assembly
             .installed_sessions
-            .read(mismatched_thread, |slot| {
+            .read(mismatched_thread, |installed| {
                 (
-                    slot.realization.staging().transition.clone(),
-                    slot.realization.staging().effect_key.clone(),
-                    slot.inputs.workspace.clone(),
-                    slot.realization.staging().manifest.clone(),
+                    installed.realization.staging().transition.clone(),
+                    installed.realization.staging().effect_key.clone(),
+                    installed.inputs.workspace.clone(),
+                    installed.realization.staging().manifest.clone(),
                 )
             })
             .expect("installed Sessions"),
@@ -1415,7 +1415,7 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     // foreign; C2 no Environment is resident; C3 a current or prospective
     // durable binding exists; C4 desired File bytes are unavailable; C5 an
     // exact immutable Skill is selected. Effects: E1 foreign active rejects
-    // before any Resource read or slot write; E2 C2+C3 defers File/provider
+    // before any Resource read or installed Session write; E2 C2+C3 defers File/provider
     // compilation until adoption; E3 C5 still stages the dispatch-semantic
     // Skill bytes needed by a cold Coordinator; E4 previous/desired without C3
     // may compile (covered by the live replacement and cold File tests).
@@ -1506,9 +1506,10 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         .unwrap();
     host.run_assembly
         .installed_sessions
-        .install_with(foreign_thread, |slot| {
-            slot.replace_frozen_with(|next| next.workspace = Some("sentinel-workspace".into()));
-            slot.realization.staging_mut().effect_key = Some("sentinel-key".into());
+        .install_with(foreign_thread, |installed| {
+            installed
+                .replace_frozen_with(|next| next.workspace = Some("sentinel-workspace".into()));
+            installed.realization.staging_mut().effect_key = Some("sentinel-key".into());
         })
         .expect("installed Sessions");
     let _guard = host
@@ -1536,15 +1537,15 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     assert!(
         host.run_assembly
             .installed_sessions
-            .read(foreign_thread, |slot| {
-                slot.realization.staging().manifest.as_ref() == Some(&foreign)
-                    && slot.inputs.workspace.as_deref() == Some("sentinel-workspace")
-                    && slot.realization.staging().effect_key.as_deref() == Some("sentinel-key")
-                    && slot.realization.staging().resources.mounts.is_empty()
+            .read(foreign_thread, |installed| {
+                installed.realization.staging().manifest.as_ref() == Some(&foreign)
+                    && installed.inputs.workspace.as_deref() == Some("sentinel-workspace")
+                    && installed.realization.staging().effect_key.as_deref() == Some("sentinel-key")
+                    && installed.realization.staging().resources.mounts.is_empty()
             })
             .expect("installed Sessions")
             .unwrap_or(false),
-        "P1 rejects before compilation or any correlated slot write"
+        "P1 rejects before compilation or any correlated installed Session write"
     );
     drop(_guard);
 
@@ -1756,7 +1757,7 @@ async fn sandbox_binding_is_validated_before_provider_adoption() {
 async fn recovery_mode_controls_the_production_adoption_seam() {
     // Fixture rule: C0 an executable Session first owns the canonical Runtime
     // composition and exact empty Resource transition; E0 its durable handle
-    // can then exercise continuity/rebuild adoption without a partial slot path.
+    // can then exercise continuity/rebuild adoption without a partial installed Session path.
     //
     // Adoption cause/effect decision table:
     // | rule | provider observation | recovery policy | resident | effect |
@@ -2230,7 +2231,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
     // before either adoption; no test fence supplies its original identity.
     // C4 existing Resident + exact binding/handle retains Durable identity
     // while the canonical test setter replaces only its Arc. A fresh empty
-    // slot has no original identity and remains the setter's legacy row.
+    // installed Session has no original identity and remains the setter's legacy row.
     // Rule C0+C1+C2+C4=>same Root identity; C3 cannot discard replacement B.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-environment-aba";
@@ -2516,8 +2517,8 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
         assert!(
             host.run_assembly
                 .installed_sessions
-                .read(&thread, |slot| slot.inputs.baseline.is_some()
-                    && slot.run.context.is_some())
+                .read(&thread, |installed| installed.inputs.baseline.is_some()
+                    && installed.run.context.is_some())
                 .expect("installed Sessions")
                 .unwrap_or(false)
         );

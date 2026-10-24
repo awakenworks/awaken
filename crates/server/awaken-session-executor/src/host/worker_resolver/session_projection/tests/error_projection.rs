@@ -11,7 +11,7 @@ async fn transition_refusals_keep_the_original_fault_and_code() {
     // Causes: C1 bound legacy projection lacks its previous Resource manifest;
     // C2 previous/desired Workspaces contradict. R1=C1 -> Unavailable with the
     // original missing-transition code; R2=C2 -> BadRequest/invalid_request.
-    // Both refuse before a per-Session slot or Resource effect is installed.
+    // Both refuse before a per-installed Session or Resource effect is installed.
     // This calls the production consumer rather than only its error helper.
     let host = crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
         .await
@@ -102,7 +102,10 @@ async fn staging_refusals_keep_the_original_fault_and_code() {
     assert!(
         host.run_assembly
             .installed_sessions
-            .read("missing-stage-skill", |slot| slot.inputs.baseline.is_none())
+            .read("missing-stage-skill", |installed| installed
+                .inputs
+                .baseline
+                .is_none())
             .unwrap()
             .unwrap_or(true),
         "R3 no prospective baseline publication"

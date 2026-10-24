@@ -287,7 +287,7 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
 #[tokio::test]
 async fn automatic_memory_requires_one_explicit_existing_binding() {
     // The state selection now belongs to the original ResourceStaging view.
-    // It mutates only realization under the same slot lock: no binding clears
+    // It mutates only realization under the same installed Session lock: no binding clears
     // selection, an absent named binding clears it before the same error, and
     // an exact named binding returns that same Arc. Host execution alone wraps
     // it in MemoryRuntime.bound; neither selection nor wrapping starts a Run.

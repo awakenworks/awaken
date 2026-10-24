@@ -28,9 +28,10 @@ impl RunAssembly {
     pub(crate) fn session_preparation_needed(&self, thread: &str) -> Result<bool, RunError> {
         let active_projection = self
             .installed_sessions
-            .read(thread, |slot| {
+            .read(thread, |installed| {
                 (
-                    slot.run
+                    installed
+                        .run
                         .context
                         .as_ref()
                         .map(|context| {
@@ -41,8 +42,9 @@ impl RunAssembly {
                         })
                         .transpose()
                         .map(Option::flatten),
-                    slot.inputs.baseline.is_some() || slot.run.session_dispatch,
-                    slot.run
+                    installed.inputs.baseline.is_some() || installed.run.session_dispatch,
+                    installed
+                        .run
                         .context
                         .as_ref()
                         .is_some_and(|context| context.is_coordination_envelope()),
@@ -75,9 +77,9 @@ impl RunAssembly {
         let refused =
             |error| RunError::from(crate::realization_error::RealizationError::from(error));
         self.installed_sessions
-            .install_with(thread, |slot| {
-                slot.run.context = None;
-                slot.run.session_dispatch = true;
+            .install_with(thread, |installed| {
+                installed.run.context = None;
+                installed.run.session_dispatch = true;
             })
             .map_err(refused)?;
         crate::lazy_sandbox::bind_deferred_executor(self, thread).map_err(refused)

@@ -628,7 +628,7 @@ impl crate::RunAssembly {
             writable,
         );
         // The embedder seam installs the Session it binds (the host's install
-        // path); the realization view then only changes the installed slot.
+        // path); the realization view then only changes the installed Session.
         self.installed_sessions.install(thread)?;
         self.realization_executor
             .staging()

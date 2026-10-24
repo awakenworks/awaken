@@ -841,7 +841,7 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
 /// | P1 | one writable Repository | exact expected coordinate | absent | publish and return canonical Session receipt |
 /// | P2 | same command replay | exact expected coordinate | same commit | no-op with byte-identical receipt |
 /// | P3 | complete ordinary projection carries empty rev0 -> desired rev1 | exact | any | canonical Dispatch install owns baseline plus Resource staging before realization; publication performs no second lookup |
-/// | P4 | replacement Host starts without root/child slots and claims one Resident aggregate binding | exact | stale without an authorized prior | cold install/adopt, child preparation, durable rejection, root preparation, then physical disposal |
+/// | P4 | replacement Host starts without root/child installed Sessions and claims one Resident aggregate binding | exact | stale without an authorized prior | cold install/adopt, child preparation, durable rejection, root preparation, then physical disposal |
 ///
 /// Invalid coordinate and mismatched remote rules are exhaustively covered at
 /// the Repository realizer boundary; this integration test proves the
@@ -999,7 +999,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     // P1/P3 cause-effect rule: a cold Session with desired revision 1 requires
     // both its immutable baseline and exact empty-rev0 -> desired-rev1 Resource
     // transition before any Environment can exist. The complete Runtime port
-    // owns both effects; no test-only preparation or direct slot write may
+    // owns both effects; no test-only preparation or direct installed Session write may
     // create a competing partial projection.
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
@@ -1240,14 +1240,14 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         // reopening ordinary execution. A cold Host does not reproduce this shape.
         host.run_assembly
             .installed_sessions
-            .install_with(session_id, |slot| {
-                let owned = slot
+            .install_with(session_id, |installed| {
+                let owned = installed
                     .realization
                     .environment()
                     .owner
                     .terminal_bound_environment()
                     .unwrap();
-                slot.realization.environment_mut().owner =
+                installed.realization.environment_mut().owner =
                 crate::environment_owner::SessionEnvironmentOwner::Retiring(
                     crate::environment_owner::RetiringSessionEnvironment {
                         cause:
@@ -1257,7 +1257,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
                         owned: crate::environment_owner::RetiringEnvironmentOwner::Bound(owned),
                     },
                 );
-                slot.run.context = None;
+                installed.run.context = None;
             })
             .expect("installed Sessions");
         assert!(
@@ -1481,7 +1481,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     // P4 cause/effect graph: C1 the old Worker durably published one exact
     // Resident binding and then lost all process-local state; C2 a replacement
     // Host has the same Namespace root, local Workspace, and Control authority
-    // but no root/child slot; C3 claim-next returns the sole aggregate-frozen
+    // but no root/child installed Session; C3 claim-next returns the sole aggregate-frozen
     // assignment; C4 child preparation is still pending; C5 the frozen
     // create-only publication has no authorized prior while the remote advanced
     // after P1/P2. Effects: E1 only the canonical cold
@@ -1489,12 +1489,12 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     // adoption writes no ordinary Environment receipt and leaves the provider
     // marker Ready, so only the later root preparation enters terminal takeover
     // under T; E3 child preparation precedes the durable CAS rejection, root
-    // preparation, and disposal; E4 all replacement slots and Environment
+    // preparation, and disposal; E4 all replacement installed Sessions and Environment
     // handles are retired. Missing, foreign,
     // Disposing, or otherwise non-live provider evidence remains owned by the
     // adjacent fail-closed recovery tests.
     //
-    // | Rule | durable source | replacement slots | claim | Effect |
+    // | Rule | durable source | replacement installed Sessions | claim | Effect |
     // |---|---|---|---|---|
     // | P4a | Resident exact | root/child absent | exact | E1 + E2 + E3 + E4 |
     // | P4b | missing/foreign/Disposing | root/child absent | exact | fail closed; no receipt/delete |
@@ -1545,7 +1545,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
                 .run_assembly
                 .installed_sessions
                 .contains(child_id),
-        "P4 replacement starts without root or child process-local slots"
+        "P4 replacement starts without root or child process-local installed Sessions"
     );
     assert!(
         replacement_host
@@ -1630,7 +1630,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
                 .run_assembly
                 .installed_sessions
                 .contains(child_id),
-        "P4 completion retires replacement root and child slots"
+        "P4 completion retires replacement root and child installed Sessions"
     );
 }
 

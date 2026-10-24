@@ -24,9 +24,9 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     // | S1/R4 | absent    | named requirements                    | denied (SessionAbsent), nothing installed |
     // | S1/R4 | installed | named requirements, no preparation    | publish the correlated tuple, replace whole Frozen Arc |
     // | S2/R5 | installed | named requirements, missing/foreign/closed/cancelled/expired proof | authority_lost; every prior correlated field and Run preserved |
-    // | S3/R6 | installed | exact live proof | publish under the same Slot guard; old Arc and Run preserved |
+    // | S3/R6 | installed | exact live proof | publish under the same installed Session guard; old Arc and Run preserved |
     // | S3/R12 | installed | callback returns Err | same Result, callback once; actual mutex stays healthy |
-    // S4 actual Slot poison has its necessary case in installed_session/tests.rs.
+    // S4 actual installed Session poison has its necessary case in installed_session/tests.rs.
     // Existing cold-resource IO tests own R1-R3/R7-R11; these rows isolate the
     // new named Source action's atomic publication, rather than mirror IO.
     //
@@ -159,7 +159,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     );
     assert!(
         !host.run_assembly.installed_sessions.contains("unknown"),
-        "C11 no absent Slot created"
+        "C11 no absent installed Session created"
     );
 
     sessions
@@ -168,7 +168,11 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     assert_eq!(
         host.run_assembly
             .installed_sessions
-            .read(thread, |slot| slot.realization.staging().effect_key.clone())
+            .read(thread, |installed| installed
+                .realization
+                .staging()
+                .effect_key
+                .clone())
             .expect("installed Sessions")
             .flatten()
             .as_deref(),
@@ -177,8 +181,8 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     );
     host.run_assembly
         .installed_sessions
-        .install_with(thread, |slot| {
-            slot.realization.staging_mut().effect_key = Some("k2".into());
+        .install_with(thread, |installed| {
+            installed.realization.staging_mut().effect_key = Some("k2".into());
         })
         .expect("installed Sessions");
     assert_eq!(
@@ -237,9 +241,9 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         Some(claim.clone()),
         "V5"
     );
-    // Q1-Q7 decision table: two REAL Slot adapters x Primary(0/1) x all
+    // Q1-Q7 decision table: two REAL installed Session adapters x Primary(0/1) x all
     // DelegationStatus variants x child marker(0/1) = 24 rows. Completed skips
-    // the child; Open and CancelRequested query it. Missing Slot/context adds
+    // the child; Open and CancelRequested query it. Missing installed Session/context adds
     // the distinct false partitions. Q3 both Primary values + failed awaited
     // delegation must propagate the exact error BEFORE any child, never bypass
     // the await. Trace asserts query(root) -> poll(delegation) -> allowed child.
@@ -288,7 +292,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                                         .unwrap_or(false))
                                 } else {
                                     Ok(sessions
-                                        .modify_session(id, |slot| slot.run.has_active_run()).expect("installed Sessions")
+                                        .modify_session(id, |installed| installed.run.has_active_run()).expect("installed Sessions")
                                         .unwrap_or(false))
                                 }
                             },
@@ -331,7 +335,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                                 .unwrap_or(false))
                         } else {
                             Ok(sessions
-                                .modify_session(id, |slot| slot.run.has_active_run()).expect("installed Sessions")
+                                .modify_session(id, |installed| installed.run.has_active_run()).expect("installed Sessions")
                                 .unwrap_or(false))
                         }
                     },
@@ -375,7 +379,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                                 .unwrap_or(false))
                         } else {
                             Ok(sessions
-                                .modify_session(session, |slot| slot.run.has_active_run()).expect("installed Sessions")
+                                .modify_session(session, |installed| installed.run.has_active_run()).expect("installed Sessions")
                                 .unwrap_or(false))
                         }
                     },
@@ -383,11 +387,11 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                 )
                 .await
                 .unwrap();
-                assert!(!observed, "Q1/Q5 missing Slot or Runtime stays false");
+                assert!(!observed, "Q1/Q5 missing installed Session or Runtime stays false");
             }
             assert!(
                 !host.run_assembly.installed_sessions.contains("query-missing-slot"),
-                "Q1 no new Slot"
+                "Q1 no new installed Session"
             );
             child.foreground.install_for_test(Some(RunId("query-child".into())));
             let mut second = delegated(Status::Open);
@@ -408,7 +412,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                                 .unwrap_or(false))
                         } else {
                             Ok(sessions
-                                .modify_session(id, |slot| slot.run.has_active_run()).expect("installed Sessions")
+                                .modify_session(id, |installed| installed.run.has_active_run()).expect("installed Sessions")
                                 .unwrap_or(false))
                         }
                     },
@@ -447,7 +451,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                 primary_or_delegated_run_active(
                     thread,
                     |id| Ok(sessions
-                        .modify_session(id, |slot| slot.run.has_active_run()).expect("installed Sessions")
+                        .modify_session(id, |installed| installed.run.has_active_run()).expect("installed Sessions")
                         .unwrap_or(false)),
                     host.thread_reads.delegated_runs_under_lifecycle(lifecycle.held()),
                 )
@@ -494,7 +498,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                                 .unwrap_or(false))
                         } else {
                             Ok(sessions
-                                .modify_session(id, |slot| slot.run.has_active_run()).expect("installed Sessions")
+                                .modify_session(id, |installed| installed.run.has_active_run()).expect("installed Sessions")
                                 .unwrap_or(false))
                         }
                     },
@@ -603,30 +607,30 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     );
     host.run_assembly
         .installed_sessions
-        .read(thread, |slot| {
+        .read(thread, |installed| {
             assert_eq!(
-                slot.realization.staging().resources.prompts,
+                installed.realization.staging().resources.prompts,
                 ["view requirements"]
             );
             assert!(Arc::ptr_eq(
-                &slot.realization.staging().memory_bindings["view-binding"],
+                &installed.realization.staging().memory_bindings["view-binding"],
                 &memory
             ));
             assert!(
-                slot.realization.staging().memory.is_none(),
+                installed.realization.staging().memory.is_none(),
                 "S1 selection cleared"
             );
             assert_eq!(
-                slot.realization.staging().skills,
+                installed.realization.staging().skills,
                 Some(Vec::new()),
                 "S1 empty frozen Skills retained"
             );
             assert_eq!(
-                slot.realization.staging().effect_key.as_deref(),
+                installed.realization.staging().effect_key.as_deref(),
                 Some("requirements-key")
             );
             assert!(
-                Arc::ptr_eq(slot.run.context.as_ref().unwrap(), &ctx),
+                Arc::ptr_eq(installed.run.context.as_ref().unwrap(), &ctx),
                 "S1 Run kept"
             );
         })
@@ -643,8 +647,8 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         let token = Arc::new(awaken_runtime_contract::CancellationToken::new());
         host.run_assembly
             .installed_sessions
-            .install_with(thread, |slot| {
-                slot.realization.execution_mut().authority =
+            .install_with(thread, |installed| {
+                installed.realization.execution_mut().authority =
                     crate::realization_state::SessionRealizationAuthority::Live(
                         if rule == "expired" {
                             awaken_session_realization::test_support::test_expired_observed_lease(
@@ -656,10 +660,10 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                             )
                         },
                     );
-                slot.realization.staging_mut().preparation = Some(token.clone());
-                slot.realization.staging_mut().memory = Some(memory.clone());
+                installed.realization.staging_mut().preparation = Some(token.clone());
+                installed.realization.staging_mut().memory = Some(memory.clone());
                 if rule == "closed" {
-                    slot.realization.close_authority(None);
+                    installed.realization.close_authority(None);
                 }
             })
             .expect("installed Sessions");
@@ -699,36 +703,42 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         );
         host.run_assembly
             .installed_sessions
-            .read(thread, |slot| {
-                assert!(Arc::ptr_eq(&slot.inputs, &published), "S2 Frozen {rule}");
+            .read(thread, |installed| {
+                assert!(
+                    Arc::ptr_eq(&installed.inputs, &published),
+                    "S2 Frozen {rule}"
+                );
                 assert_eq!(
-                    slot.realization.staging().resources.prompts,
+                    installed.realization.staging().resources.prompts,
                     ["view requirements"],
                     "S2 resources {rule}"
                 );
                 assert!(
                     Arc::ptr_eq(
-                        &slot.realization.staging().memory_bindings["view-binding"],
+                        &installed.realization.staging().memory_bindings["view-binding"],
                         &memory
                     ),
                     "S2 bindings {rule}"
                 );
                 assert!(
-                    Arc::ptr_eq(slot.realization.staging().memory.as_ref().unwrap(), &memory),
+                    Arc::ptr_eq(
+                        installed.realization.staging().memory.as_ref().unwrap(),
+                        &memory
+                    ),
                     "S2 memory {rule}"
                 );
                 assert_eq!(
-                    slot.realization.staging().skills,
+                    installed.realization.staging().skills,
                     Some(Vec::new()),
                     "S2 Skills {rule}"
                 );
                 assert_eq!(
-                    slot.realization.staging().effect_key.as_deref(),
+                    installed.realization.staging().effect_key.as_deref(),
                     Some("requirements-key"),
                     "S2 key {rule}"
                 );
                 assert!(
-                    Arc::ptr_eq(slot.run.context.as_ref().unwrap(), &ctx),
+                    Arc::ptr_eq(installed.run.context.as_ref().unwrap(), &ctx),
                     "S2 Run {rule}"
                 );
             })
@@ -737,12 +747,12 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     }
     host.run_assembly
         .installed_sessions
-        .install_with(thread, |slot| {
-            slot.realization.execution_mut().authority =
+        .install_with(thread, |installed| {
+            installed.realization.execution_mut().authority =
                 crate::realization_state::SessionRealizationAuthority::Live(
                     awaken_session_realization::test_support::test_observed_lease(lease.clone()),
                 );
-            slot.realization.staging_mut().preparation =
+            installed.realization.staging_mut().preparation =
                 Some(Arc::new(awaken_runtime_contract::CancellationToken::new()));
         })
         .expect("installed Sessions");
@@ -794,8 +804,8 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     // subsequent V6-V8 keep their original semantics and state expectations.
     host.run_assembly
         .installed_sessions
-        .install_with(thread, |slot| {
-            slot.realization.staging_mut().preparation = None
+        .install_with(thread, |installed| {
+            installed.realization.staging_mut().preparation = None
         })
         .expect("installed Sessions");
 
@@ -835,16 +845,18 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
 
     host.run_assembly
         .installed_sessions
-        .install_with(thread, |slot| {
-            slot.run.context = Some(ctx.clone());
-            slot.realization.staging_mut().reconciliation =
+        .install_with(thread, |installed| {
+            installed.run.context = Some(ctx.clone());
+            installed.realization.staging_mut().reconciliation =
                 crate::staged_resources::EnvironmentResourceReconciliation::Adopted;
         })
         .expect("installed Sessions");
     let staged_before = host
         .run_assembly
         .installed_sessions
-        .read(thread, |slot| slot.realization.staging().effect_key.clone())
+        .read(thread, |installed| {
+            installed.realization.staging().effect_key.clone()
+        })
         .expect("installed Sessions")
         .unwrap();
     sessions
@@ -853,13 +865,13 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     let after = host
         .run_assembly
         .installed_sessions
-        .read(thread, |slot| {
+        .read(thread, |installed| {
             (
-                slot.run.context.is_some(),
-                slot.realization.staging().reconciliation,
-                slot.run.dispatch_claim.clone(),
-                slot.run.session_dispatch,
-                slot.realization.staging().effect_key.clone(),
+                installed.run.context.is_some(),
+                installed.realization.staging().reconciliation,
+                installed.run.dispatch_claim.clone(),
+                installed.run.session_dispatch,
+                installed.realization.staging().effect_key.clone(),
             )
         })
         .expect("installed Sessions")

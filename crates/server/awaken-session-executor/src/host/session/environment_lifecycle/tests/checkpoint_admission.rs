@@ -44,12 +44,12 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     // Host-to-real-Local decision table H: direct/registered topology; lifecycle
-    // lock/put-response wait; current/Session close/same-byte slot replacement/
+    // lock/put-response wait; current/Session close/same-byte installed Session replacement/
     // Worker close/Worker expiry/renewal. Worker-only causes exclude direct Host.
     // H1 current/renew -> real snapshot and receipt with unchanged Control time.
     // H2 loss at lifecycle -> zero uploads. H3 loss at put response -> no receipt;
     // exact fresh retry reaches cached WAL or repeats the original pending key.
-    // H4 same-byte new slot must not rebind the authority captured BEFORE wait.
+    // H4 same-byte new installed Session must not rebind the authority captured BEFORE wait.
     // Store here is a response gate, not a durability proof; Local's store-CAS
     // table independently checks replay bytes and key. No mock Sandbox path.
     for registered in [false, true] {
@@ -414,7 +414,8 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
 }
 
 #[tokio::test]
-async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen_closed_slots() {
+async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen_closed_installed_sessions()
+ {
     use crate::realization_state::SessionRealizationAuthority as Authority;
     use awaken_session_configuration_contract::resource::SessionRealizationLease;
     use awaken_session_realization_contract::SessionRealizationLeaseReceipt;

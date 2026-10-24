@@ -986,7 +986,7 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
             .read(cold_thread, |_| ())
             .expect("installed Sessions")
             .is_none(),
-        "W0/E4 direct control must not create a Session slot"
+        "W0/E4 direct control must not create a installed Session"
     );
 
     let dispatch = Arc::new(
@@ -1065,7 +1065,7 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
     // requeue the exact dead-letter row; E2 persist its cancellation so the
     // ordinary Worker cancellation claim can settle it; E3 do not construct a
     // Runtime context or touch Environment realization. Constraint: this test
-    // observes the canonical Session slot and dispatch store only; it adds no
+    // observes the canonical installed Session and dispatch store only; it adds no
     // control registry or force-delete path.
     //
     // | Rule | dispatch | resident context | Environment | interrupt | Effects |

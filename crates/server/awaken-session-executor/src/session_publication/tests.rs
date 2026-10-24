@@ -215,7 +215,7 @@ fn publication_selection_uses_frozen_coordinates_and_selected_workspace_without_
 }
 
 #[test]
-fn publication_retention_is_one_atomic_slot_write_and_rejects_competing_candidates() {
+fn publication_retention_is_one_atomic_installed_session_write_and_rejects_competing_candidates() {
     // R1 same publication is idempotent; R2 missing input cannot erase it;
     // R3 two distinct concurrent publications have one winner and one denial;
     // R4 no projection fields are lost while replacing its immutable value.

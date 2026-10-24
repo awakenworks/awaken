@@ -13,7 +13,7 @@ mod tests {
         // -> return the unchanged Control fence. F2 missing root, F3 expired
         // observation, F4 closed root, F5 replaced incarnation -> reject before
         // lowering a fence. These are adapter/call-path checks of the shared
-        // slot rule; provider-side expiry semantics are intentionally not mocked
+        // installed Session rule; provider-side expiry semantics are intentionally not mocked
         // into a claim of end-to-end clock-skew compatibility.
         let lease = SessionRealizationLease {
             owner: "control".into(),

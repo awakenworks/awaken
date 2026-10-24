@@ -820,7 +820,7 @@ mod retry_hint_tests {
             assert_eq!(
                 host.run_assembly
                     .installed_sessions
-                    .read(&thread, |slot| slot.run.context.is_none())
+                    .read(&thread, |installed| installed.run.context.is_none())
                     .unwrap(),
                 Some(true),
                 "{rule} failed adoption never installs context"
@@ -832,7 +832,7 @@ mod retry_hint_tests {
             // M2 selected Arc -> accepted; M3 another real ProcessDispatch with
             // equal values/output -> original identity refusal, no added
             // provider effect or durable Root mutation. Existing App construction
-            // probes separately own zero-call first-refusal for every slot.
+            // probes separately own zero-call first-refusal for every installed Session.
             let effects = (
                 fake.observations.lock().unwrap().len(),
                 fake.creates.load(Ordering::SeqCst),

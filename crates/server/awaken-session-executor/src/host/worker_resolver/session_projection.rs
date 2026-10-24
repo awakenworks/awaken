@@ -130,8 +130,8 @@ mod tests {
 
         assert!(
             host.run_assembly.installed_sessions
-                .read("cold-deferred", |slot| slot.run.deferred_executor.is_some()
-                    && slot.inputs.tools.as_ref().is_some_and(|tools| {
+                .read("cold-deferred", |installed| installed.run.deferred_executor.is_some()
+                    && installed.inputs.tools.as_ref().is_some_and(|tools| {
                         tools == &awaken_session_configuration_contract::SessionToolConfiguration::default()
                     })).expect("installed Sessions")
                 .unwrap_or(false),
@@ -149,11 +149,16 @@ mod tests {
             assert!(
                 host.run_assembly
                     .installed_sessions
-                    .read(thread, |slot| slot.inputs.baseline.is_none()
-                        && !slot.run.session_dispatch
-                        && slot.realization.execution().authority.lease().is_none()
-                        && slot.run.dispatch_claim.as_ref() == Some(&claim)
-                        && slot.inputs.published_snapshot.as_ref()
+                    .read(thread, |installed| installed.inputs.baseline.is_none()
+                        && !installed.run.session_dispatch
+                        && installed
+                            .realization
+                            .execution()
+                            .authority
+                            .lease()
+                            .is_none()
+                        && installed.run.dispatch_claim.as_ref() == Some(&claim)
+                        && installed.inputs.published_snapshot.as_ref()
                             == Some(&claimed.request.activation.snapshot))
                     .expect("installed Sessions")
                     .unwrap_or(false),
@@ -1501,7 +1506,7 @@ mod tests {
          * physical root was lost and is definitively unavailable; C6 the fixture
          * producer installs the same complete frozen projection used by cold
          * adoption before creating that handle; C7 a fresh consumer Host has no
-         * resident slot or Runtime; C8 the first-use Managed binding sink commits
+         * resident installed or Runtime; C8 the first-use Managed binding sink commits
          * and reads back Resident; C9 cold replay carries that exact Store-read
          * effect id and generation, never a legacy binding-only repair. Effects:
          * E1 adopt the exact bound Environment
@@ -1679,8 +1684,8 @@ mod tests {
         assert!(
             host.run_assembly
                 .installed_sessions
-                .read(thread, |slot| slot.run.context.is_none()
-                    && slot.realization.environment().owner.is_resident())
+                .read(thread, |installed| installed.run.context.is_none()
+                    && installed.realization.environment().owner.is_resident())
                 .expect("installed Sessions")
                 .unwrap_or(false),
             "R2 fixture is the publish-to-final-resolve gap"

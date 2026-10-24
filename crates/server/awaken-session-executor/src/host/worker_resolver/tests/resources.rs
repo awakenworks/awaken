@@ -221,33 +221,41 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
     let empty_projection = host
         .run_assembly
         .installed_sessions
-        .read("thread-cold-resource", |slot| {
+        .read("thread-cold-resource", |installed| {
             (
-                slot.realization.staging().resources.mounts.is_empty(),
-                slot.realization.staging().resources.prompts.is_empty(),
-                slot.realization
+                installed.realization.staging().resources.mounts.is_empty(),
+                installed.realization.staging().resources.prompts.is_empty(),
+                installed
+                    .realization
                     .staging()
                     .resources
                     .resource_prompts
                     .is_empty(),
-                slot.realization
+                installed
+                    .realization
                     .staging()
                     .resources
                     .binding_checks
                     .is_empty(),
-                slot.realization.staging().resources.repositories.is_empty(),
-                slot.realization.staging().memory_bindings.is_empty(),
-                slot.realization.staging().memory.is_none(),
-                slot.realization
+                installed
+                    .realization
+                    .staging()
+                    .resources
+                    .repositories
+                    .is_empty(),
+                installed.realization.staging().memory_bindings.is_empty(),
+                installed.realization.staging().memory.is_none(),
+                installed
+                    .realization
                     .staging()
                     .skills
                     .as_ref()
                     .is_some_and(Vec::is_empty),
-                slot.run.context.is_none(),
+                installed.run.context.is_none(),
             )
         })
         .expect("installed Sessions")
-        .expect("F4 canonical Session slot");
+        .expect("F4 canonical installed Session");
     assert_eq!(
         empty_projection,
         (true, true, true, true, true, true, true, true, true),

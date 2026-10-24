@@ -660,7 +660,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     // Effects: U1 C1 reconstructs one hidden Unbound terminal owner, without
     // Artifact harvest or physical deletion; U2 C2 reuses the exact Arc/handle;
     // U3 C3 authorizes deletion without inventing a durable Environment binding;
-    // U4 C4 retries with that same retained owner; U5 only C5 removes the slot.
+    // U4 C4 retries with that same retained owner; U5 only C5 removes the installed Session.
     // The real Local provider owns marker identity and byte deletion. The real
     // aggregate owns both receipt gates; an empty dispatch queue is no proof.
     let thread = "terminal-unmaterialized-replay";
@@ -959,7 +959,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         .await;
     assert!(
         !host.run_assembly.installed_sessions.contains(thread),
-        "U5 only durable ack releases slot"
+        "U5 only durable ack releases installed Session"
     );
 }
 

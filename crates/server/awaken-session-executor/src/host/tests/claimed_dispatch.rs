@@ -440,11 +440,11 @@ async fn session_event_dispatch_uses_the_explicit_persisted_trace_source() {
     );
 }
 
-/// Dispatch Resource selection stays on the one Session-slot authority for both
+/// Dispatch Resource selection stays on the one installed-Session authority for both
 /// ordinary and Session-root durable requests.
 #[tokio::test]
 async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
-    // Cause/effect graph: C1 the slot is/is-not a prepared Session; C2 the
+    // Cause/effect graph: C1 the installed Session is/is-not a prepared Session; C2 the
     // canonical root/ordinary decorator is selected; C3 an aggregate-staged
     // Resource transition exists; C4 an active manifest exists; C5 an
     // Environment runtime projection exists independently of Session admission.
@@ -465,7 +465,7 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
     // | R5   | T  | T    | none | A    | F  | A       | none    | thread   | A            |
     // | R6   | T  | T    | A->B | A    | T  | B       | some    | thread   | A            |
     // Constraint: C1, C3, C4, runtime projection, and the selected manifest are
-    // read under one Session-slot lock, so no dispatch can mix generations.
+    // read under one installed-Session lock, so no dispatch can mix generations.
     for (
         rule,
         prepared_session,
@@ -530,11 +530,11 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
             .expect("selected manifest");
         host.run_assembly
             .installed_sessions
-            .install_with(&thread, |slot| {
-                slot.run.session_dispatch = prepared_session;
-                slot.realization.staging_mut().manifest = active.clone();
-                slot.realization.staging_mut().transition = transition;
-                slot.replace_frozen_with(|next| {
+            .install_with(&thread, |installed| {
+                installed.run.session_dispatch = prepared_session;
+                installed.realization.staging_mut().manifest = active.clone();
+                installed.realization.staging_mut().transition = transition;
+                installed.replace_frozen_with(|next| {
                     next.environment_snapshot = runtime_projection.then(|| {
                         session_environment(
                         awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,

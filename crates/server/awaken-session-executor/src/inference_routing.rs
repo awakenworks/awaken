@@ -25,17 +25,17 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 /// a ref becomes an executor.
 pub(crate) struct InferenceRouting {
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
-    slots: Arc<crate::installed_session::InstalledSessions>,
+    installed_sessions: Arc<crate::installed_session::InstalledSessions>,
 }
 
 impl InferenceRouting {
     pub(crate) fn new(
-        slots: Arc<crate::installed_session::InstalledSessions>,
+        installed_sessions: Arc<crate::installed_session::InstalledSessions>,
         materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     ) -> Self {
         Self {
             materializer,
-            slots,
+            installed_sessions,
         }
     }
 
@@ -58,7 +58,7 @@ impl InferenceRouting {
         thread: &str,
         model_ref: impl Into<String>,
     ) -> Result<(), crate::realization_error::RealizationLock> {
-        self.slots
+        self.installed_sessions
             .replace_frozen_with(thread, |next| next.model_ref = Some(model_ref.into()))
     }
 
@@ -81,7 +81,12 @@ impl InferenceRouting {
         &self,
         thread: &str,
     ) -> Result<Option<String>, crate::realization_error::RealizationError> {
-        Ok(self.slots.realizations().frozen(thread)?.model_ref.clone())
+        Ok(self
+            .installed_sessions
+            .realizations()
+            .frozen(thread)?
+            .model_ref
+            .clone())
     }
 
     pub(crate) fn executor_for_activation(

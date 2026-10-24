@@ -251,9 +251,9 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
 }
 
 /// Renewal-response decision table: C1 Control I/O is pending; C2 the selected
-/// slot/lease is current, replaced, or removed; C3 reply is success, temporary
+/// installed Session/lease is current, replaced, or removed; C3 reply is success, temporary
 /// failure, or conclusive ownership loss. R1 replaced/removed x every reply ->
-/// no overwrite, interrupt, revocation, or slot recreation. R2 current + success
+/// no overwrite, interrupt, revocation, or installed Session recreation. R2 current + success
 /// -> monotonic lease update without waiting for Stage (existing heartbeat test).
 /// R3 current + temporary failure -> preserve live authority (existing timeout
 /// matrix). R4 current + ownership loss -> wait for realization admission, then
@@ -349,9 +349,9 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
                     .unwrap();
                 host.run_assembly
                     .installed_sessions
-                    .install_with("renew-race", |slot| {
-                        slot.run.dispatch_claim = Some(claim.clone());
-                        slot.replace_frozen_with(|next| {
+                    .install_with("renew-race", |installed| {
+                        installed.run.dispatch_claim = Some(claim.clone());
+                        installed.replace_frozen_with(|next| {
                             next.workspace = Some("new-workspace".into())
                         });
                     })
@@ -374,10 +374,10 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
                 assert_eq!(
                     host.run_assembly
                         .installed_sessions
-                        .read("renew-race", |slot| (
-                            slot.realization.execution().authority.lease().cloned(),
-                            slot.run.dispatch_claim.clone(),
-                            slot.inputs.workspace.clone()
+                        .read("renew-race", |installed| (
+                            installed.realization.execution().authority.lease().cloned(),
+                            installed.run.dispatch_claim.clone(),
+                            installed.inputs.workspace.clone()
                         ))
                         .expect("installed Sessions"),
                     Some((Some(replacement), Some(claim), Some("new-workspace".into()))),
@@ -623,7 +623,7 @@ async fn per_request_deadlines_release_every_renewal_capacity_slot() {
      * authority timing yields a 50s virtual per-request deadline; C4 all old leases
      * remain live. Effects: E1 the first eight enter, time out, and release
      * their slots; E2 the queued eight exhaust the SAME budget before entry; E3 no cancelled future leaks
-     * an active slot; E4 all local projections remain for retry.
+     * an active installed; E4 all local projections remain for retry.
      *
      * | Rule | renewals | response | deadline/cap | Effect |
      * |---|---:|---|---|---|
@@ -854,13 +854,13 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
             for (index, (identity, lease)) in before.iter().enumerate() {
                 host.run_assembly
                     .installed_sessions
-                    .read(&format!("deadline-mutex-{index:02}"), |slot| {
+                    .read(&format!("deadline-mutex-{index:02}"), |installed| {
                         assert!(
-                            Arc::ptr_eq(&slot.realization.execution().phase, identity),
-                            "M4 exact slot is retained"
+                            Arc::ptr_eq(&installed.realization.execution().phase, identity),
+                            "M4 exact installed Session is retained"
                         );
                         assert_eq!(
-                            &slot.realization.execution().authority,
+                            &installed.realization.execution().authority,
                             lease,
                             "M4 cancellation cannot revoke a waiting projection"
                         );
@@ -916,10 +916,10 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
 async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
     // Cause/effect graph: C1 a due renewal has captured lease A and blocks at
     // Control; C2 canonical projection installation replaces A with generation
-    // B, extends A past the requested expiry, or removes the slot; C3 the old
+    // B, extends A past the requested expiry, or removes the installed Session; C3 the old
     // request returns success, explicit ownership loss, or Unavailable after
     // A's expiry. Effects: E1 retain the newer projection and its dispatch claim;
-    // E2 never resurrect a removed slot; E3 retain existing fail-closed behavior
+    // E2 never resurrect a removed installed Session; E3 retain existing fail-closed behavior
     // when no projection changed (covered by F1-F3 above).
     //
     // | Rule | old response | projection during I/O | Effect |
@@ -1062,10 +1062,10 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
         let observed = host
             .run_assembly
             .installed_sessions
-            .read(rule, |slot| {
+            .read(rule, |installed| {
                 (
-                    slot.realization.execution().authority.lease().cloned(),
-                    slot.run.dispatch_claim.clone(),
+                    installed.realization.execution().authority.lease().cloned(),
+                    installed.run.dispatch_claim.clone(),
                 )
             })
             .expect("installed Sessions");
