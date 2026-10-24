@@ -3953,6 +3953,7 @@ async fn outcome_send_returns_the_root_receipt_before_lifecycle_execution() {
     let supervisor = tokio::spawn(
         state
             .session_application()
+            .recovery()
             .run_lifecycle_supervisor(cancellation.clone()),
     );
     tokio::task::yield_now().await;
@@ -4040,6 +4041,7 @@ async fn outcome_loop_projects_evaluations() {
     let supervisor = tokio::spawn(
         state
             .session_application()
+            .recovery()
             .run_lifecycle_supervisor(cancellation.clone()),
     );
     tokio::task::yield_now().await;

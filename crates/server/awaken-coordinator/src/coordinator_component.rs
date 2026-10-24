@@ -174,7 +174,10 @@ pub(crate) fn register_session_lifecycle(
     session_application: Arc<SessionApplication>,
 ) {
     service_lifecycle.spawn("coordinator-session-lifecycle", move |cancel| async move {
-        session_application.run_lifecycle_supervisor(cancel).await
+        session_application
+            .recovery()
+            .run_lifecycle_supervisor(cancel)
+            .await
     });
 }
 

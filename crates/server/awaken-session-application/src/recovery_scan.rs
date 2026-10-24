@@ -177,15 +177,11 @@ impl ContinuationDiagnostics {
     /// this loop-owned value, so they cannot publish an out-of-order view.
     pub(super) async fn scan(
         &mut self,
-        application: &super::SessionApplication,
+        repository: &dyn SessionRepository,
+        clock: &dyn awaken_time::WallClock,
         audit_resource_references: bool,
     ) -> Result<SessionRecoveryCandidates, SessionRepositoryError> {
-        let candidates = recovery_candidates(
-            application.session_repository(),
-            application.clock.as_ref(),
-            audit_resource_references,
-        )
-        .await?;
+        let candidates = recovery_candidates(repository, clock, audit_resource_references).await?;
         self.signal(&candidates);
         Ok(candidates)
     }

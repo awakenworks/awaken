@@ -309,6 +309,7 @@ impl SessionAssembly {
             creation_commands,
             run_admissions,
             coordination,
+            recovery,
         } = self.use_cases(&kernel, &foundation, &lease);
         let SessionKernel {
             #[cfg(any(test, feature = "test-support"))]
@@ -321,7 +322,7 @@ impl SessionAssembly {
             environment_binding_sink,
             execution_admission,
             runtime_incarnation,
-            event_batch_cutover_validation,
+            event_batch_cutover_validation: _,
         } = kernel;
         let Foundation {
             credentials,
@@ -371,7 +372,7 @@ impl SessionAssembly {
             outcome_reconciliation,
             execution_admission,
             runtime_incarnation,
-            event_batch_cutover_validation,
+            recovery,
             #[cfg(any(test, feature = "test-support"))]
             store,
             #[cfg(any(test, feature = "test-support"))]
@@ -495,6 +496,20 @@ impl SessionAssembly {
             lease.realizations.clone(),
             &self.runtime,
         ));
+        let recovery = Arc::new(crate::SessionRecovery::new(
+            crate::recovery::SessionRecoveryCollaborators {
+                repository: kernel.mutations.repository().clone(),
+                clock: kernel.clock.clone(),
+                lifecycle: kernel.lifecycle.clone(),
+                work_assignments: foundation.work_assignments.clone(),
+                resource_reconciliation: resource_reconciliation.clone(),
+                continuations: lease.continuations.clone(),
+                realizations: lease.realizations.clone(),
+                event_batches: event_batches.clone(),
+                outcome_reconciliation: outcome_reconciliation.clone(),
+                event_batch_cutover_validation: kernel.event_batch_cutover_validation.clone(),
+            },
+        ));
         UseCases {
             event_batches,
             outcome_reconciliation,
@@ -505,6 +520,7 @@ impl SessionAssembly {
             creation_commands,
             run_admissions,
             coordination,
+            recovery,
         }
     }
 
@@ -650,6 +666,7 @@ struct UseCases {
     creation_commands: Arc<crate::SessionCreationCommands>,
     run_admissions: Arc<crate::SessionRunAdmissions>,
     coordination: Arc<crate::SessionCoordination>,
+    recovery: Arc<crate::SessionRecovery>,
 }
 
 /// The realization lease protocol and the components built directly on it.
@@ -673,7 +690,9 @@ pub(crate) fn reassemble(
         environment_binding_sink: application.environment_binding_sink.clone(),
         execution_admission: application.execution_admission.clone(),
         runtime_incarnation: application.runtime_incarnation.clone(),
-        event_batch_cutover_validation: application.event_batch_cutover_validation.clone(),
+        event_batch_cutover_validation: application
+            .recovery
+            .session_event_batch_cutover_validation_source(),
     };
     let holders = |application: &SessionApplication| {
         [
@@ -697,6 +716,7 @@ pub(crate) fn reassemble(
             Arc::strong_count(&application.coordination),
             Arc::strong_count(&application.event_batches),
             Arc::strong_count(&application.outcome_reconciliation),
+            Arc::strong_count(&application.recovery),
         ]
     };
     let unshared = application.fixture_assembly.clone().assemble(kernel());

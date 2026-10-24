@@ -206,8 +206,9 @@ pub use awaken_session_runtime_contract::{
 pub use credentials::{SessionCredentials, SessionPreparationError};
 mod lifecycle;
 pub use lifecycle::{BudgetSettlementOutcome, SessionDeleteCommand, SessionLifecycle};
-mod lifecycle_supervisor;
+mod recovery;
 pub use queries::SessionQueries;
+pub use recovery::SessionRecovery;
 mod mcp;
 mod realization;
 mod resource_lowering;

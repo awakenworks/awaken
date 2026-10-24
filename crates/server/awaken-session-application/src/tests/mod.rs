@@ -4974,6 +4974,7 @@ mod event_batch_cutover_validation;
 mod event_batches;
 mod execution_observation;
 pub(crate) mod realization;
+mod recovery;
 mod recovery_scan;
 mod recovery_sweep;
 mod resource_commands;

@@ -183,8 +183,8 @@ impl SessionPersistence {
 /// async fn existing_policy(runs: &dyn StreamingRunRuntime) -> Result<bool, RunError> {
 ///     runs.supports_mid_conversation_system("thread").await
 /// }
-/// fn selected_role(application: &SessionApplication) -> &dyn SessionEventBatches {
-///     application
+/// fn selected_role(application: &SessionApplication) -> std::sync::Arc<dyn SessionEventBatches> {
+///     application.event_batches()
 /// }
 /// ```
 ///
@@ -241,7 +241,9 @@ impl SessionPersistence {
 /// use awaken_session_application::{SessionApplication, SessionObservation};
 /// use awaken_session_runtime_contract::SessionThreadLiveSubscription;
 /// use awaken_session_types::{RunError, SessionId};
-/// fn selected(application: &SessionApplication) -> &dyn SessionObservation { application }
+/// fn selected(application: &SessionApplication) -> std::sync::Arc<dyn SessionObservation> {
+///     application.observations()
+/// }
 /// async fn live(role: &dyn SessionObservation, session: &SessionId)
 ///     -> Result<Option<Box<dyn SessionThreadLiveSubscription>>, RunError>
 /// {
@@ -440,7 +442,7 @@ pub struct SessionApplication {
     /// One complete set of immutable execution observations.
     execution_admission: Arc<SessionExecutionAdmission>,
     runtime_incarnation: String,
-    event_batch_cutover_validation: Arc<SessionEventBatchCutoverValidationSource>,
+    recovery: Arc<crate::SessionRecovery>,
     /// The composition inputs a fixture may still change before sharing.
     #[cfg(any(test, feature = "test-support"))]
     store: Arc<dyn awaken_session_repository_contract::SessionStore>,
@@ -767,6 +769,11 @@ impl SessionApplication {
     #[must_use]
     pub fn event_batches(&self) -> Arc<crate::SessionEventBatchCommands> {
         self.event_batches.clone()
+    }
+
+    #[must_use]
+    pub fn recovery(&self) -> Arc<crate::SessionRecovery> {
+        self.recovery.clone()
     }
 
     #[must_use]
