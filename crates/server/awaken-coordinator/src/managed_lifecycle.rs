@@ -300,11 +300,18 @@ mod tests {
         // completion does. The application commits the Session/outbox facts;
         // only delivery may wake the disposable wire projection.
         let operation_id = "lifecycle-test-background-run";
+        let access = awaken_session_application::SessionRootReads::authorize(
+            &*state.session_application().queries(),
+            "default",
+            &awaken_session_types::SessionId::from(&session.id),
+        )
+        .await
+        .expect("L1 the default Workspace owns the Session");
         state
             .session_application()
             .run_admissions()
             .run_admitted_session_for_owner(
-                "default",
+                &access,
                 AdmitSessionRun {
                     session_id: awaken_session_types::SessionId::from(&session.id),
                     agent_id: "coder".into(),

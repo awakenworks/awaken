@@ -8,9 +8,9 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
+use awaken_dispatch_contract::CompletionSink;
 use awaken_dispatch_contract::RunClaim;
 use awaken_dispatch_contract::{DispatchSettlementError, DispatchSettlementObserver, RunDispatch};
-use awaken_dispatch_execution::CompletionSink;
 
 use crate::{ExecutorComponents, FileContentSource};
 
@@ -59,7 +59,7 @@ impl ExecutorComponents {
     }
 
     pub fn worker_completion_sink(&self) -> Arc<dyn CompletionSink> {
-        self.completion.clone()
+        self.settlement.clone()
     }
 
     pub fn worker_stream_sink(&self) -> Arc<dyn StreamSink> {

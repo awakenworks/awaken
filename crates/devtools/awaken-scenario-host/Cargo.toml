@@ -28,6 +28,7 @@ awaken-protocol-mcp.workspace = true
 # The extracted service layer: ExecutorComponents and its caller-role components
 # live here; this binary only selects and serves scenario modes.
 awaken-session-executor = { workspace = true, features = ["test-support"] }
+awaken-session-run-delivery.workspace = true
 awaken-installation-workspace.workspace = true
 awaken-config-service.workspace = true
 awaken-ext-builtin-tools.workspace = true

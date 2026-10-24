@@ -44,8 +44,14 @@ async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_pre
     let batch = warm
         .application
         .event_batches()
-        .append_session_event_batch(
-            &session.id,
+        .append_owned_session_event_batch(
+            &awaken_session_application::SessionRootReads::authorize(
+                &*warm.application.queries(),
+                &warm.resolve_owner(&session.id).await.unwrap().unwrap(),
+                &SessionId::from(&session.id),
+            )
+            .await
+            .unwrap(),
             vec![SessionEventInput::DefineOutcome {
                 description: "ship the result".into(),
                 rubric: SessionOutcomeRubric::Text {
@@ -53,6 +59,7 @@ async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_pre
                 },
                 max_iterations: Some(1),
             }],
+            None,
             None,
             None,
         )
@@ -232,8 +239,14 @@ async fn terminal_committing_between_outcome_query_and_root_read_cannot_backfill
     let batch = warm
         .application
         .event_batches()
-        .append_session_event_batch(
-            &session_id,
+        .append_owned_session_event_batch(
+            &awaken_session_application::SessionRootReads::authorize(
+                &*warm.application.queries(),
+                &warm.resolve_owner(&session_id).await.unwrap().unwrap(),
+                &SessionId::from(&session_id),
+            )
+            .await
+            .unwrap(),
             vec![SessionEventInput::DefineOutcome {
                 description: "ship the result".into(),
                 rubric: SessionOutcomeRubric::Text {
@@ -241,6 +254,7 @@ async fn terminal_committing_between_outcome_query_and_root_read_cannot_backfill
                 },
                 max_iterations: Some(1),
             }],
+            None,
             None,
             None,
         )

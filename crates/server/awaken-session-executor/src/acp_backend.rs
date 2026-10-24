@@ -17,11 +17,11 @@ pub(crate) fn deployment_test_binary(key: &str) -> std::path::PathBuf {
 
 /// Bridge ACP bring-up observations onto this Host's existing thread event hub.
 pub(crate) struct HubLaunchObserver {
-    hub: Arc<crate::hub::ThreadEventHub>,
+    hub: Arc<crate::ThreadEventHub>,
 }
 
 impl HubLaunchObserver {
-    pub(crate) fn new(hub: Arc<crate::hub::ThreadEventHub>) -> Self {
+    pub(crate) fn new(hub: Arc<crate::ThreadEventHub>) -> Self {
         Self { hub }
     }
 }
@@ -44,7 +44,7 @@ impl LaunchObserver for HubLaunchObserver {
         tracing::info!(scope, stage, protocol_step, "ACP launch progress");
         self.hub.publish(
             scope,
-            crate::hub::ThreadEvent::AgentLaunch {
+            crate::ThreadEvent::AgentLaunch {
                 stage: stage.to_string(),
                 detail: event.detail.clone(),
             },
@@ -360,7 +360,7 @@ mod tests {
             .expect("timed out waiting for sub.recv()")
             .unwrap()
         {
-            crate::hub::ThreadEvent::AgentLaunch { stage, detail } => {
+            crate::ThreadEvent::AgentLaunch { stage, detail } => {
                 assert_eq!(stage, "launching");
                 assert_eq!(detail.as_deref(), Some("claude-agent-acp"));
             }
@@ -371,7 +371,7 @@ mod tests {
             .expect("timed out waiting for sub.recv()")
             .unwrap()
         {
-            crate::hub::ThreadEvent::AgentLaunch { stage, .. } => assert_eq!(stage, "ready"),
+            crate::ThreadEvent::AgentLaunch { stage, .. } => assert_eq!(stage, "ready"),
             other => panic!("expected AgentLaunch ready, got {other:?}"),
         }
     }

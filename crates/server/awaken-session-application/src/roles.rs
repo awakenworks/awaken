@@ -110,6 +110,14 @@ pub trait SessionRootReads: Send + Sync {
     /// The Workspace that owns one Session.
     async fn owner(&self, session_id: &SessionId) -> Result<String, SessionMutationError>;
 
+    /// The one ownership verdict owner-scoped commands accept: a foreign and
+    /// a missing Session are the same `NotFound`, with no read of the root.
+    async fn authorize(
+        &self,
+        owner_scope: &str,
+        session_id: &SessionId,
+    ) -> Result<crate::SessionAccess, crate::SessionAccessError>;
+
     /// Every visible root one Workspace owns.
     async fn sessions_by_owner(
         &self,
@@ -194,7 +202,7 @@ pub trait SessionEventBatches: Send + Sync {
     /// See [`SessionApplication::append_and_drive_session_event_batch_idempotent`].
     async fn append_and_drive_session_event_batch_idempotent(
         &self,
-        session_id: &SessionId,
+        access: &crate::SessionAccess,
         inputs: Vec<SessionEventInput>,
         data_subject_id: Option<String>,
         traceparent: Option<String>,
@@ -204,7 +212,7 @@ pub trait SessionEventBatches: Send + Sync {
     /// See [`SessionApplication::append_session_event_batch_idempotent`].
     async fn append_session_event_batch_idempotent(
         &self,
-        session_id: &SessionId,
+        access: &crate::SessionAccess,
         inputs: Vec<SessionEventInput>,
         data_subject_id: Option<String>,
         traceparent: Option<String>,
@@ -249,7 +257,7 @@ pub trait ProfiledSessionCommands: Send + Sync {
     /// See [`crate::SessionRunAdmissions::admit_profiled_session_run`].
     async fn admit_profiled_session_run(
         &self,
-        owner_scope: &str,
+        access: &crate::SessionAccess,
         command: AdmitSessionRun,
     ) -> Result<AdmittedSessionRun, SessionProjectionRecoveryError>;
 

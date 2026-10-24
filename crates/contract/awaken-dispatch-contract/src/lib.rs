@@ -13,6 +13,7 @@
 
 mod claimed_commit;
 mod claimed_stream;
+mod completion_sink;
 pub mod dispatch;
 mod dispatch_transition;
 pub mod operational;
@@ -20,6 +21,7 @@ pub mod run_dispatch;
 mod session_run_events;
 mod wake;
 mod worker_transport;
+pub use completion_sink::CompletionSink;
 pub use wake::WakeSignal;
 
 pub use session_run_events::SessionRunEventPage;

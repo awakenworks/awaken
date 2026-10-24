@@ -174,13 +174,7 @@ async fn resolve_claimed_worker<S: Dispatch + 'static>(
     Ok(worker)
 }
 
-/// Notified the instant the pool settles a run, so a foreground submitter can await
-/// its own run's completion by **event** rather than polling committed truth —
-/// removing the poll-interval latency floor from the durable foreground path.
-pub trait CompletionSink: Send + Sync {
-    /// The pool drove `run_id` to a settled `state` (`Ended` or `Awaiting`).
-    fn settled(&self, run_id: &RunId, state: &RunState);
-}
+use awaken_dispatch_contract::CompletionSink;
 
 /// A running pool of drain tasks over one shared dispatch queue.
 pub struct DispatchPool<S> {

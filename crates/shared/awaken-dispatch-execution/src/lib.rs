@@ -50,7 +50,7 @@ pub use coordination_activation::{coordinated_activation_matches, coordinated_ru
 pub use error::{Error, NotReady};
 pub use fenced_checkpoint::FencedStreamCheckpointStore;
 pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
-pub use pool::{CompletionSink, DispatchPool, DispatchReconciler, PoolDrainFence, WorkerResolver};
+pub use pool::{DispatchPool, DispatchReconciler, PoolDrainFence, WorkerResolver};
 pub use process_dispatch::{ClaimedRunsDrained, ProcessDispatch, ProcessDispatchLifecycle};
 pub use reconciliation::TerminalReconciliationScan;
 pub use recovery_projection::{RecoveryProjection, RecoveryProjectionError};

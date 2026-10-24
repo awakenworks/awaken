@@ -170,6 +170,8 @@ pub use event_batch_cutover_validation::{
     SessionEventBatchCutoverValidationSnapshot, SessionEventBatchCutoverValidationSource,
 };
 include!("application.rs");
+mod access;
+pub use access::{SessionAccess, SessionAccessError};
 mod activity;
 mod inputs;
 mod lifecycle_outbox_relay;

@@ -87,9 +87,9 @@ pub use awaken_protocol_managed::{
     default_models, files_router, memory_stores_router, models_router, skills_router,
 };
 pub use awaken_session_executor::{
-    ExecutorComponents, HostResume, SessionExecutorBuilder, ThreadEvent, ThreadEventHub,
-    advertised_tools,
+    ExecutorComponents, HostResume, SessionExecutorBuilder, advertised_tools,
 };
+pub use awaken_session_run_delivery::{ThreadEvent, ThreadEventHub};
 
 /// One tool-free ACP stand-in that can act as either Outcome Worker or Judge.
 /// Its prompt classification makes the Worker/Grader backend matrix observable

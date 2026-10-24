@@ -208,6 +208,20 @@ impl SessionRootReads for SessionQueries {
         session_owner(self.repository.as_ref(), session_id).await
     }
 
+    async fn authorize(
+        &self,
+        owner_scope: &str,
+        session_id: &SessionId,
+    ) -> Result<crate::SessionAccess, crate::SessionAccessError> {
+        match session_owner(self.repository.as_ref(), session_id).await {
+            Ok(owner) if owner == owner_scope => {
+                Ok(crate::SessionAccess::verified(owner_scope, session_id))
+            }
+            Ok(_) | Err(SessionMutationError::NotFound) => Err(crate::SessionAccessError::NotFound),
+            Err(error) => Err(crate::SessionAccessError::Unavailable(error.to_string())),
+        }
+    }
+
     async fn sessions_referencing_credential_source(
         &self,
         workspace_id: &str,
