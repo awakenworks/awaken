@@ -438,7 +438,7 @@
 - 必须断言：包含稳定 code、原 operation/资源身份及可执行恢复方向；secret、token、credential URL 不出现。
 - 反向控制：依赖英文文案或打印凭据以求可诊断的实现必须失败。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：`degraded_registration_health_is_observable_secret_free_and_leaks_are_detected`（E13 本机 Windows 执行通过，覆盖已成立的 oracle 与反向控制）；产品缺口复现 `degraded_registration_diagnostics_never_contain_the_secret_canary`、`degraded_registration_diagnostics_carry_stable_code_identity_and_recovery`（忽略，不计证据）：健康快照不含机密，但 supervisor 日志直接输出原始错误（含凭据 URL），且没有稳定 code、领域身份或恢复方向。完整场景：待验收。
+- 绑定及状态：`degraded_registration_health_is_observable_secret_free_and_leaks_are_detected`（E13 本机 Windows 执行通过，覆盖反向控制）、`degraded_registration_diagnostics_never_contain_the_secret_canary`、`degraded_registration_diagnostics_carry_stable_code_identity_and_recovery`（E40 本机 Windows 执行通过：supervisor 诊断只含稳定 code、领域与恢复方向，不含原始错误）。当前提交 oracle 与反向控制均已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ### T41-C02 服务与投影就绪区分
 
