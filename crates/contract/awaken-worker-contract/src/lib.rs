@@ -73,6 +73,18 @@ pub use requirements::{
 };
 pub use run_claim::RunClaim;
 
+/// Why a Worker lifecycle is stopping. The Worker drives its drain from it,
+/// and a process that supervises a co-located Worker (AllInOne) selects it from
+/// the signal it received.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerShutdown {
+    /// Developer/foreground stop: close admission and exit without an in-flight
+    /// grace window.
+    Prompt,
+    /// Orchestrator scale-in: close admission and honor the configured grace.
+    Graceful,
+}
+
 #[cfg(test)]
 use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationState};
 #[cfg(test)]

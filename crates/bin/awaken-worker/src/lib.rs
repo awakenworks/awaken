@@ -76,6 +76,7 @@ mod credential_liveness;
 mod k8s_create_client;
 mod lifecycle;
 mod manifest;
+#[cfg(test)]
 mod relay_hand;
 
 use credential_liveness::WorkerObservationCache;
@@ -93,13 +94,12 @@ pub use attempt_decorator::{
     RegisteredAttemptDecoratorFactory, RegisteredWorkerApplicationFactory, RegisteredWorkerContext,
     WorkerApplicationCapabilities, WorkerApplicationDependencies,
 };
+use awaken_worker_contract::WorkerShutdown;
 pub use bootstrap::{WorkerDaemonConfig, WorkerUpstreamSecurity, worker_upstream};
 pub use credential_files::WorkerCredentialFileResolver;
 #[cfg(feature = "container-k8s")]
 pub use k8s_create_client::WorkerK8sCreateClient;
-pub use lifecycle::WorkerShutdown;
 pub use manifest::StandardManifestConfig;
-pub use relay_hand::relay_hand_executor_factory;
 
 /// Registration-bound construction of the exact Memory projection adapter.
 /// The assigned Worker identity is required to authenticate every claim-fenced

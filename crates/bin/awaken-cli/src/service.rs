@@ -625,7 +625,7 @@ async fn serve_prepared_process(
             ).await
         }
         result = &mut server => {
-            let _ = worker_shutdown_tx.send(Some(awaken_worker::WorkerShutdown::Prompt));
+            let _ = worker_shutdown_tx.send(Some(awaken_worker_contract::WorkerShutdown::Prompt));
             let worker_result = local_worker_result((&mut worker).await);
             result.map_err(|error| format!("server stopped: {error}"))?;
             worker_result
@@ -638,7 +638,7 @@ async fn serve_prepared_process(
             ).await
         }
         failure = service_lifecycle.wait_for_failure() => {
-            let _ = worker_shutdown_tx.send(Some(awaken_worker::WorkerShutdown::Prompt));
+            let _ = worker_shutdown_tx.send(Some(awaken_worker_contract::WorkerShutdown::Prompt));
             finish_local_worker_before_surfaces(
                 async { local_worker_result((&mut worker).await) },
                 &mut server,
@@ -781,7 +781,7 @@ async fn supervise_local_worker(
     prepared: crate::PreparedLocalWorker,
     upstream: String,
     deployment: ResolvedDeployment,
-    mut shutdown: tokio::sync::watch::Receiver<Option<awaken_worker::WorkerShutdown>>,
+    mut shutdown: tokio::sync::watch::Receiver<Option<awaken_worker_contract::WorkerShutdown>>,
     clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), String> {
     let mut restart_attempt = 0_u32;
@@ -910,7 +910,7 @@ fn open_browser(url: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-async fn shutdown_mode_signal() -> awaken_worker::WorkerShutdown {
+async fn shutdown_mode_signal() -> awaken_worker_contract::WorkerShutdown {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -918,18 +918,18 @@ async fn shutdown_mode_signal() -> awaken_worker::WorkerShutdown {
             Ok(term) => term,
             Err(_) => {
                 let _ = tokio::signal::ctrl_c().await;
-                return awaken_worker::WorkerShutdown::Prompt;
+                return awaken_worker_contract::WorkerShutdown::Prompt;
             }
         };
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => awaken_worker::WorkerShutdown::Prompt,
-            _ = term.recv() => awaken_worker::WorkerShutdown::Graceful,
+            _ = tokio::signal::ctrl_c() => awaken_worker_contract::WorkerShutdown::Prompt,
+            _ = term.recv() => awaken_worker_contract::WorkerShutdown::Graceful,
         }
     }
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
-        awaken_worker::WorkerShutdown::Prompt
+        awaken_worker_contract::WorkerShutdown::Prompt
     }
 }
 

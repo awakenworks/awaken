@@ -425,7 +425,7 @@ impl WorkerDaemonConfig {
             .with_deployment_config(runtime)
             .with_standard_manifest_config(manifest)
             .with_inference_materializer(Arc::new(inference))
-            .with_hand_executor_factory(crate::relay_hand_executor_factory())
+            .with_hand_executor_factory(awaken_tool_relay::relay_hand_executor_factory())
             .with_credential_materializer(credentials)
             .with_remote_session_resource_support()
             .with_graceful_drain(std::time::Duration::from_secs(self.worker.drain_grace_secs))

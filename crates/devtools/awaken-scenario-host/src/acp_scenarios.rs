@@ -188,7 +188,7 @@ pub async fn build_acp_jsonrpc_router_with_deployment(
                 awaken_execution_composition::with_acp_launch_source(
                     host.with_agent_publications(host_publication),
                     &deployment,
-                    awaken_worker::relay_hand_executor_factory(),
+                    awaken_tool_relay::relay_hand_executor_factory(),
                     launch,
                 )
                 .await
@@ -722,7 +722,7 @@ pub(crate) async fn bind_acp_session_environment(
             let host = awaken_execution_composition::with_acp_launch_source(
                 host,
                 &deployment,
-                awaken_worker::relay_hand_executor_factory(),
+                awaken_tool_relay::relay_hand_executor_factory(),
                 source,
             )
             .await
@@ -870,7 +870,7 @@ pub async fn build_acp_container_router() -> Router {
             awaken_execution_composition::with_acp_launch_source(
                 host.with_agent_publications(host_publication),
                 &deployment,
-                awaken_worker::relay_hand_executor_factory(),
+                awaken_tool_relay::relay_hand_executor_factory(),
                 launch,
             )
             .await

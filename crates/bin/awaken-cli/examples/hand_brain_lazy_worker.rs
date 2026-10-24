@@ -125,7 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Reuse the production CLI's one container Hand relay boundary. Container
         // providers fail closed without it; local providers accept the same factory
         // without creating a second execution path.
-        .with_hand_executor_factory(awaken_worker::relay_hand_executor_factory())
+        .with_hand_executor_factory(awaken_tool_relay::relay_hand_executor_factory())
         .with_remote_session_resource_support()
         .with_standard_manifest(Default::default())
         .without_admin_surface()

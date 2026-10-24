@@ -195,7 +195,7 @@ async fn lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires
                 awaken_time::system_clock(),
             ),
         ));
-        let bound = awaken_worker::relay_hand_executor_factory().bind(
+        let bound = awaken_tool_relay::relay_hand_executor_factory().bind(
             Box::new(brain),
             "hand-scope",
             awaken_tool_contract::tool::ToolRecoveryCapability::DurableRequest,

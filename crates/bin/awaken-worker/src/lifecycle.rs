@@ -138,16 +138,6 @@ impl WarmCapacityPlan {
     }
 }
 
-/// Why the Worker lifecycle is stopping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkerShutdown {
-    /// Developer/foreground stop: close admission and exit without an in-flight
-    /// grace window.
-    Prompt,
-    /// Orchestrator scale-in: close admission and honor the configured grace.
-    Graceful,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WorkerRevocationStage {
     LocalFenceAndInterrupt,
