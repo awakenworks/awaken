@@ -3,7 +3,7 @@
     "id": "T14",
     "title": "资源替换与引用修复",
     "owner": "Session aggregate 与 resource reconciliation",
-    "entrypoint": "crates/server/awaken-session-application/src/resource_reconciliation/reference_tests.rs",
+    "entrypoint": "crates/server/awaken-session-application/src/resource_references/tests.rs",
     "change": "retain",
     "why": "保留确切 manifest 身份和原子 root；索引是可修复投影。",
     "kind": "behavior",

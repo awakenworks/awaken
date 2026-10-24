@@ -33,6 +33,11 @@ run "check-ownership-index"       python3 scripts/ci/check_ownership_index.py
 run "check-role-catalogs"         python3 scripts/ci/check_role_catalogs.py
 run "check-architecture-vocabulary-self-test" python3 scripts/ci/check_architecture_vocabulary.py --self-test
 run "check-architecture-vocabulary" python3 scripts/ci/check_architecture_vocabulary.py
+# The Session acceptance ledger may only claim what bound assertions and
+# receipts prove; its gate tests execute each refusal on real inputs.
+run "check-session-acceptance self-test" python3 scripts/ci/check_session_acceptance.py --self-test
+run "check-session-acceptance"    python3 scripts/ci/check_session_acceptance.py
+run "session-acceptance gate tests" python3 scripts/ci/test_session_acceptance.py
 
 if [ "$fail" -ne 0 ]; then
   echo "✗ documentation checks failed" >&2

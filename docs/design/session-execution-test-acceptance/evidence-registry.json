@@ -250,5 +250,106 @@
     "actual_unique_cases": 19,
     "command_location": "receipt.rows[].argv or receipt.steps[].argv; original unnormalized commands remain in the immutable receipt",
     "historical": true
+  },
+  {
+    "id": "E11",
+    "receipt": "target/session-acceptance-evidence/E11/receipt.json",
+    "receipt_sha256": "6cc8ba12ea09e827888ed88df2b1dfba954058cce4a2cfb70577bfc77f94b94a",
+    "source": {
+      "head": "9540e98c4bf16297e27b10d9bf6790418518f549",
+      "dirty_digest": "53499fe563985afe569491b7af726c8231f0eed8befb1892202f4a62adffbf64"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "Session acceptance L0 gate tests on native Windows: real workspace guards, impact planner, listed/executed validator and ledger validator with injected counter-examples",
+    "argv": [
+      "python",
+      "scripts/ci/test_session_acceptance.py",
+      "-v"
+    ],
+    "environment_names": [
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 58.8,
+    "executed_count": 13,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "725c3edd3f283e445bdaf0115a3291ce6159380673c5858e47b413969973547d",
+    "historical": false,
+    "entry_sha256": "253434fe41e1b104ec3d89c21d10e3d42415d2a09eca37be976782bd2b9fedba"
+  },
+  {
+    "id": "E12",
+    "receipt": "target/session-acceptance-evidence/E12/receipt.json",
+    "receipt_sha256": "ba7bee9016f7371395cab042b64f9606dafacaf5921936fba03c60cc81b7c9f4",
+    "source": {
+      "head": "9540e98c4bf16297e27b10d9bf6790418518f549",
+      "dirty_digest": "c49e5d4f8528b2d57c2645b8c5ec0d42d5c0b04674040fd1ed133d1ede2fbd41"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [
+      "crates/bin/awaken-worker/src/tests.rs",
+      "crates/bin/awaken-worker/src/tests/restore_capability.rs",
+      "crates/control/awaken-control/src/registration_supervisor.rs",
+      "crates/server/awaken-credential-materializer/src/lib.rs",
+      "crates/server/awaken-credential-materializer/src/tests/binding_matrix.rs",
+      "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+      "crates/server/awaken-session-executor/src/host/build.rs",
+      "crates/server/awaken-session-executor/src/host/dependencies.rs",
+      "crates/server/awaken-session-executor/src/host/dependencies/environment.rs",
+      "crates/server/awaken-session-executor/src/host/tests.rs",
+      "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
+      "crates/worker/awaken-session-environment/src/tests.rs",
+      "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs"
+    ],
+    "scope": "Rust required-execution validator self-test on native Windows with Git Bash fixtures",
+    "argv": [
+      "python",
+      "scripts/ci/check_rust_test_execution.py",
+      "--self-test"
+    ],
+    "environment_names": [
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 470.3,
+    "executed_count": 27,
+    "failed_count": 0,
+    "skipped_count": 10,
+    "log_sha256": "eb8ff3997e94927b3a78aa30040120382bfa270194e3bfc29f96dd8ebbf1c86b",
+    "historical": false,
+    "entry_sha256": "f37c67edc751b202d5e8623bc889db55eb19e4e809915747169eda97aebd2524"
+  },
+  {
+    "id": "E15",
+    "receipt": "target/session-acceptance-evidence/E15/receipt.json",
+    "receipt_sha256": "d53026db84838bd75f0667fa5984662073f5fa2c75ff8b2c06d24423923d348e",
+    "source": {
+      "head": "c8cea07b322c728a32f734690369ab4d90830677",
+      "dirty_digest": "66f6a6a0f11be44bc50c9d71dcdeeb9d856be1c12539a3973ad255299f93a125"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "Session acceptance L0 gate tests re-executed on native Windows after rebasing onto origin/main f3ae320728",
+    "argv": [
+      "python",
+      "scripts/ci/test_session_acceptance.py",
+      "-v"
+    ],
+    "environment_names": [
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 58.0,
+    "executed_count": 13,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "db1e4ab9b33de3d493ee1cc961874f99fdeb35af3f14c12e9837322c6861a6ae",
+    "historical": false,
+    "entry_sha256": "7ff59b0856f80068afa336850cfe958c41a0dd4a69b0ff687d62d47d6656843f"
   }
 ]
