@@ -806,7 +806,8 @@ async fn authenticated_protocol_scope_survives_a_cold_replica_and_replays_one_ac
     ));
     let protocol = SessionRunApplication::new(
         Arc::new(ProtocolProjectionRuntime),
-        sessions,
+        sessions.run_admissions(),
+        sessions.coordination(),
         |_| Ok("wrong-local-workspace".into()),
         |_| Ok(Some("agent".into())),
     );
@@ -941,7 +942,8 @@ async fn background_attention_uses_canonical_session_admission_without_observing
     ));
     let protocol = SessionRunApplication::new(
         Arc::new(ProtocolProjectionRuntime),
-        sessions,
+        sessions.run_admissions(),
+        sessions.coordination(),
         |_| Ok("workspace".into()),
         |_| Ok(Some("agent".into())),
     );
@@ -1030,7 +1032,8 @@ async fn public_run_reserves_then_restores_and_projects_before_activation() {
     ));
     let protocol = SessionRunApplication::new(
         Arc::new(ProtocolProjectionRuntime),
-        sessions,
+        sessions.run_admissions(),
+        sessions.coordination(),
         |_| Ok("workspace".into()),
         |_| Ok(Some("agent".into())),
     );
@@ -1895,7 +1898,8 @@ async fn public_protocol_run_projects_durable_running_until_runtime_settles() {
     );
     let protocol = SessionRunApplication::new(
         Arc::new(ProtocolProjectionRuntime),
-        application.clone(),
+        application.run_admissions(),
+        application.coordination(),
         |_| Ok("workspace".into()),
         |_| Ok(Some("agent".into())),
     );
@@ -1943,7 +1947,8 @@ async fn public_protocol_run_projects_durable_running_until_runtime_settles() {
 
     let foreign = SessionRunApplication::new(
         Arc::new(ProtocolProjectionRuntime),
-        application,
+        application.run_admissions(),
+        application.coordination(),
         |_| Ok("foreign-workspace".into()),
         |_| Ok(Some("agent".into())),
     );
@@ -2000,7 +2005,8 @@ async fn unreadable_admission_scope_refuses_the_run_before_any_reservation() {
         let counted = agent_reads.clone();
         let protocol = SessionRunApplication::new(
             Arc::new(ProtocolProjectionRuntime),
-            sessions,
+            sessions.run_admissions(),
+            sessions.coordination(),
             move |_| {
                 if workspace_readable {
                     Ok("workspace".into())

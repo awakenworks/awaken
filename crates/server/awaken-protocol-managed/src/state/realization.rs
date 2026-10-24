@@ -410,12 +410,14 @@ mod tests {
             state
                 .application
                 .clone()
+                .recovery()
                 .run_lifecycle_supervisor(cancellation.clone()),
         );
         tokio::task::yield_now().await;
         let duplicate = state
             .application
             .clone()
+            .recovery()
             .run_lifecycle_supervisor(awaken_runtime_contract::CancellationToken::new())
             .await;
         assert!(

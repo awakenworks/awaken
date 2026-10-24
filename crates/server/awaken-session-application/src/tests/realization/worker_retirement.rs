@@ -21,6 +21,7 @@ async fn ordinary_worker_occupancy_does_not_depend_on_source_provider_availabili
         None,
     );
     let read = app
+        .worker_occupancy()
         .observe_worker_realizations(crate::WorkerRealizationRead::Occupancy(&identity.worker_id))
         .await
         .unwrap();
@@ -31,7 +32,8 @@ async fn ordinary_worker_occupancy_does_not_depend_on_source_provider_availabili
     );
     assert!(runtime.retention_reads.lock().unwrap().is_empty());
     assert!(
-        app.observe_worker_realizations(crate::WorkerRealizationRead::Occupancy(""))
+        app.worker_occupancy()
+            .observe_worker_realizations(crate::WorkerRealizationRead::Occupancy(""))
             .await
             .is_err()
     );
@@ -94,6 +96,7 @@ async fn worker_retirement_observes_the_existing_disposal_action_without_acknowl
         None,
     );
     let observed = app
+        .worker_occupancy()
         .observe_worker_realizations(crate::WorkerRealizationRead::Retirement(&identity))
         .await
         .unwrap();
@@ -157,6 +160,7 @@ async fn active_resident_source_retirement_preserves_the_original_session() {
         None,
     );
     let observed = app
+        .worker_occupancy()
         .observe_worker_realizations(crate::WorkerRealizationRead::Retirement(&identity))
         .await
         .unwrap();
@@ -320,6 +324,7 @@ async fn worker_retirement_requires_each_terminal_source_without_mutating_roots(
             None,
         );
         let result = app
+            .worker_occupancy()
             .observe_worker_realizations(crate::WorkerRealizationRead::Retirement(&identity))
             .await;
         if row.ends_with("provider-error") {
@@ -450,7 +455,8 @@ async fn worker_retirement_never_publishes_a_successful_source_prefix() {
             None,
         );
         assert_eq!(
-            app.observe_worker_realizations(crate::WorkerRealizationRead::Retirement(&identity))
+            app.worker_occupancy()
+                .observe_worker_realizations(crate::WorkerRealizationRead::Retirement(&identity))
                 .await
                 .unwrap()
                 .sources_retained,

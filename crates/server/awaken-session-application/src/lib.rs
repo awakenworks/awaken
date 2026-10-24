@@ -19,7 +19,6 @@ use awaken_session_configuration_contract::EnvironmentSnapshot;
 use awaken_session_repository_contract::SessionRepository;
 use awaken_session_execution_contract::{McpAttachmentRealizer, SessionEnvironmentBindingSink};
 use awaken_session_state_contract::SessionEnvironmentFacts;
-use awaken_session_state_contract::SessionExecutionState;
 use awaken_session_types::RunError;
 use {
     awaken_session_state_contract::{PersistedSession, SessionScan},
@@ -181,6 +180,7 @@ pub use lifecycle_outbox_relay::{
 };
 mod continuation;
 mod coordination;
+pub use coordination::SessionCoordination;
 mod creation;
 mod session_input;
 pub use continuation::{SessionContinuationError, SessionContinuations};
@@ -194,8 +194,9 @@ pub use creation::{
 pub use session_input::{SessionInputRequest, SessionInputTarget};
 mod credentials;
 mod event_batches;
-pub use event_batches::SessionEventBatchIdempotency;
+pub use event_batches::{SessionEventBatchCommands, SessionEventBatchIdempotency};
 mod outcome_reconciliation;
+pub use outcome_reconciliation::SessionOutcomeReconciliation;
 mod projection;
 mod queries;
 pub use awaken_session_execution_contract::{
@@ -204,8 +205,11 @@ pub use awaken_session_execution_contract::{
 pub use credentials::{SessionCredentials, SessionPreparationError};
 mod lifecycle;
 pub use lifecycle::{BudgetSettlementOutcome, SessionDeleteCommand, SessionLifecycle};
-mod lifecycle_supervisor;
+mod recovery;
 pub use queries::SessionQueries;
+pub use recovery::SessionRecovery;
+mod worker_occupancy;
+pub use worker_occupancy::SessionWorkerOccupancy;
 mod mcp;
 mod realization;
 mod resource_lowering;

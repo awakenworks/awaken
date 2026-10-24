@@ -1,5 +1,5 @@
 // @formal evidence session_resources.repository_rotation_requires_original_live_generation
-// awaken-allow(file-limit-ceiling): 6850 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 6847 (legacy oversized test file: split, never grow)
 //! Post-creation session-resource CRUD (`/v1/sessions/{id}/resources`) mirrors the
 //! Managed Agents contract, while whole-manifest replacement is explicitly owned
 //! by `/v1/awaken/sessions/{id}/resources`: only `file` attaches to a live Session;
@@ -2438,9 +2438,7 @@ async fn session_get_projects_the_durable_activity_lifecycle() {
         .expect_for(StatusCode::OK, "A2/E1");
     assert_eq!(receipt["data"][0]["type"], "user.message", "A2/E1");
     let application = state.session_application();
-    Box::pin(application.drive_session_event_batches(&SessionId::from(&session_id), None))
-        .await
-        .expect("A2 terminal recovery scan");
+    support::drive_retained_session_events(&state, &session_id).await;
     settle_coordinated_user_run_activity(&application, &session_id, "A2/C4").await;
     let idle = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None)
         .await
@@ -2535,9 +2533,7 @@ async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
         "L2 admitted receipt"
     );
     let application = state.session_application();
-    Box::pin(application.drive_session_event_batches(&SessionId::from(session_id), None))
-        .await
-        .expect("L2 terminal recovery scan");
+    support::drive_retained_session_events(&state, session_id).await;
     settle_coordinated_user_run_activity(&application, session_id, "L2/C4").await;
     let settled = application
         .queries()

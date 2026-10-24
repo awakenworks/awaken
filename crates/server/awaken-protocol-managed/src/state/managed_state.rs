@@ -49,14 +49,14 @@ impl SessionApplicationRoles {
             credentials: application.credentials(),
             roots: application.queries(),
             projection: application.queries(),
-            events: application.clone(),
+            events: application.event_batches(),
             profiled: application.run_admissions(),
-            profiled_replies: application.clone(),
+            profiled_replies: application.coordination(),
             termination: application.termination_commands(),
             updates: application.update_commands(),
             resources: application.resource_manifests(),
             observation: application.observations(),
-            deployments: application.clone(),
+            deployments: application.creation_commands(),
             clock: application.clock(),
         }
     }

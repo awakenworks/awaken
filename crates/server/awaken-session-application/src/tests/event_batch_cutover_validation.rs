@@ -34,10 +34,13 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let validation = application.session_event_batch_cutover_validation_source();
+    let validation = application
+        .recovery()
+        .session_event_batch_cutover_validation_source();
 
     assert_eq!(validation.snapshot(), None, "V1/E1");
     let first = application
+        .recovery()
         .refresh_event_batch_cutover_validation(0)
         .await
         .expect("V2 complete scan");
@@ -56,6 +59,7 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
     repository.fail_recovery_scan_once();
     assert!(
         application
+            .recovery()
             .refresh_event_batch_cutover_validation(7)
             .await
             .is_err(),
@@ -70,6 +74,7 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
         fault.store(true, Ordering::SeqCst);
         assert!(
             application
+                .recovery()
                 .refresh_event_batch_cutover_validation(7)
                 .await
                 .is_err(),
@@ -115,6 +120,7 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
         }
         assert!(
             application
+                .recovery()
                 .refresh_event_batch_cutover_validation(7)
                 .await
                 .is_err(),
@@ -128,6 +134,7 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
     }
 
     let second = application
+        .recovery()
         .refresh_event_batch_cutover_validation(2)
         .await
         .expect("V4 complete scan");

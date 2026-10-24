@@ -115,7 +115,8 @@ async fn durable_router(
     let agent_host = host.clone();
     let admission = Arc::new(awaken_session_application::SessionRunApplication::new(
         host.session_runs().clone(),
-        sessions,
+        sessions.run_admissions(),
+        sessions.coordination(),
         move |thread| Ok(workspace_host.capabilities().thread_workspace(thread)?),
         move |thread| Ok(agent_host.capabilities().thread_agent_projection(thread)?),
     ));

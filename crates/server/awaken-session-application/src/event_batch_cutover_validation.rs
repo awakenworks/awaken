@@ -5,11 +5,11 @@
 // @formal reason: unchanged and creates no second Session store or lifecycle authority. Evidence:
 // @formal reason: session.lifecycle.session_state, ADR-0075, and the adjacent final-scan decision-table
 // @formal reason: tests; this is a product-requirement classification, not a direct formal-proof claim.
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 
 use awaken_session_state_contract::{SessionEnvironmentPhase, SessionRepositoryError, SessionScan};
 
-use super::SessionApplication;
+use awaken_session_repository_contract::SessionRepository;
 
 /// Secret-free cutover facts from a final Session scan and global phase count.
 ///
@@ -92,35 +92,26 @@ fn count_as_u64(count: usize) -> u64 {
     u64::try_from(count).unwrap_or(u64::MAX)
 }
 
-impl SessionApplication {
-    /// Return the one read-only Event-batch cutover source owned by this
-    /// application's lifecycle supervisor.
-    #[must_use]
-    pub fn session_event_batch_cutover_validation_source(
-        &self,
-    ) -> Arc<SessionEventBatchCutoverValidationSource> {
-        self.event_batch_cutover_validation.clone()
-    }
-
+impl SessionEventBatchCutoverValidationSource {
     /// Read the final recovery scan and the canonical global Environment count
     /// before publishing. Either failure preserves the preceding generation;
     /// the reconciliation scan is never a substitute for the global phase query.
-    pub(crate) async fn refresh_event_batch_cutover_validation(
+    pub(crate) async fn refresh(
         &self,
+        repository: &dyn SessionRepository,
         event_batch_failures: usize,
     ) -> Result<SessionEventBatchCutoverValidationSnapshot, SessionRepositoryError> {
         let (terminal_incomplete, quarantined) = super::recovery_scan::fold_reconcilable_sessions(
-            self.session_repository(),
+            repository,
             0_u64,
             |count, page| async move { Ok(count.saturating_add(terminal_incomplete_count(&page))) },
             std::convert::identity,
         )
         .await?;
-        let restoring_sessions = self
-            .session_repository()
+        let restoring_sessions = repository
             .count_environment_phase(SessionEnvironmentPhase::Restoring)
             .await?;
-        Ok(self.event_batch_cutover_validation.complete_scan(
+        Ok(self.complete_scan(
             terminal_incomplete,
             quarantined.len(),
             event_batch_failures,

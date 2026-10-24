@@ -3301,7 +3301,7 @@ async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_pa
 
         let result =
             awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-                &app,
+                app.coordination.as_ref(),
                 awaken_session_execution_contract::SessionAgentBoundaryCommand {
                     session_id: SessionId::from(&session_id),
                     source_thread_id: child,
@@ -3387,7 +3387,7 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
         let app = configured_admission_application(repo.clone(), runtime.clone());
         let receipt =
             awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-                &app,
+                app.coordination.as_ref(),
                 coordination_spawn_command(&session_id),
             )
             .await
@@ -3418,7 +3418,8 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
         };
         let result =
             awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-                &app, follow_up,
+                app.coordination.as_ref(),
+                follow_up,
             )
             .await;
         if accepted {
@@ -3490,7 +3491,7 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
             .active_activity_epochs;
         let error =
             awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-                &app,
+                app.coordination.as_ref(),
                 awaken_session_execution_contract::SessionAgentMessageCommand {
                     session_id: SessionId::from(&session_id),
                     source_thread_id: ThreadId(session_id.clone()),
@@ -3564,6 +3565,7 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
 
     assert!(
         accepted
+            .coordination
             .resume_session_run_streaming_for_owner(
                 "foreign-workspace",
                 "foreground-request-foreign",
@@ -3591,6 +3593,7 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
     ] {
         assert!(
             accepted
+                .coordination
                 .resume_session_run(
                     operation_id,
                     &SessionId::from("foreground-resume"),
@@ -3616,6 +3619,7 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
     );
 
     let outcome = accepted
+        .coordination
         .resume_session_run_streaming_for_owner(
             "workspace",
             "foreground-request-accepted",
@@ -3666,6 +3670,7 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
     );
     assert!(
         rejected
+            .coordination
             .resume_session_run(
                 "foreground-request-rejected",
                 &SessionId::from("foreground-resume-rejected"),
@@ -3755,7 +3760,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     extension_command.target = awaken_session_execution_contract::SessionThreadTarget::Primary;
     for _ in 0..2 {
         awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
-            &extension,
+            extension.coordination.as_ref(),
             extension_command.clone(),
         )
         .await
@@ -3784,7 +3789,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         Arc::new(RecordingEnvironmentSource::default()),
     );
     awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
-        &accepted,
+        accepted.coordination.as_ref(),
         command("reply-accepted"),
     )
     .await
@@ -3801,7 +3806,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     );
 
     awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
-        &accepted,
+        accepted.coordination.as_ref(),
         command("reply-accepted"),
     )
     .await
@@ -3830,7 +3835,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     let mut primary_command = command("reply-primary");
     primary_command.target = awaken_session_execution_contract::SessionThreadTarget::Primary;
     awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
-        &accepted,
+        accepted.coordination.as_ref(),
         primary_command,
     )
     .await
@@ -3865,7 +3870,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     );
     assert!(
         awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
-            &rejected,
+            rejected.coordination.as_ref(),
             command("reply-rejected"),
         )
         .await
@@ -3891,7 +3896,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     );
     assert!(
         awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
-            &ambiguous,
+            ambiguous.coordination.as_ref(),
             command("reply-ambiguous"),
         )
         .await
@@ -3917,7 +3922,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     );
     assert!(
         awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
-            &ambiguous,
+            ambiguous.coordination.as_ref(),
             command("reply-ambiguous"),
         )
         .await
@@ -3944,7 +3949,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     );
 
     awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &accepted,
+        accepted.coordination.as_ref(),
         awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "reply-accepted".into(),
             source_thread_id: ThreadId("reply-child".into()),
@@ -4022,7 +4027,7 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
         "A1/E1"
     );
     awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
-        &app,
+        app.coordination.as_ref(),
         awaken_session_execution_contract::SessionThreadToolReplyCommand {
             session_id: "reached-valid-reply".into(),
             tool_request_event_id: None,
@@ -4054,7 +4059,7 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
         .expect("A3 state before");
     let error =
         awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
-            &app,
+            app.coordination.as_ref(),
             awaken_session_execution_contract::SessionThreadToolReplyCommand {
                 session_id: "reached-invalid-reply".into(),
                 tool_request_event_id: None,
@@ -4133,7 +4138,7 @@ async fn root_activity_cas_is_the_only_budget_admission_choke() {
     let app = configured_admission_application(repo.clone(), runtime.clone());
 
     let roster = awaken_session_execution_contract::SessionAgentCoordination::list_session_agents(
-        &app,
+        app.coordination.as_ref(),
         &SessionId::from("budget-admission-choke"),
     )
     .await
@@ -4142,7 +4147,7 @@ async fn root_activity_cas_is_the_only_budget_admission_choke() {
 
     let error =
         awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-            &app,
+            app.coordination.as_ref(),
             coordination_spawn_command("budget-admission-choke"),
         )
         .await
@@ -4226,7 +4231,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
         "pending",
     );
     awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &app,
+        app.coordination.as_ref(),
         awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "boundary-awaiting".into(),
             source_thread_id: ThreadId("boundary-child".into()),
@@ -4250,7 +4255,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
         .await
         .expect("B2 before");
     awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &app,
+        app.coordination.as_ref(),
         awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "boundary-terminal".into(),
             source_thread_id: ThreadId("boundary-terminal-child".into()),
@@ -4284,7 +4289,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     );
     let rejected =
         awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-            &app,
+            app.coordination.as_ref(),
             awaken_session_execution_contract::SessionAgentBoundaryCommand {
                 session_id: "boundary-running".into(),
                 source_thread_id: ThreadId("boundary-running-child".into()),
@@ -4318,7 +4323,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
         "must not become a primary report",
     );
     awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &app,
+        app.coordination.as_ref(),
         awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "boundary-interrupted".into(),
             source_thread_id: ThreadId("boundary-interrupted-child".into()),
@@ -4355,7 +4360,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
         "must not become a primary report",
     );
     awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &app,
+        app.coordination.as_ref(),
         awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "boundary-failed".into(),
             source_thread_id: failed_child.clone(),
@@ -4395,7 +4400,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     runtime.set_lifecycle_visible(false);
     let unavailable =
         awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-            &app,
+            app.coordination.as_ref(),
             awaken_session_execution_contract::SessionAgentBoundaryCommand {
                 session_id: "boundary-unprojected".into(),
                 source_thread_id: ThreadId("boundary-unprojected-child".into()),
@@ -4560,7 +4565,7 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
     );
 
     awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &app,
+        app.coordination.as_ref(),
         awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: session_id.into(),
             source_thread_id: thread_id.clone(),
@@ -4580,7 +4585,7 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
 
     let missing =
         awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-            &app,
+            app.coordination.as_ref(),
             awaken_session_execution_contract::SessionAgentBoundaryCommand {
                 session_id: session_id.into(),
                 source_thread_id: thread_id,
@@ -4656,7 +4661,7 @@ async fn completed_child_without_a_committed_reply_settles_without_a_report_run(
     );
 
     awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &app,
+        app.coordination.as_ref(),
         awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "completed-without-report".into(),
             source_thread_id: child,
@@ -5080,7 +5085,7 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
     );
     assert!(
         awaken_session_execution_contract::SessionAgentCoordination::admit_session_model_request(
-            &app,
+            app.coordination.as_ref(),
             &SessionId::from("request-gate-root"),
             &root_thread,
             &root_run,
@@ -5093,7 +5098,7 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
     for replay in [false, true] {
         assert!(
             !awaken_session_execution_contract::SessionAgentCoordination::admit_session_model_request(
-                &app,
+                app.coordination.as_ref(),
                 &SessionId::from("request-gate-root"),
                 &root_thread,
                 &root_run,
@@ -5126,7 +5131,7 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
     );
     assert!(
         awaken_session_execution_contract::SessionAgentCoordination::admit_session_model_request(
-            &app,
+            app.coordination.as_ref(),
             &SessionId::from("request-gate-child"),
             &child_thread,
             &child_run,
@@ -5139,7 +5144,7 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
     for replay in [false, true] {
         assert!(
             !awaken_session_execution_contract::SessionAgentCoordination::admit_session_model_request(
-                &app,
+                app.coordination.as_ref(),
                 &SessionId::from("request-gate-child"),
                 &child_thread,
                 &child_run,
@@ -5253,7 +5258,7 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
         "budget report",
     );
     awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &app,
+        app.coordination.as_ref(),
         settle("boundary-budget-awaiting", awaiting_epoch),
     )
     .await
@@ -5312,7 +5317,7 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
     );
     let ended_command = settle("boundary-budget-ended", ended_epoch);
     awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &app,
+        app.coordination.as_ref(),
         ended_command.clone(),
     )
     .await
@@ -5337,7 +5342,7 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
     let revision = ended.revision;
 
     awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &app,
+        app.coordination.as_ref(),
         ended_command,
     )
     .await
@@ -5478,11 +5483,11 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
     runtime.set_admission_observations([Ok(None), Ok(None)]);
     let (settled_a, settled_b) = tokio::join!(
         awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-            &app,
+            app.coordination.as_ref(),
             command(child_a.clone(), run_a.clone(), epoch_a),
         ),
         awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-            &app,
+            app.coordination.as_ref(),
             command(child_b.clone(), run_b.clone(), epoch_b),
         )
     );

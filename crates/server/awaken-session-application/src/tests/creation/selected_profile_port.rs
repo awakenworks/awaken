@@ -293,7 +293,7 @@ async fn selected_profile_port_reads_the_live_handle_and_custom_delegate_without
     );
     assert_eq!(
         crate::DeploymentSessionEnvironment::deployment_unavailable_delegate(
-            &app,
+            app.creation_commands().as_ref(),
             "workspace",
             "profiled"
         ),
@@ -385,7 +385,7 @@ async fn assert_unconfigured_roster_reads_the_root_first(
         "P8 real active Session reaches the roster query"
     );
     let error = awaken_session_execution_contract::SessionAgentCoordination::list_session_agents(
-        app,
+        app.coordination.as_ref(),
         &session.session_id,
     )
     .await

@@ -47,7 +47,13 @@ async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_in
             repository.clone(),
             Arc::new(RecordingEnvironmentSource::default()),
         );
-        assert!(app.reconcile_event_batches().await.failures.is_empty());
+        assert!(
+            app.event_batches
+                .reconcile_event_batches()
+                .await
+                .failures
+                .is_empty()
+        );
         runtime.await_run(&run);
         finalize_applied_user_dispatch(&app, &runtime, id, &run).await;
         let first = repository.get(&SessionId::from(id)).await.unwrap();
@@ -290,6 +296,7 @@ async fn reserved_run_without_activity_recovers_through_the_same_operation_recei
 
     let cold = application_with_runtime(runtime.clone(), repository.clone(), environments);
     let repaired = cold
+        .event_batches
         .admit_session_user_run(command)
         .await
         .expect("C2 repair");

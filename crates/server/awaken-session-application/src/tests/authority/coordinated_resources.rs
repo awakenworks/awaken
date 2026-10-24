@@ -63,7 +63,7 @@ async fn coordination_projects_the_current_desired_files_before_child_admission(
         let app = configured_admission_application(repo.clone(), runtime.clone());
         let result =
             awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-                &app,
+                app.coordination.as_ref(),
                 coordination_spawn_command(&id),
             )
             .await;
@@ -188,7 +188,7 @@ async fn cold_child_report_projects_frozen_root_and_files_before_continuation() 
             cancellation_requested: false,
         };
         let result = awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-            &app, command.clone()).await;
+            app.coordination.as_ref(), command.clone()).await;
         if fail_projection {
             assert_eq!(
                 result.unwrap_err().kind,
@@ -198,7 +198,7 @@ async fn cold_child_report_projects_frozen_root_and_files_before_continuation() 
             assert!(runtime.continuations.lock().unwrap().is_empty(), "CR2/E3");
             runtime.projection_failure.store(false, Ordering::SeqCst);
             awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-                &app, command).await.expect("CR2 recovery");
+                app.coordination.as_ref(), command).await.expect("CR2 recovery");
         } else {
             result.expect("CR1");
         }
@@ -300,7 +300,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         configured_admission_application(repo.clone(), invalid_source_runtime.clone());
     let invalid_source_error =
         awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-            &invalid_source,
+            invalid_source.coordination.as_ref(),
             coordination_spawn_command("send-invalid-source"),
         )
         .await
@@ -329,7 +329,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
     accepted_runtime.set_admission_observations([Ok(None), Ok(None)]);
     let accepted = configured_admission_application(repo.clone(), accepted_runtime.clone());
     awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-        &accepted,
+        accepted.coordination.as_ref(),
         coordination_spawn_command("send-accepted"),
     )
     .await
@@ -366,7 +366,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         .projection_failure
         .store(true, Ordering::SeqCst);
     awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-        &accepted,
+        accepted.coordination.as_ref(),
         coordination_spawn_command("send-accepted"),
     )
     .await
@@ -391,7 +391,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
     ))]);
     let unknown =
         awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-            &accepted,
+            accepted.coordination.as_ref(),
             coordination_spawn_command("send-accepted"),
         )
         .await
@@ -408,7 +408,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
     let reads = accepted_runtime.admission_reads.load(Ordering::SeqCst);
     accepted_runtime.reject_agent_message_source();
     awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-        &accepted,
+        accepted.coordination.as_ref(),
         coordination_spawn_command("send-accepted"),
     )
     .await
@@ -431,7 +431,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
     let rejected = configured_admission_application(repo.clone(), rejected_runtime);
     let rejected_error =
         awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-            &rejected,
+            rejected.coordination.as_ref(),
             coordination_spawn_command("send-rejected"),
         )
         .await
@@ -456,7 +456,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
     ambiguous_runtime.set_admission_observations([Ok(None), Ok(None)]);
     let ambiguous = configured_admission_application(repo.clone(), ambiguous_runtime.clone());
     awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-        &ambiguous,
+        ambiguous.coordination.as_ref(),
         coordination_spawn_command("send-ambiguous"),
     )
     .await
@@ -473,7 +473,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         "S3/E3"
     );
     awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-        &ambiguous,
+        ambiguous.coordination.as_ref(),
         coordination_spawn_command("send-ambiguous"),
     )
     .await
@@ -500,7 +500,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
     let mismatch = configured_admission_application(repo.clone(), mismatch_runtime.clone());
     let mismatch_error =
         awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-            &mismatch,
+            mismatch.coordination.as_ref(),
             coordination_spawn_command("send-mismatch"),
         )
         .await
@@ -523,7 +523,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
 
     ambiguous_runtime.commit_boundary("send-ambiguous", &child, &run, RunState::Awaiting, "");
     awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &ambiguous,
+        ambiguous.coordination.as_ref(),
         awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "send-ambiguous".into(),
             source_thread_id: child,
@@ -553,7 +553,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         "research complete",
     );
     awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &accepted,
+        accepted.coordination.as_ref(),
         awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "send-accepted".into(),
             source_thread_id: accepted_admission.thread_id.clone(),
@@ -608,7 +608,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         .projection_failure
         .store(true, Ordering::SeqCst);
     awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &accepted,
+        accepted.coordination.as_ref(),
         awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "send-accepted".into(),
             source_thread_id: accepted_admission.thread_id.clone(),
@@ -644,7 +644,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         "coordinator acknowledged report",
     );
     awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &accepted,
+        accepted.coordination.as_ref(),
         awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "send-accepted".into(),
             source_thread_id: ThreadId("send-accepted".into()),
@@ -672,7 +672,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
     accepted_runtime.set_admission_observations([Ok(None)]);
     let missing =
         awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-            &accepted,
+            accepted.coordination.as_ref(),
             coordination_spawn_command("send-accepted"),
         )
         .await
