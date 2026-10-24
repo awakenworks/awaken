@@ -274,7 +274,7 @@ pub(super) fn job_fact(job: &Job, namespace: &str) -> Result<JobFact, K8sPackage
         .ok_or_else(|| K8sPackageRealizationError::invalid("package Job has no Pod template"))?;
     if pod.automount_service_account_token != Some(false)
         || pod.restart_policy.as_deref() != Some("Never")
-        || crate::has_forbidden_sandbox_namespace_shape(pod)
+        || awaken_worker_fleet_kubernetes::has_forbidden_sandbox_namespace_shape(pod)
         || pod.containers.len() != 1
         || pod
             .init_containers

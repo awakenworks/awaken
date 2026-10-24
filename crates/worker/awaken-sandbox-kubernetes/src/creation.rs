@@ -4,9 +4,9 @@
 
 use super::{
     K8sRuntime, SANDBOX_ADOPTION_ANNOTATION, SANDBOX_ATTEMPT_ANNOTATION,
-    SANDBOX_REALIZATION_ANNOTATION, api_not_found, backend, continuation, create_ledger,
-    create_or_verify, k8s_runtime_id, live_inputs, memory, participants, pod_effect_fence,
-    pod_owner_reference, projection, projection_verification, realization, rebuild_claim_admission,
+    SANDBOX_REALIZATION_ANNOTATION, api_not_found, backend, continuation, create_or_verify,
+    k8s_runtime_id, live_inputs, memory, participants, pod_effect_fence, pod_owner_reference,
+    projection, projection_verification, realization, rebuild_claim_admission,
     rebuild_continuation_expectation, stamp_pod_realization, stamp_realization,
 };
 use crate::package_realization::stamp_sandbox_release_annotations;
@@ -280,8 +280,9 @@ pub(super) async fn dispose_unscheduled_pod(
     super::lifecycle::begin_exact_pod_delete(runtime, &pod, uid, version, Some(attempt), admit)
         .await?;
     participants::finish_projected(runtime, &projected, name, true, admit).await?;
-    if create_ledger::original_guard_release_required(Some(&pod), true)? {
-        create_ledger::release_original_guard(&runtime.pods(), name, uid, admit).await?;
+    if awaken_worker_fleet_kubernetes::original_guard_release_required(Some(&pod), true)? {
+        awaken_worker_fleet_kubernetes::release_original_guard(&runtime.pods(), name, uid, admit)
+            .await?;
     }
     super::lifecycle::await_exact_pod_deleted(runtime, name, uid, admit).await?;
     participants::finish_projected(runtime, &projected, name, false, admit).await

@@ -8,7 +8,6 @@ use super::K8sRuntime;
 use super::backend;
 use super::continuation;
 use super::continuation_claim_for_pod;
-use super::create_ledger;
 use super::pod_effect_fence;
 use super::pod_name;
 use super::projection_verification;
@@ -70,8 +69,12 @@ pub(crate) async fn guarded_claim_physical_state(
     {
         return Ok(GuardedClaimPhysical::Incompatible);
     }
-    if !create_ledger::verify_pod_isolation(&runtime.clients.control, guarded.guard(), guard_uid)
-        .await?
+    if !awaken_worker_fleet_kubernetes::verify_pod_isolation(
+        &runtime.clients.control,
+        guarded.guard(),
+        guard_uid,
+    )
+    .await?
     {
         return Ok(GuardedClaimPhysical::Incompatible);
     }
@@ -172,3 +175,6 @@ pub(crate) async fn remove_guarded_claim(
     }
     admit()
 }
+
+#[cfg(test)]
+mod tests;

@@ -9,8 +9,9 @@ use k8s_openapi::api::core::v1::{ContainerStatus, Pod};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use serde::{Deserialize, Serialize};
 
-use super::{api_not_found, backend, has_forbidden_sandbox_namespace_shape};
+use crate::{api_not_found, backend};
 use awaken_container_contract::RuntimeError;
+use k8s_openapi::api::core::v1::PodSpec;
 
 mod stop;
 pub use stop::PodProcessStopper;
@@ -19,6 +20,24 @@ pub use stop::PodProcessStopper;
 /// retained until the exact attempt evidence has been durably consumed. This is
 /// not the Session continuation-cleanup finalizer and must not release its PVCs.
 pub const WORKER_PROCESS_EVIDENCE_FINALIZER: &str = "awaken.dev/worker-process-evidence";
+
+/// The Sandbox continuation-cleanup finalizer. It retains a Session Pod's
+/// process evidence as well; this observer never releases it.
+pub const CONTINUATION_CLEANUP_FINALIZER: &str = "awaken.dev/continuation-cleanup";
+
+/// One shared predicate for Pod namespace shapes that invalidate a private
+/// Sandbox boundary. `None`, explicit `false`, and an explicit empty ephemeral
+/// container list are equivalent Kubernetes API-default representations.
+pub fn has_forbidden_sandbox_namespace_shape(spec: &PodSpec) -> bool {
+    spec.host_network == Some(true)
+        || spec.host_pid == Some(true)
+        || spec.host_ipc == Some(true)
+        || spec.share_process_namespace == Some(true)
+        || spec
+            .ephemeral_containers
+            .as_ref()
+            .is_some_and(|containers| !containers.is_empty())
+}
 
 /// Freeze this identity before admitting effects. Namespace/name are lookup
 /// coordinates only; UID, node, container ID and start time identify execution.
@@ -132,7 +151,7 @@ impl PodProcessObserver {
         name: &str,
         uid: &str,
     ) -> Result<(), RuntimeError> {
-        use super::finalizer::{ExactFinalizerAdmission, update_exact_pod_finalizer};
+        use crate::pod_metadata::{ExactFinalizerAdmission, update_exact_pod_finalizer};
         update_exact_pod_finalizer(
             &self.pods,
             name,
@@ -281,7 +300,7 @@ fn coordinate(value: Option<&str>) -> Option<String> {
 // owner joins terminal disposal; reusing it grants no Worker-release authority.
 const PROCESS_RETENTION_FINALIZERS: [&str; 3] = [
     WORKER_PROCESS_EVIDENCE_FINALIZER,
-    super::continuation::CONTINUATION_CLEANUP_FINALIZER,
+    CONTINUATION_CLEANUP_FINALIZER,
     awaken_container_contract::ORIGINAL_GUARD_FINALIZER,
 ];
 

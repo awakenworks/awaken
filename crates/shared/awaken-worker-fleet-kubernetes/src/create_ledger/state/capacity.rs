@@ -4,7 +4,7 @@
 //! Derive future obligations from the original state; never persist a balance.
 use super::super::capture::RESULT_BYTES;
 use super::{GroupAdmission, MAX_TICKETS, WorkerCreateLedgerState};
-use crate::{error::backend, names};
+use crate::{backend, managed_names as names};
 use awaken_container_contract::RuntimeError;
 use awaken_container_contract::{
     CreateTicket, CreateTicketRequest, TicketOrigin, TicketResult, TicketStatus,

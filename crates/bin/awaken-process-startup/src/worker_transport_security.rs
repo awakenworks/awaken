@@ -31,7 +31,7 @@ pub(super) async fn select(
         }
         #[cfg(feature = "container-k8s")]
         {
-            let client = awaken_sandbox_kubernetes::connect_control_client()
+            let client = awaken_worker_fleet_kubernetes::connect_control_client()
                 .await
                 .map_err(|error| error.to_string())?;
             return WorkerTransport::kubernetes(

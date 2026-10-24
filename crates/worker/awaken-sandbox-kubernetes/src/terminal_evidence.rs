@@ -8,7 +8,6 @@ use super::K8sRuntime;
 use super::backend;
 use super::continuation;
 use super::continuation_claim_for_pod;
-use super::create_ledger;
 use super::creation;
 use super::guarded_claim::verify_joined_original_claim;
 use super::participants;
@@ -219,7 +218,13 @@ pub(super) async fn isolated_pod_terminal_evidence(
     ticket: CreateTicket,
     uid: String,
 ) -> Result<MissingHandleTerminalEvidence, RuntimeError> {
-    if !create_ledger::verify_pod_isolation(&runtime.clients.control, &ticket, &uid).await? {
+    if !awaken_worker_fleet_kubernetes::verify_pod_isolation(
+        &runtime.clients.control,
+        &ticket,
+        &uid,
+    )
+    .await?
+    {
         return Ok(MissingHandleTerminalEvidence::Unknown);
     }
     let claim =

@@ -6,13 +6,6 @@ use awaken_container_contract::RuntimeError;
 
 use super::backend;
 
-/// One authenticated control client for read-only infrastructure adapters. It
-/// creates no Sandbox resources or NetworkPolicies and retains finite deadlines.
-pub async fn connect_control_client() -> Result<Client, RuntimeError> {
-    let config = kube::Config::infer().await.map_err(backend)?;
-    awaken_outbound_http::kubernetes_control_client(config).map_err(backend)
-}
-
 pub(super) struct K8sClients {
     pub(super) control: Client,
     pub(super) streaming: Client,

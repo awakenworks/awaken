@@ -142,8 +142,8 @@ async fn fresh_api_or_complete_reply_or_result_overflow_never_finishes_or_repost
                 .is_err()
         );
         let original = fixture.stored.lock().unwrap().clone().unwrap();
-        let state: awaken_sandbox_kubernetes::WorkerCreateLedgerState =
-            awaken_sandbox_kubernetes::WorkerCreateLedgerState::decode(
+        let state: awaken_worker_fleet_kubernetes::WorkerCreateLedgerState =
+            awaken_worker_fleet_kubernetes::WorkerCreateLedgerState::decode(
                 original["data"]["ledger"].as_str().unwrap(),
             )
             .unwrap();
@@ -537,7 +537,7 @@ async fn every_post_status_captures_whole_bytes_before_definitive_result_selecti
             let request = validate_create(&f.identity, "sandbox-ns", f.create.clone())
                 .unwrap()
                 .ticket;
-            let retained = awaken_sandbox_kubernetes::WorkerCreateLedgerState::decode(
+            let retained = awaken_worker_fleet_kubernetes::WorkerCreateLedgerState::decode(
                 f.stored.lock().unwrap().as_ref().unwrap()["data"]["ledger"]
                     .as_str()
                     .unwrap(),
@@ -660,7 +660,7 @@ async fn registry_changes_across_original_io_keep_both_authority_rechecks() {
             let request = validate_create(&f.identity, "sandbox-ns", f.create.clone())
                 .unwrap()
                 .ticket;
-            let retained = awaken_sandbox_kubernetes::WorkerCreateLedgerState::decode(
+            let retained = awaken_worker_fleet_kubernetes::WorkerCreateLedgerState::decode(
                 f.stored.lock().unwrap().as_ref().unwrap()["data"]["ledger"]
                     .as_str()
                     .unwrap(),
