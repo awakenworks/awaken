@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
@@ -78,9 +79,10 @@ export async function scenarioMemoryStore(client, headers) {
 // shared target that can contain same-name packages from another worktree.
 // Decision table: explicit target => preserve; absent target => repo/target.
 process.env.CARGO_TARGET_DIR ??= path.join(REPO_ROOT, 'target');
-export const E2E_HOME_ROOT = `/tmp/awaken-e2e-home-${process.pid}`;
-export const E2E_HOME = `${E2E_HOME_ROOT}/home`;
-cleanupFixtureTree(E2E_HOME_ROOT);
+// Each module instance owns a freshly allocated path below the caller's
+// native temp root. Never delete a predictable pre-existing path on import.
+export const E2E_HOME_ROOT = fs.mkdtempSync(path.join(tmpdir(), 'awaken-e2e-home-'));
+export const E2E_HOME = path.join(E2E_HOME_ROOT, 'home');
 fs.mkdirSync(`${E2E_HOME}/.awaken`, { recursive: true });
 fs.writeFileSync(
   `${E2E_HOME}/.awaken/config.toml`,

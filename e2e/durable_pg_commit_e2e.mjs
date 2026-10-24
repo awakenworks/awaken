@@ -12,9 +12,8 @@
 //     node e2e/durable_pg_commit_e2e.mjs
 
 import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { E2E_HOME_ROOT, runCleanupSteps, spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38797);
 const THREAD = 'pg-commit-1';
@@ -69,20 +68,23 @@ async function waitForAssistant(minCount, timeoutMs = 30_000) {
 }
 
 async function main() {
+  const failures = [];
   // 1. First process: history committed to Postgres.
-  let { server } = spawnServer('echo', PORT, env(mkdtempSync(path.join(tmpdir(), 'awaken-pgcommit-a-'))));
+  let { server } = spawnServer('echo', PORT, env(mkdtempSync(path.join(E2E_HOME_ROOT, 'awaken-pgcommit-a-'))));
   try {
     await waitForPort(PORT);
     await submitBackground('remember this');
     const a = await waitForAssistant(1);
     pass(`run committed to the Postgres history (reply: ${JSON.stringify(a[0].text)})`);
+  } catch (error) {
+    failures.push(error);
   } finally {
-    await stopServer(server);
+    await runCleanupSteps([() => stopServer(server, { requireCleanExit: failures.length === 0 })], failures);
   }
 
   // 2. Restart with a FRESH, DIFFERENT local storage dir. If the history were a
   //    per-thread local SQLite file it would be gone; from Postgres it survives.
-  ({ server } = spawnServer('echo', PORT, env(mkdtempSync(path.join(tmpdir(), 'awaken-pgcommit-b-')))));
+  ({ server } = spawnServer('echo', PORT, env(mkdtempSync(path.join(E2E_HOME_ROOT, 'awaken-pgcommit-b-')))));
   try {
     await waitForPort(PORT);
     const survived = await messages();
@@ -90,8 +92,10 @@ async function main() {
       throw new Error(`thread history did NOT survive the restart on a fresh dir: ${JSON.stringify(survived)}`);
     }
     pass('thread history survived a restart with a fresh local dir — it lives in Postgres, not a per-thread file');
+  } catch (error) {
+    failures.push(error);
   } finally {
-    await stopServer(server);
+    await runCleanupSteps([() => stopServer(server, { requireCleanExit: failures.length === 0 })], failures);
   }
 
   console.log('\nDURABLE PG COMMIT E2E PASS: thread history committed to and warm-reloaded from shared Postgres across a restart on a different node dir.');

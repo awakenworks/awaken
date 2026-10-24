@@ -7,10 +7,9 @@
 
 import assert from 'node:assert/strict';
 import fs, { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { postgresQuery } from './postgres.mjs';
-import { postgresDatabaseName, spawnServer, stopServer, waitForPort } from './harness.mjs';
+import { E2E_HOME_ROOT, runCleanupSteps, postgresDatabaseName, spawnServer, stopServer, waitForPort } from './harness.mjs';
 import {
   claimedCommitRequestFixture,
   terminalThreadCommitFixture,
@@ -158,7 +157,9 @@ async function claimOrCompleteEventually(
 }
 
 async function main(): Promise<void> {
-  const storage = mkdtempSync(path.join(tmpdir(), 'awaken-pg-claimed-guard-'));
+  const failures: unknown[] = [];
+  let triggerInstalled = false;
+  const storage = mkdtempSync(path.join(E2E_HOME_ROOT, 'awaken-pg-claimed-guard-'));
   const server = spawnServer('echo', PORT, {
     SESSION_DEPLOYMENT_INGRESS: 'durable',
     SESSION_DEPLOYMENT_DISPATCH_BACKEND: 'postgres',
@@ -204,6 +205,7 @@ async function main(): Promise<void> {
       CREATE TRIGGER e2e_delay_claimed_commit_trigger BEFORE INSERT ON runtime_commit
       FOR EACH ROW EXECUTE FUNCTION e2e_delay_claimed_commit();
     `);
+    triggerInstalled = true;
 
     // Cause-effect graph / decision table:
     // C1 current epoch + C2 valid canonical operation -> commit holds row lock;
@@ -303,15 +305,21 @@ async function main(): Promise<void> {
     console.log(
       'POSTGRES CLAIMED-COMMIT GUARD TS E2E PASS: in-flight commit excluded reclaim, terminal recovery respected Work, stale settle was fenced and history committed once.',
     );
+  } catch (error) {
+    failures.push(error);
   } finally {
-    try {
-      sql('DROP TRIGGER IF EXISTS e2e_delay_claimed_commit_trigger ON runtime_commit');
-      sql('DROP FUNCTION IF EXISTS e2e_delay_claimed_commit()');
-    } catch {
-      // The disposable E2E database may not have completed migration on an early failure.
-    }
-    await stopServer(server).catch(() => {});
-    fs.rmSync(storage, { recursive: true, force: true });
+    // Once installed, trigger cleanup and clean shutdown are required. Every
+    // cleanup runs, and the original assertion remains the first failure.
+    await runCleanupSteps([
+      () => {
+        if (triggerInstalled) {
+          sql('DROP TRIGGER IF EXISTS e2e_delay_claimed_commit_trigger ON runtime_commit');
+          sql('DROP FUNCTION IF EXISTS e2e_delay_claimed_commit()');
+        }
+      },
+      () => stopServer(server, { requireCleanExit: failures.length === 0 }),
+      () => fs.rmSync(storage, { recursive: true, force: true }),
+    ], failures);
   }
 }
 
