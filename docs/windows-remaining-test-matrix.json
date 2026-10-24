@@ -113,88 +113,88 @@
       ],
       "cases": [
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "lease_renewal_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "physical_attempt_admission_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "physical_attempt_admission_uses_the_postgres_authority_clock",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "postgres_epoch_guard_prevents_reclaim_until_commit_returns",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "postgres_execution_binding_is_frozen_with_the_physical_slot",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "postgres_physical_thread_constraint_survives_bypassed_admission",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_replay_policy",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "postgres_returned_attempt_epoch_is_not_reused",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "relinquish_claim_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "lease_semantics",
           "name": "native_worker_freezes_binding_before_tool_entry_and_clears_on_return",
-          "source": "crates/server/awaken-run-ingress/tests/lease_semantics.rs"
+          "source": "crates/server/awaken-dispatch/tests/lease_semantics.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "lease_semantics",
           "name": "physical_ack_waits_for_all_participants_memory",
-          "source": "crates/server/awaken-run-ingress/tests/lease_semantics.rs"
+          "source": "crates/server/awaken-dispatch/tests/lease_semantics.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "lease_semantics",
           "name": "physical_ack_waits_for_all_participants_sqlite",
-          "source": "crates/server/awaken-run-ingress/tests/lease_semantics.rs"
+          "source": "crates/server/awaken-dispatch/tests/lease_semantics.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "lease_semantics",
           "name": "killed_process_does_not_fabricate_physical_quiescence_on_sqlite_reopen",
-          "source": "crates/server/awaken-run-ingress/tests/lease_semantics.rs"
+          "source": "crates/server/awaken-dispatch/tests/lease_semantics.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "lease_semantics",
           "name": "native_cancelled_external_future_does_not_acknowledge_physical_return",
-          "source": "crates/server/awaken-run-ingress/tests/lease_semantics.rs"
+          "source": "crates/server/awaken-dispatch/tests/lease_semantics.rs"
         }
       ],
       "entry": {
@@ -204,7 +204,7 @@
           "test",
           "--locked",
           "-p",
-          "awaken-run-ingress",
+          "awaken-dispatch",
           "--features",
           "test-support",
           "--",
@@ -283,34 +283,34 @@
       ],
       "cases": [
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "defer_claim_is_request_local_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "postgres_candidate_page_boundary_preserves_the_exact_tail_under_contention",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "postgres_candidate_pages_reach_work_after_incompatible_front_page",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "postgres_one_running_per_thread_under_concurrent_claimers",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "two_workers_claim_distinct_runs_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         }
       ],
       "entry": {
@@ -320,7 +320,7 @@
           "test",
           "--locked",
           "-p",
-          "awaken-run-ingress",
+          "awaken-dispatch",
           "--features",
           "test-support",
           "--",
@@ -345,40 +345,40 @@
       ],
       "cases": [
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "message_idempotency_conflicts_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "millis_boundaries_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "pending_revision_cas_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "postgres_append_is_idempotent_and_stale_input_is_dropped",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "postgres_pending_mutations_lock_revision_before_effect_and_preserve_exhaustion",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "supersession_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         }
       ],
       "entry": {
@@ -388,7 +388,7 @@
           "test",
           "--locked",
           "-p",
-          "awaken-run-ingress",
+          "awaken-dispatch",
           "--features",
           "test-support",
           "--",
@@ -413,34 +413,34 @@
       ],
       "cases": [
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "dispatch_queries",
           "name": "postgres_corrupt_summary_does_not_poison_identity_pages",
-          "source": "crates/server/awaken-run-ingress/tests/dispatch_queries.rs"
+          "source": "crates/server/awaken-dispatch/tests/dispatch_queries.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "postgres_operational_feed_waits_for_the_complete_committed_prefix",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "reconciliation_scan",
           "name": "postgres_scan_counts_corrupt_payload_and_reaches_healthy_suffix",
-          "source": "crates/server/awaken-run-ingress/tests/reconciliation_scan.rs"
+          "source": "crates/server/awaken-dispatch/tests/reconciliation_scan.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "postgres_stream_checkpoint_corruption_and_unavailability_stay_unknown",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "postgres_stream_checkpoint_survives_restart_overwrites_and_deletes",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         }
       ],
       "entry": {
@@ -450,7 +450,7 @@
           "test",
           "--locked",
           "-p",
-          "awaken-run-ingress",
+          "awaken-dispatch",
           "--features",
           "test-support",
           "--",
@@ -475,40 +475,40 @@
       ],
       "cases": [
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "cancel_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "concurrent_recovery_yields_one_winner_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "dead_letter_budget_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "dead_letter_ttl_gc_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "priority_dedupe_gc_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "scheduled_delivery_due_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         }
       ],
       "entry": {
@@ -518,7 +518,7 @@
           "test",
           "--locked",
           "-p",
-          "awaken-run-ingress",
+          "awaken-dispatch",
           "--features",
           "test-support",
           "--",
@@ -543,94 +543,94 @@
       ],
       "cases": [
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "any_store",
           "name": "any_postgres_connect_and_claim",
-          "source": "crates/server/awaken-run-ingress/tests/any_store.rs"
+          "source": "crates/server/awaken-dispatch/tests/any_store.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "units",
           "name": "configured_postgres_failure_cannot_pass_as_a_skipped_test",
-          "source": "crates/server/awaken-run-ingress/tests/units.rs"
+          "source": "crates/server/awaken-dispatch/tests/units.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "cross_thread_outbox_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "durable_submit_awaits_then_delivered_decision_resumes_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "idle_thread_inbox_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "list_dispatches_on_postgres",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "sandbox_binding",
           "name": "postgres_backend_binds_and_recovers",
-          "source": "crates/server/awaken-run-ingress/tests/sandbox_binding.rs"
+          "source": "crates/server/awaken-dispatch/tests/sandbox_binding.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "dispatch_queries",
           "name": "postgres_bounded_dispatch_queries_conform",
-          "source": "crates/server/awaken-run-ingress/tests/dispatch_queries.rs"
+          "source": "crates/server/awaken-dispatch/tests/dispatch_queries.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "runtime_postgres",
           "name": "postgres_commit_backs_execute_resume_and_survives_restart",
-          "source": "crates/server/awaken-run-ingress/tests/runtime_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/runtime_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "durable_postgres",
           "name": "postgres_connect_applies_migrations_and_claim_recovers_a_lease",
-          "source": "crates/server/awaken-run-ingress/tests/durable_postgres.rs"
+          "source": "crates/server/awaken-dispatch/tests/durable_postgres.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "dispatch_conformance",
           "name": "postgres_dispatch_conforms",
-          "source": "crates/server/awaken-run-ingress/tests/dispatch_conformance.rs"
+          "source": "crates/server/awaken-dispatch/tests/dispatch_conformance.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "any_store",
           "name": "postgres_factory_pairs_the_selected_store_with_its_wake",
-          "source": "crates/server/awaken-run-ingress/tests/any_store.rs"
+          "source": "crates/server/awaken-dispatch/tests/any_store.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "dispatch_conformance",
           "name": "postgres_refines_the_same_crash_recovery_history",
-          "source": "crates/server/awaken-run-ingress/tests/dispatch_conformance.rs"
+          "source": "crates/server/awaken-dispatch/tests/dispatch_conformance.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "attempt_inventory",
           "name": "postgres_scoped_admission_inventory_preserves_original_selection",
-          "source": "crates/server/awaken-run-ingress/tests/attempt_inventory.rs"
+          "source": "crates/server/awaken-dispatch/tests/attempt_inventory.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "dispatch_conformance",
           "name": "postgres_session_reply_activity_rotation_conforms",
-          "source": "crates/server/awaken-run-ingress/tests/dispatch_conformance.rs"
+          "source": "crates/server/awaken-dispatch/tests/dispatch_conformance.rs"
         }
       ],
       "entry": {
@@ -640,7 +640,7 @@
           "test",
           "--locked",
           "-p",
-          "awaken-run-ingress",
+          "awaken-dispatch",
           "--features",
           "test-support",
           "--",
@@ -666,34 +666,34 @@
       ],
       "cases": [
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "pg_notify_wake",
           "name": "delivery_observation_requires_completion_and_reaps_a_timed_out_waiter",
-          "source": "crates/server/awaken-run-ingress/tests/pg_notify_wake.rs"
+          "source": "crates/server/awaken-dispatch/tests/pg_notify_wake.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "pg_notify_wake",
           "name": "publish_wakes_a_waiter_on_another_connection",
-          "source": "crates/server/awaken-run-ingress/tests/pg_notify_wake.rs"
+          "source": "crates/server/awaken-dispatch/tests/pg_notify_wake.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "pg_notify_wake",
           "name": "publish_is_ok_with_no_waiter",
-          "source": "crates/server/awaken-run-ingress/tests/pg_notify_wake.rs"
+          "source": "crates/server/awaken-dispatch/tests/pg_notify_wake.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "pg_notify_wake",
           "name": "listener_reconnects_after_its_connection_is_dropped",
-          "source": "crates/server/awaken-run-ingress/tests/pg_notify_wake.rs"
+          "source": "crates/server/awaken-dispatch/tests/pg_notify_wake.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "pg_notify_wake",
           "name": "listener_ownership_releases_connection_on_shutdown_and_last_drop",
-          "source": "crates/server/awaken-run-ingress/tests/pg_notify_wake.rs"
+          "source": "crates/server/awaken-dispatch/tests/pg_notify_wake.rs"
         }
       ],
       "entry": {
@@ -703,7 +703,7 @@
           "test",
           "--locked",
           "-p",
-          "awaken-run-ingress",
+          "awaken-dispatch",
           "--features",
           "test-support",
           "--test",
@@ -731,16 +731,16 @@
       ],
       "cases": [
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "lib",
           "name": "wake::nats_tests::nats_fixture_absence_and_configured_failure_are_distinct",
-          "source": "crates/server/awaken-run-ingress/tests/support/nats.rs"
+          "source": "crates/server/awaken-dispatch/tests/support/nats.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "lib",
           "name": "wake::nats_tests::nats_wake_signal_notifies_a_waiter",
-          "source": "crates/server/awaken-run-ingress/tests/support/nats.rs"
+          "source": "crates/server/awaken-dispatch/tests/support/nats.rs"
         }
       ],
       "entry": {
@@ -750,7 +750,7 @@
           "test",
           "--locked",
           "-p",
-          "awaken-run-ingress",
+          "awaken-dispatch",
           "--features",
           "test-support,nats",
           "--lib",
@@ -781,22 +781,22 @@
       ],
       "cases": [
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "dispatch_claim_perf",
           "name": "broad_pending_queue_claim_latency",
-          "source": "crates/server/awaken-run-ingress/tests/dispatch_claim_perf.rs"
+          "source": "crates/server/awaken-dispatch/tests/dispatch_claim_perf.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "dispatch_claim_perf",
           "name": "incompatible_front_queue_claim_latency",
-          "source": "crates/server/awaken-run-ingress/tests/dispatch_claim_perf.rs"
+          "source": "crates/server/awaken-dispatch/tests/dispatch_claim_perf.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "dispatch_claim_perf",
           "name": "concurrent_incompatible_front_claim_throughput",
-          "source": "crates/server/awaken-run-ingress/tests/dispatch_claim_perf.rs"
+          "source": "crates/server/awaken-dispatch/tests/dispatch_claim_perf.rs"
         }
       ],
       "entry": {
@@ -806,7 +806,7 @@
           "test",
           "--locked",
           "-p",
-          "awaken-run-ingress",
+          "awaken-dispatch",
           "--features",
           "test-support",
           "--test",
@@ -842,16 +842,16 @@
       ],
       "cases": [
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "dispatch_claim_perf",
           "name": "percentile_reporting_covers_empty_bounds_and_exact_integer_ranks",
-          "source": "crates/server/awaken-run-ingress/tests/dispatch_claim_perf.rs"
+          "source": "crates/server/awaken-dispatch/tests/dispatch_claim_perf.rs"
         },
         {
-          "package": "awaken-run-ingress",
+          "package": "awaken-dispatch",
           "target": "dispatch_claim_perf",
           "name": "sparse_samples_never_report_a_qualified_numeric_tail",
-          "source": "crates/server/awaken-run-ingress/tests/dispatch_claim_perf.rs"
+          "source": "crates/server/awaken-dispatch/tests/dispatch_claim_perf.rs"
         }
       ],
       "entry": {
@@ -861,7 +861,7 @@
           "test",
           "--locked",
           "-p",
-          "awaken-run-ingress",
+          "awaken-dispatch",
           "--features",
           "test-support",
           "--test",

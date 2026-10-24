@@ -452,8 +452,8 @@
       "scripts/ci/test_native_services.py": "9614aaf768f5f3a77e438c3e65ee1fc4a78075cfa0abce8acddf9b9d720c9e4f",
       "scripts/ci/install_windows_services.py": "237d5b08cce2cf8e8a13fd9961d2258a7c14989f0705bee6db1b2ce718541aaf",
       ".github/workflows/windows-native-services.yml": "16eb16f54a33af0c15e7821b6d02d393f753df98e82e688e4e637a1977d28990",
-      "crates/server/awaken-run-ingress/src/wake.rs": "89c027865a385db6b749f8d67a8738fa067a1d3c21203fa839ea6b0ec4d99ada",
-      "crates/server/awaken-run-ingress/tests/support/nats.rs": "eb4b2dff4d7dd679d63d54f266d91494f0710461ffac19a04872d17d9e974fcb",
+      "crates/server/awaken-dispatch/src/wake.rs": "89c027865a385db6b749f8d67a8738fa067a1d3c21203fa839ea6b0ec4d99ada",
+      "crates/server/awaken-dispatch/tests/support/nats.rs": "eb4b2dff4d7dd679d63d54f266d91494f0710461ffac19a04872d17d9e974fcb",
       "scripts/ci/check_dependency_gates.py": "65de2ea6d5e210fa918e6269573f2cf64410d89056f085063dccdfbca58947de",
       "scripts/ci/test_waits_baseline.json": "082a3f9226a5cd67329b4af92e77d6d88ad608dbf54ab29b79671f704f9efda1"
     },
@@ -890,7 +890,7 @@
     "scripts/ci/nats_tests.sh": "c643363bbbf85c47dd9fd4a132ac1eb734fee462248cb14ede9c7ae396162e91",
     "scripts/ci/pg_tests.sh": "41c39474c65f5e9fd1503d9c19754697b8df13948e806b773fc62f418f4c0337",
     ".github/workflows/windows-native-services.yml": "398f4a405fe5f673b8401cf6dcb0b70128b326f1d2352485c5c55c2d6aaed0fa",
-    "crates/server/awaken-run-ingress-http/tests/active_active_postgres.rs": "4887022cc9f89b44bab7b484d8bf7a2f5e49759f2225933009edf990d8b59ccb"
+    "crates/server/awaken-dispatch-http/tests/active_active_postgres.rs": "4887022cc9f89b44bab7b484d8bf7a2f5e49759f2225933009edf990d8b59ccb"
   },
   "runner_self_tests": {
     "count": 16,
