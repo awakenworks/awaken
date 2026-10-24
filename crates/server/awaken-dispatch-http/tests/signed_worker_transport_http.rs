@@ -22,6 +22,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
+use awaken_coordinator_client::{WorkerControlClient, WorkerControlSessionClient};
 use awaken_dispatch::{
     AttemptAdmission, ClaimedStreamPublisher as _, DispatchClaimOwnership as _,
     DispatchClaims as _, DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _,
@@ -39,7 +40,6 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::MemoryStreamSink;
-use awaken_coordinator_client::{WorkerControlClient, WorkerControlSessionClient};
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, SignedWorkerAuthenticator, SignedWorkerRequestAuthorizer,
     WorkerRequestAuthenticator, WorkerSigningCredential, WorkerUpstream,

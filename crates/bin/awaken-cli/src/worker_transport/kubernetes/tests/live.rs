@@ -8,6 +8,7 @@ use awaken_container_contract::{K8sLedgerBinding, RequestJoin};
 use awaken_lease_testkit::ManualClock;
 use awaken_worker_contract::{WorkerCurrentSource, WorkerIncarnationSource};
 
+use awaken_coordinator_client::{WorkerControlClient, dispatch_transport_with_upstream};
 use awaken_dispatch::{
     AttemptAdmission, RunClaim, RunDispatch, SqliteDispatchStore, WorkerHeartbeat,
 };
@@ -17,7 +18,6 @@ use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_time::WallClockExt;
 use awaken_worker::WorkerK8sCreateClient;
 use awaken_worker_registry::SqliteWorkerDirectory;
-use awaken_coordinator_client::{WorkerControlClient, dispatch_transport_with_upstream};
 use awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer;
 use awaken_worker_transport_security::{FixedWorkerLeasePolicy, WorkerUpstream};
 use k8s_openapi::api::apps::v1::Deployment;

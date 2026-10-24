@@ -437,9 +437,7 @@ async fn registration_retention_failure_retries_the_same_durable_identity_before
             control
                 .register_classified("retention-boot", manifest.clone())
                 .await,
-            Err(awaken_coordinator_client::WorkerRegistrationError::Unavailable(
-                _
-            ))
+            Err(awaken_coordinator_client::WorkerRegistrationError::Unavailable(_))
         ),
         "R0 preparation failure is retryable"
     );
@@ -455,9 +453,7 @@ async fn registration_retention_failure_retries_the_same_durable_identity_before
             control
                 .register_classified("retention-boot", manifest.clone())
                 .await,
-            Err(awaken_coordinator_client::WorkerRegistrationError::Unavailable(
-                _
-            ))
+            Err(awaken_coordinator_client::WorkerRegistrationError::Unavailable(_))
         ),
         "R1 exact retryable outcome"
     );

@@ -9,7 +9,7 @@ context = "worker"
 product = "platform"
 bounded_context = "dispatch"
 layer = "infrastructure"
-authority = "worker-runtime-transport"
+authority = "coordinator-client"
 separation = "isolation"
 isolates = ["reqwest"]
 

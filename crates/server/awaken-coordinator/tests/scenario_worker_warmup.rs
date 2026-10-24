@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use awaken_coordinator_client::WorkerControlClient;
 use awaken_scenario_host::{EchoModel, build_router_with_deployment};
 use awaken_worker_registry::{WorkerIdentity, WorkerManifest};
-use awaken_coordinator_client::WorkerControlClient;
 use awaken_worker_transport_security::WorkerUpstream;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

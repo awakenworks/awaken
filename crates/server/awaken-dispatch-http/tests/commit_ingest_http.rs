@@ -15,6 +15,7 @@ use awaken_agent_contract::thread::commit::operation::{
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
+use awaken_coordinator_client::RemoteClaimedRunCommit;
 use awaken_dispatch::ClaimedCommitService;
 use awaken_dispatch::{
     ClaimedCommitCommand, ClaimedRunCommit, MemoryDispatchStore, RegisteredWorker, RegistryError,
@@ -29,7 +30,6 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
-use awaken_coordinator_client::RemoteClaimedRunCommit;
 use awaken_worker_transport_security::HeaderWorkerAuthenticator;
 
 struct CurrentWorkerDirectory(RegisteredWorker);

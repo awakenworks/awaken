@@ -67,7 +67,7 @@ domain problem it solves:
      leaf ports remain in `awaken-run-ingress-contract`. Backend adapters and
      Worker transports consume that binding through their existing execution
      entrypoint, without a second cross-context infrastructure dependency.
-   - **The `worker` context is retired.** `awaken-coordinator-client`,
+   - **The `worker` context is retired.** `awaken-worker-runtime`,
      `awaken-worker-registry`, `awaken-worker-contract`,
      `awaken-worker-transport-security` and `awaken-connection-plan` join Dispatch. A
      separate Fleet context waits until they show an independent change rhythm.

@@ -6,6 +6,7 @@ mod postgres_support;
 
 use std::sync::Arc;
 
+use awaken_coordinator_client::WorkerControlClient;
 use awaken_dispatch::{
     MemoryDispatchStore, WorkerDirectory, WorkerManifest, WorkerRegistration, WorkerState,
 };
@@ -14,7 +15,6 @@ use awaken_lease_testkit::ManualClock;
 use awaken_worker_registry::{
     MemoryWorkerDirectory, PostgresWorkerDirectory, SqliteWorkerDirectory,
 };
-use awaken_coordinator_client::WorkerControlClient;
 use awaken_worker_transport_security::kubernetes::{
     KubernetesPodIdentity, KubernetesWorkerAuthenticator, KubernetesWorkerRequestAuthorizer,
 };

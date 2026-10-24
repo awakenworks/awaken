@@ -20,6 +20,7 @@ use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpoi
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_coordinator_client::HttpDispatchQueue;
 use awaken_credential_contract::{
     AttemptCredentialBinding, AttemptCredentialDelivery, AttemptCredentialDeliveryRequest,
     AttemptCredentialDeliverySource,
@@ -42,7 +43,6 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
-use awaken_coordinator_client::HttpDispatchQueue;
 use awaken_worker_transport_security::{FixedWorkerLeasePolicy, HeaderWorkerAuthenticator};
 
 fn activation(run: &str, thread: &str) -> RunActivation {

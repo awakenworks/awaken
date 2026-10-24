@@ -114,10 +114,10 @@ pub type RegisteredMemoryMounterFactory = Arc<
         + Sync,
 >;
 
+use awaken_coordinator_client::WorkerControlClient;
 use awaken_credential_materializer::InferenceExecutorMaterializer;
 use awaken_session_executor::ExecutorComponents;
 use awaken_worker_contract::{RegistryMutation, WorkerManifest};
-use awaken_coordinator_client::WorkerControlClient;
 use awaken_worker_transport_security::WorkerUpstream;
 
 /// Completion of the one Worker preparation lane. A timeout or task failure

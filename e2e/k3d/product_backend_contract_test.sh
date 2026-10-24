@@ -161,7 +161,7 @@ assert any({'pods/exec', 'pods/portforward'} <= rule['resources'] and 'create' i
 creation = rules(document('Role', 'awaken-create-executor'))
 assert creation and all(rule['verbs'] == {'create'} for rule in creation), 'B2 only Create'
 assert set().union(*(rule['resources'] for rule in creation)) == direct, 'B2 six exact kinds'
-worker = document('RoleBinding', 'awaken-coordinator-client')
+worker = document('RoleBinding', 'awaken-worker-runtime')
 assert 'name: awaken-runtime-read-dispose' in worker and 'name: awaken-worker' in worker and 'name: awaken-product' not in worker, 'B1 binding'
 product = document('RoleBinding', 'awaken-runtime-read-dispose')
 assert 'name: awaken-product' in product, 'B2 shared base'
