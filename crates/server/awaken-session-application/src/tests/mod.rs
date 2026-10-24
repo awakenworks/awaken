@@ -23,8 +23,8 @@ use std::sync::{
 
 use awaken_executable_environment_contract::EnvironmentImageBuildError;
 use awaken_service_lifecycle::run_composed_async_test;
-use awaken_session_repository_contract::SessionRepository;
 use awaken_session_execution_contract::{McpAttachmentRealizer, SessionRuntime};
+use awaken_session_repository_contract::SessionRepository;
 use awaken_session_state_contract::PersistedSession;
 use awaken_session_types::RunError;
 use awaken_time::system_clock;
@@ -1207,8 +1207,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for NoopRuntime {
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await
@@ -1358,8 +1360,10 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingReplyRu
     async fn activate_session_run(
         &self,
         delivery: awaken_session_execution_contract::SessionRunDelivery,
-    ) -> Result<awaken_session_execution_contract::SessionRunActivation, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_execution_contract::SessionRunActivation,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .activate_session_run(delivery)
             .await
@@ -1824,8 +1828,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingReplyRuntime
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await
@@ -1968,8 +1974,10 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingAgentAd
     async fn activate_session_run(
         &self,
         delivery: awaken_session_execution_contract::SessionRunDelivery,
-    ) -> Result<awaken_session_execution_contract::SessionRunActivation, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_execution_contract::SessionRunActivation,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .activate_session_run(delivery)
             .await
@@ -2157,7 +2165,9 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingAgentAd
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::SessionCoordinationReads for RecordingAgentAdmissionRuntime {
+impl awaken_session_execution_contract::SessionCoordinationReads
+    for RecordingAgentAdmissionRuntime
+{
     async fn source_dispatch_observation(
         &self,
         _session: &awaken_session_state_contract::PersistedSession,
@@ -2422,8 +2432,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingAgentAdmissi
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await
@@ -2571,8 +2583,10 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingBoundar
     async fn activate_session_run(
         &self,
         delivery: awaken_session_execution_contract::SessionRunDelivery,
-    ) -> Result<awaken_session_execution_contract::SessionRunActivation, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_execution_contract::SessionRunActivation,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .activate_session_run(delivery)
             .await
@@ -2743,7 +2757,9 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingBoundar
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::SessionCoordinationReads for RecordingBoundaryBudgetRuntime {
+impl awaken_session_execution_contract::SessionCoordinationReads
+    for RecordingBoundaryBudgetRuntime
+{
     async fn source_dispatch_observation(
         &self,
         _session: &awaken_session_state_contract::PersistedSession,
@@ -3065,8 +3081,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingBoundaryBudg
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await
@@ -3222,8 +3240,10 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingCleanup
     async fn activate_session_run(
         &self,
         delivery: awaken_session_execution_contract::SessionRunDelivery,
-    ) -> Result<awaken_session_execution_contract::SessionRunActivation, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_execution_contract::SessionRunActivation,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .activate_session_run(delivery)
             .await
@@ -3816,8 +3836,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingCleanupRunti
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await

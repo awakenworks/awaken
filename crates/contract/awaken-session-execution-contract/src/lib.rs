@@ -1,4 +1,5 @@
-//! Runtime-facing Session roles, coordination, and Run admission.
+//! The Session ↔ execution boundary: the Session roles execution calls, coordination
+//! and Run admission.
 
 mod claimed_coordination;
 mod coordination;

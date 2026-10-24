@@ -8,10 +8,10 @@ use crate::{
 use awaken_dispatch_contract::RunClaim;
 use awaken_runtime_contract::ExecutableAgentSnapshot;
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
+use awaken_session_execution_contract::McpAttachmentRealizer;
 use awaken_session_realization_contract::{
     FrozenSessionProjection, ObservedSessionRealizationLease,
 };
-use awaken_session_execution_contract::McpAttachmentRealizer;
 /// Installs frozen inputs through the existing Runtime projection boundary.
 #[async_trait::async_trait]
 pub trait SessionProjectionExecution: Send + Sync {

@@ -15,13 +15,13 @@
 
 use awaken_session_configuration_contract::mcp::{McpGenerationRef, McpProjectionEffectKind};
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
+use awaken_session_execution_contract::McpAttachmentRealizer;
 use awaken_session_realization_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, FailSessionRealization,
     SessionProjectionSynchronizer, SessionRealizationAction, SessionRealizationControl,
     SessionRealizationDirective, SessionRealizationDriveError, SessionRealizationEffectFailure,
     SessionRealizationPermit,
 };
-use awaken_session_execution_contract::McpAttachmentRealizer;
 use awaken_session_types::RunError;
 use awaken_session_types::SessionId;
 

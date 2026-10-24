@@ -16,8 +16,8 @@ use awaken_environment_contract::EnvItem;
 #[cfg(test)]
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
 use awaken_session_configuration_contract::EnvironmentSnapshot;
-use awaken_session_repository_contract::SessionRepository;
 use awaken_session_execution_contract::{McpAttachmentRealizer, SessionEnvironmentBindingSink};
+use awaken_session_repository_contract::SessionRepository;
 use awaken_session_state_contract::SessionEnvironmentFacts;
 use awaken_session_types::RunError;
 use {

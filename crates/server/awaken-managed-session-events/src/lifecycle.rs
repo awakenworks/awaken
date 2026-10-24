@@ -257,7 +257,9 @@ pub fn project_child_lifecycle(
             )
         };
         let run_terminates_thread = awaken_session_execution_contract::coordinated_thread_closed(
-            awaken_session_execution_contract::CoordinatedThreadKind::from_is_advisor(child.advisor),
+            awaken_session_execution_contract::CoordinatedThreadKind::from_is_advisor(
+                child.advisor,
+            ),
             &event.state,
         );
         match SessionAgentRunBoundary::of_lifecycle_kind(event.kind) {

@@ -8,8 +8,8 @@ use awaken_sandbox_container::{
 };
 use awaken_sandbox_local::LocalProvider;
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_realization::peers::EnvironmentPeer as _;
 use awaken_session_execution_contract::TerminalCleanupRuntime as _;
+use awaken_session_realization::peers::EnvironmentPeer as _;
 
 /// The logical path a staged resource realizes under, recovered from a projected
 /// pc mount (`.mnt/<logical>`) so the registry assertions stay resource-oriented.

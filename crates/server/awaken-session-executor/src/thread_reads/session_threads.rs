@@ -15,8 +15,8 @@
 use super::*;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::thread::read::lifecycle::{RunLifecycleCursor, RunLifecycleFeed as _};
-use awaken_session_realization::peers::EnvironmentPeer as _;
 use awaken_session_execution_contract::CoordinatedThreadLink;
+use awaken_session_realization::peers::EnvironmentPeer as _;
 
 const MAX_LIFECYCLE_PAGE: usize = 1_024;
 

@@ -57,8 +57,10 @@ macro_rules! no_committed_threads {
                 &self,
                 _thread: &str,
                 _outcome_id: &str,
-            ) -> Result<Option<awaken_session_execution_contract::CommittedOutcomeProjection>, RunError>
-            {
+            ) -> Result<
+                Option<awaken_session_execution_contract::CommittedOutcomeProjection>,
+                RunError,
+            > {
                 Ok(None)
             }
         }

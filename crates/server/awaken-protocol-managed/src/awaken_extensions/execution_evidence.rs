@@ -170,8 +170,9 @@ mod tests {
             "workspace_id":"workspace","session_id":"session-1","revision":2,
             "file_ids":["file-original"],"origin":{"run_id":"original-run","owner":"worker","epoch":7}
         })).unwrap());
-        with_footprint.operation_footprint =
-            Some(awaken_session_execution_contract::SessionExecutionOperationFootprint::ResponseOnly);
+        with_footprint.operation_footprint = Some(
+            awaken_session_execution_contract::SessionExecutionOperationFootprint::ResponseOnly,
+        );
         with_footprint.preparation = Some(
             awaken_session_execution_contract::SessionRecoveryPreparationReference {
                 session_id: "session-1".into(),

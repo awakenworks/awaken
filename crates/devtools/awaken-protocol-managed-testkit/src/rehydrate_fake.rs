@@ -107,8 +107,9 @@ pub struct RehydrateFake {
         >,
     >,
     pub archive_commits: Arc<std::sync::Mutex<Vec<(String, String)>>>,
-    pub thread_tool_replies:
-        Arc<std::sync::Mutex<Vec<awaken_session_execution_contract::SessionThreadToolReplyCommand>>>,
+    pub thread_tool_replies: Arc<
+        std::sync::Mutex<Vec<awaken_session_execution_contract::SessionThreadToolReplyCommand>>,
+    >,
     pub delegate_ids: Arc<std::sync::Mutex<Vec<String>>>,
     pub custom_tools: Arc<std::sync::Mutex<Vec<awaken_session_configuration_contract::CustomTool>>>,
     pub order: Arc<std::sync::Mutex<Vec<&'static str>>>,
@@ -461,8 +462,10 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
     async fn activate_session_run(
         &self,
         delivery: awaken_session_execution_contract::SessionRunDelivery,
-    ) -> Result<awaken_session_execution_contract::SessionRunActivation, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_execution_contract::SessionRunActivation,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .activate_session_run(delivery)
             .await

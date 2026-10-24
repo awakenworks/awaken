@@ -27,11 +27,11 @@ use awaken_agent_contract::{
 use awaken_protocol_managed::{ManagedState, managed_session_id_from_idempotency};
 use awaken_session_application_contract::{Pending, StepOutcome};
 use awaken_session_configuration_contract::{AgentCapabilities, BuiltinTool, CustomTool};
-use awaken_session_repository_contract::SessionRepositoryReads;
 use awaken_session_execution_contract::{
     AdmitSessionRun, CommittedOutcomeProjection, OutcomeDrive, OutcomeIteration, OutcomeReport,
     SessionRunReservation, SessionRuntime, ToolPermissionDecision,
 };
+use awaken_session_repository_contract::SessionRepositoryReads;
 use awaken_session_state_contract::SessionExecutionState;
 use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_session_types::RunError;
@@ -1676,8 +1676,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for EchoFake {
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await
@@ -2355,8 +2357,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for CapableFake {
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await
@@ -2893,8 +2897,10 @@ impl awaken_session_execution_contract::CoordinationRuntime for ToolAwaitingFake
     async fn activate_session_run(
         &self,
         delivery: awaken_session_execution_contract::SessionRunDelivery,
-    ) -> Result<awaken_session_execution_contract::SessionRunActivation, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_execution_contract::SessionRunActivation,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .activate_session_run(delivery)
             .await
@@ -3893,7 +3899,8 @@ impl awaken_session_execution_contract::OutcomeRuntime for OutcomeFake {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<awaken_session_execution_contract::OutcomeDrive, awaken_session_types::RunError> {
+    ) -> Result<awaken_session_execution_contract::OutcomeDrive, awaken_session_types::RunError>
+    {
         let outcome_id = awaken_session_event_contract::session_outcome_convenience_id(
             thread,
             description,
@@ -3916,8 +3923,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for OutcomeFake {
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await
@@ -5289,8 +5298,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingFake {
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await
@@ -6229,8 +6240,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for InterruptRedirectFake
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await

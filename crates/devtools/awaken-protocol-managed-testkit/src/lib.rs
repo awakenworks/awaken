@@ -51,8 +51,8 @@ use awaken_executable_environment_contract::ExecutableEnvironmentRegistrar;
 /// [`ManagedStateFixture`] constructors that build it.
 pub use awaken_protocol_managed::ManagedState;
 use awaken_provisioning_contract::SandboxExecutionPolicyStore;
-use awaken_session_repository_contract::SessionStore;
 use awaken_session_execution_contract::{CompleteSessionRuntime, McpAttachmentRealizer};
+use awaken_session_repository_contract::SessionStore;
 
 /// A fresh in-memory durable Session repository.
 #[must_use]

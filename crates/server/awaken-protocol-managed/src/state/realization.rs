@@ -50,12 +50,12 @@ mod tests {
         EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,
         SessionNetworkPolicy,
     };
+    use awaken_session_execution_contract::{SessionRuntime, ToolPermissionDecision};
     use awaken_session_realization_contract::{
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
         FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
         SessionRealizationControl,
     };
-    use awaken_session_execution_contract::{SessionRuntime, ToolPermissionDecision};
     use awaken_session_state_contract::{IdempotencyRecord, SessionResourceState};
     use {
         awaken_agent_contract::McpTarget,

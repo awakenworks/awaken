@@ -34,8 +34,8 @@ use awaken_session_configuration_contract::SessionRuntimeProjection;
 use awaken_session_configuration_contract::resource::{
     SessionRealizationLease, SessionResourceManifest,
 };
-use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_execution_contract::{AdmitSessionRun, SessionRunExecutionRequirements};
+use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
 
 fn command() -> AdmitSessionRun {

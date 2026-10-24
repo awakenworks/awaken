@@ -111,8 +111,10 @@ impl ThreadEventHub {
     pub(crate) fn live_subscription(
         &self,
         thread_key: &str,
-    ) -> Result<Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>, ExecutorLock>
-    {
+    ) -> Result<
+        Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>,
+        ExecutorLock,
+    > {
         Ok(Box::new(HubLiveSubscription {
             receiver: self.subscribe(thread_key)?,
         }))

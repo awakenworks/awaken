@@ -25,7 +25,9 @@ impl WorkerControlSessionClient {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::SessionEnvironmentBindingSink for WorkerControlSessionClient {
+impl awaken_session_execution_contract::SessionEnvironmentBindingSink
+    for WorkerControlSessionClient
+{
     async fn authorize(
         &self,
         intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,

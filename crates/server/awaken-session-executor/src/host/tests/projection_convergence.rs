@@ -4,8 +4,8 @@ use crate::host::worker_resolver::test_support::{
     AdoptionModel, deferred_environment, empty_frozen_projection_for_snapshot, managed_test_host,
     test_activation,
 };
-use awaken_session_realization_contract::SessionProjectionInstallMode;
 use awaken_session_execution_contract::RealizationRuntime as _;
+use awaken_session_realization_contract::SessionProjectionInstallMode;
 use awaken_session_state_contract::SessionEnvironmentState;
 
 fn observation(host: &ExecutorComponents) -> serde_json::Value {

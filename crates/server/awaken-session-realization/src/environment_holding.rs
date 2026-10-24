@@ -17,7 +17,9 @@ pub mod realization;
 pub struct EnvironmentHolding {
     /// The selected aggregate publication authority; the lock permits fixture installation only.
     environment_binding_sink: std::sync::RwLock<
-        Option<std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
+        Option<
+            std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
+        >,
     >,
     /// The same dispatch instance used by this process, narrowed to execution binding.
     dispatch_execution: Option<std::sync::Arc<dyn awaken_dispatch_contract::DispatchExecution>>,

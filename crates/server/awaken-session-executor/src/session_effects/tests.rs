@@ -1,8 +1,8 @@
 //! Exercise the two constructor-bound MCP roles, including injected failures.
 use super::*;
 use awaken_dispatch_execution::session_execution::RunMcpAttachments as _;
-use awaken_session_realization::worker_projection::SessionProjectionExecution;
 use awaken_session_execution_contract::McpAttachmentRealizer;
+use awaken_session_realization::worker_projection::SessionProjectionExecution;
 use std::sync::Mutex;
 
 fn request(session: &str, url: &str) -> crate::session_mcp::StageMcpAttachment {

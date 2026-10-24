@@ -87,7 +87,7 @@ domain problem it solves:
      realization actions) belongs to Session. Environment-side control ports stay in
      Environment. They are split into two crates only if their reader sets differ;
      otherwise only the metadata changes.
-   - `awaken-session-execution-contract` is split by direction when it is next changed:
+   - `awaken-session-runtime-contract` is split by direction when it is next changed:
      the roles the Session requires from Execution, and the callbacks Execution makes
      into the Session application.
    - Session-specific remote ports leave the dispatch contract after the Session
@@ -246,11 +246,11 @@ Public paths that moved (ADR-0091 D9 requires recording them):
 | Before | After |
 |---|---|
 | `awaken_run_ingress_contract::{ClaimedSessionControlError, ClaimedSessionRealizationControl}` | `awaken_session_realization_contract::…` |
-| `awaken_run_ingress_contract::ClaimedSessionCoordinationControl` | `awaken_session_execution_contract::ClaimedSessionCoordinationControl<Claim>` (Host uses `<RunClaim>`) |
+| `awaken_run_ingress_contract::ClaimedSessionCoordinationControl` | `awaken_session_runtime_contract::ClaimedSessionCoordinationControl<Claim>` (Host uses `<RunClaim>`) |
 | `awaken_run_ingress[_contract]::SessionRunAdmissionObserver` | `awaken_dispatch_execution::SessionRunAdmissionObserver` |
 | `awaken_run_ingress[_contract]::{ResourceOperationFence, ArtifactPublicationFence}` | `awaken_session_realization_contract::ResourceOperationFence`; the alias is deleted |
 | `awaken_run_ingress_contract::run_dispatch::DispatchedSessionRuntimeProjection` | `awaken_session_configuration_contract::SessionRuntimeProjection` |
-| `awaken_session_execution_contract::{SessionRunReplacement, SessionRunCommandFingerprint}` | `awaken_session_types::…`; `SessionRunCommandFingerprint::current(&cmd)` is `cmd.command_fingerprint()` |
+| `awaken_session_runtime_contract::{SessionRunReplacement, SessionRunCommandFingerprint}` | `awaken_session_types::…`; `SessionRunCommandFingerprint::current(&cmd)` is `cmd.command_fingerprint()` |
 | `SessionResourceEnvelope::from_manifest(&m)` | `SessionResourceEnvelope::at_revision(m.workspace_id.clone(), m.revision, m.encode_resources()?)` |
 | `envelope.decode_manifest()` (resource) | `envelope.decode_with(SessionResourceManifest::decode_resources)` |
 | `SessionRuntimeEnvelope::from_projection(env, tools, stages)` | `SessionRuntimeEnvelope::new(SessionRuntimeProjection { environment, tools, mcp_stages: Some(stages) }.encode()?)`; a current admission uses `.dispatch()`, which also returns the MCP credential requirements to place in `PlacementRequirements::session_mcp_credentials` |
@@ -529,7 +529,7 @@ inspection does not certify an external Cloud build or SDK publication.
 
 ## Implementation note 2026-10-19: one durable application error projection
 
-`awaken-session-execution-contract` remains the sole owner of `ApplicationError`,
+`awaken-session-runtime-contract` remains the sole owner of `ApplicationError`,
 `ApplicationErrorKind`, `DurableRunOperations`, `DurableDispatchStatus` and
 `DurableSupersedeResult`. Native callers use that owner directly; the two
 `awaken-run-ingress` forwarding layers are removed. Its pure `bad_request`

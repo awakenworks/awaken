@@ -37,7 +37,10 @@ pub(super) struct AcceptingFake {
     >,
     pub(super) activated_runs: std::sync::Arc<
         std::sync::Mutex<
-            std::collections::HashMap<String, awaken_session_execution_contract::SessionRunDelivery>,
+            std::collections::HashMap<
+                String,
+                awaken_session_execution_contract::SessionRunDelivery,
+            >,
         >,
     >,
     pub(super) fail_next_reservation_unavailable: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -970,8 +973,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for AcceptingFake {
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await

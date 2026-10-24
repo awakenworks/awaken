@@ -11,6 +11,9 @@ use crate::session_execution_error::ExecutorLock;
 use awaken_dispatch_contract::{HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY};
 #[cfg(test)]
 use awaken_dispatch_execution::placement::remote_worker_placement;
+use awaken_session_execution_contract::{
+    AdmittedSessionRun, SessionRunActivation, SessionRunDelivery,
+};
 use std::collections::HashMap;
 
 impl crate::SessionRuns {
@@ -48,8 +51,8 @@ impl crate::SessionRuns {
     /// non-blocking reconciler port and foreground observation.
     pub(crate) async fn activate_session_run_reservation(
         &self,
-        delivery: awaken_session_execution_contract::SessionRunDelivery,
-    ) -> Result<awaken_session_execution_contract::SessionRunActivation, SessionExecutionError> {
+        delivery: SessionRunDelivery,
+    ) -> Result<SessionRunActivation, SessionExecutionError> {
         if delivery.session_activity_epoch == 0 {
             return Err(SessionExecutionError::bad_request(
                 "Session User Run activity epoch must be nonzero",
@@ -66,18 +69,18 @@ impl crate::SessionRuns {
             .map_err(|error| SessionExecutionError::unavailable(error.to_string()))?;
         let projected = match outcome {
             awaken_dispatch_contract::SessionRunReservationActivation::Activated => {
-                awaken_session_execution_contract::SessionRunActivation::Activated
+                SessionRunActivation::Activated
             }
             awaken_dispatch_contract::SessionRunReservationActivation::AlreadyActivated {
                 session_activity_epoch,
-            } => awaken_session_execution_contract::SessionRunActivation::AlreadyActivated {
+            } => SessionRunActivation::AlreadyActivated {
                 session_activity_epoch,
             },
             awaken_dispatch_contract::SessionRunReservationActivation::RecoveryClaimed => {
-                awaken_session_execution_contract::SessionRunActivation::RecoveryClaimed
+                SessionRunActivation::RecoveryClaimed
             }
             awaken_dispatch_contract::SessionRunReservationActivation::Completed => {
-                awaken_session_execution_contract::SessionRunActivation::Completed
+                SessionRunActivation::Completed
             }
             awaken_dispatch_contract::SessionRunReservationActivation::MissingOrRejected => {
                 return Err(SessionExecutionError::bad_request(
@@ -92,8 +95,7 @@ impl crate::SessionRuns {
         };
         if matches!(
             projected,
-            awaken_session_execution_contract::SessionRunActivation::Activated
-                | awaken_session_execution_contract::SessionRunActivation::AlreadyActivated { .. }
+            SessionRunActivation::Activated | SessionRunActivation::AlreadyActivated { .. }
         ) {
             self.dispatch
                 .publish_staged(store.as_ref())
@@ -108,7 +110,7 @@ impl crate::SessionRuns {
     /// the same authoritative Thread read used by other foreground operations.
     pub(crate) async fn activate_and_observe_session_run(
         &self,
-        admission: awaken_session_execution_contract::AdmittedSessionRun,
+        admission: AdmittedSessionRun,
         input_message_ids: Vec<String>,
         stream_sink: Option<Arc<dyn StreamSink>>,
     ) -> Result<CommittedStepReceipt, SessionExecutionError> {
@@ -125,19 +127,15 @@ impl crate::SessionRuns {
             std::time::Duration::from_millis(250),
             || async move {
                 match admission {
-                    awaken_session_execution_contract::AdmittedSessionRun::Reserved(delivery)
-                    | awaken_session_execution_contract::AdmittedSessionRun::AlreadyReserved(
-                        delivery,
-                    )
-                    | awaken_session_execution_contract::AdmittedSessionRun::AlreadyActivated(
-                        delivery,
-                    ) => self.activate_session_run_reservation(delivery).await,
-                    awaken_session_execution_contract::AdmittedSessionRun::RecoveryClaimed {
-                        ..
-                    } => Ok(awaken_session_execution_contract::SessionRunActivation::RecoveryClaimed),
-                    awaken_session_execution_contract::AdmittedSessionRun::Completed { .. } => {
-                        Ok(awaken_session_execution_contract::SessionRunActivation::Completed)
+                    AdmittedSessionRun::Reserved(delivery)
+                    | AdmittedSessionRun::AlreadyReserved(delivery)
+                    | AdmittedSessionRun::AlreadyActivated(delivery) => {
+                        self.activate_session_run_reservation(delivery).await
                     }
+                    AdmittedSessionRun::RecoveryClaimed { .. } => {
+                        Ok(SessionRunActivation::RecoveryClaimed)
+                    }
+                    AdmittedSessionRun::Completed { .. } => Ok(SessionRunActivation::Completed),
                 }
             },
             || self.read_settled_phase(&ctx, &run_id, None),
@@ -378,12 +376,8 @@ async fn activate_and_await_session_run<Activate, ActivateFuture, Read, ReadFutu
 ) -> Result<RunState, SessionExecutionError>
 where
     Activate: FnOnce() -> ActivateFuture,
-    ActivateFuture: std::future::Future<
-            Output = Result<
-                awaken_session_execution_contract::SessionRunActivation,
-                SessionExecutionError,
-            >,
-        >,
+    ActivateFuture:
+        std::future::Future<Output = Result<SessionRunActivation, SessionExecutionError>>,
     Read: FnMut() -> ReadFuture,
     ReadFuture: std::future::Future<Output = Result<Option<RunState>, SessionExecutionError>>,
 {
@@ -392,10 +386,8 @@ where
     // authorities continue independently.
     let (settled, _waiter_guard) = registry.register(run_id, stream_sink)?;
     let activation = activate().await?;
-    if matches!(
-        activation,
-        awaken_session_execution_contract::SessionRunActivation::Completed
-    ) && let Some(state) = read_settled().await?
+    if matches!(activation, SessionRunActivation::Completed)
+        && let Some(state) = read_settled().await?
     {
         return Ok(state);
     }

@@ -721,8 +721,10 @@ impl awaken_session_execution_contract::CoordinationRuntime for CoordinatedRunti
     async fn activate_session_run(
         &self,
         delivery: awaken_session_execution_contract::SessionRunDelivery,
-    ) -> Result<awaken_session_execution_contract::SessionRunActivation, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_execution_contract::SessionRunActivation,
+        awaken_session_types::RunError,
+    > {
         if self
             .user_run_states
             .lock()
@@ -1128,8 +1130,8 @@ impl awaken_session_execution_contract::SessionCoordinationReads for Coordinated
         let run_count = self.runs.load(std::sync::atomic::Ordering::SeqCst);
         let operation_id = self.coordination_operation_id.lock().unwrap().clone();
         Ok(operation_id
-            .map(
-                |created_by_operation_id| awaken_session_execution_contract::CoordinatedThreadLink {
+            .map(|created_by_operation_id| {
+                awaken_session_execution_contract::CoordinatedThreadLink {
                     session_id: session_id.clone(),
                     thread_id: awaken_agent_contract::agent::thread::Id(
                         Self::CHILD_THREAD_ID.into(),
@@ -1141,8 +1143,8 @@ impl awaken_session_execution_contract::SessionCoordinationReads for Coordinated
                     latest_run_id: Some(awaken_agent_contract::agent::run::Id(format!(
                         "coord-run-{run_count}"
                     ))),
-                },
-            )
+                }
+            })
             .into_iter()
             .collect())
     }
@@ -1583,7 +1585,8 @@ impl awaken_session_execution_contract::OutcomeRuntime for CoordinatedRuntimeFak
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
-    ) -> Result<awaken_session_execution_contract::OutcomeDrive, awaken_session_types::RunError> {
+    ) -> Result<awaken_session_execution_contract::OutcomeDrive, awaken_session_types::RunError>
+    {
         unreachable!()
     }
 
@@ -1595,8 +1598,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for CoordinatedRuntimeFak
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_execution_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await
