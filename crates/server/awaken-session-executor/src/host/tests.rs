@@ -438,7 +438,7 @@ pub(crate) fn frozen_skill_version(
 
 /// One Managed Skill test setup through the Resource pin and immutable version
 /// owner. A test may omit the bytes to exercise the same fail-closed path; it
-/// never authors a process-local slot as a second selection source.
+/// never authors a process-local installed Session as a second selection source.
 async fn install_pinned_managed_skill_session(
     host: &Arc<ExecutorComponents>,
     managed: &Arc<crate::ExecutorComponents>,
@@ -2029,7 +2029,7 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<pc::SandboxEffectFence, pc::SandboxError> {
         // The fixture consumes the actual captured Host authority too; a stale
-        // slot must not record successful provider preparation.
+        // installed Session must not record successful provider preparation.
         pc::MemoryReconciliationAck::default().require_for_disposal(
             &[],
             effect_fence,

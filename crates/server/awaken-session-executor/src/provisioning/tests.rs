@@ -224,7 +224,7 @@ fn frozen_projection_with_model_override(
 }
 
 /// Install the complete frozen projection before a terminal-artifact fixture
-/// creates its resident Environment. Causes: P1 the process-local slot is
+/// creates its resident Environment. Causes: P1 the process-local installed Session is
 /// absent and P2 the physical Sandbox has not been created. Effects: E1 the
 /// canonical projection owner installs baseline, Workspace, Environment
 /// expectation, and exact revision-zero Resource transition; E2 later Sandbox
@@ -248,7 +248,7 @@ async fn install_terminal_artifact_projection_before_environment(
 
 /// Publish a legacy durable binding through the same projection/adoption owner
 /// that terminal assignment installation later replays. Causes: F1 the frozen
-/// slot is Unmaterialized; F2 one exact physical Environment exists; F3 the
+/// installed Session is Unmaterialized; F2 one exact physical Environment exists; F3 the
 /// historical aggregate state has binding evidence but no generated V2
 /// generation. Effects: E1 project the canonical DurableBinding identity; E2
 /// adopt and publish that exact Arc once. Rule F1+F2+F3=>E1+E2. A direct-only
@@ -1098,7 +1098,7 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
     assert!(
         host.run_assembly
             .installed_sessions
-            .read("model-override-acp", |slot| slot
+            .read("model-override-acp", |installed| installed
                 .inputs
                 .published_snapshot
                 .is_none())

@@ -122,10 +122,10 @@ impl awaken_provisioning_contract::RepositoryRealizer for RecordingRepositoryRea
 /// |---|---|---|---|---|---|
 /// | D1 | T | T | T | secret-free activation | exact transient material |
 /// | D2 | T | T | F | same secret-free activation | reject, zero realizer calls |
-/// P2/C12 extends these original rows with true Slot poison after staging:
+/// P2/C12 extends these original rows with true installed Session poison after staging:
 /// D3 configured Workload reads the current Workspace -> typed Poisoned denial, no effect;
 /// D4 absent materializer -> original Internal before any Workspace read;
-/// D5 anonymous clone -> no Slot read and one anonymous effect despite poison.
+/// D5 anonymous clone -> no installed Session read and one anonymous effect despite poison.
 /// No fake Session view or provider receipt is substituted for that mutex.
 #[tokio::test]
 async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
@@ -228,7 +228,9 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 host.run_assembly
                     .installed_sessions
-                    .modify(&thread, |_| panic!("P2/C12 actual Slot poison"))
+                    .modify(&thread, |_| {
+                        panic!("P2/C12 actual installed Session poison")
+                    })
                     .expect("installed Sessions");
             }))
             .is_err()
@@ -249,8 +251,10 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
         .await;
         if install_credentials {
             let denied = effect
-                .expect("D3 a poisoned Slot denies without unwinding")
-                .expect_err("D3 configured materializer still reads the poisoned Slot");
+                .expect("D3 a poisoned installed Session denies without unwinding")
+                .expect_err(
+                    "D3 configured materializer still reads the poisoned installed Session",
+                );
             assert!(
                 matches!(
                     denied,
@@ -294,7 +298,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
                 awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
             )
             .await
-            .expect("D5 anonymous clone never reads poisoned Slot");
+            .expect("D5 anonymous clone never reads poisoned installed Session");
         assert_eq!(
             realizer.0.lock().unwrap().len(),
             prior_calls + 1,
@@ -321,7 +325,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
 /// P2/C13 uses this same verifier/realizer fixture for protected upstream
 /// publication. Causes T1 exact command+lease/Workspace/repo/config, T2 fresh
 /// mediated capability, T3 verifier Indeterminate/Direct, T4 pin malformed,
-/// T5 actual Slot poisoned while the original verifier is gated. Effects:
+/// T5 actual installed Session poisoned while the original verifier is gated. Effects:
 /// T1+T2 -> one publish with refreshed capability + verified receipt;
 /// T3/T4 -> original typed refusal + zero new publish; T5 -> original second
 /// delayed Workspace read denies (typed Poisoned) after joined verifier, zero new publish.
@@ -729,13 +733,13 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         assert_eq!(published.1.lock().unwrap().len(), 1, "C13 downgrade zero effect");
 
         // C12: upstream publication checks a missing verifier BEFORE looking up
-        // Workspace; ordinary Platform clone performs that Slot read FIRST.
+        // Workspace; ordinary Platform clone performs that installed Session read FIRST.
         let missing = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await
             .with_authority(crate::UpstreamAuthority::default()))
             .build().expect("C12 upstream has no verifier");
         missing.run_assembly.installed_sessions.replace_frozen_with(session, |next| next.workspace = Some("terminal-original-workspace".into())).expect("installed Sessions");
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            missing.run_assembly.installed_sessions.modify(session, |_| panic!("C12 actual Slot poison")).expect("installed Sessions");
+            missing.run_assembly.installed_sessions.modify(session, |_| panic!("C12 actual installed Session poison")).expect("installed Sessions");
         })).is_err());
         let refused = std::panic::AssertUnwindSafe(missing.realization_executor.staging().publish_repository_activation(
             session, missing.local_workspace(), repository, &staged.binding_checks,
@@ -747,14 +751,14 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             std::panic::AssertUnwindSafe(missing.realization_executor.staging().realize_repository_activation(
                 session, missing.local_workspace(), repository, &staged.binding_checks,
                 published.as_ref(), awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
-            )).catch_unwind().await.expect("C12 a poisoned Slot denies without unwinding"),
+            )).catch_unwind().await.expect("C12 a poisoned installed Session denies without unwinding"),
             Err(crate::realization_error::RealizationError::Poisoned(_))
         ), "C12 ordinary Platform poison precedes absent verifier");
         assert_eq!(published.1.lock().unwrap().len(), 1, "C12 zero publication");
         assert!(published.0.lock().unwrap().is_empty(), "C12 zero clone");
 
         // C13/T5: join the actual asynchronous verifier entry, poison only this
-        // real Slot, release/join its callback, then observe the required SECOND
+        // real installed Session, release/join its callback, then observe the required SECOND
         // Workspace read fail. A captured/precomputed Workspace would publish.
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
@@ -782,12 +786,12 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         let refused = operation.await.expect("C13 callback and operation joined");
         assert!(
             matches!(
-                refused.expect("C13 a poisoned Slot denies without unwinding"),
+                refused.expect("C13 a poisoned installed Session denies without unwinding"),
                 Err(crate::staged_resources::RepositoryPublicationActivationError::Failed(
                     crate::realization_error::RealizationError::Poisoned(_)
                 ))
             ),
-            "C13 second current Workspace read observes true Slot poison"
+            "C13 second current Workspace read observes true installed Session poison"
         );
         assert_eq!(remote_verifier.calls.load(Ordering::SeqCst), 5, "C13 no second verifier");
         assert_eq!(published.1.lock().unwrap().len(), 1, "C13 gated poison zero new publication");

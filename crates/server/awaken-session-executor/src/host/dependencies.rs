@@ -55,7 +55,7 @@ pub(crate) type RealizationSourceFactory = Box<
 /// compositions (`awaken-cli`, `awaken-worker`, `awaken-coordinator`, the
 /// Scenario host and test fixtures) and `SessionExecutorBuilder::build`.
 pub struct SessionExecutorBuilder {
-    /// Test-only once-consumed projection of the canonical slot allocation.
+    /// Test-only once-consumed projection of the canonical installed Session allocation.
     /// Default constructors never select a replacement source.
     #[cfg(test)]
     pub(crate) realization_source: Option<RealizationSourceFactory>,

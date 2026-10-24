@@ -52,9 +52,9 @@ async fn memory_test_host(
 /// exact Resource-transition authorities. C1 the Host publication source owns
 /// the Agent selecting binding `test-input-0`; C2 the Session pins that one
 /// writable store. C1+C2 produces one automatic Memory binding used by recall
-/// and terminal extraction, without a second publication or slot-write path.
+/// and terminal extraction, without a second publication or installed-Session write path.
 /// Return that same creation-time manifest so a cold child test can freeze its
-/// dispatch before any process-local Runtime slot derives a cached copy.
+/// dispatch before any process-local Runtime installed Session derives a cached copy.
 async fn install_complete_memory_test_session(
     managed: &Arc<crate::ExecutorComponents>,
     roots: &ManagedSessionRootFixture,

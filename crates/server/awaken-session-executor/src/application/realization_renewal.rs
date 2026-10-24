@@ -1,6 +1,6 @@
 // @formal entrypoint session_realization.cross_session_reconciliation_is_bounded_and_each_control_deadline_releases_capacity_without_weakening_per_session_mutex
 // @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
-//! Lease-only scheduling and response application for the canonical Session slot.
+//! Lease-only scheduling and response application for the canonical installed Session.
 
 use awaken_lease_contract::authority::AuthorityLeaseTiming;
 use awaken_session_realization_contract::ObservedSessionRealizationLease;
@@ -50,13 +50,13 @@ impl crate::RunAssembly {
         // | R4 | yes | temporary failure | expired | E4 |
         // The original success/error arms are carried by Result::map/map_err;
         // R1-R4 keep the same observation time and error/revocation policy.
-        // Capture the existing slot identity before Control I/O. Equal lease
-        // fields do not authorize an ABA replacement of the Session slot.
+        // Capture the existing installed Session identity before Control I/O. Equal lease
+        // fields do not authorize an ABA replacement of the installed Session.
         let Some(realization) = self
             .installed_sessions
-            .read(&session_id, |slot| {
-                (slot.realization.execution().authority.lease() == Some(&lease))
-                    .then(|| slot.realization.execution().phase.clone())
+            .read(&session_id, |installed| {
+                (installed.realization.execution().authority.lease() == Some(&lease))
+                    .then(|| installed.realization.execution().phase.clone())
             })?
             .flatten()
         else {
@@ -102,7 +102,7 @@ impl crate::RunAssembly {
                 // The response belongs to the snapshot sent before I/O. Compare
                 // and install atomically: another driver may already have extended,
                 // replaced, or removed that projection. A renewal is not authority
-                // to recreate a slot or overwrite a later installed lease.
+                // to recreate an installed Session or overwrite a later installed lease.
                 self.realization_executor
                     .authority()
                     .authorize_worker_effect::<_, crate::SessionExecutionError>(|| {

@@ -483,18 +483,19 @@ impl crate::ChildRunCoordination {
             })?;
         let (baseline, tools, resources, coordinator_publication) = self
             .installed_sessions
-            .read(session_id.as_str(), |slot| {
+            .read(session_id.as_str(), |installed| {
                 (
-                    slot.inputs.baseline.clone(),
-                    slot.inputs.tools.clone(),
+                    installed.inputs.baseline.clone(),
+                    installed.inputs.tools.clone(),
                     // Coordinated children share the exact generation selected
                     // for root and extension dispatch. Selection stays inside
-                    // this one slot snapshot; child admission neither publishes
+                    // this one installed Session snapshot; child admission neither publishes
                     // nor reconstructs physical active truth.
-                    slot.realization
+                    installed
+                        .realization
                         .staging()
-                        .run_manifest(slot.run.session_dispatch),
-                    slot.inputs.published_snapshot.clone(),
+                        .run_manifest(installed.run.session_dispatch),
+                    installed.inputs.published_snapshot.clone(),
                 )
             })?
             .ok_or_else(|| {
@@ -639,7 +640,7 @@ impl crate::ChildRunCoordination {
                 .override_for(command.session_id.as_str())?,
         );
         // The report command itself is durable Session provenance. Do not rely
-        // on a process-local prepared slot to rediscover self-affinity after a
+        // on a process-local prepared installed Session to rediscover self-affinity after a
         // cold restart; the settlement observer must always route this root
         // continuation back to the same Session application.
         let request = self
@@ -1285,17 +1286,17 @@ mod tests {
             .expect("validated Host dependencies");
             host.run_assembly
                 .installed_sessions
-                .install_with(&session_id, |slot| {
-                    slot.run.session_dispatch = true;
-                    slot.replace_frozen_with(|next| {
+                .install_with(&session_id, |installed| {
+                    installed.run.session_dispatch = true;
+                    installed.replace_frozen_with(|next| {
                         next.baseline = Some(baseline);
                         // This resource-generation fixture explicitly supplies the
                         // coordinator's unrestricted configuration; missing input is
                         // not evidence of an unrestricted parent.
                         next.tools = Some(Default::default());
                     });
-                    slot.realization.staging_mut().manifest = active.clone();
-                    slot.realization.staging_mut().transition = transition;
+                    installed.realization.staging_mut().manifest = active.clone();
+                    installed.realization.staging_mut().transition = transition;
                 })
                 .expect("installed Sessions");
             let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
@@ -1470,7 +1471,7 @@ mod tests {
             let baseline = host
                 .run_assembly
                 .installed_sessions
-                .read(&session_id, |slot| slot.inputs.baseline.clone())
+                .read(&session_id, |installed| installed.inputs.baseline.clone())
                 .expect("installed Sessions")
                 .unwrap()
                 .unwrap();

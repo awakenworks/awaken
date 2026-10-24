@@ -414,7 +414,7 @@ impl ClaimedRunWorkers for ClaimedRunAssembly {
 impl SessionProjectionExecution for crate::RunAssembly {
     fn sessions(&self) -> crate::session_realizations::SessionRealizations {
         // Projection execution consumes the constructor-bound view of the same
-        // original slots as realization, publication, staging, and terminal cleanup.
+        // original installed Sessions as realization, publication, staging, and terminal cleanup.
         self.realization_executor.sessions().clone()
     }
     fn realization_executor(&self) -> &crate::realization_executor::RealizationExecutor {
@@ -462,7 +462,7 @@ impl SessionProjectionExecution for crate::RunAssembly {
 }
 
 /// Dispatch admission reads the installed Session through the realization's
-/// named operations on the same slots.
+/// named operations on the same installed Sessions.
 pub(crate) struct InstalledSessionReads(
     pub(crate) crate::session_realizations::SessionRealizations,
 );

@@ -27,7 +27,7 @@ fn carried_mount_bytes(mount: &awaken_provisioning_contract::MountRequirement) -
 )]
 async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_sandbox() {
     // Causes: C1 an active Session's Resource inputs change to a new generation;
-    // C2 a cached sandbox/projection exists; C3 the process slot retains a Run
+    // C2 a cached sandbox/projection exists; C3 the process installed Session retains a Run
     // claim from the preceding settled attempt; C4 the Resource reservation is
     // authorized by the Session root. Effects: E1 active generation and installed
     // sandbox projection advance as one pair; E2 the reservation persists through
@@ -1238,7 +1238,7 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
     assert!(
         host.run_assembly
             .installed_sessions
-            .read("coordinator-dispatch-only", |slot| slot
+            .read("coordinator-dispatch-only", |installed| installed
                 .inputs
                 .environment_snapshot
                 .is_some())
@@ -1488,7 +1488,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     assert!(
         host.run_assembly
             .installed_sessions
-            .read("worker-dispatch-conflict", |slot| slot
+            .read("worker-dispatch-conflict", |installed| installed
                 .inputs
                 .baseline
                 .is_none())

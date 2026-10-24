@@ -35,7 +35,7 @@ awaken-session-execution-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-budget-contract.workspace = true
 awaken-session-event-contract.workspace = true
-# Per-Session MCP lifecycle and Worker relay; the Session slot holds its state.
+# Per-Session MCP lifecycle and Worker relay; the installed Session holds its state.
 awaken-session-mcp.workspace = true
 awaken-session-types.workspace = true
 # The topology-neutral Session realization and terminal-cleanup drivers over

@@ -155,9 +155,9 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
         assert_eq!(
             host.run_assembly
                 .installed_sessions
-                .read(&thread, |slot| (
-                    slot.inputs.baseline.is_some(),
-                    slot.run.session_dispatch
+                .read(&thread, |installed| (
+                    installed.inputs.baseline.is_some(),
+                    installed.run.session_dispatch
                 ))
                 .expect("installed Sessions")
                 .unwrap_or((false, false)),
@@ -401,8 +401,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             baseline_host
                 .run_assembly
                 .installed_sessions
-                .read("local-baseline", |slot| {
-                    slot.inputs.baseline.is_some() && slot.run.session_dispatch
+                .read("local-baseline", |installed| {
+                    installed.inputs.baseline.is_some() && installed.run.session_dispatch
                 })
                 .expect("installed Sessions")
                 .unwrap_or(false),
@@ -508,8 +508,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             baseline_host
                 .run_assembly
                 .installed_sessions
-                .read("coordinator-before-baseline", |slot| {
-                    slot.inputs.baseline.is_some() && slot.run.context.is_none()
+                .read("coordinator-before-baseline", |installed| {
+                    installed.inputs.baseline.is_some() && installed.run.context.is_none()
                 })
                 .expect("installed Sessions")
                 .unwrap_or(false),
@@ -539,8 +539,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             baseline_host
                 .run_assembly
                 .installed_sessions
-                .read("dispatch-before-baseline", |slot| {
-                    slot.inputs.baseline.is_some() && slot.run.context.is_none()
+                .read("dispatch-before-baseline", |installed| {
+                    installed.inputs.baseline.is_some() && installed.run.context.is_none()
                 })
                 .expect("installed Sessions")
                 .unwrap_or(false),
@@ -553,7 +553,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         // Fault-injection rule B6: any fallible Resource verification fails before
         // publishing the complete logical projection. No baseline, workspace,
         // Agent, manifest, prompt, or lease fragment may survive independently. An
-        // empty process-local coordination slot is not Session truth and may remain
+        // empty process-local coordination installed Session is not Session truth and may remain
         // to serialize a concurrent retry.
         let failed_host =
             ((crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub").await)
@@ -585,22 +585,27 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             failed_host
                 .run_assembly
                 .installed_sessions
-                .read("failed-projection", |slot| {
-                    slot.inputs.baseline.is_none()
-                        && slot.inputs.workspace.is_none()
-                        && slot.inputs.agent_id.is_none()
-                        && slot.realization.staging().manifest.is_none()
-                        && slot.realization.staging().resources.mounts.is_empty()
-                        && slot.realization.staging().resources.prompts.is_empty()
-                        && slot
+                .read("failed-projection", |installed| {
+                    installed.inputs.baseline.is_none()
+                        && installed.inputs.workspace.is_none()
+                        && installed.inputs.agent_id.is_none()
+                        && installed.realization.staging().manifest.is_none()
+                        && installed.realization.staging().resources.mounts.is_empty()
+                        && installed.realization.staging().resources.prompts.is_empty()
+                        && installed
                             .realization
                             .staging()
                             .resources
                             .resource_prompts
                             .is_empty()
-                        && slot.inputs.request_context.is_empty()
-                        && slot.realization.execution().authority.lease().is_none()
-                        && !slot.run.session_dispatch
+                        && installed.inputs.request_context.is_empty()
+                        && installed
+                            .realization
+                            .execution()
+                            .authority
+                            .lease()
+                            .is_none()
+                        && !installed.run.session_dispatch
                 })
                 .expect("installed Sessions")
                 .unwrap_or(true),
@@ -671,16 +676,19 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             amendment_host
                 .run_assembly
                 .installed_sessions
-                .read("authority-amendment", |slot| {
-                    slot.inputs.baseline.is_some()
-                        && slot.run.session_dispatch
-                        && slot.realization.staging().manifest.is_none()
-                        && slot.realization.staging().transition.as_ref().is_some_and(
-                            |transition| {
+                .read("authority-amendment", |installed| {
+                    installed.inputs.baseline.is_some()
+                        && installed.run.session_dispatch
+                        && installed.realization.staging().manifest.is_none()
+                        && installed
+                            .realization
+                            .staging()
+                            .transition
+                            .as_ref()
+                            .is_some_and(|transition| {
                                 transition.desired().revision == initial_dispatch.resource_revision
                                     && transition.desired().resources == initial_dispatch.resources
-                            },
-                        )
+                            })
                 })
                 .expect("installed Sessions")
                 .unwrap_or(false),
@@ -765,7 +773,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         // Prospective-layout decision rule: F1 a cold projection's Repository is
         // nested below a mount in the same not-yet-resident frozen baseline. F1 must
         // fail before the baseline, Environment, Resource manifest, Skill loader, or
-        // Repository verifier is touched. Reading only the current slot would miss
+        // Repository verifier is touched. Reading only the current installed Session would miss
         // this first-install combination.
         let mut conflicting = projection("prospective conflict", true);
         conflicting.resources = effective_resources(vec![TestInput {
@@ -800,8 +808,9 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(
             host.run_assembly
                 .installed_sessions
-                .read("prospective-layout-conflict", |slot| {
-                    slot.inputs.baseline.is_none() && slot.inputs.environment_projection.is_none()
+                .read("prospective-layout-conflict", |installed| {
+                    installed.inputs.baseline.is_none()
+                        && installed.inputs.environment_projection.is_none()
                 })
                 .expect("installed Sessions")
                 .unwrap_or(true),
@@ -835,7 +844,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     // stale SessionCtx and rebuilds with the exact request-only messages; E2
     // C1+C2+C3+C4 retains that rebuilt context; E3 C4 persists exactly once and
     // every later projection carries that returned Resident. FMECA: updating
-    // the slot directly leaves a resident ACP/Native attempt context stale,
+    // the installed Session directly leaves a resident ACP/Native attempt context stale,
     // while replaying an Unmaterialized aggregate over its live owner violates
     // the durable binding fence.
     //

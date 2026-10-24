@@ -436,7 +436,7 @@ pub(super) async fn assemble(
     run_context.resource_origin = resource_origin;
     run_context.request_context = host
         .installed_sessions
-        .read(thread, |slot| slot.inputs.request_context.clone())?
+        .read(thread, |installed| installed.inputs.request_context.clone())?
         .unwrap_or_default();
     let run_context = mcp
         .plugins

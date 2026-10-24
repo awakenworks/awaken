@@ -195,7 +195,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     // acknowledgement arrives; C7 an effect has no installed generation. Effects:
     // E1 preparation is idempotent and leaves the substrate live; E2 no physical
     // mutation crosses C3; E3 exact disposal replay returns one receipt and reaps
-    // the substrate; E4 the frozen slot/lease remains retryable; E5 acknowledgement
+    // the substrate; E4 the frozen installed Session/lease remains retryable; E5 acknowledgement
     // alone retires every local projection; E6 an unfenced/retired effect fails
     // before provider I/O. Constraint: preparation/disposal receipts live only in
     // the aggregate; Host has no combined completion registry or alternate fence.
@@ -992,13 +992,17 @@ async fn terminal_quiescence_never_materializes_a_cold_environment() {
     assert!(
         host.run_assembly
             .installed_sessions
-            .read("cold-terminal", |slot| {
-                slot.run.context.is_none()
-                    && !slot.realization.environment().owner.has_local_environment()
+            .read("cold-terminal", |installed| {
+                installed.run.context.is_none()
+                    && !installed
+                        .realization
+                        .environment()
+                        .owner
+                        .has_local_environment()
             })
             .expect("installed Sessions")
             .unwrap_or(true),
-        "terminal control may allocate a lock slot but not a Runtime or Environment projection"
+        "terminal control may allocate a lock installed Session but not a Runtime or Environment projection"
     );
 }
 
@@ -1194,7 +1198,7 @@ async fn terminal_quiescence_does_not_rewait_an_expired_physical_claim() {
                 .unwrap()
                 .claim,
             physical_claim,
-            "Q1/E3 only the original Dispatch authority may retire the slot"
+            "Q1/E3 only the original Dispatch authority may retire the installed Session"
         );
     }
 }
@@ -1358,8 +1362,8 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
     assert!(
         host.run_assembly
             .installed_sessions
-            .read(&parent.0, |slot| slot.run.context.is_none()
-                && !slot
+            .read(&parent.0, |installed| installed.run.context.is_none()
+                && !installed
                     .realization
                     .environment()
                     .owner

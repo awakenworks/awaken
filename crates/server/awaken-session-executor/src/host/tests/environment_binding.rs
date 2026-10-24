@@ -119,15 +119,15 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
             .unwrap();
         host.run_assembly
             .installed_sessions
-            .install_with(thread, |slot| {
-                slot.run.session_dispatch = marker;
+            .install_with(thread, |installed| {
+                installed.run.session_dispatch = marker;
                 if baseline {
-                    slot.replace_frozen_with(|next| {
+                    installed.replace_frozen_with(|next| {
                         next.baseline = Some(remote_terminal_cleanup_projection().baseline)
                     });
                 }
                 if closed {
-                    slot.realization.execution_mut().authority =
+                    installed.realization.execution_mut().authority =
                         crate::realization_state::SessionRealizationAuthority::Closed(None);
                 }
             })
@@ -485,7 +485,7 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
     // binding. R1 C1+C2+C3 retains the hidden Candidate and returns retryable;
     // R2=R1+C4 retries the same idempotent persist, publishes the Store-read
     // identity with no second provider effect, and later context lookup is pure
-    // slot reuse.
+    // installed Session reuse.
     let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
@@ -540,7 +540,7 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
         .run_assembly
         .ctx_for("binding-response-loss", None)
         .await
-        .expect("R1 slot replay");
+        .expect("R1 installed Session replay");
     assert!(Arc::ptr_eq(&first, &second), "R1 no context recreation");
     assert_eq!(
         second
@@ -559,7 +559,7 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
 #[tokio::test]
 async fn already_applied_create_adopts_under_the_existing_lifecycle_lock() {
     // Cause/effect table: C1 root already committed this exact Create effect;
-    // C2 the process-local slot is cold; C3 the physical handle is a Ready V2
+    // C2 the process-local installed Session is cold; C3 the physical handle is a Ready V2
     // realization created from the complete frozen projection and its exact
     // provider-effective spec; C4 the committed intent carries that projection's
     // immutable Environment fingerprint. R1 C1+C2+C3+C4 adopts and publishes
@@ -731,7 +731,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
     // Causes: C1 a local CPU-derived default; C2 registered manifest capacity is
     // lower/equal/higher than that default; C3 execution owner is Worker or
     // Coordinator. Effects: R1 local Host retains C1 and reports it as the
-    // unregistered branch; R2 Worker installs exactly C2 slots (including I/O
+    // unregistered branch; R2 Worker installs exactly C2 installed Sessions (including I/O
     // concurrency above CPU quota) and reports it as the registered branch; R3
     // incompatible Coordinator-only graph is refused before any pool. Every capacity assertion observes the installed
     // pool or the installed sizing — never the manifest it came from.
@@ -797,7 +797,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         assert_eq!(
             worker.dispatch.pool().unwrap().concurrency(),
             capacity,
-            "R2 actual slots"
+            "R2 actual installed Sessions"
         );
         assert_eq!(
             worker.dispatch.topology().local,

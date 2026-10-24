@@ -208,7 +208,7 @@ mod tests {
         // advanced after physical completion); C3 Workspace matches; C4 desired revision is newer,
         // equal, or older; C5 the typed caller is Coordinator Dispatch and may
         // project the aggregate's unattempted amendment. Effects are Stage,
-        // Replace, or Reject before any Resource read or slot mutation.
+        // Replace, or Reject before any Resource read or installed Session mutation.
         //
         // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
         // | I1 | F | any | any | any | any | Stage |

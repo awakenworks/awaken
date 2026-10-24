@@ -40,13 +40,20 @@ pub(crate) const MANAGED_SKILLS_SUBDIR: &str = ".claude/skills";
 /// absent. This is an adapter over the existing frozen projection, not another
 /// catalog or virtual workspace. `None` leaves ordinary files to lazy Hand.
 pub(crate) fn read_pinned_skill(
-    slot: &crate::installed_session::InstalledSession,
+    installed: &crate::installed_session::InstalledSession,
     args: &awaken_ext_builtin_tools::ReadArgs,
 ) -> Option<Result<String, ToolError>> {
     use awaken_provisioning_contract::WorkspaceLayout;
     use std::path::Component;
 
-    if !slot.run.session_dispatch || slot.realization.environment().owner.resident().is_some() {
+    if !installed.run.session_dispatch
+        || installed
+            .realization
+            .environment()
+            .owner
+            .resident()
+            .is_some()
+    {
         return None;
     }
     let relative = WorkspaceLayout::relative(&args.path).unwrap_or(&args.path);
@@ -72,7 +79,7 @@ pub(crate) fn read_pinned_skill(
             .collect::<Result<Vec<_>, _>>()?;
         let (stem, file_parts) = parts.split_first().ok_or_else(failure)?;
         let directory = format!("{DELIVERED_SKILLS_SUBDIR}/{stem}");
-        if !slot
+        if !installed
             .realization
             .staging()
             .skill_prompt
@@ -81,12 +88,12 @@ pub(crate) fn read_pinned_skill(
         {
             return Err(failure());
         }
-        let manifest = slot
+        let manifest = installed
             .realization
             .staging()
-            .run_manifest(slot.run.session_dispatch)
+            .run_manifest(installed.run.session_dispatch)
             .ok_or_else(failure)?;
-        if slot.inputs.workspace.as_deref() != Some(manifest.workspace_id.as_str()) {
+        if installed.inputs.workspace.as_deref() != Some(manifest.workspace_id.as_str()) {
             return Err(failure());
         }
         let mut bindings = manifest
@@ -98,7 +105,7 @@ pub(crate) fn read_pinned_skill(
         if bindings.next().is_some() {
             return Err(failure());
         }
-        let version = slot
+        let version = installed
             .realization
             .staging()
             .skills
@@ -853,12 +860,12 @@ mod tests {
         .unwrap()
         .unwrap();
         let projection = filesystem_skill_prompt(registry.as_ref()).unwrap().unwrap();
-        let slots = Arc::new(crate::installed_session::InstalledSessions::default());
-        slots.install_realization("skill-path", |r| {
+        let installed_sessions = Arc::new(crate::installed_session::InstalledSessions::default());
+        installed_sessions.install_realization("skill-path", |r| {
             r.staging_mut().skill_prompt = Some(projection.clone())
         });
         assert!(
-            slots
+            installed_sessions
                 .realizations()
                 .prompts("skill-path", None, true, false)
                 .unwrap()
@@ -868,7 +875,7 @@ mod tests {
         );
         // The test installs a resident projection only, not a durable claim.
         // Actual Managed owner transitions retain their existing integration tests.
-        slots
+        installed_sessions
             .realizations()
             .update_realization("skill-path", |r| {
                 use crate::environment_owner::{
@@ -899,7 +906,7 @@ mod tests {
                 crate::session_environment::AgentFilesystemClient::AcpProcess,
             );
             std::fs::create_dir_all(&view.protocol_cwd).unwrap();
-            let prompt = slots
+            let prompt = installed_sessions
                 .realizations()
                 .prompts("skill-path", cwd, true, false)
                 .unwrap()
@@ -936,7 +943,7 @@ mod tests {
             }
         }
         assert_eq!(
-            slots
+            installed_sessions
                 .realizations()
                 .read_realization("skill-path", |r| r.staging().skill_prompt.clone())
                 .expect("installed Sessions")
@@ -946,7 +953,7 @@ mod tests {
         );
         // P6 malformed directory metadata cannot yield a model request once
         // realized; propagate the shared path validator's failure unchanged.
-        slots
+        installed_sessions
             .realizations()
             .update_realization("skill-path", |r| {
                 r.staging_mut().skill_prompt = Some(FilesystemSkillPrompt::from_entries(vec![(
@@ -957,7 +964,7 @@ mod tests {
             })
             .expect("installed Sessions");
         assert!(
-            slots
+            installed_sessions
                 .realizations()
                 .prompts("skill-path", None, true, false)
                 .is_err()

@@ -1,9 +1,9 @@
 // @formal surface requirement=protocol.mcp.mcp_protocol
-// @formal reason: The Runtime Host side of Session MCP: its slot registry and root realization authority as
+// @formal reason: The Runtime Host side of Session MCP: its installed Session registry and root realization authority as
 // @formal reason: the MCP lifecycle reads them, the Host projection of MCP failures, and thin delegates. The
 // @formal reason: lifecycle itself is classified at its own module; this is a product-requirement
 // @formal reason: classification, not a direct proof claim.
-//! The Runtime Host side of Session MCP: the slot registry and root
+//! The Runtime Host side of Session MCP: the installed Session registry and root
 //! authority the MCP lifecycle reads, the Host error projection of its
 //! failures, and the `ExecutorComponents` methods other Host modules call, each a thin
 //! delegate to [`awaken_session_mcp::McpSessions`].
@@ -34,8 +34,10 @@ impl SessionMcpStates for InstalledSessions {
         session: &str,
         read: impl FnOnce(&SessionMcpState) -> R,
     ) -> Result<Option<R>, McpError> {
-        self.read(session, |slot| read(&slot.realization.staging().mcp))
-            .map_err(registry_unavailable)
+        self.read(session, |installed| {
+            read(&installed.realization.staging().mcp)
+        })
+        .map_err(registry_unavailable)
     }
 
     fn update_mcp<R>(
@@ -43,8 +45,10 @@ impl SessionMcpStates for InstalledSessions {
         session: &str,
         update: impl FnOnce(&mut SessionMcpState) -> R,
     ) -> Result<R, McpError> {
-        self.install_with(session, |slot| update(slot.realization.session_mcp_mut()))
-            .map_err(registry_unavailable)
+        self.install_with(session, |installed| {
+            update(installed.realization.session_mcp_mut())
+        })
+        .map_err(registry_unavailable)
     }
 
     fn modify_mcp<R>(
@@ -52,8 +56,10 @@ impl SessionMcpStates for InstalledSessions {
         session: &str,
         modify: impl FnOnce(&mut SessionMcpState) -> R,
     ) -> Result<Option<R>, McpError> {
-        self.modify(session, |slot| modify(slot.realization.session_mcp_mut()))
-            .map_err(registry_unavailable)
+        self.modify(session, |installed| {
+            modify(installed.realization.session_mcp_mut())
+        })
+        .map_err(registry_unavailable)
     }
 
     fn modify_mcp_and_runtime<R>(
@@ -61,8 +67,11 @@ impl SessionMcpStates for InstalledSessions {
         session: &str,
         modify: impl FnOnce(&mut SessionMcpState, &mut Option<Self::Runtime>) -> R,
     ) -> Result<Option<R>, McpError> {
-        self.modify(session, |slot| {
-            modify(slot.realization.session_mcp_mut(), &mut slot.run.context)
+        self.modify(session, |installed| {
+            modify(
+                installed.realization.session_mcp_mut(),
+                &mut installed.run.context,
+            )
         })
         .map_err(registry_unavailable)
     }
@@ -72,9 +81,11 @@ impl SessionMcpStates for InstalledSessions {
         generation: &crate::session_mcp::McpGenerationRef,
         modify: impl FnOnce(&mut SessionMcpState, Option<bool>) -> R,
     ) -> Result<Option<R>, McpError> {
-        self.modify(generation.session_id().as_str(), |slot| {
-            let root = slot.realization.mcp_generation_root_authority(generation);
-            modify(slot.realization.session_mcp_mut(), root)
+        self.modify(generation.session_id().as_str(), |installed| {
+            let root = installed
+                .realization
+                .mcp_generation_root_authority(generation);
+            modify(installed.realization.session_mcp_mut(), root)
         })
         .map_err(registry_unavailable)
     }
@@ -121,8 +132,10 @@ impl McpGenerationAuthority for McpRootAuthority {
         // refused as an error, so no caller can fall back to the lease alone.
         Ok(self
             .installed_sessions
-            .read(generation.session_id().as_str(), |slot| {
-                slot.realization.mcp_generation_root_authority(generation)
+            .read(generation.session_id().as_str(), |installed| {
+                installed
+                    .realization
+                    .mcp_generation_root_authority(generation)
             })
             .map_err(crate::installed_session::registry_run_error)?
             .flatten())

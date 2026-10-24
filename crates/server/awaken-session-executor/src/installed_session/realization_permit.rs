@@ -3,8 +3,8 @@
 //! Worker-side identity source for the canonical Session realization permit.
 //!
 //! `InstalledSession::realization` remains the sole mutex and the sole
-//! exclusion identity on this side: it is the same `Arc` allocation the slot's
-//! revocation selection compares, so a removed/recreated slot is automatically
+//! exclusion identity on this side: it is the same `Arc` allocation the installed Session's
+//! revocation selection compares, so a removed/recreated installed Session is automatically
 //! a replaced registration. This adapter only feeds that identity and its
 //! acquired owner to the contract-owned kernel and constructor
 //! (`awaken_session_realization_contract::SessionRealizationPermit`); it is not another
@@ -19,7 +19,7 @@ use crate::realization_error::RealizationLock;
 use super::{InstalledSession, InstalledSessions};
 
 impl InstalledSessions {
-    /// Acquire the current slot's realization owner and atomically apply the
+    /// Acquire the current installed Session's realization owner and atomically apply the
     /// caller's admission projection. If removal/recreation happened while
     /// awaiting Tokio, the contract kernel retries against the replacement
     /// instead of admitting the stale allocation. The permit opens the claimed
@@ -67,29 +67,30 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn a_recreated_slot_is_not_admitted_through_the_removed_allocation() {
-        // Owner migration keeps the same Arc registry and three slot locks.
+    async fn a_recreated_installed_session_is_not_admitted_through_the_removed_allocation() {
+        // Owner migration keeps the same Arc registry and three installed Session locks.
         // Both callers now enter the original with/permit kernel directly;
         // the removed projection used this exact unit admission callback.
         // R1/R2 still cover waiting, removal/recreation and current identity.
-        // Cause/effect graph: C1 a driver holds the Session's slot allocation;
-        // C2 a second driver waits on that same allocation; C3 the slot is
+        // Cause/effect graph: C1 a driver holds the installed Session allocation;
+        // C2 a second driver waits on that same allocation; C3 the installed Session is
         // removed and recreated while it waits; C4 the first permit is dropped.
         // E1 C2 waits; E2 after C3+C4 it is admitted only against the *current*
         // allocation. Rules: R1=C1+C2=>E1; R2=C1+C2+C3+C4=>E2.
-        let slots = Arc::new(InstalledSessions::default());
-        let held = slots
+        let installed_sessions = Arc::new(InstalledSessions::default());
+        let held = installed_sessions
             .acquire_realization_with("session-a", |_| ())
             .await
             .expect("installed Sessions")
             .0;
-        let waiting = slots.acquire_realization_with("session-a", |slot| {
-            slot.realization.execution().phase.clone()
+        let waiting = installed_sessions.acquire_realization_with("session-a", |installed| {
+            installed.realization.execution().phase.clone()
         });
         let mut waiting = std::pin::pin!(waiting);
         assert!(futures_util::poll!(waiting.as_mut()).is_pending(), "R1/E1");
-        slots.remove("session-a");
-        let recreated = slots.install_realization("session-a", |r| r.execution().phase.clone());
+        installed_sessions.remove("session-a");
+        let recreated =
+            installed_sessions.install_realization("session-a", |r| r.execution().phase.clone());
         drop(held);
         let (_permit, admitted) = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
             .await
@@ -100,21 +101,21 @@ mod tests {
 
     #[tokio::test]
     async fn realizer_and_host_permits_share_replacement_validation_and_exclusion() {
-        // V1 Host owns A and the realization view waits for A. V2 the slot is
+        // V1 Host owns A and the realization view waits for A. V2 the installed Session is
         // replaced by B while both B and A are held. V3 releasing only A must
         // not admit the realization waiter; it must retry and wait for B.
         // V4 the admitted realizer excludes a Host driver on B until dropped.
-        let slots = Arc::new(InstalledSessions::default());
-        let realizations = slots.realizations();
-        let held_a = slots
+        let installed_sessions = Arc::new(InstalledSessions::default());
+        let realizations = installed_sessions.realizations();
+        let held_a = installed_sessions
             .acquire_realization_with("session-a", |_| ())
             .await
             .expect("installed Sessions")
             .0;
         let mut waiting = std::pin::pin!(realizations.acquire_realization("session-a"));
         assert!(futures_util::poll!(waiting.as_mut()).is_pending(), "V1");
-        slots.remove("session-a");
-        let held_b = slots
+        installed_sessions.remove("session-a");
+        let held_b = installed_sessions
             .acquire_realization_with("session-a", |_| ())
             .await
             .expect("installed Sessions")
@@ -127,7 +128,7 @@ mod tests {
             .expect("V3 retry must acquire the replacement allocation")
             .expect("installed Sessions");
         assert_eq!(realizer.session_id().as_str(), "session-a");
-        let host = slots.acquire_realization_with("session-a", |_| ());
+        let host = installed_sessions.acquire_realization_with("session-a", |_| ());
         let mut host = std::pin::pin!(host);
         assert!(futures_util::poll!(host.as_mut()).is_pending(), "V4");
         drop(realizer);

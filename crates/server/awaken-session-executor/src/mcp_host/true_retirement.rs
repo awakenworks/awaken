@@ -293,7 +293,7 @@ async fn retire_component_current(
 async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
     tokio::time::timeout(CONTROLLER_TIMEOUT, async {
         // R1: original canonical removal actually returns true, after releasing the
-        // slot lock. R2: a new allocation is admitted by the production projection
+        // installed Session lock. R2: a new allocation is admitted by the production projection
         // installer before the old public finish returns. R3: old successful cleanup
         // must not remove the new tenure's real relay route. No fabricated removal result is accepted.
         let session = "successful-retirement-successor-route";
@@ -384,7 +384,9 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
         .await
         .expect("bounded complete original A projection install");
         let original = canonical
-            .read(session, |slot| slot.realization.execution().phase.clone())
+            .read(session, |installed| {
+                installed.realization.execution().phase.clone()
+            })
             .expect("installed Sessions")
             .expect("A canonical allocation");
         let relay = original_relay(&host).await;
@@ -444,7 +446,9 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
         .await
         .expect("bounded complete successor B projection install");
         let successor = canonical
-            .read(session, |slot| slot.realization.execution().phase.clone())
+            .read(session, |installed| {
+                installed.realization.execution().phase.clone()
+            })
             .expect("installed Sessions")
             .expect("B canonical allocation");
         assert!(
@@ -520,7 +524,11 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
         assert!(Arc::ptr_eq(
             &successor,
             &canonical
-                .read(session, |slot| slot.realization.execution().phase.clone())
+                .read(session, |installed| installed
+                    .realization
+                    .execution()
+                    .phase
+                    .clone())
                 .expect("installed Sessions")
                 .unwrap(),
         ));
@@ -584,7 +592,7 @@ async fn absent_component_retirement_cannot_close_or_remove_a_later_session() {
                 Some(awaken_session_realization::test_support::test_observed_lease(lease.clone())),
             ).await.expect("B uses the original complete projection installer after real absence");
         }).await.expect("bounded complete successor installation");
-        let successor = canonical.read(session, |slot| slot.realization.execution().phase.clone()).expect("installed Sessions").unwrap();
+        let successor = canonical.read(session, |installed| installed.realization.execution().phase.clone()).expect("installed Sessions").unwrap();
         let generation = crate::test_mcp::mcp_fence(
             session, "docs", 1, &lease.runtime_incarnation, lease.epoch, lease.expires_at_unix_ms,
         );
@@ -592,7 +600,7 @@ async fn absent_component_retirement_cannot_close_or_remove_a_later_session() {
         drop(release);
         let retired = tokio::time::timeout(std::time::Duration::from_secs(5), finish)
             .await.expect("absence gate released").unwrap().unwrap();
-        let remains = canonical.read(session, |slot| Arc::ptr_eq(&successor, &slot.realization.execution().phase)).expect("installed Sessions").unwrap_or(false);
+        let remains = canonical.read(session, |installed| Arc::ptr_eq(&successor, &installed.realization.execution().phase)).expect("installed Sessions").unwrap_or(false);
         let authority = host.run_assembly.mcp_generation_root_authority(&generation).expect("healthy registry");
         assert!(remains && authority == Some(true),
             "retirement that observed actual absence selected the later Session: remains={remains}, authority={authority:?}");

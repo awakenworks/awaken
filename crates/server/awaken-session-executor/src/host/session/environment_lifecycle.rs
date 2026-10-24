@@ -55,16 +55,17 @@ impl crate::RunAssembly {
             .expect("installed Sessions");
         self.realization_executor
             .sessions()
-            .update_session(thread, |slot| {
-                let owner = slot.realization.environment().owner.after_projection(
+            .update_session(thread, |installed| {
+                let owner = installed.realization.environment().owner.after_projection(
                     thread,
                     workspace_id,
                     state,
                     false,
                     false,
                 )?;
-                slot.realization
-                    .install_owner(owner, state, slot.run.holds_context());
+                installed
+                    .realization
+                    .install_owner(owner, state, installed.run.holds_context());
                 Ok(())
             })?
     }

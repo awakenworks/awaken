@@ -127,9 +127,10 @@ impl awaken_session_mcp::McpStagingSession for RunAssembly {
     fn frozen_agent(&self, session: &str) -> Result<Option<String>, RunError> {
         Ok(self
             .installed_sessions
-            .read(session, |slot| {
-                slot.inputs.agent_id.clone().or_else(|| {
-                    slot.inputs
+            .read(session, |installed| {
+                installed.inputs.agent_id.clone().or_else(|| {
+                    installed
+                        .inputs
                         .baseline
                         .as_ref()
                         .map(|baseline| baseline.agent_id.clone())

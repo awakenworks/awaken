@@ -102,7 +102,7 @@ impl RunCapabilities {
         thread: &str,
     ) -> Result<Option<Vec<String>>, crate::realization_error::RealizationLock> {
         self.installed_sessions
-            .read(thread, |slot| slot.inputs.delegates.clone())
+            .read(thread, |installed| installed.inputs.delegates.clone())
     }
 
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first Run.

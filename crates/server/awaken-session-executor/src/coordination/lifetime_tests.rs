@@ -64,11 +64,11 @@ impl Query {
 }
 
 #[tokio::test]
-async fn remote_cached_consumers_release_original_slots() {
+async fn remote_cached_consumers_release_original_installed_sessions() {
     // Causes: C1 a real resident coordination Context caches a remote model gate;
     // C2 coordinator, gate, claimed-gate factory and observer remain reachable;
     // C3 the final Host and caller Context owners drop, with no active request.
-    // Rule R1=C1+C2+C3 -> both original slots and Context are released. Capture
+    // Rule R1=C1+C2+C3 -> both original installed Sessions and Context are released. Capture
     // that effect before fixture cleanup; no eviction may create the evidence.
     let host = remote_host(Arc::new(RemoteControl::default())).await;
     host.run_assembly
@@ -107,7 +107,7 @@ async fn remote_cached_consumers_release_original_slots() {
         .dispatch_settlement_observer()
         .unwrap();
     let weak_host = Arc::downgrade(&host);
-    let weak_slots = Arc::downgrade(&host.run_assembly.installed_sessions);
+    let weak_installed_sessions = Arc::downgrade(&host.run_assembly.installed_sessions);
     let weak_context = Arc::downgrade(&context);
     drop(endpoint);
     drop(context);
@@ -116,22 +116,22 @@ async fn remote_cached_consumers_release_original_slots() {
         weak_host.upgrade().is_none(),
         "the original Host was released"
     );
-    let slots_released = weak_slots.upgrade().is_none();
+    let installed_sessions_released = weak_installed_sessions.upgrade().is_none();
     let context_released = weak_context.upgrade().is_none();
-    if let Some(slots) = weak_slots.upgrade() {
-        let detached = slots
+    if let Some(installed_sessions) = weak_installed_sessions.upgrade() {
+        let detached = installed_sessions
             .modify_run("session", |run| run.context.take())
             .expect("installed Sessions");
         drop(detached);
     }
     drop((coordinator, gate, factory, observer));
     assert!(
-        weak_slots.upgrade().is_none() && weak_context.upgrade().is_none(),
+        weak_installed_sessions.upgrade().is_none() && weak_context.upgrade().is_none(),
         "fixture cleanup releases any captured cycle"
     );
     assert!(
-        slots_released && context_released,
-        "cached remote consumers retained the original slots: slots_released={slots_released}, context_released={context_released}"
+        installed_sessions_released && context_released,
+        "cached remote consumers retained the original installed Sessions: slots_released={installed_sessions_released}, context_released={context_released}"
     );
 }
 
@@ -139,7 +139,7 @@ async fn remote_cached_consumers_release_original_slots() {
 async fn current_claim_queries_fail_closed_after_original_owner_drops() {
     // Causes: C1 operation=list/send; C2 the original owner is gone; C3 its
     // current claim was valid. Rules R1/R2=C1+C2+C3 -> DefinitiveFailure before
-    // transport entry, no resurrected slots. Claim validity cannot replace C2.
+    // transport entry, no resurrected installed Sessions. Claim validity cannot replace C2.
     for query in [Query::List, Query::Send] {
         let control = Arc::new(RemoteControl::default());
         let host = remote_host(control.clone()).await;
@@ -206,12 +206,13 @@ async fn current_claim_queries_reject_missing_or_foreign_claim_before_control_io
 }
 
 #[tokio::test]
-async fn active_remote_queries_retain_original_slots_until_completion_or_cancellation() {
+async fn active_remote_queries_retain_original_installed_sessions_until_completion_or_cancellation()
+{
     // Causes: C1 operation=list/send; C2 live owner plus matching current claim;
     // C3 transport is entered and blocks; C4 final external owner drops;
     // C5 outcome=success/original error/caller cancellation. R7-R12=C1+C2+C3+C4
-    // -> retain the same slots until C5, pass through success/original error or
-    // destroy the original future, then release slots and reject later I/O.
+    // -> retain the same installed Sessions until C5, pass through success/original error or
+    // destroy the original future, then release installed Sessions and reject later I/O.
     // Entry/drop receipts prove the boundary; timeouts only bound broken tests.
     for query in [Query::List, Query::Send] {
         for finish in 0..3 {
@@ -241,7 +242,7 @@ async fn active_remote_queries_retain_original_slots_until_completion_or_cancell
             drop(host);
             assert!(
                 weak.upgrade().is_some(),
-                "{query:?}/{finish}: retain the original slots during control I/O"
+                "{query:?}/{finish}: retain the original installed Sessions during control I/O"
             );
             if finish == 2 {
                 drop(call);
@@ -284,7 +285,7 @@ async fn active_remote_queries_retain_original_slots_until_completion_or_cancell
 }
 
 #[tokio::test]
-async fn explicit_claim_controls_continue_after_original_slots_drop() {
+async fn explicit_claim_controls_continue_after_original_installed_sessions_drop() {
     // Causes: C1 explicit claim-bound model/activity/settlement call; C2 the
     // Session previously held another Run and its original owner is now gone;
     // C3 model request Run matches/mismatches the explicit claim. Rules R13-R15:
@@ -405,7 +406,7 @@ async fn model_gate_preserves_local_and_remote_control_failure_grades() {
             CoordinationEndpoint::Local(Arc::downgrade(&local)),
             CoordinationEndpoint::Remote {
                 control: control.clone(),
-                slots: Weak::new(),
+                installed_sessions: Weak::new(),
             },
         ] {
             let exact = claim();

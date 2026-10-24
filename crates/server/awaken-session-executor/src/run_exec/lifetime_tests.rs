@@ -1,5 +1,5 @@
 //! Decorator lifetime decision rows at the real RunAttemptExecutor entry points.
-//! No slot table, execution lease, physical-stop signal or shutdown flag is added.
+//! No installed-Session table, execution lease, physical-stop signal or shutdown flag is added.
 
 use super::*;
 use crate::application::attempt_context::SessionContextAttemptExecutor;
@@ -146,22 +146,22 @@ async fn entered(
 
 #[tokio::test]
 async fn session_projection_without_owner_refuses_start_and_resume_but_preserves_cancel() {
-    // Cause/effect graph: C1 original slots owner is released; C2 operation is
+    // Cause/effect graph: C1 original installed Sessions owner is released; C2 operation is
     // execute/resume/cancel. Effects: E1 new execution refuses before inner I/O;
-    // E2 cancellation reaches its original physical port without slot access.
+    // E2 cancellation reaches its original physical port without installed-Session access.
     // Decision rows S1=C1+execute => E1; S2=C1+resume => E1; S3=C1+cancel => E2.
-    let slots = Arc::new(crate::installed_session::InstalledSessions::default());
-    let weak_slots = Arc::downgrade(&slots);
+    let installed_sessions = Arc::new(crate::installed_session::InstalledSessions::default());
+    let weak_installed_sessions = Arc::downgrade(&installed_sessions);
     let probe = Arc::new(AttemptProbe::new(false, false));
     let executor = SessionContextAttemptExecutor::new(
         probe.clone(),
-        Arc::downgrade(&slots),
+        Arc::downgrade(&installed_sessions),
         "lifetime-thread",
         awaken_time::system_clock(),
     );
-    drop(slots);
+    drop(installed_sessions);
     assert!(
-        weak_slots.upgrade().is_none(),
+        weak_installed_sessions.upgrade().is_none(),
         "decorator has no owner allocation"
     );
     for is_resume in [false, true] {
@@ -186,35 +186,37 @@ async fn session_projection_without_owner_refuses_start_and_resume_but_preserves
 }
 
 #[tokio::test]
-async fn session_projection_active_future_holds_original_slots_until_success_or_error() {
+async fn session_projection_active_future_holds_original_installed_sessions_until_success_or_error()
+{
     // Cause/effect graph: C1 execute/resume; C2 inner succeeds/fails; C3 the last
     // external owner drops after inner entry. All four C1 x C2 rows under C3
-    // retain the original slots until completion, preserve the exact result,
+    // retain the original installed Sessions until completion, preserve the exact result,
     // then release them. A subsequent attempt refuses without a second I/O.
     // This exercises the real entry point, not only Arc reference counts.
     for is_resume in [false, true] {
         for fails in [false, true] {
-            let slots = Arc::new(crate::installed_session::InstalledSessions::default());
-            let weak_slots = Arc::downgrade(&slots);
+            let installed_sessions =
+                Arc::new(crate::installed_session::InstalledSessions::default());
+            let weak_installed_sessions = Arc::downgrade(&installed_sessions);
             let probe = Arc::new(AttemptProbe::new(true, fails));
             let executor = SessionContextAttemptExecutor::new(
                 probe.clone(),
-                Arc::downgrade(&slots),
+                Arc::downgrade(&installed_sessions),
                 "lifetime-thread",
                 awaken_time::system_clock(),
             );
             let mut running = start(&executor, is_resume);
             entered(&probe, &mut running).await;
-            drop(slots);
+            drop(installed_sessions);
             assert!(
-                weak_slots.upgrade().is_some(),
-                "active future owns original slots"
+                weak_installed_sessions.upgrade().is_some(),
+                "active future owns original installed Sessions"
             );
             probe.release.add_permits(1);
             let result = running.await;
             assert_eq!(result.is_err(), fails, "original physical result preserved");
             assert!(
-                weak_slots.upgrade().is_none(),
+                weak_installed_sessions.upgrade().is_none(),
                 "completed future releases original owner"
             );
             assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
@@ -232,8 +234,9 @@ async fn session_projection_active_future_holds_original_slots_until_success_or_
 }
 
 #[tokio::test]
-async fn artifact_decorator_without_harvest_owner_refuses_effects_even_if_slots_live() {
-    // Causes: C1 harvest owner is gone; C2 the canonical slots remain alive;
+async fn artifact_decorator_without_harvest_owner_refuses_effects_even_if_installed_sessions_live()
+{
+    // Causes: C1 harvest owner is gone; C2 the canonical installed Sessions remain alive;
     // C3 execute/resume/cancel. Effects: E1 execute/resume refuse before I/O;
     // E2 cancel still forwards. A1=C1+C2+execute=>E1;
     // A2=C1+C2+resume=>E1; A3=C1+C2+cancel=>E2. C2 proves that readable state
@@ -245,8 +248,8 @@ async fn artifact_decorator_without_harvest_owner_refuses_effects_even_if_slots_
     .await
     .build()
     .unwrap();
-    let slots = host.run_assembly.installed_sessions.clone();
-    let weak_slots = Arc::downgrade(&slots);
+    let installed_sessions = host.run_assembly.installed_sessions.clone();
+    let weak_installed_sessions = Arc::downgrade(&installed_sessions);
     let owner = host.realization_executor.effects().artifacts().clone();
     let weak_owner = Arc::downgrade(&owner);
     let probe = Arc::new(AttemptProbe::new(false, false));
@@ -254,12 +257,12 @@ async fn artifact_decorator_without_harvest_owner_refuses_effects_even_if_slots_
     drop(owner);
     drop(host);
     assert!(
-        weak_slots.upgrade().is_some(),
+        weak_installed_sessions.upgrade().is_some(),
         "read-only state can still exist"
     );
     assert!(
         weak_owner.upgrade().is_none(),
-        "slots do not retain independent harvest authority"
+        "installed Sessions do not retain independent harvest authority"
     );
     for is_resume in [false, true] {
         let error = start(&executor, is_resume).await.expect_err("owner loss");
@@ -276,15 +279,15 @@ async fn artifact_decorator_without_harvest_owner_refuses_effects_even_if_slots_
         .await
         .unwrap();
     assert_eq!(probe.cancels.load(Ordering::SeqCst), 1);
-    drop(slots);
-    assert!(weak_slots.upgrade().is_none());
+    drop(installed_sessions);
+    assert!(weak_installed_sessions.upgrade().is_none());
 }
 
 #[tokio::test]
 async fn artifact_decorator_active_future_holds_owner_through_attempt_success_or_error() {
     // Causes: C1 execute/resume; C2 inner success/failure; C3 drop the last
     // external Host/harvest owner after inner entry. The four C1 x C2 rules
-    // under C3 retain the same operation and slots, preserve the inner result,
+    // under C3 retain the same operation and installed Sessions, preserve the inner result,
     // then release both. No new claim or publication authority is created.
     for is_resume in [false, true] {
         for fails in [false, true] {
@@ -295,7 +298,7 @@ async fn artifact_decorator_active_future_holds_owner_through_attempt_success_or
             .await
             .build()
             .unwrap();
-            let weak_slots = Arc::downgrade(&host.run_assembly.installed_sessions);
+            let weak_installed_sessions = Arc::downgrade(&host.run_assembly.installed_sessions);
             let owner = host.realization_executor.effects().artifacts().clone();
             let weak_owner = Arc::downgrade(&owner);
             let probe = Arc::new(AttemptProbe::new(true, fails));
@@ -310,7 +313,7 @@ async fn artifact_decorator_active_future_holds_owner_through_attempt_success_or
                 "physical future holds harvest operation"
             );
             assert!(
-                weak_slots.upgrade().is_some(),
+                weak_installed_sessions.upgrade().is_some(),
                 "same operation retains original state"
             );
             probe.release.add_permits(1);
@@ -324,7 +327,10 @@ async fn artifact_decorator_active_future_holds_owner_through_attempt_success_or
                 assert!(error.to_string().contains("injected attempt failure"));
             }
             assert!(weak_owner.upgrade().is_none(), "no resident wrapper owner");
-            assert!(weak_slots.upgrade().is_none(), "no original state cycle");
+            assert!(
+                weak_installed_sessions.upgrade().is_none(),
+                "no original state cycle"
+            );
         }
     }
 }
@@ -395,7 +401,7 @@ async fn artifact_decorator_holds_same_owner_until_real_publication_finishes() {
     // suspends after the physical result; C4 all external owners then drop.
     // The four C1 x C2 rows with C3+C4 retain the original owner until capture
     // and publication finish, commit exact output bytes on both result paths,
-    // preserve the physical result, and release slots/owner after completion.
+    // preserve the physical result, and release installed Sessions/owner after completion.
     for is_resume in [false, true] {
         for fails in [false, true] {
             let storage = tempfile::tempdir().unwrap();
@@ -433,7 +439,7 @@ async fn artifact_decorator_holds_same_owner_until_real_publication_finishes() {
             let application = host.file_application().unwrap();
             let owner = host.realization_executor.effects().artifacts().clone();
             let weak_owner = Arc::downgrade(&owner);
-            let weak_slots = Arc::downgrade(&host.run_assembly.installed_sessions);
+            let weak_installed_sessions = Arc::downgrade(&host.run_assembly.installed_sessions);
             let workspace = host
                 .capabilities
                 .thread_workspace("lifetime-thread")
@@ -462,7 +468,7 @@ async fn artifact_decorator_holds_same_owner_until_real_publication_finishes() {
                 "harvest await retains original operation"
             );
             assert!(
-                weak_slots.upgrade().is_some(),
+                weak_installed_sessions.upgrade().is_some(),
                 "harvest await retains original state"
             );
             publisher.release.add_permits(1);
@@ -497,7 +503,7 @@ async fn artifact_decorator_holds_same_owner_until_real_publication_finishes() {
                 "finished harvest releases operation"
             );
             assert!(
-                weak_slots.upgrade().is_none(),
+                weak_installed_sessions.upgrade().is_none(),
                 "finished harvest releases original state"
             );
         }
@@ -520,7 +526,7 @@ async fn abandoning_the_original_attempt_drops_both_decorator_owners_and_inner_f
         .await
         .build()
         .unwrap();
-        let weak_slots = Arc::downgrade(&host.run_assembly.installed_sessions);
+        let weak_installed_sessions = Arc::downgrade(&host.run_assembly.installed_sessions);
         let owner = host.realization_executor.effects().artifacts().clone();
         let weak_owner = Arc::downgrade(&owner);
         let probe = Arc::new(AttemptProbe::new(true, false));
@@ -540,7 +546,7 @@ async fn abandoning_the_original_attempt_drops_both_decorator_owners_and_inner_f
         drop(owner);
         drop(host);
         assert!(
-            weak_owner.upgrade().is_some() && weak_slots.upgrade().is_some(),
+            weak_owner.upgrade().is_some() && weak_installed_sessions.upgrade().is_some(),
             "the original attempt holds both owners while blocked"
         );
         drop(running);
@@ -550,7 +556,7 @@ async fn abandoning_the_original_attempt_drops_both_decorator_owners_and_inner_f
             "the entered original inner future was destroyed without release"
         );
         assert!(
-            weak_owner.upgrade().is_none() && weak_slots.upgrade().is_none(),
+            weak_owner.upgrade().is_none() && weak_installed_sessions.upgrade().is_none(),
             "no cached decorator retains either owner after abandonment"
         );
         assert!(start(&executor, is_resume).await.is_err());

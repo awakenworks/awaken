@@ -116,7 +116,7 @@ pub(crate) struct ChildExecutionAdapters {
     /// requires this existing clock before any Fresh provider effect; absence
     /// is a typed configuration refusal, never a process-clock fallback.
     pub(crate) clock: Option<Arc<dyn awaken_time::WallClock>>,
-    /// The Host-owned slot registry also installed on the root Native Runtime.
+    /// The Host-owned installed Session registry also installed on the root Native Runtime.
     pub(crate) background_supervisor:
         Option<Arc<awaken_ext_background_task::BackgroundTaskSupervisor>>,
 }

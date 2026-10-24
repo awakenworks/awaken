@@ -1,4 +1,4 @@
-//! Resource projection reads the original Session slot throughout its lifecycle.
+//! Resource projection reads the original installed Session throughout its lifecycle.
 use super::*;
 use awaken_provisioning_contract as pc;
 
@@ -24,15 +24,15 @@ fn mount(id: &str, memory: bool) -> pc::MountRequirement {
 }
 
 #[tokio::test]
-async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retaining_removed_slots()
-{
+async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retaining_removed_installed_sessions()
+ {
     use crate::frozen_inputs::ManagedContentDelivery;
     use awaken_session_configuration_contract::{SessionBaseline, SessionBaselineInputs};
-    // M1 unknown reads neither create a slot nor inherit another Session.
-    // M2 the same original slot supplies Resource + baseline mounts and delivery.
+    // M1 unknown reads neither create an installed Session nor inherit another Session.
+    // M2 the same original installed Session supplies Resource + baseline mounts and delivery.
     // M3 semantic delivery filters Memory from BOTH sources. M4 removal drops
     // every old projection, even through a retained component clone; recreating
-    // the same Session id reads only the new slot, never an executor-owned cache.
+    // the same Session id reads only the new installed Session, never an executor-owned cache.
     let host = crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
         "stub",

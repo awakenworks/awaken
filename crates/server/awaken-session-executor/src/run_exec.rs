@@ -319,7 +319,7 @@ impl<'a> BoundRunExecutor<'a> {
     }
 
     /// Keep the foreground identity installed until the caller has projected the
-    /// committed terminal/awaiting step. Terminal quiescence treats an empty slot
+    /// committed terminal/awaiting step. Terminal quiescence treats an empty installed Session
     /// as proof that no parent delegation commit remains in flight.
     pub(crate) fn retain_active_until_settled(mut self) -> Self {
         self.release_active_on_return = false;
@@ -381,7 +381,7 @@ pub(crate) fn session_attempt_executor(
     let mut registry = AttemptExecutorRegistry::new();
     registry
         .register_native(native)
-        .expect("fresh Session registry has one native slot");
+        .expect("fresh Session registry has one native installed Session");
     for binding in resolved.iter().flat_map(|resolved| {
         resolved
             .attempt_candidates(None)
@@ -705,7 +705,7 @@ pub(crate) mod tests {
     }
 
     struct ReplacingClaimExecutor {
-        slots: Arc<crate::installed_session::InstalledSessions>,
+        installed_sessions: Arc<crate::installed_session::InstalledSessions>,
         thread: String,
         replacement: awaken_dispatch_contract::RunClaim,
         failure: Option<&'static str>,
@@ -713,12 +713,12 @@ pub(crate) mod tests {
 
     impl ReplacingClaimExecutor {
         fn succeeding(
-            slots: Arc<crate::installed_session::InstalledSessions>,
+            installed_sessions: Arc<crate::installed_session::InstalledSessions>,
             thread: &str,
             replacement: awaken_dispatch_contract::RunClaim,
         ) -> Self {
             Self {
-                slots,
+                installed_sessions,
                 thread: thread.into(),
                 replacement,
                 failure: None,
@@ -726,13 +726,13 @@ pub(crate) mod tests {
         }
 
         fn failing(
-            slots: Arc<crate::installed_session::InstalledSessions>,
+            installed_sessions: Arc<crate::installed_session::InstalledSessions>,
             thread: &str,
             replacement: awaken_dispatch_contract::RunClaim,
             failure: &'static str,
         ) -> Self {
             Self {
-                slots,
+                installed_sessions,
                 thread: thread.into(),
                 replacement,
                 failure: Some(failure),
@@ -764,7 +764,7 @@ pub(crate) mod tests {
             _activation: RunActivation,
             _context: RuntimeRunContext,
         ) -> ExecutionResult<RunState> {
-            self.slots.install_run(&self.thread, |run| {
+            self.installed_sessions.install_run(&self.thread, |run| {
                 run.dispatch_claim = Some(self.replacement.clone());
             });
             match self.failure {
