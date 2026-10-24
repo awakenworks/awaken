@@ -175,6 +175,8 @@ T00 是追溯门禁，T34 是后端资格，T35 是平台和执行器资格，T3
 | 批次 | 场景 | 状态 | 证据 |
 | --- | --- | --- | --- |
 | 静态门禁 | T00-C01、T00-C02、T00-C03、T34-C03、T36-C01、T36-C02、T36-C03 | `current_clause_complete` | E11、E12、E15 |
+| 组件 | T01-C01、T14-C01 | `current_clause_complete` | E13 |
+| 组件 | T06-C01、T07-C01、T11-C02、T12-C01、T13-C03、T15-C01、T27-C01、T27-C02、T41-C01 | `product_gap` | E13（已成立部分）；E14 为复现测试的预期失败 |
 
 #### 静态门禁
 
@@ -183,6 +185,26 @@ T00 是追溯门禁，T34 是后端资格，T35 是平台和执行器资格，T3
 已知限制：依赖守卫按自身表格允许部分跨上下文基础设施依赖（例如 memory-store 到 session-executor），本批只证明其规则禁止的边会被拒绝；影响选择只证明 Cargo 反向依赖，L2/L3 层级扩展由各门禁脚本负责。
 
 E11 是 13 个门禁测试在本机 Windows 的执行，E15 是 rebase 到 `f3ae320728` 后的同一组复跑；E12 是 Rust 必需执行验证器自测（27 例通过，10 例为 POSIX/Linux 专属固件而跳过，未绑定）。原始 receipt 和日志在 `target/session-acceptance-evidence/`，哈希登记在证据注册表。
+
+#### 组件
+
+各测试调用生产入口，以副作用计数、持久 root 与确切身份断言，并在测试内执行反向控制（变异检查器或注入故障）。E13 为 23 个非忽略用例在本机 Windows 的 nextest 执行，全部通过；E14 以 `--run-ignored only` 执行 14 个产品缺口复现测试，全部按预期失败，只用于证明缺口存在。
+
+T01-C01 在本批修复了一个小缺口：Secret Broker 原先只安装到当时已选的 Provider，之后选择、替换或迁移的 Provider 不会获得它；现在 builder 保存 Broker，并与 Memory mounter 一起重新安装。
+
+产品缺口（复现测试以 `#[ignore = "product gap: …"]` 标注，不计证据，后续由各所有者处理）：
+
+| 场景 | 缺口 | 所有者范围与规模 |
+| --- | --- | --- |
+| T06-C01 | event batch 追加等内部入口不带所有者；run admission 对未知 id 创建、对外来 id 报未找到，泄露存在性 | session-application（M） |
+| T07-C01 | activity CAS 失败后不释放 reserve，修复路径之后会接纳调用方已见失败的 Run | session-application run admission（M） |
+| T11-C02 | application 追加入口不校验 ticket 坐标；无版本的新回复被接受，执行器 fence 跳过版本检查 | session-application 与 session-executor（S–M） |
+| T12-C01 | 编译类拒绝共用 `invalid_request`；aggregate 入口接受指向未知 child 的 Interrupt | session-application（S、M） |
+| T13-C03 | 提额后恢复转发全部 ticket；被预算拒绝的绕过 Run 保留 reserve 并会被修复路径接纳 | session-application（S、M） |
+| T15-C01 | 公开 resolve 把 holder 不符映射为可重试 Unavailable；MCP attachment 把非 Unavailable 错误都映射为 revision mismatch | credential-materializer、session-mcp（S） |
+| T27-C01 | 启用 checkpoint 时构造阶段不检查 Provider 的 restore 能力 | awaken-worker（S） |
+| T27-C02 | `rebind_retained` 只比较 handle 值，相同 handle 的另一 Provider 实例可绑定外来 Environment | session-environment（M） |
+| T41-C01 | registration supervisor 日志输出原始错误（含凭据 URL），没有稳定 code、领域身份与恢复方向 | awaken-control（S） |
 
 本节新增的绑定从 B101 起登记在 `bindings-4.json` 及后续分片，每条带断言行、覆盖的 oracle 编号与反向控制标记；下文“现有测试绑定索引”只列基线时的 100 个绑定。
 

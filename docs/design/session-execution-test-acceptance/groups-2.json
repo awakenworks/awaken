@@ -28,8 +28,12 @@
           ],
           "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B121",
+          "B122",
+          "B123"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -39,7 +43,23 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, L1 component, in-memory SQLite / fakes, nextest"
+          ],
+          "unaccepted": [
+            "L2 real adapters and process crash are separate scenarios",
+            "T35 platform gate open"
+          ]
+        },
+        "product_gap": {
+          "reason": "activity CAS 失败后返回错误但不释放 reserve，修复路径 RecoverOrAdmit 之后会接纳调用方已见失败的 Run",
+          "follow_up": "session-application run admission：失败时释放或标记 reserve（M）",
+          "reproducers": [
+            "failed_activity_cas_releases_its_reservation_before_reporting_failure"
+          ]
+        }
       },
       {
         "id": "T07-C02",
@@ -564,8 +584,14 @@
           ],
           "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B124",
+          "B125",
+          "B126",
+          "B127",
+          "B128"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -575,7 +601,24 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, L1 component, in-memory SQLite / fakes, nextest"
+          ],
+          "unaccepted": [
+            "L2 real adapters and process crash are separate scenarios",
+            "T35 platform gate open"
+          ]
+        },
+        "product_gap": {
+          "reason": "协议入口按确切坐标拒绝，但 application 追加入口不校验 ticket 坐标，且无版本的新回复被接受、执行器 fence 跳过版本检查",
+          "follow_up": "session-application 追加入口校验已提交 ticket，执行器 fence 拒绝缺版本的新回复（S–M）",
+          "reproducers": [
+            "application_append_rejects_forged_reply_coordinates",
+            "application_append_rejects_version_less_new_reply"
+          ]
+        }
       },
       {
         "id": "T11-C03",
@@ -651,8 +694,17 @@
           ],
           "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B129",
+          "B130",
+          "B131",
+          "B132",
+          "B133",
+          "B134",
+          "B135",
+          "B136"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -662,7 +714,24 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, L1 component, in-memory SQLite / fakes, nextest"
+          ],
+          "unaccepted": [
+            "L2 real adapters and process crash are separate scenarios",
+            "T35 platform gate open"
+          ]
+        },
+        "product_gap": {
+          "reason": "所有编译类拒绝共用 invalid_request，分类只能靠文案；aggregate 入口接受指向未知 child 的 Interrupt（协议入口会拒绝）",
+          "follow_up": "session-application：分配稳定错误码，并把线程拓扑校验放进 aggregate 接纳（S + M）",
+          "reproducers": [
+            "compile_rejections_carry_distinct_stable_codes",
+            "interrupt_of_unknown_child_target_is_rejected_without_effect"
+          ]
+        }
       },
       {
         "id": "T12-C02",
@@ -843,8 +912,13 @@
           ],
           "scope": "组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B137",
+          "B138",
+          "B139",
+          "B140"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -854,7 +928,24 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, L1 component, in-memory SQLite / fakes, nextest"
+          ],
+          "unaccepted": [
+            "L2 real adapters and process crash are separate scenarios",
+            "T35 platform gate open"
+          ]
+        },
+        "product_gap": {
+          "reason": "提高额度后恢复会转发所有 ticket，不只 BudgetReached；被预算拒绝的绕过 Run 保留 reserve，提额后修复路径会接纳它",
+          "follow_up": "session-application：按 BudgetReached 过滤恢复 ticket（S），拒绝时释放 reserve（M）",
+          "reproducers": [
+            "raised_budget_resumes_only_budget_reached_tickets",
+            "budget_rejected_bypass_run_is_not_admitted_by_repair_after_raise"
+          ]
+        }
       }
     ],
     "risk": "P0",

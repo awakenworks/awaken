@@ -351,5 +351,102 @@
     "log_sha256": "db1e4ab9b33de3d493ee1cc961874f99fdeb35af3f14c12e9837322c6861a6ae",
     "historical": false,
     "entry_sha256": "7ff59b0856f80068afa336850cfe958c41a0dd4a69b0ff687d62d47d6656843f"
+  },
+  {
+    "id": "E13",
+    "receipt": "target/session-acceptance-evidence/E13/receipt.json",
+    "receipt_sha256": "27704641439e01e3885092b2519997314ea9fb898cb705828482e55aa8d2e36c",
+    "source": {
+      "head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+      "dirty_digest": "1953baff8be2958dd76d4e81292f2b084f96dd8301d91779a16154ac5e205239"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "Component batch L1 tests on native Windows (nextest, shared workspace features), rebased on origin/main f3ae320728",
+    "argv": [
+      "cargo",
+      "nextest",
+      "run",
+      "--workspace",
+      "--locked",
+      "--features",
+      "awaken-cli/container-k8s,awaken-sandbox/hand",
+      "--no-fail-fast",
+      "-E",
+      "(package(=awaken-session-application) & test(/pre_activation|budget_resume|ownership_rejection|partial_preparation|admission_boundaries/)) | (package(=awaken-protocol-managed) & test(/reply_coordinates|admission_boundaries/)) | (package(=awaken-session-executor) & test(/environment_installation_order/)) | (package(=awaken-worker) & test(/restore_capability/)) | (package(=awaken-credential-materializer) & test(/binding_matrix/)) | (package(=awaken-control) & test(/diagnostics_tests/)) | (package(=awaken-session-environment) & test(/foreign_instance/))"
+    ],
+    "environment_names": [
+      "CARGO_BUILD_BUILD_DIR",
+      "CARGO_BUILD_JOBS",
+      "CARGO_TARGET_DIR",
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 8.0,
+    "executed_count": 23,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b",
+    "historical": false,
+    "entry_sha256": "be59f4b4e4822a80046e035bf8fb052af68abbe56b241008bc573449e4eba9ec"
+  },
+  {
+    "id": "E14",
+    "receipt": "target/session-acceptance-evidence/E14/receipt.json",
+    "receipt_sha256": "80dbfddbe2acfa6c34956e0038dd17121ff7d9bb442be39c92e5e8849aba68da",
+    "source": {
+      "head": "7913413bca3c9960309aa46144b8eeb5092980ef",
+      "dirty_digest": "1953baff8be2958dd76d4e81292f2b084f96dd8301d91779a16154ac5e205239"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": false,
+    "files_changed_during_run": [],
+    "scope": "Component batch product-gap reproducers run with --run-ignored only; every one is expected to fail (documents the gap, never execution evidence)",
+    "argv": [
+      "cargo",
+      "nextest",
+      "run",
+      "--workspace",
+      "--locked",
+      "--features",
+      "awaken-cli/container-k8s,awaken-sandbox/hand",
+      "--no-fail-fast",
+      "--run-ignored",
+      "only",
+      "-E",
+      "(package(=awaken-session-application) & test(/pre_activation|budget_resume|ownership_rejection|partial_preparation|admission_boundaries/)) | (package(=awaken-protocol-managed) & test(/reply_coordinates|admission_boundaries/)) | (package(=awaken-session-executor) & test(/environment_installation_order/)) | (package(=awaken-worker) & test(/restore_capability/)) | (package(=awaken-credential-materializer) & test(/binding_matrix/)) | (package(=awaken-control) & test(/diagnostics_tests/)) | (package(=awaken-session-environment) & test(/foreign_instance/))"
+    ],
+    "environment_names": [
+      "CARGO_BUILD_BUILD_DIR",
+      "CARGO_BUILD_JOBS",
+      "CARGO_TARGET_DIR",
+      "PYTHONUTF8"
+    ],
+    "exit": 100,
+    "seconds": 6.3,
+    "executed_count": 0,
+    "failed_count": 28,
+    "skipped_count": 0,
+    "log_sha256": "822718033c1fb653c01843655e61609663021d458962ddd08e85ac1391e0a831",
+    "historical": false,
+    "expected_failures": [
+      "awaken-control registration_supervisor::diagnostics_tests::degraded_registration_diagnostics_carry_stable_code_identity_and_recovery",
+      "awaken-control registration_supervisor::diagnostics_tests::degraded_registration_diagnostics_never_contain_the_secret_canary",
+      "awaken-credential-materializer tests::binding_matrix::binding_matrix_holder_dimension_has_its_recipient_classification",
+      "awaken-protocol-managed state::events::tests::reply_coordinates::application_append_rejects_forged_reply_coordinates",
+      "awaken-protocol-managed state::events::tests::reply_coordinates::application_append_rejects_version_less_new_reply",
+      "awaken-session-application tests::authority::budget_resume::budget_rejected_bypass_run_is_not_admitted_by_repair_after_raise",
+      "awaken-session-application tests::authority::budget_resume::raised_budget_resumes_only_budget_reached_tickets",
+      "awaken-session-application tests::authority::ownership_rejection::foreign_run_admission_is_indistinguishable_from_missing",
+      "awaken-session-application tests::authority::ownership_rejection::owner_less_event_append_refuses_without_owner_proof",
+      "awaken-session-application tests::event_batches::admission_boundaries::compile_rejections_carry_distinct_stable_codes",
+      "awaken-session-application tests::event_batches::admission_boundaries::interrupt_of_unknown_child_target_is_rejected_without_effect",
+      "awaken-session-application tests::run_admission::pre_activation::failed_activity_cas_releases_its_reservation_before_reporting_failure",
+      "awaken-session-environment tests::foreign_instance::foreign_instance_with_equal_handle_cannot_rebind_another_providers_environment",
+      "awaken-worker tests::restore_capability::restore_enabled_worker_with_unsupported_restoration_is_refused_at_construction"
+    ],
+    "role": "product-gap reproducers; documents each recorded gap fails today; not execution evidence for any clause",
+    "entry_sha256": "6ec368d4a39c6bf5402c0d79afe1e4fa5a95c584dc88fd738f2386f8a8fb4641"
   }
 ]

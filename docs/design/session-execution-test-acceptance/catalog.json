@@ -30,12 +30,13 @@
     "existing_assertion_scopes_verified": 5,
     "fully_accepted_scenarios": 0,
     "case_evidence_states": {
-      "design_only": 60,
+      "design_only": 49,
       "current_subset": 41,
       "source_binding_only": 6,
       "historical_subset": 12,
       "aggregate_subset_only": 1,
-      "current_clause_complete": 7
+      "current_clause_complete": 9,
+      "product_gap": 9
     }
   },
   "scope_rules": {
@@ -186,7 +187,23 @@
       "file": "bindings-4.json",
       "range": [
         100,
-        114
+        122
+      ]
+    },
+    {
+      "key": "bindings",
+      "file": "bindings-5.json",
+      "range": [
+        122,
+        144
+      ]
+    },
+    {
+      "key": "bindings",
+      "file": "bindings-6.json",
+      "range": [
+        144,
+        151
       ]
     },
     {

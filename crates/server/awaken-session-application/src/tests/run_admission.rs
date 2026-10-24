@@ -10,6 +10,8 @@ use awaken_session_execution_contract::{
 };
 use awaken_session_types::SessionId;
 
+mod pre_activation;
+
 struct ProtocolProjectionRuntime;
 
 #[derive(Default)]

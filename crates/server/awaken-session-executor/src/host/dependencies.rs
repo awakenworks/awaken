@@ -406,14 +406,9 @@ impl SessionExecutorBuilder {
             .backend_owned_session_provider
             .as_ref()
             .map(|provider| relocate(provider, dir.join("trusted-local-sandboxes")));
-        if let Some(mounter) = self.env.memory_mounter.clone() {
-            self.env
-                .session_provider
-                .installation()
-                .install_memory_mounter(mounter.clone());
-            if let Some(provider) = &self.env.backend_owned_session_provider {
-                provider.installation().install_memory_mounter(mounter);
-            }
+        self.install_shared_environment_services(&self.env.session_provider);
+        if let Some(provider) = &self.env.backend_owned_session_provider {
+            self.install_shared_environment_services(provider);
         }
         self.store_dir = Some(dir);
         self
