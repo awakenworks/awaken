@@ -3,7 +3,7 @@
   "transitions": {
     "awaken-credential-materializer": {
       "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; reached through the Session executor and realization, and the startup's AllInOne model and credential plane (PinnedCredentialMaterializer over the local Vault, CredentialInferenceMaterializer, the A2A attempt relay capabilities, the hosted InferenceExecutorMaterializer adapter); the ambient-key guard, the Cloud broker transport, the recipient-key envelope, the refresh port and the MCP credential probe left it on 2026-10-25; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "pending: v4-coord-exec for integrator review (record restated after the credential pieces outside execution left the materializer)",
+      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; reviewed at integration (record restated after the credential pieces outside execution left the materializer)",
       "date": "2026-10-25",
       "remove_when": "the executor leaves the Coordinator closure"
     },
