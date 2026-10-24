@@ -265,7 +265,7 @@ pub(crate) struct SessionKernel {
     pub(crate) mutations: Arc<crate::SessionMutations>,
     pub(crate) lifecycle: Arc<crate::SessionLifecycle>,
     pub(crate) environment_binding_sink:
-        Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>,
+        Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     pub(crate) execution_admission: Arc<SessionExecutionAdmission>,
     pub(crate) runtime_incarnation: String,
     pub(crate) event_batch_cutover_validation: Arc<crate::SessionEventBatchCutoverValidationSource>,

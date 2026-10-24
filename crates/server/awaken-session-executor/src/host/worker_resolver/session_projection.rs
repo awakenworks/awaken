@@ -171,7 +171,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_runtime_contract::McpAttachmentRealizer for RecordingMcpRealizer {
+    impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRealizer {
         async fn stage_mcp_attachment(
             &self,
             request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
@@ -264,7 +264,7 @@ mod tests {
         calls: std::sync::atomic::AtomicUsize,
         root_authority: Option<(
             Arc<ManagedSessionRootFixture>,
-            Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>,
+            Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
         )>,
     }
 
@@ -283,7 +283,7 @@ mod tests {
         fn rooted(
             control: &RecoveryControl,
             roots: Arc<ManagedSessionRootFixture>,
-            delegate: Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>,
+            delegate: Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
         ) -> Self {
             let mut recorder = Self::new(control);
             recorder.root_authority = Some((roots, delegate));
@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_runtime_contract::SessionEnvironmentBindingSink
+    impl awaken_session_execution_contract::SessionEnvironmentBindingSink
         for RecoveryEnvironmentBindingSink
     {
         async fn authorize(
@@ -1407,7 +1407,7 @@ mod tests {
             .expect("installed Sessions")
             .flatten()
             .expect("C1 actual original assignment");
-        awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &*source.run_assembly,
             thread,
             resident.clone(),
@@ -1551,7 +1551,7 @@ mod tests {
         original_managed
             .run_assembly
             .install_test_environment_binding_sink(original_binding_sink.clone());
-        awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &*original_managed.run_assembly,
             thread,
             original_projection,

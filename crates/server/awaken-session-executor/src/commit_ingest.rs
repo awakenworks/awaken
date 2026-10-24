@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
-use awaken_session_runtime_contract::ApplicationError;
+use awaken_session_execution_contract::ApplicationError;
 
 use crate::host::ExecutorComponents;
 
@@ -62,7 +62,7 @@ mod tests {
     use awaken_dispatch_contract::{RunClaim, RunDispatch};
     use awaken_runtime_contract::RunActivation;
     use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ResolvedModelCandidate};
-    use awaken_session_runtime_contract::ApplicationErrorKind;
+    use awaken_session_execution_contract::ApplicationErrorKind;
 
     /// The Coordinator composition's resolver, rebuilt here over the same
     /// Host method so these tests drive the real claimed-commit service.
@@ -580,7 +580,7 @@ mod tests {
         .build()
         .expect("validated Host dependencies");
         let managed = host.clone();
-        let application: Arc<dyn awaken_session_runtime_contract::SessionAgentCoordination> =
+        let application: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
             Arc::new(crate::coordination::RecordingSessionAgentCoordination::default());
         managed
             .session_application_bindings()

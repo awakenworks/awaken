@@ -3,7 +3,7 @@
 //! The exact serialized response crosses the original private HTTP route.
 use awaken_container_contract::K8sCreateResponse;
 use awaken_container_contract::{CreateReplyProfile, K8S_CREATE_CAPTURE_HEADER};
-use awaken_session_runtime_contract::ApplicationError;
+use awaken_session_execution_contract::ApplicationError;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 

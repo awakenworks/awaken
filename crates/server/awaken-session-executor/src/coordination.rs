@@ -4,7 +4,7 @@
 //! Both adapters route through the Session application's existing authority. A
 //! co-located Host holds only its weak application edge; a database-less Worker
 //! uses the current dispatch claim and the existing authenticated
-//! [`awaken_session_runtime_contract::ClaimedSessionCoordinationControl`] transport.
+//! [`awaken_session_execution_contract::ClaimedSessionCoordinationControl`] transport.
 
 use std::sync::{Arc, Weak};
 
@@ -18,7 +18,7 @@ use awaken_ext_builtin_tools::{
 use awaken_runtime_contract::llm::{
     Error as LlmError, ModelRequestAdmission, ModelRequestAdmissionRequest, ModelRequestGate,
 };
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     ClaimedSessionCoordinationControl, SessionAgentBoundaryCommand, SessionAgentCoordination,
     SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentRosterEntry,
     SessionAgentTarget, SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
@@ -606,9 +606,9 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
         _session_id: &awaken_session_types::SessionId,
         _agent_id: &str,
         _run_id: &awaken_agent_contract::agent::run::Id,
-        _mode: awaken_session_runtime_contract::SessionRunActivityAdmissionMode,
+        _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
     ) -> Result<
-        awaken_session_runtime_contract::SessionRunActivityAdmission,
+        awaken_session_execution_contract::SessionRunActivityAdmission,
         awaken_session_types::RunError,
     > {
         Err(awaken_session_types::RunError::bad_request(
@@ -677,7 +677,7 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
 
     async fn reply_session_thread_tool(
         &self,
-        _command: awaken_session_runtime_contract::SessionThreadToolReplyCommand,
+        _command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
     ) -> Result<(), awaken_session_types::RunError> {
         Ok(())
     }

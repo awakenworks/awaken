@@ -23,7 +23,7 @@ use crate::tests::effect_counting_runtime::EffectCountingRuntime;
 use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason, ResumeTicket};
 use awaken_session_application_contract::SessionBudgetResumeTicket;
 use awaken_session_budget_contract::SessionBudgetState;
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     AdmitSessionRun, SessionAgentCoordination as _, SessionRunActivityAdmission,
     SessionRunActivityAdmissionMode,
 };
@@ -116,7 +116,7 @@ fn bypass_run(session: &str) -> AdmitSessionRun {
         session_id: session_id.clone(),
         agent_id: "agent".into(),
         operation_id: "t13-bypass".into(),
-        run_id: awaken_session_runtime_contract::session_run_id(&session_id, "t13-bypass"),
+        run_id: awaken_session_execution_contract::session_run_id(&session_id, "t13-bypass"),
         messages: vec![awaken_agent_contract::agent::message::Message::text(
             awaken_agent_contract::agent::message::Id("t13-bypass-input".into()),
             awaken_agent_contract::agent::message::Role::User,

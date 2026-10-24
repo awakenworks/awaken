@@ -14,8 +14,8 @@ pub(crate) use awaken_protocol_managed_testkit::{
 pub(crate) use session_repository::ConflictInjectingRepo;
 
 pub(crate) fn managed_state_from_parts(
-    runtime: std::sync::Arc<dyn awaken_session_runtime_contract::CompleteSessionRuntime>,
-    mcp: Option<std::sync::Arc<dyn awaken_session_runtime_contract::McpAttachmentRealizer>>,
+    runtime: std::sync::Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
+    mcp: Option<std::sync::Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     sessions: std::sync::Arc<dyn awaken_session_repository_contract::SessionStore>,
     environments: std::sync::Arc<
         awaken_environment_application::execution::EnvironmentExecutionApplication,

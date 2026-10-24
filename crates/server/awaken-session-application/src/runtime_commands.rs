@@ -76,7 +76,7 @@ pub(super) fn session_input_error(error: crate::session_resource::SessionInputEr
     }
 }
 
-pub use awaken_session_runtime_contract::{
+pub use awaken_session_execution_contract::{
     SessionExecutionObservation, SessionModelRequestObservation, SessionRunExecutionObservation,
     SessionToolUseObservation,
 };

@@ -13,7 +13,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent};
 use awaken_session_application_contract::Pending;
 use awaken_session_event_contract::SessionAgentRunBoundary;
-use awaken_session_runtime_contract::CoordinatedThreadLink;
+use awaken_session_execution_contract::CoordinatedThreadLink;
 use awaken_session_state_contract::{PersistedSession, SessionRuntimeInterval};
 
 use crate::interval::{

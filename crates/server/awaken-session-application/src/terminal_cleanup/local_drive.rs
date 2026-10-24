@@ -486,7 +486,7 @@ impl SessionTerminalCleanups {
 mod tests {
     use super::*;
     use awaken_session_configuration_contract::resource::SessionRealizationLease;
-    use awaken_session_runtime_contract::RealizationRuntime as _;
+    use awaken_session_execution_contract::RealizationRuntime as _;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -546,7 +546,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_runtime_contract::SessionRuntime for RecordingTerminalProjectionRuntime {
+    impl awaken_session_execution_contract::SessionRuntime for RecordingTerminalProjectionRuntime {
         async fn run(
             &self,
             _agent: &str,
@@ -560,7 +560,7 @@ mod tests {
             &self,
             _thread: &str,
             _tool_use_id: &str,
-            _decision: awaken_session_runtime_contract::ToolPermissionDecision,
+            _decision: awaken_session_execution_contract::ToolPermissionDecision,
         ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
             Err(RunError::internal("terminal renewal fixture"))
         }
@@ -580,26 +580,26 @@ mod tests {
         }
     }
 
-    awaken_session_runtime_contract::neutral_role!(CoordinationRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(CoordinationRuntime for RecordingTerminalProjectionRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(SessionCoordinationReads for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for RecordingTerminalProjectionRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(BudgetRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingTerminalProjectionRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(StreamingRunRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for RecordingTerminalProjectionRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(EnvironmentRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for RecordingTerminalProjectionRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(ThreadReadRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for RecordingTerminalProjectionRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(OutcomeRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(OutcomeRuntime for RecordingTerminalProjectionRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(LiveInboxRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RecordingTerminalProjectionRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(CapabilityRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(CapabilityRuntime for RecordingTerminalProjectionRuntime);
 
     #[async_trait::async_trait]
-    impl awaken_session_runtime_contract::RealizationRuntime for RecordingTerminalProjectionRuntime {
+    impl awaken_session_execution_contract::RealizationRuntime for RecordingTerminalProjectionRuntime {
         fn observe_realization_request(
             &self,
         ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
@@ -609,7 +609,7 @@ mod tests {
             }
         }
 
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Reconcile the existing Runtime projections through the given Control
         /// owner. Local and Worker deployment use one slot-based selection and
@@ -621,12 +621,12 @@ mod tests {
             runtime_incarnation: &str,
             timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
         ) -> Result<usize, awaken_session_types::RunError> {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
                 .await
         }
 
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Install one complete Control-frozen Session projection. Dispatch and
         /// realization are explicit modes of this single port; callers must never
@@ -639,12 +639,12 @@ mod tests {
             mode: awaken_session_realization_contract::SessionProjectionInstallMode,
         ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>
         {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .install_session_projection(thread, projection, mode)
                 .await
         }
 
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Install a monotonic same-owner/same-incarnation/same-epoch successor of
         /// an already-installed realization fence. This is the only lease-only
@@ -654,12 +654,12 @@ mod tests {
             thread: &str,
             lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
         ) -> Result<(), awaken_session_types::RunError> {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_lease(thread, lease)
                 .await
         }
 
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Forget one failed realization fence from disposable Runtime state. The
         /// aggregate remains the sole lease authority: this hook only prevents a
@@ -670,30 +670,30 @@ mod tests {
             thread: &str,
             lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) -> Result<(), awaken_session_types::RunError> {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .invalidate_session_realization_lease(thread, lease)
                 .await
         }
     }
 
-    awaken_session_runtime_contract::neutral_role!(RealizationEffects for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(RealizationEffects for RecordingTerminalProjectionRuntime);
 
     #[async_trait::async_trait]
-    impl awaken_session_runtime_contract::TerminalCleanupRuntime
+    impl awaken_session_execution_contract::TerminalCleanupRuntime
         for RecordingTerminalProjectionRuntime
     {
         async fn observe_terminal_cleanup_retention(
             &self,
-            session_id: &awaken_session_runtime_contract::__macro_support::SessionId,
-            projection: &awaken_session_runtime_contract::__macro_support::FrozenSessionProjection,
+            session_id: &awaken_session_execution_contract::__macro_support::SessionId,
+            projection: &awaken_session_execution_contract::__macro_support::FrozenSessionProjection,
             source_prepared: bool,
-        ) -> Result<bool, awaken_session_runtime_contract::__macro_support::RunError> {
-            awaken_session_runtime_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
-            &awaken_session_runtime_contract::NeutralRuntime, session_id, projection, source_prepared,
+        ) -> Result<bool, awaken_session_execution_contract::__macro_support::RunError> {
+            awaken_session_execution_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
+            &awaken_session_execution_contract::NeutralRuntime, session_id, projection, source_prepared,
         ).await
         }
 
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Make every source-dependent effect durable under the exact aggregate
         /// preparation fence without deleting the physical realization.
@@ -705,12 +705,12 @@ mod tests {
             awaken_session_state_contract::SessionCleanupPreparation,
             awaken_session_types::RunError,
         > {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .prepare_terminal_cleanup_for_effect(effect, authorization)
                 .await
         }
 
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Retire only a prepared child projection after Control durably accepts
         /// its exact preparation. The shared root Environment must remain until the
@@ -719,12 +719,12 @@ mod tests {
             &self,
             effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
         ) {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .acknowledge_terminal_cleanup_preparation(effect)
                 .await
         }
 
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Retire only the process-local teardown projection after Control has
         /// durably accepted the exact disposal receipt. No provider or Resource
@@ -733,12 +733,12 @@ mod tests {
             &self,
             effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
         ) {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .acknowledge_terminal_cleanup_disposal(effect)
                 .await
         }
 
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Retire a process-local terminal projection after Control reports that
         /// the aggregate has no remaining cleanup work. This closes final receipt
@@ -749,7 +749,7 @@ mod tests {
             session_id: &awaken_session_types::SessionId,
             lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .acknowledge_completed_terminal_cleanup(session_id, lease)
                 .await
         }

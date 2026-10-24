@@ -2,7 +2,7 @@
 
 use super::*;
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_runtime_contract::RealizationEffects as _;
+use awaken_session_execution_contract::RealizationEffects as _;
 
 struct PendingUploadStore {
     puts: std::sync::atomic::AtomicUsize,

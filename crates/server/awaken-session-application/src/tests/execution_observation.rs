@@ -412,7 +412,7 @@ async fn native_run_reply_rejects_foreign_owner_mode_and_nonprimary_or_unfenced_
     // ticket owner. R1 foreign owner and R2 Managed mode stop before Runtime;
     // R3 child, absent/zero version, empty operation or adjacent System reject
     // before activity transfer. E1 no root mutation or delivery on every row.
-    use awaken_session_runtime_contract::{
+    use awaken_session_execution_contract::{
         SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand,
     };
     let repository = Arc::new(
@@ -602,7 +602,7 @@ async fn native_run_claim_is_visible_before_the_first_commit_only_with_exact_adm
     app.activities
         .begin_activity_for_operation(
             &id,
-            &awaken_session_runtime_contract::session_run_activity_operation_id(&id, &run),
+            &awaken_session_execution_contract::session_run_activity_operation_id(&id, &run),
         )
         .await
         .unwrap();

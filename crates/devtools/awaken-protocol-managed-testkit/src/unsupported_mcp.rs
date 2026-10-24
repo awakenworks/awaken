@@ -10,7 +10,7 @@
 pub struct UnsupportedMcpAttachmentRealizer;
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::McpAttachmentRealizer for UnsupportedMcpAttachmentRealizer {
+impl awaken_session_execution_contract::McpAttachmentRealizer for UnsupportedMcpAttachmentRealizer {
     async fn stage_mcp_attachment(
         &self,
         _request: awaken_session_configuration_contract::mcp::StageMcpAttachment,

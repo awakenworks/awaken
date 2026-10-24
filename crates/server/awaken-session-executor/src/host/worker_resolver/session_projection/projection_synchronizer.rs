@@ -25,7 +25,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_runtime_contract::SessionEnvironmentBindingSink
+    impl awaken_session_execution_contract::SessionEnvironmentBindingSink
         for LegacyUnownedEnvironmentBindingSink
     {
         async fn authorize(
@@ -385,7 +385,7 @@ mod tests {
                 expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
                     + 60_000,
             };
-        awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &*managed.run_assembly,
             thread,
             projection,

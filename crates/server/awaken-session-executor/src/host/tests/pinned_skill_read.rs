@@ -66,7 +66,7 @@ struct GatedSkillBindingSink {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::SessionEnvironmentBindingSink for GatedSkillBindingSink {
+impl awaken_session_execution_contract::SessionEnvironmentBindingSink for GatedSkillBindingSink {
     async fn authorize(
         &self,
         intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,

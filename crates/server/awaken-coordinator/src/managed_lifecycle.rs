@@ -104,7 +104,7 @@ mod tests {
     use awaken_protocol_managed::{ManagedState, StateError, router};
     use awaken_protocol_managed_testkit::CoordinatedRuntimeFake;
     use awaken_session_application_contract::LifecycleFactDelivery;
-    use awaken_session_runtime_contract::{AdmitSessionRun, session_run_id};
+    use awaken_session_execution_contract::{AdmitSessionRun, session_run_id};
     use awaken_session_state_contract::{ManagedLifecycleFact, SessionExecutionState};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};

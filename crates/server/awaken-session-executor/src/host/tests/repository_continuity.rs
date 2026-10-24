@@ -160,7 +160,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         mcp: Vec::new(),
         request_context: Vec::new(),
     };
-    awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         managed.run_assembly.as_ref(),
         thread,
         projection,

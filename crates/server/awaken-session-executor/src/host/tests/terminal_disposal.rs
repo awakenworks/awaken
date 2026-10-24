@@ -62,7 +62,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     install_test_session_application(&host);
 
     let mut terminal_projection = remote_terminal_cleanup_projection();
-    awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         "t-end",
         terminal_projection.clone(),
@@ -1026,7 +1026,7 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
     let run = RunId("terminal-reservation-run".into());
     let activation =
         crate::host::worker_resolver::test_support::test_activation(&session.0, &run.0);
-    let command = awaken_session_runtime_contract::AdmitSessionRun {
+    let command = awaken_session_execution_contract::AdmitSessionRun {
         session_id: SessionId::from(&session.0),
         agent_id: activation.snapshot.root_agent_id.0.clone(),
         operation_id: "terminal-reservation-operation".into(),
@@ -1037,10 +1037,11 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
             .as_ref()
             .map(|subject| subject.0.clone()),
         traceparent: None,
-        execution_requirements: awaken_session_runtime_contract::SessionRunExecutionRequirements {
-            tool_capability_narrowing: activation.tool_capability_narrowing(),
-            required_worker_capabilities: Default::default(),
-        },
+        execution_requirements:
+            awaken_session_execution_contract::SessionRunExecutionRequirements {
+                tool_capability_narrowing: activation.tool_capability_narrowing(),
+                required_worker_capabilities: Default::default(),
+            },
         replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
     };
     let request = awaken_dispatch_contract::RunDispatch::new(activation)

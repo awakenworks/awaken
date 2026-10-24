@@ -13,7 +13,7 @@
 
 use async_trait::async_trait;
 use awaken_dispatch_contract::{DispatchSettlementError, RunClaim, RunDispatch};
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
 };
 

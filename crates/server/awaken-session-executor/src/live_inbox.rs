@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_runtime_contract::live_inbox::{
     EditError, LiveInbox, LiveInboxMessageId, MessageOrigin, Offer,
 };
-use awaken_session_runtime_contract::{LiveInboxEntry, LiveInboxError, LiveInboxSnapshot};
+use awaken_session_execution_contract::{LiveInboxEntry, LiveInboxError, LiveInboxSnapshot};
 
 use crate::managed_input_projection::user_message;
 
@@ -65,7 +65,7 @@ impl LiveInboxes {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::LiveInboxRuntime for LiveInboxes {
+impl awaken_session_execution_contract::LiveInboxRuntime for LiveInboxes {
     async fn live_inbox_snapshot(&self, thread: &str) -> Result<LiveInboxSnapshot, LiveInboxError> {
         Ok(match self.live_inbox(thread).await? {
             Some(inbox) => LiveInboxSnapshot {

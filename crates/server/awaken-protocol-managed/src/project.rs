@@ -16,7 +16,7 @@ use awaken_session_application_contract::Pending;
 
 use crate::types::{EvaluatedPermission, OutboundKind, StopReason};
 use awaken_session_configuration_contract::{AgentCapabilities, CustomTool};
-use awaken_session_runtime_contract::OutcomeIteration;
+use awaken_session_execution_contract::OutcomeIteration;
 
 /// Versioned, length-delimited public identity for a Managed tool-use event.
 /// Runtime/provider call ids are only batch-local; qualifying them by logical
@@ -816,7 +816,7 @@ mod tests {
             RunId, RunLifecycleEvent, RunLifecycleEventKind, ThreadId, encode_run_lifecycle_cursor,
         };
         use awaken_managed_session_events::{OrderEvidence, OrderIndex, ParentTerminalEvidence};
-        use awaken_session_runtime_contract::ThreadReadRuntime as _;
+        use awaken_session_execution_contract::ThreadReadRuntime as _;
         let runtime = awaken_protocol_managed_testkit::RehydrateFake::default();
         let lifecycle = [RunLifecycleEvent {
             cursor: encode_run_lifecycle_cursor(4, 0).unwrap(),

@@ -8,7 +8,7 @@ use awaken_provisioning_contract::{
     EnvVar, MountRequirement, RepositoryPublicationExpectation, RepositoryPublicationReceipt,
 };
 use awaken_session_configuration_contract::{SessionNetworkPolicy, SessionToolConfiguration};
-use awaken_session_runtime_contract::SessionRunExecutionRequirements;
+use awaken_session_execution_contract::SessionRunExecutionRequirements;
 use axum::Router;
 use axum::handler::Handler;
 use axum::routing::post;

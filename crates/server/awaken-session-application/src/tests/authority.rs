@@ -154,14 +154,14 @@ async fn anchor_unsettled_event(
 
 fn coordination_spawn_command(
     session_id: &str,
-) -> awaken_session_runtime_contract::SessionAgentMessageCommand {
-    awaken_session_runtime_contract::SessionAgentMessageCommand {
+) -> awaken_session_execution_contract::SessionAgentMessageCommand {
+    awaken_session_execution_contract::SessionAgentMessageCommand {
         session_id: session_id.into(),
         source_thread_id: ThreadId(session_id.into()),
         source_run_id: RunId(format!("{session_id}-parent-run")),
         source_call_id: "send-call".into(),
         operation_id: "send-operation".into(),
-        target: awaken_session_runtime_contract::SessionAgentTarget::Spawn {
+        target: awaken_session_execution_contract::SessionAgentTarget::Spawn {
             agent_id: "coord-child".into(),
         },
         message: "investigate".into(),
@@ -3290,7 +3290,7 @@ async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_pa
             format!("recovered report {rule}"),
         );
         assert!(
-            awaken_session_runtime_contract::SessionCoordinationReads::coordinated_threads(
+            awaken_session_execution_contract::SessionCoordinationReads::coordinated_threads(
                 runtime.as_ref(),
                 &SessionId::from(&session_id),
                 None,
@@ -3302,9 +3302,9 @@ async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_pa
         );
 
         let result =
-            awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
+            awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
                 app.coordination.as_ref(),
-                awaken_session_runtime_contract::SessionAgentBoundaryCommand {
+                awaken_session_execution_contract::SessionAgentBoundaryCommand {
                     session_id: SessionId::from(&session_id),
                     source_thread_id: child,
                     source_run_id: run,
@@ -3388,7 +3388,7 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
         runtime.set_admission_observations([Ok(None), Ok(None)]);
         let app = configured_admission_application(repo.clone(), runtime.clone());
         let receipt =
-            awaken_session_runtime_contract::SessionAgentCoordination::send_session_agent_message(
+            awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
                 app.coordination.as_ref(),
                 coordination_spawn_command(&session_id),
             )
@@ -3407,19 +3407,19 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
             .await
             .expect("activity before follow-up")
             .active_activity_epochs;
-        let follow_up = awaken_session_runtime_contract::SessionAgentMessageCommand {
+        let follow_up = awaken_session_execution_contract::SessionAgentMessageCommand {
             session_id: SessionId::from(&session_id),
             source_thread_id: ThreadId(session_id.clone()),
             source_run_id: RunId(format!("{session_id}-parent-follow-up")),
             source_call_id: format!("{rule}-follow-up-call"),
             operation_id: format!("{rule}-follow-up-operation"),
-            target: awaken_session_runtime_contract::SessionAgentTarget::ExistingThread {
+            target: awaken_session_execution_contract::SessionAgentTarget::ExistingThread {
                 thread_id: receipt.thread_id.clone(),
             },
             message: "continue".into(),
         };
         let result =
-            awaken_session_runtime_contract::SessionAgentCoordination::send_session_agent_message(
+            awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
                 app.coordination.as_ref(),
                 follow_up,
             )
@@ -3431,7 +3431,7 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
             assert_eq!(admissions.len(), 2, "{rule}/E1");
             assert_eq!(
                 admissions[1].intent,
-                awaken_session_runtime_contract::CoordinatedRunIntent::FollowUp,
+                awaken_session_execution_contract::CoordinatedRunIntent::FollowUp,
                 "{rule}/E1"
             );
         } else {
@@ -3462,20 +3462,20 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
         let thread_id = ThreadId(format!("{session_id}-target"));
         match rule {
             "A6" => {}
-            "A7" => runtime.commit_link(awaken_session_runtime_contract::CoordinatedThreadLink {
+            "A7" => runtime.commit_link(awaken_session_execution_contract::CoordinatedThreadLink {
                 session_id: SessionId::from(&session_id),
                 thread_id: thread_id.clone(),
-                target: awaken_session_runtime_contract::CoordinatedThreadTarget::Advisor {
+                target: awaken_session_execution_contract::CoordinatedThreadTarget::Advisor {
                     model: "advisor-model".into(),
                 },
                 created_by_operation_id: "advisor-operation".into(),
                 latest_run_id: Some(RunId("advisor-run".into())),
             }),
             "A8" => {
-                runtime.commit_link(awaken_session_runtime_contract::CoordinatedThreadLink {
+                runtime.commit_link(awaken_session_execution_contract::CoordinatedThreadLink {
                     session_id: SessionId::from(&session_id),
                     thread_id: thread_id.clone(),
-                    target: awaken_session_runtime_contract::CoordinatedThreadTarget::Agent {
+                    target: awaken_session_execution_contract::CoordinatedThreadTarget::Agent {
                         agent_id: "coord-child".into(),
                     },
                     created_by_operation_id: "archived-agent-operation".into(),
@@ -3492,15 +3492,15 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
             .expect("target state before rejection")
             .active_activity_epochs;
         let error =
-            awaken_session_runtime_contract::SessionAgentCoordination::send_session_agent_message(
+            awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
                 app.coordination.as_ref(),
-                awaken_session_runtime_contract::SessionAgentMessageCommand {
+                awaken_session_execution_contract::SessionAgentMessageCommand {
                     session_id: SessionId::from(&session_id),
                     source_thread_id: ThreadId(session_id.clone()),
                     source_run_id: RunId(format!("{session_id}-parent-run")),
                     source_call_id: format!("{rule}-call"),
                     operation_id: format!("{rule}-operation"),
-                    target: awaken_session_runtime_contract::SessionAgentTarget::ExistingThread {
+                    target: awaken_session_execution_contract::SessionAgentTarget::ExistingThread {
                         thread_id,
                     },
                     message: "must reject before activity".into(),
@@ -3645,7 +3645,7 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
     let delivery = accepted_runtime.deliveries.lock().unwrap()[0].clone();
     assert_eq!(
         delivery.command.target,
-        awaken_session_runtime_contract::SessionThreadTarget::Primary,
+        awaken_session_execution_contract::SessionThreadTarget::Primary,
         "F3/E2"
     );
     assert_eq!(delivery.command.expected_run_id.0, "reply-run", "F3/E2");
@@ -3730,17 +3730,17 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         create(repo.as_ref(), persisted(session_id, false, "idle")).await;
     }
     let command =
-        |session_id: &str| awaken_session_runtime_contract::SessionThreadToolReplyCommand {
+        |session_id: &str| awaken_session_execution_contract::SessionThreadToolReplyCommand {
             session_id: SessionId::from(session_id),
             tool_request_event_id: None,
             expected_thread_version: None,
-            target: awaken_session_runtime_contract::SessionThreadTarget::Child(ThreadId(
+            target: awaken_session_execution_contract::SessionThreadTarget::Child(ThreadId(
                 "reply-child".into(),
             )),
             expected_run_id: RunId("reply-run".into()),
             expected_correlation_id: "reply-correlation".into(),
             tool_use_id: "reply-tool".into(),
-            reply: awaken_session_runtime_contract::SessionThreadToolReply::Confirm(
+            reply: awaken_session_execution_contract::SessionThreadToolReply::Confirm(
                 awaken_agent_contract::agent::awaiting::PermissionDecision::Allow { note: None },
             ),
             accompanying_system: None,
@@ -3751,7 +3751,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     create(repo.as_ref(), persisted("reply-extension", false, "idle")).await;
     let mut extension_runtime = RecordingReplyRuntime::new(ReplyRuntimeOutcome::Accepted);
     extension_runtime.activity =
-        awaken_session_runtime_contract::SessionThreadToolReplyActivity::ThreadExtension;
+        awaken_session_execution_contract::SessionThreadToolReplyActivity::ThreadExtension;
     let extension_runtime = Arc::new(extension_runtime);
     let extension = application_with_runtime(
         extension_runtime.clone(),
@@ -3759,9 +3759,9 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let mut extension_command = command("reply-extension");
-    extension_command.target = awaken_session_runtime_contract::SessionThreadTarget::Primary;
+    extension_command.target = awaken_session_execution_contract::SessionThreadTarget::Primary;
     for _ in 0..2 {
-        awaken_session_runtime_contract::SessionAgentCoordination::reply_session_thread_tool(
+        awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
             extension.coordination.as_ref(),
             extension_command.clone(),
         )
@@ -3790,7 +3790,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    awaken_session_runtime_contract::SessionAgentCoordination::reply_session_thread_tool(
+    awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
         accepted.coordination.as_ref(),
         command("reply-accepted"),
     )
@@ -3807,7 +3807,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         "P1/E1"
     );
 
-    awaken_session_runtime_contract::SessionAgentCoordination::reply_session_thread_tool(
+    awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
         accepted.coordination.as_ref(),
         command("reply-accepted"),
     )
@@ -3835,8 +3835,8 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     );
 
     let mut primary_command = command("reply-primary");
-    primary_command.target = awaken_session_runtime_contract::SessionThreadTarget::Primary;
-    awaken_session_runtime_contract::SessionAgentCoordination::reply_session_thread_tool(
+    primary_command.target = awaken_session_execution_contract::SessionThreadTarget::Primary;
+    awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
         accepted.coordination.as_ref(),
         primary_command,
     )
@@ -3851,7 +3851,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         .expect("P6 delivery");
     assert_eq!(
         primary_delivery.command.target,
-        awaken_session_runtime_contract::SessionThreadTarget::Primary,
+        awaken_session_execution_contract::SessionThreadTarget::Primary,
         "P6/E6"
     );
     assert_eq!(
@@ -3871,7 +3871,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         Arc::new(RecordingEnvironmentSource::default()),
     );
     assert!(
-        awaken_session_runtime_contract::SessionAgentCoordination::reply_session_thread_tool(
+        awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
             rejected.coordination.as_ref(),
             command("reply-rejected"),
         )
@@ -3897,7 +3897,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         Arc::new(RecordingEnvironmentSource::default()),
     );
     assert!(
-        awaken_session_runtime_contract::SessionAgentCoordination::reply_session_thread_tool(
+        awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
             ambiguous.coordination.as_ref(),
             command("reply-ambiguous"),
         )
@@ -3923,7 +3923,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         "P4/E4"
     );
     assert!(
-        awaken_session_runtime_contract::SessionAgentCoordination::reply_session_thread_tool(
+        awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
             ambiguous.coordination.as_ref(),
             command("reply-ambiguous"),
         )
@@ -3950,9 +3950,9 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         "P4R/E4 one retained activity"
     );
 
-    awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         accepted.coordination.as_ref(),
-        awaken_session_runtime_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "reply-accepted".into(),
             source_thread_id: ThreadId("reply-child".into()),
             source_run_id: RunId("reply-run".into()),
@@ -4028,19 +4028,19 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
         ),
         "A1/E1"
     );
-    awaken_session_runtime_contract::SessionAgentCoordination::reply_session_thread_tool(
+    awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
         app.coordination.as_ref(),
-        awaken_session_runtime_contract::SessionThreadToolReplyCommand {
+        awaken_session_execution_contract::SessionThreadToolReplyCommand {
             session_id: "reached-valid-reply".into(),
             tool_request_event_id: None,
             expected_thread_version: None,
-            target: awaken_session_runtime_contract::SessionThreadTarget::Child(ThreadId(
+            target: awaken_session_execution_contract::SessionThreadTarget::Child(ThreadId(
                 "reply-child".into(),
             )),
             expected_run_id: RunId("reply-run".into()),
             expected_correlation_id: "reply-correlation".into(),
             tool_use_id: "reply-tool".into(),
-            reply: awaken_session_runtime_contract::SessionThreadToolReply::Confirm(
+            reply: awaken_session_execution_contract::SessionThreadToolReply::Confirm(
                 awaken_agent_contract::agent::awaiting::PermissionDecision::Allow { note: None },
             ),
             accompanying_system: None,
@@ -4060,19 +4060,19 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
         .await
         .expect("A3 state before");
     let error =
-        awaken_session_runtime_contract::SessionAgentCoordination::reply_session_thread_tool(
+        awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
             app.coordination.as_ref(),
-            awaken_session_runtime_contract::SessionThreadToolReplyCommand {
+            awaken_session_execution_contract::SessionThreadToolReplyCommand {
                 session_id: "reached-invalid-reply".into(),
                 tool_request_event_id: None,
                 expected_thread_version: None,
-                target: awaken_session_runtime_contract::SessionThreadTarget::Child(ThreadId(
+                target: awaken_session_execution_contract::SessionThreadTarget::Child(ThreadId(
                     "reply-child".into(),
                 )),
                 expected_run_id: RunId("reply-run".into()),
                 expected_correlation_id: "reply-correlation".into(),
                 tool_use_id: "forged-tool".into(),
-                reply: awaken_session_runtime_contract::SessionThreadToolReply::Confirm(
+                reply: awaken_session_execution_contract::SessionThreadToolReply::Confirm(
                     awaken_agent_contract::agent::awaiting::PermissionDecision::Allow {
                         note: None,
                     },
@@ -4139,7 +4139,7 @@ async fn root_activity_cas_is_the_only_budget_admission_choke() {
     runtime.set_admission_observations([Ok(None)]);
     let app = configured_admission_application(repo.clone(), runtime.clone());
 
-    let roster = awaken_session_runtime_contract::SessionAgentCoordination::list_session_agents(
+    let roster = awaken_session_execution_contract::SessionAgentCoordination::list_session_agents(
         app.coordination.as_ref(),
         &SessionId::from("budget-admission-choke"),
     )
@@ -4148,7 +4148,7 @@ async fn root_activity_cas_is_the_only_budget_admission_choke() {
     assert_eq!(roster.len(), 1, "G1/E1");
 
     let error =
-        awaken_session_runtime_contract::SessionAgentCoordination::send_session_agent_message(
+        awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
             app.coordination.as_ref(),
             coordination_spawn_command("budget-admission-choke"),
         )
@@ -4232,9 +4232,9 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
         RunState::Awaiting,
         "pending",
     );
-    awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         app.coordination.as_ref(),
-        awaken_session_runtime_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "boundary-awaiting".into(),
             source_thread_id: ThreadId("boundary-child".into()),
             source_run_id: RunId("boundary-child-run".into()),
@@ -4256,9 +4256,9 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
         .get(&SessionId::from("boundary-terminal"))
         .await
         .expect("B2 before");
-    awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         app.coordination.as_ref(),
-        awaken_session_runtime_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "boundary-terminal".into(),
             source_thread_id: ThreadId("boundary-terminal-child".into()),
             source_run_id: RunId("boundary-terminal-run".into()),
@@ -4290,9 +4290,9 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
         "",
     );
     let rejected =
-        awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
             app.coordination.as_ref(),
-            awaken_session_runtime_contract::SessionAgentBoundaryCommand {
+            awaken_session_execution_contract::SessionAgentBoundaryCommand {
                 session_id: "boundary-running".into(),
                 source_thread_id: ThreadId("boundary-running-child".into()),
                 source_run_id: RunId("boundary-running-run".into()),
@@ -4324,9 +4324,9 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
         RunState::Ended(EndCause::NaturalEnd),
         "must not become a primary report",
     );
-    awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         app.coordination.as_ref(),
-        awaken_session_runtime_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "boundary-interrupted".into(),
             source_thread_id: ThreadId("boundary-interrupted-child".into()),
             source_run_id: RunId("boundary-interrupted-run".into()),
@@ -4361,9 +4361,9 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
         )),
         "must not become a primary report",
     );
-    awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         app.coordination.as_ref(),
-        awaken_session_runtime_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "boundary-failed".into(),
             source_thread_id: failed_child.clone(),
             source_run_id: failed_run,
@@ -4401,9 +4401,9 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     );
     runtime.set_lifecycle_visible(false);
     let unavailable =
-        awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
             app.coordination.as_ref(),
-            awaken_session_runtime_contract::SessionAgentBoundaryCommand {
+            awaken_session_execution_contract::SessionAgentBoundaryCommand {
                 session_id: "boundary-unprojected".into(),
                 source_thread_id: ThreadId("boundary-unprojected-child".into()),
                 source_run_id: RunId("boundary-unprojected-run".into()),
@@ -4541,7 +4541,7 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
     );
     runtime.set_generic_recovery_available(false);
     assert!(
-        awaken_session_runtime_contract::ThreadReadRuntime::session_thread_recovery_snapshot(
+        awaken_session_execution_contract::ThreadReadRuntime::session_thread_recovery_snapshot(
             runtime.as_ref(),
             &SessionId::from(session_id),
             &thread_id.0,
@@ -4566,9 +4566,9 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
         "R2 precondition"
     );
 
-    awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         app.coordination.as_ref(),
-        awaken_session_runtime_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: session_id.into(),
             source_thread_id: thread_id.clone(),
             source_run_id,
@@ -4586,9 +4586,9 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
     assert_eq!(after_replay, before_replay, "R2/E1+E2");
 
     let missing =
-        awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
             app.coordination.as_ref(),
-            awaken_session_runtime_contract::SessionAgentBoundaryCommand {
+            awaken_session_execution_contract::SessionAgentBoundaryCommand {
                 session_id: session_id.into(),
                 source_thread_id: thread_id,
                 source_run_id: RunId("boundary-redelivery-missing".into()),
@@ -4662,9 +4662,9 @@ async fn completed_child_without_a_committed_reply_settles_without_a_report_run(
         "",
     );
 
-    awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         app.coordination.as_ref(),
-        awaken_session_runtime_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "completed-without-report".into(),
             source_thread_id: child,
             source_run_id: run,
@@ -4725,7 +4725,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
             )]),
         })
         .with_child_target(
-            awaken_session_runtime_contract::CoordinatedThreadTarget::Advisor {
+            awaken_session_execution_contract::CoordinatedThreadTarget::Advisor {
                 model: "advisor-model".into(),
             },
         ),
@@ -5086,7 +5086,7 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
         "",
     );
     assert!(
-        awaken_session_runtime_contract::SessionAgentCoordination::admit_session_model_request(
+        awaken_session_execution_contract::SessionAgentCoordination::admit_session_model_request(
             app.coordination.as_ref(),
             &SessionId::from("request-gate-root"),
             &root_thread,
@@ -5099,7 +5099,7 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
     runtime.set_root_usage(reached_usage.clone());
     for replay in [false, true] {
         assert!(
-            !awaken_session_runtime_contract::SessionAgentCoordination::admit_session_model_request(
+            !awaken_session_execution_contract::SessionAgentCoordination::admit_session_model_request(
                 app.coordination.as_ref(),
                 &SessionId::from("request-gate-root"),
                 &root_thread,
@@ -5132,7 +5132,7 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
         "",
     );
     assert!(
-        awaken_session_runtime_contract::SessionAgentCoordination::admit_session_model_request(
+        awaken_session_execution_contract::SessionAgentCoordination::admit_session_model_request(
             app.coordination.as_ref(),
             &SessionId::from("request-gate-child"),
             &child_thread,
@@ -5145,7 +5145,7 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
     runtime.set_child_usage(reached_usage);
     for replay in [false, true] {
         assert!(
-            !awaken_session_runtime_contract::SessionAgentCoordination::admit_session_model_request(
+            !awaken_session_execution_contract::SessionAgentCoordination::admit_session_model_request(
                 app.coordination.as_ref(),
                 &SessionId::from("request-gate-child"),
                 &child_thread,
@@ -5236,8 +5236,8 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
 
     let settle = |session_id: &str,
                   epoch: u64|
-     -> awaken_session_runtime_contract::SessionAgentBoundaryCommand {
-        awaken_session_runtime_contract::SessionAgentBoundaryCommand {
+     -> awaken_session_execution_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: session_id.into(),
             source_thread_id: ThreadId("budget-child".into()),
             source_run_id: RunId("budget-child-run".into()),
@@ -5259,7 +5259,7 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
         RunState::Awaiting,
         "budget report",
     );
-    awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         app.coordination.as_ref(),
         settle("boundary-budget-awaiting", awaiting_epoch),
     )
@@ -5290,7 +5290,7 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
     runtime.set_admission_observations([
         Ok(None),
         Ok(Some(
-            awaken_session_runtime_contract::SessionAgentMessageReceipt {
+            awaken_session_execution_contract::SessionAgentMessageReceipt {
                 thread_id: ThreadId("boundary-budget-ended".into()),
             },
         )),
@@ -5318,7 +5318,7 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
         "budget report",
     );
     let ended_command = settle("boundary-budget-ended", ended_epoch);
-    awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         app.coordination.as_ref(),
         ended_command.clone(),
     )
@@ -5343,7 +5343,7 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
     assert_eq!(ended.execution, SessionExecutionState::Running, "B2/E3");
     let revision = ended.revision;
 
-    awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         app.coordination.as_ref(),
         ended_command,
     )
@@ -5473,7 +5473,7 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
         .await
         .expect("C1 child B activity");
     let command = |thread_id, run_id, session_activity_epoch| {
-        awaken_session_runtime_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "concurrent-child-budget".into(),
             source_thread_id: thread_id,
             source_run_id: run_id,
@@ -5484,11 +5484,11 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
     };
     runtime.set_admission_observations([Ok(None), Ok(None)]);
     let (settled_a, settled_b) = tokio::join!(
-        awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
             app.coordination.as_ref(),
             command(child_a.clone(), run_a.clone(), epoch_a),
         ),
-        awaken_session_runtime_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
             app.coordination.as_ref(),
             command(child_b.clone(), run_b.clone(), epoch_b),
         )

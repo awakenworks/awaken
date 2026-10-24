@@ -35,7 +35,7 @@ if [ "${1:-}" = "--session-observations" ]; then
   # observation test required by the same fresh evidence manifest.
   cargo test --locked --features awaken-store-sqlite/test-support \
     -p awaken-session-event-contract -p awaken-session-configuration-contract \
-    -p awaken-session-application-contract -p awaken-session-runtime-contract \
+    -p awaken-session-application-contract -p awaken-session-execution-contract \
     -p awaken-session-realization-contract -p awaken-session-state-contract \
     -p awaken-session-repository-contract \
     -p awaken-session-configuration-contract -p awaken-worker-contract \
@@ -71,7 +71,7 @@ cleanup_mutation_artifacts() {
     -p awaken-session-types >/dev/null 2>&1 || true
   cargo clean -p awaken-session-application-contract -p awaken-session-configuration-contract \
     -p awaken-session-event-contract -p awaken-session-realization-contract \
-    -p awaken-session-repository-contract -p awaken-session-runtime-contract \
+    -p awaken-session-repository-contract -p awaken-session-execution-contract \
     -p awaken-session-state-contract >/dev/null 2>&1 || true
   cargo clean -p awaken-session-executor >/dev/null 2>&1 || true
 }

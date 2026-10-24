@@ -2,7 +2,7 @@
 //! capture failures that must not publish partial sets.
 
 use super::*;
-use awaken_session_runtime_contract::RealizationEffects as _;
+use awaken_session_execution_contract::RealizationEffects as _;
 
 struct BatchArtifactContainerProvider {
     files: Vec<awaken_provisioning_contract::SandboxFile>,

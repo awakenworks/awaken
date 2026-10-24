@@ -4,7 +4,7 @@ use awaken_dispatch_contract::dispatch::PhysicalAttempt;
 use awaken_dispatch_contract::{
     DispatchControlReads, DispatchReads, DispatchSummary, WorkerDirectory, WorkerIdentity,
 };
-use awaken_session_runtime_contract::ApplicationError;
+use awaken_session_execution_contract::ApplicationError;
 
 /// Borrow the existing Execution-owned SDK source for one reconciliation call.
 /// Consumers receive the published snapshot value, never the engine SPI or a

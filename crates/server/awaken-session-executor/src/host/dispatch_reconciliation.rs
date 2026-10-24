@@ -36,7 +36,7 @@ mod tests {
             _: Option<&awaken_dispatch::WorkerCreateLedger>,
         ) -> Result<
             Option<awaken_dispatch::WorkerProcessExit>,
-            awaken_session_runtime_contract::ApplicationError,
+            awaken_session_execution_contract::ApplicationError,
         > {
             Ok(Some(
                 awaken_dispatch::WorkerProcessExit::new(
@@ -51,10 +51,10 @@ mod tests {
             &self,
             identity: &awaken_dispatch_contract::WorkerIdentity,
             _original_create_ledger: Option<&awaken_dispatch_contract::WorkerCreateLedger>,
-        ) -> Result<(), awaken_session_runtime_contract::ApplicationError> {
+        ) -> Result<(), awaken_session_execution_contract::ApplicationError> {
             if self.fail_first.swap(false, Ordering::SeqCst) {
                 return Err(
-                    awaken_session_runtime_contract::ApplicationError::unavailable(
+                    awaken_session_execution_contract::ApplicationError::unavailable(
                         "provider unavailable",
                     ),
                 );
@@ -67,7 +67,7 @@ mod tests {
             command: &awaken_dispatch::ClosedWorkerExecution,
         ) -> Result<
             awaken_dispatch::WorkerProcessStopStatus,
-            awaken_session_runtime_contract::ApplicationError,
+            awaken_session_execution_contract::ApplicationError,
         > {
             self.stops.lock().unwrap().push(command.binding().clone());
             command.observed_exit("durable-exit")
@@ -78,7 +78,7 @@ mod tests {
             recovery: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
         ) -> Result<
             awaken_dispatch::AttemptStopStatus,
-            awaken_session_runtime_contract::ApplicationError,
+            awaken_session_execution_contract::ApplicationError,
         > {
             assert_eq!(recovery.claimed_run_id, command.attempt().claim.run_id);
             assert_eq!(
@@ -229,7 +229,7 @@ mod tests {
             _: Option<&awaken_dispatch::WorkerCreateLedger>,
         ) -> Result<
             Option<awaken_dispatch::WorkerProcessExit>,
-            awaken_session_runtime_contract::ApplicationError,
+            awaken_session_execution_contract::ApplicationError,
         > {
             self.observed.lock().unwrap().push(may_stop_active);
             Ok(may_stop_active.then(|| {
@@ -245,7 +245,7 @@ mod tests {
             &self,
             _: &awaken_dispatch_contract::WorkerIdentity,
             _: Option<&awaken_dispatch_contract::WorkerCreateLedger>,
-        ) -> Result<(), awaken_session_runtime_contract::ApplicationError> {
+        ) -> Result<(), awaken_session_execution_contract::ApplicationError> {
             self.released.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -254,7 +254,7 @@ mod tests {
             _: &awaken_dispatch::ClosedWorkerExecution,
         ) -> Result<
             awaken_dispatch::WorkerProcessStopStatus,
-            awaken_session_runtime_contract::ApplicationError,
+            awaken_session_execution_contract::ApplicationError,
         > {
             panic!("no Dispatch slot exists")
         }
@@ -367,7 +367,7 @@ mod tests {
             &self,
             _: &awaken_dispatch_contract::WorkerIdentity,
             _: Option<&awaken_dispatch_contract::WorkerCreateLedger>,
-        ) -> Result<(), awaken_session_runtime_contract::ApplicationError> {
+        ) -> Result<(), awaken_session_execution_contract::ApplicationError> {
             panic!("Unknown physical exit cannot release provider evidence")
         }
         async fn stop_closed_worker(
@@ -375,7 +375,7 @@ mod tests {
             _: &awaken_dispatch::ClosedWorkerExecution,
         ) -> Result<
             awaken_dispatch::WorkerProcessStopStatus,
-            awaken_session_runtime_contract::ApplicationError,
+            awaken_session_execution_contract::ApplicationError,
         > {
             panic!("idle maintenance has no Dispatch attempt")
         }
@@ -454,7 +454,7 @@ mod tests {
             &self,
             _: &awaken_dispatch_contract::WorkerIdentity,
             _: Option<&awaken_dispatch_contract::WorkerCreateLedger>,
-        ) -> Result<(), awaken_session_runtime_contract::ApplicationError> {
+        ) -> Result<(), awaken_session_execution_contract::ApplicationError> {
             panic!("an unowned domain cannot release provider evidence")
         }
         async fn stop_closed_worker(
@@ -462,7 +462,7 @@ mod tests {
             _: &awaken_dispatch::ClosedWorkerExecution,
         ) -> Result<
             awaken_dispatch::WorkerProcessStopStatus,
-            awaken_session_runtime_contract::ApplicationError,
+            awaken_session_execution_contract::ApplicationError,
         > {
             panic!("expiry is not physical termination")
         }

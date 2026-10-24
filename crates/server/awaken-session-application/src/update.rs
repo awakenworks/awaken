@@ -288,7 +288,7 @@ fn apply_configuration_update(
 /// Exact receipt replay and no-op classification precede this phase; it adds no
 /// executor, persistence authority, timer, or publication path.
 async fn record_update_fact(
-    projection: &dyn awaken_session_runtime_contract::SessionProjectionSource,
+    projection: &dyn awaken_session_execution_contract::SessionProjectionSource,
     session: &mut awaken_session_state_contract::SessionAggregate,
     before: &PersistedSession,
     mcp_changed: bool,
@@ -354,9 +354,9 @@ pub struct SessionUpdateCommands {
     activities: Arc<crate::SessionActivities>,
     executable_projections: crate::ExecutableProjections,
     tool_configuration_compiler: Arc<dyn awaken_tool_contract::ToolConfigurationCompiler>,
-    environment: Arc<dyn awaken_session_runtime_contract::EnvironmentRuntime>,
-    budget: Arc<dyn awaken_session_runtime_contract::BudgetRuntime>,
-    projection: Arc<dyn awaken_session_runtime_contract::SessionProjectionSource>,
+    environment: Arc<dyn awaken_session_execution_contract::EnvironmentRuntime>,
+    budget: Arc<dyn awaken_session_execution_contract::BudgetRuntime>,
+    projection: Arc<dyn awaken_session_execution_contract::SessionProjectionSource>,
 }
 
 /// The collaborators one [`SessionUpdateCommands`] is built from.

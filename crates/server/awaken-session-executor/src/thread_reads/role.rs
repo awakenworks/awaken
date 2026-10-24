@@ -11,7 +11,7 @@ use crate::session_execution_error::to_run_error;
 use super::ThreadReads;
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::ThreadReadRuntime for ThreadReads {
+impl awaken_session_execution_contract::ThreadReadRuntime for ThreadReads {
     async fn owns_thread(&self, thread: &str) -> Result<bool, RunError> {
         self.has_durable_thread(thread).await.map_err(to_run_error)
     }
@@ -54,7 +54,7 @@ impl awaken_session_runtime_contract::ThreadReadRuntime for ThreadReads {
             )
             .await
             .map_err(to_run_error)?;
-        awaken_session_runtime_contract::select_recovery_snapshot_run(Some(snapshot), run_id)
+        awaken_session_execution_contract::select_recovery_snapshot_run(Some(snapshot), run_id)
     }
 
     async fn session_thread_disposition(
@@ -74,7 +74,8 @@ impl awaken_session_runtime_contract::ThreadReadRuntime for ThreadReads {
         &self,
         thread: &str,
         outcome_id: &str,
-    ) -> Result<Option<awaken_session_runtime_contract::CommittedOutcomeProjection>, RunError> {
+    ) -> Result<Option<awaken_session_execution_contract::CommittedOutcomeProjection>, RunError>
+    {
         self.committed_outcome(thread, outcome_id)
             .await
             .map(|terminal| terminal.map(crate::outcome_report::committed_projection))

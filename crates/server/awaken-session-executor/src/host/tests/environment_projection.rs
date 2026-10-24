@@ -1831,7 +1831,7 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
         "L9/E4 no environment side effect"
     );
 
-    let coordination: Arc<dyn awaken_session_runtime_contract::SessionAgentCoordination> =
+    let coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
         Arc::new(RejectingSessionAgentCoordination);
     managed
         .session_application_bindings()
@@ -1896,7 +1896,7 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         "G1"
     );
 
-    let coordination: Arc<dyn awaken_session_runtime_contract::SessionAgentCoordination> =
+    let coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
         Arc::new(RejectingSessionAgentCoordination);
     let direct_with_endpoint =
         (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)

@@ -99,7 +99,7 @@ pub(crate) async fn resolve_session_inputs(
 pub(crate) struct ResourceLowering<'a> {
     registry: Option<&'a dyn awaken_resource_contract::ResourceRegistry>,
     participants: &'a crate::SessionRepositoryParticipants,
-    effects: &'a dyn awaken_session_runtime_contract::RealizationEffects,
+    effects: &'a dyn awaken_session_execution_contract::RealizationEffects,
     session_id: &'a str,
     owner_scope: &'a str,
     configured: Vec<ConfiguredSessionRepository>,
@@ -109,7 +109,7 @@ impl<'a> ResourceLowering<'a> {
     pub(crate) fn new(
         registry: Option<&'a dyn awaken_resource_contract::ResourceRegistry>,
         participants: &'a crate::SessionRepositoryParticipants,
-        effects: &'a dyn awaken_session_runtime_contract::RealizationEffects,
+        effects: &'a dyn awaken_session_execution_contract::RealizationEffects,
         session_id: &'a str,
         owner_scope: &'a str,
     ) -> Self {

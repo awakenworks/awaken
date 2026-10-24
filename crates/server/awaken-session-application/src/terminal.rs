@@ -254,9 +254,9 @@ pub struct SessionTerminationCommands {
     lifecycle: Arc<crate::SessionLifecycle>,
     terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
     activities: Arc<crate::SessionActivities>,
-    thread_reads: Arc<dyn awaken_session_runtime_contract::ThreadReadRuntime>,
-    coordination: Arc<dyn awaken_session_runtime_contract::CoordinationRuntime>,
-    coordination_reads: Arc<dyn awaken_session_runtime_contract::SessionCoordinationReads>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
+    coordination: Arc<dyn awaken_session_execution_contract::CoordinationRuntime>,
+    coordination_reads: Arc<dyn awaken_session_execution_contract::SessionCoordinationReads>,
 }
 
 impl SessionTerminationCommands {
@@ -802,7 +802,7 @@ impl SessionTerminationCommands {
         let run =
             awaken_session_state_contract::failed_profiled_run_for_archive(session, &snapshot)
                 .ok_or_else(refused)?;
-        let operation = awaken_session_runtime_contract::session_run_activity_operation_id(
+        let operation = awaken_session_execution_contract::session_run_activity_operation_id(
             &session.session_id,
             &run.id,
         );

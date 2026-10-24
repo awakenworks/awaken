@@ -227,7 +227,7 @@ impl BudgetAccounting {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::BudgetRuntime for BudgetAccounting {
+impl awaken_session_execution_contract::BudgetRuntime for BudgetAccounting {
     async fn resume_budget_reached(
         &self,
         delivery: awaken_session_application_contract::SessionBudgetResumeDelivery,

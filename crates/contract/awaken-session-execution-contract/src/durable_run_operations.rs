@@ -71,21 +71,21 @@ pub struct DurableDispatchStatus {
 /// cannot select either retired Legacy command (O1/O2), before any queue effect.
 ///
 /// ```
-/// use awaken_session_runtime_contract::DurableRunOperations;
+/// use awaken_session_execution_contract::DurableRunOperations;
 /// async fn operational_read_remains_available(operations: &dyn DurableRunOperations) {
 ///     let _ = operations.superseded("thread").await;
 /// }
 /// ```
 ///
 /// ```compile_fail,E0599
-/// use awaken_session_runtime_contract::DurableRunOperations;
+/// use awaken_session_execution_contract::DurableRunOperations;
 /// async fn no_legacy_supersede(operations: &dyn DurableRunOperations) {
 ///     let _ = operations.supersede(None, "thread", Vec::new()).await;
 /// }
 /// ```
 ///
 /// ```compile_fail,E0599
-/// use awaken_session_runtime_contract::DurableRunOperations;
+/// use awaken_session_execution_contract::DurableRunOperations;
 /// async fn no_legacy_background(operations: &dyn DurableRunOperations) {
 ///     let _ = operations.submit_background(None, "thread", Vec::new()).await;
 /// }

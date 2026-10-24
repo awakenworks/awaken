@@ -4,7 +4,7 @@
 //! fixtures here; this suite does not claim Kubernetes or remote termination.
 mod postgres_support;
 
-use awaken_session_runtime_contract::ApplicationError;
+use awaken_session_execution_contract::ApplicationError;
 use awaken_worker_contract::WorkerCurrentSource;
 use std::sync::{Arc, Mutex};
 

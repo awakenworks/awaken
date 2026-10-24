@@ -9,7 +9,7 @@ impl crate::RunAssembly {
     /// selected for durable Worker commands, else this assembly's own.
     pub(crate) fn session_mcp_realizer(
         &self,
-    ) -> &dyn awaken_session_runtime_contract::McpAttachmentRealizer {
+    ) -> &dyn awaken_session_execution_contract::McpAttachmentRealizer {
         match &self.session_execution.mcp_realizer {
             Some(realizer) => realizer.as_ref(),
             None => self,
@@ -21,7 +21,7 @@ impl crate::RunAssembly {
 /// A configured remote realizer owns no unrelated local Session execution state.
 #[derive(Clone)]
 pub(crate) struct RunMcpEffects {
-    realizer: Arc<dyn awaken_session_runtime_contract::McpAttachmentRealizer>,
+    realizer: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
     projections: std::sync::Weak<crate::RunAssembly>,
 }
 impl RunMcpEffects {
@@ -45,7 +45,7 @@ impl RunMcpEffects {
     }
 }
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::McpAttachmentRealizer for RunMcpEffects {
+impl awaken_session_execution_contract::McpAttachmentRealizer for RunMcpEffects {
     async fn stage_mcp_attachment(
         &self,
         request: crate::session_mcp::StageMcpAttachment,

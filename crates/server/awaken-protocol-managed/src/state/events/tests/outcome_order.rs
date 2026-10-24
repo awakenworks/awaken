@@ -95,9 +95,9 @@ async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_pre
 
     runtime.outcome_projections.lock().unwrap().insert(
         outcome_id.clone(),
-        awaken_session_runtime_contract::CommittedOutcomeProjection::Completed(
-            awaken_session_runtime_contract::OutcomeReport {
-                iterations: vec![awaken_session_runtime_contract::OutcomeIteration {
+        awaken_session_execution_contract::CommittedOutcomeProjection::Completed(
+            awaken_session_execution_contract::OutcomeReport {
+                iterations: vec![awaken_session_execution_contract::OutcomeIteration {
                     messages: Vec::new(),
                     outcome_id: outcome_id.clone(),
                     description: "ship the result".into(),
@@ -318,9 +318,9 @@ async fn terminal_committing_between_outcome_query_and_root_read_cannot_backfill
     runtime.state_cursors.lock().unwrap().extend([29, 30, 30]);
     runtime.outcome_projections.lock().unwrap().insert(
         outcome_id.clone(),
-        awaken_session_runtime_contract::CommittedOutcomeProjection::Completed(
-            awaken_session_runtime_contract::OutcomeReport {
-                iterations: vec![awaken_session_runtime_contract::OutcomeIteration {
+        awaken_session_execution_contract::CommittedOutcomeProjection::Completed(
+            awaken_session_execution_contract::OutcomeReport {
+                iterations: vec![awaken_session_execution_contract::OutcomeIteration {
                     messages: Vec::new(),
                     outcome_id: outcome_id.clone(),
                     description: "ship the result".into(),

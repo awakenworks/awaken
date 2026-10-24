@@ -3,7 +3,7 @@
 use super::*;
 use awaken_dispatch_execution::DEFAULT_LEASE_MS;
 use awaken_session_environment::test_support::SandboxEnvironmentAccess;
-use awaken_session_runtime_contract::RealizationEffects as _;
+use awaken_session_execution_contract::RealizationEffects as _;
 use awaken_time::system_clock;
 
 #[tokio::test]
@@ -98,15 +98,15 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
         .settle(&run, claimed.lease.epoch(), DispatchOutcome::Awaiting, &[])
         .await
         .unwrap();
-    let command = awaken_session_runtime_contract::SessionThreadToolReplyCommand {
+    let command = awaken_session_execution_contract::SessionThreadToolReplyCommand {
         session_id: SessionId::from(&thread.0),
         tool_request_event_id: Some("native-response-1".into()),
         expected_thread_version: Some(version),
-        target: awaken_session_runtime_contract::SessionThreadTarget::Primary,
+        target: awaken_session_execution_contract::SessionThreadTarget::Primary,
         expected_run_id: run.clone(),
         expected_correlation_id: ticket.correlation_id.clone(),
         tool_use_id: String::new(),
-        reply: awaken_session_runtime_contract::SessionThreadToolReply::Input("answer".into()),
+        reply: awaken_session_execution_contract::SessionThreadToolReply::Input("answer".into()),
         accompanying_system: None,
     };
     let mut stale = command.clone();
@@ -119,7 +119,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
         "R3 stale version"
     );
     let mut wrong_kind = command.clone();
-    wrong_kind.reply = awaken_session_runtime_contract::SessionThreadToolReply::Confirm(
+    wrong_kind.reply = awaken_session_execution_contract::SessionThreadToolReply::Confirm(
         PermissionDecision::Allow { note: None },
     );
     assert!(
@@ -134,7 +134,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
         .session_thread_tool_reply_fence(&command)
         .await
         .unwrap();
-    let delivery = awaken_session_runtime_contract::SessionThreadToolReplyDelivery {
+    let delivery = awaken_session_execution_contract::SessionThreadToolReplyDelivery {
         command: command.clone(),
         fence: fence.clone(),
         session_activity_epoch: Some(11),
@@ -194,7 +194,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
     assert!(replay.already_applied, "R4");
     host.coordination
         .reply_session_thread_tool(
-            awaken_session_runtime_contract::SessionThreadToolReplyDelivery {
+            awaken_session_execution_contract::SessionThreadToolReplyDelivery {
                 command: command.clone(),
                 fence: replay,
                 session_activity_epoch: None,
@@ -204,7 +204,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
         .unwrap();
     let mut changed = command;
     changed.reply =
-        awaken_session_runtime_contract::SessionThreadToolReply::Input("changed answer".into());
+        awaken_session_execution_contract::SessionThreadToolReply::Input("changed answer".into());
     assert!(
         host.coordination
             .session_thread_tool_reply_fence(&changed)
@@ -221,7 +221,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
 }
 
 use awaken_sandbox_container::ContainerHandleCodec as _;
-use awaken_session_runtime_contract::TerminalCleanupRuntime;
+use awaken_session_execution_contract::TerminalCleanupRuntime;
 use awaken_session_types::SessionId;
 mod claimed_dispatch;
 mod managed_root;
@@ -534,7 +534,7 @@ fn reject_environment_test_coordination<T>() -> Result<T, awaken_session_types::
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::SessionAgentCoordination
+impl awaken_session_execution_contract::SessionAgentCoordination
     for RejectingSessionAgentCoordination
 {
     async fn admit_session_run_activity(
@@ -542,9 +542,9 @@ impl awaken_session_runtime_contract::SessionAgentCoordination
         _session_id: &SessionId,
         _agent_id: &str,
         _run_id: &awaken_agent_contract::agent::run::Id,
-        _mode: awaken_session_runtime_contract::SessionRunActivityAdmissionMode,
+        _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
     ) -> Result<
-        awaken_session_runtime_contract::SessionRunActivityAdmission,
+        awaken_session_execution_contract::SessionRunActivityAdmission,
         awaken_session_types::RunError,
     > {
         reject_environment_test_coordination()
@@ -563,7 +563,7 @@ impl awaken_session_runtime_contract::SessionAgentCoordination
         &self,
         _session_id: &SessionId,
     ) -> Result<
-        Vec<awaken_session_runtime_contract::SessionAgentRosterEntry>,
+        Vec<awaken_session_execution_contract::SessionAgentRosterEntry>,
         awaken_session_types::RunError,
     > {
         reject_environment_test_coordination()
@@ -571,9 +571,9 @@ impl awaken_session_runtime_contract::SessionAgentCoordination
 
     async fn send_session_agent_message(
         &self,
-        _command: awaken_session_runtime_contract::SessionAgentMessageCommand,
+        _command: awaken_session_execution_contract::SessionAgentMessageCommand,
     ) -> Result<
-        awaken_session_runtime_contract::SessionAgentMessageReceipt,
+        awaken_session_execution_contract::SessionAgentMessageReceipt,
         awaken_session_types::RunError,
     > {
         reject_environment_test_coordination()
@@ -581,14 +581,14 @@ impl awaken_session_runtime_contract::SessionAgentCoordination
 
     async fn settle_session_agent_boundary(
         &self,
-        _command: awaken_session_runtime_contract::SessionAgentBoundaryCommand,
+        _command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
     ) -> Result<(), awaken_session_types::RunError> {
         reject_environment_test_coordination()
     }
 
     async fn finalize_session_agent_boundary(
         &self,
-        _command: awaken_session_runtime_contract::SessionAgentBoundaryCommand,
+        _command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
     ) -> Result<(), awaken_session_types::RunError> {
         reject_environment_test_coordination()
     }
@@ -603,7 +603,7 @@ impl awaken_session_runtime_contract::SessionAgentCoordination
 
     async fn reply_session_thread_tool(
         &self,
-        _command: awaken_session_runtime_contract::SessionThreadToolReplyCommand,
+        _command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
     ) -> Result<(), awaken_session_types::RunError> {
         reject_environment_test_coordination()
     }
@@ -615,7 +615,7 @@ impl awaken_session_runtime_contract::SessionAgentCoordination
 /// behavioral fake to each fixture.
 fn install_test_session_application(host: &Arc<ExecutorComponents>) {
     static APPLICATION: std::sync::OnceLock<
-        Arc<dyn awaken_session_runtime_contract::SessionAgentCoordination>,
+        Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     > = std::sync::OnceLock::new();
     let application = APPLICATION.get_or_init(|| Arc::new(RejectingSessionAgentCoordination));
     host.session_application_bindings()
@@ -629,7 +629,7 @@ fn install_test_session_application(host: &Arc<ExecutorComponents>) {
 /// still fails closed.
 fn install_recording_session_application(host: &Arc<ExecutorComponents>) {
     static APPLICATION: std::sync::OnceLock<
-        Arc<dyn awaken_session_runtime_contract::SessionAgentCoordination>,
+        Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     > = std::sync::OnceLock::new();
     let application = APPLICATION.get_or_init(|| {
         Arc::new(crate::coordination::RecordingSessionAgentCoordination::default())
@@ -1188,7 +1188,7 @@ fn compile_complete_test_session_projection(
     let runtime = runtime.unwrap_or_else(|| "default".into());
     let tools = tools.unwrap_or_else(|| {
         awaken_session_configuration_contract::SessionToolConfiguration::from_capabilities(
-            &awaken_session_runtime_contract::CapabilityRuntime::capabilities(
+            &awaken_session_execution_contract::CapabilityRuntime::capabilities(
                 managed.capabilities.as_ref(),
             )
             .expect("healthy registry"),
@@ -1279,7 +1279,7 @@ async fn install_complete_test_session(
     thread: &str,
     init: awaken_session_configuration_contract::SessionInit,
 ) -> Result<(), awaken_session_types::RunError> {
-    awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         thread,
         compile_complete_test_session_projection(managed, init),
@@ -1394,7 +1394,7 @@ fn test_committed_environment(
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::SessionEnvironmentBindingSink for BindingOrderSink {
+impl awaken_session_execution_contract::SessionEnvironmentBindingSink for BindingOrderSink {
     async fn authorize(
         &self,
         intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
@@ -2588,7 +2588,7 @@ async fn install_terminal_recovery_projection(
     environment: awaken_session_state_contract::SessionEnvironmentState,
 ) -> awaken_session_realization_contract::FrozenSessionProjection {
     let mut projection = remote_terminal_cleanup_projection();
-    awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         thread,
         projection.clone(),

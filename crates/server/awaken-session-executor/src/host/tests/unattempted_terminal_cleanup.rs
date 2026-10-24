@@ -52,7 +52,7 @@ async fn cold_unmaterialized_recovery_uses_the_saved_create_not_the_cleanup_leas
             .install_test_terminal_cleanup_projection(&assignment)
             .await
             .unwrap();
-        let result = awaken_session_runtime_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+        let result = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     terminal_preparation_authorization(&effect, &assignment.projection),
@@ -159,7 +159,7 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
             .install_test_terminal_cleanup_projection(&assignment)
             .await
             .unwrap();
-        let result = awaken_session_runtime_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+        let result = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     terminal_preparation_authorization(&effect, &projection),
@@ -200,7 +200,7 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
             .install_test_terminal_cleanup_projection(&conflicting)
             .await
             .unwrap();
-        let error = awaken_session_runtime_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+        let error = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     terminal_preparation_authorization(&effect, &conflicting.projection),

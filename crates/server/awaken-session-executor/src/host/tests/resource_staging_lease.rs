@@ -1,8 +1,8 @@
 // @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 use super::*;
+use awaken_session_execution_contract::RealizationRuntime as _;
 #[cfg(target_os = "linux")]
 use awaken_session_realization::peers::EnvironmentPeer as _;
-use awaken_session_runtime_contract::RealizationRuntime as _;
 
 // B1-B4: after the synchronous close, remove/recreate the SAME Session id with
 // the SAME closed lease (or Closed(None)); its new owner lock may even be held.
@@ -485,7 +485,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 );
                 let managed = host.clone();
                 assert!(
-                    awaken_session_runtime_contract::RealizationRuntime::renew_session_realization_lease(
+                    awaken_session_execution_contract::RealizationRuntime::renew_session_realization_lease(
                         &*managed.run_assembly,
                         SESSION,
                         awaken_session_realization::test_support::test_observed_lease(extended.clone()),
@@ -970,7 +970,7 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
     let runtime = host.clone();
     let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000);
     assert_eq!(
-        awaken_session_runtime_contract::RealizationRuntime::renew_session_realization_projections(
+        awaken_session_execution_contract::RealizationRuntime::renew_session_realization_projections(
             runtime.run_assembly.as_ref(),
             control.as_ref(),
             "local",

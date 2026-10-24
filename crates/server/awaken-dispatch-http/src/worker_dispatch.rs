@@ -12,7 +12,7 @@
 //! `DispatchQueue` is called.
 
 use awaken_session_configuration_contract::resource::SessionResourceManifest;
-use awaken_session_runtime_contract::{ApplicationError, ApplicationErrorKind};
+use awaken_session_execution_contract::{ApplicationError, ApplicationErrorKind};
 use std::sync::Arc;
 
 use axum::extract::{Extension, State};
@@ -179,9 +179,9 @@ pub struct WorkerDispatchService {
     terminal_cleanup_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>>,
     session_environment_bindings:
-        Option<Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>>,
+        Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
     session_coordination:
-        Option<Arc<dyn awaken_session_runtime_contract::SessionAgentCoordination>>,
+        Option<Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>>,
     session_work: Option<Arc<dyn awaken_session_application_contract::SessionWorkerLeaseAuthority>>,
     local_credential_capabilities: awaken_credential_contract::CredentialRealizationCapabilities,
     credential_deliveries:
@@ -317,7 +317,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_session_environment_bindings(
         mut self,
-        bindings: Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>,
+        bindings: Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     ) -> Self {
         self.session_environment_bindings = Some(bindings);
         self
@@ -328,7 +328,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_session_coordination(
         mut self,
-        coordination: Arc<dyn awaken_session_runtime_contract::SessionAgentCoordination>,
+        coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     ) -> Self {
         self.session_coordination = Some(coordination);
         self
@@ -538,8 +538,8 @@ pub struct RegisteredDispatchDependencies {
     pub session_preparation:
         Arc<dyn awaken_session_realization_contract::SessionPreparationControl>,
     pub session_environment_bindings:
-        Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>,
-    pub coordination: Arc<dyn awaken_session_runtime_contract::SessionAgentCoordination>,
+        Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
+    pub coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     pub session_work: Arc<dyn awaken_session_application_contract::SessionWorkerLeaseAuthority>,
     pub authenticator: Arc<dyn WorkerRequestAuthenticator>,
     pub recovery: Arc<dyn RunRecoverySource>,
@@ -1370,7 +1370,7 @@ async fn settle(
                     )));
                 }
                 Some(
-                    awaken_session_runtime_contract::SessionAgentBoundaryCommand {
+                    awaken_session_execution_contract::SessionAgentBoundaryCommand {
                         session_id: awaken_session_types::SessionId::from(
                             session_thread_id.0.clone(),
                         ),
@@ -1569,7 +1569,7 @@ impl<
 #[cfg(test)]
 mod application_response_tests {
     use super::respond;
-    use awaken_session_runtime_contract::ApplicationError;
+    use awaken_session_execution_contract::ApplicationError;
     use axum::{Json, http::StatusCode};
     use serde_json::json;
 

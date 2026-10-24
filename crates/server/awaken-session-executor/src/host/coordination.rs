@@ -16,7 +16,7 @@ mod session_reply_receipt;
 pub(super) use session_reply_receipt::{SessionReplyReceipt, validate_awaiting_tool_authority};
 
 use awaken_dispatch_execution::coordinated_run_activation;
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadKind, CoordinatedThreadTarget,
     SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentReportContinuation,
     coordinated_thread_closed,
@@ -26,9 +26,9 @@ fn reply_dispatch_activity(
     dispatch: Option<&awaken_dispatch_contract::DispatchSummary>,
     thread: &ThreadId,
     parent: &ThreadId,
-) -> Result<awaken_session_runtime_contract::SessionThreadToolReplyActivity, SessionExecutionError>
+) -> Result<awaken_session_execution_contract::SessionThreadToolReplyActivity, SessionExecutionError>
 {
-    use awaken_session_runtime_contract::SessionThreadToolReplyActivity;
+    use awaken_session_execution_contract::SessionThreadToolReplyActivity;
     match dispatch {
         Some(row) if row.thread_id == *thread => SessionThreadToolReplyActivity::from_dispatch(
             thread,
@@ -112,7 +112,7 @@ impl crate::ChildRunCoordination {
     /// are shared with background Managed Event reconciliation.
     pub(crate) async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: awaken_session_runtime_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         let session_id = delivery.command.session_id.clone();
@@ -134,7 +134,7 @@ impl crate::ChildRunCoordination {
     /// version are only admission fences against delayed or reused call ids.
     pub(super) async fn validated_session_thread_tool_reply(
         &self,
-        command: &awaken_session_runtime_contract::SessionThreadToolReplyCommand,
+        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
     ) -> Result<(ThreadId, ResumeTicket), SessionExecutionError> {
         if !command.has_complete_coordinates() {
             return Err(SessionExecutionError::bad_request(
@@ -189,7 +189,7 @@ impl crate::ChildRunCoordination {
             .clone();
         if matches!(
             command.reply,
-            awaken_session_runtime_contract::SessionThreadToolReply::Input(_)
+            awaken_session_execution_contract::SessionThreadToolReply::Input(_)
         ) {
             if ticket.call_id().unwrap_or_default() != command.tool_use_id {
                 return Err(SessionExecutionError::bad_request(
@@ -260,8 +260,8 @@ impl crate::ChildRunCoordination {
     /// closes call-id reuse and concurrent-resume races without another store.
     pub(crate) async fn session_thread_tool_reply_fence(
         &self,
-        command: &awaken_session_runtime_contract::SessionThreadToolReplyCommand,
-    ) -> Result<awaken_session_runtime_contract::SessionThreadToolReplyFence, SessionExecutionError>
+        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_execution_contract::SessionThreadToolReplyFence, SessionExecutionError>
     {
         // Resolve topology before SessionApplication opens a reply activity.
         self.session_runs.coordinator_dispatch()?;
@@ -269,9 +269,9 @@ impl crate::ChildRunCoordination {
             Ok(active) => active,
             Err(active_error) => match self.session_thread_tool_reply_receipt(command).await? {
                 SessionReplyReceipt::Exact => {
-                    return Ok(awaken_session_runtime_contract::SessionThreadToolReplyFence {
+                    return Ok(awaken_session_execution_contract::SessionThreadToolReplyFence {
                         activity:
-                            awaken_session_runtime_contract::SessionThreadToolReplyActivity::Session {
+                            awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
                                 prior_epoch: None,
                             },
                         already_applied: true,
@@ -296,7 +296,7 @@ impl crate::ChildRunCoordination {
             .find(|dispatch| dispatch.run_id == command.expected_run_id);
         let activity = reply_dispatch_activity(dispatch.as_ref(), &thread_id, &parent)?;
         Ok(
-            awaken_session_runtime_contract::SessionThreadToolReplyFence {
+            awaken_session_execution_contract::SessionThreadToolReplyFence {
                 activity,
                 already_applied: false,
             },
@@ -309,9 +309,9 @@ impl crate::ChildRunCoordination {
     /// Session context or store is opened.
     pub(crate) async fn reply_session_thread_tool(
         &self,
-        delivery: awaken_session_runtime_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), SessionExecutionError> {
-        let awaken_session_runtime_contract::SessionThreadToolReplyDelivery {
+        let awaken_session_execution_contract::SessionThreadToolReplyDelivery {
             command,
             fence,
             session_activity_epoch,
@@ -860,7 +860,7 @@ use awaken_dispatch_contract::{
 mod tests {
     use super::*;
     use awaken_dispatch_contract::DispatchClaims;
-    use awaken_session_runtime_contract::coordinated_activation_input;
+    use awaken_session_execution_contract::coordinated_activation_input;
 
     #[tokio::test]
     async fn dispatch_admission_errors_preserve_commit_certainty() {
@@ -914,7 +914,7 @@ mod tests {
             DispatchCursor, DispatchEnqueue as _, DispatchOperationalFeed as _, DispatchOutcome,
             DispatchSettlement as _, SessionChildAdmission, SessionRuntimeEnvelope,
         };
-        use awaken_session_runtime_contract::{
+        use awaken_session_execution_contract::{
             CoordinatedAdmissionRef, SessionCoordinationReads as _,
         };
 
@@ -928,12 +928,12 @@ mod tests {
             crate::host::worker_resolver::test_support::adoption_host_over(dispatch.clone()).await;
         let session = awaken_session_types::SessionId::from("certainty-session");
         let parent = RunId("certainty-parent".into());
-        let thread = awaken_session_runtime_contract::coordinated_thread_id(
+        let thread = awaken_session_execution_contract::coordinated_thread_id(
             &session,
             &parent,
             "certainty-operation",
         );
-        let run = awaken_session_runtime_contract::coordinated_run_id(
+        let run = awaken_session_execution_contract::coordinated_run_id(
             &session,
             &thread,
             &parent,
@@ -1089,12 +1089,12 @@ mod tests {
         // Same original read role sees the row but cannot grant its ACK.
         let mut scoped = command.clone();
         scoped.operation_id = "reserved-root-operation".into();
-        scoped.thread_id = awaken_session_runtime_contract::coordinated_thread_id(
+        scoped.thread_id = awaken_session_execution_contract::coordinated_thread_id(
             &scoped.session_id,
             &scoped.parent_run_id,
             &scoped.operation_id,
         );
-        scoped.run_id = awaken_session_runtime_contract::coordinated_run_id(
+        scoped.run_id = awaken_session_execution_contract::coordinated_run_id(
             &scoped.session_id,
             &scoped.thread_id,
             &scoped.parent_run_id,
@@ -1465,7 +1465,7 @@ mod tests {
             );
 
             use awaken_dispatch_contract::DispatchEnqueue as _;
-            use awaken_session_runtime_contract::SessionCoordinationReads as _;
+            use awaken_session_execution_contract::SessionCoordinationReads as _;
             let managed = host.clone();
             let baseline = host
                 .run_assembly
@@ -1501,7 +1501,7 @@ mod tests {
                 managed
                     .coordination
                     .coordinated_admission_receipt(
-                        awaken_session_runtime_contract::CoordinatedAdmissionRef::Report(
+                        awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
                             &report, &baseline
                         )
                     )
@@ -1522,7 +1522,7 @@ mod tests {
                 managed
                     .coordination
                     .coordinated_admission_receipt(
-                        awaken_session_runtime_contract::CoordinatedAdmissionRef::Report(
+                        awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
                             &changed, &baseline
                         )
                     )
@@ -1541,7 +1541,7 @@ mod tests {
                 managed
                     .coordination
                     .coordinated_admission_receipt(
-                        awaken_session_runtime_contract::CoordinatedAdmissionRef::Report(
+                        awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
                             &report,
                             &unknown_root
                         )
@@ -1555,7 +1555,7 @@ mod tests {
                 managed
                     .coordination
                     .coordinated_admission_receipt(
-                        awaken_session_runtime_contract::CoordinatedAdmissionRef::Report(
+                        awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
                             &report,
                             &unknown_root
                         )

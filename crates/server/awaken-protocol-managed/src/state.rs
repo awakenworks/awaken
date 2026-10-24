@@ -69,11 +69,11 @@ pub(crate) use managed_state::SessionApplicationRoles;
 use awaken_session_application_contract::StepOutcome;
 use awaken_session_budget_contract::SessionUsage;
 use awaken_session_configuration_contract::AgentCapabilities;
-use awaken_session_runtime_contract::CommittedOutcomeProjection;
+use awaken_session_execution_contract::CommittedOutcomeProjection;
 #[cfg(test)]
-use awaken_session_runtime_contract::SessionRuntime;
+use awaken_session_execution_contract::SessionRuntime;
 #[cfg(test)]
-use awaken_session_runtime_contract::{OutcomeDrive, OutcomeFailure, OutcomeReport};
+use awaken_session_execution_contract::{OutcomeDrive, OutcomeFailure, OutcomeReport};
 use awaken_session_types::RunError;
 pub use constants::COMMITTED_PREFIX_READ_CONFLICT;
 pub(crate) use constants::LEGACY_UNRECORDED_AT;

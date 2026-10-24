@@ -261,13 +261,13 @@ async fn ownership_fixture_with(
     }
 }
 
-fn admit_command(session: &str) -> awaken_session_runtime_contract::AdmitSessionRun {
+fn admit_command(session: &str) -> awaken_session_execution_contract::AdmitSessionRun {
     let session_id = SessionId::from(session);
-    awaken_session_runtime_contract::AdmitSessionRun {
+    awaken_session_execution_contract::AdmitSessionRun {
         session_id: session_id.clone(),
         agent_id: "agent".into(),
         operation_id: "t06-operation".into(),
-        run_id: awaken_session_runtime_contract::session_run_id(&session_id, "t06-operation"),
+        run_id: awaken_session_execution_contract::session_run_id(&session_id, "t06-operation"),
         messages: Vec::new(),
         data_subject_id: None,
         traceparent: None,

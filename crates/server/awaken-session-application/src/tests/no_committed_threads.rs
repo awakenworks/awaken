@@ -10,7 +10,7 @@
 macro_rules! no_committed_threads {
     ($ty:ty) => {
         #[async_trait::async_trait]
-        impl awaken_session_runtime_contract::ThreadReadRuntime for $ty {
+        impl awaken_session_execution_contract::ThreadReadRuntime for $ty {
             async fn owns_thread(&self, _thread: &str) -> Result<bool, RunError> {
                 Ok(false)
             }
@@ -57,8 +57,10 @@ macro_rules! no_committed_threads {
                 &self,
                 _thread: &str,
                 _outcome_id: &str,
-            ) -> Result<Option<awaken_session_runtime_contract::CommittedOutcomeProjection>, RunError>
-            {
+            ) -> Result<
+                Option<awaken_session_execution_contract::CommittedOutcomeProjection>,
+                RunError,
+            > {
                 Ok(None)
             }
         }

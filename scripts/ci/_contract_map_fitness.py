@@ -105,7 +105,7 @@ TARGET_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     "awaken-session-dream-contract": ("Session", ()),
     "awaken-session-configuration-contract": ("Session", ()),
     "awaken-session-application-contract": ("Session", ()),
-    "awaken-session-runtime-contract": ("Session", ()),
+    "awaken-session-execution-contract": ("Session", ()),
     "awaken-session-realization-contract": ("Session", ()),
     "awaken-deployment-contract": ("Deployment", ()),
     "awaken-dispatch-contract": ("Dispatch", ()),

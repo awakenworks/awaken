@@ -33,7 +33,7 @@ use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationErr
 use awaken_session_application_contract::{ExecutableProjectionAdmission, SessionEventAdmission};
 use awaken_session_budget_contract::SessionUsage;
 use awaken_session_event_contract::{SessionEventBatch, SessionEventInput};
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, CoordinatedThreadLink, SessionRunActivation,
     SessionThreadLiveSubscription,
 };
@@ -280,7 +280,7 @@ pub trait ProfiledSessionReplies: Send + Sync {
     async fn reply_profiled_session_run_for_owner(
         &self,
         owner_scope: &str,
-        command: awaken_session_runtime_contract::SessionThreadToolReplyCommand,
+        command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
     ) -> Result<(), SessionProjectionRecoveryError>;
 }
 
@@ -377,7 +377,7 @@ pub trait SessionResourceCommands: Send + Sync {
 /// usage read.
 #[async_trait]
 pub trait SessionObservation: Send + Sync {
-    /// Adapt the selected [`awaken_session_runtime_contract::CoordinationRuntime::subscribe_session_thread_live`] result unchanged.
+    /// Adapt the selected [`awaken_session_execution_contract::CoordinationRuntime::subscribe_session_thread_live`] result unchanged.
     async fn subscribe_session_thread_live(
         &self,
         session_id: &SessionId,

@@ -1,5 +1,5 @@
 //! Separate the SDK direct assertion from an installed service assignment.
-use awaken_session_runtime_contract::McpAttachmentRealizer;
+use awaken_session_execution_contract::McpAttachmentRealizer;
 use std::sync::Arc;
 
 #[tokio::test]

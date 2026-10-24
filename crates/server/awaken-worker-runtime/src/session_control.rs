@@ -25,7 +25,9 @@ impl WorkerControlSessionClient {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::SessionEnvironmentBindingSink for WorkerControlSessionClient {
+impl awaken_session_execution_contract::SessionEnvironmentBindingSink
+    for WorkerControlSessionClient
+{
     async fn authorize(
         &self,
         intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
@@ -83,7 +85,7 @@ impl awaken_session_realization_contract::ClaimedSessionRealizationControl
 
 #[async_trait::async_trait]
 impl
-    awaken_session_runtime_contract::ClaimedSessionCoordinationControl<
+    awaken_session_execution_contract::ClaimedSessionCoordinationControl<
         awaken_dispatch_contract::RunClaim,
     > for WorkerControlSessionClient
 {
@@ -92,7 +94,7 @@ impl
         claim: &RunClaim,
         session_id: &str,
     ) -> Result<
-        Vec<awaken_session_runtime_contract::SessionAgentRosterEntry>,
+        Vec<awaken_session_execution_contract::SessionAgentRosterEntry>,
         ClaimedSessionControlError,
     > {
         self.control
@@ -118,9 +120,9 @@ impl
         session_id: &str,
         agent_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
-        mode: awaken_session_runtime_contract::SessionRunActivityAdmissionMode,
+        mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
     ) -> Result<
-        awaken_session_runtime_contract::SessionRunActivityAdmission,
+        awaken_session_execution_contract::SessionRunActivityAdmission,
         ClaimedSessionControlError,
     > {
         self.control
@@ -131,9 +133,9 @@ impl
     async fn send_session_agent_message(
         &self,
         claim: &RunClaim,
-        command: awaken_session_runtime_contract::SessionAgentMessageCommand,
+        command: awaken_session_execution_contract::SessionAgentMessageCommand,
     ) -> Result<
-        awaken_session_runtime_contract::SessionAgentMessageReceipt,
+        awaken_session_execution_contract::SessionAgentMessageReceipt,
         ClaimedSessionControlError,
     > {
         self.control
@@ -144,7 +146,7 @@ impl
     async fn settle_session_agent_boundary(
         &self,
         claim: &RunClaim,
-        command: awaken_session_runtime_contract::SessionAgentBoundaryCommand,
+        command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
     ) -> Result<(), ClaimedSessionControlError> {
         self.control
             .settle_session_agent_boundary(&self.identity, claim, command)

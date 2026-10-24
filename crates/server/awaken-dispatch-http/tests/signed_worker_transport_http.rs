@@ -57,8 +57,8 @@ struct RecordingSessionControl {
     renewal_failure:
         Mutex<Option<awaken_session_realization_contract::SessionRealizationControlFailure>>,
     agent_lists: AtomicUsize,
-    agent_messages: Mutex<Vec<awaken_session_runtime_contract::SessionAgentMessageCommand>>,
-    agent_boundaries: Mutex<Vec<awaken_session_runtime_contract::SessionAgentBoundaryCommand>>,
+    agent_messages: Mutex<Vec<awaken_session_execution_contract::SessionAgentMessageCommand>>,
+    agent_boundaries: Mutex<Vec<awaken_session_execution_contract::SessionAgentBoundaryCommand>>,
     terminal_control_calls: AtomicUsize,
     cleanup_claims: Mutex<Vec<awaken_session_realization_contract::SessionRealizationTarget>>,
     cleanup_after: Mutex<Vec<Option<awaken_session_types::SessionId>>>,
@@ -120,7 +120,7 @@ struct RecordingEnvironmentBindings {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::SessionEnvironmentBindingSink
+impl awaken_session_execution_contract::SessionEnvironmentBindingSink
     for RecordingEnvironmentBindings
 {
     async fn authorize(
@@ -586,15 +586,15 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::SessionAgentCoordination for RecordingSessionControl {
+impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSessionControl {
     async fn admit_session_run_activity(
         &self,
         _session_id: &SessionId,
         _agent_id: &str,
         _run_id: &RunId,
-        _mode: awaken_session_runtime_contract::SessionRunActivityAdmissionMode,
+        _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
     ) -> Result<
-        awaken_session_runtime_contract::SessionRunActivityAdmission,
+        awaken_session_execution_contract::SessionRunActivityAdmission,
         awaken_session_types::RunError,
     > {
         Err(awaken_session_types::RunError::bad_request(
@@ -617,12 +617,12 @@ impl awaken_session_runtime_contract::SessionAgentCoordination for RecordingSess
         &self,
         _session_id: &SessionId,
     ) -> Result<
-        Vec<awaken_session_runtime_contract::SessionAgentRosterEntry>,
+        Vec<awaken_session_execution_contract::SessionAgentRosterEntry>,
         awaken_session_types::RunError,
     > {
         self.agent_lists.fetch_add(1, Ordering::SeqCst);
         Ok(vec![
-            awaken_session_runtime_contract::SessionAgentRosterEntry {
+            awaken_session_execution_contract::SessionAgentRosterEntry {
                 agent_id: "researcher".into(),
                 name: "Researcher".into(),
                 description: Some("remote test agent".into()),
@@ -632,14 +632,14 @@ impl awaken_session_runtime_contract::SessionAgentCoordination for RecordingSess
 
     async fn send_session_agent_message(
         &self,
-        command: awaken_session_runtime_contract::SessionAgentMessageCommand,
+        command: awaken_session_execution_contract::SessionAgentMessageCommand,
     ) -> Result<
-        awaken_session_runtime_contract::SessionAgentMessageReceipt,
+        awaken_session_execution_contract::SessionAgentMessageReceipt,
         awaken_session_types::RunError,
     > {
         self.agent_messages.lock().unwrap().push(command);
         Ok(
-            awaken_session_runtime_contract::SessionAgentMessageReceipt {
+            awaken_session_execution_contract::SessionAgentMessageReceipt {
                 thread_id: ThreadId("signed-child-thread".into()),
             },
         )
@@ -647,7 +647,7 @@ impl awaken_session_runtime_contract::SessionAgentCoordination for RecordingSess
 
     async fn settle_session_agent_boundary(
         &self,
-        command: awaken_session_runtime_contract::SessionAgentBoundaryCommand,
+        command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
     ) -> Result<(), awaken_session_types::RunError> {
         self.agent_boundaries.lock().unwrap().push(command);
         Ok(())
@@ -655,7 +655,7 @@ impl awaken_session_runtime_contract::SessionAgentCoordination for RecordingSess
 
     async fn finalize_session_agent_boundary(
         &self,
-        _command: awaken_session_runtime_contract::SessionAgentBoundaryCommand,
+        _command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
     ) -> Result<(), awaken_session_types::RunError> {
         Err(awaken_session_types::RunError::bad_request(
             "signed coordination fixture does not finalize post-Dispatch roots",
@@ -674,7 +674,7 @@ impl awaken_session_runtime_contract::SessionAgentCoordination for RecordingSess
 
     async fn reply_session_thread_tool(
         &self,
-        _command: awaken_session_runtime_contract::SessionThreadToolReplyCommand,
+        _command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
     ) -> Result<(), awaken_session_types::RunError> {
         Err(awaken_session_types::RunError::internal(
             "signed Worker transport does not own public Thread replies",
@@ -1286,13 +1286,13 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
     assert_eq!(session_control.agent_lists.load(Ordering::SeqCst), 1, "T26");
 
-    let message = awaken_session_runtime_contract::SessionAgentMessageCommand {
+    let message = awaken_session_execution_contract::SessionAgentMessageCommand {
         session_id: "signed-thread".into(),
         source_thread_id: ThreadId("signed-thread".into()),
         source_run_id: claim.run_id.clone(),
         source_call_id: "call-send".into(),
         operation_id: "operation-send".into(),
-        target: awaken_session_runtime_contract::SessionAgentTarget::Spawn {
+        target: awaken_session_execution_contract::SessionAgentTarget::Spawn {
             agent_id: "researcher".into(),
         },
         message: "research this".into(),
@@ -1354,7 +1354,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     )
     .for_environment("env-fingerprint");
     assert_eq!(
-        awaken_session_runtime_contract::SessionEnvironmentBindingSink::authorize(
+        awaken_session_execution_contract::SessionEnvironmentBindingSink::authorize(
             &session_client,
             &environment_intent,
         )
@@ -1369,7 +1369,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     *environment_bindings.mode.lock().unwrap() =
         EnvironmentAuthorizationMode::AlreadyApplied("sandbox-binding-v2".into());
     assert_eq!(
-        awaken_session_runtime_contract::SessionEnvironmentBindingSink::authorize(
+        awaken_session_execution_contract::SessionEnvironmentBindingSink::authorize(
             &session_client,
             &environment_intent,
         )
@@ -1383,7 +1383,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
 
     *environment_bindings.mode.lock().unwrap() = EnvironmentAuthorizationMode::Unowned;
-    let unowned = awaken_session_runtime_contract::SessionEnvironmentBindingSink::authorize(
+    let unowned = awaken_session_execution_contract::SessionEnvironmentBindingSink::authorize(
         &session_client,
         &environment_intent,
     )
@@ -1392,7 +1392,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     assert_eq!(unowned.code, "session_environment_unowned", "B3");
 
     *environment_bindings.mode.lock().unwrap() = EnvironmentAuthorizationMode::Unavailable;
-    let unavailable = awaken_session_runtime_contract::SessionEnvironmentBindingSink::authorize(
+    let unavailable = awaken_session_execution_contract::SessionEnvironmentBindingSink::authorize(
         &session_client,
         &environment_intent,
     )
@@ -1419,7 +1419,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     )
     .for_environment("env-fingerprint");
     assert!(
-        awaken_session_runtime_contract::SessionEnvironmentBindingSink::authorize(
+        awaken_session_execution_contract::SessionEnvironmentBindingSink::authorize(
             &session_client,
             &foreign_intent,
         )
@@ -1452,7 +1452,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         idle_since_unix_ms: None,
     };
     *environment_bindings.persisted_environment.lock().unwrap() = persisted_environment.clone();
-    let persisted = awaken_session_runtime_contract::SessionEnvironmentBindingSink::persist(
+    let persisted = awaken_session_execution_contract::SessionEnvironmentBindingSink::persist(
         &session_client,
         environment_receipt.clone(),
     )
@@ -1467,7 +1467,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     environment_bindings
         .reject_persist
         .store(true, Ordering::SeqCst);
-    let unavailable = awaken_session_runtime_contract::SessionEnvironmentBindingSink::persist(
+    let unavailable = awaken_session_execution_contract::SessionEnvironmentBindingSink::persist(
         &session_client,
         environment_receipt.clone(),
     )
@@ -2374,13 +2374,13 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .is_err(),
         "T26b a child claim cannot list the primary roster"
     );
-    let forged_primary_message = awaken_session_runtime_contract::SessionAgentMessageCommand {
+    let forged_primary_message = awaken_session_execution_contract::SessionAgentMessageCommand {
         session_id: "signed-thread".into(),
         source_thread_id: ThreadId("signed-thread".into()),
         source_run_id: child_claim.run_id.clone(),
         source_call_id: "forged-child-call".into(),
         operation_id: "forged-child-operation".into(),
-        target: awaken_session_runtime_contract::SessionAgentTarget::Spawn {
+        target: awaken_session_execution_contract::SessionAgentTarget::Spawn {
             agent_id: "researcher".into(),
         },
         message: "orphan this work".into(),
@@ -2427,7 +2427,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "T22 every child Work check uses the parent Session"
     );
 
-    let awaiting_boundary = awaken_session_runtime_contract::SessionAgentBoundaryCommand {
+    let awaiting_boundary = awaken_session_execution_contract::SessionAgentBoundaryCommand {
         session_id: "signed-thread".into(),
         source_thread_id: ThreadId("signed-child-thread".into()),
         source_run_id: child_claim.run_id.clone(),

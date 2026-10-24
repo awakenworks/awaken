@@ -26,7 +26,7 @@
       "awaken_runtime_contract::execution": 1,
       "awaken_runtime_contract::resume": 1
     },
-    "awaken-session-runtime-contract": {
+    "awaken-session-execution-contract": {
       "awaken_agent_contract::stream::sink": 8
     },
     "awaken-resource-worker-http": {

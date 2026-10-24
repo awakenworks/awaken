@@ -10,7 +10,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
     };
     use awaken_ext_mcp::McpToolTransport;
-    use awaken_session_runtime_contract::McpAttachmentRealizer;
+    use awaken_session_execution_contract::McpAttachmentRealizer;
 
     struct PinnedBearerRefresher;
 
@@ -1666,7 +1666,7 @@ async fn session_mcp_realizer_is_constructed_once_without_a_host_cycle() {
         .unwrap();
     let assembly = host.run_assembly.clone();
     let realizer = assembly.session_mcp_realizer()
-        as *const dyn awaken_session_runtime_contract::McpAttachmentRealizer;
+        as *const dyn awaken_session_execution_contract::McpAttachmentRealizer;
     assert!(
         std::ptr::addr_eq(realizer, Arc::as_ptr(&assembly)),
         "R1 the Session MCP realizer is the constructed assembly"
@@ -1702,7 +1702,7 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
     use awaken_session_configuration_contract::mcp::{
         McpGenerationRef, McpRealizationReceipt, StageMcpAttachment,
     };
-    use awaken_session_runtime_contract::McpAttachmentRealizer;
+    use awaken_session_execution_contract::McpAttachmentRealizer;
 
     #[derive(Default)]
     struct RecordingRealizer {

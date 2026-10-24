@@ -141,19 +141,19 @@ struct FailFirstTerminalSettlement {
 
 #[derive(Default)]
 struct RecordingSessionCoordination {
-    finalized: Mutex<Vec<awaken_session_runtime_contract::SessionAgentBoundaryCommand>>,
+    finalized: Mutex<Vec<awaken_session_execution_contract::SessionAgentBoundaryCommand>>,
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::SessionAgentCoordination for RecordingSessionCoordination {
+impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSessionCoordination {
     async fn admit_session_run_activity(
         &self,
         _session_id: &awaken_session_types::SessionId,
         _agent_id: &str,
         _run_id: &RunId,
-        _mode: awaken_session_runtime_contract::SessionRunActivityAdmissionMode,
+        _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
     ) -> Result<
-        awaken_session_runtime_contract::SessionRunActivityAdmission,
+        awaken_session_execution_contract::SessionRunActivityAdmission,
         awaken_session_types::RunError,
     > {
         Err(awaken_session_types::RunError::bad_request(
@@ -176,7 +176,7 @@ impl awaken_session_runtime_contract::SessionAgentCoordination for RecordingSess
         &self,
         _session_id: &awaken_session_types::SessionId,
     ) -> Result<
-        Vec<awaken_session_runtime_contract::SessionAgentRosterEntry>,
+        Vec<awaken_session_execution_contract::SessionAgentRosterEntry>,
         awaken_session_types::RunError,
     > {
         Ok(Vec::new())
@@ -184,9 +184,9 @@ impl awaken_session_runtime_contract::SessionAgentCoordination for RecordingSess
 
     async fn send_session_agent_message(
         &self,
-        _command: awaken_session_runtime_contract::SessionAgentMessageCommand,
+        _command: awaken_session_execution_contract::SessionAgentMessageCommand,
     ) -> Result<
-        awaken_session_runtime_contract::SessionAgentMessageReceipt,
+        awaken_session_execution_contract::SessionAgentMessageReceipt,
         awaken_session_types::RunError,
     > {
         Err(awaken_session_types::RunError::bad_request("unused"))
@@ -194,14 +194,14 @@ impl awaken_session_runtime_contract::SessionAgentCoordination for RecordingSess
 
     async fn settle_session_agent_boundary(
         &self,
-        _command: awaken_session_runtime_contract::SessionAgentBoundaryCommand,
+        _command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
     ) -> Result<(), awaken_session_types::RunError> {
         Ok(())
     }
 
     async fn finalize_session_agent_boundary(
         &self,
-        command: awaken_session_runtime_contract::SessionAgentBoundaryCommand,
+        command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
     ) -> Result<(), awaken_session_types::RunError> {
         self.finalized.lock().unwrap().push(command);
         Ok(())
@@ -217,7 +217,7 @@ impl awaken_session_runtime_contract::SessionAgentCoordination for RecordingSess
 
     async fn reply_session_thread_tool(
         &self,
-        _command: awaken_session_runtime_contract::SessionThreadToolReplyCommand,
+        _command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
     ) -> Result<(), awaken_session_types::RunError> {
         Ok(())
     }

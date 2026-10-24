@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot,
 };

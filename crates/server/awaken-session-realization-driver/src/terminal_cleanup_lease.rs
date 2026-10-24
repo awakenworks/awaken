@@ -21,8 +21,8 @@ pub const LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS: u64 = LOCAL_SESSION_REALIZAT
 pub async fn supervise_session_terminal_cleanup_lease<Drive, Renew, RenewFuture, Clock>(
     session_id: &awaken_session_types::SessionId,
     initial_assignment: &SessionTerminalCleanupAssignment,
-    realization: &dyn awaken_session_runtime_contract::RealizationRuntime,
-    runtime: &dyn awaken_session_runtime_contract::TerminalCleanupRuntime,
+    realization: &dyn awaken_session_execution_contract::RealizationRuntime,
+    runtime: &dyn awaken_session_execution_contract::TerminalCleanupRuntime,
     drive: Drive,
     mut renew: Renew,
     now_unix_ms: Clock,

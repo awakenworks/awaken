@@ -10,7 +10,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_session_application_contract::DelegatedRun;
 use awaken_session_budget_contract::SessionUsage;
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     BudgetRuntime, CoordinationRuntime, SessionCoordinationReads, ThreadReadRuntime,
 };
 use awaken_session_types::RunError;
@@ -232,7 +232,7 @@ impl SessionObservations {
     pub async fn session_usage(
         &self,
         thread: &str,
-        observed_links: Option<&[awaken_session_runtime_contract::CoordinatedThreadLink]>,
+        observed_links: Option<&[awaken_session_execution_contract::CoordinatedThreadLink]>,
     ) -> Result<SessionUsage, RunError> {
         self.session_usage_with_additional_thread(thread, None, observed_links)
             .await
@@ -255,7 +255,7 @@ impl SessionObservations {
         &self,
         thread: &str,
         additional_thread: Option<&str>,
-        observed_links: Option<&[awaken_session_runtime_contract::CoordinatedThreadLink]>,
+        observed_links: Option<&[awaken_session_execution_contract::CoordinatedThreadLink]>,
     ) -> Result<SessionUsage, RunError> {
         let coordination_reads = self.coordination_reads.as_ref();
 
@@ -371,7 +371,7 @@ impl crate::SessionObservation for SessionObservations {
         session_id: &awaken_session_types::SessionId,
         thread_id: &str,
     ) -> Result<
-        Option<Box<dyn awaken_session_runtime_contract::SessionThreadLiveSubscription>>,
+        Option<Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>>,
         RunError,
     > {
         self.coordination
@@ -390,7 +390,7 @@ impl crate::SessionObservation for SessionObservations {
     async fn session_usage(
         &self,
         thread: &str,
-        observed_links: Option<&[awaken_session_runtime_contract::CoordinatedThreadLink]>,
+        observed_links: Option<&[awaken_session_execution_contract::CoordinatedThreadLink]>,
     ) -> Result<SessionUsage, RunError> {
         SessionObservations::session_usage(self, thread, observed_links).await
     }

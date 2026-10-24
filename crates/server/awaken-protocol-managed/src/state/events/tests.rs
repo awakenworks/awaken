@@ -9,8 +9,8 @@
 // @formal evidence tool_result.pending_commit_coordinate_is_exact
 // @formal evidence tool_result.terminal_run_rejects_late_result
 // awaken-allow(file-limit-ceiling): 13018 (legacy oversized test file: split, never grow)
+use awaken_session_execution_contract::ThreadReadRuntime as _;
 use awaken_session_repository_contract::{LifecycleOutbox as _, SessionRepositoryReads};
-use awaken_session_runtime_contract::ThreadReadRuntime as _;
 use awaken_session_types::SessionId;
 mod activation_failure_time;
 mod admission_boundaries;
@@ -42,8 +42,8 @@ use awaken_managed_session_events::{
     message_projection_ordinal_bound,
 };
 use awaken_session_application_contract::Pending;
-use awaken_session_runtime_contract::OutcomeIteration;
-use awaken_session_runtime_contract::{SessionRuntime, ToolPermissionDecision};
+use awaken_session_execution_contract::OutcomeIteration;
+use awaken_session_execution_contract::{SessionRuntime, ToolPermissionDecision};
 use awaken_session_types::RunError;
 use awaken_tool_contract::tool_batch::ToolBatch;
 use axum::body::Body;
@@ -6937,10 +6937,10 @@ async fn ordinary_child_failure_is_error_then_terminated_live_warm_and_cold() {
         RunId("root".into()),
         0,
         "failed-child",
-        awaken_session_runtime_contract::CoordinatedThreadLink {
+        awaken_session_execution_contract::CoordinatedThreadLink {
             session_id: SessionId::from(&session.id),
             thread_id: ThreadId(child_id.into()),
-            target: awaken_session_runtime_contract::CoordinatedThreadTarget::Agent {
+            target: awaken_session_execution_contract::CoordinatedThreadTarget::Agent {
                 agent_id: "researcher".into(),
             },
             created_by_operation_id: ToolBatch::operation_id_for_step(
@@ -12585,7 +12585,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                 let reply = state.application.event_batches().append_session_event_batch(&session.id,
                     vec![SessionEventInput::ToolReply(awaken_session_event_contract::SessionEventToolReply {
                         tool_request_event_id: first_issued.iter().find(|event| event.type_str() == "agent.tool_use").unwrap().id.clone(),
-                        target: awaken_session_runtime_contract::SessionThreadTarget::Primary,
+                        target: awaken_session_execution_contract::SessionThreadTarget::Primary,
                         expected_run_id: run.clone(), expected_correlation_id: "test-ticket".into(),
                         expected_thread_version: Some(2), answered_pending_commit_cursor: Some(2),
                         runtime_tool_use_id: "test-call".into(),

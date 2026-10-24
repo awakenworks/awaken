@@ -7,7 +7,7 @@
 use crate::worker_dispatch::respond;
 use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_session_runtime_contract::{ApplicationError, DurableRunOperations};
+use awaken_session_execution_contract::{ApplicationError, DurableRunOperations};
 
 use awaken_session_application_contract::{
     SessionRunBackgroundApplication, SessionRunReplacementApplication,

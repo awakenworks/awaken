@@ -1,5 +1,5 @@
 // @formal surface exclude=composition_wiring
-// @formal owner crates/contract/awaken-session-runtime-contract/src/coordination.rs
+// @formal owner crates/contract/awaken-session-execution-contract/src/coordination.rs
 // @formal owner crates/contract/awaken-session-application-contract/src/run_application.rs
 // @formal reason: Process-local weak connections to existing application authorities; no state, queue,
 // @formal reason: receipt or admission law is implemented here. Readiness observes only these connections.
@@ -8,7 +8,7 @@
 use std::sync::{Arc, OnceLock, Weak};
 
 use awaken_session_application_contract::SessionRunBackgroundApplication;
-use awaken_session_runtime_contract::SessionAgentCoordination;
+use awaken_session_execution_contract::SessionAgentCoordination;
 
 /// Failure to connect a selected Session application before its service starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

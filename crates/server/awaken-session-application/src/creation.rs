@@ -588,10 +588,10 @@ pub struct SessionCreationCommands {
         Option<Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>>,
     managed_list_prices: Option<Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>>,
     execution_placement: crate::SessionExecutionPlacement,
-    core: Arc<dyn awaken_session_runtime_contract::SessionRuntime>,
-    thread_reads: Arc<dyn awaken_session_runtime_contract::ThreadReadRuntime>,
-    environment: Arc<dyn awaken_session_runtime_contract::EnvironmentRuntime>,
-    realization_effects: Arc<dyn awaken_session_runtime_contract::RealizationEffects>,
+    core: Arc<dyn awaken_session_execution_contract::SessionRuntime>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
+    environment: Arc<dyn awaken_session_execution_contract::EnvironmentRuntime>,
+    realization_effects: Arc<dyn awaken_session_execution_contract::RealizationEffects>,
 }
 
 /// The collaborators one [`SessionCreationCommands`] is built from.

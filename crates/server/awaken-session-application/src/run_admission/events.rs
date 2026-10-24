@@ -10,7 +10,7 @@ use awaken_dispatch_contract::{DispatchCursor, DispatchPage, SessionRunEventPage
 use awaken_session_types::{RunError, SessionId};
 
 use crate::SessionProjectionRecoveryError;
-use awaken_session_runtime_contract::session_run_activity_operation_id;
+use awaken_session_execution_contract::session_run_activity_operation_id;
 
 fn rejected_projection(error: impl std::fmt::Display) -> SessionProjectionRecoveryError {
     SessionProjectionRecoveryError::Rejected(RunError::internal(error.to_string()))

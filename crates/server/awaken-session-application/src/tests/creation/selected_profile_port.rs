@@ -384,7 +384,7 @@ async fn assert_unconfigured_roster_reads_the_root_first(
             && !session.terminal_cleanup.is_fenced(),
         "P8 real active Session reaches the roster query"
     );
-    let error = awaken_session_runtime_contract::SessionAgentCoordination::list_session_agents(
+    let error = awaken_session_execution_contract::SessionAgentCoordination::list_session_agents(
         app.coordination.as_ref(),
         &session.session_id,
     )

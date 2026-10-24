@@ -17,7 +17,7 @@ fn parent_terminal_time_has_one_durable_owner_for_every_status_role() {
     let links = [CoordinatedThreadLink {
         session_id: "session".into(),
         thread_id: awaken_agent_contract::agent::thread::Id("child".into()),
-        target: awaken_session_runtime_contract::CoordinatedThreadTarget::Agent {
+        target: awaken_session_execution_contract::CoordinatedThreadTarget::Agent {
             agent_id: "coder".into(),
         },
         created_by_operation_id: "operation".into(),

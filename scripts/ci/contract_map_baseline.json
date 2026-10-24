@@ -57,14 +57,14 @@
     "awaken-session-application-contract": 3,
     "awaken-session-configuration-contract": 3,
     "awaken-session-realization-contract": 3,
-    "awaken-session-runtime-contract": 51,
+    "awaken-session-execution-contract": 51,
     "awaken-session-state-contract": 7,
     "awaken-tenancy": 2,
     "awaken-worker-contract": 2
   },
   "renamed-reexport": {
     "awaken-session-configuration-contract": 2,
-    "awaken-session-runtime-contract": 1,
+    "awaken-session-execution-contract": 1,
     "awaken-worker-contract": 2
   },
   "aggregate-pub-field": {

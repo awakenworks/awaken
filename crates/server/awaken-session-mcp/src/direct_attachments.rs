@@ -5,7 +5,7 @@ use crate::{McpCredentialMaterialization, McpSessions, McpStagingSession, Sessio
 use awaken_session_configuration_contract::mcp::{
     McpGenerationRef, McpRealizationReceipt, StageMcpAttachment,
 };
-use awaken_session_runtime_contract::McpAttachmentRealizer;
+use awaken_session_execution_contract::McpAttachmentRealizer;
 use awaken_session_types::RunError;
 use std::sync::Arc;
 

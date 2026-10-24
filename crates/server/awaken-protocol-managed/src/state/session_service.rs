@@ -28,7 +28,7 @@ impl ManagedState {
     /// [`ManagedState::from_application`].
     #[cfg(test)]
     pub async fn new(
-        runtime: impl awaken_session_runtime_contract::CompleteSessionRuntime + 'static,
+        runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
     ) -> Self {
         let clock = awaken_time::system_clock();
         crate::state::test_support::managed_state_from_parts(
@@ -47,8 +47,8 @@ impl ManagedState {
     #[cfg(test)]
     pub async fn new_with_mcp<R>(runtime: R) -> Self
     where
-        R: awaken_session_runtime_contract::CompleteSessionRuntime
-            + awaken_session_runtime_contract::McpAttachmentRealizer
+        R: awaken_session_execution_contract::CompleteSessionRuntime
+            + awaken_session_execution_contract::McpAttachmentRealizer
             + 'static,
     {
         let runtime = Arc::new(runtime);

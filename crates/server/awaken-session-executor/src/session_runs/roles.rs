@@ -7,7 +7,7 @@
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_session_application_contract::{Pending, StepOutcome};
-use awaken_session_runtime_contract::ToolPermissionDecision;
+use awaken_session_execution_contract::ToolPermissionDecision;
 use awaken_session_types::RunError;
 
 use super::SessionRuns;
@@ -16,7 +16,7 @@ use crate::managed_input_projection::user_message;
 use crate::session_execution_error::to_run_error;
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::SessionRuntime for SessionRuns {
+impl awaken_session_execution_contract::SessionRuntime for SessionRuns {
     async fn run(
         &self,
         agent: &str,
@@ -76,7 +76,7 @@ impl awaken_session_runtime_contract::SessionRuntime for SessionRuns {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::StreamingRunRuntime for SessionRuns {
+impl awaken_session_execution_contract::StreamingRunRuntime for SessionRuns {
     async fn run_attributed(
         &self,
         agent: &str,

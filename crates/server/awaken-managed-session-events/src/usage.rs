@@ -4,7 +4,7 @@
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_runtime_contract::llm::ThreadUsage;
 use awaken_session_budget_contract::SessionUsage;
-use awaken_session_runtime_contract::ProjectionThreadSnapshots;
+use awaken_session_execution_contract::ProjectionThreadSnapshots;
 use awaken_session_state_contract::SessionRuntimeInterval;
 
 use crate::ProjectionError;

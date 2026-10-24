@@ -20,7 +20,7 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_session_application_contract::{
     OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivityReceiptPlan, SessionRunDelivery,
     session_run_activity_operation_id, session_run_activity_receipt_plan,
 };
@@ -113,9 +113,9 @@ pub struct SessionRunAdmissions {
     work_assignments: Arc<crate::SessionWorkAssignments>,
     executable_projections: crate::ExecutableProjections,
     execution_admission: Arc<crate::SessionExecutionAdmission>,
-    coordination: Arc<dyn awaken_session_runtime_contract::CoordinationRuntime>,
-    thread_reads: Arc<dyn awaken_session_runtime_contract::ThreadReadRuntime>,
-    streaming_runs: Arc<dyn awaken_session_runtime_contract::StreamingRunRuntime>,
+    coordination: Arc<dyn awaken_session_execution_contract::CoordinationRuntime>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
+    streaming_runs: Arc<dyn awaken_session_execution_contract::StreamingRunRuntime>,
 }
 
 /// The collaborators one [`SessionRunAdmissions`] is built from.
@@ -387,7 +387,7 @@ impl SessionRunAdmissions {
     pub async fn activate_admitted_session_run(
         &self,
         admitted: AdmittedSessionRun,
-    ) -> Result<awaken_session_runtime_contract::SessionRunActivation, RunError> {
+    ) -> Result<awaken_session_execution_contract::SessionRunActivation, RunError> {
         let coordination_runtime = self.coordination.as_ref();
 
         match admitted {
@@ -397,10 +397,10 @@ impl SessionRunAdmissions {
                 coordination_runtime.activate_session_run(delivery).await
             }
             AdmittedSessionRun::RecoveryClaimed { .. } => {
-                Ok(awaken_session_runtime_contract::SessionRunActivation::RecoveryClaimed)
+                Ok(awaken_session_execution_contract::SessionRunActivation::RecoveryClaimed)
             }
             AdmittedSessionRun::Completed { .. } => {
-                Ok(awaken_session_runtime_contract::SessionRunActivation::Completed)
+                Ok(awaken_session_execution_contract::SessionRunActivation::Completed)
             }
         }
     }
@@ -644,7 +644,7 @@ impl crate::ProfiledSessionCommands for SessionRunAdmissions {
     async fn activate_admitted_session_run(
         &self,
         admitted: AdmittedSessionRun,
-    ) -> Result<awaken_session_runtime_contract::SessionRunActivation, RunError> {
+    ) -> Result<awaken_session_execution_contract::SessionRunActivation, RunError> {
         Box::pin(SessionRunAdmissions::activate_admitted_session_run(
             self, admitted,
         ))
@@ -735,7 +735,7 @@ impl SessionRunApplication {
             session_id: awaken_session_types::SessionId::from(thread),
             agent_id: self.agent_for(thread, requested_agent)?,
             operation_id: operation_id.to_string(),
-            run_id: awaken_session_runtime_contract::session_run_id(
+            run_id: awaken_session_execution_contract::session_run_id(
                 &awaken_session_types::SessionId::from(thread),
                 operation_id,
             ),

@@ -151,7 +151,7 @@ impl awaken_session_mcp::McpStagingSession for RunAssembly {
 
 // Runtime realization of one Session-owned MCP attachment generation.
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::McpAttachmentRealizer for RunAssembly {
+impl awaken_session_execution_contract::McpAttachmentRealizer for RunAssembly {
     async fn stage_mcp_attachment(
         &self,
         request: crate::session_mcp::StageMcpAttachment,

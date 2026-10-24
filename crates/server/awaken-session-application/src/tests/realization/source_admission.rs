@@ -77,7 +77,7 @@ async fn terminal_source_authorization_uses_current_dispatch_without_business_cl
     // permission. Every row is a read: keep the entire Root and perform no
     // ordinary activation or physical cleanup. The existing real SQLite Host
     // regression separately derives Settled from an ordinary physical ACK.
-    use awaken_session_runtime_contract::SessionSourceDispatchObservation as Source;
+    use awaken_session_execution_contract::SessionSourceDispatchObservation as Source;
     let session_id = "source-authorization";
     let lease = crate::session_resource::SessionRealizationLease {
         owner: "source-worker".into(),
@@ -106,12 +106,12 @@ async fn terminal_source_authorization_uses_current_dispatch_without_business_cl
         Arc::new(RecordingEnvironmentSource::default()),
     );
     assert!(matches!(
-        awaken_session_runtime_contract::SessionCoordinationReads::execution_recovery_observation(
+        awaken_session_execution_contract::SessionCoordinationReads::execution_recovery_observation(
             runtime.as_ref(),
             &before,
         )
         .await,
-        awaken_session_runtime_contract::SessionExecutionRecoveryObservation::NotProven { .. }
+        awaken_session_execution_contract::SessionExecutionRecoveryObservation::NotProven { .. }
     ));
     let work = application
         .terminal_cleanups

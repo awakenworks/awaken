@@ -3,7 +3,7 @@
 // @formal reason: method performs one aggregate-authored realization effect (layout check, continuation
 // @formal reason: checkpoint/restore, Resource inputs, terminal Repository publication and disposal); the
 // @formal reason: decisions stay in the Session aggregate.
-//! The [`RealizationEffects`](awaken_session_runtime_contract::RealizationEffects)
+//! The [`RealizationEffects`](awaken_session_execution_contract::RealizationEffects)
 //! role, served by the realization executor: the effects a Session application
 //! asks for that need no Session context, Memory, MCP or delegated-Run fact.
 
@@ -12,7 +12,7 @@ use awaken_session_types::RunError;
 use super::RealizationExecutor;
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::RealizationEffects for RealizationExecutor {
+impl awaken_session_execution_contract::RealizationEffects for RealizationExecutor {
     fn validate_session_sandbox_layout(
         &self,
         thread: &str,

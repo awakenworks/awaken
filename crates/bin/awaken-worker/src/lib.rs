@@ -200,7 +200,7 @@ pub struct WorkerNodeBuilder {
     k8s_create_client: Option<Arc<WorkerK8sCreateClient>>,
     prepared_local_sandbox: Option<manifest::PreparedLocalSandbox>,
     mcp_attachment_realizer:
-        Option<Arc<dyn awaken_session_runtime_contract::McpAttachmentRealizer>>,
+        Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
     admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
     admin_listen: Option<String>,
@@ -816,7 +816,7 @@ impl WorkerNodeBuilder {
     #[must_use]
     pub fn with_mcp_attachment_realizer(
         mut self,
-        realizer: Arc<dyn awaken_session_runtime_contract::McpAttachmentRealizer>,
+        realizer: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
     ) -> Self {
         self.mcp_attachment_realizer = Some(realizer);
         self
@@ -1136,7 +1136,7 @@ pub struct WorkerNode {
     k8s_create_client: Option<Arc<WorkerK8sCreateClient>>,
     prepared_local_sandbox: Option<manifest::PreparedLocalSandbox>,
     mcp_attachment_realizer:
-        Option<Arc<dyn awaken_session_runtime_contract::McpAttachmentRealizer>>,
+        Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
     admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
     admin_listen: Option<String>,

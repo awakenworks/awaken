@@ -2,7 +2,7 @@
 use super::*;
 use awaken_dispatch_contract::dispatch::AttemptExecutionBinding;
 use awaken_dispatch_contract::*;
-use awaken_session_runtime_contract::SessionEnvironmentBindingSink;
+use awaken_session_execution_contract::SessionEnvironmentBindingSink;
 use awaken_session_state_contract::{SessionEnvironmentReceipt, SessionEnvironmentState};
 use std::sync::{
     Mutex,

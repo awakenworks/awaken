@@ -1001,7 +1001,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     // transition before any Environment can exist. The complete Runtime port
     // owns both effects; no test-only preparation or direct slot write may
     // create a competing partial projection.
-    awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         session_id,
         ordinary_projection.clone(),
@@ -1176,7 +1176,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             resources.clone(),
         ),
     );
-    awaken_session_runtime_contract::TerminalCleanupRuntime::install_terminal_cleanup_assignment(
+    awaken_session_execution_contract::TerminalCleanupRuntime::install_terminal_cleanup_assignment(
         &*managed.run_assembly,
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             environment_creation_not_attempted: false,

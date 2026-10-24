@@ -26,7 +26,7 @@ use std::sync::Arc;
 use awaken_protocol_managed::ManagedState;
 use awaken_protocol_managed::types::Event;
 use awaken_protocol_managed_testkit::CoordinatedRuntimeFake;
-use awaken_session_runtime_contract::SessionAgentCoordination as _;
+use awaken_session_execution_contract::SessionAgentCoordination as _;
 
 /// The Managed router as a real deployment mounts it — behind the trusted edge
 /// stamp the composition root installs. Handlers fail closed on an absent
@@ -421,7 +421,7 @@ async fn accepted_followup_running_keeps_its_get_cursor_when_child_run_commits_l
     // old cursor return exactly the same suffix. Decision rows R1=F1+F2+F3
     // =>E1; R2=R1+F4=>E1+E2; R3=R2+F5=>E3. Both reads use the production GET
     // projector; the fake assigns the delayed commit a fresh, later cursor.
-    use awaken_session_runtime_contract::SessionAgentCoordination as _;
+    use awaken_session_execution_contract::SessionAgentCoordination as _;
 
     let runtime = CoordinatedRuntimeFake::default();
     let repository = Arc::new(
@@ -463,14 +463,14 @@ async fn accepted_followup_running_keeps_its_get_cursor_when_child_run_commits_l
             &awaken_session_types::SessionId::from(&id),
             "researcher",
             &awaken_agent_contract::agent::run::Id("coord-run-2".into()),
-            awaken_session_runtime_contract::SessionRunActivityAdmissionMode::RecoverOrAdmit,
+            awaken_session_execution_contract::SessionRunActivityAdmissionMode::RecoverOrAdmit,
         )
         .await
         .unwrap();
     assert!(
         matches!(
             admitted,
-            awaken_session_runtime_contract::SessionRunActivityAdmission::Admitted { .. }
+            awaken_session_execution_contract::SessionRunActivityAdmission::Admitted { .. }
         ),
         "F2 exact child activity receipt"
     );
@@ -1019,11 +1019,11 @@ async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report(
             &awaken_session_types::SessionId::from(&id),
             "researcher",
             &awaken_agent_contract::agent::run::Id("coord-run-1".into()),
-            awaken_session_runtime_contract::SessionRunActivityAdmissionMode::RecoverOrAdmit,
+            awaken_session_execution_contract::SessionRunActivityAdmissionMode::RecoverOrAdmit,
         )
         .await
         .unwrap();
-    let awaken_session_runtime_contract::SessionRunActivityAdmission::Admitted {
+    let awaken_session_execution_contract::SessionRunActivityAdmission::Admitted {
         session_activity_epoch: child_epoch,
     } = admitted
     else {

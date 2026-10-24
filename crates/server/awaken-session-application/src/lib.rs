@@ -16,8 +16,8 @@ use awaken_environment_contract::EnvItem;
 #[cfg(test)]
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
 use awaken_session_configuration_contract::EnvironmentSnapshot;
+use awaken_session_execution_contract::{McpAttachmentRealizer, SessionEnvironmentBindingSink};
 use awaken_session_repository_contract::SessionRepository;
-use awaken_session_runtime_contract::{McpAttachmentRealizer, SessionEnvironmentBindingSink};
 use awaken_session_state_contract::SessionEnvironmentFacts;
 use awaken_session_types::RunError;
 use {
@@ -25,7 +25,7 @@ use {
     awaken_session_types::SessionRecoveryQuarantine,
 };
 
-pub use awaken_session_runtime_contract::SessionExecutor;
+pub use awaken_session_execution_contract::SessionExecutor;
 
 mod execution_admission;
 pub use execution_admission::SessionExecutionAdmission;
@@ -199,7 +199,7 @@ mod outcome_reconciliation;
 pub use outcome_reconciliation::SessionOutcomeReconciliation;
 mod projection;
 mod queries;
-pub use awaken_session_runtime_contract::{
+pub use awaken_session_execution_contract::{
     CommittedSessionFacts, ProjectionThreadSnapshots, SessionProjectionReadTimings,
 };
 pub use credentials::{SessionCredentials, SessionPreparationError};

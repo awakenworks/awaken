@@ -1,6 +1,6 @@
 // @formal surface exclude=projection_vocabulary
 // @formal owner crates/contract/awaken-session-configuration-contract/src/lib.rs
-// @formal owner crates/contract/awaken-session-runtime-contract/src/session/roles.rs
+// @formal owner crates/contract/awaken-session-execution-contract/src/session/roles.rs
 // @formal owner crates/server/awaken-session-executor/src/host.rs
 // @formal reason: SessionInit and SessionSandboxLayout are passive, secret-free typed projections
 // @formal reason: assembled from already-authorized frozen Session configuration and Resource bindings.

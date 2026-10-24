@@ -20,7 +20,7 @@ use awaken_session_realization::peers::EnvironmentPeer as _;
 /// Coordinator and server composition roots.
 #[derive(Clone)]
 pub struct CoordinatorRoles {
-    session_execution: awaken_session_runtime_contract::SessionExecutionRoles,
+    session_execution: awaken_session_execution_contract::SessionExecutionRoles,
     process: ProcessOperations,
 }
 
@@ -96,7 +96,7 @@ impl CoordinatorRoles {
 
     /// The Session application's executor roles, each served by its owner.
     #[must_use]
-    pub fn session_execution(&self) -> awaken_session_runtime_contract::SessionExecutionRoles {
+    pub fn session_execution(&self) -> awaken_session_execution_contract::SessionExecutionRoles {
         self.session_execution.clone()
     }
 

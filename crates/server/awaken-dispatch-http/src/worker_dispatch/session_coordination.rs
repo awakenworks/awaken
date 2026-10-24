@@ -50,21 +50,21 @@ pub(super) struct ClaimedRunActivityReq {
     session_id: String,
     agent_id: String,
     run_id: RunId,
-    mode: awaken_session_runtime_contract::SessionRunActivityAdmissionMode,
+    mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
 }
 
 #[derive(Deserialize)]
 pub(super) struct ClaimedSessionMessageReq {
     claim: RunClaim,
     identity: WorkerIdentity,
-    command: awaken_session_runtime_contract::SessionAgentMessageCommand,
+    command: awaken_session_execution_contract::SessionAgentMessageCommand,
 }
 
 #[derive(Deserialize)]
 pub(super) struct ClaimedSessionBoundaryReq {
     claim: RunClaim,
     identity: WorkerIdentity,
-    command: awaken_session_runtime_contract::SessionAgentBoundaryCommand,
+    command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
 }
 
 async fn claimed_session_authority(
@@ -131,8 +131,10 @@ fn require_primary_session_claim(
 
 fn session_coordination(
     service: &WorkerDispatchService,
-) -> Result<&Arc<dyn awaken_session_runtime_contract::SessionAgentCoordination>, RealizationHttpError>
-{
+) -> Result<
+    &Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
+    RealizationHttpError,
+> {
     service.session_coordination.as_ref().ok_or_else(|| {
         RealizationHttpError::from(ApplicationError::internal(
             "Session coordination control is not configured",
@@ -254,9 +256,9 @@ pub(super) async fn session_run_activity_admit(
             })?;
         let dispatch = guard.request();
         let expected_mode = if guard.cancellation_requested() {
-            awaken_session_runtime_contract::SessionRunActivityAdmissionMode::RecoverOnly
+            awaken_session_execution_contract::SessionRunActivityAdmissionMode::RecoverOnly
         } else {
-            awaken_session_runtime_contract::SessionRunActivityAdmissionMode::RecoverOrAdmit
+            awaken_session_execution_contract::SessionRunActivityAdmissionMode::RecoverOrAdmit
         };
         if !guard.is_live_at(authority.now_ms)
             || request.run_id != request.claim.run_id

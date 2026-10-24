@@ -2,13 +2,13 @@
 use super::*;
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::TerminalCleanupRuntime for RecordingCleanupRuntime {
+impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingCleanupRuntime {
     async fn observe_terminal_cleanup_retention(
         &self,
-        session_id: &awaken_session_runtime_contract::__macro_support::SessionId,
-        projection: &awaken_session_runtime_contract::__macro_support::FrozenSessionProjection,
+        session_id: &awaken_session_execution_contract::__macro_support::SessionId,
+        projection: &awaken_session_execution_contract::__macro_support::FrozenSessionProjection,
         source_prepared: bool,
-    ) -> Result<bool, awaken_session_runtime_contract::__macro_support::RunError> {
+    ) -> Result<bool, awaken_session_execution_contract::__macro_support::RunError> {
         self.retention_reads.lock().unwrap().push((
             session_id.to_string(),
             projection.clone(),
@@ -81,7 +81,7 @@ impl awaken_session_runtime_contract::TerminalCleanupRuntime for RecordingCleanu
             .push(effect.clone());
     }
 
-    // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Retire only the process-local teardown projection after Control has
     /// durably accepted the exact disposal receipt. No provider or Resource
@@ -90,7 +90,7 @@ impl awaken_session_runtime_contract::TerminalCleanupRuntime for RecordingCleanu
         &self,
         effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_disposal(effect)
             .await
     }

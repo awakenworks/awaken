@@ -4,7 +4,7 @@
 
 use super::*;
 use awaken_ext_builtin_tools::{AgentMessageTarget, SendMessageArgs};
-use awaken_session_runtime_contract::SessionAgentTarget;
+use awaken_session_execution_contract::SessionAgentTarget;
 use awaken_tool_contract::tool_batch::ToolCallPhase;
 
 pub(super) fn validate(

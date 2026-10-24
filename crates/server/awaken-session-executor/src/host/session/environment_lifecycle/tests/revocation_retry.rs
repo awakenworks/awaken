@@ -519,7 +519,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         .install_test_environment_binding_sink(first_sink);
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &*first_managed.run_assembly,
             thread,
             projection.clone(),
@@ -586,7 +586,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         .install_test_environment_binding_sink(sink.clone());
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &*managed.run_assembly,
             thread,
             projection,

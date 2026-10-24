@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use awaken_session_runtime_contract::OutcomeDrive;
+use awaken_session_execution_contract::OutcomeDrive;
 use awaken_session_types::RunError;
 
 /// Outcome orchestration for one process. Consumer: the Session application's
@@ -30,7 +30,7 @@ impl Outcomes {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::OutcomeRuntime for Outcomes {
+impl awaken_session_execution_contract::OutcomeRuntime for Outcomes {
     async fn prepare_outcome(
         &self,
         thread: &str,

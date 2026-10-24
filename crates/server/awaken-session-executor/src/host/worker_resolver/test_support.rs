@@ -197,7 +197,7 @@ pub(crate) async fn install_complete_projection_for_snapshot(
 ) {
     let mut projection = empty_frozen_projection_for_snapshot(workspace_id, environment, snapshot);
     projection.agent_publication = Some(snapshot.clone());
-    awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         thread,
         projection,
@@ -280,7 +280,7 @@ pub(super) fn complete_managed_test_host(
     managed: Arc<crate::ExecutorComponents>,
 ) -> Arc<crate::ExecutorComponents> {
     static APPLICATION: std::sync::OnceLock<
-        Arc<dyn awaken_session_runtime_contract::SessionAgentCoordination>,
+        Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     > = std::sync::OnceLock::new();
     let application = APPLICATION.get_or_init(|| {
         Arc::new(crate::coordination::RecordingSessionAgentCoordination::default())
@@ -454,7 +454,7 @@ pub(super) async fn prepare_deferred_session(
     thread: &str,
 ) -> Arc<crate::ExecutorComponents> {
     let managed = managed_test_host(host.clone());
-    awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         thread,
         empty_frozen_projection(host.run_assembly.local_workspace(), deferred_environment()),
@@ -490,7 +490,7 @@ pub(super) fn committed_environment(
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::SessionEnvironmentBindingSink for ToggleBindingSink {
+impl awaken_session_execution_contract::SessionEnvironmentBindingSink for ToggleBindingSink {
     async fn authorize(
         &self,
         intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
@@ -538,7 +538,7 @@ pub(crate) struct BlockingBindingSink {
     block: std::sync::atomic::AtomicBool,
     pub(crate) entered: tokio::sync::Notify,
     calls: AtomicUsize,
-    delegate: Option<Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>>,
+    delegate: Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
     commit_before_block: bool,
 }
 
@@ -554,7 +554,7 @@ impl BlockingBindingSink {
     }
 
     pub(crate) fn around(
-        delegate: Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>,
+        delegate: Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
         commit_before_block: bool,
     ) -> Self {
         Self {
@@ -574,7 +574,7 @@ impl BlockingBindingSink {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::SessionEnvironmentBindingSink for BlockingBindingSink {
+impl awaken_session_execution_contract::SessionEnvironmentBindingSink for BlockingBindingSink {
     async fn authorize(
         &self,
         intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,

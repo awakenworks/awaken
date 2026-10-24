@@ -1136,7 +1136,7 @@ mod tests {
                 McpAttachmentCandidate, McpAttachmentCandidateTarget,
             };
             use awaken_session_configuration_contract::mcp::McpAttachmentOrigin;
-            use awaken_session_runtime_contract::NeutralRuntime;
+            use awaken_session_execution_contract::NeutralRuntime;
 
             // MCP causes: C1 published pin; C2 source capability installed;
             // C3 HTTP/stdio; C4 discovery success/miss/error; C5 access result;

@@ -926,7 +926,7 @@ mod tests {
                     "transient test failure",
                 ));
             }
-            Ok(awaken_session_runtime_contract::session_run_id(
+            Ok(awaken_session_execution_contract::session_run_id(
                 &awaken_session_types::SessionId::from(thread),
                 operation_id,
             ))

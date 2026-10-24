@@ -43,7 +43,7 @@ use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_session_runtime_contract::{AdmitSessionRun, SessionRunExecutionRequirements};
+use awaken_session_execution_contract::{AdmitSessionRun, SessionRunExecutionRequirements};
 use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
 
 /// Minimum live lease used by cross-backend conformance journeys. A live

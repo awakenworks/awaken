@@ -17,7 +17,9 @@ pub mod realization;
 pub struct EnvironmentHolding {
     /// The selected aggregate publication authority; the lock permits fixture installation only.
     environment_binding_sink: std::sync::RwLock<
-        Option<std::sync::Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>>,
+        Option<
+            std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
+        >,
     >,
     /// The same dispatch instance used by this process, narrowed to execution binding.
     dispatch_execution: Option<std::sync::Arc<dyn awaken_dispatch_contract::DispatchExecution>>,
@@ -37,7 +39,7 @@ impl EnvironmentHolding {
         runs_local_dispatch_pool: bool,
         sessions: crate::session_realizations::SessionRealizations,
         environment_binding_sink: Option<
-            std::sync::Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>,
+            std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
         >,
         dispatch_execution: Option<std::sync::Arc<dyn awaken_dispatch_contract::DispatchExecution>>,
         publication: crate::session_publication::SessionPublicationSelection,
@@ -56,7 +58,7 @@ impl EnvironmentHolding {
     #[cfg(any(test, feature = "test-support"))]
     pub fn environment_binding_sink(
         &self,
-    ) -> Option<std::sync::Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>>
+    ) -> Option<std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>
     {
         self.environment_binding_sink
             .read()
@@ -77,7 +79,7 @@ impl EnvironmentHolding {
     #[cfg(any(test, feature = "test-support"))]
     pub fn install_environment_binding_sink(
         &self,
-        sink: std::sync::Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>,
+        sink: std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     ) {
         *self
             .environment_binding_sink

@@ -318,7 +318,7 @@ async fn immediate_environment_binding_sink_is_durable_and_idempotent() {
     // Cause/effect table: C1 durable Session exists, C2 binding absent,
     // C3 identical binding already committed. R1 C1+C2 -> persist binding
     // and advance revision; R2 C1+C3 -> success without another revision.
-    use awaken_session_runtime_contract::SessionEnvironmentBindingSink;
+    use awaken_session_execution_contract::SessionEnvironmentBindingSink;
 
     let repo = Arc::new(ephemeral_session_repo().await);
     create_session_fixture(
@@ -354,7 +354,7 @@ async fn immediate_binding_cas_retries_once_then_fails_closed_at_the_bound() {
     // C2 conflict count reaches the bound. R1 C1 -> retry then persist;
     // R2 C2 -> error and leave the binding absent. These are the two
     // equivalence classes for the moved application-owned CAS loop.
-    use awaken_session_runtime_contract::SessionEnvironmentBindingSink;
+    use awaken_session_execution_contract::SessionEnvironmentBindingSink;
 
     for (case, conflicts, accepted) in [
         ("one conflict then success", 1, true),
@@ -673,10 +673,10 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         root_run_id.clone(),
         0,
         "call-durable",
-        awaken_session_runtime_contract::CoordinatedThreadLink {
+        awaken_session_execution_contract::CoordinatedThreadLink {
             session_id: "sesn_1".into(),
             thread_id: awaken_agent_contract::agent::thread::Id(child_thread_id.into()),
-            target: awaken_session_runtime_contract::CoordinatedThreadTarget::Agent {
+            target: awaken_session_execution_contract::CoordinatedThreadTarget::Agent {
                 agent_id: "researcher".into(),
             },
             created_by_operation_id: ToolBatch::operation_id_for_step(

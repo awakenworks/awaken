@@ -39,7 +39,7 @@ pub struct SessionExecutionDependencies {
         Arc<dyn awaken_resource_contract::RepositoryBindingVerifier<crate::ResourceOperationFence>>,
     >,
     pub(crate) mcp_realizer:
-        Option<Arc<dyn awaken_session_runtime_contract::McpAttachmentRealizer>>,
+        Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
 }
 
 /// Test-only construction seam, consumed before component binding.
@@ -66,7 +66,7 @@ pub struct SessionExecutorBuilder {
     pub(crate) execution_authority:
         Option<Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>>,
     pub(crate) environment_binding_sink:
-        Option<Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>>,
+        Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
     /// The Thread event hub the Host publishes through; ACP launch observers
     /// selected with these dependencies report into the same hub.
     pub(crate) hub: Arc<ThreadEventHub>,
@@ -365,7 +365,7 @@ impl SessionExecutorBuilder {
     #[must_use]
     pub fn with_environment_binding_sink(
         mut self,
-        sink: Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>,
+        sink: Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     ) -> Self {
         self.environment_binding_sink = Some(sink);
         self
@@ -631,7 +631,7 @@ impl SessionExecutorBuilder {
     pub fn with_session_control<T>(mut self, control: Arc<T>) -> Self
     where
         T: awaken_session_realization_contract::ClaimedSessionRealizationControl
-            + awaken_session_runtime_contract::ClaimedSessionCoordinationControl<RunClaim>
+            + awaken_session_execution_contract::ClaimedSessionCoordinationControl<RunClaim>
             + 'static,
     {
         self.worker.session_control = Some(control.clone());
@@ -778,7 +778,7 @@ impl SessionExecutionDependencies {
     #[must_use]
     pub fn with_mcp_attachment_realizer(
         mut self,
-        realizer: Arc<dyn awaken_session_runtime_contract::McpAttachmentRealizer>,
+        realizer: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
     ) -> Self {
         self.mcp_realizer = Some(realizer);
         self

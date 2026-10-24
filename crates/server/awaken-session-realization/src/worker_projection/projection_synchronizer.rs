@@ -329,7 +329,7 @@ where
 pub struct WorkerMcpEffects<'a, T>(pub &'a T);
 
 #[async_trait::async_trait]
-impl<T: SessionProjectionExecution> awaken_session_runtime_contract::McpAttachmentRealizer
+impl<T: SessionProjectionExecution> awaken_session_execution_contract::McpAttachmentRealizer
     for WorkerMcpEffects<'_, T>
 {
     async fn stage_mcp_attachment(

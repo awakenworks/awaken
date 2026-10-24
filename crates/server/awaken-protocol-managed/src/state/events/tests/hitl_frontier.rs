@@ -36,7 +36,7 @@ async fn plan_aggregate_from_fixture(
         .collect::<std::collections::HashSet<_>>()
     {
         let snapshot =
-            awaken_session_runtime_contract::ThreadReadRuntime::session_thread_recovery_snapshot(
+            awaken_session_execution_contract::ThreadReadRuntime::session_thread_recovery_snapshot(
                 &runtime, &session, thread,
             )
             .await
@@ -253,10 +253,10 @@ async fn aggregate_fallback_holds_root_and_child_answerable_calls_neutrally() {
             },
         ),
     ]);
-    let link = awaken_session_runtime_contract::CoordinatedThreadLink {
+    let link = awaken_session_execution_contract::CoordinatedThreadLink {
         session_id: session_id.into(),
         thread_id: ThreadId("child".into()),
-        target: awaken_session_runtime_contract::CoordinatedThreadTarget::Agent {
+        target: awaken_session_execution_contract::CoordinatedThreadTarget::Agent {
             agent_id: "worker".into(),
         },
         created_by_operation_id: "spawn-child".into(),

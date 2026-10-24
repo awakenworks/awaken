@@ -2299,14 +2299,14 @@ async fn executor_components_supply_every_session_role() {
     let roles = host.session_execution_roles();
     assert!(Arc::ptr_eq(
         &(shared.thread_reads().clone()
-            as Arc<dyn awaken_session_runtime_contract::ThreadReadRuntime>),
+            as Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>),
         &roles.thread_reads
     ));
     assert!(Arc::ptr_eq(
         &(shared.live_inboxes().clone()
-            as Arc<dyn awaken_session_runtime_contract::LiveInboxRuntime>),
+            as Arc<dyn awaken_session_execution_contract::LiveInboxRuntime>),
         &roles.live_inbox
     ));
-    let bindings = awaken_session_runtime_contract::SessionExecutor::from(roles);
+    let bindings = awaken_session_execution_contract::SessionExecutor::from(roles);
     assert_eq!(bindings.core().model(), host.capabilities.model());
 }

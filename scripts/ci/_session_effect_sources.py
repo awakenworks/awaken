@@ -1,7 +1,7 @@
 """Canonical source owners and required markers for the Session effect checker."""
 
-SESSION_RUNTIME = "crates/contract/awaken-session-runtime-contract/src/session.rs"
-SESSION_RUNTIME_ROLES = "crates/contract/awaken-session-runtime-contract/src/session/roles.rs"
+SESSION_RUNTIME = "crates/contract/awaken-session-execution-contract/src/session.rs"
+SESSION_RUNTIME_ROLES = "crates/contract/awaken-session-execution-contract/src/session/roles.rs"
 SESSION_CLEANUP = "crates/contract/awaken-session-state-contract/src/terminal_cleanup.rs"
 SESSION_REPOSITORY_PUBLICATION = (
     "crates/contract/awaken-session-state-contract/src/"

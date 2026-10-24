@@ -57,7 +57,7 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::{
     AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext,
 };
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
 };
 use tokio_util::sync::CancellationToken;

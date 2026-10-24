@@ -444,7 +444,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                     detail: "fixture source observation outage".into(),
                 },
             ] {
-                let error = awaken_session_runtime_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+                let error = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
                     &*(host.clone()).run_assembly,
                     guarded_effect.clone(),
                     guarded_authorization.clone().with_source_dispatch(source),
@@ -470,7 +470,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             let effect = effect.clone();
             let authorization = authorization.clone();
             async move {
-                awaken_session_runtime_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+                awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
                     &*(host.clone()).run_assembly,
                     effect,
                     authorization,
@@ -541,7 +541,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         );
 
         release.notify_one();
-        let preparation = awaken_session_runtime_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+        let preparation = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     authorization,
@@ -757,7 +757,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         )
         .unwrap()
         .with_source_dispatch(awaken_session_realization_contract::SessionTerminalSourceDispatch::Settled {});
-    let first = awaken_session_runtime_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+    let first = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     authorization.clone(),
@@ -811,7 +811,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
             .realizations()
             .update_realization(thread, |r| r.environment_mut().owner = wrong.clone())
             .expect("installed Sessions");
-        awaken_session_runtime_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+        awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     authorization.clone(),
@@ -836,7 +836,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
             None,
         )
         .unwrap();
-    awaken_session_runtime_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+    awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
         &*(host.clone()).run_assembly,
         stale,
         stale_authorization,
@@ -845,7 +845,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     .map_err(crate::session_execution_error::from_run_error)
     .expect_err("U6 foreign realization cannot prepare");
     assert!(output.exists(), "U6 stale Preparation keeps physical bytes");
-    let preparation = awaken_session_runtime_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+    let preparation = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     authorization,

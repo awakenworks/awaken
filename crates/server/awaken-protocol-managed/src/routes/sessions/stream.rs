@@ -113,7 +113,7 @@ pub(super) fn live_sse_stream<F>(
     terminal_scope: SseTerminalScope,
     project: F,
     thread_preview: Option<(
-        Box<dyn awaken_session_runtime_contract::SessionThreadLiveSubscription>,
+        Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>,
         ThreadPreviewProjector,
     )>,
 ) -> impl Stream<Item = Result<SseEvent, StateError>>

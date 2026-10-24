@@ -20,7 +20,7 @@ use awaken_time::WallClockExt;
 /// external realization and is the one seam used before create, live
 /// Resource and final root persistence boundaries.
 pub(crate) fn validate_session_sandbox_layout(
-    effects: &dyn awaken_session_runtime_contract::RealizationEffects,
+    effects: &dyn awaken_session_execution_contract::RealizationEffects,
     session_id: &str,
     layout: &awaken_session_configuration_contract::SessionSandboxLayout,
 ) -> Result<(), RunError> {
@@ -180,7 +180,7 @@ impl SessionPersistence {
 ///
 /// ```
 /// use awaken_session_application::{SessionApplication, SessionEventBatches};
-/// use awaken_session_runtime_contract::StreamingRunRuntime;
+/// use awaken_session_execution_contract::StreamingRunRuntime;
 /// use awaken_session_types::RunError;
 /// async fn existing_policy(runs: &dyn StreamingRunRuntime) -> Result<bool, RunError> {
 ///     runs.supports_mid_conversation_system("thread").await
@@ -241,7 +241,7 @@ impl SessionPersistence {
 ///
 /// ```
 /// use awaken_session_application::{SessionApplication, SessionObservation};
-/// use awaken_session_runtime_contract::SessionThreadLiveSubscription;
+/// use awaken_session_execution_contract::SessionThreadLiveSubscription;
 /// use awaken_session_types::{RunError, SessionId};
 /// fn selected(application: &SessionApplication) -> std::sync::Arc<dyn SessionObservation> {
 ///     application.observations()
@@ -357,7 +357,7 @@ impl SessionPersistence {
 /// Z2a: coordinated links remain on the original read role.
 ///
 /// ```
-/// use awaken_session_runtime_contract::SessionCoordinationReads;
+/// use awaken_session_execution_contract::SessionCoordinationReads;
 /// use awaken_session_types::SessionId;
 /// async fn existing_role(reads: &dyn SessionCoordinationReads, session: &SessionId) {
 ///     let _ = reads.coordinated_threads(session, None).await;
@@ -367,7 +367,7 @@ impl SessionPersistence {
 /// Z2b: Thread disposition and exact Outcome reads keep their original owner.
 ///
 /// ```
-/// use awaken_session_runtime_contract::ThreadReadRuntime;
+/// use awaken_session_execution_contract::ThreadReadRuntime;
 /// use awaken_session_types::SessionId;
 /// async fn existing_role(reads: &dyn ThreadReadRuntime, session: &SessionId) {
 ///     let _ = reads.session_thread_disposition(session, "thread").await;
@@ -380,7 +380,7 @@ impl SessionPersistence {
 /// ```
 /// use std::sync::Arc;
 /// use awaken_agent_contract::stream::sink::Sink;
-/// use awaken_session_runtime_contract::StreamingRunRuntime;
+/// use awaken_session_execution_contract::StreamingRunRuntime;
 /// async fn existing_role(runs: &dyn StreamingRunRuntime, sink: Arc<dyn Sink>) {
 ///     let _ = runs.pending_tool("thread").await;
 ///     let _ = runs.rebind_model("thread", "model").await;
@@ -393,7 +393,7 @@ impl SessionPersistence {
 /// Z2d: ticket results remain on the original Runtime role.
 ///
 /// ```
-/// use awaken_session_runtime_contract::{SessionRuntime, ToolPermissionDecision};
+/// use awaken_session_execution_contract::{SessionRuntime, ToolPermissionDecision};
 /// async fn existing_role(runs: &dyn SessionRuntime, decision: ToolPermissionDecision) {
 ///     let _ = runs.resume("thread", "call", decision).await;
 ///     let _ = runs.resume_custom("thread", "call", Vec::new(), false).await;
@@ -403,7 +403,7 @@ impl SessionPersistence {
 /// Z2e: Outcome commands remain on the original Outcome role.
 ///
 /// ```
-/// use awaken_session_runtime_contract::OutcomeRuntime;
+/// use awaken_session_execution_contract::OutcomeRuntime;
 /// async fn existing_role(outcomes: &dyn OutcomeRuntime) {
 ///     let _ = outcomes.define_outcome("thread", "goal", "rubric", 3).await;
 ///     let _ = outcomes.continue_outcome("thread").await;

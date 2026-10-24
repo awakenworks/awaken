@@ -87,7 +87,7 @@ async fn worker_retirement_observes_the_existing_disposal_action_without_acknowl
     let runtime = Arc::new(RecordingCleanupRuntime::default());
     runtime.source_retained.store(true, Ordering::SeqCst);
     *runtime.source_observation.lock().unwrap() =
-        awaken_session_runtime_contract::SessionSourceDispatchObservation::Settled;
+        awaken_session_execution_contract::SessionSourceDispatchObservation::Settled;
     let app = configured_application(
         runtime.clone(),
         crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
@@ -148,7 +148,7 @@ async fn active_resident_source_retirement_preserves_the_original_session() {
     let runtime = Arc::new(RecordingCleanupRuntime::default());
     runtime.source_retained.store(true, Ordering::SeqCst);
     *runtime.source_observation.lock().unwrap() =
-        awaken_session_runtime_contract::SessionSourceDispatchObservation::Pending;
+        awaken_session_execution_contract::SessionSourceDispatchObservation::Pending;
     let app = configured_application(
         runtime.clone(),
         crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
@@ -269,7 +269,7 @@ async fn worker_retirement_requires_each_terminal_source_without_mutating_roots(
                     let thread = awaken_agent_contract::ThreadId(id.as_str().into());
                     let run = awaken_agent_contract::RunId("retained-running-run".into());
                     let operation =
-                        awaken_session_runtime_contract::session_run_activity_operation_id(
+                        awaken_session_execution_contract::session_run_activity_operation_id(
                             &id, &run,
                         );
                     let epoch = 2;
@@ -304,14 +304,14 @@ async fn worker_retirement_requires_each_terminal_source_without_mutating_roots(
             .retention_unavailable
             .store(row.ends_with("provider-error"), Ordering::SeqCst);
         *runtime.source_observation.lock().unwrap() = match row {
-            "pending" => awaken_session_runtime_contract::SessionSourceDispatchObservation::Pending,
+            "pending" => awaken_session_execution_contract::SessionSourceDispatchObservation::Pending,
             "unsealed" => {
-                awaken_session_runtime_contract::SessionSourceDispatchObservation::NotProven {
+                awaken_session_execution_contract::SessionSourceDispatchObservation::NotProven {
                     reason:
-                        awaken_session_runtime_contract::SessionExecutionRecoveryGap::ScopeNotFrozen,
+                        awaken_session_execution_contract::SessionExecutionRecoveryGap::ScopeNotFrozen,
                 }
             }
-            _ => awaken_session_runtime_contract::SessionSourceDispatchObservation::Settled,
+            _ => awaken_session_execution_contract::SessionSourceDispatchObservation::Settled,
         };
         let app = configured_application(
             runtime.clone(),
@@ -443,7 +443,7 @@ async fn worker_retirement_never_publishes_a_successful_source_prefix() {
         let runtime = Arc::new(RecordingCleanupRuntime::default());
         runtime.source_retained.store(true, Ordering::SeqCst);
         *runtime.source_observation.lock().unwrap() =
-            awaken_session_runtime_contract::SessionSourceDispatchObservation::Settled;
+            awaken_session_execution_contract::SessionSourceDispatchObservation::Settled;
         let app = configured_application(
             runtime.clone(),
             crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),

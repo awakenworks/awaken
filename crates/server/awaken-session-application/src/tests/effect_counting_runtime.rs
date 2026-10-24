@@ -12,7 +12,7 @@ use awaken_session_application_contract::{
     SessionBudgetResumeDelivery, SessionBudgetResumeDisposition, SessionBudgetResumeTicket,
     StepOutcome,
 };
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunDelivery,
     SessionRunReservation,
 };
@@ -69,7 +69,7 @@ impl EffectCountingRuntime {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::SessionRuntime for EffectCountingRuntime {
+impl awaken_session_execution_contract::SessionRuntime for EffectCountingRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -88,7 +88,7 @@ impl awaken_session_runtime_contract::SessionRuntime for EffectCountingRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: awaken_session_runtime_contract::ToolPermissionDecision,
+        _decision: awaken_session_execution_contract::ToolPermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         self.tool_calls.fetch_add(1, Ordering::SeqCst);
         self.events.lock().unwrap().push("tool");
@@ -118,17 +118,17 @@ impl awaken_session_runtime_contract::SessionRuntime for EffectCountingRuntime {
     }
 }
 
-awaken_session_runtime_contract::neutral_role!(StreamingRunRuntime for EffectCountingRuntime);
-awaken_session_runtime_contract::neutral_role!(TerminalCleanupRuntime for EffectCountingRuntime);
-awaken_session_runtime_contract::neutral_role!(OutcomeRuntime for EffectCountingRuntime);
-awaken_session_runtime_contract::neutral_role!(LiveInboxRuntime for EffectCountingRuntime);
-awaken_session_runtime_contract::neutral_role!(CapabilityRuntime for EffectCountingRuntime);
-awaken_session_runtime_contract::neutral_role!(SessionCoordinationReads for EffectCountingRuntime);
-awaken_session_runtime_contract::neutral_role!(EnvironmentRuntime for EffectCountingRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for EffectCountingRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for EffectCountingRuntime);
+awaken_session_execution_contract::neutral_role!(OutcomeRuntime for EffectCountingRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for EffectCountingRuntime);
+awaken_session_execution_contract::neutral_role!(CapabilityRuntime for EffectCountingRuntime);
+awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for EffectCountingRuntime);
+awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for EffectCountingRuntime);
 no_committed_threads!(EffectCountingRuntime);
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::BudgetRuntime for EffectCountingRuntime {
+impl awaken_session_execution_contract::BudgetRuntime for EffectCountingRuntime {
     async fn resume_budget_reached(
         &self,
         delivery: SessionBudgetResumeDelivery,
@@ -146,7 +146,7 @@ impl awaken_session_runtime_contract::BudgetRuntime for EffectCountingRuntime {
         match configured {
             Some(tickets) => Ok(tickets),
             None => {
-                awaken_session_runtime_contract::NeutralRuntime
+                awaken_session_execution_contract::NeutralRuntime
                     .session_budget_resume_tickets(session_id)
                     .await
             }
@@ -170,7 +170,7 @@ impl awaken_session_runtime_contract::BudgetRuntime for EffectCountingRuntime {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::RealizationRuntime for EffectCountingRuntime {
+impl awaken_session_execution_contract::RealizationRuntime for EffectCountingRuntime {
     fn observe_realization_request(
         &self,
     ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
@@ -184,7 +184,7 @@ impl awaken_session_runtime_contract::RealizationRuntime for EffectCountingRunti
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
     ) -> Result<usize, RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
             .await
     }
@@ -206,7 +206,7 @@ impl awaken_session_runtime_contract::RealizationRuntime for EffectCountingRunti
         thread: &str,
         lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
             .await
     }
@@ -216,14 +216,14 @@ impl awaken_session_runtime_contract::RealizationRuntime for EffectCountingRunti
         thread: &str,
         lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
             .await
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::CoordinationRuntime for EffectCountingRuntime {
+impl awaken_session_execution_contract::CoordinationRuntime for EffectCountingRuntime {
     async fn reserve_session_run(
         &self,
         command: AdmitSessionRun,
@@ -264,9 +264,9 @@ impl awaken_session_runtime_contract::CoordinationRuntime for EffectCountingRunt
 
     async fn admit_coordinated_run(
         &self,
-        command: awaken_session_runtime_contract::CoordinatedRunCommand,
-    ) -> Result<awaken_session_runtime_contract::SessionAgentMessageReceipt, RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        command: awaken_session_execution_contract::CoordinatedRunCommand,
+    ) -> Result<awaken_session_execution_contract::SessionAgentMessageReceipt, RunError> {
+        awaken_session_execution_contract::NeutralRuntime
             .admit_coordinated_run(command)
             .await
     }
@@ -276,19 +276,19 @@ impl awaken_session_runtime_contract::CoordinationRuntime for EffectCountingRunt
         session_id: &awaken_session_types::SessionId,
         thread_id: &str,
     ) -> Result<
-        Option<Box<dyn awaken_session_runtime_contract::SessionThreadLiveSubscription>>,
+        Option<Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>>,
         RunError,
     > {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .subscribe_session_thread_live(session_id, thread_id)
             .await
     }
 
     async fn continue_session_agent_report(
         &self,
-        command: awaken_session_runtime_contract::SessionAgentReportContinuation,
+        command: awaken_session_execution_contract::SessionAgentReportContinuation,
     ) -> Result<(), RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .continue_session_agent_report(command)
             .await
     }
@@ -298,14 +298,14 @@ impl awaken_session_runtime_contract::CoordinationRuntime for EffectCountingRunt
         session_id: &awaken_session_types::SessionId,
         child_thread_id: &awaken_agent_contract::agent::thread::Id,
     ) -> Result<(), RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .interrupt_session_thread(session_id, child_thread_id)
             .await
     }
 
     async fn reply_session_thread_tool(
         &self,
-        _delivery: awaken_session_runtime_contract::SessionThreadToolReplyDelivery,
+        _delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), RunError> {
         self.tool_calls.fetch_add(1, Ordering::SeqCst);
         self.events.lock().unwrap().push("tool");
@@ -314,7 +314,7 @@ impl awaken_session_runtime_contract::CoordinationRuntime for EffectCountingRunt
 
     async fn reply_and_observe_session_thread_tool(
         &self,
-        _delivery: awaken_session_runtime_contract::SessionThreadToolReplyDelivery,
+        _delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
         _stream_sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError> {
         self.tool_calls.fetch_add(1, Ordering::SeqCst);
@@ -330,7 +330,7 @@ impl awaken_session_runtime_contract::CoordinationRuntime for EffectCountingRunt
         session_id: &awaken_session_types::SessionId,
         thread_id: &str,
     ) -> Result<(), RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .archive_session_thread(session_id, thread_id)
             .await
     }
@@ -339,20 +339,20 @@ impl awaken_session_runtime_contract::CoordinationRuntime for EffectCountingRunt
         &self,
         thread: &str,
     ) -> Result<awaken_session_application_contract::DelegatedRunSnapshot, RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .quiesce_terminal_delegations(thread)
             .await
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::RealizationEffects for EffectCountingRuntime {
+impl awaken_session_execution_contract::RealizationEffects for EffectCountingRuntime {
     fn validate_session_sandbox_layout(
         &self,
         thread: &str,
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
     ) -> Result<(), RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .validate_session_sandbox_layout(thread, layout)
     }
 
@@ -361,7 +361,7 @@ impl awaken_session_runtime_contract::RealizationEffects for EffectCountingRunti
         thread: &str,
         request: awaken_session_state_contract::SandboxCheckpointRequest,
     ) -> Result<awaken_session_state_contract::CheckpointReceipt, RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .checkpoint_session_environment(thread, request)
             .await
     }
@@ -373,7 +373,7 @@ impl awaken_session_runtime_contract::RealizationEffects for EffectCountingRunti
         generation: &awaken_session_state_contract::SandboxGeneration,
         source_binding: &str,
     ) -> Result<awaken_session_state_contract::SourceReleasePreparedReceipt, RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
             .await
     }
@@ -383,7 +383,7 @@ impl awaken_session_runtime_contract::RealizationEffects for EffectCountingRunti
         thread: &str,
         disposal: &awaken_session_state_contract::SourceReleaseDisposal,
     ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .dispose_prepared_checkpoint_source(thread, disposal)
             .await
     }
@@ -392,7 +392,7 @@ impl awaken_session_runtime_contract::RealizationEffects for EffectCountingRunti
         &self,
         request: awaken_session_state_contract::SandboxRestoreRequest,
     ) -> Result<awaken_session_state_contract::RestoreReceipt, RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .restore_checkpointed_session_environment(request)
             .await
     }
@@ -402,7 +402,7 @@ impl awaken_session_runtime_contract::RealizationEffects for EffectCountingRunti
         thread: &str,
         checkpoint: &awaken_session_state_contract::SandboxCheckpointRef,
     ) -> Result<(), RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .delete_session_checkpoint(thread, checkpoint)
             .await
     }
@@ -444,25 +444,25 @@ impl awaken_session_runtime_contract::RealizationEffects for EffectCountingRunti
 
     async fn execute_terminal_repository_publication_for_lease(
         &self,
-        command: awaken_session_runtime_contract::__macro_support::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_runtime_contract::__macro_support::SessionRealizationLease,
+        command: awaken_session_execution_contract::__macro_support::SessionRepositoryPublicationCommand,
+        lease: &awaken_session_execution_contract::__macro_support::SessionRealizationLease,
     ) -> Result<
-        awaken_session_runtime_contract::__macro_support::SessionRepositoryPublicationEffect,
+        awaken_session_execution_contract::__macro_support::SessionRepositoryPublicationEffect,
         RunError,
     > {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .execute_terminal_repository_publication_for_lease(command, lease)
             .await
     }
 
     async fn dispose_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_runtime_contract::__macro_support::SessionTerminalCleanupDisposalEffect,
+        effect: awaken_session_execution_contract::__macro_support::SessionTerminalCleanupDisposalEffect,
     ) -> Result<
-        awaken_session_runtime_contract::__macro_support::SessionCleanupDisposalReceipt,
+        awaken_session_execution_contract::__macro_support::SessionCleanupDisposalReceipt,
         RunError,
     > {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .dispose_terminal_cleanup_for_effect(effect)
             .await
     }

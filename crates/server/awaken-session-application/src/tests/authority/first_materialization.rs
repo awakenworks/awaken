@@ -130,7 +130,7 @@ async fn legacy_binding_subject_rejects_new_admission_but_accepts_its_inflight_r
 /// admission/receipt: retryable Pending before CAS, exact snapshot/revision.
 /// Both cuts use the real Repository sink; no fake authorization stands in for it.
 async fn assert_late_noncreate_is_pending(
-    sink: &dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink,
+    sink: &dyn awaken_session_execution_contract::SessionEnvironmentBindingSink,
     repo: &dyn awaken_session_repository_contract::SessionRepository,
     before: &PersistedSession,
     original: &awaken_session_state_contract::SessionEnvironmentEffectIntent,

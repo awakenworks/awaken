@@ -14,7 +14,7 @@ async fn source_dispatch_observation_preserves_current_scope_and_rejects_affinit
     use awaken_dispatch_contract::{
         DispatchEnqueue as _, DispatchReads as _, SessionRunReservations as _,
     };
-    use awaken_session_runtime_contract::{
+    use awaken_session_execution_contract::{
         SessionExecutionRecoveryGap as Gap, SessionSourceDispatchObservation as Source,
     };
     for (terminal, frozen, rows, expected) in [
@@ -151,7 +151,7 @@ async fn ordinary_attempt_acknowledgement_releases_source_without_claiming_globa
         DispatchAttemptRecordReads as _, DispatchClaims as _, DispatchEnqueue as _,
         DispatchExecution as _, DispatchSettlement as _,
     };
-    use awaken_session_runtime_contract::SessionSourceDispatchObservation as Source;
+    use awaken_session_execution_contract::SessionSourceDispatchObservation as Source;
     let store = awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
         awaken_lease_testkit::ManualClock::new(100),
     ))
@@ -277,7 +277,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     .expect("validated Host dependencies");
     let managed = host.clone();
     let mut projection = remote_terminal_cleanup_projection();
-    awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         "remote-terminal-worker",
         projection.clone(),
@@ -490,7 +490,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
 
     let ordinary_id = "renewal-beside-terminal";
     let ordinary_projection = remote_terminal_cleanup_projection();
-    awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         ordinary_id,
         ordinary_projection.clone(),

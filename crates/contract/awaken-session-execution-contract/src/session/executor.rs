@@ -26,7 +26,7 @@ use std::sync::Arc;
 ///
 /// ```compile_fail,E0277
 /// use std::sync::Arc;
-/// use awaken_session_runtime_contract::{SessionExecutor, SessionRuntime};
+/// use awaken_session_execution_contract::{SessionExecutor, SessionRuntime};
 ///
 /// fn cannot_bind_partial<T: SessionRuntime + 'static>(runtime: Arc<T>) {
 ///     let _: SessionExecutor = runtime.into();
@@ -37,7 +37,7 @@ use std::sync::Arc;
 ///
 /// ```compile_fail,E0594
 /// use std::sync::Arc;
-/// use awaken_session_runtime_contract::{EnvironmentRuntime, SessionExecutor};
+/// use awaken_session_execution_contract::{EnvironmentRuntime, SessionExecutor};
 /// fn cannot_replace(executor: &mut SessionExecutor, other: Arc<dyn EnvironmentRuntime>) {
 ///     executor.environment = other;
 /// }

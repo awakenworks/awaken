@@ -13,7 +13,7 @@ pub fn vault(
 /// A volatile `ManagedState` over the testkit's stores behind their ports.
 #[allow(dead_code)] // This shared module is compiled independently by each integration binary.
 pub async fn state(
-    runtime: impl awaken_session_runtime_contract::CompleteSessionRuntime + 'static,
+    runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
 ) -> awaken_protocol_managed::ManagedState {
     <awaken_protocol_managed::ManagedState as awaken_protocol_managed_testkit::ManagedStateFixture>::new(runtime).await
 }
@@ -21,7 +21,7 @@ pub async fn state(
 /// [`state`] shared behind the `Arc` every router and supervisor takes.
 #[allow(dead_code)] // This shared module is compiled independently by each integration binary.
 pub async fn shared_state(
-    runtime: impl awaken_session_runtime_contract::CompleteSessionRuntime + 'static,
+    runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
 ) -> std::sync::Arc<awaken_protocol_managed::ManagedState> {
     std::sync::Arc::new(state(runtime).await)
 }
@@ -30,7 +30,7 @@ pub async fn shared_state(
 /// restart over the same store is a second call with the same repository).
 #[allow(dead_code)] // This shared module is compiled independently by each integration binary.
 pub async fn shared_state_over(
-    runtime: impl awaken_session_runtime_contract::CompleteSessionRuntime + 'static,
+    runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
     repository: std::sync::Arc<dyn awaken_session_repository_contract::SessionStore>,
 ) -> std::sync::Arc<awaken_protocol_managed::ManagedState> {
     std::sync::Arc::new({
@@ -52,8 +52,8 @@ pub async fn shared_state_over(
 #[allow(dead_code)] // This shared module is compiled independently by each integration binary.
 pub async fn state_with_mcp<R>(runtime: R) -> awaken_protocol_managed::ManagedState
 where
-    R: awaken_session_runtime_contract::CompleteSessionRuntime
-        + awaken_session_runtime_contract::McpAttachmentRealizer
+    R: awaken_session_execution_contract::CompleteSessionRuntime
+        + awaken_session_execution_contract::McpAttachmentRealizer
         + 'static,
 {
     <awaken_protocol_managed::ManagedState as awaken_protocol_managed_testkit::ManagedStateFixture>::new_with_mcp(runtime).await
@@ -248,7 +248,7 @@ pub async fn drive_retained_session_events(
 pub async fn drive_completed_user_dispatches(
     state: &awaken_protocol_managed::ManagedState,
     session_id: &str,
-    completions: &Mutex<Vec<awaken_session_runtime_contract::SessionAgentBoundaryCommand>>,
+    completions: &Mutex<Vec<awaken_session_execution_contract::SessionAgentBoundaryCommand>>,
 ) {
     // Run only the canonical supervisor, then deliver exact activation facts.
     // No scan of active epochs can substitute for a simulated Applied receipt.
@@ -264,14 +264,14 @@ pub async fn drive_completed_user_dispatches(
 #[allow(dead_code)]
 pub async fn finalize_applied_user_dispatch(
     state: &awaken_protocol_managed::ManagedState,
-    boundary: awaken_session_runtime_contract::SessionAgentBoundaryCommand,
+    boundary: awaken_session_execution_contract::SessionAgentBoundaryCommand,
 ) {
     // C1 exact activation coordinates retained by the fake; C2 committed Run;
     // C3 simulated Dispatch CAS Applied. C1+C2+C3 => the production callback
     // records processed and removes only that activity; duplicate callback is
     // a no-op. Calling this without C3 is forbidden: Thread completion alone
     // is not a Dispatch receipt. Production Host/queue tests own actual CAS.
-    use awaken_session_runtime_contract::SessionAgentCoordination;
+    use awaken_session_execution_contract::SessionAgentCoordination;
     let application = state.session_application();
     application
         .coordination()

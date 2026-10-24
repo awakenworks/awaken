@@ -123,7 +123,7 @@ async fn ghost_and_archived_child_interrupt_targets_have_zero_effect() {
         "T3"
     );
 
-    <CoordinatedRuntimeFake as awaken_session_runtime_contract::CoordinationRuntime>::archive_session_thread(
+    <CoordinatedRuntimeFake as awaken_session_execution_contract::CoordinationRuntime>::archive_session_thread(
         &runtime,
         &SessionId::from(&session_id),
         child_id,

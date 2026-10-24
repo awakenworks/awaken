@@ -139,7 +139,7 @@ impl SessionRealizationSource for RemoveAfterReadyRead {
 struct RecordUnexpectedStage(Mutex<Vec<crate::session_mcp::StageMcpAttachment>>);
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::McpAttachmentRealizer for RecordUnexpectedStage {
+impl awaken_session_execution_contract::McpAttachmentRealizer for RecordUnexpectedStage {
     async fn stage_mcp_attachment(
         &self,
         request: crate::session_mcp::StageMcpAttachment,

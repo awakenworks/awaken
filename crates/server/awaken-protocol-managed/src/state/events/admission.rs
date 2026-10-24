@@ -8,7 +8,7 @@
 use super::*;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_managed_session_events::{OrderEvidence, OrderIndex};
-use awaken_session_runtime_contract::ProjectionThreadSnapshots;
+use awaken_session_execution_contract::ProjectionThreadSnapshots;
 
 impl ManagedState {
     #[cfg(test)]

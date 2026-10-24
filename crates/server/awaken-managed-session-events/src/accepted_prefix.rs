@@ -24,7 +24,7 @@ use awaken_agent_contract::{
     RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind, ThreadDisposition,
 };
 use awaken_session_application_contract::Pending;
-use awaken_session_runtime_contract::{CoordinatedThreadLink, ProjectionThreadSnapshots};
+use awaken_session_execution_contract::{CoordinatedThreadLink, ProjectionThreadSnapshots};
 
 use crate::{
     AcceptanceFence, LifecycleAcceptance, ProjectionError, accept_lifecycle, audited_await_targets,

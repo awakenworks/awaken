@@ -15,7 +15,7 @@ impl RunAssembly {
     #[cfg(test)]
     pub(crate) fn install_test_environment_binding_sink(
         &self,
-        sink: std::sync::Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>,
+        sink: std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     ) {
         self.realization_executor
             .environments()

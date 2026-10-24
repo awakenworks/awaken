@@ -46,7 +46,7 @@ fn workspace_matches(expected: &str, authorized: &str) -> Result<(), SessionReal
     }
 }
 
-async fn next_work<R: awaken_session_runtime_contract::RealizationRuntime + ?Sized>(
+async fn next_work<R: awaken_session_execution_contract::RealizationRuntime + ?Sized>(
     control: &dyn SessionTerminalCleanupControl,
     runtime: &R,
     session_id: &awaken_session_types::SessionId,
@@ -77,9 +77,9 @@ pub async fn drive_session_terminal_cleanup(
     session_id: &awaken_session_types::SessionId,
     asserted_lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     control: &dyn SessionTerminalCleanupControl,
-    realization: &dyn awaken_session_runtime_contract::RealizationRuntime,
-    effects: &dyn awaken_session_runtime_contract::RealizationEffects,
-    runtime: &dyn awaken_session_runtime_contract::TerminalCleanupRuntime,
+    realization: &dyn awaken_session_execution_contract::RealizationRuntime,
+    effects: &dyn awaken_session_execution_contract::RealizationEffects,
+    runtime: &dyn awaken_session_execution_contract::TerminalCleanupRuntime,
 ) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError> {
     let mut lease = asserted_lease.clone();
     'drive: for _ in 0..8 {
@@ -297,11 +297,11 @@ pub(crate) mod tests {
     use super::*;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_session_application_contract::StepOutcome;
+    use awaken_session_execution_contract::SessionRuntime;
+    use awaken_session_execution_contract::ToolPermissionDecision;
     use awaken_session_realization_contract::{
         FrozenSessionProjection, SessionTerminalCleanupAssignment, SessionTerminalCleanupWork,
     };
-    use awaken_session_runtime_contract::SessionRuntime;
-    use awaken_session_runtime_contract::ToolPermissionDecision;
     use awaken_session_state_contract::{
         SessionCleanupCommand, SessionCleanupDisposalReceipt, SessionCleanupOperation,
     };
@@ -622,26 +622,26 @@ pub(crate) mod tests {
         }
     }
 
-    awaken_session_runtime_contract::neutral_role!(CoordinationRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(CoordinationRuntime for RecordingRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(SessionCoordinationReads for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for RecordingRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(BudgetRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(StreamingRunRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for RecordingRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(EnvironmentRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for RecordingRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(ThreadReadRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for RecordingRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(OutcomeRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(OutcomeRuntime for RecordingRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(LiveInboxRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RecordingRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(CapabilityRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(CapabilityRuntime for RecordingRuntime);
 
     #[async_trait::async_trait]
-    impl awaken_session_runtime_contract::RealizationRuntime for RecordingRuntime {
+    impl awaken_session_execution_contract::RealizationRuntime for RecordingRuntime {
         fn observe_realization_request(
             &self,
         ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
@@ -655,7 +655,7 @@ pub(crate) mod tests {
             )
         }
 
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Reconcile the existing Runtime projections through the given Control
         /// owner. Local and Worker deployment use one slot-based selection and
@@ -667,12 +667,12 @@ pub(crate) mod tests {
             runtime_incarnation: &str,
             timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
         ) -> Result<usize, awaken_session_types::RunError> {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
                 .await
         }
 
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Install one complete Control-frozen Session projection. Dispatch and
         /// realization are explicit modes of this single port; callers must never
@@ -685,12 +685,12 @@ pub(crate) mod tests {
             mode: awaken_session_realization_contract::SessionProjectionInstallMode,
         ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>
         {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .install_session_projection(thread, projection, mode)
                 .await
         }
 
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Install a monotonic same-owner/same-incarnation/same-epoch successor of
         /// an already-installed realization fence. This is the only lease-only
@@ -700,12 +700,12 @@ pub(crate) mod tests {
             thread: &str,
             lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
         ) -> Result<(), awaken_session_types::RunError> {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_lease(thread, lease)
                 .await
         }
 
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Forget one failed realization fence from disposable Runtime state. The
         /// aggregate remains the sole lease authority: this hook only prevents a
@@ -716,15 +716,15 @@ pub(crate) mod tests {
             thread: &str,
             lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) -> Result<(), awaken_session_types::RunError> {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .invalidate_session_realization_lease(thread, lease)
                 .await
         }
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_runtime_contract::RealizationEffects for RecordingRuntime {
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+    impl awaken_session_execution_contract::RealizationEffects for RecordingRuntime {
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Validate the exact provider-effective Sandbox layout without publishing
         /// process-local state or performing provider, cache, Skill, File, Vault,
@@ -736,19 +736,19 @@ pub(crate) mod tests {
             thread: &str,
             layout: &awaken_session_configuration_contract::SessionSandboxLayout,
         ) -> Result<(), awaken_session_types::RunError> {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .validate_session_sandbox_layout(thread, layout)
         }
 
         async fn checkpoint_session_environment(
             &self,
             thread: &str,
-            request: awaken_session_runtime_contract::__macro_support::SandboxCheckpointRequest,
+            request: awaken_session_execution_contract::__macro_support::SandboxCheckpointRequest,
         ) -> Result<
-            awaken_session_runtime_contract::__macro_support::CheckpointReceipt,
-            awaken_session_runtime_contract::__macro_support::RunError,
+            awaken_session_execution_contract::__macro_support::CheckpointReceipt,
+            awaken_session_execution_contract::__macro_support::RunError,
         > {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .checkpoint_session_environment(thread, request)
                 .await
         }
@@ -756,14 +756,14 @@ pub(crate) mod tests {
         async fn prepare_checkpoint_source_disposal(
             &self,
             thread: &str,
-            preparation: &awaken_session_runtime_contract::__macro_support::SourceReleasePreparationEffect,
-            generation: &awaken_session_runtime_contract::__macro_support::SandboxGeneration,
+            preparation: &awaken_session_execution_contract::__macro_support::SourceReleasePreparationEffect,
+            generation: &awaken_session_execution_contract::__macro_support::SandboxGeneration,
             source_binding: &str,
         ) -> Result<
-            awaken_session_runtime_contract::__macro_support::SourceReleasePreparedReceipt,
-            awaken_session_runtime_contract::__macro_support::RunError,
+            awaken_session_execution_contract::__macro_support::SourceReleasePreparedReceipt,
+            awaken_session_execution_contract::__macro_support::RunError,
         > {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
                 .await
         }
@@ -771,24 +771,24 @@ pub(crate) mod tests {
         async fn dispose_prepared_checkpoint_source(
             &self,
             thread: &str,
-            disposal: &awaken_session_runtime_contract::__macro_support::SourceReleaseDisposal,
+            disposal: &awaken_session_execution_contract::__macro_support::SourceReleaseDisposal,
         ) -> Result<
-            awaken_session_runtime_contract::__macro_support::SourceDisposedReceipt,
-            awaken_session_runtime_contract::__macro_support::RunError,
+            awaken_session_execution_contract::__macro_support::SourceDisposedReceipt,
+            awaken_session_execution_contract::__macro_support::RunError,
         > {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .dispose_prepared_checkpoint_source(thread, disposal)
                 .await
         }
 
         async fn restore_checkpointed_session_environment(
             &self,
-            request: awaken_session_runtime_contract::__macro_support::SandboxRestoreRequest,
+            request: awaken_session_execution_contract::__macro_support::SandboxRestoreRequest,
         ) -> Result<
-            awaken_session_runtime_contract::__macro_support::RestoreReceipt,
-            awaken_session_runtime_contract::__macro_support::RunError,
+            awaken_session_execution_contract::__macro_support::RestoreReceipt,
+            awaken_session_execution_contract::__macro_support::RunError,
         > {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .restore_checkpointed_session_environment(request)
                 .await
         }
@@ -796,9 +796,9 @@ pub(crate) mod tests {
         async fn delete_session_checkpoint(
             &self,
             thread: &str,
-            checkpoint: &awaken_session_runtime_contract::__macro_support::SandboxCheckpointRef,
-        ) -> Result<(), awaken_session_runtime_contract::__macro_support::RunError> {
-            awaken_session_runtime_contract::NeutralRuntime
+            checkpoint: &awaken_session_execution_contract::__macro_support::SandboxCheckpointRef,
+        ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+            awaken_session_execution_contract::NeutralRuntime
                 .delete_session_checkpoint(thread, checkpoint)
                 .await
         }
@@ -806,9 +806,9 @@ pub(crate) mod tests {
         async fn apply_session_inputs(
             &self,
             thread: &str,
-            transition: &awaken_session_runtime_contract::__macro_support::SessionResourceTransition,
-        ) -> Result<(), awaken_session_runtime_contract::__macro_support::RunError> {
-            awaken_session_runtime_contract::NeutralRuntime
+            transition: &awaken_session_execution_contract::__macro_support::SessionResourceTransition,
+        ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+            awaken_session_execution_contract::NeutralRuntime
                 .apply_session_inputs(thread, transition)
                 .await
         }
@@ -840,15 +840,15 @@ pub(crate) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_runtime_contract::TerminalCleanupRuntime for RecordingRuntime {
+    impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingRuntime {
         async fn observe_terminal_cleanup_retention(
             &self,
-            session_id: &awaken_session_runtime_contract::__macro_support::SessionId,
-            projection: &awaken_session_runtime_contract::__macro_support::FrozenSessionProjection,
+            session_id: &awaken_session_execution_contract::__macro_support::SessionId,
+            projection: &awaken_session_execution_contract::__macro_support::FrozenSessionProjection,
             source_prepared: bool,
-        ) -> Result<bool, awaken_session_runtime_contract::__macro_support::RunError> {
-            awaken_session_runtime_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
-            &awaken_session_runtime_contract::NeutralRuntime, session_id, projection, source_prepared,
+        ) -> Result<bool, awaken_session_execution_contract::__macro_support::RunError> {
+            awaken_session_execution_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
+            &awaken_session_execution_contract::NeutralRuntime, session_id, projection, source_prepared,
         ).await
         }
 

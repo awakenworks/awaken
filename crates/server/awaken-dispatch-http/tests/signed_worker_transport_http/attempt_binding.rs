@@ -2,7 +2,7 @@
 use super::*;
 use awaken_dispatch::DispatchAttemptRecordReads as _;
 use awaken_dispatch::{AttemptExecutionBinding, RunClaim, WorkerExecutionBindingSource};
-use awaken_session_runtime_contract::ApplicationError;
+use awaken_session_execution_contract::ApplicationError;
 use awaken_worker_contract::{WorkerCurrentSource, WorkerIncarnationSource};
 
 use awaken_dispatch_testkit::worker_http as support;

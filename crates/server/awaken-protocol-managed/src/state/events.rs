@@ -15,8 +15,8 @@ use awaken_session_event_contract::{
     SessionEventToolReplyKind, SessionOutcomeRubric,
 };
 #[cfg(test)]
-use awaken_session_runtime_contract::SessionThreadToolReply;
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::SessionThreadToolReply;
+use awaken_session_execution_contract::{
     CoordinatedThreadLink, CoordinatedThreadTarget, SessionThreadTarget,
 };
 

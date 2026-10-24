@@ -82,7 +82,7 @@ async fn install_complete_memory_test_session(
         projection.resource_revision,
         resources.clone(),
     );
-    awaken_session_runtime_contract::RealizationEffects::apply_session_inputs(
+    awaken_session_execution_contract::RealizationEffects::apply_session_inputs(
         &*managed.realization_executor,
         thread,
         &resource_transition(

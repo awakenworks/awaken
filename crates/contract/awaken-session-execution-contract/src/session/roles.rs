@@ -262,7 +262,7 @@ pub trait CoordinationRuntime: Send + Sync {
 /// This role grants no Run execution, claim or mutation authority.
 ///
 /// ```compile_fail,E0599
-/// use awaken_session_runtime_contract::{AdmitSessionRun, SessionCoordinationReads};
+/// use awaken_session_execution_contract::{AdmitSessionRun, SessionCoordinationReads};
 /// async fn cannot_reserve(reads: &dyn SessionCoordinationReads, command: AdmitSessionRun) {
 ///     let _ = reads.reserve_session_run(command).await;
 /// }

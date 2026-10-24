@@ -117,7 +117,7 @@ fn input(
 
 /// A shared Managed state over `runtime` with the seeded [`resource_registry`].
 async fn registry_state(
-    runtime: impl awaken_session_runtime_contract::CompleteSessionRuntime + 'static,
+    runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
 ) -> std::sync::Arc<awaken_protocol_managed::ManagedState> {
     std::sync::Arc::new(
         support::state(runtime)

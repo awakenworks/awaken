@@ -15,13 +15,13 @@
 
 use awaken_session_configuration_contract::mcp::{McpGenerationRef, McpProjectionEffectKind};
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
+use awaken_session_execution_contract::McpAttachmentRealizer;
 use awaken_session_realization_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, FailSessionRealization,
     SessionProjectionSynchronizer, SessionRealizationAction, SessionRealizationControl,
     SessionRealizationDirective, SessionRealizationDriveError, SessionRealizationEffectFailure,
     SessionRealizationPermit,
 };
-use awaken_session_runtime_contract::McpAttachmentRealizer;
 use awaken_session_types::RunError;
 use awaken_session_types::SessionId;
 
@@ -30,7 +30,7 @@ async fn publish_mcp_projection(
     generation: &McpGenerationRef,
 ) -> Result<(), RunError> {
     let receipt =
-        awaken_session_runtime_contract::publish_mcp_generation_receipt(mcp, generation.clone())
+        awaken_session_execution_contract::publish_mcp_generation_receipt(mcp, generation.clone())
             .await?;
     receipt
         .verify(generation, McpProjectionEffectKind::Publish)
@@ -47,7 +47,7 @@ async fn drain_mcp_projection(
     generation: &McpGenerationRef,
 ) -> Result<(), RunError> {
     let receipt =
-        awaken_session_runtime_contract::drain_mcp_generation_receipt(mcp, generation.clone())
+        awaken_session_execution_contract::drain_mcp_generation_receipt(mcp, generation.clone())
             .await?;
     receipt
         .verify(generation, McpProjectionEffectKind::Drain)

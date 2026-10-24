@@ -13,7 +13,7 @@ pub(crate) struct ManagedSessionRootFixture {
     pub(super) repository: Arc<awaken_session_store::SqliteManagedSessionRepository>,
     persistence: std::sync::Mutex<Option<awaken_session_application::SessionPersistence>>,
     pub(super) binding_sink:
-        Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>,
+        Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     application: std::sync::OnceLock<Arc<awaken_session_application::SessionApplication>>,
     clock: Arc<dyn awaken_time::WallClock>,
     pub(super) incarnation: String,
@@ -591,14 +591,14 @@ impl ManagedSessionRootFixture {
         // lease-only mode validates those same inputs and cannot cold-stage or
         // adopt. Both modes carry the same Store-read snapshot, and the tested
         // Run remains the only owner of new physical Environment I/O.
-        awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &*managed.run_assembly,
             thread,
             projection.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
         )
         .await?;
-        awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &*managed.run_assembly,
             thread,
             projection.clone(),

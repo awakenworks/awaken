@@ -15,7 +15,7 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
 #[cfg(test)]
 use awaken_session_application_contract::Pending;
-use awaken_session_runtime_contract::CoordinatedThreadLink;
+use awaken_session_execution_contract::CoordinatedThreadLink;
 
 use crate::{
     DerivedSessionEvent, EventIdentity, EventPosition, IssuedToolEvent, OrderIndex,
@@ -260,7 +260,7 @@ mod tests {
     use awaken_agent_contract::agent::message::{Id as MessageId, Message};
     use awaken_agent_contract::agent::run::{Id as RunId, Record, RunState};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_session_runtime_contract::CoordinatedThreadTarget;
+    use awaken_session_execution_contract::CoordinatedThreadTarget;
 
     #[test]
     fn committed_receipt_alone_selects_the_cross_post_and_its_anchor() {

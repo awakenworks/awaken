@@ -136,7 +136,7 @@ pub struct SessionResourceReconciliation {
     resource_references: Arc<crate::SessionResourceReferences>,
     repository_participants: Arc<crate::SessionRepositoryParticipants>,
     terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
-    realization_effects: Arc<dyn awaken_session_runtime_contract::RealizationEffects>,
+    realization_effects: Arc<dyn awaken_session_execution_contract::RealizationEffects>,
 }
 
 impl SessionResourceReconciliation {

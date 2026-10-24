@@ -5,7 +5,7 @@
 //! Awaken-only read projection for exact Session execution evidence.
 
 use crate::common::scope::RequiredWorkspaceScope;
-use awaken_session_runtime_contract::SessionExecutionEvidenceSelection;
+use awaken_session_execution_contract::SessionExecutionEvidenceSelection;
 use std::sync::Arc;
 
 use axum::Json;
@@ -107,8 +107,8 @@ mod tests {
                     "workspace_id":"workspace","session_id":"session-1","revision":2,
                     "file_ids":["file-original"],"origin":{"run_id":"original-run","owner":"worker","epoch":7}
                 })).unwrap()),
-                recovery: awaken_session_runtime_contract::SessionExecutionRecoveryObservation::NotProven {
-                    reason: awaken_session_runtime_contract::SessionExecutionRecoveryGap::NotTerminal,
+                recovery: awaken_session_execution_contract::SessionExecutionRecoveryObservation::NotProven {
+                    reason: awaken_session_execution_contract::SessionExecutionRecoveryGap::NotTerminal,
                 },
                 session_id: "session-1".into(),
                 session_revision: 5,
@@ -220,7 +220,7 @@ mod tests {
         // On -> exact original ids, with no tool-settlement or retry claim.
         // P7 both selections preserve existing preparation/footprint fields and
         // closure coordinates while the Session language extracts the details.
-        use awaken_session_runtime_contract::{
+        use awaken_session_execution_contract::{
             SessionExecutionOperationInventory as Inventory,
             SessionExecutionRecoveryObservation as Recovery, SessionExecutionToolOperation,
         };
@@ -235,14 +235,14 @@ mod tests {
         };
         observation.recovery = Recovery::EffectsClosed {
             preparation: Some(
-                awaken_session_runtime_contract::SessionRecoveryPreparationReference {
+                awaken_session_execution_contract::SessionRecoveryPreparationReference {
                     session_id: "session-1".into(),
                     effect_id: "original-preparation".into(),
                     preparation_fingerprint: "original-fingerprint".into(),
                 },
             ),
             operation_footprint: Some(
-                awaken_session_runtime_contract::SessionExecutionOperationFootprint::ResponseOnly,
+                awaken_session_execution_contract::SessionExecutionOperationFootprint::ResponseOnly,
             ),
             operation_inventory: Some(inventory.clone()),
             session_revision: 5,
@@ -291,7 +291,7 @@ mod tests {
         {
             *operation_inventory = Some(Inventory::NotProven {
                 reason:
-                    awaken_session_runtime_contract::SessionExecutionRecoveryGap::HistoryMissing,
+                    awaken_session_execution_contract::SessionExecutionRecoveryGap::HistoryMissing,
             });
         }
         assert!(
@@ -306,7 +306,7 @@ mod tests {
                 .operation_inventory,
                 Some(Inventory::NotProven {
                     reason:
-                        awaken_session_runtime_contract::SessionExecutionRecoveryGap::HistoryMissing
+                        awaken_session_execution_contract::SessionExecutionRecoveryGap::HistoryMissing
                 })
             ),
             "P6"

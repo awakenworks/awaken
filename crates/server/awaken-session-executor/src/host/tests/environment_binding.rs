@@ -224,7 +224,7 @@ struct MovingRealizationFenceSink {
 struct ResponseLossBindingSink {
     // A recording boundary can observe the real selected authority; it does
     // not retain a second Root or fabricate a committed generation.
-    delegate: Option<Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>>,
+    delegate: Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
     original_intent:
         std::sync::Mutex<Option<awaken_session_state_contract::SessionEnvironmentEffectIntent>>,
     authorize_calls: AtomicUsize,
@@ -233,7 +233,7 @@ struct ResponseLossBindingSink {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::SessionEnvironmentBindingSink for ResponseLossBindingSink {
+impl awaken_session_execution_contract::SessionEnvironmentBindingSink for ResponseLossBindingSink {
     async fn authorize(
         &self,
         intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
@@ -292,7 +292,9 @@ impl awaken_session_runtime_contract::SessionEnvironmentBindingSink for Response
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::SessionEnvironmentBindingSink for MovingRealizationFenceSink {
+impl awaken_session_execution_contract::SessionEnvironmentBindingSink
+    for MovingRealizationFenceSink
+{
     async fn authorize(
         &self,
         intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,

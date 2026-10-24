@@ -2,7 +2,7 @@
 //! Trusted Kubernetes facts lowered into existing Coordinator ports.
 
 use awaken_container_contract::{K8sCreateBrokerEffects, K8sLedgerBinding};
-use awaken_session_runtime_contract::ApplicationError;
+use awaken_session_execution_contract::ApplicationError;
 use std::sync::Arc;
 
 use super::WorkerTransport;

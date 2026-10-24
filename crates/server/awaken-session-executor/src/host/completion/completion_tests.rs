@@ -600,7 +600,7 @@ async fn session_user_run_observation_covers_activation_and_peer_recovery() {
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
     use awaken_agent_contract::agent::run::EndCause;
-    use awaken_session_runtime_contract::SessionRunActivation;
+    use awaken_session_execution_contract::SessionRunActivation;
 
     // Cause/effect graph: C1 activation returns Activated/AlreadyActivated/
     // RecoveryClaimed/Completed; C2 settlement is signalled locally during
@@ -690,7 +690,7 @@ async fn session_user_run_observation_covers_activation_and_peer_recovery() {
 async fn dropping_session_user_run_observation_releases_only_its_waiter() {
     // Constraint/Invariant: the authoritative inputs and ownership boundaries
     // documented here remain the only decision source; no parallel path is admitted.
-    use awaken_session_runtime_contract::SessionRunActivation;
+    use awaken_session_execution_contract::SessionRunActivation;
 
     // Cause/effect graph: C1 an activated Run remains Running in committed
     // truth; C2 its foreground caller is dropped. Effects: E1 the observation

@@ -253,10 +253,10 @@ async fn cancelled_child_uses_the_same_committed_execution_classifier() {
             RunId("root".into()),
             0,
             "child",
-            awaken_session_runtime_contract::CoordinatedThreadLink {
+            awaken_session_execution_contract::CoordinatedThreadLink {
                 session_id: awaken_session_types::SessionId::from(&session.id),
                 thread_id: ThreadId(child_id.into()),
-                target: awaken_session_runtime_contract::CoordinatedThreadTarget::Agent {
+                target: awaken_session_execution_contract::CoordinatedThreadTarget::Agent {
                     agent_id: "researcher".into(),
                 },
                 created_by_operation_id: ToolBatch::operation_id_for_step(

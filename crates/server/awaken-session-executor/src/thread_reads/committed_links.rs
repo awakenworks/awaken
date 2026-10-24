@@ -9,7 +9,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::{StateKey as _, Store};
 use awaken_ext_builtin_tools::{AgentMessageReceipt, SendMessageArgs};
-use awaken_session_runtime_contract::{CoordinatedThreadLink, CoordinatedThreadTarget};
+use awaken_session_execution_contract::{CoordinatedThreadLink, CoordinatedThreadTarget};
 use awaken_tool_contract::tool_batch::ToolBatch;
 
 #[derive(Clone)]
@@ -62,7 +62,7 @@ fn include_spawn_cleanup_target(
         Ok(awaken_ext_builtin_tools::AgentMessageTarget::Spawn { .. })
     ) {
         targets.insert(
-            awaken_session_runtime_contract::coordinated_thread_id(
+            awaken_session_execution_contract::coordinated_thread_id(
                 session_id,
                 &call.run_id,
                 &call.operation_id,
@@ -293,7 +293,7 @@ fn apply_coordination_result(
     let operation_id = call.operation_id.clone();
     match call.args.normalized_target() {
         Ok(awaken_ext_builtin_tools::AgentMessageTarget::Spawn { agent_id }) => {
-            let expected = awaken_session_runtime_contract::coordinated_thread_id(
+            let expected = awaken_session_execution_contract::coordinated_thread_id(
                 session_id,
                 &call.run_id,
                 &operation_id,
@@ -630,12 +630,12 @@ mod tests {
         let published_call = "published-send";
         let gap_call = "gap-send";
         let advisor_call = "advisor-call";
-        let published_child = awaken_session_runtime_contract::coordinated_thread_id(
+        let published_child = awaken_session_execution_contract::coordinated_thread_id(
             &awaken_session_types::SessionId::from(session),
             &run_id,
             &ToolBatch::operation_id_for_step(&run_id, step, published_call),
         );
-        let gap_child = awaken_session_runtime_contract::coordinated_thread_id(
+        let gap_child = awaken_session_execution_contract::coordinated_thread_id(
             &awaken_session_types::SessionId::from(session),
             &run_id,
             &ToolBatch::operation_id_for_step(&run_id, step, gap_call),
@@ -947,7 +947,7 @@ mod tests {
         let args = serde_json::json!({"agent_id":"writer","message":"write report"});
         let operation = ToolBatch::operation_id_for_step(&run, 0, call_id);
         let child =
-            awaken_session_runtime_contract::coordinated_thread_id(&session, &run, &operation);
+            awaken_session_execution_contract::coordinated_thread_id(&session, &run, &operation);
         let assistant = Message::new(
             MessageId::assistant(&run, 1),
             Role::Assistant,

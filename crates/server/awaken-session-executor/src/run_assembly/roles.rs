@@ -14,7 +14,7 @@ use crate::session_execution_error::to_run_error;
 use crate::skill_delivery::skill_store_run_error;
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::RealizationRuntime for RunAssembly {
+impl awaken_session_execution_contract::RealizationRuntime for RunAssembly {
     fn observe_realization_request(
         &self,
     ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
@@ -118,7 +118,7 @@ impl awaken_session_runtime_contract::RealizationRuntime for RunAssembly {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::EnvironmentRuntime for RunAssembly {
+impl awaken_session_execution_contract::EnvironmentRuntime for RunAssembly {
     async fn replace_session_tools(
         &self,
         thread: &str,
@@ -183,7 +183,7 @@ impl awaken_session_runtime_contract::EnvironmentRuntime for RunAssembly {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::TerminalCleanupRuntime for RunAssembly {
+impl awaken_session_execution_contract::TerminalCleanupRuntime for RunAssembly {
     async fn observe_terminal_cleanup_retention(
         &self,
         session_id: &awaken_session_types::SessionId,

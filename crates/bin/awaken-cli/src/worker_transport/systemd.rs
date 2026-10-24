@@ -5,7 +5,7 @@
 // @formal reason: cannot acknowledge a Run or Session cleanup.
 //! Independent Linux user-service evidence for one exact Worker incarnation.
 
-use awaken_session_runtime_contract::ApplicationError;
+use awaken_session_execution_contract::ApplicationError;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};

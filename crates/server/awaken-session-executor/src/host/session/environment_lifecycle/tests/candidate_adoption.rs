@@ -140,7 +140,7 @@ async fn candidate_retention_preserves_original_intent_and_never_invents_unknown
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::SessionEnvironmentBindingSink
+impl awaken_session_execution_contract::SessionEnvironmentBindingSink
     for NonOwningEnvironmentBindingSink
 {
     async fn authorize(
@@ -659,7 +659,7 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
 async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identity() {
     use crate::host::worker_resolver::test_support::{BlockingBindingSink, claim};
 
-    use awaken_session_runtime_contract::SessionEnvironmentBindingSink;
+    use awaken_session_execution_contract::SessionEnvironmentBindingSink;
     // Boundary decision table B: C1 source root receipt A; C2 owning sink
     // commits Adopt B; C3 SQLite dispatch claim current/stale; C4 retry count.
     // B1 C1+C2+stale => dispatch_claim_stale (never internal), same Arc hidden

@@ -3,7 +3,7 @@
 //! selecting current model, resource or inherited tool configuration.
 
 use awaken_agent_contract::agent::message::Role;
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     CoordinatedAdmissionRef, CoordinatedRunCommand, CoordinatedRunIntent,
     coordinated_activation_input, coordinated_run_id, coordinated_thread_id,
 };

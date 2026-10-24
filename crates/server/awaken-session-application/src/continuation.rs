@@ -10,7 +10,7 @@
 //! out the decided effect through the Runtime, and commit the observation
 //! through the Session root CAS before the next external effect.
 
-use awaken_session_runtime_contract::EnvironmentRuntime;
+use awaken_session_execution_contract::EnvironmentRuntime;
 use awaken_session_state_contract::{
     PersistedSession, SessionAggregate, SessionEnvironmentEvent, SessionEnvironmentFacts,
     SessionEnvironmentInstruction, SessionEnvironmentRejection, SessionEnvironmentStep,
@@ -20,7 +20,7 @@ use awaken_session_types::RunError;
 
 use std::sync::Arc;
 
-use awaken_session_runtime_contract::RealizationEffects;
+use awaken_session_execution_contract::RealizationEffects;
 
 use super::{SessionMutationError, SessionRecoveryCandidates};
 
@@ -291,7 +291,7 @@ struct ContinuationStep {
 /// to the candidate; returns the commit reason.
 async fn carry_out_effect(
     runtime: &dyn EnvironmentRuntime,
-    effects: &dyn awaken_session_runtime_contract::RealizationEffects,
+    effects: &dyn awaken_session_execution_contract::RealizationEffects,
     owner_scope: &str,
     session: &mut SessionAggregate,
     instruction: SessionEnvironmentInstruction,

@@ -13,13 +13,13 @@ use awaken_session_configuration_contract::mcp::{
     McpAttachmentState, McpGenerationRef, StageMcpAttachment,
 };
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
+use awaken_session_execution_contract::RealizationRuntime;
 use awaken_session_realization_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
     SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
     SessionRealizationDriveError,
 };
-use awaken_session_runtime_contract::RealizationRuntime;
 use awaken_session_state_contract::{
     ManagedLifecycleFact, PersistedSession, SessionEnvironmentEvent, SessionEnvironmentFacts,
     SessionEnvironmentState, SessionExecutionState, SessionRepositoryError, transition_environment,
@@ -203,7 +203,7 @@ pub struct SessionRealizations {
     lifecycle: Arc<crate::SessionLifecycle>,
     resource_references: Arc<crate::SessionResourceReferences>,
     realization: Arc<dyn RealizationRuntime>,
-    mcp: Arc<dyn awaken_session_runtime_contract::McpAttachmentRealizer>,
+    mcp: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
     executable_projections: crate::ExecutableProjections,
     execution_admission: Arc<crate::SessionExecutionAdmission>,
     local_realization_owner: String,
@@ -227,7 +227,7 @@ pub(crate) struct SessionRealizationCollaborators {
     pub(crate) lifecycle: Arc<crate::SessionLifecycle>,
     pub(crate) resource_references: Arc<crate::SessionResourceReferences>,
     pub(crate) realization: Arc<dyn RealizationRuntime>,
-    pub(crate) mcp: Arc<dyn awaken_session_runtime_contract::McpAttachmentRealizer>,
+    pub(crate) mcp: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
     pub(crate) executable_projections: crate::ExecutableProjections,
     pub(crate) execution_admission: Arc<crate::SessionExecutionAdmission>,
     pub(crate) local_realization_owner: String,

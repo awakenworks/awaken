@@ -6,7 +6,7 @@
 //! application, asks this crate which facts exist and where each one sits,
 //! mints its own public ids from [`EventIdentity`]s and encodes each fact on its
 //! wire. The evidence itself is the Session's (`CommittedSessionFacts` in
-//! `awaken-session-runtime-contract`). Consumer: the Managed protocol adapter
+//! `awaken-session-execution-contract`). Consumer: the Managed protocol adapter
 //! (identity, ordering and projection).
 
 mod updates;

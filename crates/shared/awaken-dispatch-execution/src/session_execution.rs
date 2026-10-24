@@ -202,7 +202,7 @@ pub trait ThreadCommitBoundary: Send + Sync {
 
 /// The ordinary Run compatibility path uses SDK Direct staging. A Managed
 /// Session reaches the distinct assigned-root role through projection execution.
-pub trait RunMcpAttachments: awaken_session_runtime_contract::McpAttachmentRealizer {
+pub trait RunMcpAttachments: awaken_session_execution_contract::McpAttachmentRealizer {
     fn active_stages(
         &self,
         session: &str,

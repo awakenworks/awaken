@@ -435,7 +435,7 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
     .expect("validated Host dependencies");
     let _managed = install_test_dispatch_runtime(&host);
     let child_run = RunId("child-report-run".into());
-    let command = awaken_session_runtime_contract::SessionAgentReportContinuation {
+    let command = awaken_session_execution_contract::SessionAgentReportContinuation {
         session_id: "primary-report".into(),
         source_thread_id: ThreadId("child-report-thread".into()),
         source_run_id: child_run.clone(),
@@ -468,7 +468,7 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
     let rejected = host
         .coordination
         .continue_session_agent_report(
-            awaken_session_runtime_contract::SessionAgentReportContinuation {
+            awaken_session_execution_contract::SessionAgentReportContinuation {
                 session_id: "primary-report".into(),
                 source_thread_id: ThreadId("child-report-thread".into()),
                 source_run_id: bad_run,
@@ -486,7 +486,7 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
     let zero_epoch = host
         .coordination
         .continue_session_agent_report(
-            awaken_session_runtime_contract::SessionAgentReportContinuation {
+            awaken_session_execution_contract::SessionAgentReportContinuation {
                 session_id: "primary-report".into(),
                 source_thread_id: ThreadId("child-report-thread".into()),
                 source_run_id: child_run.clone(),
@@ -757,15 +757,15 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         "CR5/E6 the old Awaiting Run remains the open writer"
     );
 
-    let command = awaken_session_runtime_contract::SessionThreadToolReplyCommand {
+    let command = awaken_session_execution_contract::SessionThreadToolReplyCommand {
         session_id: SessionId::from(&parent.0),
         tool_request_event_id: Some("evt-coordinated-reply-tool-use-1".into()),
         expected_thread_version: Some(admitted_thread_version),
-        target: awaken_session_runtime_contract::SessionThreadTarget::Child(child.clone()),
+        target: awaken_session_execution_contract::SessionThreadTarget::Child(child.clone()),
         expected_run_id: child_run.clone(),
         expected_correlation_id: ticket.correlation_id.clone(),
         tool_use_id: "coordinated-reply-tool-use".into(),
-        reply: awaken_session_runtime_contract::SessionThreadToolReply::Confirm(
+        reply: awaken_session_execution_contract::SessionThreadToolReply::Confirm(
             PermissionDecision::Allow { note: None },
         ),
         accompanying_system: Some(awaken_session_event_contract::SessionUserRunSystemInput {
@@ -779,7 +779,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         .await
         .expect("trusted Awaiting fence");
     let mut stale_fence = fence.clone();
-    if let awaken_session_runtime_contract::SessionThreadToolReplyActivity::Session {
+    if let awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
         prior_epoch: Some(epoch),
     } = &mut stale_fence.activity
     {
@@ -790,7 +790,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     assert!(
         host.coordination
             .reply_session_thread_tool(
-                awaken_session_runtime_contract::SessionThreadToolReplyDelivery {
+                awaken_session_execution_contract::SessionThreadToolReplyDelivery {
                     command: command.clone(),
                     fence: stale_fence,
                     session_activity_epoch: Some(resumed_epoch),
@@ -807,7 +807,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     );
     host.coordination
         .reply_session_thread_tool(
-            awaken_session_runtime_contract::SessionThreadToolReplyDelivery {
+            awaken_session_execution_contract::SessionThreadToolReplyDelivery {
                 command: command.clone(),
                 fence: fence.clone(),
                 session_activity_epoch: Some(resumed_epoch),
@@ -866,7 +866,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
 
     host.coordination
         .reply_session_thread_tool(
-            awaken_session_runtime_contract::SessionThreadToolReplyDelivery {
+            awaken_session_execution_contract::SessionThreadToolReplyDelivery {
                 command: command.clone(),
                 fence: fence.clone(),
                 session_activity_epoch: Some(resumed_epoch),
@@ -936,7 +936,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     );
     host.coordination
         .reply_session_thread_tool(
-            awaken_session_runtime_contract::SessionThreadToolReplyDelivery {
+            awaken_session_execution_contract::SessionThreadToolReplyDelivery {
                 command: command.clone(),
                 fence: replay_fence,
                 session_activity_epoch: Some(resumed_epoch),
@@ -963,7 +963,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     assert!(
         host.coordination
             .reply_session_thread_tool(
-                awaken_session_runtime_contract::SessionThreadToolReplyDelivery {
+                awaken_session_execution_contract::SessionThreadToolReplyDelivery {
                     command: conflicting_system,
                     fence: fence.clone(),
                     session_activity_epoch: Some(resumed_epoch + 1),
@@ -1017,7 +1017,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     assert!(!later_fence.already_applied, "CR11/E11");
 
     let mut conflicting = command;
-    conflicting.reply = awaken_session_runtime_contract::SessionThreadToolReply::Confirm(
+    conflicting.reply = awaken_session_execution_contract::SessionThreadToolReply::Confirm(
         PermissionDecision::Deny {
             reason: Some("changed".into()),
         },
@@ -1025,7 +1025,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     assert!(
         host.coordination
             .reply_session_thread_tool(
-                awaken_session_runtime_contract::SessionThreadToolReplyDelivery {
+                awaken_session_execution_contract::SessionThreadToolReplyDelivery {
                     command: conflicting,
                     fence,
                     session_activity_epoch: Some(resumed_epoch + 1),
@@ -1236,15 +1236,15 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
         ))
         .await
         .expect("R2 RemoteInput without ToolBatch");
-    let command = awaken_session_runtime_contract::SessionThreadToolReplyCommand {
+    let command = awaken_session_execution_contract::SessionThreadToolReplyCommand {
         session_id: SessionId::from(&thread.0),
         tool_request_event_id: Some("remote-input-event".into()),
         expected_thread_version: None,
-        target: awaken_session_runtime_contract::SessionThreadTarget::Primary,
+        target: awaken_session_execution_contract::SessionThreadTarget::Primary,
         expected_run_id: run_id,
         expected_correlation_id: ticket.correlation_id.clone(),
         tool_use_id: "remote-task-7".into(),
-        reply: awaken_session_runtime_contract::SessionThreadToolReply::Result {
+        reply: awaken_session_execution_contract::SessionThreadToolReply::Result {
             content: vec![ContentBlock::text("README.md")],
             is_error: false,
         },
@@ -1316,15 +1316,15 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
         ))
         .await
         .expect("R1 ToolCall without ToolBatch");
-    let tool_command = awaken_session_runtime_contract::SessionThreadToolReplyCommand {
+    let tool_command = awaken_session_execution_contract::SessionThreadToolReplyCommand {
         session_id: SessionId::from(&tool_thread.0),
         tool_request_event_id: Some("missing-tool-batch-event".into()),
         expected_thread_version: None,
-        target: awaken_session_runtime_contract::SessionThreadTarget::Primary,
+        target: awaken_session_execution_contract::SessionThreadTarget::Primary,
         expected_run_id: tool_run,
         expected_correlation_id: tool_ticket.correlation_id,
         tool_use_id: "client-call".into(),
-        reply: awaken_session_runtime_contract::SessionThreadToolReply::Result {
+        reply: awaken_session_execution_contract::SessionThreadToolReply::Result {
             content: vec![ContentBlock::text("result")],
             is_error: false,
         },
@@ -1480,15 +1480,15 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
             awaken_dispatch_contract::SettleOutcome::Applied
         );
 
-        let command = awaken_session_runtime_contract::SessionThreadToolReplyCommand {
+        let command = awaken_session_execution_contract::SessionThreadToolReplyCommand {
             session_id: SessionId::from(&parent.0),
             tool_request_event_id: Some("evt-primary-reply-tool-use-1".into()),
             expected_thread_version: None,
-            target: awaken_session_runtime_contract::SessionThreadTarget::Primary,
+            target: awaken_session_execution_contract::SessionThreadTarget::Primary,
             expected_run_id: run_id.clone(),
             expected_correlation_id: ticket.correlation_id.clone(),
             tool_use_id: "primary-reply-tool-use".into(),
-            reply: awaken_session_runtime_contract::SessionThreadToolReply::Result {
+            reply: awaken_session_execution_contract::SessionThreadToolReply::Result {
                 content: vec![ContentBlock::text("client answer")],
                 is_error: false,
             },
@@ -1577,7 +1577,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
             .expect("PR1 exact primary fence");
         host.coordination
             .reply_session_thread_tool(
-                awaken_session_runtime_contract::SessionThreadToolReplyDelivery {
+                awaken_session_execution_contract::SessionThreadToolReplyDelivery {
                     command,
                     fence,
                     session_activity_epoch: (!extension).then_some(resumed_epoch),

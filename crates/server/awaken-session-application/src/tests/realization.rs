@@ -313,7 +313,7 @@ impl SessionRuntime for RecordingResourceRuntime {
         &self,
         thread: &str,
         tool_use_id: &str,
-        decision: awaken_session_runtime_contract::ToolPermissionDecision,
+        decision: awaken_session_execution_contract::ToolPermissionDecision,
     ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
         NoopRuntime.resume(thread, tool_use_id, decision).await
     }
@@ -335,26 +335,26 @@ impl SessionRuntime for RecordingResourceRuntime {
     }
 }
 
-awaken_session_runtime_contract::neutral_role!(CoordinationRuntime for RecordingResourceRuntime);
+awaken_session_execution_contract::neutral_role!(CoordinationRuntime for RecordingResourceRuntime);
 
-awaken_session_runtime_contract::neutral_role!(SessionCoordinationReads for RecordingResourceRuntime);
+awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for RecordingResourceRuntime);
 
-awaken_session_runtime_contract::neutral_role!(BudgetRuntime for RecordingResourceRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingResourceRuntime);
 
-awaken_session_runtime_contract::neutral_role!(StreamingRunRuntime for RecordingResourceRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for RecordingResourceRuntime);
 
 no_committed_threads!(RecordingResourceRuntime);
 
-awaken_session_runtime_contract::neutral_role!(TerminalCleanupRuntime for RecordingResourceRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for RecordingResourceRuntime);
 
-awaken_session_runtime_contract::neutral_role!(LiveInboxRuntime for RecordingResourceRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RecordingResourceRuntime);
 
-awaken_session_runtime_contract::neutral_role!(CapabilityRuntime for RecordingResourceRuntime);
+awaken_session_execution_contract::neutral_role!(CapabilityRuntime for RecordingResourceRuntime);
 
 // Only complete installation exercises this resource fixture; lifecycle
 // methods reuse NeutralRuntime and its authoritative role contract unchanged.
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::RealizationRuntime for RecordingResourceRuntime {
+impl awaken_session_execution_contract::RealizationRuntime for RecordingResourceRuntime {
     fn observe_realization_request(
         &self,
     ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
@@ -368,7 +368,7 @@ impl awaken_session_runtime_contract::RealizationRuntime for RecordingResourceRu
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
     ) -> Result<usize, awaken_session_types::RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
             .await
     }
@@ -389,7 +389,7 @@ impl awaken_session_runtime_contract::RealizationRuntime for RecordingResourceRu
         thread: &str,
         lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
             .await
     }
@@ -399,14 +399,14 @@ impl awaken_session_runtime_contract::RealizationRuntime for RecordingResourceRu
         thread: &str,
         lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
             .await
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::EnvironmentRuntime for RecordingResourceRuntime {
+impl awaken_session_execution_contract::EnvironmentRuntime for RecordingResourceRuntime {
     async fn replace_session_tools(
         &self,
         thread: &str,
@@ -419,7 +419,7 @@ impl awaken_session_runtime_contract::EnvironmentRuntime for RecordingResourceRu
         Ok(())
     }
 
-    // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Adopt a previously persisted environment before reopening a Session.
     /// Implementations must validate that the binding belongs to `thread` and
@@ -430,12 +430,12 @@ impl awaken_session_runtime_contract::EnvironmentRuntime for RecordingResourceRu
         thread: &str,
         binding: &str,
     ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .adopt_session_environment(agent, thread, binding)
             .await
     }
 
-    // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Close Runtime admission and prove that no primary, delegated,
     /// shared-background, MCP, tool, Hand, or child-process effect can mutate
@@ -450,7 +450,7 @@ impl awaken_session_runtime_contract::EnvironmentRuntime for RecordingResourceRu
         expected_mcp_generations: &[crate::session_mcp::McpGenerationRef],
     ) -> Result<awaken_session_state_contract::QuiescenceReceipt, awaken_session_types::RunError>
     {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .quiesce_session_environment(
                 thread,
                 operation,
@@ -462,7 +462,7 @@ impl awaken_session_runtime_contract::EnvironmentRuntime for RecordingResourceRu
             .await
     }
 
-    // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Resolve the current versions of already-authorized Skill resource ids once
     /// at Session creation. The implementation receives only a trusted Workspace
@@ -473,20 +473,20 @@ impl awaken_session_runtime_contract::EnvironmentRuntime for RecordingResourceRu
         skills: &[awaken_agent_contract::AgentSkillBinding],
     ) -> Result<Vec<crate::session_resource::ResolvedSkillBinding>, awaken_session_types::RunError>
     {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .resolve_session_skills(workspace_id, skills)
             .await
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::RealizationEffects for RecordingResourceRuntime {
+impl awaken_session_execution_contract::RealizationEffects for RecordingResourceRuntime {
     fn validate_session_sandbox_layout(
         &self,
         thread: &str,
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
     ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .validate_session_sandbox_layout(thread, layout)
     }
 
@@ -496,7 +496,7 @@ impl awaken_session_runtime_contract::RealizationEffects for RecordingResourceRu
         request: awaken_session_state_contract::SandboxCheckpointRequest,
     ) -> Result<awaken_session_state_contract::CheckpointReceipt, awaken_session_types::RunError>
     {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .checkpoint_session_environment(thread, request)
             .await
     }
@@ -511,7 +511,7 @@ impl awaken_session_runtime_contract::RealizationEffects for RecordingResourceRu
         awaken_session_state_contract::SourceReleasePreparedReceipt,
         awaken_session_types::RunError,
     > {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
             .await
     }
@@ -522,7 +522,7 @@ impl awaken_session_runtime_contract::RealizationEffects for RecordingResourceRu
         disposal: &awaken_session_state_contract::SourceReleaseDisposal,
     ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, awaken_session_types::RunError>
     {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .dispose_prepared_checkpoint_source(thread, disposal)
             .await
     }
@@ -531,7 +531,7 @@ impl awaken_session_runtime_contract::RealizationEffects for RecordingResourceRu
         &self,
         request: awaken_session_state_contract::SandboxRestoreRequest,
     ) -> Result<awaken_session_state_contract::RestoreReceipt, awaken_session_types::RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .restore_checkpointed_session_environment(request)
             .await
     }
@@ -541,7 +541,7 @@ impl awaken_session_runtime_contract::RealizationEffects for RecordingResourceRu
         thread: &str,
         checkpoint: &awaken_session_state_contract::SandboxCheckpointRef,
     ) -> Result<(), awaken_session_types::RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .delete_session_checkpoint(thread, checkpoint)
             .await
     }
@@ -567,33 +567,33 @@ impl awaken_session_runtime_contract::RealizationEffects for RecordingResourceRu
 
     async fn execute_terminal_repository_publication_for_lease(
         &self,
-        command: awaken_session_runtime_contract::__macro_support::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_runtime_contract::__macro_support::SessionRealizationLease,
+        command: awaken_session_execution_contract::__macro_support::SessionRepositoryPublicationCommand,
+        lease: &awaken_session_execution_contract::__macro_support::SessionRealizationLease,
     ) -> Result<
-        awaken_session_runtime_contract::__macro_support::SessionRepositoryPublicationEffect,
-        awaken_session_runtime_contract::__macro_support::RunError,
+        awaken_session_execution_contract::__macro_support::SessionRepositoryPublicationEffect,
+        awaken_session_execution_contract::__macro_support::RunError,
     > {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .execute_terminal_repository_publication_for_lease(command, lease)
             .await
     }
 
     async fn dispose_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_runtime_contract::__macro_support::SessionTerminalCleanupDisposalEffect,
+        effect: awaken_session_execution_contract::__macro_support::SessionTerminalCleanupDisposalEffect,
     ) -> Result<
-        awaken_session_runtime_contract::__macro_support::SessionCleanupDisposalReceipt,
-        awaken_session_runtime_contract::__macro_support::RunError,
+        awaken_session_execution_contract::__macro_support::SessionCleanupDisposalReceipt,
+        awaken_session_execution_contract::__macro_support::RunError,
     > {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .dispose_terminal_cleanup_for_effect(effect)
             .await
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::OutcomeRuntime for RecordingResourceRuntime {
-    // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+impl awaken_session_execution_contract::OutcomeRuntime for RecordingResourceRuntime {
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
     /// The opaque id is supplied by the application command so crash replay and
@@ -606,7 +606,7 @@ impl awaken_session_runtime_contract::OutcomeRuntime for RecordingResourceRuntim
         rubric: &str,
         max_iterations: u32,
     ) -> Result<u64, awaken_session_types::RunError> {
-        awaken_session_runtime_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
             .await
     }
@@ -617,13 +617,13 @@ impl awaken_session_runtime_contract::OutcomeRuntime for RecordingResourceRuntim
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<awaken_session_runtime_contract::OutcomeDrive, RunError> {
+    ) -> Result<awaken_session_execution_contract::OutcomeDrive, RunError> {
         NoopRuntime
             .define_outcome(thread, description, rubric, max_iterations)
             .await
     }
 
-    // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Continue the active Outcome after the ordinary Run resume has committed.
     /// `None` proves there is no active aggregate; implementations must rebuild
@@ -631,9 +631,11 @@ impl awaken_session_runtime_contract::OutcomeRuntime for RecordingResourceRuntim
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_runtime_contract::OutcomeDrive>, awaken_session_types::RunError>
-    {
-        awaken_session_runtime_contract::NeutralRuntime
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await
     }

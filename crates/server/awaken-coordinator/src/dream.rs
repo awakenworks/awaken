@@ -18,7 +18,7 @@ use awaken_resource_contract::{
 use awaken_session_application::{CreateProfiledSessionCommand, SessionApplication};
 use awaken_session_configuration_contract::SessionToolConfiguration;
 use awaken_session_dream_contract::DreamOutputBehavior;
-use awaken_session_runtime_contract::{AdmitSessionRun, session_run_id};
+use awaken_session_execution_contract::{AdmitSessionRun, session_run_id};
 use awaken_session_state_contract::ManagedLifecycleFact;
 
 const PLATFORM_INSTRUCTIONS: &str = r#"You are the built-in Dream Agent.

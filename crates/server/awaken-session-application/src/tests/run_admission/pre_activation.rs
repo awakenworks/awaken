@@ -17,7 +17,7 @@
 //! | Z4 | admitted, activate never called | Reserved(e) | one record e | Admitted(e) | Admitted(e) |
 use super::*;
 use crate::tests::effect_counting_runtime::{EffectCountingRuntime, EffectCounts};
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     SessionAgentCoordination as _, SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
 };
 
@@ -29,7 +29,7 @@ fn admit_command(session: &str, operation: &str) -> AdmitSessionRun {
         session_id: session_id.clone(),
         agent_id: "agent".into(),
         operation_id: operation.into(),
-        run_id: awaken_session_runtime_contract::session_run_id(&session_id, operation),
+        run_id: awaken_session_execution_contract::session_run_id(&session_id, operation),
         messages: vec![awaken_agent_contract::agent::message::Message::text(
             awaken_agent_contract::agent::message::Id(format!("{operation}-input")),
             awaken_agent_contract::agent::message::Role::User,
@@ -136,7 +136,7 @@ async fn paused_or_failed_activity_cas_executes_nothing_and_leaves_a_repairable_
     let command = admit_command(session, "t07-operation");
     let run_id = command.run_id.clone();
     let operation =
-        awaken_session_runtime_contract::session_run_activity_operation_id(&id, &run_id);
+        awaken_session_execution_contract::session_run_activity_operation_id(&id, &run_id);
 
     // Z1: hold the real activity CAS after the reservation is durable.
     let pause = faulting.pause_next_mutation(ACTIVITY_CAS);
@@ -316,7 +316,7 @@ async fn return_code_alone_cannot_sign_off_zero_execution() {
     check_zero_execution(&runtime.counts()).expect("NC baseline: no leak yet");
 
     // Mutant: a leaked inline model execution behind the failed admission.
-    awaken_session_runtime_contract::SessionRuntime::run(
+    awaken_session_execution_contract::SessionRuntime::run(
         runtime.as_ref(),
         "agent",
         session,

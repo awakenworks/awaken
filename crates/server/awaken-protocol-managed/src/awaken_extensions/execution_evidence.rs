@@ -19,18 +19,18 @@ pub struct SessionExecutionEvidence {
     pub configuration:
         Option<awaken_session_configuration_contract::SessionConfigurationInspection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preparation: Option<awaken_session_runtime_contract::SessionRecoveryPreparationReference>,
+    pub preparation: Option<awaken_session_execution_contract::SessionRecoveryPreparationReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_capture: Option<awaken_resource_contract::ArtifactCapture>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_footprint:
-        Option<awaken_session_runtime_contract::SessionExecutionOperationFootprint>,
+        Option<awaken_session_execution_contract::SessionExecutionOperationFootprint>,
     /// Expanded original-operation read, explicitly selected by the caller.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_inventory:
-        Option<awaken_session_runtime_contract::SessionExecutionOperationInventory>,
+        Option<awaken_session_execution_contract::SessionExecutionOperationInventory>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery: Option<awaken_session_runtime_contract::SessionExecutionRecoveryObservation>,
+    pub recovery: Option<awaken_session_execution_contract::SessionExecutionRecoveryObservation>,
     pub session_id: String,
     pub session_revision: u64,
     pub agent_id: String,
@@ -59,7 +59,7 @@ pub struct SessionRunExecutionEvidence {
     pub idempotency_key: Option<String>,
     pub state: RunState,
     pub tool_use_ids: Vec<String>,
-    pub model_requests: Vec<awaken_session_runtime_contract::SessionModelRequestObservation>,
+    pub model_requests: Vec<awaken_session_execution_contract::SessionModelRequestObservation>,
 }
 
 /// Mount the read-only evidence adapter under Awaken's extension namespace.
@@ -107,7 +107,7 @@ mod tests {
                 state: RunState::Running,
                 tool_use_ids: vec!["tool-submit".into()],
                 model_requests: vec![
-                    awaken_session_runtime_contract::SessionModelRequestObservation {
+                    awaken_session_execution_contract::SessionModelRequestObservation {
                         sequence: 9,
                         is_error: false,
                         retry_count: 1,
@@ -170,17 +170,18 @@ mod tests {
             "workspace_id":"workspace","session_id":"session-1","revision":2,
             "file_ids":["file-original"],"origin":{"run_id":"original-run","owner":"worker","epoch":7}
         })).unwrap());
-        with_footprint.operation_footprint =
-            Some(awaken_session_runtime_contract::SessionExecutionOperationFootprint::ResponseOnly);
+        with_footprint.operation_footprint = Some(
+            awaken_session_execution_contract::SessionExecutionOperationFootprint::ResponseOnly,
+        );
         with_footprint.preparation = Some(
-            awaken_session_runtime_contract::SessionRecoveryPreparationReference {
+            awaken_session_execution_contract::SessionRecoveryPreparationReference {
                 session_id: "session-1".into(),
                 effect_id: "original-effect".into(),
                 preparation_fingerprint: "original-preparation".into(),
             },
         );
         with_footprint.recovery = Some(
-            awaken_session_runtime_contract::SessionExecutionRecoveryObservation::EffectsClosed {
+            awaken_session_execution_contract::SessionExecutionRecoveryObservation::EffectsClosed {
                 preparation: None,
                 operation_footprint: None,
                 operation_inventory: None,
@@ -188,7 +189,7 @@ mod tests {
                 runtime_commit_cursor: 9,
                 thread_ids: vec!["session-1".into()],
                 closure_records: vec![
-                    awaken_session_runtime_contract::SessionExecutionClosureReference {
+                    awaken_session_execution_contract::SessionExecutionClosureReference {
                         run_id: "run-1".into(),
                         evidence_ref: "original-closure".into(),
                     },

@@ -9,13 +9,13 @@
 //!
 //! This module adds no child registry. It resolves the roster already frozen by
 //! the Session baseline and delegates ordinary Thread/Run persistence to the
-//! existing [`awaken_session_runtime_contract::SessionRuntime`] port.
+//! existing [`awaken_session_execution_contract::SessionRuntime`] port.
 
 use crate::SessionRootReads as _;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_session_application_contract::{Pending, RunResume, StepOutcome};
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     CoordinatedRunIntent, SessionAgentBoundaryAction, SessionAgentBoundaryCommand,
     SessionAgentBoundaryRole, SessionAgentBoundaryVisibility, SessionAgentCommittedReport,
     SessionAgentCoordination, SessionAgentMessageCommand, SessionAgentMessageReceipt,
@@ -93,9 +93,9 @@ pub struct SessionCoordination {
     run_admissions: Arc<crate::SessionRunAdmissions>,
     realizations: Arc<crate::SessionRealizations>,
     observations: Arc<crate::SessionObservations>,
-    coordination: Arc<dyn awaken_session_runtime_contract::CoordinationRuntime>,
-    coordination_reads: Arc<dyn awaken_session_runtime_contract::SessionCoordinationReads>,
-    thread_reads: Arc<dyn awaken_session_runtime_contract::ThreadReadRuntime>,
+    coordination: Arc<dyn awaken_session_execution_contract::CoordinationRuntime>,
+    coordination_reads: Arc<dyn awaken_session_execution_contract::SessionCoordinationReads>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
 }
 
 /// The collaborators one [`SessionCoordination`] is built from.
@@ -185,7 +185,7 @@ impl SessionCoordination {
     async fn recover_coordinated_admission(
         &self,
         session: &awaken_session_state_contract::PersistedSession,
-        command: awaken_session_runtime_contract::CoordinatedAdmissionRef<'_>,
+        command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
     ) -> Result<Option<SessionAgentMessageReceipt>, RunError> {
         let (operation, thread, run) = command.activity_source();
         let epoch = command.activity_epoch();
@@ -479,8 +479,8 @@ impl SessionCoordination {
             None
         } else {
             match fence.activity {
-                awaken_session_runtime_contract::SessionThreadToolReplyActivity::ThreadExtension => None,
-                awaken_session_runtime_contract::SessionThreadToolReplyActivity::Session {
+                awaken_session_execution_contract::SessionThreadToolReplyActivity::ThreadExtension => None,
+                awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
                     prior_epoch,
                 } => {
                     let (_, epoch) = self.activities
@@ -821,7 +821,7 @@ impl SessionAgentCoordination for SessionCoordination {
                         ))
                     })?;
                 (
-                    awaken_session_runtime_contract::coordinated_thread_id(
+                    awaken_session_execution_contract::coordinated_thread_id(
                         &command.session_id,
                         &command.source_run_id,
                         &command.operation_id,
@@ -901,7 +901,7 @@ impl SessionAgentCoordination for SessionCoordination {
         if let Some(receipt) = self
             .recover_coordinated_admission(
                 original,
-                awaken_session_runtime_contract::CoordinatedAdmissionRef::Child(&admission),
+                awaken_session_execution_contract::CoordinatedAdmissionRef::Child(&admission),
             )
             .await?
         {
@@ -1081,7 +1081,7 @@ impl SessionAgentCoordination for SessionCoordination {
         if self
             .recover_coordinated_admission(
                 &settled,
-                awaken_session_runtime_contract::CoordinatedAdmissionRef::Report(
+                awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
                     &continuation,
                     baseline,
                 ),
@@ -1183,9 +1183,9 @@ impl crate::ProfiledSessionReplies for SessionCoordination {
     async fn reply_profiled_session_run_for_owner(
         &self,
         owner_scope: &str,
-        command: awaken_session_runtime_contract::SessionThreadToolReplyCommand,
+        command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
     ) -> Result<(), SessionProjectionRecoveryError> {
-        use awaken_session_runtime_contract::{SessionAgentCoordination, SessionThreadTarget};
+        use awaken_session_execution_contract::{SessionAgentCoordination, SessionThreadTarget};
         self.run_admissions
             .require_profiled_run_owner(owner_scope, &command.session_id)
             .await?;
@@ -1236,23 +1236,23 @@ mod boundary_tests {
         // | B5 | Running | E4 |
         assert_eq!(
             session_agent_run_boundary(&RunState::Awaiting).expect("B1"),
-            awaken_session_runtime_contract::SessionAgentRunBoundary::Awaiting,
+            awaken_session_execution_contract::SessionAgentRunBoundary::Awaiting,
             "B1/E1"
         );
         assert_eq!(
             session_agent_run_boundary(&RunState::Ended(EndCause::NaturalEnd,)).expect("B2"),
-            awaken_session_runtime_contract::SessionAgentRunBoundary::Completed,
+            awaken_session_execution_contract::SessionAgentRunBoundary::Completed,
             "B2/E2"
         );
         assert_eq!(
             session_agent_run_boundary(&RunState::Ended(EndCause::Error(Failure::StateConflict,)))
                 .expect("B3"),
-            awaken_session_runtime_contract::SessionAgentRunBoundary::Failed,
+            awaken_session_execution_contract::SessionAgentRunBoundary::Failed,
             "B3/E3"
         );
         assert_eq!(
             session_agent_run_boundary(&RunState::Ended(EndCause::Cancelled)).expect("B4"),
-            awaken_session_runtime_contract::SessionAgentRunBoundary::Cancelled,
+            awaken_session_execution_contract::SessionAgentRunBoundary::Cancelled,
             "B4/E3"
         );
         assert!(

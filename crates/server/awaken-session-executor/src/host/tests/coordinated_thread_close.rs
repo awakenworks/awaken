@@ -100,7 +100,7 @@ async fn failed_child_boundary_cancels_raced_follow_up_without_fencing_its_own_s
             .coordinated_thread_is_closed(
                 &parent.0,
                 &child,
-                awaken_session_runtime_contract::CoordinatedThreadKind::Agent
+                awaken_session_execution_contract::CoordinatedThreadKind::Agent
             )
             .await
             .expect("R1 admission fence"),
@@ -170,7 +170,7 @@ async fn follow_up_close_fence_applies_the_contract_rule_for_each_thread_kind() 
     use awaken_agent_contract::agent::run::Failure;
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
-    use awaken_session_runtime_contract::CoordinatedThreadKind;
+    use awaken_session_execution_contract::CoordinatedThreadKind;
 
     let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()

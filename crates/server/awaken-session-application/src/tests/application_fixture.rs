@@ -9,7 +9,7 @@ pub(crate) fn application(
 }
 
 pub(super) fn application_with_runtime(
-    runtime: Arc<dyn awaken_session_runtime_contract::CompleteSessionRuntime>,
+    runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
     repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
     environments: impl Into<SessionEnvironments>,
 ) -> SessionApplication {
@@ -23,7 +23,7 @@ pub(super) fn application_with_runtime(
 }
 
 pub(super) fn configured_application(
-    runtime: Arc<dyn awaken_session_runtime_contract::CompleteSessionRuntime>,
+    runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
     persistence: SessionPersistence,
     environments: impl Into<SessionEnvironments>,
     configuration: SessionApplicationConfiguration,
@@ -60,7 +60,7 @@ pub(super) fn application_with_configuration(
 }
 
 pub(super) fn application_with_persistence(
-    runtime: Arc<dyn awaken_session_runtime_contract::CompleteSessionRuntime>,
+    runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
     persistence: SessionPersistence,
 ) -> SessionApplication {
     configured_application(

@@ -369,7 +369,7 @@ async fn original_raw_request_build_refusal_precedes_the_one_service() {
         .unwrap_err();
     assert_eq!(
         error.kind,
-        awaken_session_runtime_contract::ApplicationErrorKind::Internal
+        awaken_session_execution_contract::ApplicationErrorKind::Internal
     );
     assert_eq!(error.message, "original Create readback path invalid");
     assert_eq!(f.api_calls.load(Ordering::SeqCst), calls);
@@ -445,7 +445,7 @@ async fn raw_send_and_capture_failures_keep_original_caller_errors_and_receipts(
         };
         assert_eq!(
             error.kind,
-            awaken_session_runtime_contract::ApplicationErrorKind::Unavailable
+            awaken_session_execution_contract::ApplicationErrorKind::Unavailable
         );
         assert_eq!(
             error.message,

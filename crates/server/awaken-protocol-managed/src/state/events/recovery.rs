@@ -78,7 +78,7 @@ impl ManagedState {
             })?
             .map(|run| &run.state);
         Ok(
-            !awaken_session_runtime_contract::coordinated_thread_is_interruptible(
+            !awaken_session_execution_contract::coordinated_thread_is_interruptible(
                 &link.target,
                 disposition,
                 latest_state,
@@ -181,7 +181,7 @@ impl ManagedState {
             Item = &'a awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
         >,
     ) -> Result<Vec<RunLifecycleEvent>, StateError> {
-        awaken_session_runtime_contract::committed_lifecycle_prefix(snapshots)
+        awaken_session_execution_contract::committed_lifecycle_prefix(snapshots)
             .map_err(|error| StateError::Run(RunError::internal(error.to_string())))
     }
 

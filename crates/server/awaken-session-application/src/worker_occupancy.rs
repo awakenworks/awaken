@@ -23,8 +23,8 @@ use crate::session_repository_error;
 pub struct SessionWorkerOccupancy {
     repository: Arc<dyn SessionRepository>,
     queries: Arc<crate::SessionQueries>,
-    coordination_reads: Arc<dyn awaken_session_runtime_contract::SessionCoordinationReads>,
-    terminal_cleanup: Arc<dyn awaken_session_runtime_contract::TerminalCleanupRuntime>,
+    coordination_reads: Arc<dyn awaken_session_execution_contract::SessionCoordinationReads>,
+    terminal_cleanup: Arc<dyn awaken_session_execution_contract::TerminalCleanupRuntime>,
 }
 
 impl SessionWorkerOccupancy {
@@ -120,7 +120,7 @@ impl SessionWorkerOccupancy {
                     self.coordination_reads
                         .source_dispatch_observation(&session)
                         .await,
-                    awaken_session_runtime_contract::SessionSourceDispatchObservation::Settled
+                    awaken_session_execution_contract::SessionSourceDispatchObservation::Settled
                 ) {
                     return Ok(blocked);
                 }

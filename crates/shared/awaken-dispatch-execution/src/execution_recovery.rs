@@ -6,7 +6,7 @@ use awaken_dispatch_contract::dispatch::PhysicalAttempt;
 use awaken_dispatch_contract::{
     AttemptClosureRecord, AttemptPhysicalFact, DispatchCursor, DispatchOperation,
 };
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     SessionExecutionClosureReference, SessionExecutionOperationInventory,
     SessionExecutionRecoveryGap as Gap, SessionExecutionRecoveryObservation as Observation,
     SessionExecutionToolOperation,
@@ -60,8 +60,8 @@ pub async fn read_source_dispatch_observation<
 >(
     source: &S,
     session: &PersistedSession,
-) -> awaken_session_runtime_contract::SessionSourceDispatchObservation {
-    use awaken_session_runtime_contract::SessionSourceDispatchObservation as Source;
+) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
+    use awaken_session_execution_contract::SessionSourceDispatchObservation as Source;
     let (threads, _) = match frozen_terminal_scope(session) {
         Ok(scope) => scope,
         Err(reason) => return Source::NotProven { reason },
@@ -129,12 +129,12 @@ where
 
 fn original_preparation(
     session: &PersistedSession,
-) -> Option<awaken_session_runtime_contract::SessionRecoveryPreparationReference> {
+) -> Option<awaken_session_execution_contract::SessionRecoveryPreparationReference> {
     match session.terminal_cleanup_work_action() {
         Ok(Some(awaken_session_state_contract::SessionTerminalCleanupAction::Dispose {
             command,
         })) => Some(
-            awaken_session_runtime_contract::SessionRecoveryPreparationReference {
+            awaken_session_execution_contract::SessionRecoveryPreparationReference {
                 session_id: command.session_id.to_string(),
                 effect_id: command.effect_id,
                 preparation_fingerprint: command.preparation_fingerprint,
@@ -299,7 +299,7 @@ pub async fn read_execution_recovery<S, R>(
 ) -> Observation
 where
     S: awaken_dispatch_contract::DispatchAttemptRecordReads + ?Sized,
-    R: awaken_session_runtime_contract::ThreadReadRuntime + ?Sized,
+    R: awaken_session_execution_contract::ThreadReadRuntime + ?Sized,
 {
     let (threads, runtime_commit_cursor) = match frozen_terminal_scope(session) {
         Ok(scope) => scope,
@@ -484,7 +484,7 @@ fn project_closed_scope_observation(
         operation_inventory: Some(inventory),
         preparation: original_preparation(session),
         operation_footprint: response_only.then_some(
-            awaken_session_runtime_contract::SessionExecutionOperationFootprint::ResponseOnly,
+            awaken_session_execution_contract::SessionExecutionOperationFootprint::ResponseOnly,
         ),
         session_revision: session.revision.0,
         runtime_commit_cursor,
@@ -625,7 +625,7 @@ mod tests {
         }
     }
     #[async_trait::async_trait]
-    impl awaken_session_runtime_contract::ThreadReadRuntime for RecoveryHistory {
+    impl awaken_session_execution_contract::ThreadReadRuntime for RecoveryHistory {
         async fn owns_thread(&self, _thread: &str) -> Result<bool, RunError> {
             Ok(false)
         }
@@ -661,7 +661,7 @@ mod tests {
             &self,
             _thread: &str,
             _outcome: &str,
-        ) -> Result<Option<awaken_session_runtime_contract::CommittedOutcomeProjection>, RunError>
+        ) -> Result<Option<awaken_session_execution_contract::CommittedOutcomeProjection>, RunError>
         {
             Ok(None)
         }
@@ -1160,7 +1160,7 @@ mod tests {
             AttemptClosureEvent, AttemptClosureKind, AttemptClosureRecord, AttemptPhysicalFact,
             DispatchCursor, DispatchOperation, DispatchOperationalEvent, RunClaim,
         };
-        use awaken_session_runtime_contract::{
+        use awaken_session_execution_contract::{
             SessionExecutionRecoveryGap as Gap, SessionExecutionRecoveryObservation as Observation,
         };
         // Cause/effect graph: terminal fence F, complete frozen scope S, each
@@ -1421,7 +1421,7 @@ mod tests {
                     );
                     assert_eq!(tools[0].tool_id, "original-tool");
                 }
-                assert_eq!(operation_footprint, (rule == 10).then_some(awaken_session_runtime_contract::SessionExecutionOperationFootprint::ResponseOnly), "R10/R11 complete original scope only");
+                assert_eq!(operation_footprint, (rule == 10).then_some(awaken_session_execution_contract::SessionExecutionOperationFootprint::ResponseOnly), "R10/R11 complete original scope only");
                 assert_eq!(thread_ids.len(), 2, "R1 includes child");
                 assert_eq!(
                     closure_records.len(),

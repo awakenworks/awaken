@@ -642,7 +642,7 @@ impl WorkerControlClient {
         claim: &RunClaim,
         session_id: &str,
     ) -> Result<
-        Vec<awaken_session_runtime_contract::SessionAgentRosterEntry>,
+        Vec<awaken_session_execution_contract::SessionAgentRosterEntry>,
         ClaimedSessionControlError,
     > {
         let body = self
@@ -700,9 +700,9 @@ impl WorkerControlClient {
         session_id: &str,
         agent_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
-        mode: awaken_session_runtime_contract::SessionRunActivityAdmissionMode,
+        mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
     ) -> Result<
-        awaken_session_runtime_contract::SessionRunActivityAdmission,
+        awaken_session_execution_contract::SessionRunActivityAdmission,
         ClaimedSessionControlError,
     > {
         let body = self
@@ -732,9 +732,9 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         claim: &RunClaim,
-        command: awaken_session_runtime_contract::SessionAgentMessageCommand,
+        command: awaken_session_execution_contract::SessionAgentMessageCommand,
     ) -> Result<
-        awaken_session_runtime_contract::SessionAgentMessageReceipt,
+        awaken_session_execution_contract::SessionAgentMessageReceipt,
         ClaimedSessionControlError,
     > {
         let body = self
@@ -755,7 +755,7 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         claim: &RunClaim,
-        command: awaken_session_runtime_contract::SessionAgentBoundaryCommand,
+        command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
     ) -> Result<(), ClaimedSessionControlError> {
         self.realization_response(
             "/v1/worker/session/agents/settle",

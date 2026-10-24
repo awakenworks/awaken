@@ -41,7 +41,7 @@ impl RunCapabilities {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::CapabilityRuntime for RunCapabilities {
+impl awaken_session_execution_contract::CapabilityRuntime for RunCapabilities {
     /// Advertise the host's provisioned surface on the created session: its built-in
     /// tools (folded into the agent toolset by the adapter), client tools, offered
     /// skills, and delegate roster. (MCP servers and file resources are not advertised

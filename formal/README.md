@@ -37,7 +37,7 @@ The named harnesses in the strict gate invoke production pure functions directly
     disposition table; Runtime Worker effects map NotReady to defer, Retryable
     to relinquish, and Terminal to absorbing settlement, while renewal retires
     exactly terminal truth.
-- `awaken-session-runtime-contract`: awaiting outcomes cannot be terminal or failed;
+- `awaken-session-execution-contract`: awaiting outcomes cannot be terminal or failed;
   - ended outcomes carry the only failure authority and no pending tool.
 - `awaken-executable-environment-contract` (Environment Work): only queued items are claimable;
   - only active WorkQueue items accept lease extension;

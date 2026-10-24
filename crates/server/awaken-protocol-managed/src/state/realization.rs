@@ -50,12 +50,12 @@ mod tests {
         EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,
         SessionNetworkPolicy,
     };
+    use awaken_session_execution_contract::{SessionRuntime, ToolPermissionDecision};
     use awaken_session_realization_contract::{
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
         FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
         SessionRealizationControl,
     };
-    use awaken_session_runtime_contract::{SessionRuntime, ToolPermissionDecision};
     use awaken_session_state_contract::{IdempotencyRecord, SessionResourceState};
     use {
         awaken_agent_contract::McpTarget,
@@ -102,26 +102,26 @@ mod tests {
         }
     }
 
-    awaken_session_runtime_contract::neutral_role!(CoordinationRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(CoordinationRuntime for NoopRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(SessionCoordinationReads for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for NoopRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(BudgetRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(BudgetRuntime for NoopRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(StreamingRunRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for NoopRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(EnvironmentRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for NoopRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(ThreadReadRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for NoopRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(TerminalCleanupRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for NoopRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(LiveInboxRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for NoopRuntime);
 
-    awaken_session_runtime_contract::neutral_role!(CapabilityRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(CapabilityRuntime for NoopRuntime);
 
     #[async_trait::async_trait]
-    impl awaken_session_runtime_contract::RealizationRuntime for NoopRuntime {
+    impl awaken_session_execution_contract::RealizationRuntime for NoopRuntime {
         fn observe_realization_request(
             &self,
         ) -> Result<
@@ -131,7 +131,7 @@ mod tests {
             awaken_protocol_managed_testkit::observe_realization_request()
         }
 
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Reconcile the existing Runtime projections through the given Control
         /// owner. Local and Worker deployment use one slot-based selection and
@@ -143,7 +143,7 @@ mod tests {
             runtime_incarnation: &str,
             timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
         ) -> Result<usize, awaken_session_types::RunError> {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
                 .await
         }
@@ -171,7 +171,7 @@ mod tests {
             Ok(())
         }
 
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Forget one failed realization fence from disposable Runtime state. The
         /// aggregate remains the sole lease authority: this hook only prevents a
@@ -182,17 +182,17 @@ mod tests {
             thread: &str,
             lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) -> Result<(), awaken_session_types::RunError> {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .invalidate_session_realization_lease(thread, lease)
                 .await
         }
     }
 
-    awaken_session_runtime_contract::neutral_role!(RealizationEffects for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(RealizationEffects for NoopRuntime);
 
     #[async_trait::async_trait]
-    impl awaken_session_runtime_contract::OutcomeRuntime for NoopRuntime {
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+    impl awaken_session_execution_contract::OutcomeRuntime for NoopRuntime {
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Persist one Outcome aggregate without executing a Worker or Grader Run.
         /// The opaque id is supplied by the application command so crash replay and
@@ -205,7 +205,7 @@ mod tests {
             rubric: &str,
             max_iterations: u32,
         ) -> Result<u64, awaken_session_types::RunError> {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
                 .await
         }
@@ -220,7 +220,7 @@ mod tests {
             unreachable!()
         }
 
-        // Former `awaken_session_runtime_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Continue the active Outcome after the ordinary Run resume has committed.
         /// `None` proves there is no active aggregate; implementations must rebuild
@@ -229,17 +229,17 @@ mod tests {
             &self,
             thread: &str,
         ) -> Result<
-            Option<awaken_session_runtime_contract::OutcomeDrive>,
+            Option<awaken_session_execution_contract::OutcomeDrive>,
             awaken_session_types::RunError,
         > {
-            awaken_session_runtime_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .continue_outcome(thread)
                 .await
         }
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_runtime_contract::McpAttachmentRealizer for NoopRuntime {
+    impl awaken_session_execution_contract::McpAttachmentRealizer for NoopRuntime {
         async fn stage_mcp_attachment(
             &self,
             request: StageMcpAttachment,

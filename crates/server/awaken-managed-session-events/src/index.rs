@@ -28,7 +28,7 @@ use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecycleE
 use awaken_session_application_contract::Pending;
 use awaken_session_event_contract::SessionAgentRunBoundary;
 use awaken_session_event_contract::SessionEventBatch;
-use awaken_session_runtime_contract::{CommittedOutcomeProjection, CoordinatedThreadLink};
+use awaken_session_execution_contract::{CommittedOutcomeProjection, CoordinatedThreadLink};
 use awaken_session_state_contract::{
     PersistedSession, SessionExecutionState, SessionRuntimeInterval,
 };
@@ -207,11 +207,13 @@ pub fn report_commit_cursor(
     if snapshot.messages.len() != snapshot.message_commit_cursors.len() {
         return None;
     }
-    let report_ids =
-        awaken_session_runtime_contract::session_agent_report_messages(&snapshot.messages, run_id)
-            .into_iter()
-            .map(|message| message.id.0.as_str())
-            .collect::<HashSet<_>>();
+    let report_ids = awaken_session_execution_contract::session_agent_report_messages(
+        &snapshot.messages,
+        run_id,
+    )
+    .into_iter()
+    .map(|message| message.id.0.as_str())
+    .collect::<HashSet<_>>();
     snapshot
         .messages
         .iter()
@@ -1096,11 +1098,11 @@ mod tests {
         // lies beyond the terminal commit. R1 C1+C2 => all six facts release
         // at 30 in iteration/trio order, regardless of their earlier times.
         // R2 C1+C3 => no order for the inconsistent evaluation fact.
-        let terminal =
-            CommittedOutcomeProjection::Completed(awaken_session_runtime_contract::OutcomeReport {
+        let terminal = CommittedOutcomeProjection::Completed(
+            awaken_session_execution_contract::OutcomeReport {
                 iterations: [0, 1]
                     .map(
-                        |iteration| awaken_session_runtime_contract::OutcomeIteration {
+                        |iteration| awaken_session_execution_contract::OutcomeIteration {
                             messages: Vec::new(),
                             outcome_id: "outcome".into(),
                             description: "ship".into(),
@@ -1111,7 +1113,8 @@ mod tests {
                         },
                     )
                     .into(),
-            });
+            },
+        );
         let children = HashMap::new();
         let historical = HashMap::new();
         let evaluations = HashMap::from([(0, 10), (1, 20)]);
@@ -1283,7 +1286,7 @@ mod tests {
         let links = [CoordinatedThreadLink {
             session_id: SESSION.into(),
             thread_id: ThreadId("child".into()),
-            target: awaken_session_runtime_contract::CoordinatedThreadTarget::Agent {
+            target: awaken_session_execution_contract::CoordinatedThreadTarget::Agent {
                 agent_id: "researcher".into(),
             },
             created_by_operation_id: "operation".into(),

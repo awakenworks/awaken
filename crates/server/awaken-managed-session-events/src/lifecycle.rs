@@ -13,7 +13,7 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind};
 use awaken_session_application_contract::Pending;
 use awaken_session_event_contract::SessionAgentRunBoundary;
-use awaken_session_runtime_contract::CoordinatedThreadLink;
+use awaken_session_execution_contract::CoordinatedThreadLink;
 
 use crate::fault::run_fault;
 use crate::stop::terminal_stop;
@@ -256,8 +256,10 @@ pub fn project_child_lifecycle(
                 kind,
             )
         };
-        let run_terminates_thread = awaken_session_runtime_contract::coordinated_thread_closed(
-            awaken_session_runtime_contract::CoordinatedThreadKind::from_is_advisor(child.advisor),
+        let run_terminates_thread = awaken_session_execution_contract::coordinated_thread_closed(
+            awaken_session_execution_contract::CoordinatedThreadKind::from_is_advisor(
+                child.advisor,
+            ),
             &event.state,
         );
         match SessionAgentRunBoundary::of_lifecycle_kind(event.kind) {
@@ -455,7 +457,7 @@ pub(crate) mod tests {
         // then the primary and Session. Decision rows R1=C1=>E1,
         // R2=C1+C2=>E1+E2, R3=C1+C2+C3=>E1+E2+E3. The same vector carries
         // every state; no rendered child DTO is read back between stages.
-        use awaken_session_runtime_contract::CoordinatedThreadTarget;
+        use awaken_session_execution_contract::CoordinatedThreadTarget;
 
         let link = |thread: &str, target| CoordinatedThreadLink {
             session_id: "session".into(),

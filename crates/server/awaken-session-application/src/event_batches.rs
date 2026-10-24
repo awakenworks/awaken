@@ -21,7 +21,7 @@ use awaken_session_event_contract::{
     classify_session_event_batch_admission, resolve_session_event_batch_admission,
     session_event_batch_id,
 };
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionAgentCoordination, SessionRunActivation,
     SessionThreadTarget,
 };
@@ -252,11 +252,11 @@ pub struct SessionEventBatchCommands {
     activities: Arc<crate::SessionActivities>,
     run_admissions: Arc<crate::SessionRunAdmissions>,
     coordination: Arc<crate::SessionCoordination>,
-    thread_reads: Arc<dyn awaken_session_runtime_contract::ThreadReadRuntime>,
-    coordination_runtime: Arc<dyn awaken_session_runtime_contract::CoordinationRuntime>,
-    coordination_reads: Arc<dyn awaken_session_runtime_contract::SessionCoordinationReads>,
-    streaming_runs: Arc<dyn awaken_session_runtime_contract::StreamingRunRuntime>,
-    outcomes: Arc<dyn awaken_session_runtime_contract::OutcomeRuntime>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
+    coordination_runtime: Arc<dyn awaken_session_execution_contract::CoordinationRuntime>,
+    coordination_reads: Arc<dyn awaken_session_execution_contract::SessionCoordinationReads>,
+    streaming_runs: Arc<dyn awaken_session_execution_contract::StreamingRunRuntime>,
+    outcomes: Arc<dyn awaken_session_execution_contract::OutcomeRuntime>,
 }
 
 /// The collaborators one [`SessionEventBatchCommands`] is built from.
@@ -1531,7 +1531,7 @@ impl SessionEventBatchCommands {
                         root.activity_epoch,
                         observation.clone(),
                         &latest.id,
-                        awaken_session_runtime_contract::SessionAgentRunBoundary::Awaiting,
+                        awaken_session_execution_contract::SessionAgentRunBoundary::Awaiting,
                     )
                     .await
                     .map_err(crate::SessionActivityError::run_error)?;

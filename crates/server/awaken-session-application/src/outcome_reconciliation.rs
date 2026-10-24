@@ -10,7 +10,7 @@
 //! transitions, Run identities, and terminal truth remain exclusively in the
 //! existing Outcome aggregate and its Thread commits.
 
-use awaken_session_runtime_contract::OutcomeDrive;
+use awaken_session_execution_contract::OutcomeDrive;
 
 #[cfg(test)]
 use super::mutation::repository_failure;
@@ -31,7 +31,7 @@ pub(crate) struct OutcomeReconciliation {
 pub struct SessionOutcomeReconciliation {
     mutations: Arc<crate::SessionMutations>,
     realizations: Arc<crate::SessionRealizations>,
-    outcomes: Arc<dyn awaken_session_runtime_contract::OutcomeRuntime>,
+    outcomes: Arc<dyn awaken_session_execution_contract::OutcomeRuntime>,
 }
 
 #[cfg(test)]

@@ -16,7 +16,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
-use awaken_session_runtime_contract::{session_agent_report_messages, session_agent_report_text};
+use awaken_session_execution_contract::{session_agent_report_messages, session_agent_report_text};
 
 use crate::ProjectionError;
 use crate::transcript::assistant_response_coordinates;

@@ -1,6 +1,6 @@
 // @formal surface exclude=application_adapter
 // @formal owner crates/contract/awaken-session-repository-contract/src/repository_port.rs
-// @formal owner crates/contract/awaken-session-runtime-contract/src/session/projection_source.rs
+// @formal owner crates/contract/awaken-session-execution-contract/src/session/projection_source.rs
 // @formal reason: Reads the selected repository and committed projection ports without issuing
 // @formal reason: mutations or realization. The same handles are selected by process composition.
 //! Session queries over the existing durable root and committed read roles.
@@ -10,10 +10,10 @@ use awaken_executable_agent_contract::{
     ExecutableAgentProfileSource, ExecutableAgentSessionProfile,
 };
 use awaken_session_configuration_contract::AgentCapabilities;
-use awaken_session_repository_contract::SessionRepositoryReads;
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     CapabilityRuntime, SessionExecutor, SessionProjectionSource, ThreadReadRuntime,
 };
+use awaken_session_repository_contract::SessionRepositoryReads;
 use awaken_session_state_contract::{
     DeletedSessionEventAdmissions, PersistedSession, SessionRepositoryError, SessionScan,
     SessionScanQuery,
@@ -54,7 +54,7 @@ mod projection_evidence;
 /// ```
 /// use awaken_session_application::SessionQueries;
 /// use awaken_session_state_contract::PersistedSession;
-/// use awaken_session_runtime_contract::ThreadReadRuntime;
+/// use awaken_session_execution_contract::ThreadReadRuntime;
 /// use awaken_session_types::RunError;
 /// async fn frozen(q: &SessionQueries, s: &PersistedSession)
 ///     -> Result<awaken_session_realization_contract::FrozenSessionProjection, RunError> {
@@ -156,7 +156,7 @@ impl SessionQueries {
     /// use std::sync::Arc;
     /// use awaken_session_application::SessionQueries;
     /// use awaken_session_repository_contract::SessionRepositoryReads;
-    /// use awaken_session_runtime_contract::SessionExecutor;
+    /// use awaken_session_execution_contract::SessionExecutor;
     /// fn selected(repo: Arc<dyn SessionRepositoryReads>, executor: SessionExecutor) -> SessionQueries {
     ///     let query = SessionQueries::new(repo, &executor, None);
     ///     drop(executor);
@@ -168,7 +168,7 @@ impl SessionQueries {
     /// use std::sync::Arc;
     /// use awaken_session_application::SessionQueries;
     /// use awaken_session_repository_contract::SessionRepositoryReads;
-    /// use awaken_session_runtime_contract::{CapabilityRuntime, SessionProjectionSource};
+    /// use awaken_session_execution_contract::{CapabilityRuntime, SessionProjectionSource};
     /// fn separate(repo: Arc<dyn SessionRepositoryReads>, projection: Arc<dyn SessionProjectionSource>,
     ///             capabilities: Arc<dyn CapabilityRuntime>) {
     ///     SessionQueries::new(repo, projection, capabilities, None);

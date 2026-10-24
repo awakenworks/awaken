@@ -51,8 +51,8 @@ use awaken_executable_environment_contract::ExecutableEnvironmentRegistrar;
 /// [`ManagedStateFixture`] constructors that build it.
 pub use awaken_protocol_managed::ManagedState;
 use awaken_provisioning_contract::SandboxExecutionPolicyStore;
+use awaken_session_execution_contract::{CompleteSessionRuntime, McpAttachmentRealizer};
 use awaken_session_repository_contract::SessionStore;
-use awaken_session_runtime_contract::{CompleteSessionRuntime, McpAttachmentRealizer};
 
 /// A fresh in-memory durable Session repository.
 #[must_use]
@@ -125,7 +125,7 @@ pub trait ManagedStateFixture: Sized {
         R: CompleteSessionRuntime + McpAttachmentRealizer + 'static;
 
     /// A Managed state over executor roles selected from separate owners.
-    async fn with_roles(roles: awaken_session_runtime_contract::SessionExecutionRoles) -> Self;
+    async fn with_roles(roles: awaken_session_execution_contract::SessionExecutionRoles) -> Self;
 }
 
 impl ManagedStateFixture for ManagedState {
@@ -158,7 +158,7 @@ impl ManagedStateFixture for ManagedState {
         )
     }
 
-    async fn with_roles(roles: awaken_session_runtime_contract::SessionExecutionRoles) -> Self {
+    async fn with_roles(roles: awaken_session_execution_contract::SessionExecutionRoles) -> Self {
         let clock = awaken_time::system_clock();
         managed_state_from_parts(
             roles,
@@ -173,8 +173,8 @@ impl ManagedStateFixture for ManagedState {
 
 /// Explicit bootstrap of a test Session application over supplied ports.
 pub fn managed_state_from_parts(
-    runtime: impl Into<awaken_session_runtime_contract::SessionExecutor>,
-    mcp: Option<Arc<dyn awaken_session_runtime_contract::McpAttachmentRealizer>>,
+    runtime: impl Into<awaken_session_execution_contract::SessionExecutor>,
+    mcp: Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
     environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     clock: Arc<dyn awaken_time::WallClock>,
@@ -197,8 +197,8 @@ pub fn managed_state_from_parts(
 /// Build only the application so a protocol unit-test crate retains its own
 /// ManagedState type rather than importing the non-test copy through testkit.
 pub fn session_application_from_parts(
-    runtime: impl Into<awaken_session_runtime_contract::SessionExecutor>,
-    mcp: Option<Arc<dyn awaken_session_runtime_contract::McpAttachmentRealizer>>,
+    runtime: impl Into<awaken_session_execution_contract::SessionExecutor>,
+    mcp: Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
     environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     clock: Arc<dyn awaken_time::WallClock>,

@@ -120,7 +120,7 @@ pub struct SessionResourceManifests {
     repository_participants: Arc<crate::SessionRepositoryParticipants>,
     resource_reconciliation: Arc<crate::SessionResourceReconciliation>,
     resource_registry: Option<Arc<dyn awaken_resource_contract::ResourceRegistry>>,
-    realization_effects: Arc<dyn awaken_session_runtime_contract::RealizationEffects>,
+    realization_effects: Arc<dyn awaken_session_execution_contract::RealizationEffects>,
 }
 
 /// The collaborators one [`SessionResourceManifests`] is built from.
@@ -132,7 +132,7 @@ pub(crate) struct SessionResourceManifestCollaborators {
     pub(crate) repository_participants: Arc<crate::SessionRepositoryParticipants>,
     pub(crate) resource_reconciliation: Arc<crate::SessionResourceReconciliation>,
     pub(crate) resource_registry: Option<Arc<dyn awaken_resource_contract::ResourceRegistry>>,
-    pub(crate) realization_effects: Arc<dyn awaken_session_runtime_contract::RealizationEffects>,
+    pub(crate) realization_effects: Arc<dyn awaken_session_execution_contract::RealizationEffects>,
 }
 
 impl SessionResourceManifests {

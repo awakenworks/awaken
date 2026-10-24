@@ -16,7 +16,7 @@ use awaken_container_contract::{
     original_request_metadata_matches,
 };
 use awaken_container_contract::{K8sCreateRequest, K8sCreateResponse};
-use awaken_session_runtime_contract::ApplicationError;
+use awaken_session_execution_contract::ApplicationError;
 use std::sync::Arc;
 
 use awaken_agent_contract::{

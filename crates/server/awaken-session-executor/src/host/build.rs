@@ -264,7 +264,7 @@ fn environment_holding(
     env: capability::EnvironmentProviders,
     runs_local_pool: bool,
     realizations: &crate::session_realizations::SessionRealizations,
-    sink: Option<Arc<dyn awaken_session_runtime_contract::SessionEnvironmentBindingSink>>,
+    sink: Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
     authority: &dyn crate::SessionAuthority,
     local_workspace: &str,
     publications: Option<Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>>,
@@ -506,8 +506,8 @@ impl ExecutorComponents {
     #[must_use]
     pub(crate) fn session_execution_roles(
         &self,
-    ) -> awaken_session_runtime_contract::SessionExecutionRoles {
-        awaken_session_runtime_contract::SessionExecutionRoles {
+    ) -> awaken_session_execution_contract::SessionExecutionRoles {
+        awaken_session_execution_contract::SessionExecutionRoles {
             core: self.session_runs.clone(),
             realization: self.run_assembly.clone(),
             realization_effects: self.realization_executor.clone(),

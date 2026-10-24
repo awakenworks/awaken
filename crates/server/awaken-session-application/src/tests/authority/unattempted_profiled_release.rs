@@ -470,7 +470,7 @@ fn failed_profiled_release_joins_current_run_activity_without_claiming_cleanup()
             }
             create(repo.as_ref(), session).await;
             let operation =
-                awaken_session_runtime_contract::session_run_activity_operation_id(&sid, &run);
+                awaken_session_execution_contract::session_run_activity_operation_id(&sid, &run);
             app.activities
                 .begin_activity_for_operation_with_policy(
                     &sid,

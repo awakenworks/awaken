@@ -48,7 +48,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     let session_id = "reservation-repair";
     let run_id = "reservation-repair-run";
     let activation = test_activation(session_id, run_id);
-    let command = awaken_session_runtime_contract::AdmitSessionRun {
+    let command = awaken_session_execution_contract::AdmitSessionRun {
         session_id: session_id.into(),
         agent_id: activation.snapshot.root_agent_id.0.clone(),
         operation_id: "reservation-repair-operation".into(),
@@ -404,7 +404,7 @@ struct RecordingMcpRealizer {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_runtime_contract::McpAttachmentRealizer for RecordingMcpRealizer {
+impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRealizer {
     async fn stage_mcp_attachment(
         &self,
         request: crate::session_mcp::StageMcpAttachment,
@@ -948,7 +948,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     );
 
     let ordinary_activation = test_activation("ordinary-run", "run-without-session");
-    awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         "ordinary-run",
         empty_frozen_projection_for_snapshot(
@@ -1196,7 +1196,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     for thread in ["exact-cold-transition", "mismatched-cold-transition"] {
         let mut projection = frozen_projection_for_manifest(deferred_environment(), &revision_one);
         projection.previous_resource_manifest = Some(revision_one.clone());
-        awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &*managed.run_assembly,
             thread,
             projection,
@@ -1221,7 +1221,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     let mut active_projection =
         frozen_projection_for_manifest(deferred_environment(), &revision_two);
     active_projection.previous_resource_manifest = Some(revision_one.clone());
-    awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         active_thread,
         active_projection,
@@ -2531,7 +2531,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
             claimed.request.admission_shape(),
             ingress::DispatchAdmissionShape::OrdinaryRoot
         );
-        awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &*managed.run_assembly,
             &thread,
             frozen,
@@ -2564,7 +2564,7 @@ async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
     };
     let host = adoption_host().await;
     let managed = managed_test_host(host.clone());
-    awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         thread,
         projection,

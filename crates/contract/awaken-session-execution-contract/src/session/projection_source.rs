@@ -36,7 +36,7 @@ pub fn select_recovery_snapshot_run(
 /// reads only (the Runtime Host's `commit_for_read`).
 ///
 /// ```compile_fail,E0599
-/// use awaken_session_runtime_contract::SessionProjectionSource;
+/// use awaken_session_execution_contract::SessionProjectionSource;
 /// async fn cannot_quiesce(source: &dyn SessionProjectionSource) {
 ///     // A selected committed Run is data; the pure role has no stop command.
 ///     source.quiesce_terminal_delegations("session").await;

@@ -5,10 +5,10 @@
 
 use super::*;
 use crate::terminal_cleanup_driver::tests::{lease, work};
+use awaken_session_execution_contract::NeutralRuntime;
 use awaken_session_realization_contract::{
     SessionTerminalCleanupAssignment, SessionTerminalCleanupWork,
 };
-use awaken_session_runtime_contract::NeutralRuntime;
 use awaken_session_state_contract::SessionTerminalCleanupAction;
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -214,12 +214,12 @@ struct InstallingCleanup;
 impl TerminalCleanupRuntime for InstallingCleanup {
     async fn observe_terminal_cleanup_retention(
         &self,
-        session_id: &awaken_session_runtime_contract::__macro_support::SessionId,
-        projection: &awaken_session_runtime_contract::__macro_support::FrozenSessionProjection,
+        session_id: &awaken_session_execution_contract::__macro_support::SessionId,
+        projection: &awaken_session_execution_contract::__macro_support::FrozenSessionProjection,
         source_prepared: bool,
-    ) -> Result<bool, awaken_session_runtime_contract::__macro_support::RunError> {
-        awaken_session_runtime_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
-            &awaken_session_runtime_contract::NeutralRuntime,
+    ) -> Result<bool, awaken_session_execution_contract::__macro_support::RunError> {
+        awaken_session_execution_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
+            &awaken_session_execution_contract::NeutralRuntime,
             session_id,
             projection,
             source_prepared,

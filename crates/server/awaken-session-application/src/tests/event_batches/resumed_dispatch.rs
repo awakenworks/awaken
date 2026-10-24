@@ -118,9 +118,9 @@ async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_in
         let mut prior_source = 0;
         for cursor in [2, 3] {
             let boundary = if cursor == 2 {
-                awaken_session_runtime_contract::SessionAgentRunBoundary::Awaiting
+                awaken_session_execution_contract::SessionAgentRunBoundary::Awaiting
             } else {
-                awaken_session_runtime_contract::SessionAgentRunBoundary::Completed
+                awaken_session_execution_contract::SessionAgentRunBoundary::Completed
             };
             // Recreate the stateless application to exercise persisted receipts.
             let cold = application_with_runtime(
@@ -277,7 +277,7 @@ async fn reserved_run_without_activity_recovers_through_the_same_operation_recei
         SessionRunReservation::Reserved,
         "C1/E1"
     );
-    let operation = awaken_session_runtime_contract::session_run_activity_operation_id(
+    let operation = awaken_session_execution_contract::session_run_activity_operation_id(
         &awaken_session_types::SessionId::from("reservation-before-activity"),
         &command.run_id,
     );

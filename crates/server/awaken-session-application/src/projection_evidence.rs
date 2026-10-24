@@ -10,7 +10,7 @@
 //!
 //! The Managed adapter used to gather this itself, straight from the Runtime.
 //! It now reads through the Session application, which in turn sees only the
-//! [`awaken_session_runtime_contract::SessionProjectionSource`] port: committed Thread prefixes, coordinated
+//! [`awaken_session_execution_contract::SessionProjectionSource`] port: committed Thread prefixes, coordinated
 //! links and terminal Outcomes, never an execution context or Environment.
 
 use crate::agent_configuration::{
@@ -20,7 +20,7 @@ use crate::agent_configuration::{
 
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_session_event_contract::{SessionEventBatch, SessionEventCommand};
-use awaken_session_runtime_contract::{
+use awaken_session_execution_contract::{
     CommittedSessionFacts, CoordinatedThreadLink, ProjectionThreadSnapshots,
     SessionProjectionReadTimings, committed_lifecycle_prefix, outcome_terminal_commit_cursor,
 };

@@ -95,7 +95,7 @@ async fn worker_retirement_consumes_only_explicit_retention_and_preserves_provid
             idle_since_unix_ms: None,
         };
         let before = serde_json::to_value(&projection).unwrap();
-        let result = awaken_session_runtime_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
+        let result = awaken_session_execution_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
             &*host.run_assembly,
             &awaken_session_types::SessionId::from(id),
             &projection,
@@ -217,7 +217,7 @@ async fn worker_retirement_refuses_unprepared_memory_in_current_or_retained_reso
         };
         let before = serde_json::to_value(&projection).unwrap();
         assert!(
-            !awaken_session_runtime_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
+            !awaken_session_execution_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
                 &*host.run_assembly,
                 &awaken_session_types::SessionId::from("live-memory"),
                 &projection,
@@ -1048,7 +1048,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         .previous_resource_manifest
         .clone()
         .expect("HS1 frozen source manifest");
-    awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         thread,
         projection,
@@ -1116,7 +1116,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         .expect("HS1 decode the aggregate-owned preparation transport");
 
     let error =
-        awaken_session_runtime_contract::RealizationEffects::prepare_checkpoint_source_disposal(
+        awaken_session_execution_contract::RealizationEffects::prepare_checkpoint_source_disposal(
             &*managed.realization_executor,
             thread,
             &preparation,
@@ -2041,7 +2041,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
     let managed = managed_with_resource_source(host.clone());
 
     let mut projection = terminal_memory_projection();
-    awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         thread,
         projection.clone(),
@@ -2169,7 +2169,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
         let managed = managed_with_resource_source(host.clone());
 
         let mut projection = terminal_memory_projection();
-        awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &*managed.run_assembly,
             thread,
             projection.clone(),
@@ -2334,7 +2334,7 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
     // HM0b adds C4: the first request was already saved before any provider
     // effect. The separate missing-history row remains pending/zero-I/O.
     fresh_terminal_fixture_before_create(thread, &mut projection, &lease);
-    awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         thread,
         projection.clone(),

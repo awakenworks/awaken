@@ -3,7 +3,7 @@
 //! Worker runtime projection: frozen baselines, reservations, and coordination contexts.
 
 use super::*;
-use awaken_session_runtime_contract::{CoordinationRuntime as _, SessionCoordinationReads as _};
+use awaken_session_execution_contract::{CoordinationRuntime as _, SessionCoordinationReads as _};
 
 #[tokio::test]
 async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
@@ -659,7 +659,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             .expect("validated Host dependencies");
         let amendment_managed = amendment_host.clone();
         let initial_dispatch = projection("authority amendment", false);
-        awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &*amendment_managed.run_assembly,
             "authority-amendment",
             initial_dispatch.clone(),
@@ -730,7 +730,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .unwrap_or(false),
             "A1/E2 rejection is side-effect free"
         );
-        awaken_session_runtime_contract::RealizationRuntime::install_session_projection(
+        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &*amendment_managed.run_assembly,
             "authority-amendment",
             amended_dispatch.clone(),
@@ -1217,7 +1217,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     .expect("validated Host dependencies");
     install_test_session_application(&host);
     let managed = install_test_dispatch_runtime(&host);
-    let command = awaken_session_runtime_contract::AdmitSessionRun {
+    let command = awaken_session_execution_contract::AdmitSessionRun {
         session_id: thread.into(),
         agent_id: "assistant".into(),
         operation_id: "cold-session-reservation-op".into(),
@@ -1229,13 +1229,14 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         )],
         data_subject_id: None,
         traceparent: None,
-        execution_requirements: awaken_session_runtime_contract::SessionRunExecutionRequirements {
-            tool_capability_narrowing:
-                awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
-            required_worker_capabilities: std::collections::BTreeSet::from([
-                "application:test-session-envelope/v1".to_string(),
-            ]),
-        },
+        execution_requirements:
+            awaken_session_execution_contract::SessionRunExecutionRequirements {
+                tool_capability_narrowing:
+                    awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
+                required_worker_capabilities: std::collections::BTreeSet::from([
+                    "application:test-session-envelope/v1".to_string(),
+                ]),
+            },
         replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
     };
     let expected_fingerprint = command.command_fingerprint();
@@ -1246,7 +1247,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             .reserve_session_run(command.clone())
             .await
             .expect("R1 reservation"),
-        awaken_session_runtime_contract::SessionRunReservation::Reserved,
+        awaken_session_execution_contract::SessionRunReservation::Reserved,
         "R1/E1"
     );
     assert_eq!(
@@ -1255,7 +1256,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             .reserve_session_run(command.clone())
             .await
             .expect("R1 exact Reserved replay"),
-        awaken_session_runtime_contract::SessionRunReservation::AlreadyReserved,
+        awaken_session_execution_contract::SessionRunReservation::AlreadyReserved,
         "R1/E5 Reserved"
     );
     let mut retraced = command.clone();
@@ -1266,7 +1267,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             .reserve_session_run(retraced)
             .await
             .expect("R4 trace-only replay"),
-        awaken_session_runtime_contract::SessionRunReservation::AlreadyReserved,
+        awaken_session_execution_contract::SessionRunReservation::AlreadyReserved,
         "R4/E5"
     );
     let mut changed_operation = command.clone();
@@ -1338,7 +1339,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             .reserve_session_run(empty_capabilities.clone())
             .await
             .expect("R3 reserve empty capabilities"),
-        awaken_session_runtime_contract::SessionRunReservation::Reserved,
+        awaken_session_execution_contract::SessionRunReservation::Reserved,
         "R3 precondition"
     );
     let mut added_capability = empty_capabilities.clone();
@@ -1368,7 +1369,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             .reserve_session_run(recovery_command.clone())
             .await
             .expect("R1 reserve recovery probe"),
-        awaken_session_runtime_contract::SessionRunReservation::Reserved,
+        awaken_session_execution_contract::SessionRunReservation::Reserved,
         "R1/E5 Recovery precondition"
     );
     clock.set(u64::MAX);
@@ -1392,7 +1393,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             .reserve_session_run(recovery_command)
             .await
             .expect("R1 exact Recovery replay"),
-        awaken_session_runtime_contract::SessionRunReservation::RecoveryClaimed,
+        awaken_session_execution_contract::SessionRunReservation::RecoveryClaimed,
         "R1/E5 Recovery"
     );
     assert_eq!(
@@ -1425,7 +1426,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             .reserve_session_run(command.clone())
             .await
             .expect("R1 exact Activated replay"),
-        awaken_session_runtime_contract::SessionRunReservation::AlreadyActivated {
+        awaken_session_execution_contract::SessionRunReservation::AlreadyActivated {
             session_activity_epoch: 1,
         },
         "R1/E5 Activated"
@@ -1503,7 +1504,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             .reserve_session_run(command)
             .await
             .expect("R1 exact Completed replay"),
-        awaken_session_runtime_contract::SessionRunReservation::Completed,
+        awaken_session_execution_contract::SessionRunReservation::Completed,
         "R1/E5 Completed"
     );
     let completion = dispatch
@@ -1561,7 +1562,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             .reserve_session_run(empty_capabilities.clone())
             .await
             .expect("R3 exact empty-capability Completed replay"),
-        awaken_session_runtime_contract::SessionRunReservation::Completed,
+        awaken_session_execution_contract::SessionRunReservation::Completed,
         "R3/E5 Completed"
     );
     let mut completed_changed_operation = empty_capabilities.clone();
@@ -1788,7 +1789,7 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     );
 
     let child_run = RunId("worker-owned-child-report".into());
-    let report = awaken_session_runtime_contract::SessionAgentReportContinuation {
+    let report = awaken_session_execution_contract::SessionAgentReportContinuation {
         session_id: thread.into(),
         source_thread_id: ThreadId("worker-owned-child".into()),
         source_run_id: child_run.clone(),

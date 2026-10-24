@@ -26,7 +26,7 @@ use awaken_time::WallClockExt as _;
 
 use std::sync::Arc;
 
-use awaken_session_runtime_contract::ThreadReadRuntime;
+use awaken_session_execution_contract::ThreadReadRuntime;
 
 use super::{SessionMutationError, mutation::repository_failure};
 
