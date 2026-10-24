@@ -138,7 +138,7 @@ class ExecutionReceiptTests(unittest.TestCase):
         import check_rust_test_execution as q
         packages=["awaken-reliability-testkit","awaken-model-catalog-store","awaken-credential-store",
             "awaken-data-subject-store","awaken-captured-content-store","awaken-work-store",
-            "awaken-session-store","awaken-memory-store","awaken-skill-store","awaken-work-store","awaken-run-ingress-http",
+            "awaken-session-store","awaken-memory-store","awaken-skill-store","awaken-work-store","awaken-dispatch-http",
             "awaken-config-store","awaken-session-store","awaken-credential-store","awaken-cli","awaken-cli","awaken-coordinator"]
         with tempfile.TemporaryDirectory() as directory,mock.patch.object(q,"verify_preparation"):
             base=Path(directory);receipts=[]

@@ -12,7 +12,7 @@ dependency edge come back, so three rules hold it:
   ``awaken-session-realization`` or on any ``awaken-ext-*`` crate.
 * D2 The Coordinator's dispatch path -- ``awaken-dispatch-execution``,
   ``awaken-run-ingress`` (the Coordinator's dispatch adapter) and
-  ``awaken-run-ingress-http`` -- has no Worker-side implementation crate in its
+  ``awaken-dispatch-http`` -- has no Worker-side implementation crate in its
   normal dependency closure.
 * D3 The Coordinator ``awaken-coordinator`` has neither the Session executor
   (``awaken-session-executor``) nor any Worker-side implementation crate in
@@ -64,7 +64,7 @@ DISPATCH_FORBIDDEN = "awaken-session-realization"
 DISPATCH_PATH: tuple[str, ...] = (
     "awaken-dispatch-execution",
     "awaken-run-ingress",
-    "awaken-run-ingress-http",
+    "awaken-dispatch-http",
 )
 COORDINATOR = "awaken-coordinator"
 
@@ -282,7 +282,7 @@ def selftest() -> None:
         ("awaken-dispatch-execution", "shared", "infrastructure", {"awaken-dispatch-contract"}),
         ("awaken-dispatch-contract", "shared", "contract", set()),
         ("awaken-run-ingress", "coordinator", "infrastructure", {"awaken-dispatch-execution"}),
-        ("awaken-run-ingress-http", "coordinator", "interface", {"awaken-run-ingress"}),
+        ("awaken-dispatch-http", "coordinator", "interface", {"awaken-run-ingress"}),
         ("awaken-session-realization", "shared", "infrastructure", {"awaken-sandbox-control"}),
         ("awaken-sandbox-control", "worker", "contract", set()),
         ("awaken-sandbox-local", "worker", "infrastructure", {"awaken-sandbox-control"}),

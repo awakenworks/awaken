@@ -199,7 +199,7 @@ awaken-run-ingress = { path = "crates/server/awaken-run-ingress", default-featur
 awaken-run-ingress-testkit = { path = "crates/server/awaken-run-ingress-testkit" }
 awaken-worker-transport-security = { path = "crates/server/awaken-worker-transport-security" }
 awaken-session-executor = { path = "crates/server/awaken-session-executor", default-features = false }
-awaken-run-ingress-http = { path = "crates/server/awaken-run-ingress-http" }
+awaken-dispatch-http = { path = "crates/server/awaken-dispatch-http" }
 awaken-resource-worker-http = { path = "crates/resources/awaken-resource-worker-http" }
 awaken-worker-runtime = { path = "crates/server/awaken-worker-runtime" }
 awaken-admin-assistant = { path = "crates/control/awaken-admin-assistant" }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 pub(crate) fn memory_router(
     resources: &awaken_resource_application::ResourceAuthorities,
     registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
-    dispatch: Arc<dyn awaken_run_ingress_http::WorkerDispatchAuthority>,
+    dispatch: Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
     authorization: Arc<awaken_session_application::SessionResourceEffectAuthorization>,
     authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
     directory: Arc<dyn crate::WorkerDirectory>,

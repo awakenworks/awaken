@@ -10,11 +10,11 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
+use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_lease_testkit::ManualClock;
 use awaken_run_ingress::{
     MemoryDispatchStore, PlacementRequirements, RunDispatch, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
 };
-use awaken_run_ingress_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{
@@ -758,7 +758,7 @@ use awaken_run_ingress::{
     DispatchClaims as _, DispatchEnqueue as _, DispatchExecution as _, DispatchSettlement as _,
 };
 
-use awaken_run_ingress_http::WorkerDispatchAuthority;
+use awaken_dispatch_http::WorkerDispatchAuthority;
 
 mod environment_renewal {
     use super::*;

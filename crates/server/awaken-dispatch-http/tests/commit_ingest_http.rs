@@ -15,13 +15,13 @@ use awaken_agent_contract::thread::commit::operation::{
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
+use awaken_dispatch_http::{ClaimedCommitHttpService, claimed_commit_router};
 use awaken_run_ingress::ClaimedCommitService;
 use awaken_run_ingress::{
     ClaimedCommitCommand, ClaimedRunCommit, MemoryDispatchStore, RegisteredWorker, RegistryError,
     RegistryMutation, RunClaim, RunDispatch, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
     WorkerManifest, WorkerObservationSource, WorkerRegistration, WorkerSnapshot, WorkerState,
 };
-use awaken_run_ingress_http::{ClaimedCommitHttpService, claimed_commit_router};
 use awaken_run_ingress_testkit::ConformanceClock as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};

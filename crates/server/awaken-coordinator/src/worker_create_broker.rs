@@ -421,7 +421,7 @@ impl K8sCreateBroker {
             match result {
                 Ok(response) => response.into_http_response(),
                 Err(error) => {
-                    awaken_run_ingress_http::worker_transport_response(Err(error)).into_response()
+                    awaken_dispatch_http::worker_transport_response(Err(error)).into_response()
                 }
             }
         }
@@ -463,7 +463,7 @@ impl K8sCreateBroker {
             match result {
                 Ok(response) => response.into_http_response(),
                 Err(error) => {
-                    awaken_run_ingress_http::worker_transport_response(Err(error)).into_response()
+                    awaken_dispatch_http::worker_transport_response(Err(error)).into_response()
                 }
             }
         }

@@ -22,6 +22,9 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
+use awaken_dispatch_http::{
+    WorkerDispatchService, dispatch_transport_router_with_service, worker_environment_warmup_router,
+};
 use awaken_lease_testkit::ManualClock;
 use awaken_run_ingress::{
     AttemptAdmission, ClaimedStreamPublisher as _, DispatchClaimOwnership as _,
@@ -29,9 +32,6 @@ use awaken_run_ingress::{
     DispatchSettlement as _, MemoryDispatchStore, RegisteredWorker, RegistryError,
     RegistryMutation, RunDispatch, SettleOutcome, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
     WorkerManifest, WorkerRegistration, WorkerSnapshot, WorkerState,
-};
-use awaken_run_ingress_http::{
-    WorkerDispatchService, dispatch_transport_router_with_service, worker_environment_warmup_router,
 };
 use awaken_runtime_contract::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};

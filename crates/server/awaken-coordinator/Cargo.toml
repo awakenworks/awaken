@@ -20,7 +20,7 @@ awaken-dispatch-execution.workspace = true
 awaken-tool-contract.workspace = true
 awaken-data-governance-contract.workspace = true
 awaken-service-lifecycle.workspace = true
-awaken-run-ingress-http.workspace = true
+awaken-dispatch-http.workspace = true
 awaken-resource-worker-http.workspace = true
 awaken-config-service.workspace = true
 awaken-ext-skills.workspace = true
@@ -123,7 +123,7 @@ test-support = [
     "awaken-resource-persistence/test-support",
     "awaken-deployment-application/test-support",
     "awaken-captured-content-store/test-support",
-    "awaken-run-ingress-http/test-support",
+    "awaken-dispatch-http/test-support",
     "awaken-run-ingress/test-support",
     "awaken-resource-worker-http/test-support",
     "awaken-config-store/test-support",

@@ -153,7 +153,7 @@ work_store_evidence() {
 }
 
 http_transport_evidence() {
-  pg_required_test -p awaken-run-ingress-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http \
+  pg_required_test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http \
     --require-case=two_control_processes_retry_recover_and_settle_without_sticky_routing \
     --require-case=active_active_child_diagnostics_are_isolated_and_bounded \
     --require-case=immutable_pod_registration_postgres_when_configured \
@@ -671,7 +671,7 @@ self_test() {
   # P9 immutable Pod registration must exercise the real database rather than
   # merely compiling a self-skipping test in the no-database workspace gate.
   # P10 independent predecessor stopping exercises the same exact Registry CAS.
-  grep -Fq "pg_required_test -p awaken-run-ingress-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http" "$0" || {
+  grep -Fq "pg_required_test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http" "$0" || {
     echo "Postgres gate omits the coordinator-owned active/active transport test" >&2
     return 1
   }

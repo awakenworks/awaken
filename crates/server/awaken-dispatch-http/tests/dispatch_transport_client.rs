@@ -25,13 +25,13 @@ use awaken_credential_contract::{
     AttemptCredentialDeliverySource,
 };
 use awaken_credential_contract::{CredentialRealizationCapabilities, CredentialRealizationKind};
+use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_lease_testkit::ManualClock;
 use awaken_run_ingress::{
     CredentialRealizationReceipt, DispatchBinding, DispatchOutcome, DispatchState,
     DispatchTopology, FencedStreamCheckpointStore, MemoryDispatchStore, PendingInput, RunClaim,
     RunDispatch, WorkerIdentity,
 };
-use awaken_run_ingress_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_runtime_contract::InferenceEndpoint;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{
@@ -1007,6 +1007,6 @@ use awaken_dispatch_contract::{
     DispatchReads as _, DispatchSettlement as _,
 };
 
-use awaken_run_ingress_http::WorkerDispatchAuthority;
+use awaken_dispatch_http::WorkerDispatchAuthority;
 
 use awaken_dispatch_contract::ClaimedCredentialDeliveryTransport as _;

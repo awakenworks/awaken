@@ -1,6 +1,6 @@
 // @formal entrypoint session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
 // @formal surface exclude=wire_dto
-// @formal owner crates/server/awaken-run-ingress-http/tests/dispatch_transport_http.rs
+// @formal owner crates/server/awaken-dispatch-http/tests/dispatch_transport_http.rs
 // @formal reason: Serializable Worker HTTP request envelopes and a field-preserving constructor;
 // @formal reason: authentication and claim authorization stay server-side.
 //! Worker-facing HTTP request values.

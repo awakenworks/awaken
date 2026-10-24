@@ -5,7 +5,7 @@ POSTGRES_PACKAGES = {
         "awaken-reliability-testkit", "awaken-model-catalog-store", "awaken-credential-store",
         "awaken-data-subject-store", "awaken-captured-content-store", "awaken-work-store",
         "awaken-session-store", "awaken-memory-store", "awaken-skill-store", "awaken-work-store",
-        "awaken-run-ingress-http", "awaken-config-store", "awaken-session-store",
+        "awaken-dispatch-http", "awaken-config-store", "awaken-session-store",
         "awaken-credential-store", "awaken-cli", "awaken-cli", "awaken-coordinator"),
     "storage": (
         "awaken-store-runtime", "awaken-session-store", "awaken-config-store", "awaken-store-postgres",

@@ -6,11 +6,11 @@ mod postgres_support;
 
 use std::sync::Arc;
 
+use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_lease_testkit::ManualClock;
 use awaken_run_ingress::{
     MemoryDispatchStore, WorkerDirectory, WorkerManifest, WorkerRegistration, WorkerState,
 };
-use awaken_run_ingress_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_worker_registry::{
     MemoryWorkerDirectory, PostgresWorkerDirectory, SqliteWorkerDirectory,
 };

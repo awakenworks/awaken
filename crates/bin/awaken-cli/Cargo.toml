@@ -86,7 +86,7 @@ awaken-session-runtime-contract.workspace = true
 awaken-work-store.workspace = true
 awaken-worker-transport-security.workspace = true
 awaken-worker-contract.workspace = true
-awaken-run-ingress-http.workspace = true
+awaken-dispatch-http.workspace = true
 awaken-local-process.workspace = true
 awaken-fs-durability.workspace = true
 uuid = { version = "1", features = ["v7"] }

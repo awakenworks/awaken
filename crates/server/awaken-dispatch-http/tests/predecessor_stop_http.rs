@@ -12,6 +12,7 @@ use awaken_agent_contract::agent::run::{Record as RunRecord, RunState};
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
+use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_lease_testkit::ManualClock;
 use awaken_run_ingress::{
     AttemptAdmission, AttemptExecutionBinding, AttemptStopStatus, ClosedAttemptExecution,
@@ -21,7 +22,6 @@ use awaken_run_ingress::{
     WorkerState, has_active_physical_attempt_for_owner, stop_committed_terminal_attempt,
     stop_expired_predecessor,
 };
-use awaken_run_ingress_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_run_ingress_testkit::worker_http::activation;
 use awaken_run_ingress_testkit::{AuthoritativeWallClock, ConformanceClock};
 use awaken_worker_registry::{
@@ -2211,4 +2211,4 @@ use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchExecution as _,
 };
 
-use awaken_run_ingress_http::WorkerDispatchAuthority;
+use awaken_dispatch_http::WorkerDispatchAuthority;

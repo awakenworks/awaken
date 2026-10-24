@@ -1,5 +1,5 @@
 [package]
-name = "awaken-run-ingress-http"
+name = "awaken-dispatch-http"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ context = "coordinator"
 product = "platform"
 bounded_context = "dispatch"
 layer = "interface"
-authority = "run-ingress-http"
+authority = "dispatch-http"
 separation = "isolation"
 isolates = ["axum"]
 

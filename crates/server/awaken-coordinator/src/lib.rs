@@ -808,11 +808,11 @@ async fn mount_with_managed_over(
 fn registered_worker_transport_with_broker(
     dispatch: Router,
     resources: Router,
-    commit: Arc<awaken_run_ingress_http::ClaimedCommitHttpService>,
+    commit: Arc<awaken_dispatch_http::ClaimedCommitHttpService>,
     environment_warmups: Router,
     broker: Option<Router>,
 ) -> Router {
-    let transport = awaken_run_ingress_http::registered_worker_transport_router_with_services(
+    let transport = awaken_dispatch_http::registered_worker_transport_router_with_services(
         dispatch, resources, commit,
     )
     .merge(environment_warmups);
@@ -903,7 +903,7 @@ async fn mount_with_managed_over_and_models(
         }),
         None => managed_state.environment_execution(),
     };
-    let environment_warmups = awaken_run_ingress_http::worker_environment_warmup_router(
+    let environment_warmups = awaken_dispatch_http::worker_environment_warmup_router(
         environment_warmup_source,
         worker_directory.clone(),
         worker_authenticator.clone(),
@@ -1052,7 +1052,7 @@ async fn mount_with_managed_over_and_models(
     }
     // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
     // (supersede / reconcile / manual quarantine + GC) over the same shared host.
-    let durable_ops = awaken_run_ingress_http::durable_ops_router_with_session_admission(
+    let durable_ops = awaken_dispatch_http::durable_ops_router_with_session_admission(
         execution.durable_runs.clone(),
         session_runs.clone(),
         session_runs,
@@ -1063,11 +1063,11 @@ async fn mount_with_managed_over_and_models(
     let dispatch = execution.coordinator_dispatch.clone();
     let checkpoint =
         worker_checkpoint_authority(dispatch.as_ref(), execution.storage_dir.as_deref())?;
-    let dispatch_router = awaken_run_ingress_http::registered_dispatch_router(
-        awaken_run_ingress_http::RegisteredDispatchDependencies {
+    let dispatch_router = awaken_dispatch_http::registered_dispatch_router(
+        awaken_dispatch_http::RegisteredDispatchDependencies {
             execution_bindings: worker_execution_bindings,
             execution_stops: worker_execution_stops,
-            dispatch: dispatch.clone() as Arc<dyn awaken_run_ingress_http::WorkerDispatchAuthority>,
+            dispatch: dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
             checkpoint,
             directory: worker_directory.clone(),
             policy: worker_placement_policy
@@ -1090,7 +1090,7 @@ async fn mount_with_managed_over_and_models(
     let file_content = awaken_resource_worker_http::worker_file_content_router(Arc::new(
         awaken_resource_worker_http::WorkerFileContentService::new(
             execution.worker_file_content.clone(),
-            dispatch.clone() as Arc<dyn awaken_run_ingress_http::WorkerDispatchAuthority>,
+            dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
             worker_authenticator.clone(),
             worker_clock.clone(),
         )
@@ -1103,7 +1103,7 @@ async fn mount_with_managed_over_and_models(
         awaken_resource_worker_http::worker_artifact_publication_router(Arc::new(
             awaken_resource_worker_http::WorkerArtifactPublicationService::new(
                 worker_file_application,
-                dispatch.clone() as Arc<dyn awaken_run_ingress_http::WorkerDispatchAuthority>,
+                dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
                 worker_authenticator.clone(),
                 worker_directory.clone(),
                 worker_clock.clone(),
@@ -1114,7 +1114,7 @@ async fn mount_with_managed_over_and_models(
     let memory = worker_memory::memory_router(
         &resource_authorities,
         resource_registry.clone(),
-        dispatch.clone() as Arc<dyn awaken_run_ingress_http::WorkerDispatchAuthority>,
+        dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
         session_application.resource_effect_authorization(),
         worker_authenticator.clone(),
         worker_directory.clone(),
@@ -1122,7 +1122,7 @@ async fn mount_with_managed_over_and_models(
     );
     let repository_service = awaken_resource_worker_http::WorkerRepositoryBindingService::new(
         resource_registry,
-        dispatch.clone() as Arc<dyn awaken_run_ingress_http::WorkerDispatchAuthority>,
+        dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
         worker_authenticator.clone(),
         worker_clock.clone(),
     )
@@ -1143,7 +1143,7 @@ async fn mount_with_managed_over_and_models(
             Arc::new(
                 awaken_resource_worker_http::WorkerSkillBundleService::new(
                     worker_skill_bundles,
-                    dispatch.clone() as Arc<dyn awaken_run_ingress_http::WorkerDispatchAuthority>,
+                    dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
                     worker_authenticator.clone(),
                     worker_clock.clone(),
                 )
@@ -1151,10 +1151,10 @@ async fn mount_with_managed_over_and_models(
                 .with_session_control(session_application.resource_effect_authorization()),
             ),
         ));
-    let commit = Arc::new(awaken_run_ingress_http::ClaimedCommitHttpService::new(
+    let commit = Arc::new(awaken_dispatch_http::ClaimedCommitHttpService::new(
         Arc::new(
             awaken_run_ingress::ClaimedCommitService::with_coordinator_resolver(
-                dispatch as Arc<dyn awaken_run_ingress_http::WorkerDispatchAuthority>,
+                dispatch as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
                 execution.commit_owners.clone(),
             ),
         ),

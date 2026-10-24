@@ -98,7 +98,7 @@ GIT_REPOSITORY_PUBLICATION = (
     "crates/worker/awaken-sandbox-local/src/git_transport.rs"
 )
 WORKER_PUBLICATION_ROUTE = (
-    "crates/server/awaken-run-ingress-http/src/"
+    "crates/server/awaken-dispatch-http/src/"
     "worker_dispatch/terminal_repository_publication.rs"
 )
 WORKER_CONTROL_CLIENT = (

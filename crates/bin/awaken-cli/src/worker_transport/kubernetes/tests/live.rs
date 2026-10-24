@@ -8,10 +8,10 @@ use awaken_container_contract::{K8sLedgerBinding, RequestJoin};
 use awaken_lease_testkit::ManualClock;
 use awaken_worker_contract::{WorkerCurrentSource, WorkerIncarnationSource};
 
+use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_run_ingress::{
     AttemptAdmission, RunClaim, RunDispatch, SqliteDispatchStore, WorkerHeartbeat,
 };
-use awaken_run_ingress_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_sandbox_kubernetes::{K8sCreateTransport, K8sWorkerCreateLedger, PodProcessObserver};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_time::WallClockExt;
