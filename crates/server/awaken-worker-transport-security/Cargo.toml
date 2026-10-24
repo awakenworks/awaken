@@ -18,6 +18,8 @@ awaken-time.workspace = true
 awaken-dispatch-contract.workspace = true
 awaken-outbound-http.workspace = true
 awaken-worker-contract.workspace = true
+# The self-hosted Worker trust domain a resolved bootstrap defaults to.
+awaken-agent-contract.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 base64 = "0.22"
