@@ -212,21 +212,6 @@ struct InstallingCleanup;
 
 #[async_trait::async_trait]
 impl TerminalCleanupRuntime for InstallingCleanup {
-    async fn observe_terminal_cleanup_retention(
-        &self,
-        session_id: &awaken_session_execution_contract::__macro_support::SessionId,
-        projection: &awaken_session_execution_contract::__macro_support::FrozenSessionProjection,
-        source_prepared: bool,
-    ) -> Result<bool, awaken_session_execution_contract::__macro_support::RunError> {
-        awaken_session_execution_contract::TerminalCleanupRuntime::observe_terminal_cleanup_retention(
-            &awaken_session_execution_contract::NeutralRuntime,
-            session_id,
-            projection,
-            source_prepared,
-        )
-        .await
-    }
-
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         _effect: awaken_session_state_contract::SessionTerminalCleanupEffect,

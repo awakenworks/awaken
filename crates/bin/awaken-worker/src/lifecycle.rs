@@ -17,7 +17,9 @@ use std::sync::{Arc, RwLock};
 use awaken_coordinator_client::WorkerControlClient;
 use awaken_lease_contract::authority::AuthorityLeaseTiming;
 use awaken_session_executor::WorkerRoles;
-use awaken_worker_contract::{RegistryMutation, WorkerIdentity};
+use awaken_worker_contract::{
+    RegistryMutation, WorkerHeartbeat, WorkerIdentity, WorkerSourceRetention,
+};
 use futures_util::FutureExt as _;
 
 use crate::credential_liveness::WorkerObservationCache;
@@ -203,6 +205,9 @@ pub(crate) struct WorkerSupervisor {
             >,
         >,
     >,
+    /// The original-source retention this draining incarnation last observed;
+    /// every heartbeat reports it whole.
+    pub(crate) source_retention: Arc<RwLock<BTreeSet<WorkerSourceRetention>>>,
 }
 
 /// One fresh readiness observation of a local tier's backend.
@@ -306,6 +311,74 @@ impl WorkerSupervisor {
             })
             .map(|(shape, _)| shape.clone())
             .collect()
+    }
+
+    /// The heartbeat this incarnation sends: one frozen observation batch,
+    /// its admitted executions, warm capacity and the source retention it
+    /// reports.
+    pub(crate) fn heartbeat(&self, sequence: u64, ready: bool) -> WorkerHeartbeat {
+        let mut heartbeat = self.observations.snapshot().into_heartbeat(
+            sequence,
+            ready,
+            self.roles.dispatch().in_flight(),
+            self.warm_environment_shapes(),
+        );
+        heartbeat.source_retention = self.source_retention();
+        heartbeat
+    }
+
+    /// The retention facts the next heartbeat reports.
+    pub(crate) fn source_retention(&self) -> BTreeSet<WorkerSourceRetention> {
+        self.source_retention
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Observe the original Session sources this incarnation holds and keep
+    /// the facts its heartbeat reports to the Coordinator, which decides
+    /// retirement from them.
+    ///
+    /// Decision table (rows of [`source_retention_fact`] per subject):
+    /// | Rule | Claim pool | Subject read | Observation | Report |
+    /// |---|---|---|---|---|
+    /// | W1 | can resume work (not draining) | - | - | empty: no retirement is being qualified |
+    /// | W2 | draining | fails | - | the previous report stays; the Coordinator refuses any fact whose subject changed |
+    /// | W3 | draining | succeeds | retained | retained fact for the subject's digest |
+    /// | W4 | draining | succeeds | not retained | not-retained fact |
+    /// | W5 | draining | succeeds | fails | not-retained fact: a failed observation stays closed |
+    pub(crate) async fn reconcile_source_retention(&self) -> Result<usize, String> {
+        let report = if self.roles.dispatch().can_resume_work().await {
+            BTreeSet::new()
+        } else {
+            let subjects = self
+                .control
+                .source_retention_subjects(&self.identity)
+                .await?;
+            let mut report = BTreeSet::new();
+            for subject in subjects {
+                let observed = self
+                    .roles
+                    .observe_source_retention(
+                        &subject.session_id,
+                        &subject.projection,
+                        subject.source_prepared,
+                    )
+                    .await;
+                report.insert(source_retention_fact(
+                    subject.session_id.as_str(),
+                    &subject.digest,
+                    observed,
+                ));
+            }
+            report
+        };
+        let facts = report.len();
+        *self
+            .source_retention
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = report;
+        Ok(facts)
     }
 
     /// Reconcile Coordinator-derived Environment demand and the default Session
@@ -509,12 +582,7 @@ async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u6
         let heartbeat_timeout = timing
             .request_timeout()
             .min(lifecycle.authority.remaining());
-        let heartbeat = lifecycle.observations.snapshot().into_heartbeat(
-            sequence,
-            ready,
-            lifecycle.roles.dispatch().in_flight(),
-            lifecycle.warm_environment_shapes(),
-        );
+        let heartbeat = lifecycle.heartbeat(sequence, ready);
         let mutation = tokio::time::timeout(
             heartbeat_timeout,
             lifecycle.control.heartbeat(&lifecycle.identity, heartbeat),
@@ -867,6 +935,38 @@ pub(crate) fn spawn_session_preparation_reconciliation(
     })
 }
 
+/// One reported fact for one observed subject: only a positive observation
+/// is retention.
+pub(crate) fn source_retention_fact<E>(
+    session_id: &str,
+    digest: &str,
+    observed: Result<bool, E>,
+) -> WorkerSourceRetention {
+    WorkerSourceRetention {
+        session_id: session_id.to_owned(),
+        subject: digest.to_owned(),
+        retained: matches!(observed, Ok(true)),
+    }
+}
+
+/// Keep the retention report current while this incarnation drains.
+pub(crate) fn spawn_source_retention_reconciliation(
+    lifecycle: Arc<WorkerSupervisor>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            if let Err(error) = lifecycle.reconcile_source_retention().await {
+                eprintln!(
+                    "Worker source retention report not refreshed; the previous report stays: {error}"
+                );
+            }
+        }
+    })
+}
+
 pub(crate) fn spawn_environment_warmup_reconciliation(
     lifecycle: Arc<WorkerSupervisor>,
 ) -> tokio::task::JoinHandle<()> {
@@ -1090,6 +1190,80 @@ mod tests {
         supervise_session_realization_reconciliation, supervise_worker_authority,
     };
 
+    #[test]
+    fn a_reported_fact_is_retained_only_for_a_positive_observation() {
+        // Rows W3-W5 of `reconcile_source_retention`: the fact names the
+        // exact Session and subject digest; only Ok(true) is retention, so a
+        // refused or failed observation stays closed.
+        for (rule, observed, retained) in [
+            ("W3", Ok(true), true),
+            ("W4", Ok(false), false),
+            ("W5", Err("provider unavailable"), false),
+        ] {
+            assert_eq!(
+                super::source_retention_fact("session-a", "digest-a", observed),
+                awaken_worker_contract::WorkerSourceRetention {
+                    session_id: "session-a".into(),
+                    subject: "digest-a".into(),
+                    retained,
+                },
+                "{rule}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_retention_report_follows_the_drain_and_survives_a_failed_subject_read() {
+        // Rows W1-W2. Without a started claim pool the Worker cannot resume work,
+        // so it reports as a draining Worker. An unreachable Coordinator
+        // fails the subject read; the previous report stays for the next
+        // heartbeat, and the Coordinator refuses it if the subject changed.
+        let previous =
+            std::collections::BTreeSet::from([awaken_worker_contract::WorkerSourceRetention {
+                session_id: "session-a".into(),
+                subject: "digest-a".into(),
+                retained: true,
+            }]);
+        let lifecycle = super::WorkerSupervisor {
+            authority: Default::default(),
+            roles: awaken_session_executor::WorkerRoles::of(
+                &*awaken_session_executor_testkit::volatile_host(
+                    Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
+                    "worker-test",
+                )
+                .await,
+            ),
+            control: awaken_coordinator_client::WorkerControlClient::new(
+                awaken_worker_transport_security::WorkerUpstream::new("http://127.0.0.1:1")
+                    .with_worker_id("retiring"),
+            ),
+            identity: awaken_worker_contract::WorkerIdentity::new("retiring", "boot", 1),
+            credential_observation_resolver: None,
+            acp_capability_observation_source: None,
+            session_environment_provider: None,
+            local_readiness: None,
+            observations: Arc::new(crate::WorkerObservationCache::default()),
+            observation_ttl: std::time::Duration::from_secs(30),
+            probe_interval: std::time::Duration::from_secs(10),
+            warm_environments: Default::default(),
+            source_retention: Arc::new(std::sync::RwLock::new(previous.clone())),
+        };
+        assert!(!lifecycle.roles.dispatch().can_resume_work().await);
+        assert!(lifecycle.reconcile_source_retention().await.is_err(), "W2");
+        assert_eq!(lifecycle.source_retention(), previous, "W2 previous report");
+        // Row W1: once the claim pool runs, the Worker is not draining; it
+        // reports nothing and never asks the Coordinator for subjects (the
+        // unreachable Coordinator would fail the read).
+        lifecycle.roles.start_pool().unwrap();
+        assert!(lifecycle.roles.dispatch().can_resume_work().await);
+        assert_eq!(lifecycle.reconcile_source_retention().await, Ok(0), "W1");
+        assert!(lifecycle.source_retention().is_empty(), "W1 empty report");
+        assert!(
+            lifecycle.heartbeat(1, true).source_retention.is_empty(),
+            "W1"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_local_backend_lost_after_start_drains_like_a_lost_container_daemon() {
         // ADR-0092 decision 5. Causes: C1 a container provider is installed;
@@ -1140,6 +1314,7 @@ mod tests {
                 observation_ttl: Duration::from_secs(30),
                 probe_interval: Duration::from_secs(10),
                 warm_environments: Default::default(),
+                source_retention: Default::default(),
             })
         };
         let none = supervisor(None).await;
@@ -1762,6 +1937,7 @@ mod tests {
                 observation_ttl: Duration::from_secs(6),
                 probe_interval: Duration::from_secs(1),
                 warm_environments: Default::default(),
+                source_retention: Default::default(),
             });
             let task = spawn_heartbeat(
                 lifecycle,

@@ -91,6 +91,7 @@ impl ObservationBatch {
             warm_environment_shapes,
             credential_observations: self.credentials,
             acp_capability_observations: self.acp_capabilities,
+            source_retention: Default::default(),
         }
     }
 }

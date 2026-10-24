@@ -419,6 +419,7 @@ async fn assert_expiry_race(
             warm_environment_shapes: Default::default(),
             credential_observations: Default::default(),
             acp_capability_observations: Default::default(),
+            source_retention: Default::default(),
         };
         let (renewed, expired, replacement) = tokio::join!(
             first.heartbeat(&old, heartbeat, 120, 100),
@@ -492,6 +493,7 @@ async fn assert_registration_history(
                 warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
             };
             if state == "ready" {
                 assert_eq!(

@@ -475,6 +475,7 @@ mod tests {
                         .expect("coherent verified capability fixture"),
                         valid_until_ms: now + 30_000,
                     }],
+                    source_retention: Default::default(),
                 },
                 now,
                 60_000,

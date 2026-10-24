@@ -2,30 +2,41 @@
 //!
 //! One complete, fail-closed read of the Sessions whose realization lease a
 //! Worker holds decides whether that Worker is still occupied and, for an
-//! exact retirement read, whether every original source is retained without
-//! effects. It changes no lease, projection or cleanup receipt.
+//! exact retirement read, whether every original source the Worker must
+//! retain was reported retained by that Worker. It changes no lease,
+//! projection or cleanup receipt, and observes no Sandbox: retention is
+//! Worker-reported data ([`SourceRetentionSubject`] out, a
+//! `WorkerSourceRetention` fact per subject back in the heartbeat, decided by
+//! [`SourceRetentionSubject::reported_retained`]).
 
 use std::sync::Arc;
 
+use awaken_session_realization_contract::{SourceRetentionSubject, WorkerSourceRetentionSubjects};
 use awaken_session_repository_contract::SessionRepository;
 use awaken_session_state_contract::{
     SessionEnvironmentState, SessionExecutionState, SessionTerminalCleanupAction,
 };
 use awaken_session_types::RunError;
+use awaken_worker_contract::WorkerIdentity;
 
 use crate::session_repository_error;
 
 /// The Worker occupancy and retirement read over durable Session roots.
 ///
 /// It holds the Session repository the owner read scans, the query component
-/// that freezes a retained Session's projection, and the Runtime source-dispatch
-/// and terminal-cleanup retention observations the qualification consults.
+/// that freezes a retained Session's projection, and the source-dispatch
+/// observation the qualification consults.
 pub struct SessionWorkerOccupancy {
     repository: Arc<dyn SessionRepository>,
     queries: Arc<crate::SessionQueries>,
     coordination_reads: Arc<dyn awaken_session_execution_contract::SessionCoordinationReads>,
-    terminal_cleanup: Arc<dyn awaken_session_execution_contract::TerminalCleanupRuntime>,
 }
+
+/// One complete Worker-owned Session read: `None` when a Session the Worker
+/// holds keeps it occupied and refuses retirement on its root facts alone;
+/// otherwise occupancy and the original sources whose reported retention
+/// admits retirement.
+type WorkerRealizationScan = Option<(bool, Vec<SourceRetentionSubject>)>;
 
 impl SessionWorkerOccupancy {
     pub(crate) fn new(
@@ -37,24 +48,46 @@ impl SessionWorkerOccupancy {
             repository,
             queries,
             coordination_reads: runtime.coordination_reads.clone(),
-            terminal_cleanup: runtime.terminal_cleanup.clone(),
         }
     }
 
     /// One complete Worker-owned Session read. Normal occupancy never depends
-    /// on provider availability. Explicit retirement preserves occupancy and
-    /// additionally qualifies each original source (terminal or live Resident) without effects,
+    /// on source retention. Explicit retirement preserves occupancy and
+    /// additionally qualifies each original source (terminal or live Resident)
+    /// from the retention the exact incarnation reported, without effects,
     /// lease changes, installed projections or cleanup receipts.
     pub async fn observe_worker_realizations(
         &self,
         read: crate::WorkerRealizationRead<'_>,
     ) -> Result<crate::WorkerRealizationObservation, RunError> {
-        let (worker_id, identity) = match read {
+        let (worker_id, retirement) = match read {
             crate::WorkerRealizationRead::Occupancy(worker_id) => (worker_id, None),
-            crate::WorkerRealizationRead::Retirement(identity) => {
-                (identity.worker_id.as_str(), Some(identity))
+            crate::WorkerRealizationRead::Retirement { identity, reported } => {
+                (identity.worker_id.as_str(), Some((identity, reported)))
             }
         };
+        let scan = self.scan(worker_id, retirement.map(|(identity, _)| identity));
+        let Some((occupied, subjects)) = scan.await? else {
+            return Ok(crate::WorkerRealizationObservation {
+                occupied: true,
+                sources_retained: false,
+            });
+        };
+        Ok(crate::WorkerRealizationObservation {
+            occupied,
+            sources_retained: retirement.is_some_and(|(_, reported)| {
+                subjects
+                    .iter()
+                    .all(|subject| subject.reported_retained(reported))
+            }),
+        })
+    }
+
+    async fn scan(
+        &self,
+        worker_id: &str,
+        identity: Option<&WorkerIdentity>,
+    ) -> Result<WorkerRealizationScan, RunError> {
         if worker_id.trim().is_empty() {
             return Err(RunError::bad_request("Worker realization owner is empty"));
         }
@@ -70,10 +103,7 @@ impl SessionWorkerOccupancy {
                 .await
                 .map_err(session_repository_error)?;
         let mut occupied = false;
-        let blocked = crate::WorkerRealizationObservation {
-            occupied: true,
-            sources_retained: false,
-        };
+        let mut subjects = Vec::new();
         for scoped in sessions {
             let session = scoped.session;
             if !session
@@ -84,7 +114,7 @@ impl SessionWorkerOccupancy {
             }
             occupied = true;
             let Some(identity) = identity else {
-                return Ok(blocked);
+                return Ok(None);
             };
             let lease = session
                 .realization
@@ -93,17 +123,17 @@ impl SessionWorkerOccupancy {
             if lease.runtime_incarnation != identity.lease_owner()
                 || session.has_incomplete_event_batches()
             {
-                return Ok(blocked);
+                return Ok(None);
             }
             let prepared = if session.is_terminal() {
                 let Some(action) = session
                     .terminal_cleanup_work_action()
                     .map_err(|error| RunError::unavailable(error.to_string()))?
                 else {
-                    return Ok(blocked);
+                    return Ok(None);
                 };
                 if matches!(action, SessionTerminalCleanupAction::Waiting) {
-                    return Ok(blocked);
+                    return Ok(None);
                 }
                 if awaken_session_state_contract::session_has_terminal_no_create_evidence(&session)
                     || crate::archive_intent::unattempted_profiled_archive_witness(
@@ -122,7 +152,7 @@ impl SessionWorkerOccupancy {
                         .await,
                     awaken_session_execution_contract::SessionSourceDispatchObservation::Settled
                 ) {
-                    return Ok(blocked);
+                    return Ok(None);
                 }
                 matches!(action, SessionTerminalCleanupAction::Dispose { .. })
             } else {
@@ -142,7 +172,7 @@ impl SessionWorkerOccupancy {
                         SessionEnvironmentState::Resident { .. }
                     )
                 {
-                    return Ok(blocked);
+                    return Ok(None);
                 }
                 false
             };
@@ -150,17 +180,26 @@ impl SessionWorkerOccupancy {
                 .queries
                 .frozen_session_projection(scoped.workspace_id, &session, false)
                 .await?;
-            if !self
-                .terminal_cleanup
-                .observe_terminal_cleanup_retention(&session.session_id, &projection, prepared)
-                .await?
-            {
-                return Ok(blocked);
-            }
+            subjects.push(SourceRetentionSubject::new(
+                session.session_id.clone(),
+                prepared,
+                projection,
+            )?);
         }
-        Ok(crate::WorkerRealizationObservation {
-            occupied,
-            sources_retained: identity.is_some(),
-        })
+        Ok(Some((occupied, subjects)))
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkerSourceRetentionSubjects for SessionWorkerOccupancy {
+    /// The same complete read the retirement decision makes, stopped before
+    /// the decision. A blocked read names no subject: nothing the Worker
+    /// could report would admit its retirement.
+    async fn source_retention_subjects(
+        &self,
+        worker: &WorkerIdentity,
+    ) -> Result<Vec<SourceRetentionSubject>, RunError> {
+        let scan = self.scan(&worker.worker_id, Some(worker)).await?;
+        Ok(scan.map(|(_, subjects)| subjects).unwrap_or_default())
     }
 }

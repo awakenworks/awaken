@@ -271,6 +271,7 @@ mod tests {
             warm_environment_shapes: Default::default(),
             credential_observations,
             acp_capability_observations: Default::default(),
+            source_retention: Default::default(),
         };
 
         assert_eq!(

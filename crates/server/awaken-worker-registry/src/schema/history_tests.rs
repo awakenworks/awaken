@@ -31,6 +31,7 @@ fn expected(generation: u64) -> RegisteredWorker {
         drain_deadline_ms: Some(120),
         process_exit: None,
         create_ledger: None,
+        source_retention: Default::default(),
     }
 }
 

@@ -176,6 +176,7 @@ mod tests {
             observation_ttl: std::time::Duration::from_secs(30),
             probe_interval: std::time::Duration::from_secs(10),
             warm_environments: Default::default(),
+            source_retention: Default::default(),
         });
         let binding = Arc::new(OnceLock::from(lifecycle));
         let app = worker_admin_router(binding);

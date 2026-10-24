@@ -9,25 +9,6 @@
 use crate::host::*;
 
 impl SessionExecutorBuilder {
-    /// Install only the existing read roles for a split Coordinator. An
-    /// execution provider may not be silently replaced or partly reconfigured.
-    pub fn with_session_environment_observation<P>(
-        mut self,
-        observer: Arc<P>,
-    ) -> Result<Self, &'static str>
-    where
-        P: awaken_session_environment_contract::EnvironmentRealizer
-            + awaken_session_environment_contract::EnvironmentAdoption
-            + 'static,
-    {
-        if self.env.session_provider_explicit {
-            return Err("Session execution provider is already installed");
-        }
-        self.env.session_provider = crate::uninstalled_environment::uninstalled_session_provider()
-            .with_observation_roles(observer);
-        Ok(self)
-    }
-
     /// Select the sole checkpoint-byte adapter. This does not install lifecycle
     /// state; Session root CAS remains authoritative.
     #[must_use]

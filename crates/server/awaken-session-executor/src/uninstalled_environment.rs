@@ -29,21 +29,14 @@ pub(crate) fn default_session_provider(sandbox_root: PathBuf) -> SessionEnvironm
     #[cfg(not(test))]
     {
         let _ = sandbox_root;
-        uninstalled_session_provider()
+        SessionEnvironmentProvider::new(Arc::new(UninstalledSessionEnvironmentProvider))
     }
-}
-
-/// Fresh unavailable effect roles, including when a test/scenario previously
-/// supplied an implicit Workdir fallback. Read-only composition must not retain
-/// that fallback's terminal, capacity or installation capabilities.
-pub(crate) fn uninstalled_session_provider() -> SessionEnvironmentProvider {
-    SessionEnvironmentProvider::new(Arc::new(UninstalledSessionEnvironmentProvider))
 }
 
 /// Refuses every Session environment effect: the shared Host never chooses a
 /// sandbox implementation itself. Consumer: a Host whose composition installed
 /// no provider, such as a split Coordinator that only projects Sessions to its
-/// Workers.
+/// Workers and observes none of their sources.
 struct UninstalledSessionEnvironmentProvider;
 
 fn not_installed() -> pc::SandboxError {

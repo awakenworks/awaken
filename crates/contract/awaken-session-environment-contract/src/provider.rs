@@ -241,20 +241,6 @@ impl SessionEnvironmentProvider {
         }
     }
 
-    /// Replace only the metadata/observation roles. The process composition
-    /// supplies an adapter whose effect methods refuse before backend access;
-    /// terminal, capacity, installation and execution-origin handles stay put.
-    /// Consumer: a Coordinator that observes retained remote Session sources.
-    #[must_use]
-    pub fn with_observation_roles<P>(mut self, observer: Arc<P>) -> Self
-    where
-        P: EnvironmentRealizer + EnvironmentAdoption + 'static,
-    {
-        self.realizer = observer.clone();
-        self.adoption = observer;
-        self
-    }
-
     #[must_use]
     pub fn realizer(&self) -> &Arc<dyn EnvironmentRealizer> {
         &self.realizer

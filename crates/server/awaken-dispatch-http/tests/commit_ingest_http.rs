@@ -210,6 +210,7 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         drain_deadline_ms: None,
         process_exit: None,
         create_ledger: None,
+        source_retention: Default::default(),
     }));
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let dispatch = Arc::new(MemoryDispatchStore::new(clock.clock()));

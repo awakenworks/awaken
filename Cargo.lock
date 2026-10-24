@@ -3402,6 +3402,7 @@ dependencies = [
  "awaken-session-types",
  "awaken-time",
  "awaken-worker-contract",
+ "blake3",
  "proptest",
  "serde",
  "serde_json",

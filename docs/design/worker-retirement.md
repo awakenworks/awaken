@@ -5,6 +5,47 @@ It delegates the existing role catalog to the
 [remote Worker component catalog](remote-worker-protocol.md#10-remote-worker-component-catalog);
 it adds no service, queue, durable cleanup state or permission authority.
 
+## Amendment 2026-10-24: retention is Worker-reported data
+
+Supersedes the 2026-10-22 amendment "install observation in the
+registered-Worker composition". A Coordinator-side observation port would need
+a Sandbox provider implementation in the Coordinator and break plan v4 §3.3
+(no Worker-side implementation in the Coordinator closure). The integrator's
+decision: the Worker observes its own Sandbox sources and reports the facts;
+the Coordinator decides from the facts and holds no provider.
+
+- The Coordinator's Worker occupancy read
+  ([`SessionWorkerOccupancy`](../../crates/server/awaken-session-application/src/worker_occupancy.rs))
+  names each original source that must outlive the Actor as a
+  `SourceRetentionSubject` (Session, preparation semantics, frozen projection)
+  with a canonical digest that excludes only the root revision (realization
+  lease renewals advance it while the source is unchanged). A read blocked by
+  a root fact names no subject.
+- A draining Worker reads its subjects over its control channel
+  (`/v1/worker/source-retention/subjects`), observes each through its own
+  execution provider (`RunAssembly::observe_source_retention`, the same
+  provider observer and `SandboxObservationPurpose::WorkerRetirement`
+  classifier as before) and reports one `WorkerSourceRetention` fact per
+  subject in its heartbeat. The Registry keeps the incarnation's last report
+  (`source_retention_json`); a later heartbeat replaces it whole.
+- Retirement qualification (`qualify_retirement=true`) reads the same subjects
+  again and admits a source only when a fact for its exact digest exists and
+  every such fact says retained. A missing report (the Worker never observed,
+  or its observation failed) and a stale report (the subject changed) refuse;
+  neither is an error. The registry, attempt and Work facts and the read's
+  other rules are unchanged.
+
+| Rule | Worker side | Coordinator side |
+|---|---|---|
+| W1 | not draining: reports nothing | - |
+| W2 | subject read fails: previous report stays | stale facts refuse (S2) |
+| W3/W4/W5 | observation retained / not retained / failed: fact retained / not / not | S3 retained / S4 refused |
+| S1 | - | no fact for the subject: refused |
+
+Consequence: an incarnation that dies before reporting cannot be qualified for
+retirement from Coordinator-side observation any more; it keeps its Sessions
+until an independent authority (process exit, ordinary recovery) proceeds.
+
 ## Amendment 2026-10-22: observe the original source independently of execution configuration
 
 The original published handle and Create fence identify the retained source.

@@ -3,25 +3,6 @@ use super::*;
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingCleanupRuntime {
-    async fn observe_terminal_cleanup_retention(
-        &self,
-        session_id: &awaken_session_execution_contract::__macro_support::SessionId,
-        projection: &awaken_session_execution_contract::__macro_support::FrozenSessionProjection,
-        source_prepared: bool,
-    ) -> Result<bool, awaken_session_execution_contract::__macro_support::RunError> {
-        self.retention_reads.lock().unwrap().push((
-            session_id.to_string(),
-            projection.clone(),
-            source_prepared,
-        ));
-        if self.retention_unavailable.load(Ordering::SeqCst) {
-            return Err(RunError::unavailable(
-                "retained source observation unavailable",
-            ));
-        }
-        Ok(self.source_retained.load(Ordering::SeqCst))
-    }
-
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
