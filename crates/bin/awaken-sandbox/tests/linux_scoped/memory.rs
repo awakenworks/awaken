@@ -28,7 +28,7 @@ pub(super) async fn provider(base: &Path) -> LocalProvider {
     let clock = awaken_time::system_clock();
     LocalProvider::trusted_host(base).with_memory_mounter(Arc::new({
         let backend = repository(base, clock.clone()).await;
-        let bus = Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default());
+        let bus = Arc::new(awaken_resource_contract::LocalInvalidator::default());
         let memory = Arc::new(
             awaken_resource_application::memory::InvalidatingMemoryRepository::new(
                 backend,

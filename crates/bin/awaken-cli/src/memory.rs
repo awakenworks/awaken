@@ -46,7 +46,7 @@ pub fn with_platform_memory_data_plane(
     dependencies: SessionExecutorBuilder,
     tier: awaken_deployment_config::SandboxTier,
     source: MemoryMountSource,
-    invalidator: Arc<awaken_sandbox_memoryd::LocalInvalidator>,
+    invalidator: Arc<awaken_resource_contract::LocalInvalidator>,
 ) -> SessionExecutorBuilder {
     if dependencies.has_memory_mounter() {
         return dependencies;
@@ -105,7 +105,7 @@ mod platform_memory_projection_tests {
     #[tokio::test]
     async fn default_mount_degrades_to_copy_and_harvests_off_linux() {
         use awaken_provisioning_contract::{MemoryMounter as _, MountAccess, Realization};
-        let bus = std::sync::Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default());
+        let bus = std::sync::Arc::new(awaken_resource_contract::LocalInvalidator::default());
         let resources =
             awaken_resource_persistence::ephemeral(awaken_time::system_clock(), bus.clone())
                 .await

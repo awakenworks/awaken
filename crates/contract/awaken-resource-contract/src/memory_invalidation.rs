@@ -7,8 +7,14 @@
 //! read refetches the durable head). [`LocalInvalidator`] is the in-process bus; a
 //! distributed transport can implement the same trait without touching the store or
 //! FUSE realization.
+//!
+//! The bus is the in-process implementation of this contract's
+//! [`MemoryInvalidator`] port, so the publisher (the Resource application's
+//! Memory write decorator, selected by every process that opens the Resources
+//! stores, a Coordinator included) and the subscriber (the Worker's Memory
+//! mounter) share one type without either linking the other.
 
-use awaken_resource_contract::MemoryInvalidator;
+use crate::MemoryInvalidator;
 use tokio::sync::broadcast;
 
 /// A `(store_id, path)` invalidation — "this path changed; drop it".
@@ -33,8 +39,12 @@ impl LocalInvalidator {
     pub fn subscribe(&self) -> broadcast::Receiver<Invalidation> {
         self.tx.subscribe()
     }
-    #[cfg(all(test, target_os = "linux"))]
-    pub(crate) fn subscriber_count_for_test(&self) -> usize {
+
+    /// The number of live subscriptions. A mount construction that fails
+    /// before it starts a listener leaves this count unchanged, which is how
+    /// the mounter's fail-closed construction is observed.
+    #[must_use]
+    pub fn subscriber_count(&self) -> usize {
         self.tx.receiver_count()
     }
 }

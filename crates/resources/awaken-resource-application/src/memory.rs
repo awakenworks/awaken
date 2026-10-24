@@ -296,49 +296,13 @@ impl<T: MemoryContentPurge + ?Sized> MemoryContentPurge for InvalidatingMemoryRe
 mod tests {
     use super::InvalidatingMemoryRepository;
     use awaken_memory_store::VolatileMemoryRepository;
+    use awaken_resource_contract::LocalInvalidator;
     use awaken_resource_contract::{
         MemErr, MemoryActor, MemoryContentPurge, MemoryCopyWriteback, MemoryFilesystem,
         MemoryInvalidator, MemoryQueries, MemoryVersionQueries, MemoryWriter,
     };
     use std::sync::Arc;
     use tokio::sync::broadcast;
-    /// A `(store_id, path)` invalidation — "this path changed; drop it".
-    pub type Invalidation = (String, String);
-
-    /// The in-process invalidation bus (a broadcast). A future distributed transport
-    /// can implement [`MemoryInvalidator`] over the network.
-    pub struct LocalInvalidator {
-        tx: broadcast::Sender<Invalidation>,
-    }
-
-    impl LocalInvalidator {
-        /// A bus buffering up to `capacity` un-drained invalidations per subscriber.
-        #[must_use]
-        pub fn new(capacity: usize) -> Self {
-            let (tx, _) = broadcast::channel(capacity.max(1));
-            Self { tx }
-        }
-
-        /// A receiver a mount drains to drop invalidated paths from its cache.
-        #[must_use]
-        pub fn subscribe(&self) -> broadcast::Receiver<Invalidation> {
-            self.tx.subscribe()
-        }
-    }
-
-    impl Default for LocalInvalidator {
-        fn default() -> Self {
-            Self::new(1024)
-        }
-    }
-
-    #[cfg(test)]
-    impl MemoryInvalidator for LocalInvalidator {
-        fn publish(&self, store: &str, path: &str) {
-            // Err only when there are no live subscribers — nothing to invalidate.
-            let _ = self.tx.send((store.to_string(), path.to_string()));
-        }
-    }
 
     #[tokio::test]
     async fn decorator_accepts_a_queries_only_backend_without_granting_write_capabilities() {

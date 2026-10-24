@@ -94,7 +94,7 @@ async fn destination_boundary_requires_exact_auth_root_registry_and_pod() {
     let environments = awaken_scenario_host::volatile_environment_execution(clock.clone());
     let resources = awaken_resource_persistence::ephemeral(
         clock.clone(),
-        Arc::new(awaken_sandbox_memoryd::LocalInvalidator::default()),
+        Arc::new(awaken_resource_contract::LocalInvalidator::default()),
     )
     .await
     .unwrap();

@@ -158,8 +158,6 @@ awaken-run-executor-a2a.workspace = true
 # The Broker regressions retain the original real Kube client/ledger fixture.
 awaken-sandbox-kubernetes.workspace = true
 kube = { workspace = true, features = ["client", "rustls-tls", "http-proxy"] }
-# The relay fixture uses the real root invalidation bus.
-awaken-sandbox-memoryd.workspace = true
 # The erasure regression retains the real portable ACP filesystem store.
 awaken-run-executor-acp.workspace = true
 awaken-coordinator-client.workspace = true
