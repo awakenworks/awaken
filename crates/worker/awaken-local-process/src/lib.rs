@@ -53,6 +53,8 @@ pub fn bubblewrap_seccomp_args() -> Vec<String> {
         .collect()
 }
 
+pub mod podman;
+
 mod execution_identity;
 pub use execution_identity::{ProcessExecutionIdentity, ProcessNamespaceIdentity};
 

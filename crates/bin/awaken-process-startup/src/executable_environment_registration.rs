@@ -170,6 +170,47 @@ fn coordinator_registrar(
     )
 }
 
+/// The Coordinator's Environment image builder: the deployment's builder
+/// (`SandboxSettings::package_image_builder_for`) when this build links its
+/// engine, none otherwise. Builder Pods are created directly, not brokered.
+async fn package_image_provisioner(
+    sandbox: &awaken_deployment_config::SandboxSettings,
+    tier: awaken_deployment_config::SandboxTier,
+) -> Result<Option<Arc<dyn awaken_container_contract::PackageImageProvisioner>>, String> {
+    use awaken_deployment_config::PackageImageBuilder;
+    let Some(builder) = sandbox.package_image_builder_for(tier) else {
+        return Ok(None);
+    };
+    Ok(match builder {
+        #[cfg(feature = "container-docker")]
+        PackageImageBuilder::Docker => Some(Arc::new(
+            awaken_package_image::docker_package_image_provisioner(
+                &sandbox.package_image_build_settings(),
+            )?,
+        )),
+        #[cfg(feature = "container-podman")]
+        PackageImageBuilder::Podman => Some(Arc::new(
+            awaken_package_image::podman_package_image_provisioner(
+                &sandbox.package_image_build_settings(),
+            )?,
+        )),
+        #[cfg(feature = "container-k8s")]
+        PackageImageBuilder::Kubernetes => Some(Arc::new(
+            awaken_package_image::kubernetes_package_image_provisioner(
+                &sandbox.package_image_build_settings(),
+                None,
+            )
+            .await?,
+        )),
+        #[cfg(not(feature = "container-docker"))]
+        PackageImageBuilder::Docker => None,
+        #[cfg(not(feature = "container-podman"))]
+        PackageImageBuilder::Podman => None,
+        #[cfg(not(feature = "container-k8s"))]
+        PackageImageBuilder::Kubernetes => None,
+    })
+}
+
 async fn open_image_builds(
     deployment: &ResolvedDeployment,
     schema: PostgresSchemaMode,
@@ -178,7 +219,8 @@ async fn open_image_builds(
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<Option<Arc<awaken_environment_image_build::EnvironmentImageBuildCoordinator>>, String> {
     let Some(provisioner) =
-        awaken_execution_composition::package_image_provisioner(&deployment.runtime).await?
+        package_image_provisioner(&deployment.runtime.sandbox, deployment.runtime.sandbox_tier)
+            .await?
     else {
         return Ok(None);
     };

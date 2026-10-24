@@ -10,21 +10,19 @@
 use awaken_container_contract::RuntimeError;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 
 use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, SplitChannel};
 use awaken_provisioning_contract as pc;
-use base64::Engine as _;
 use bollard::Docker;
-use bollard::auth::DockerCredentials;
 use bollard::container::{
     Config, CreateContainerOptions, DownloadFromContainerOptions, KillContainerOptions,
     ListContainersOptions, RemoveContainerOptions, StartContainerOptions, WaitContainerOptions,
 };
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
-use bollard::image::{BuildImageOptions, CreateImageOptions, PruneImagesOptions, PushImageOptions};
+use bollard::image::CreateImageOptions;
 use bollard::models::{
     ContainerInspectResponse, ContainerStateStatusEnum, HostConfig, PortBinding,
 };
@@ -169,37 +167,6 @@ fn docker_absence_requires_an_explicit_not_found_response() {
     }
 }
 
-#[derive(serde::Deserialize)]
-struct RegistryAuthFile {
-    #[serde(default)]
-    auths: HashMap<String, RegistryAuthEntry>,
-}
-
-#[derive(serde::Deserialize)]
-struct RegistryAuthEntry {
-    #[serde(default)]
-    username: Option<String>,
-    #[serde(default)]
-    password: Option<String>,
-    #[serde(default)]
-    auth: Option<String>,
-    #[serde(default, rename = "identitytoken")]
-    identitytoken: Option<String>,
-    #[serde(default, rename = "registrytoken")]
-    registrytoken: Option<String>,
-}
-
-fn registry_key_matches(key: &str, registry: &str) -> bool {
-    fn normalize(value: &str) -> &str {
-        value
-            .strip_prefix("https://")
-            .or_else(|| value.strip_prefix("http://"))
-            .unwrap_or(value)
-            .trim_end_matches('/')
-    }
-    normalize(key) == normalize(registry)
-}
-
 fn exec_env(command: &pc::MaterializedCommand) -> Result<Vec<String>, RuntimeError> {
     Ok(command
         .env
@@ -247,29 +214,6 @@ fn tmpfs_for(plan: &ContainerPlan) -> HashMap<String, String> {
 #[allow(clippy::items_after_test_module)]
 mod cgroup_host_config_tests {
     use super::*;
-
-    #[test]
-    fn registry_auth_selects_only_the_configured_registry_without_exposing_it() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(
-            file.path(),
-            r#"{"auths":{"https://registry.internal/":{"auth":"dXNlcjpwYXNz"}}}"#,
-        )
-        .unwrap();
-        let runtime =
-            DockerRuntime::with_client(Docker::connect_with_local_defaults().unwrap(), 8080)
-                .with_package_registry("registry.internal")
-                .with_package_registry_auth_file(file.path())
-                .unwrap();
-        let credentials = runtime.package_registry_credentials.unwrap();
-        assert_eq!(credentials.auth.as_deref(), Some("dXNlcjpwYXNz"));
-        assert_eq!(credentials.username.as_deref(), Some("user"));
-        assert_eq!(credentials.password.as_deref(), Some("pass"));
-        assert_eq!(
-            credentials.serveraddress.as_deref(),
-            Some("https://registry.internal/")
-        );
-    }
 
     fn plan() -> ContainerPlan {
         ContainerPlan {
@@ -434,47 +378,11 @@ mod cgroup_host_config_tests {
     }
 
     #[test]
-    fn package_network_opt_in_preserves_environment_egress_boundary() {
-        // Cause/effect table: host opt-in false/true crossed with Unrestricted,
-        // None, Allowlist. Only Unrestricted+true selects host. None always
-        // selects none; Allowlist always rejects. Execution host_config is separate.
-        for enabled in [false, true] {
-            assert_eq!(
-                package_build_network(&pc::NetworkPolicy::Unrestricted, enabled).unwrap(),
-                if enabled { "host" } else { "default" }
-            );
-            assert_eq!(
-                package_build_network(&pc::NetworkPolicy::None, enabled).unwrap(),
-                "none"
-            );
-            assert!(
-                package_build_network(
-                    &pc::NetworkPolicy::Allowlist {
-                        hosts: vec!["pypi.org".into()]
-                    },
-                    enabled
-                )
-                .is_err()
-            );
-            let rt =
-                DockerRuntime::with_client(Docker::connect_with_local_defaults().unwrap(), 9000);
-            assert!(!rt.package_build_host_network);
-            assert_eq!(
-                rt.with_package_build_host_network(enabled)
-                    .package_build_host_network,
-                enabled
-            );
-        }
-    }
-
-    #[test]
     fn with_client_wraps_a_handle_and_connect_local_builds_one() {
         let docker = Docker::connect_with_local_defaults().unwrap();
-        let rt = DockerRuntime::with_client(docker, 9000)
-            .with_package_build_timeout(std::time::Duration::from_secs(17));
+        let rt = DockerRuntime::with_client(docker, 9000);
         assert_eq!(rt.agent_port, 9000);
         assert_eq!(rt.port_key(), "9000/tcp");
-        assert_eq!(rt.package_build_timeout, std::time::Duration::from_secs(17));
     }
 
     #[tokio::test]
@@ -501,28 +409,6 @@ pub struct DockerRuntime {
     agent_port: u16,
     realization_namespace: ContainerRealizationNamespace,
     owner_id: String,
-    /// Serialize the cache-probe/build sequence so concurrent sessions with the
-    /// same Environment cannot race two identical immutable image builds.
-    package_builds: tokio::sync::Mutex<()>,
-    package_registry: Option<String>,
-    package_registry_credentials: Option<DockerCredentials>,
-    package_cache_ttl: Option<std::time::Duration>,
-    package_build_timeout: std::time::Duration,
-    package_build_host_network: bool,
-}
-
-/// Render the shared build-network decision in Docker's `NetworkMode` vocabulary.
-fn package_build_network(
-    network: &pc::NetworkPolicy,
-    host_opt_in: bool,
-) -> Result<&'static str, RuntimeError> {
-    Ok(
-        match crate::packages::package_build_network(network, host_opt_in)? {
-            crate::packages::PackageBuildNetwork::EngineDefault => "default",
-            crate::packages::PackageBuildNetwork::Host => "host",
-            crate::packages::PackageBuildNetwork::Denied => "none",
-        },
-    )
 }
 
 impl DockerRuntime {
@@ -568,43 +454,7 @@ impl DockerRuntime {
             agent_port,
             realization_namespace,
             owner_id: crate::runtime_owner_id(),
-            package_builds: tokio::sync::Mutex::new(()),
-            package_registry: None,
-            package_registry_credentials: None,
-            package_cache_ttl: None,
-            package_build_timeout: crate::packages::PACKAGE_BUILD_TIMEOUT,
-            package_build_host_network: false,
         }
-    }
-
-    /// Deployment-owned selection; the Environment's network policy still bounds it.
-    #[must_use]
-    pub fn with_package_build_host_network(mut self, enabled: bool) -> Self {
-        self.package_build_host_network = enabled;
-        self
-    }
-
-    /// Publish content-addressed package images to a shared OCI registry.
-    #[must_use]
-    pub fn with_package_registry(mut self, registry: impl Into<String>) -> Self {
-        self.package_registry = Some(registry.into().trim_end_matches('/').to_string());
-        self
-    }
-
-    /// Bound unused Awaken-derived images in the local engine cache. Docker's
-    /// prune operation never removes an image referenced by a container.
-    #[must_use]
-    pub fn with_package_cache_ttl(mut self, ttl: std::time::Duration) -> Self {
-        self.package_cache_ttl = Some(ttl);
-        self
-    }
-
-    /// Bound one registry lookup/build/push transaction. A timeout fails the
-    /// Environment activation closed; it never selects the unmodified base image.
-    #[must_use]
-    pub fn with_package_build_timeout(mut self, timeout: std::time::Duration) -> Self {
-        self.package_build_timeout = timeout;
-        self
     }
 
     fn container_config(
@@ -672,122 +522,9 @@ impl DockerRuntime {
             .cloned()
     }
 
-    async fn resolve_package_build(
-        &self,
-        base_image: &str,
-        packages: &awaken_environment_contract::PackageRequirements,
-    ) -> Result<(String, String, String, String), RuntimeError> {
-        let base = self
-            .docker
-            .inspect_image(base_image)
-            .await
-            .map_err(backend)?;
-        let base_identity = base
-            .id
-            .ok_or_else(|| backend("docker returned an empty base-image identity"))?;
-        if base_identity.is_empty() {
-            return Err(backend("docker returned an empty base-image identity"));
-        }
-        let base_user = base
-            .config
-            .and_then(|config| config.user)
-            .unwrap_or_default();
-        let (dockerfile, fingerprint) =
-            awaken_container_contract::package_image_recipe(&base_identity, &base_user, packages)?;
-        let repository = self.package_registry.as_ref().map_or_else(
-            || "awaken-packages".to_string(),
-            |registry| format!("{registry}/awaken-packages"),
-        );
-        let image = format!("{repository}:{fingerprint}");
-        Ok((dockerfile, fingerprint, repository, image))
-    }
-
-    async fn prune_package_cache(&self) {
-        let Some(ttl) = self.package_cache_ttl else {
-            return;
-        };
-        let filters = [
-            ("dangling".to_owned(), vec!["false".to_owned()]),
-            (
-                "label".to_owned(),
-                vec!["org.awaken.package-recipe".to_owned()],
-            ),
-            ("until".to_owned(), vec![format!("{}s", ttl.as_secs())]),
-        ]
-        .into_iter()
-        .collect();
-        let _ = self
-            .docker
-            .prune_images(Some(PruneImagesOptions { filters }))
-            .await;
-    }
-
-    /// Load the selected registry entry from a Docker/containers authentication
-    /// file. Only the Worker-side Docker API receives these credentials.
-    pub fn with_package_registry_auth_file(
-        mut self,
-        path: impl AsRef<Path>,
-    ) -> Result<Self, RuntimeError> {
-        let registry = self
-            .package_registry
-            .as_deref()
-            .ok_or_else(|| backend("registry authentication requires a package registry"))?;
-        let bytes = std::fs::read(path.as_ref()).map_err(backend)?;
-        let config: RegistryAuthFile = serde_json::from_slice(&bytes).map_err(backend)?;
-        let (serveraddress, entry) = config
-            .auths
-            .into_iter()
-            .find(|(server, _)| registry_key_matches(server, registry))
-            .ok_or_else(|| {
-                backend(format!(
-                    "registry authentication file has no entry for `{registry}`"
-                ))
-            })?;
-        let (decoded_username, decoded_password) = entry
-            .auth
-            .as_deref()
-            .and_then(|auth| base64::engine::general_purpose::STANDARD.decode(auth).ok())
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .and_then(|value| {
-                value
-                    .split_once(':')
-                    .map(|(username, password)| (username.to_owned(), password.to_owned()))
-            })
-            .unzip();
-        self.package_registry_credentials = Some(DockerCredentials {
-            username: entry.username.or(decoded_username),
-            password: entry.password.or(decoded_password),
-            auth: entry.auth,
-            identitytoken: entry.identitytoken,
-            registrytoken: entry.registrytoken,
-            serveraddress: Some(serveraddress),
-            ..Default::default()
-        });
-        Ok(self)
-    }
-
     /// Probe the daemon (for tests / health checks): `Ok` iff it responds.
     pub async fn ping(&self) -> Result<(), RuntimeError> {
         self.docker.version().await.map(|_| ()).map_err(backend)
-    }
-
-    async fn package_image_reference(
-        &self,
-        image: &str,
-        repository: &str,
-    ) -> Result<String, RuntimeError> {
-        if self.package_registry.is_none() {
-            return Ok(image.to_string());
-        }
-        self.docker
-            .inspect_image(image)
-            .await
-            .map_err(backend)?
-            .repo_digests
-            .unwrap_or_default()
-            .into_iter()
-            .find(|digest| digest.starts_with(&format!("{repository}@sha256:")))
-            .ok_or_else(|| backend("package image has no immutable repository digest"))
     }
 
     fn port_key(&self) -> String {
@@ -975,10 +712,6 @@ impl ContainerRuntime for DockerRuntime {
         true
     }
 
-    fn supports_package_provisioning(&self) -> bool {
-        true
-    }
-
     fn uses_host_live_input_bind(&self) -> bool {
         true
     }
@@ -1008,104 +741,6 @@ impl ContainerRuntime for DockerRuntime {
     async fn remove_live_input(&self, container_id: &str, path: &str) -> Result<(), RuntimeError> {
         let root = self.live_inputs_root(container_id).await?;
         crate::live_inputs::remove_host_input(&root, path)
-    }
-
-    async fn prepare_package_image(
-        &self,
-        base_image: &str,
-        packages: &awaken_environment_contract::PackageRequirements,
-        network: &pc::NetworkPolicy,
-    ) -> Result<String, RuntimeError> {
-        let operation = async {
-            if packages.is_empty() {
-                return Ok(base_image.to_string());
-            }
-            let _build_guard = self.package_builds.lock().await;
-            self.prune_package_cache().await;
-            let (dockerfile, fingerprint, repository, image) =
-                self.resolve_package_build(base_image, packages).await?;
-            if self.package_registry.is_none() && self.docker.inspect_image(&image).await.is_ok() {
-                return self.package_image_reference(&image, &repository).await;
-            }
-            if self.package_registry.is_some() {
-                let mut pull = self.docker.create_image(
-                    Some(CreateImageOptions {
-                        from_image: repository.clone(),
-                        tag: fingerprint.clone(),
-                        ..Default::default()
-                    }),
-                    None,
-                    self.package_registry_credentials.clone(),
-                );
-                let mut pulled = true;
-                while let Some(result) = pull.next().await {
-                    if result.is_err() {
-                        pulled = false;
-                        break;
-                    }
-                }
-                if pulled && self.docker.inspect_image(&image).await.is_ok() {
-                    return self.package_image_reference(&image, &repository).await;
-                }
-                // A local cache hit is not evidence that another worker can pull the
-                // image. Repair an empty/expired registry from the deterministic local
-                // tag before returning a shared digest.
-                if self.docker.inspect_image(&image).await.is_ok() {
-                    let mut push = self.docker.push_image(
-                        &repository,
-                        Some(PushImageOptions {
-                            tag: fingerprint.clone(),
-                        }),
-                        self.package_registry_credentials.clone(),
-                    );
-                    while let Some(result) = push.next().await {
-                        result.map_err(backend)?;
-                    }
-                    return self.package_image_reference(&image, &repository).await;
-                }
-            }
-
-            let mut context = tar::Builder::new(Vec::new());
-            let mut header = tar::Header::new_gnu();
-            header.set_size(dockerfile.len() as u64);
-            header.set_mode(0o644);
-            header.set_cksum();
-            context
-                .append_data(&mut header, "Containerfile", dockerfile.as_bytes())
-                .map_err(backend)?;
-            let context = context.into_inner().map_err(backend)?;
-            let options = BuildImageOptions::<String> {
-                dockerfile: "Containerfile".into(),
-                t: image.clone(),
-                rm: true,
-                forcerm: true,
-                networkmode: package_build_network(network, self.package_build_host_network)?
-                    .into(),
-                ..Default::default()
-            };
-            let mut build = self.docker.build_image(options, None, Some(context.into()));
-            while let Some(result) = build.next().await {
-                result.map_err(backend)?;
-            }
-            self.docker.inspect_image(&image).await.map_err(backend)?;
-            if self.package_registry.is_some() {
-                let mut push = self.docker.push_image(
-                    &repository,
-                    Some(PushImageOptions {
-                        tag: fingerprint.clone(),
-                    }),
-                    self.package_registry_credentials.clone(),
-                );
-                while let Some(result) = push.next().await {
-                    result.map_err(backend)?;
-                }
-                return self.package_image_reference(&image, &repository).await;
-            }
-            Ok(image)
-        };
-        tokio::time::timeout(self.package_build_timeout, operation)
-            .await
-            .map_err(|_| backend("package image preparation exceeded its deadline"))?
     }
 
     async fn preflight_create_for_effect(
@@ -1834,58 +1469,6 @@ impl ContainerRuntime for DockerRuntime {
         self.remove(container_id).await?;
         pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))
             .map_err(backend)
-    }
-}
-
-#[async_trait]
-impl awaken_container_contract::PackageImageProvisioner for DockerRuntime {
-    async fn probe_builder(&self) -> Result<(), RuntimeError> {
-        self.ping().await
-    }
-
-    async fn package_base_image_identity(&self, reference: &str) -> Result<String, RuntimeError> {
-        self.docker
-            .inspect_image(reference)
-            .await
-            .map_err(backend)?
-            .id
-            .filter(|identity| !identity.is_empty())
-            .ok_or_else(|| backend("docker returned an empty base-image identity"))
-    }
-
-    async fn prepare_package_image(
-        &self,
-        base_image: &str,
-        packages: &awaken_environment_contract::PackageRequirements,
-        network: &pc::NetworkPolicy,
-    ) -> Result<String, RuntimeError> {
-        ContainerRuntime::prepare_package_image(self, base_image, packages, network).await
-    }
-
-    async fn package_image_available(
-        &self,
-        _base_image: &str,
-        _packages: &awaken_environment_contract::PackageRequirements,
-        _network: &pc::NetworkPolicy,
-        image: &str,
-    ) -> Result<bool, RuntimeError> {
-        if self.package_registry.is_none() {
-            return Ok(self.docker.inspect_image(image).await.is_ok());
-        }
-        let mut pull = self.docker.create_image(
-            Some(CreateImageOptions {
-                from_image: image.to_string(),
-                ..Default::default()
-            }),
-            None,
-            self.package_registry_credentials.clone(),
-        );
-        while let Some(result) = pull.next().await {
-            if result.is_err() {
-                return Ok(false);
-            }
-        }
-        Ok(self.docker.inspect_image(image).await.is_ok())
     }
 }
 

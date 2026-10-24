@@ -137,11 +137,21 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             self.runtime.enforces_network_none(),
             allowlist,
             self.worker_mcp_relay_substitution,
-            self.runtime.supports_package_provisioning()
-                || (self.package_provisioner.is_some() && builder_proven),
+            self.package_provisioner.is_some() && builder_proven,
             evidence.is_none_or(|evidence| evidence.resource_limits),
             self.runtime.sandbox_control_services(),
         )
+    }
+
+    pub(super) fn package_image_provisioner(
+        &self,
+    ) -> Result<&Arc<dyn awaken_container_contract::PackageImageProvisioner>, pc::SandboxError>
+    {
+        self.package_provisioner.as_ref().ok_or_else(|| {
+            pc::SandboxError::from(RuntimeError::Backend(
+                "container runtime cannot provision package requirements".into(),
+            ))
+        })
     }
 
     async fn probe_runtime_ready(&self) -> Result<(), pc::SandboxError> {
@@ -245,8 +255,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         self
     }
 
-    /// Use an independent image builder/publisher. This is required when the
-    /// execution runtime cannot build images itself (for example Kubernetes).
+    /// Build package images through this builder. No container engine adapter
+    /// builds images itself; without a builder, package requirements fail
+    /// closed before a workload exists.
     #[must_use]
     pub fn with_package_provisioner(
         mut self,
@@ -429,15 +440,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     ));
                 }
             };
-            let prepared_image = if let Some(provisioner) = &self.package_provisioner {
-                provisioner
-                    .prepare_package_image(&base_image, &plan.packages, &spec.network)
-                    .await
-            } else {
-                self.runtime
-                    .prepare_package_image(&base_image, &plan.packages, &spec.network)
-                    .await
-            };
+            let prepared_image = self
+                .package_image_provisioner()?
+                .prepare_package_image(&base_image, &plan.packages, &spec.network)
+                .await;
             admit()?;
             plan.image = prepared_image.map_err(pc::SandboxError::from)?;
             plan.rootfs = RootfsPlan::Image(plan.image.clone());

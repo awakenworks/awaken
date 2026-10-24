@@ -61,7 +61,6 @@ pub use kubernetes_handle::{
     KubernetesProjectedOrigin, KubernetesProjectedParticipants,
 };
 mod live_inputs;
-mod packages;
 mod podman_plan;
 mod process_env;
 mod provider_contract;
