@@ -1382,9 +1382,7 @@ async fn release_failed_claim<S: awaken_dispatch_contract::DispatchExecution + '
     }
 }
 
-pub(crate) async fn defer_failed_claim<
-    S: awaken_dispatch_contract::DispatchExecution + 'static,
->(
+pub(crate) async fn defer_failed_claim<S: awaken_dispatch_contract::DispatchExecution + 'static>(
     store: &S,
     claim: &crate::RunClaim,
     retry_after_ms: u64,

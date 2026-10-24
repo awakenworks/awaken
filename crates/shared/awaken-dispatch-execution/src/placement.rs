@@ -44,22 +44,20 @@ fn worker_acp_capabilities(
             awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { acp, .. }
                 if !acp.capability_fingerprint.trim().is_empty() =>
             {
-                Some(
-                    awaken_dispatch_contract::WorkerAcpCapabilityRequirement {
-                        backend_ref: candidate.binding().identity().2.to_owned(),
-                        fingerprint: acp.capability_fingerprint.clone(),
-                    },
-                )
+                Some(awaken_dispatch_contract::WorkerAcpCapabilityRequirement {
+                    backend_ref: candidate.binding().identity().2.to_owned(),
+                    fingerprint: acp.capability_fingerprint.clone(),
+                })
             }
             awaken_runtime_contract::resolved::ModelProvisioning::Provider {
                 acp: Some(acp),
                 ..
-            } if !acp.capability_fingerprint.trim().is_empty() => Some(
-                awaken_dispatch_contract::WorkerAcpCapabilityRequirement {
+            } if !acp.capability_fingerprint.trim().is_empty() => {
+                Some(awaken_dispatch_contract::WorkerAcpCapabilityRequirement {
                     backend_ref: candidate.binding().identity().2.to_owned(),
                     fingerprint: acp.capability_fingerprint.clone(),
-                },
-            ),
+                })
+            }
             _ => None,
         })
         .collect()

@@ -8,7 +8,7 @@
   `RunDispatch` plus `DispatchPool`/`DispatchWorker`. The historical decision below
   records the incremental slice that introduced those durable authorities.
 - Depends on: ADR-0006, ADR-0008
-- Amended by: ADR-0039 (port names; the D1 `awaken-dispatch-contract` split was done in its slice 2.1)
+- Amended by: ADR-0039 (port names; the D1 `awaken-run-ingress-contract` split was done in its slice 2.1)
 - Amended: 2026-10-09 (names and references)
 
 ## Context
@@ -22,7 +22,7 @@ durable commit backend, so — as its consequences noted — durable ingress fin
 
 The reference design planned this host: `key-design-decisions.md` D11 names an
 `awaken-dispatch` "durable run host" crate (and a separate
-`awaken-dispatch-contract`), and the metadata-derived boundary checker reserves the
+`awaken-run-ingress-contract`), and the metadata-derived boundary checker reserves the
 `awaken-dispatch` layer. The risk is the opposite of missing it: a full
 durable dispatch subsystem (lease renewal, scheduled wake, supersession,
 dead-letter, cross-thread outbox, dispatch query/maintenance, a per-thread worker
@@ -35,7 +35,7 @@ breadth: build the first tested slice, name the rest as deferred.
 
 `awaken-dispatch` holds the whole durable-ingress aggregate — the dispatch
 ports, an in-memory reference store, the Postgres adapter, the worker, and
-`DurableRunIngress` — in one crate. The planned `awaken-dispatch-contract`
+`DurableRunIngress` — in one crate. The planned `awaken-run-ingress-contract`
 split (ports in their own crate, backends in `awaken-stores`) is **deferred**
 until a second backend or an out-of-crate consumer needs it; splitting now would
 be a speculative crate list (`key-design-decisions.md`, "no speculative crate
@@ -102,9 +102,9 @@ settle. `RunIngressCapabilities` reports `scheduled_wake = false` accordingly.
 ## Amendment 2026-10-09: names and references
 
 - D1: the contract split is no longer deferred. The ports live in
-  `crates/contract/awaken-dispatch-contract` ([ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md) slice 2.1).
+  `crates/contract/awaken-run-ingress-contract` ([ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md) slice 2.1).
 - D2: the delivery-opportunity port is `DispatchQueue`
-  (`crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs:13`);
+  (`crates/contract/awaken-run-ingress-contract/src/dispatch/queue.rs:13`);
   `PendingInbox` is `Inbox` (`.../dispatch/delivery.rs:69`). `RunDispatch` now
   names only the serializable record (`.../src/run_dispatch.rs:164`). Backend
   types keep the `*DispatchStore` names (for example `SqliteDispatchStore`).

@@ -214,9 +214,7 @@ impl StoredDispatchEvent {
         })
     }
 
-    pub(crate) fn diagnostic(
-        self,
-    ) -> Option<awaken_dispatch_contract::DispatchOperationalEvent> {
+    pub(crate) fn diagnostic(self) -> Option<awaken_dispatch_contract::DispatchOperationalEvent> {
         match self.operation {
             StoredDispatchOperation::Diagnostic(operation) => {
                 Some(awaken_dispatch_contract::DispatchOperationalEvent {
@@ -1454,9 +1452,9 @@ pub(crate) fn normalize_pending_millis(mut input: PendingInput) -> PendingInput 
 pub(crate) fn installed_worker_credential_capabilities(
     worker: &crate::WorkerSnapshot,
 ) -> Result<awaken_credential_contract::CredentialRealizationCapabilities, DispatchError> {
-    awaken_dispatch_contract::worker_credential_realization_capabilities(worker).map_err(
-        |error| DispatchError::Rejected(format!("Worker capability evidence is invalid: {error}")),
-    )
+    awaken_dispatch_contract::worker_credential_realization_capabilities(worker).map_err(|error| {
+        DispatchError::Rejected(format!("Worker capability evidence is invalid: {error}"))
+    })
 }
 
 #[cfg(kani)]

@@ -7,10 +7,7 @@
 // @formal reason: invokes it. Evidence: crates/server/awaken-dispatch-testkit/src/lib.rs.
 // Dispatch single-writer and bounded Session-child conformance rules. Included
 // at crate root so the shared public conformance API retains its original paths.
-async fn settle_done(
-    store: &dyn ConformanceDispatch,
-    claim: &awaken_dispatch_contract::Claimed,
-) {
+async fn settle_done(store: &dyn ConformanceDispatch, claim: &awaken_dispatch_contract::Claimed) {
     let consumed = claim
         .pending
         .iter()

@@ -25,6 +25,9 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunRecoverySource};
+#[cfg(test)]
+use awaken_dispatch_contract::RunDispatch;
+use awaken_dispatch_contract::{Inbox, PendingInput};
 use awaken_dispatch_erasure::AnyDispatchStore;
 use awaken_dispatch_execution::CompletionSink;
 #[cfg(test)]
@@ -32,9 +35,6 @@ use awaken_dispatch_execution::WorkerResolver;
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 #[cfg(any(test, feature = "test-support"))]
 use awaken_resource_contract::{FileCatalog, FileStore};
-#[cfg(test)]
-use awaken_dispatch_contract::RunDispatch;
-use awaken_dispatch_contract::{Inbox, PendingInput};
 use awaken_runtime::{DirectAttemptDriver, Runtime};
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::activation::RunActivation;

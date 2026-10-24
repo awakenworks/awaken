@@ -6,7 +6,7 @@
 - Builds on: the plane-aligned single workspace and inward dependency rule
   (`Cargo.toml` metadata, `scripts/ci/check_crate_boundaries.py`); the
   `X-contract` extraction convention that factored
-  `awaken-dispatch-contract` out of its host (ADR-0039 slice 2.1); the unified
+  `awaken-run-ingress-contract` out of its host (ADR-0039 slice 2.1); the unified
   agent-configuration snapshot as the config→execution data seam (ADR-0057); the one
   neutral event vocabulary + `Transcoder` projection seam (ADR-0058); tenancy as an
   edge aspect with one opaque `ScopeId` (ADR-0051).
@@ -172,7 +172,7 @@ Verified state after the 2026-08-04 cut:
   `DispatchWorker`, process `DispatchPool`, renewal guard, recovery projection,
   process-local capacity, and neutral wake port. `awaken-dispatch` retains
   Coordinator-only SQLite/PostgreSQL dispatch adapters, PG/NATS wake transports,
-  and the claimed-commit application; `awaken-dispatch-contract` owns queue
+  and the claimed-commit application; `awaken-run-ingress-contract` owns queue
   and claim vocabulary, while its application port has its own bounded contract.
   Runtime Host consumes those contracts and the shared execution owner, with no
   normal Cargo path to the Coordinator Ingress implementation. Test fixtures

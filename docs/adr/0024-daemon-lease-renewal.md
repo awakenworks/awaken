@@ -107,7 +107,7 @@ claim receives `Blocked` while the predecessor slot remains. `finish_attempt`
 may clear only the matching exact slot, even after its mutation lease advanced.
 It grants no commit, checkpoint, or settlement authority.
 
-The physical-slot transition kernel in `awaken-dispatch-contract` is the
+The physical-slot transition kernel in `awaken-run-ingress-contract` is the
 single rule owner. Continuation handoff reuses ordinary admission and changes
 only `Blocked` to `Replace`; it cannot bypass stale-claim or corrupt-slot
 rejection. The backend-neutral adapter in `awaken-dispatch::dispatch` owns

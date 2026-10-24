@@ -234,8 +234,7 @@ impl awaken_dispatch_contract::DispatchClaims for SqliteDispatchStore {
                 session_activity_epoch,
             } => {
                 request.session_activity_epoch = Some(session_activity_epoch);
-                let awaken_dispatch_contract::GuardedTransition::Applied(next) = transition
-                else {
+                let awaken_dispatch_contract::GuardedTransition::Applied(next) = transition else {
                     unreachable!("the exact recovery claim is admitted by the kernel")
                 };
                 sqlx::query(&format!(
@@ -256,8 +255,7 @@ impl awaken_dispatch_contract::DispatchClaims for SqliteDispatchStore {
                 .rows_affected()
             }
             SessionRunReservationResolution::Retry { reservation_ttl_ms } => {
-                let awaken_dispatch_contract::GuardedTransition::Applied(next) = transition
-                else {
+                let awaken_dispatch_contract::GuardedTransition::Applied(next) = transition else {
                     unreachable!("the exact recovery claim is admitted by the kernel")
                 };
                 sqlx::query(&format!(

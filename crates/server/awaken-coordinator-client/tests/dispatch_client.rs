@@ -22,11 +22,11 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
+use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
 use awaken_dispatch::{
     AttemptAdmission, ClaimedStreamPublisher, DispatchError, DispatchOutcome, MemoryDispatchStore,
     RunClaim, RunDispatch, SettleOutcome, StreamObservationRequest, SubmitOptions, WorkerIdentity,
 };
-use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
@@ -1278,12 +1278,10 @@ fn any_dispatch_store_preserves_the_claimed_recovery_transport() {
         "http://127.0.0.1:1",
         WorkerIdentity::new("worker-local", "boot-local", 1),
     ));
-    let checkpoints: Arc<dyn awaken_dispatch_contract::ClaimedCheckpointTransport> =
-        owner.clone();
+    let checkpoints: Arc<dyn awaken_dispatch_contract::ClaimedCheckpointTransport> = owner.clone();
     let credentials: Arc<dyn awaken_dispatch_contract::ClaimedCredentialDeliveryTransport> =
         owner.clone();
-    let commit: Arc<dyn awaken_dispatch_contract::ClaimedRunCommit> =
-        Arc::new(SelectionOnlyCommit);
+    let commit: Arc<dyn awaken_dispatch_contract::ClaimedRunCommit> = Arc::new(SelectionOnlyCommit);
     let binding = awaken_dispatch::DispatchBinding::remote(owner, commit.clone());
     let awaken_dispatch::DispatchTopology::Remote {
         checkpoints: selected,

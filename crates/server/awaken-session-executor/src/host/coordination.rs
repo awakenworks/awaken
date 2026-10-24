@@ -458,11 +458,10 @@ impl crate::ChildRunCoordination {
                 CoordinatedThreadTarget::Agent { .. } => {}
             }
         }
-        Ok(awaken_dispatch_contract::SessionChildAdmission::new(
-            max_unarchived_threads,
-            archived,
+        Ok(
+            awaken_dispatch_contract::SessionChildAdmission::new(max_unarchived_threads, archived)
+                .with_capacity_exempt_threads(capacity_exempt),
         )
-        .with_capacity_exempt_threads(capacity_exempt))
     }
 
     pub(crate) async fn admit_coordinated_run(
@@ -777,9 +776,9 @@ impl crate::ChildRunCoordination {
             ));
         }
         if already_archived
-            || child_rows.iter().any(|dispatch| {
-                dispatch.state == awaken_dispatch_contract::DispatchState::Awaiting
-            })
+            || child_rows
+                .iter()
+                .any(|dispatch| dispatch.state == awaken_dispatch_contract::DispatchState::Awaiting)
         {
             // The protocol projects an Awaiting tool boundary as idle for archive admission. Use
             // the ordinary claim-fenced interruption path to close its pending
@@ -879,9 +878,9 @@ mod tests {
         // B changes only runtime input under the same Run identity. A later
         // conflict cannot erase that accepted A. Summary and operational cursor
         // stutter guard the original authority; no claim is used as a read.
-        let rejected = dispatch_admission_error(
-            awaken_dispatch_contract::DispatchError::Rejected("invalid shape".into()),
-        );
+        let rejected = dispatch_admission_error(awaken_dispatch_contract::DispatchError::Rejected(
+            "invalid shape".into(),
+        ));
         let unavailable = dispatch_admission_error(
             awaken_dispatch_contract::DispatchError::Unavailable("response lost".into()),
         );

@@ -53,7 +53,7 @@ those existing verbs; `list_dispatches` is the missing observability over them.
 ## Amendment 2026-10-09: names and references
 
 - The port that exposes `dead_letters`, `superseded` and `list_dispatches` is
-  `DispatchQueue` (`crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs:13,373`),
+  `DispatchQueue` (`crates/contract/awaken-run-ingress-contract/src/dispatch/queue.rs:13,373`),
   per [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md); `RunDispatch` now names the serializable record.
 - D2: `DispatchState` is `Reserved | ReservationLeased | Pending | Leased |
   Awaiting | DeadLetter | Superseded` (`.../dispatch/model.rs:370-386`). `Leased`

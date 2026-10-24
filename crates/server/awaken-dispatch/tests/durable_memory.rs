@@ -22,6 +22,7 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as AuditKind;
+use awaken_dispatch_contract::SessionContinuationOutbox as _;
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::PlacementRequirements;
 use awaken_dispatch::{
@@ -29,7 +30,6 @@ use awaken_dispatch::{
     DispatchSettlementObserver, DispatchTestHarness, DispatchWorker, Inbox, MemoryDispatchStore,
     PendingInput, RunClaim, RunDispatch, SessionChildAdmission,
 };
-use awaken_dispatch_contract::SessionContinuationOutbox as _;
 use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{
@@ -2378,8 +2378,8 @@ async fn lease_renewal_store_spec() {
 
 #[tokio::test]
 async fn local_wake_signal_delivers_a_held_hint() {
-    use awaken_dispatch::LocalWakeSignal;
     use awaken_dispatch_contract::WakeSignal;
+    use awaken_dispatch::LocalWakeSignal;
     let wake = LocalWakeSignal::new();
     // A hint published before anyone waits is held (one permit), so wait returns.
     wake.publish().await.unwrap();

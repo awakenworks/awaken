@@ -73,7 +73,7 @@ operator can `cancel` a superseded run to make it committed-terminal today.
 - D4's last sentence ("An operator can `cancel` a superseded run to make it
   committed-terminal today") is no longer true. `cancel` on a superseded row
   returns `NotCancellable`
-  (`crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs:549`),
+  (`crates/contract/awaken-run-ingress-contract/src/dispatch_transition.rs:549`),
   so a superseded run has no committed terminal fact; it is visible only through
   `superseded()`. [ADR-0016](0016-durable-cancel.md) (amended 2026-10-09) records the same rule.
 - D1 cites [ADR-0017](0017-send-message-over-outbox.md) for "cross-Thread delivery addresses Threads"; the revised

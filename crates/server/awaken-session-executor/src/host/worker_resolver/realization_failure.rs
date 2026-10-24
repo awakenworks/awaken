@@ -65,11 +65,11 @@ mod tests {
         use crate::host::worker_resolver::test_support::{
             adoption_dependencies, eager_environment, test_activation, with_empty_session_resources,
         };
-        use awaken_dispatch::WorkerResolver as _;
         use awaken_dispatch_contract::{
             DispatchClaimOwnership as _, DispatchClaims as _, DispatchEnqueue as _,
             DispatchReads as _, DispatchState, RunClaim, RunDispatch, SessionRuntimeEnvelope,
         };
+        use awaken_dispatch::WorkerResolver as _;
         use awaken_session_environment::SandboxEnvironmentProvider;
         use awaken_session_environment::test_support::{
             FakeContainerProvider, FakeHandExecutorFactory,

@@ -7,20 +7,19 @@ mod tests {
     use crate::host::worker_resolver::test_support::{AdoptionModel, claim, test_activation};
     use async_trait::async_trait;
     use awaken_agent_contract::agent::{run::EndCause, thread::Id as ThreadId};
-    use awaken_dispatch_execution::DEFAULT_LEASE_MS;
     use awaken_dispatch_contract::DispatchAttemptRecordReads as _;
     use awaken_dispatch_contract::{
         DispatchClaims, DispatchCommitAuthority, DispatchControlReads, DispatchExecution,
         DispatchReads, SessionRunReservations,
     };
+    use awaken_dispatch_execution::DEFAULT_LEASE_MS;
     use awaken_worker_contract::WorkerIncarnationSource;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct IdleEvidence {
         released: std::sync::Mutex<Vec<awaken_dispatch_contract::WorkerIdentity>>,
         fail_first: std::sync::atomic::AtomicBool,
-        stops:
-            std::sync::Mutex<Vec<awaken_dispatch_contract::dispatch::AttemptExecutionBinding>>,
+        stops: std::sync::Mutex<Vec<awaken_dispatch_contract::dispatch::AttemptExecutionBinding>>,
         attempts: std::sync::Mutex<Vec<awaken_dispatch_contract::dispatch::PhysicalAttempt>>,
         complete: std::sync::atomic::AtomicBool,
     }

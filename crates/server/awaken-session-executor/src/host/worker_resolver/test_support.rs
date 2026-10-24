@@ -642,9 +642,9 @@ pub(crate) async fn claim(
     clock: &awaken_lease_testkit::ManualClock,
 ) -> awaken_dispatch_contract::Claimed {
     store
-        .enqueue(awaken_dispatch_contract::RunDispatch::new(
-            test_activation(thread, run),
-        ))
+        .enqueue(awaken_dispatch_contract::RunDispatch::new(test_activation(
+            thread, run,
+        )))
         .await
         .expect("enqueue deferred run");
     clock.set(now);

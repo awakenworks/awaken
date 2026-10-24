@@ -192,9 +192,7 @@ async fn undecodable_dispatched_runtime_projection_is_an_absorbing_resolution_fa
             "corrupt-projection",
             "run-corrupt-projection",
         ))
-        .with_session_runtime(awaken_dispatch_contract::SessionRuntimeEnvelope::new(
-            "{",
-        )),
+        .with_session_runtime(awaken_dispatch_contract::SessionRuntimeEnvelope::new("{")),
         host.run_assembly.local_workspace(),
     );
     request.placement.session_mcp_credentials = Some(Vec::new());
