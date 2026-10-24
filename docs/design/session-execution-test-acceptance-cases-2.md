@@ -4,7 +4,7 @@
 
 ## T14 资源替换与引用修复
 
-责任组件：Session aggregate 与 resource reconciliation。入口：[源码或现有门禁](../../crates/server/awaken-session-application/src/resource_reconciliation/reference_tests.rs)。风险基准：P0。类型：行为域。
+责任组件：Session aggregate 与 resource reconciliation。入口：[源码或现有门禁](../../crates/server/awaken-session-application/src/resource_references/tests.rs)。风险基准：P0。类型：行为域。
 
 校准：保留。保留确切 manifest 身份和原子 root；索引是可修复投影。
 
