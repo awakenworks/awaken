@@ -21,9 +21,8 @@ use crate::{
 /// Brokered cloud inference, credential materialization, Web search and model
 /// publication: everything a model call or a model publication needs.
 pub(super) struct CloudPlane {
-    pub(super) brokered_client: Option<
-        Arc<awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient>,
-    >,
+    pub(super) brokered_client:
+        Option<Arc<awaken_inference_endpoint::brokered_inference::HttpBrokeredInferenceClient>>,
     pub(super) credential_materializer:
         Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
     pub(super) credential_refresh_factory:
@@ -67,7 +66,7 @@ pub(super) async fn assemble_cloud_plane(
 async fn brokered_cloud_client(
     base: &ProcessBase,
 ) -> Result<
-    Option<Arc<awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient>>,
+    Option<Arc<awaken_inference_endpoint::brokered_inference::HttpBrokeredInferenceClient>>,
     String,
 > {
     let stores = &base.stores;
@@ -194,7 +193,7 @@ async fn model_plane(
     base: &mut ProcessBase,
     model_supply: PublicationModelSupply,
     brokered_client: Option<
-        &Arc<awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient>,
+        &Arc<awaken_inference_endpoint::brokered_inference::HttpBrokeredInferenceClient>,
     >,
     credential_materializer: Option<&awaken_credential_materializer::PinnedCredentialMaterializer>,
 ) -> ModelPlane {

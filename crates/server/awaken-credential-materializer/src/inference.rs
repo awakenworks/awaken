@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use crate::InferenceExecutorMaterializer;
 use async_trait::async_trait;
+use awaken_runtime_contract::ModelBinding;
 use awaken_runtime_contract::llm::{
     ChatRequest, ChatResponse, DeltaSink, Error as LlmError, LlmExecutor,
 };
@@ -20,104 +21,10 @@ use awaken_runtime_contract::resolved::{
     Backend, ModelProvisioning, ProviderAccessKind, ResolvedModelCandidate,
 };
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_runtime_contract::{ModelBinding, UnspecifiedReasoning};
 
 use crate::PinnedCredentialMaterializer;
 use awaken_credential_contract::AttemptCredentialRealization;
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum ResolvedExecutorError {
-    #[error("resolved inference for adapter `{0}` carries no base URL")]
-    MissingBaseUrl(String),
-    #[error("resolved inference carries no credential")]
-    MissingCredential,
-    #[error("no provider executor in this build serves adapter `{0}`")]
-    UnsupportedAdapter(String),
-    #[error("no provider executor in this build serves API dialect `{0}`")]
-    UnsupportedDialect(String),
-    #[error("API dialect `{dialect}` is incompatible with adapter `{adapter}`")]
-    DialectAdapterMismatch { dialect: String, adapter: String },
-    #[error("provider executor could not be constructed: {0}")]
-    ExecutorBuild(String),
-    #[error("API dialect `{0}` cannot enforce the frozen reasoning policy")]
-    UnsupportedReasoningPolicy(String),
-}
-
-pub fn executor_from_materialized_endpoint(
-    api_dialect: &str,
-    adapter_kind: &str,
-    base_url: Option<&str>,
-    credential: Option<&awaken_agent_contract::RedactedString>,
-) -> Result<Arc<dyn LlmExecutor>, ResolvedExecutorError> {
-    executor_from_materialized_endpoint_for_provider(
-        adapter_kind,
-        api_dialect,
-        adapter_kind,
-        base_url,
-        credential,
-        UnspecifiedReasoning::ProviderDefault,
-    )
-}
-
-/// Provider-aware endpoint realization. The provider kind is independent of
-/// the wire adapter so compatible gateways cannot accidentally inherit native
-/// capabilities from the protocol they emulate.
-pub fn executor_from_materialized_endpoint_for_provider(
-    provider_kind: &str,
-    api_dialect: &str,
-    adapter_kind: &str,
-    base_url: Option<&str>,
-    credential: Option<&awaken_agent_contract::RedactedString>,
-    unspecified_reasoning: UnspecifiedReasoning,
-) -> Result<Arc<dyn LlmExecutor>, ResolvedExecutorError> {
-    let expected_adapter = match api_dialect {
-        "anthropic_messages" => "anthropic",
-        "open_ai_chat" => "openai",
-        "gemini" => "gemini",
-        "vertex_gemini" => "vertex",
-        "open_ai_responses" => "openai",
-        other => return Err(ResolvedExecutorError::UnsupportedDialect(other.to_string())),
-    };
-    if expected_adapter != adapter_kind {
-        return Err(ResolvedExecutorError::DialectAdapterMismatch {
-            dialect: api_dialect.to_string(),
-            adapter: adapter_kind.to_string(),
-        });
-    }
-    let base_url =
-        base_url.ok_or_else(|| ResolvedExecutorError::MissingBaseUrl(adapter_kind.to_string()))?;
-    let credential = credential.ok_or(ResolvedExecutorError::MissingCredential)?;
-    if api_dialect == "open_ai_responses" {
-        if unspecified_reasoning != UnspecifiedReasoning::ProviderDefault {
-            return Err(ResolvedExecutorError::UnsupportedReasoningPolicy(
-                api_dialect.to_string(),
-            ));
-        }
-        return awaken_provider_genai::OpenAiResponsesExecutor::from_materialized_endpoint(
-            provider_kind,
-            base_url,
-            credential.expose_secret(),
-        )
-        .map(|executor| Arc::new(executor) as Arc<dyn LlmExecutor>)
-        .map_err(|error| ResolvedExecutorError::ExecutorBuild(error.to_string()));
-    }
-    let adapter = match adapter_kind {
-        "anthropic" => awaken_provider_genai::AdapterKind::Anthropic,
-        "gemini" => awaken_provider_genai::AdapterKind::Gemini,
-        "vertex" => awaken_provider_genai::AdapterKind::Vertex,
-        "openai" => awaken_provider_genai::AdapterKind::OpenAI,
-        other => return Err(ResolvedExecutorError::UnsupportedAdapter(other.to_string())),
-    };
-    awaken_provider_genai::GenaiExecutor::from_materialized_provider_endpoint(
-        provider_kind,
-        adapter,
-        base_url,
-        credential.expose_secret(),
-        unspecified_reasoning,
-    )
-    .map(|executor| Arc::new(executor) as Arc<dyn LlmExecutor>)
-    .map_err(|error| ResolvedExecutorError::ExecutorBuild(error.to_string()))
-}
+use awaken_inference_endpoint::executor_from_materialized_endpoint_for_provider;
 
 /// Worker/host adapter for one immutable candidate set. Direct and brokered
 /// supply differ only at the final realization edge; all candidate fencing and
@@ -126,7 +33,8 @@ pub fn executor_from_materialized_endpoint_for_provider(
 pub struct CredentialInferenceMaterializer {
     credentials: PinnedCredentialMaterializer,
     #[cfg(feature = "brokered")]
-    brokered: Option<Arc<dyn crate::brokered_inference::BrokeredInferenceClient>>,
+    brokered:
+        Option<Arc<dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient>>,
     #[cfg(feature = "brokered")]
     brokered_mode_enabled: bool,
 }
@@ -165,7 +73,7 @@ impl CredentialInferenceMaterializer {
     #[must_use]
     pub fn with_brokered_client(
         mut self,
-        client: Arc<dyn crate::brokered_inference::BrokeredInferenceClient>,
+        client: Arc<dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient>,
     ) -> Self {
         self.brokered = Some(client);
         self.brokered_mode_enabled = true;
@@ -199,7 +107,7 @@ impl CredentialInferenceMaterializer {
                     "cloud_sign_in_required: brokered inference needs an authenticated Awaken Cloud identity"
                         .to_string()
                 })?;
-                return crate::brokered_inference::BrokeredCandidateExecutor::new(
+                return awaken_inference_endpoint::brokered_inference::BrokeredCandidateExecutor::new(
                     client,
                     provider_ref,
                     candidate.binding().identity().1,
@@ -399,7 +307,7 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
         if self.brokered.is_some() {
             return &[
                 awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
-                crate::brokered_inference::BROKERED_INFERENCE_ACCESS_CAPABILITY,
+                awaken_inference_endpoint::brokered_inference::BROKERED_INFERENCE_ACCESS_CAPABILITY,
             ];
         }
         &[awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY]
@@ -497,6 +405,7 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "brokered")]
     use awaken_agent_contract::RedactedString;
 
     #[tokio::test]
@@ -579,117 +488,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn provider_executor_factory_decision_table() {
-        // Causes: C1 dialect is present and supported, C2 dialect matches the
-        // pinned adapter, C3 adapter is supported, C4 base URL exists, and C5
-        // credential exists. Effects: E1 exact construction; E2 every false
-        // cause fails closed before provider I/O. Decision rules:
-        // R1=C1+C2+C3+C4+C5=>E1; R2=!C1=>UnsupportedDialect; each other single
-        // false cause yields its typed error. Empty historical dialect is not an
-        // executable compatibility path; it must be migrated at publication.
-        let credential = RedactedString::new("sk-test");
-        for (dialect, adapter) in [
-            ("anthropic_messages", "anthropic"),
-            ("open_ai_chat", "openai"),
-            ("open_ai_responses", "openai"),
-            ("gemini", "gemini"),
-            ("vertex_gemini", "vertex"),
-        ] {
-            assert!(
-                executor_from_materialized_endpoint(
-                    dialect,
-                    adapter,
-                    Some("https://provider.invalid"),
-                    Some(&credential),
-                )
-                .is_ok(),
-                "all causes true for {dialect}/{adapter} -> E1"
-            );
-        }
-        assert!(matches!(
-            executor_from_materialized_endpoint(
-                "",
-                "openai",
-                Some("https://provider.invalid"),
-                Some(&credential),
-            ),
-            Err(ResolvedExecutorError::UnsupportedDialect(dialect)) if dialect.is_empty()
-        ));
-        assert!(matches!(
-            executor_from_materialized_endpoint(
-                "unknown",
-                "openai",
-                Some("https://provider.invalid"),
-                Some(&credential),
-            ),
-            Err(ResolvedExecutorError::UnsupportedDialect(_))
-        ));
-        assert!(matches!(
-            executor_from_materialized_endpoint(
-                "anthropic_messages",
-                "openai",
-                Some("https://provider.invalid"),
-                Some(&credential),
-            ),
-            Err(ResolvedExecutorError::DialectAdapterMismatch { .. })
-        ));
-        assert!(matches!(
-            executor_from_materialized_endpoint(
-                "",
-                "unknown",
-                Some("https://provider.invalid"),
-                Some(&credential),
-            ),
-            Err(ResolvedExecutorError::UnsupportedDialect(dialect)) if dialect.is_empty()
-        ));
-        assert!(matches!(
-            executor_from_materialized_endpoint("open_ai_chat", "openai", None, Some(&credential)),
-            Err(ResolvedExecutorError::MissingBaseUrl(_))
-        ));
-        assert!(matches!(
-            executor_from_materialized_endpoint(
-                "open_ai_chat",
-                "openai",
-                Some("https://provider.invalid"),
-                None,
-            ),
-            Err(ResolvedExecutorError::MissingCredential)
-        ));
-        // C6 the immutable publication selected Disabled for DeepSeek Chat;
-        // C7 the same policy reaches a Responses adapter that has no faithful
-        // projection. E3 Chat accepts the policy for the provider-wire gate;
-        // E4 Responses fails before any network I/O. Rules R3=C1..C5+C6=>E3;
-        // R4=C1..C5+C7=>E4. The HTTP-byte assertion lives in the genai
-        // compatibility suite and prevents an accepted but dropped override.
-        assert!(
-            executor_from_materialized_endpoint_for_provider(
-                "deepseek",
-                "open_ai_chat",
-                "openai",
-                Some("https://provider.invalid"),
-                Some(&credential),
-                UnspecifiedReasoning::Disabled,
-            )
-            .is_ok(),
-            "R3"
-        );
-        assert!(
-            matches!(
-                executor_from_materialized_endpoint_for_provider(
-                    "deepseek",
-                    "open_ai_responses",
-                    "openai",
-                    Some("https://provider.invalid"),
-                    Some(&credential),
-                    UnspecifiedReasoning::Disabled,
-                ),
-                Err(ResolvedExecutorError::UnsupportedReasoningPolicy(_))
-            ),
-            "R4"
-        );
-    }
-
     #[cfg(feature = "brokered")]
     struct CurrentOwnership;
 
@@ -708,13 +506,13 @@ mod tests {
 
     #[cfg(feature = "brokered")]
     #[async_trait::async_trait]
-    impl crate::brokered_inference::BrokeredInferenceClient for NeverGrantClient {
+    impl awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient for NeverGrantClient {
         async fn create_grant(
             &self,
-            _request: crate::brokered_inference::BrokeredInferenceRequest,
+            _request: awaken_inference_endpoint::brokered_inference::BrokeredInferenceRequest,
         ) -> Result<
-            crate::brokered_inference::BrokeredInferenceLease,
-            crate::brokered_inference::BrokeredInferenceError,
+            awaken_inference_endpoint::brokered_inference::BrokeredInferenceLease,
+            awaken_inference_endpoint::brokered_inference::BrokeredInferenceError,
         > {
             panic!("candidate selection must not acquire a grant")
         }
@@ -722,7 +520,8 @@ mod tests {
         async fn close_grant(
             &self,
             _grant_id: &str,
-        ) -> Result<(), crate::brokered_inference::BrokeredInferenceError> {
+        ) -> Result<(), awaken_inference_endpoint::brokered_inference::BrokeredInferenceError>
+        {
             panic!("no grant was acquired")
         }
 
@@ -730,8 +529,8 @@ mod tests {
             &self,
             _grant_id: &str,
         ) -> Result<
-            crate::brokered_inference::BrokeredInferenceLease,
-            crate::brokered_inference::BrokeredInferenceError,
+            awaken_inference_endpoint::brokered_inference::BrokeredInferenceLease,
+            awaken_inference_endpoint::brokered_inference::BrokeredInferenceError,
         > {
             panic!("no grant was acquired")
         }
@@ -893,7 +692,7 @@ mod tests {
     #[cfg(feature = "brokered")]
     #[tokio::test]
     async fn published_reasoning_policy_survives_candidate_materialization() {
-        use crate::brokered_inference::{
+        use awaken_inference_endpoint::brokered_inference::{
             BrokeredInferenceClient, BrokeredInferenceError, BrokeredInferenceLease,
             BrokeredInferenceRequest,
         };
@@ -950,7 +749,7 @@ mod tests {
                 upstream_model: "deepseek-v4-pro".into(),
                 processing_placement: None,
             },
-            UnspecifiedReasoning::Disabled,
+            awaken_runtime_contract::UnspecifiedReasoning::Disabled,
         )
         .unwrap();
         let grant = Arc::new(Grant::default());
@@ -997,7 +796,7 @@ mod tests {
     #[cfg(feature = "brokered")]
     #[tokio::test]
     async fn pinned_materialization_preserves_journal_identity_in_both_model_modes() {
-        use crate::brokered_inference::{
+        use awaken_inference_endpoint::brokered_inference::{
             BrokeredInferenceClient, BrokeredInferenceError, BrokeredInferenceLease,
             BrokeredInferenceRequest,
         };
@@ -1143,11 +942,9 @@ mod tests {
         );
 
         let materializer = materializer.with_brokered_client(Arc::new(NeverGrantClient));
-        assert!(
-            materializer
-                .supported_access_schemes()
-                .contains(&crate::brokered_inference::BROKERED_INFERENCE_ACCESS_CAPABILITY)
-        );
+        assert!(materializer.supported_access_schemes().contains(
+            &awaken_inference_endpoint::brokered_inference::BROKERED_INFERENCE_ACCESS_CAPABILITY
+        ));
         let router = PinnedCandidateExecutor {
             materializer,
             candidates: vec![primary.clone(), fallback.clone()],

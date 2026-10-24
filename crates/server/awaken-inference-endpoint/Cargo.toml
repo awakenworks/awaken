@@ -1,0 +1,53 @@
+[package]
+name = "awaken-inference-endpoint"
+description = "Inference executors for materialized model endpoints: a direct Provider endpoint or an Awaken Cloud brokered grant"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "shared"
+product = "platform"
+bounded_context = "execution"
+layer = "infrastructure"
+authority = "inference-endpoint"
+separation = "isolation"
+isolates = ["reqwest"]
+
+# Endpoint-to-executor construction shared by the Worker's credential
+# realization and Control's Cloud catalog. It realizes no credential, so the
+# Control and Coordinator processes link it without the Worker-side
+# credential materializer.
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-provider-genai.workspace = true
+thiserror.workspace = true
+async-trait = { workspace = true, optional = true }
+awaken-tool-contract = { workspace = true, optional = true }
+awaken-ext-builtin-tools = { workspace = true, optional = true }
+awaken-outbound-http = { workspace = true, optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["time"], optional = true }
+
+[features]
+default = []
+# The Awaken Cloud brokered grant transport (catalog, Web routes, inference).
+brokered = [
+    "dep:async-trait",
+    "dep:awaken-tool-contract",
+    "dep:awaken-ext-builtin-tools",
+    "dep:awaken-outbound-http",
+    "dep:reqwest",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio",
+]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+
+[lints]
+workspace = true

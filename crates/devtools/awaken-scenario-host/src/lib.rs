@@ -560,7 +560,7 @@ fn normalize_anthropic_compatible_base(base_url: &str) -> String {
 fn anthropic_messages_executor(base_url: &str, api_key: String) -> Arc<dyn LlmExecutor> {
     let credential = awaken_agent_contract::RedactedString::new(api_key);
     let base_url = normalize_anthropic_compatible_base(base_url);
-    awaken_credential_materializer::executor_from_materialized_endpoint(
+    awaken_inference_endpoint::executor_from_materialized_endpoint(
         "anthropic_messages",
         "anthropic",
         Some(&base_url),

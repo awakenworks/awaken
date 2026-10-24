@@ -631,7 +631,7 @@ fn runtime_model_wiring(
     credential_materializer: &awaken_credential_materializer::PinnedCredentialMaterializer,
     cloud_models_enabled: bool,
     brokered_client: Option<
-        &Arc<awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient>,
+        &Arc<awaken_inference_endpoint::brokered_inference::HttpBrokeredInferenceClient>,
     >,
 ) -> RuntimeModelWiring {
     match runtime {

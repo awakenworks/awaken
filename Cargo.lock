@@ -865,17 +865,14 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-credential-vault",
- "awaken-ext-builtin-tools",
- "awaken-outbound-http",
+ "awaken-inference-endpoint",
  "awaken-provider-genai",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
  "awaken-time",
- "awaken-tool-contract",
  "awaken-worker-contract",
  "base64 0.22.1",
  "chacha20poly1305",
- "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
@@ -1784,6 +1781,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-inference-endpoint"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-ext-builtin-tools",
+ "awaken-outbound-http",
+ "awaken-provider-genai",
+ "awaken-runtime-contract",
+ "awaken-tool-contract",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-installation-workspace"
 version = "1.0.0"
 dependencies = [
@@ -2067,6 +2082,7 @@ dependencies = [
  "awaken-iam-client",
  "awaken-iam-contract",
  "awaken-iam-core",
+ "awaken-inference-endpoint",
  "awaken-installation-workspace",
  "awaken-lease-testkit",
  "awaken-local-process",
@@ -2967,6 +2983,7 @@ dependencies = [
  "awaken-iam-host",
  "awaken-iam-preset",
  "awaken-iam-server",
+ "awaken-inference-endpoint",
  "awaken-installation-workspace",
  "awaken-model-catalog",
  "awaken-model-catalog-store",
