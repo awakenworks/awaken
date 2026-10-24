@@ -7,36 +7,6 @@
       "date": "2026-10-24",
       "remove_when": "the executor leaves the Coordinator closure"
     },
-    "awaken-execution-composition": {
-      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; after Worker-retirement observation became Worker-reported data and the co-located execution install moved to awaken-cli, the startup reaches the execution composition only for the Environment package image provisioner; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "pending: v4-coord-closure2 for integrator review",
-      "date": "2026-10-24",
-      "remove_when": "Environment image provisioning moves to the Environment image build context"
-    },
-    "awaken-sandbox-container": {
-      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; reached through the execution composition (observation and image provisioning); see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; reviewed at integration (record restated after the Coordinator binary left awaken-cli)",
-      "date": "2026-10-24",
-      "remove_when": "the execution composition leaves the Coordinator closure"
-    },
-    "awaken-sandbox-control-transport": {
-      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; reached through the execution composition; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; reviewed at integration (record restated after the Coordinator binary left awaken-cli)",
-      "date": "2026-10-24",
-      "remove_when": "the execution composition leaves the Coordinator closure"
-    },
-    "awaken-sandbox-kubernetes": {
-      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; after the Kubernetes Worker fleet left for awaken-worker-fleet-kubernetes the crate is reached only through the execution composition's optional Kubernetes engine; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "pending: v4-coord-closure2 for integrator review",
-      "date": "2026-10-24",
-      "remove_when": "the execution composition leaves the Coordinator closure"
-    },
-    "awaken-sandbox-local": {
-      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; reached through the execution composition; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; reviewed at integration (record restated after the Coordinator binary left awaken-cli)",
-      "date": "2026-10-24",
-      "remove_when": "the execution composition leaves the Coordinator closure"
-    },
     "awaken-session-executor": {
       "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; the shared process startup composes the Coordinator execution ports from the Session executor (Run admission over RunAssembly, committed reads, commit ingest, the Session application executor roles); see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
       "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; reviewed at integration (record restated after the Coordinator binary left awaken-cli)",

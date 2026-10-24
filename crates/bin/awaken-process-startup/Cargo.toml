@@ -31,8 +31,8 @@ awaken-acp-contract = { workspace = true }
 awaken-container-contract.workspace = true
 awaken-tool-contract.workspace = true
 awaken-data-governance-contract.workspace = true
-# Assembles the container-tier Session environment the deployment names.
-awaken-execution-composition.workspace = true
+# The package-image builder the Environment image build stage builds through.
+awaken-package-image.workspace = true
 # This product root selects the original publication-pinned outbound A2A adapter.
 awaken-run-executor-a2a.workspace = true
 awaken-protocol-a2a.workspace = true
@@ -177,9 +177,9 @@ test-support = [
 ]
 # Container ACP tiers (AWAKEN_SANDBOX_TIER=docker/podman/k8s): enable the backend a
 # deployment runs its agents on. Off by default — the namespace tier needs no feature.
-container-docker = ["awaken-execution-composition/docker"]
-container-podman = ["awaken-execution-composition/podman"]
-container-k8s = ["awaken-coordinator/container-k8s", "awaken-execution-composition/k8s", "awaken-worker-transport-security/kubernetes", "dep:awaken-worker-fleet-kubernetes", "dep:kube"]
+container-docker = ["awaken-package-image/docker"]
+container-podman = ["awaken-package-image/podman"]
+container-k8s = ["awaken-coordinator/container-k8s", "awaken-package-image/k8s", "awaken-worker-transport-security/kubernetes", "dep:awaken-worker-fleet-kubernetes", "dep:kube"]
 
 [build-dependencies]
 awaken-ui-artifact.workspace = true
@@ -187,6 +187,9 @@ serde_json.workspace = true
 sha2 = "0.10"
 
 [dev-dependencies]
+# Test fixtures install container Session environments (the live Kubernetes
+# source-retention rows) and a recording container provider.
+awaken-execution-composition.workspace = true
 # The AllInOne test builders run Sessions through the launcher's co-located execution.
 awaken-cli = { workspace = true, features = ["test-support"] }
 # The live Kubernetes Worker transport tests drive a real Worker create client.

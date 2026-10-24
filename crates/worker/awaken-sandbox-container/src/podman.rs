@@ -12,7 +12,7 @@
 
 use awaken_container_contract::RuntimeError;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,7 +26,6 @@ use tokio::process::Command as OsCommand;
 
 use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory};
 
-mod command;
 mod realization;
 use crate::runtime::{
     ExistingRealization, ExistingRealizationDecision, ExistingRealizationPhase,
@@ -45,10 +44,10 @@ use crate::{
     restoration_plan_fingerprint, restore_container_name, runtime_container_name,
     sandbox_scope_identity,
 };
-use awaken_provisioning_contract::AgentProcess;
 #[cfg(test)]
-use command::rootless_systemd_bus;
-use command::{podman_command, podman_subcommand};
+use awaken_local_process::podman::CmdOutput;
+use awaken_local_process::podman::{CommandExec, OsCommandExec, podman_command};
+use awaken_provisioning_contract::AgentProcess;
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -142,40 +141,6 @@ impl pc::ProcessHandle for PodmanExecProcess {
     }
 }
 
-/// The outcome of one subcommand, decoupled from `std::process` so the CLI logic
-/// (argv assembly, stdout parsing, error mapping) is unit-testable without a real
-/// `podman` binary. The live dial in [`ContainerRuntime::open_channel`] still needs
-/// a running container and is exercised only by the gated integration test.
-#[derive(Debug, Clone)]
-pub(crate) struct CmdOutput {
-    pub ok: bool,
-    pub status_code: Option<i32>,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
-}
-
-/// The command-execution seam. Production forks a real process; tests script it.
-#[async_trait]
-pub(crate) trait CommandExec: Send + Sync {
-    async fn exec(&self, bin: &str, args: &[String]) -> std::io::Result<CmdOutput>;
-}
-
-/// The real executor — forks `bin args` and captures its output.
-struct OsCommandExec;
-
-#[async_trait]
-impl CommandExec for OsCommandExec {
-    async fn exec(&self, bin: &str, args: &[String]) -> std::io::Result<CmdOutput> {
-        let out = podman_subcommand(bin, args).output().await?;
-        Ok(CmdOutput {
-            ok: out.status.success(),
-            status_code: out.status.code(),
-            stdout: out.stdout,
-            stderr: out.stderr,
-        })
-    }
-}
-
 fn signal_flag(signal: pc::Signal) -> &'static str {
     match signal {
         pc::Signal::Term => "TERM",
@@ -193,12 +158,6 @@ pub struct PodmanRuntime {
     exec: Arc<dyn CommandExec>,
     realization_namespace: ContainerRealizationNamespace,
     owner_id: String,
-    package_builds: tokio::sync::Mutex<()>,
-    package_registry: Option<String>,
-    package_registry_auth_file: Option<PathBuf>,
-    package_cache_ttl: Option<std::time::Duration>,
-    package_build_timeout: std::time::Duration,
-    package_build_host_network: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -316,12 +275,6 @@ impl PodmanRuntime {
             exec: Arc::new(OsCommandExec),
             realization_namespace,
             owner_id: crate::runtime_owner_id(),
-            package_builds: tokio::sync::Mutex::new(()),
-            package_registry: None,
-            package_registry_auth_file: None,
-            package_cache_ttl: None,
-            package_build_timeout: crate::packages::PACKAGE_BUILD_TIMEOUT,
-            package_build_host_network: false,
         }
     }
 
@@ -338,120 +291,7 @@ impl PodmanRuntime {
             exec,
             realization_namespace,
             owner_id: crate::runtime_owner_id(),
-            package_builds: tokio::sync::Mutex::new(()),
-            package_registry: None,
-            package_registry_auth_file: None,
-            package_cache_ttl: None,
-            package_build_timeout: crate::packages::PACKAGE_BUILD_TIMEOUT,
-            package_build_host_network: false,
         }
-    }
-
-    /// Deployment-owned selection; the Environment's network policy still bounds it.
-    #[must_use]
-    pub fn with_package_build_host_network(mut self, enabled: bool) -> Self {
-        self.package_build_host_network = enabled;
-        self
-    }
-
-    /// Publish content-addressed package images to a shared OCI registry.
-    #[must_use]
-    pub fn with_package_registry(mut self, registry: impl Into<String>) -> Self {
-        self.package_registry = Some(registry.into().trim_end_matches('/').to_string());
-        self
-    }
-
-    /// Bound unused Awaken-derived images in the local rootless engine cache.
-    #[must_use]
-    pub fn with_package_cache_ttl(mut self, ttl: std::time::Duration) -> Self {
-        self.package_cache_ttl = Some(ttl);
-        self
-    }
-
-    /// Bound one registry lookup/build/push transaction. A timeout fails the
-    /// Environment activation closed; it never selects the unmodified base image.
-    #[must_use]
-    pub fn with_package_build_timeout(mut self, timeout: std::time::Duration) -> Self {
-        self.package_build_timeout = timeout;
-        self
-    }
-
-    async fn resolve_package_build(
-        &self,
-        base_image: &str,
-        packages: &awaken_environment_contract::PackageRequirements,
-    ) -> Result<(String, String, String), RuntimeError> {
-        let base_identity = self
-            .run(&[
-                "image".into(),
-                "inspect".into(),
-                "--format".into(),
-                "{{.Id}}\n{{.Config.User}}".into(),
-                base_image.into(),
-            ])
-            .await?;
-        let mut base_lines = base_identity.lines();
-        let base_identity = base_lines.next().unwrap_or_default();
-        let base_user = base_lines.next().unwrap_or_default();
-        if base_identity.is_empty() {
-            return Err(backend("podman returned an empty base-image identity"));
-        }
-        let (containerfile, fingerprint) =
-            awaken_container_contract::package_image_recipe(base_identity, base_user, packages)?;
-        let image = self.package_registry.as_ref().map_or_else(
-            || format!("localhost/awaken-packages:{fingerprint}"),
-            |registry| format!("{registry}/awaken-packages:{fingerprint}"),
-        );
-        Ok((containerfile, fingerprint, image))
-    }
-
-    async fn prune_package_cache(&self) {
-        let Some(ttl) = self.package_cache_ttl else {
-            return;
-        };
-        let _ = self
-            .run(&[
-                "image".into(),
-                "prune".into(),
-                "--force".into(),
-                "--all".into(),
-                "--filter".into(),
-                "label=org.awaken.package-recipe".into(),
-                "--filter".into(),
-                format!("until={}s", ttl.as_secs()),
-            ])
-            .await;
-    }
-
-    /// Select a Docker/containers authentication file for registry pull/push.
-    /// Podman reads it only in the Worker-side builder process.
-    pub fn with_package_registry_auth_file(
-        mut self,
-        path: impl AsRef<Path>,
-    ) -> Result<Self, RuntimeError> {
-        if self.package_registry.is_none() {
-            return Err(backend(
-                "registry authentication requires a package registry",
-            ));
-        }
-        let path = path.as_ref();
-        if !path.is_file() {
-            return Err(backend(format!(
-                "registry authentication file `{}` is not a file",
-                path.display()
-            )));
-        }
-        self.package_registry_auth_file = Some(path.to_owned());
-        Ok(self)
-    }
-
-    fn registry_command(&self, command: &str, image: &str) -> Vec<String> {
-        let mut args = vec![command.to_owned()];
-        if let Some(path) = &self.package_registry_auth_file {
-            args.extend(["--authfile".to_owned(), path.to_string_lossy().into_owned()]);
-        }
-        args.push(image.to_owned());
-        args
     }
 
     /// Run a podman subcommand, returning trimmed stdout (or a backend error).
@@ -521,26 +361,6 @@ impl PodmanRuntime {
         self.run(&["info".into(), "--format".into(), "{{.Host.Arch}}".into()])
             .await
             .map(|_| ())
-    }
-
-    async fn package_image_reference(&self, image: &str) -> Result<String, RuntimeError> {
-        if self.package_registry.is_none() {
-            return Ok(image.to_string());
-        }
-        let digest = self
-            .run(&[
-                "image".into(),
-                "inspect".into(),
-                "--format".into(),
-                "{{index .RepoDigests 0}}".into(),
-                image.to_string(),
-            ])
-            .await?;
-        if digest.contains("@sha256:") {
-            Ok(digest)
-        } else {
-            Err(backend("package image has no immutable repository digest"))
-        }
     }
 
     /// The ephemeral host address the agent port was published to (`podman port`).
@@ -707,10 +527,6 @@ impl ContainerRuntime for PodmanRuntime {
         true
     }
 
-    fn supports_package_provisioning(&self) -> bool {
-        true
-    }
-
     fn uses_host_live_input_bind(&self) -> bool {
         true
     }
@@ -740,81 +556,6 @@ impl ContainerRuntime for PodmanRuntime {
     async fn remove_live_input(&self, container_id: &str, path: &str) -> Result<(), RuntimeError> {
         let root = self.live_inputs_root(container_id).await?;
         crate::live_inputs::remove_host_input(&root, path)
-    }
-
-    async fn prepare_package_image(
-        &self,
-        base_image: &str,
-        packages: &awaken_environment_contract::PackageRequirements,
-        network: &pc::NetworkPolicy,
-    ) -> Result<String, RuntimeError> {
-        let operation = async {
-            if packages.is_empty() {
-                return Ok(base_image.to_string());
-            }
-            let _build_guard = self.package_builds.lock().await;
-            self.prune_package_cache().await;
-            let (dockerfile, fingerprint, image) =
-                self.resolve_package_build(base_image, packages).await?;
-            if self.package_registry.is_none()
-                && self
-                    .run(&["image".into(), "exists".into(), image.clone()])
-                    .await
-                    .is_ok()
-            {
-                return self.package_image_reference(&image).await;
-            }
-            if self.package_registry.is_some()
-                && self
-                    .run(&self.registry_command("pull", &image))
-                    .await
-                    .is_ok()
-            {
-                return self.package_image_reference(&image).await;
-            }
-            if self.package_registry.is_some()
-                && self
-                    .run(&["image".into(), "exists".into(), image.clone()])
-                    .await
-                    .is_ok()
-            {
-                self.run(&self.registry_command("push", &image)).await?;
-                return self.package_image_reference(&image).await;
-            }
-            let mut guard = None;
-            let root = crate::staging_dir(&mut guard, &format!("package-{fingerprint}"))
-                .map_err(backend)?;
-            let containerfile = root.join("Containerfile");
-            std::fs::write(&containerfile, dockerfile).map_err(backend)?;
-            let mut build = vec!["build".into()];
-            // Render the shared build-network decision in Podman's CLI vocabulary.
-            match crate::packages::package_build_network(network, self.package_build_host_network)?
-            {
-                crate::packages::PackageBuildNetwork::EngineDefault => {}
-                crate::packages::PackageBuildNetwork::Host => {
-                    build.extend(["--network".into(), "host".into()]);
-                }
-                crate::packages::PackageBuildNetwork::Denied => {
-                    build.extend(["--network".into(), "none".into()]);
-                }
-            }
-            build.extend([
-                "--tag".into(),
-                image.clone(),
-                "--file".into(),
-                containerfile.to_string_lossy().into_owned(),
-                root.to_string_lossy().into_owned(),
-            ]);
-            self.run(&build).await?;
-            if self.package_registry.is_some() {
-                self.run(&self.registry_command("push", &image)).await?;
-                return self.package_image_reference(&image).await;
-            }
-            Ok(image)
-        };
-        tokio::time::timeout(self.package_build_timeout, operation)
-            .await
-            .map_err(|_| backend("package image preparation exceeded its deadline"))?
     }
 
     async fn preflight_create_for_effect(
@@ -1416,57 +1157,6 @@ impl ContainerRuntime for PodmanRuntime {
         self.remove(container_id).await?;
         pc::with_current_sandbox_effect(authorization.effect_fence(), authority, |_| Ok(()))
             .map_err(backend)
-    }
-}
-
-#[async_trait]
-impl awaken_container_contract::PackageImageProvisioner for PodmanRuntime {
-    async fn probe_builder(&self) -> Result<(), RuntimeError> {
-        self.ping().await
-    }
-
-    async fn package_base_image_identity(&self, reference: &str) -> Result<String, RuntimeError> {
-        self.run(&[
-            "image".into(),
-            "inspect".into(),
-            "--format".into(),
-            "{{.Id}}".into(),
-            reference.into(),
-        ])
-        .await
-        .and_then(|identity| {
-            (!identity.is_empty())
-                .then_some(identity)
-                .ok_or_else(|| backend("podman returned an empty base-image identity"))
-        })
-    }
-
-    async fn prepare_package_image(
-        &self,
-        base_image: &str,
-        packages: &awaken_environment_contract::PackageRequirements,
-        network: &pc::NetworkPolicy,
-    ) -> Result<String, RuntimeError> {
-        ContainerRuntime::prepare_package_image(self, base_image, packages, network).await
-    }
-
-    async fn package_image_available(
-        &self,
-        _base_image: &str,
-        _packages: &awaken_environment_contract::PackageRequirements,
-        _network: &pc::NetworkPolicy,
-        image: &str,
-    ) -> Result<bool, RuntimeError> {
-        if self.package_registry.is_none() {
-            return Ok(self
-                .run(&["image".into(), "exists".into(), image.to_string()])
-                .await
-                .is_ok());
-        }
-        Ok(self
-            .run(&self.registry_command("pull", image))
-            .await
-            .is_ok())
     }
 }
 

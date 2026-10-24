@@ -28,9 +28,7 @@ mod sandbox_source;
 pub use acp_provision::PublishedAcpLaunchResolver;
 pub use sandbox_source::{AcpLaunchRegistry, LaunchSource};
 
-pub use container::{
-    ContainerTierPolicy, build_container_environment_for_realization, package_image_provisioner,
-};
+pub use container::{ContainerTierPolicy, build_container_environment_for_realization};
 pub use local::{
     local_tier_readiness, resolve_sandbox_tier, select_local_session_environment,
     with_backend_owned_environment, with_workdir_fallback,
