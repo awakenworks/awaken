@@ -31,7 +31,7 @@ pub async fn build_delegation_router() -> Router {
 /// Deterministic in-process tests select Local here; real-process scenarios use
 /// [`build_delegation_router`] and exercise their configured sandbox tier.
 pub async fn build_delegation_router_with_deployment(
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
 ) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(DelegatingModel), "delegate");
     let metadata = |owner_id: &str| AgentSnapshotMetadata {

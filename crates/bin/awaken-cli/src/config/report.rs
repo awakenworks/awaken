@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use awaken_dispatch_execution::DispatchBackend;
+use awaken_deployment_config::DispatchBackend;
 
 use super::{ResolvedDeployment, Role};
 

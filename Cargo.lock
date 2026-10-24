@@ -487,10 +487,10 @@ dependencies = [
  "awaken-data-subject-application",
  "awaken-data-subject-store",
  "awaken-deployment-application",
+ "awaken-deployment-config",
  "awaken-deployment-contract",
  "awaken-dispatch",
  "awaken-dispatch-erasure",
- "awaken-dispatch-execution",
  "awaken-dispatch-http",
  "awaken-dispatch-testkit",
  "awaken-env-store",
@@ -796,6 +796,7 @@ dependencies = [
  "awaken-credential-vault",
  "awaken-data-governance-contract",
  "awaken-deployment-application",
+ "awaken-deployment-config",
  "awaken-deployment-contract",
  "awaken-dispatch",
  "awaken-dispatch-contract",
@@ -1089,6 +1090,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-deployment-config"
+version = "1.0.0"
+dependencies = [
+ "awaken-acp-contract",
+ "awaken-container-contract",
+ "awaken-provisioning-contract",
+ "awaken-runtime-contract",
+ "awaken-session-environment-contract",
+ "awaken-tool-contract",
+ "uuid",
+]
+
+[[package]]
 name = "awaken-deployment-contract"
 version = "1.0.0"
 dependencies = [
@@ -1194,6 +1208,7 @@ dependencies = [
  "awaken-authority-clock",
  "awaken-coordinator-client",
  "awaken-credential-contract",
+ "awaken-deployment-config",
  "awaken-dispatch",
  "awaken-dispatch-contract",
  "awaken-dispatch-erasure",
@@ -1534,6 +1549,7 @@ dependencies = [
  "awaken-credential-materializer",
  "awaken-credential-vault",
  "awaken-data-governance-contract",
+ "awaken-deployment-config",
  "awaken-provisioning-contract",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
@@ -2854,9 +2870,9 @@ dependencies = [
  "awaken-credential-materializer",
  "awaken-credential-store",
  "awaken-credential-vault",
+ "awaken-deployment-config",
  "awaken-dispatch",
  "awaken-dispatch-erasure",
- "awaken-dispatch-execution",
  "awaken-dream-application",
  "awaken-environment-application",
  "awaken-executable-agent-catalog",
@@ -3088,12 +3104,14 @@ dependencies = [
  "async-trait",
  "awaken-acp-contract",
  "awaken-agent-channel",
+ "awaken-container-contract",
  "awaken-credential-contract",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
  "awaken-tool-contract",
  "schemars 1.2.1",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -3140,12 +3158,12 @@ dependencies = [
  "awaken-agent-channel",
  "awaken-agent-contract",
  "awaken-authority-clock",
- "awaken-container-contract",
  "awaken-coordinator-client",
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-credential-vault",
  "awaken-data-governance-contract",
+ "awaken-deployment-config",
  "awaken-dispatch",
  "awaken-dispatch-contract",
  "awaken-dispatch-erasure",
@@ -3228,6 +3246,7 @@ dependencies = [
 name = "awaken-session-executor-testkit"
 version = "1.0.0"
 dependencies = [
+ "awaken-deployment-config",
  "awaken-dispatch",
  "awaken-dispatch-erasure",
  "awaken-ext-memory",
@@ -3737,6 +3756,7 @@ dependencies = [
  "awaken-coordinator-client",
  "awaken-credential-contract",
  "awaken-credential-materializer",
+ "awaken-deployment-config",
  "awaken-dispatch-erasure",
  "awaken-dispatch-execution",
  "awaken-environment-contract",

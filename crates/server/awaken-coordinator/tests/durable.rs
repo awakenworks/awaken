@@ -40,7 +40,7 @@ fn host_with_client_tool(dependencies: SessionExecutorBuilder) -> Arc<ExecutorCo
 }
 
 async fn host_over(dir: &std::path::Path, process: &str) -> Arc<ExecutorComponents> {
-    let mut authority_deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+    let mut authority_deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     authority_deployment.storage_dir = Some(dir.to_path_buf());
     let authority = awaken_cli::scenario_runtime_authority(
         &authority_deployment.coordinator_storage(),
@@ -48,7 +48,7 @@ async fn host_over(dir: &std::path::Path, process: &str) -> Arc<ExecutorComponen
     )
     .await
     .expect("open Coordinator-owned SQLite runtime authority");
-    let mut worker_deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+    let mut worker_deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     worker_deployment.sandbox_dir = Some(dir.join(format!("sandbox-{process}")));
     host_with_client_tool(
         build_unmounted_dependencies_with_deployment(

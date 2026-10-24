@@ -379,7 +379,7 @@ async fn build_all_in_one_router_with_model_supply(
 pub async fn build_all_in_one_router_with_host_customizer(
     model: Arc<dyn LlmExecutor>,
     binding: awaken_runtime_contract::resolved::ModelBinding,
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
     web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
     customize_host: impl FnOnce(SessionExecutorBuilder) -> SessionExecutorBuilder + Send + 'static,
 ) -> Router {
@@ -1171,7 +1171,7 @@ mod process_role_surface_tests {
         // separate protocol-backed coverage in local_execution::tests.
         coordinator_deployment.runtime.disable_local_pool = true;
         coordinator_deployment.runtime.sandbox_tier =
-            awaken_session_executor::SandboxTier::Namespace;
+            awaken_deployment_config::SandboxTier::Namespace;
         let absent_hand = coordinator_data.path().join("uninstalled-namespace-hand");
         assert!(
             !absent_hand.exists(),

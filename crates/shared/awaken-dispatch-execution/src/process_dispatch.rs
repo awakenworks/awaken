@@ -29,12 +29,12 @@ use std::sync::{Arc, OnceLock};
 use awaken_dispatch_erasure::{AnyCoordinatorDispatch, AnyDispatchStore, DispatchBinding};
 use awaken_time::WallClock;
 
-use crate::execution_topology::{DispatchPoolSizing, ExecutionTopology};
 use crate::session_reconciliation::TerminalReconciliationState;
 use crate::{
     AdmissionError, CompletionSink, DEFAULT_LEASE_MS, DispatchHint, DispatchPool,
     DispatchReconciler, Error, PoolDrainFence, WorkerResolver,
 };
+use awaken_deployment_config::{DispatchPoolSizing, ExecutionTopology};
 
 /// The dispatch pool, terminal reconciliation and wake hint of one process.
 /// Consumers: the Session Run component (submission, cancellation and resume
@@ -169,7 +169,7 @@ impl ProcessDispatch {
             self.clock.clone(),
             self.topology.lease_owner.as_str().to_owned(),
             DEFAULT_LEASE_MS,
-            self.topology.dispatch_service_config(),
+            crate::DispatchServiceConfig::for_topology(&self.topology),
             resolver()?,
             sizing.slots().get(),
             self.hint.wake(),
@@ -203,7 +203,7 @@ impl ProcessDispatch {
             owner,
             self.clock.clone(),
             self.hint.wake(),
-            self.topology.dispatch_service_config(),
+            crate::DispatchServiceConfig::for_topology(&self.topology),
             resolver,
             Some(self.completion.clone()),
         );

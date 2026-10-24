@@ -30,10 +30,10 @@ fn manifest() -> WorkerManifest {
     }
 }
 
-fn local_coordinator_deployment() -> awaken_session_executor::DeploymentConfig {
-    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+fn local_coordinator_deployment() -> awaken_deployment_config::DeploymentConfig {
+    let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     deployment.disable_local_pool = true;
-    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Namespace;
+    deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Namespace;
     deployment
 }
 
@@ -469,7 +469,7 @@ fn builder_rejects_incomplete_or_invalid_topology() {
 
 #[test]
 fn standard_manifest_is_derived_from_builder_topology() {
-    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+    let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     deployment.acp = Some(
         awaken_acp_contract::AcpWorkerProfile::new(
             vec!["codex".to_string()],
@@ -575,8 +575,8 @@ fn container_deployment_cannot_bypass_canonical_provider_preparation() {
      * E1=manifest, Host, and heartbeat share one instance; E2=build fails.
      * S=10/O=4/D=1, RPN=40. Rules A1 !C1=>normal; A2 C1&&(C2||C3)=>E1;
      * A3 C1&&!C2&&!C3=>E2. This case owns A3; provider drift owns A2. */
-    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
-    deployment.sandbox_tier = awaken_session_executor::SandboxTier::K8s;
+    let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_deployment_config::SandboxTier::K8s;
     let error = WorkerNodeBuilder::new(
         WorkerUpstream::new("http://control"),
         awaken_time::system_clock(),
@@ -1468,7 +1468,7 @@ async fn startup_failure_and_cancellation_share_one_registration_exit() {
         if let Some(reservation) = relay_reservation.as_ref() {
             let port = reservation.local_addr().unwrap().port();
             deployment.sandbox.container_mcp_relay = Some(
-                awaken_session_mcp::ContainerMcpRelayExposure::new(
+                awaken_session_environment_contract::ContainerMcpRelayExposure::new(
                     format!("0.0.0.0:{port}").parse().unwrap(),
                     format!("http://relay.awaken-cloud.svc:{port}"),
                 )

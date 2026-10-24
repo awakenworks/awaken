@@ -33,8 +33,8 @@ use tower::ServiceExt;
 use support::wait_for_session_events;
 
 async fn build_local_delegation_router() -> Router {
-    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
-    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
+    let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
     build_delegation_router_with_deployment(deployment).await
 }
 

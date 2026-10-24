@@ -270,7 +270,7 @@ pub struct WorkerDaemonConfig {
     server: String,
     server_ca_certificate_file: Option<PathBuf>,
     pub worker: WorkerBootstrap,
-    runtime: awaken_session_executor::DeploymentConfig,
+    runtime: awaken_deployment_config::DeploymentConfig,
     local_credential_bindings_file: Option<PathBuf>,
 }
 
@@ -319,7 +319,7 @@ impl WorkerDaemonConfig {
             },
             &data_dir,
         )?;
-        let mut runtime = awaken_session_executor::DeploymentConfig::ephemeral();
+        let mut runtime = awaken_deployment_config::DeploymentConfig::ephemeral();
         // `data_dir` is the standalone Worker's installation-stable root. The
         // Runtime derives its durable workspace identity here rather than from
         // a process incarnation, so a restarted container Worker can discover
@@ -348,7 +348,7 @@ impl WorkerDaemonConfig {
             .apply_k8s_unschedulable_wait_secs(tier, file.k8s_unschedulable_wait_secs)?;
         if let Some(policy) = file.k8s_image_prewarm {
             policy.validate()?;
-            if runtime.sandbox_tier != awaken_session_executor::SandboxTier::K8s {
+            if runtime.sandbox_tier != awaken_deployment_config::SandboxTier::K8s {
                 return Err("k8s_image_prewarm requires sandbox_tier=k8s".into());
             }
             runtime.sandbox.k8s_image_prewarm = Some(policy);
@@ -357,7 +357,7 @@ impl WorkerDaemonConfig {
             policy.validate().map_err(|error| error.to_string())?;
             runtime.sandbox.k8s_continuation_volume = Some(policy);
         }
-        awaken_session_executor::SandboxPackageSettingsInput {
+        awaken_deployment_config::SandboxPackageSettingsInput {
             k8s_image_pull_secrets: file.k8s_image_pull_secrets.unwrap_or_default(),
             package_image_registry: file.package_image_registry,
             package_registry_auth_file: file.package_registry_auth_file,
@@ -385,8 +385,8 @@ impl WorkerDaemonConfig {
             }
             if !matches!(
                 runtime.sandbox_tier,
-                awaken_session_executor::SandboxTier::Local
-                    | awaken_session_executor::SandboxTier::Namespace
+                awaken_deployment_config::SandboxTier::Local
+                    | awaken_deployment_config::SandboxTier::Namespace
             ) || !runtime.sandbox.trusted_host_enabled
                 || runtime.acp.is_none()
             {
@@ -483,8 +483,8 @@ impl WorkerDaemonConfig {
         let mut builder = crate::WorkerNodeBuilder::new(upstream, clock.clone());
         if matches!(
             runtime.sandbox_tier,
-            awaken_session_executor::SandboxTier::Local
-                | awaken_session_executor::SandboxTier::Namespace
+            awaken_deployment_config::SandboxTier::Local
+                | awaken_deployment_config::SandboxTier::Namespace
         ) && let Some(profile) = &runtime.acp
         {
             use awaken_run_executor_acp::host::{
@@ -1243,7 +1243,7 @@ mod tests {
                 .expect("R1 default syntax")
                 .runtime
                 .sandbox_tier,
-            awaken_session_executor::SandboxTier::Namespace,
+            awaken_deployment_config::SandboxTier::Namespace,
             "omitted tier preserves the Native default"
         );
         // R1 owns portable configuration/assembly. Native backend availability
@@ -1313,7 +1313,7 @@ mod tests {
         );
         assert_eq!(
             k8s.runtime.sandbox.package_image_builder,
-            Some(awaken_session_executor::PackageImageBuilder::Kubernetes),
+            Some(awaken_deployment_config::PackageImageBuilder::Kubernetes),
             "S1"
         );
         assert!(k8s.runtime.sandbox.inherit_agent_stderr, "S1");

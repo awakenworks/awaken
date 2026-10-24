@@ -193,7 +193,7 @@ async fn selected_runtime_authority(
         let selected = process
             .deployment
             .clone()
-            .unwrap_or_else(awaken_session_executor::DeploymentConfig::ephemeral);
+            .unwrap_or_else(awaken_deployment_config::DeploymentConfig::ephemeral);
         process.runtime_authority = Some(
             crate::scenario_runtime_authority(
                 &selected.coordinator_storage(),
@@ -560,7 +560,8 @@ async fn assemble_execution_host(
                     memory: resources.resource_authorities.memory_execution_content(),
                 },
                 execution.memory_extractions.clone(),
-                deployment.session_execution_process(
+                awaken_session_executor::SessionExecutionProcess::from_deployment(
+                    &deployment,
                     base.stores.platform_workspace.clone(),
                     clock.clone(),
                 )?,
@@ -570,7 +571,7 @@ async fn assemble_execution_host(
         }
         #[cfg(any(test, feature = "test-support"))]
         None => {
-            let deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+            let deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
             let host_builder = SessionExecutorBuilder::for_local_resources(
                 cloud.model_wiring.executor.clone(),
                 cloud.model_wiring.model_ref.clone(),
@@ -578,12 +579,12 @@ async fn assemble_execution_host(
                     &resources.resource_authorities,
                 ),
                 execution.memory_extractions.clone(),
-                deployment
-                    .session_execution_process(
-                        base.stores.platform_workspace.clone(),
-                        resources.resource_authorities.clock(),
-                    )
-                    .expect("a local fixture selects a valid process"),
+                awaken_session_executor::SessionExecutionProcess::from_deployment(
+                    &deployment,
+                    base.stores.platform_workspace.clone(),
+                    resources.resource_authorities.clock(),
+                )
+                .expect("a local fixture selects a valid process"),
                 runtime_authority.clone(),
             );
             (deployment, host_builder)

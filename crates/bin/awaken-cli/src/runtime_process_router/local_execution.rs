@@ -1,8 +1,9 @@
 // @formal evidence assembly_role.local_managed_mount_requires_exact_local_worker_component
 //! Install physical execution only for the selected local Session placement.
 
+use awaken_deployment_config::DeploymentConfig;
 use awaken_session_application::SessionExecutionPlacement;
-use awaken_session_executor::{DeploymentConfig, SessionExecutorBuilder};
+use awaken_session_executor::SessionExecutorBuilder;
 use std::path::PathBuf;
 
 pub(super) async fn prepare(
@@ -93,7 +94,7 @@ mod tests {
     async fn assert_observation_roles(package_builder: bool, implicit_fallback: bool) {
         let mut deployment = DeploymentConfig::ephemeral();
         deployment.disable_local_pool = true;
-        deployment.sandbox_tier = awaken_session_executor::SandboxTier::K8s;
+        deployment.sandbox_tier = awaken_deployment_config::SandboxTier::K8s;
         deployment.container_image = Some(format!(
             "registry.invalid/sandbox@sha256:{}",
             "0".repeat(64)
@@ -102,7 +103,7 @@ mod tests {
         deployment.sandbox.warm_pool_size = 2;
         if package_builder {
             deployment.sandbox.package_image_builder =
-                Some(awaken_session_executor::PackageImageBuilder::Kubernetes);
+                Some(awaken_deployment_config::PackageImageBuilder::Kubernetes);
             deployment.sandbox.package_image_registry = None;
         }
         let host = if implicit_fallback {

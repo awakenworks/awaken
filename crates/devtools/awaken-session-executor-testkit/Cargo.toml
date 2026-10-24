@@ -14,6 +14,7 @@ description = "Local Resources, Skill and Memory-extraction adapters handed to t
 separation = "test-support"
 
 [dependencies]
+awaken-deployment-config.workspace = true
 awaken-dispatch-erasure.workspace = true
 awaken-session-executor = { workspace = true, features = ["test-support"] }
 awaken-dispatch = { workspace = true, features = ["test-support"] }

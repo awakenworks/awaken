@@ -9,6 +9,13 @@
 //! dispatch leases are fenced with ([`LeaseOwnerId`]), how long a lost wake can
 //! delay recovery, and who observes queue depth ([`QueueDepthSource`]).
 
+/// The default lost-wake recovery bound: cross-node wake drives prompt work,
+/// so fallback reads need not hit the durable queue twenty times per second
+/// while it is idle. Consumers: [`crate::DeploymentConfig::ephemeral`] and the
+/// dispatch service's default schedule.
+pub const DEFAULT_DISPATCH_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(500);
+
 /// Whether a foreground Run is delivered through the durable dispatch queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunIngress {
@@ -170,16 +177,6 @@ impl ExecutionTopology {
         }
         Ok(())
     }
-
-    /// Project the recovery bound and depth observer into the one dispatch
-    /// service schedule shared by local pools and coordinator-only repair.
-    pub(crate) fn dispatch_service_config(&self) -> crate::DispatchServiceConfig {
-        crate::DispatchServiceConfig {
-            poll_interval: self.lost_wake_recovery_bound,
-            sample_dispatch_queue_depth: self.queue_depth == QueueDepthSource::BuiltInSampler,
-            ..crate::DispatchServiceConfig::default()
-        }
-    }
 }
 
 #[cfg(test)]
@@ -199,17 +196,13 @@ mod tests {
 
     #[test]
     fn recovery_bound_has_one_validated_projection() {
-        // C1 a positive bound within 60s; C2 zero or more than 60s. E1 the same
-        // value reaches the shared local-pool/reconciler schedule; E2 invalid
-        // values fail before a process starts. Rules: D1=C1 -> E1, D2=C2 -> E2.
+        // C1 a positive bound within 60s; C2 zero or more than 60s. E1 the
+        // bound is admitted (its projection into the dispatch schedule is
+        // owned and tested by dispatch-execution); E2 invalid values fail
+        // before a process starts. Rules: D1=C1 -> E1, D2=C2 -> E2.
         let mut topology = standalone();
         topology.lost_wake_recovery_bound = std::time::Duration::from_millis(750);
         topology.validate().expect("D1 valid");
-        assert_eq!(
-            topology.dispatch_service_config().poll_interval,
-            topology.lost_wake_recovery_bound,
-            "D1/E1"
-        );
         for invalid in [0, 60_001] {
             topology.lost_wake_recovery_bound = std::time::Duration::from_millis(invalid);
             assert!(
@@ -220,25 +213,6 @@ mod tests {
                 "D2/E2"
             );
         }
-    }
-
-    #[test]
-    fn hosted_depth_observation_choice_reaches_the_one_dispatch_schedule() {
-        // C1 a standalone process keeps the built-in sampler; C2 a hosting
-        // composition names an external observer. E1 the sampler stays on; E2
-        // pool and coordinator-only reconciliation both receive it disabled
-        // through their shared DispatchServiceConfig. No lease setting changes.
-        let mut topology = standalone();
-        assert!(
-            topology
-                .dispatch_service_config()
-                .sample_dispatch_queue_depth,
-            "C1/E1"
-        );
-        topology.queue_depth = QueueDepthSource::External;
-        let config = topology.dispatch_service_config();
-        assert!(!config.sample_dispatch_queue_depth, "C2/E2");
-        assert_eq!(config.poll_interval, topology.lost_wake_recovery_bound);
     }
 
     #[test]

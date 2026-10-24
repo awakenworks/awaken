@@ -56,6 +56,7 @@ mod adoption_layout;
 mod agent_view;
 mod files;
 mod hand;
+mod mcp_relay_exposure;
 mod process;
 mod proofs;
 mod provider;
@@ -69,6 +70,7 @@ pub use hand::{
     ContainerHandResidency, HandExecutorBinding, HandExecutorFactory, HandRecoveryObservation,
     HandRequestRecovery,
 };
+pub use mcp_relay_exposure::ContainerMcpRelayExposure;
 pub use process::ProcessReaper;
 pub use proofs::{EnvironmentQuiescenceProof, EnvironmentStopProof, HandStopProof};
 pub use provider::{

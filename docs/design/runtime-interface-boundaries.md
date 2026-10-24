@@ -95,15 +95,19 @@ leaves the closure.
 
 ### Where each Coordinator need belongs
 
-Each row is something the Coordinator-only process uses from the executor
-today, measured on the `RegisteredWorker` placement with no local pool.
+Each row is something the Coordinator-only process uses today from a crate
+that D4 counts as Worker-side, measured on the `RegisteredWorker` placement:
+a Coordinator never owns a claim pool (`run_local_pool` is AllInOne-only), so
+the Coordinator-only process always has that placement. Rows marked *done*
+have left the executor and the Worker-side crates.
 
-| Coordinator need | Executor owner today | Reaches Worker-side code on that path | Destination |
+| Coordinator need | Owner today | Reaches Worker-side code on that path | Destination |
 |---|---|---|---|
-| Run admission and delivery (`RunApplication`, `DurableRunOperations`, `SessionRuntime`, `StreamingRunRuntime`) | `SessionRuns` over `RunAssembly::ctx_for` | Yes: the dispatch envelope is built from a Session context assembled over the realization executor | A Coordinator-side Session execution crate that builds the envelope from the frozen projection and the publication closure; attempt execution stays in the executor |
-| Frozen projection installation and realization lease renewal (`RealizationRuntime`) | `RunAssembly`, `InstalledSessions`, `SessionRealizations` | Yes: the realization registry | Projection facts: the Session application, which owns the frozen projection; lease and physical realization: the Worker, reached through dispatch |
-| Environment, terminal-cleanup and realization effects (`EnvironmentRuntime`, `TerminalCleanupRuntime`, `RealizationEffects`) | `RunAssembly`, `RealizationExecutor` | Yes | The Worker only (realization and its driver); the Coordinator issues them as dispatched preparation and cleanup work. The Session application reaches these roles through one `SessionExecutor` for every placement today, so this needs placement-typed role sets in the application |
-| Provider-effective Sandbox layout validation | `RealizationExecutor` over `with_session_environment_observation_from_deployment` | Yes: the Sandbox adapters | Provider capabilities as data in the provisioning contract, registered by Workers or derived from the Deployment |
+| Run admission and delivery (`RunApplication`, `DurableRunOperations`, `SessionRuntime`, `StreamingRunRuntime`) | `SessionRuns` over `RunAssembly::ctx_for` | Yes: every role entry first revalidates Resource bindings through the realization executor, and the dispatch envelope is built from a Session context opened under the realization lifecycle lock | A Coordinator-side Session execution crate that builds the envelope from the frozen projection and the publication closure; attempt execution stays in the executor |
+| Frozen projection installation (`RealizationRuntime`) | `RunAssembly`, `InstalledSessions` | Yes: on the Worker placement the Session application installs a `SessionProjectionInstallMode::Dispatch` projection into the executor's realization registry only so Run admission can read it back | The Session application, which already owns the frozen projection; Run admission reads it there and the Dispatch install mode disappears |
+| Realization lease renewal, Environment, terminal-cleanup and realization effects (`RealizationRuntime`, `EnvironmentRuntime`, `TerminalCleanupRuntime`, `RealizationEffects`) | `RunAssembly`, `RealizationExecutor` | Yes | The Worker only (realization and its driver); the Coordinator issues them as dispatched preparation and cleanup work. The Session application reaches these roles through one `SessionExecutor` for every placement today, so this needs placement-typed role sets in the application; a Session whose frozen placement needs a local owner is refused by the Worker-placement set |
+| Prospective Sandbox layout validation | `RealizationEffects::validate_session_sandbox_layout` | No provider on this path: a Worker-placement layout is validated structurally (`validate_structural_binding_layout`) | The Worker-placement role set, over the same structural kernel; no provider capability is needed |
+| Retained-source observation for Worker retirement (`TerminalCleanupRuntime::observe_terminal_cleanup_retention`) | `EnvironmentHolding` over the read-only `ContainerEnvironmentObservation` the root installs with `with_session_environment_observation_from_deployment` | Yes: `awaken-execution-composition` builds a Docker/Podman/Kubernetes provider so the Coordinator can observe a retiring Worker's retained Sandbox (`SandboxObservationPurpose::WorkerRetirement`) | Provider observation as data: the retiring Worker reports the retention of the sources it holds, the Coordinator's occupancy read consumes that report; until then the observation stays in the composition |
 | Committed Thread reads and the Worker recovery source (`ThreadReadRuntime`) | `ThreadReads` | Partly: its lifecycle-held cleanup reads | Committed reads: the Coordinator-side crate over the runtime authority; lifecycle-held cleanup reads stay with the Worker |
 | Claimed commit ingest (`ClaimedOperationCoordinatorResolver`) | `commit_ingest::session_commit_owner` | No, but it lives in the executor with `HostCommit` and `SessionAuthority` | The Coordinator-side crate, together with `HostCommit` and `SessionAuthority` |
 | Completion relay, Worker stream sink, Thread event hub | `CompletionRegistry`, `ThreadEventHub` | No | The Coordinator-side crate |
@@ -114,15 +118,28 @@ today, measured on the `RegisteredWorker` placement with no local pool.
 | Budgets and Outcomes (`BudgetRuntime`, `OutcomeRuntime`) | `BudgetAccounting`, `Outcomes` | Outcomes launch grader Runs | The Coordinator-side crate, over Run admission |
 | Thread Workspace and Agent projection registry (`CapabilityRuntime`) | `RunCapabilities` | No | The Coordinator-side crate; tool, MCP, ACP and credential capability assembly stays in the executor |
 | Committed-terminal reconciliation resolver | `CommitBoundaryAssembly` | Carries `RunCapabilities` for remote cancellation | The Coordinator-side crate; `ProcessDispatch` stays in dispatch-execution |
-| Deployment configuration (`DeploymentConfig`, `SandboxSettings`, `SessionExecutionProcess`) | `deployment_config` | No, but every role's configuration links the executor through it | Topology and storage: dispatch-execution (`ExecutionTopology`, `CoordinatorStorage`); Sandbox settings: the execution composition; process selection: the executor |
-| Process startup (configuration, stores, identity, listeners, drain) | `awaken-cli` library | Links `awaken-worker`, `awaken-execution-composition` and the Sandbox adapters | The Coordinator process package; `awaken-cli` adds the executor and the co-located Worker |
+| Deployment configuration (`DeploymentConfig`, `SandboxSettings`, `ExecutionTopology`, `CoordinatorStorage`) | *done*: `awaken-deployment-config`, the execution context's domain crate | No | Every root resolves it without linking the executor; the executor projects it with `SessionExecutionProcess::from_deployment`, dispatch-execution with `DispatchServiceConfig::for_topology`; the container MCP relay exposure it carries lives in `awaken-session-environment-contract` |
+| Kubernetes Worker fleet control (Pod identity authentication, Pod process observation and stop, the Worker create ledger) | `awaken-sandbox-kubernetes`, selected by the root's Worker transport | Yes: the Coordinator authenticates, observes and stops Worker Pods through the Sandbox adapter crate | A Kubernetes Worker fleet crate of the Coordinator context, shared by the Sandbox adapter where it observes Sandbox Pods |
+| Environment package image provisioning (`EnvironmentImageBuildCoordinator`) | `awaken_execution_composition::package_image_provisioner` | Yes: the provisioner is built over the container engines | The Environment image build context (`awaken-environment-package-image-builder`), over an image-build port the container engines implement |
+| Local Memory invalidation bus (`LocalInvalidator`) | `awaken-sandbox-memoryd` | Yes: the Resources stores the Coordinator opens publish to it | The Resource application, which publishes the invalidations; the Memory mounter subscribes |
+| Process startup (configuration, stores, identity, listeners, drain) | `awaken-cli` library | Links `awaken-worker`, `awaken-execution-composition` and the Sandbox adapters | The Coordinator process package over an executor-free startup; `awaken-cli` adds the executor and the co-located Worker |
 
-The order that removes D4's transitions: split the Deployment configuration;
-move commit ingest, committed reads, completion, the event hub and the
-projection registry into the Coordinator-side crate; build Run admission from
-the frozen projection; give the Session application placement-typed role sets
-(with the Session application work); publish provider capabilities as data;
-then declare `awaken-coordinator` in the Coordinator process package.
+The order that removes D4's transitions, each step a reviewed `--tighten`:
+the Deployment configuration (done); the Memory invalidation bus; the
+Kubernetes Worker fleet crate; the executor-free process startup and the
+Coordinator process package that declares `awaken-coordinator` (the package
+then still composes the executor, and its baseline names exactly the
+executor, realization, credential materializer and execution composition);
+Environment image provisioning and retirement observation as data (removes
+the execution composition and the Sandbox adapters); then the Coordinator-side
+crate (commit ingest, committed reads, completion, the event hub, the
+projection registry), Run admission from the frozen projection and the
+placement-typed role sets in the Session application, which together remove
+the executor, the realization and the credential materializer and empty the
+baseline. The Session application and the executor stop binding each other
+(`SessionApplicationBindings`) in that last step: the bindings exist because
+the executor serves the application's roles while the application supplies
+the executor's coordination and background submission.
 
 ## Embedded Runtime SDK Boundary
 

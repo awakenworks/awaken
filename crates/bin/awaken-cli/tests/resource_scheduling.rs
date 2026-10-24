@@ -343,8 +343,8 @@ async fn exact_http_policy_reaches_session_and_kubernetes_pod_requests() {
     let provider = Arc::new(RecordingProvider {
         specs: specs.clone(),
     });
-    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
-    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
+    let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
     let installed = deployment.clone();
     let app = build_all_in_one_router_with_host_customizer(
         Arc::new(EchoModel),

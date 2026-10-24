@@ -195,6 +195,7 @@ awaken-runtime-examples = { path = "crates/devtools/awaken-runtime-examples" }
 awaken-dispatch-contract = { path = "crates/contract/awaken-dispatch-contract" }
 awaken-dispatch-erasure = { path = "crates/shared/awaken-dispatch-erasure" }
 awaken-dispatch-execution = { path = "crates/shared/awaken-dispatch-execution" }
+awaken-deployment-config = { path = "crates/shared/awaken-deployment-config" }
 awaken-dispatch = { path = "crates/server/awaken-dispatch", default-features = false }
 awaken-dispatch-testkit = { path = "crates/server/awaken-dispatch-testkit" }
 awaken-worker-transport-security = { path = "crates/server/awaken-worker-transport-security" }

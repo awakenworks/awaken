@@ -7,7 +7,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
-use awaken_dispatch_execution::DispatchBackend;
+use awaken_deployment_config::DispatchBackend;
 
 use super::{ConfigOverrides, FileConfig, OperatingMode, ResolvedDeployment, Role};
 

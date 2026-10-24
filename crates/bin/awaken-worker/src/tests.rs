@@ -94,8 +94,8 @@ fn container_realization_namespace_is_installation_wide() {
     // C3 is deliberately absent from the projector's input type: registry
     // leases and Sandbox effect fences, not object identity, fence incarnations.
     let kubernetes = |namespace: &str, local_root: &std::path::Path| {
-        let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
-        deployment.sandbox_tier = awaken_session_executor::SandboxTier::K8s;
+        let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
+        deployment.sandbox_tier = awaken_deployment_config::SandboxTier::K8s;
         deployment.sandbox.k8s_namespace = namespace.into();
         deployment.storage_dir = Some(local_root.into());
         worker_realization_namespace(&deployment).expect("Kubernetes realization namespace")
@@ -105,8 +105,8 @@ fn container_realization_namespace_is_installation_wide() {
     let worker_a = kubernetes("installation-a", first_root.path());
     let replacement = kubernetes("installation-a", replacement_root.path());
     let other_installation = kubernetes("installation-b", first_root.path());
-    let mut markerless_kubernetes = awaken_session_executor::DeploymentConfig::ephemeral();
-    markerless_kubernetes.sandbox_tier = awaken_session_executor::SandboxTier::K8s;
+    let mut markerless_kubernetes = awaken_deployment_config::DeploymentConfig::ephemeral();
+    markerless_kubernetes.sandbox_tier = awaken_deployment_config::SandboxTier::K8s;
     markerless_kubernetes.sandbox.k8s_namespace = "installation-a".into();
     markerless_kubernetes.storage_dir = None;
     let markerless = worker_realization_namespace(&markerless_kubernetes)
@@ -116,8 +116,8 @@ fn container_realization_namespace_is_installation_wide() {
     assert_ne!(worker_a, other_installation, "R2/E2");
 
     let local = |root: &std::path::Path| {
-        let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
-        deployment.sandbox_tier = awaken_session_executor::SandboxTier::Docker;
+        let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
+        deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Docker;
         deployment.storage_dir = Some(root.into());
         worker_realization_namespace(&deployment).expect("local realization namespace")
     };
@@ -590,8 +590,8 @@ impl InferenceExecutorMaterializer for SchemeMaterializer {
     }
 }
 
-fn deployment() -> awaken_session_executor::DeploymentConfig {
-    awaken_session_executor::DeploymentConfig::ephemeral()
+fn deployment() -> awaken_deployment_config::DeploymentConfig {
+    awaken_deployment_config::DeploymentConfig::ephemeral()
 }
 
 fn admits_native_source(
@@ -728,13 +728,13 @@ fn worker_manifest_reports_trusted_host_only_from_operator_configuration() {
     // tier or explicit switch, never by default on an isolated Worker.
     // Rules: local/F=>E1+E2, namespace/F=>E1 only, namespace/T=>E1+E2.
     for (tier, enabled, expected_trusted) in [
-        (awaken_session_executor::SandboxTier::Local, false, true),
+        (awaken_deployment_config::SandboxTier::Local, false, true),
         (
-            awaken_session_executor::SandboxTier::Namespace,
+            awaken_deployment_config::SandboxTier::Namespace,
             false,
             false,
         ),
-        (awaken_session_executor::SandboxTier::Namespace, true, true),
+        (awaken_deployment_config::SandboxTier::Namespace, true, true),
     ] {
         let mut deployment = deployment();
         deployment.sandbox_tier = tier;
@@ -820,7 +820,7 @@ async fn namespace_fallback_manifest_participant() {
         Ok("1")
     );
     let mut deployment = deployment();
-    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Namespace;
+    deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Namespace;
     deployment.sandbox.allow_local_fallback = true;
     deployment.sandbox.trusted_host_enabled = false;
     let make = || {
@@ -851,7 +851,7 @@ async fn namespace_fallback_manifest_participant() {
         .unwrap();
     let manifest = worker.manifest();
     let (local, backend) =
-        deployment.sandbox_support_for_tier(awaken_session_executor::SandboxTier::Local);
+        deployment.sandbox_support_for_tier(awaken_deployment_config::SandboxTier::Local);
     assert_eq!(manifest.sandbox, local, "F1 actual Workdir capabilities");
     assert_eq!(
         manifest.sandbox_backends,
@@ -863,7 +863,7 @@ async fn namespace_fallback_manifest_participant() {
     );
     assert_eq!(
         worker.deployment.sandbox_tier,
-        awaken_session_executor::SandboxTier::Namespace
+        awaken_deployment_config::SandboxTier::Namespace
     );
 
     let stale = derive_standard_manifest(StandardManifestInputs {
@@ -920,9 +920,9 @@ async fn container_preparation_preserves_existing_provider_and_refuses_foreign_c
     for selected in [false, true] {
         let mut configuration = deployment();
         configuration.sandbox_tier = if selected {
-            awaken_session_executor::SandboxTier::Docker
+            awaken_deployment_config::SandboxTier::Docker
         } else {
-            awaken_session_executor::SandboxTier::Local
+            awaken_deployment_config::SandboxTier::Local
         };
         let mut builder = WorkerNodeBuilder::new(
             awaken_worker_transport_security::WorkerUpstream::new("http://control"),
@@ -979,7 +979,7 @@ fn worker_builder_rejects_scoped_execution_without_platform_or_host_consent() {
     for scoped in [false, true] {
         for trusted in [false, true] {
             let mut deployment = deployment();
-            deployment.sandbox_tier = awaken_session_executor::SandboxTier::Namespace;
+            deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Namespace;
             deployment.sandbox.trusted_host_enabled = trusted;
             deployment.sandbox.trusted_host_scoped_execution = scoped;
             let result = WorkerNodeBuilder::new(
@@ -1860,7 +1860,7 @@ fn configured_container_acp_uses_live_image_probe_targets_only() {
         "R1"
     );
 
-    config.sandbox_tier = awaken_session_executor::SandboxTier::Docker;
+    config.sandbox_tier = awaken_deployment_config::SandboxTier::Docker;
     config.container_image = Some("image@sha256:exact".into());
     config.acp = None;
     assert!(

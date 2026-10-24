@@ -18,8 +18,6 @@ isolates = ["axum"]
 awaken-session-realization.workspace = true
 awaken-tool-contract.workspace = true
 awaken-data-governance-contract.workspace = true
-# The backend-erased container environment ports the Session owner holds.
-awaken-container-contract.workspace = true
 # The auxiliary-run sandbox ports the process composition injects.
 awaken-session-environment-contract.workspace = true
 # The neutral Agent channel the Session environment launches Agents over.
@@ -62,6 +60,8 @@ awaken-tenancy = { workspace = true }
 awaken-dispatch-contract.workspace = true
 awaken-dispatch-erasure.workspace = true
 awaken-dispatch-execution.workspace = true
+# The typed Deployment configuration a composition root projects into this Host.
+awaken-deployment-config.workspace = true
 awaken-acp-contract = { workspace = true }
 awaken-credential-contract.workspace = true
 awaken-credential-materializer = { workspace = true }

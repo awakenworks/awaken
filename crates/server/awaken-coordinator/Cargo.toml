@@ -17,6 +17,8 @@ awaken-dispatch-contract.workspace = true
 # The process dispatch and its lifecycle port; the executor that resolves
 # claimed Runs is selected by the composition root (ExecutionPorts).
 awaken-dispatch-execution.workspace = true
+# The process storage selection the Coordinator opens its runtime authority over.
+awaken-deployment-config.workspace = true
 awaken-tool-contract.workspace = true
 awaken-data-governance-contract.workspace = true
 awaken-service-lifecycle.workspace = true

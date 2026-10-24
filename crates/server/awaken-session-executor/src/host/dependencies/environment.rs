@@ -161,7 +161,7 @@ impl SessionExecutorBuilder {
         >,
         hand_factory: Arc<dyn awaken_session_environment_contract::HandExecutorFactory>,
     ) -> Self {
-        let hand = crate::SandboxSettings::default();
+        let hand = awaken_deployment_config::SandboxSettings::default();
         let environment = awaken_session_environment::SandboxEnvironmentProvider::
             container_with_capacity_hand_idle_and_residency(
                 provider,

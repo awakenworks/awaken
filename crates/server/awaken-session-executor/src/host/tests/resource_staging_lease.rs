@@ -1103,8 +1103,8 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
     // execution composition's startup rows.
     let base = tempfile::tempdir().unwrap();
     let gate = Arc::new(WorkerProofGate(std::sync::Mutex::new(true)));
-    let mut deployment = crate::DeploymentConfig::ephemeral();
-    deployment.sandbox_tier = crate::SandboxTier::Local;
+    let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
     deployment.sandbox_dir = Some(base.path().into());
     deployment.sandbox.trusted_host_scoped_execution = true;
     // The TrustedHost backend exactly as startup selection configures it:

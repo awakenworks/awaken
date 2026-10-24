@@ -136,8 +136,8 @@ async fn managed_session_advertises_custom_tools() {
 /// detects that high-severity compatibility regression.
 #[tokio::test]
 async fn managed_session_advertises_multiagent_roster() {
-    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
-    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
+    let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
     let app = build_delegation_router_with_deployment(deployment).await;
     let session = create_session(&app).await;
 

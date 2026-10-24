@@ -364,9 +364,12 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
             }
         },
         awaken_session_executor_testkit::memory_extraction_repository(None).await,
-        crate::DeploymentConfig::ephemeral()
-            .session_execution_process(ExecutorComponents::mint_local_workspace(), system_clock())
-            .expect("ephemeral process"),
+        crate::SessionExecutionProcess::from_deployment(
+            &awaken_deployment_config::DeploymentConfig::ephemeral(),
+            ExecutorComponents::mint_local_workspace(),
+            system_clock(),
+        )
+        .expect("ephemeral process"),
         Arc::new(crate::EphemeralRuntimeAuthority::new(system_clock())),
     ))
     .build()
@@ -426,7 +429,7 @@ async fn attributed_run_meets_deployment_capture_with_control_consent() {
     // -> no content row. The single attempt-executor decorator owns this meet for
     // both direct and durable delivery; this unit partition proves the direct
     // route and management_capture_erasure_loop_e2e proves durable delivery.
-    let mut deployment = crate::DeploymentConfig::ephemeral();
+    let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     deployment.content_capture.level = awaken_runtime_contract::ContentCapture::Full;
     let captured = Arc::new(CountingCaptureSink::default());
     let (host, _managed) = dispatch_test_host(
@@ -533,7 +536,7 @@ async fn workspace_narrowing_tightens_the_deployment_ceiling_for_each_run() {
     // | W4   | ws-broken (unreadable)   | fail closed: no content row         |
     // W1 and W2 run concurrently-configured Workspaces of one self-hosted
     // deployment: each Workspace's narrowing applies only to its own Runs.
-    let mut deployment = crate::DeploymentConfig::ephemeral();
+    let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     deployment.content_capture.level = awaken_runtime_contract::ContentCapture::Full;
     let captured = Arc::new(CountingCaptureSink::default());
     let narrowing = Arc::new(WorkspaceNarrowing::default());

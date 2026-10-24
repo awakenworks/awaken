@@ -8,8 +8,8 @@
 
 use std::sync::Arc;
 
+use awaken_deployment_config::{CoordinatorStorage, DispatchBackend, StoreKind};
 use awaken_dispatch_erasure::RuntimeAuthority;
-use awaken_dispatch_execution::{CoordinatorStorage, DispatchBackend, StoreKind};
 
 /// Select the one runtime authority a scenario process shares between its
 /// executor and its Session application.
@@ -47,7 +47,7 @@ mod tests {
         // its original atomic Session-continuation and operational-feed
         // roles. Durable selections open the Coordinator's authority; its
         // fail-closed rules are owned by the Coordinator persistence tests.
-        let missing = awaken_session_executor::DeploymentConfig::ephemeral().coordinator_storage();
+        let missing = awaken_deployment_config::DeploymentConfig::ephemeral().coordinator_storage();
         let reference = scenario_runtime_authority(&missing, awaken_time::system_clock())
             .await
             .expect("R0 scenario SQLite runtime needs no shared backend");

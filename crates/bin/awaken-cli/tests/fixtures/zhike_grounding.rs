@@ -107,9 +107,9 @@ async fn grounding_review_uses_a_tool_free_platform_agent_and_the_existing_parse
         Arc::new(ContractJudge),
         awaken_runtime_contract::resolved::ModelBinding::parse("default", "judge-fixture", "genai")
             .unwrap(),
-        awaken_session_executor::DeploymentConfig {
-            sandbox_tier: awaken_session_executor::SandboxTier::Local,
-            ..awaken_session_executor::DeploymentConfig::ephemeral()
+        awaken_deployment_config::DeploymentConfig {
+            sandbox_tier: awaken_deployment_config::SandboxTier::Local,
+            ..awaken_deployment_config::DeploymentConfig::ephemeral()
         },
         None,
         |host| host,
@@ -134,9 +134,9 @@ async fn live_grounding_judge_rejects_invented_details_and_accepts_bounded_claim
     let app = awaken_cli::build_all_in_one_router_with_host_customizer(
         executor,
         awaken_runtime_contract::resolved::ModelBinding::parse("default", &model, "genai").unwrap(),
-        awaken_session_executor::DeploymentConfig {
-            sandbox_tier: awaken_session_executor::SandboxTier::Local,
-            ..awaken_session_executor::DeploymentConfig::ephemeral()
+        awaken_deployment_config::DeploymentConfig {
+            sandbox_tier: awaken_deployment_config::SandboxTier::Local,
+            ..awaken_deployment_config::DeploymentConfig::ephemeral()
         },
         None,
         |host| host,

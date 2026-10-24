@@ -139,8 +139,8 @@ async fn delegation_factory_wires_the_fixed_managed_coordination_surface() {
     // Constraints/invariants: the frozen roster and fixed coordination tools are
     // the only topology inputs; this factory must not turn admission into a
     // synchronous child-result path.
-    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
-    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
+    let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
     let frames = drive_run(
         build_delegation_router_with_deployment(deployment).await,
         "go research this",
@@ -180,8 +180,8 @@ async fn acp_sandboxed_factory_also_mounts_the_environments_surface() {
     // Extracting its startup into `acp_scenarios` introduces no new branch or
     // effect, so no new decision table applies; this end-to-end route observation
     // is the regression coverage for the structural move.
-    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
-    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
+    let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
     assert_eq!(
         get_status(
             build_acp_sandboxed_router_with_deployment(deployment).await,

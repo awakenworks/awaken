@@ -11,7 +11,7 @@ use awaken_runtime_contract::{CaptureDecision, ContentCapture, ContentRedactor, 
 
 /// Project the typed deployment ceiling into the runtime's opaque decision.
 pub(crate) fn capture_decision(
-    settings: crate::deployment_config::ContentCaptureSettings,
+    settings: awaken_deployment_config::ContentCaptureSettings,
     trace_file_present: bool,
 ) -> CaptureDecision {
     let redactor: Arc<dyn ContentRedactor> = if uses_pii_redaction(settings.redaction) {
@@ -36,17 +36,17 @@ const fn clamp_for_trace_file(level: ContentCapture, trace_file_present: bool) -
 /// The supported persistence choice used by the actual redactor constructor.
 /// An exhaustive match keeps any future unsupported mode from falling back to
 /// no redaction. The upper-layer DLP requirement is not an execution choice.
-const fn uses_pii_redaction(configured: crate::deployment_config::ContentRedaction) -> bool {
+const fn uses_pii_redaction(configured: awaken_deployment_config::ContentRedaction) -> bool {
     match configured {
-        crate::deployment_config::ContentRedaction::None => false,
-        crate::deployment_config::ContentRedaction::Regex => true,
+        awaken_deployment_config::ContentRedaction::None => false,
+        awaken_deployment_config::ContentRedaction::Regex => true,
     }
 }
 
 #[cfg(kani)]
 mod kani_proofs {
     use super::{clamp_for_trace_file, uses_pii_redaction};
-    use crate::deployment_config::ContentRedaction;
+    use awaken_deployment_config::ContentRedaction;
     use awaken_runtime_contract::ContentCapture;
 
     fn arbitrary_capture() -> ContentCapture {
@@ -109,7 +109,7 @@ mod tests {
         // | C2 | Full | Regex | 0 | full, scrubbed content |
         // | C3 | Off | Regex | 0 | no content |
         // | C4 | Full | either | 1 | structured |
-        use crate::deployment_config::{ContentCaptureSettings, ContentRedaction};
+        use awaken_deployment_config::{ContentCaptureSettings, ContentRedaction};
         use awaken_runtime_contract::{ContentCapture, ContentKind};
         let structured = super::capture_decision(ContentCaptureSettings::default(), false);
         assert_eq!(structured.level, ContentCapture::Structured, "C1");

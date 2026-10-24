@@ -10,7 +10,7 @@
 
 use super::runtime_authority::SchemaAccess;
 use super::worker_registry::WorkerDirectoryHandle;
-use awaken_dispatch_execution::{CoordinatorStorage, DispatchBackend, StoreKind};
+use awaken_deployment_config::{CoordinatorStorage, DispatchBackend, StoreKind};
 
 #[derive(Clone)]
 pub struct CoordinatorPersistence {

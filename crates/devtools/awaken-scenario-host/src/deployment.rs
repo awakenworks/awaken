@@ -16,13 +16,13 @@ pub(crate) struct ScenarioPlatform {
     memory_invalidator: Arc<awaken_sandbox_memoryd::LocalInvalidator>,
     /// The typed Deployment the dependencies were selected from; Session
     /// environment, ACP and Memory mount selection read it explicitly.
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
 }
 
 impl ScenarioPlatform {
     /// The typed Deployment this platform was selected from.
     #[must_use]
-    pub(crate) fn deployment(&self) -> &awaken_session_executor::DeploymentConfig {
+    pub(crate) fn deployment(&self) -> &awaken_deployment_config::DeploymentConfig {
         &self.deployment
     }
 
@@ -158,14 +158,14 @@ pub fn install_scenario_runtime_authority(
 /// Resolve the scenario-only process fixture into the same typed deployment
 /// consumed by every Scenario platform. Production binaries never use these
 /// environment variables; their sole boundary is `ResolvedDeployment`.
-pub fn scenario_deployment() -> awaken_session_executor::DeploymentConfig {
+pub fn scenario_deployment() -> awaken_deployment_config::DeploymentConfig {
     scenario_deployment_from(|name| std::env::var(name).ok())
 }
 
 fn scenario_deployment_from(
     mut read: impl FnMut(&str) -> Option<String>,
-) -> awaken_session_executor::DeploymentConfig {
-    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+) -> awaken_deployment_config::DeploymentConfig {
+    let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     deployment.storage_dir = read("SESSION_DEPLOYMENT_STORAGE_DIR")
         .filter(|value| !value.trim().is_empty())
         .map(std::path::PathBuf::from);
@@ -178,11 +178,11 @@ fn scenario_deployment_from(
     deployment.sandbox.package_build_host_network =
         read("SESSION_DEPLOYMENT_PACKAGE_BUILD_HOST_NETWORK").as_deref() == Some("1");
     deployment.sandbox_tier = match read("SESSION_DEPLOYMENT_SANDBOX_TIER").as_deref() {
-        None | Some("") | Some("namespace") => awaken_session_executor::SandboxTier::Namespace,
-        Some("local") => awaken_session_executor::SandboxTier::Local,
-        Some("docker") => awaken_session_executor::SandboxTier::Docker,
-        Some("podman") => awaken_session_executor::SandboxTier::Podman,
-        Some("k8s") | Some("kubernetes") => awaken_session_executor::SandboxTier::K8s,
+        None | Some("") | Some("namespace") => awaken_deployment_config::SandboxTier::Namespace,
+        Some("local") => awaken_deployment_config::SandboxTier::Local,
+        Some("docker") => awaken_deployment_config::SandboxTier::Docker,
+        Some("podman") => awaken_deployment_config::SandboxTier::Podman,
+        Some("k8s") | Some("kubernetes") => awaken_deployment_config::SandboxTier::K8s,
         Some(value) => panic!(
             "SESSION_DEPLOYMENT_SANDBOX_TIER must be local, namespace, docker, podman, or k8s (got {value})"
         ),
@@ -197,15 +197,15 @@ fn scenario_deployment_from(
             .expect("SESSION_DEPLOYMENT_POSTGRES_MAX_CONNECTIONS must be a positive u32");
     }
     if read("SESSION_DEPLOYMENT_DISPATCH_BACKEND").as_deref() == Some("postgres") {
-        deployment.dispatch_backend = awaken_dispatch_execution::DispatchBackend::Postgres;
+        deployment.dispatch_backend = awaken_deployment_config::DispatchBackend::Postgres;
     }
     if read("SESSION_DEPLOYMENT_STORE").as_deref() == Some("postgres") {
-        deployment.store = awaken_dispatch_execution::StoreKind::Postgres;
+        deployment.store = awaken_deployment_config::StoreKind::Postgres;
     }
     deployment.wake = match read("SESSION_DEPLOYMENT_WAKE").as_deref() {
-        None | Some("") | Some("none") => awaken_dispatch_execution::Wake::None,
-        Some("pg-notify") => awaken_dispatch_execution::Wake::PgNotify,
-        Some("nats") => awaken_dispatch_execution::Wake::Nats,
+        None | Some("") | Some("none") => awaken_deployment_config::Wake::None,
+        Some("pg-notify") => awaken_deployment_config::Wake::PgNotify,
+        Some("nats") => awaken_deployment_config::Wake::Nats,
         Some(value) => {
             panic!("SESSION_DEPLOYMENT_WAKE must be none, pg-notify, or nats (got {value})")
         }
@@ -228,7 +228,7 @@ fn scenario_deployment_from(
 /// The scenario installation's platform Workspace: the durable marker under a
 /// configured storage root (published on first use), else a volatile mint.
 pub(crate) fn installation_workspace(
-    deployment: &awaken_session_executor::DeploymentConfig,
+    deployment: &awaken_deployment_config::DeploymentConfig,
 ) -> String {
     match deployment.storage_dir.as_deref() {
         Some(root) => awaken_installation_workspace::provision_at(
@@ -249,7 +249,7 @@ pub(crate) async fn resource_host(
 pub(crate) async fn resource_host_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
 ) -> ScenarioPlatform {
     resource_host_with_selected_runtime(
         llm,
@@ -266,7 +266,7 @@ pub(crate) async fn resource_host_with_deployment(
 async fn resource_host_with_selected_runtime(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
     selected: Option<&Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>>,
 ) -> ScenarioPlatform {
     // The Scenario process's Resources clock.
@@ -304,9 +304,12 @@ async fn resource_host_with_selected_runtime(
     let authority = select_scenario_runtime_authority(&deployment, clock.clone(), selected);
     let local_workspace = scenario_workspace.unwrap_or(installation_workspace);
     let model_ref: String = model_ref.into();
-    let process = deployment
-        .session_execution_process(local_workspace, clock)
-        .expect("a local fixture selects a valid process");
+    let process = awaken_session_executor::SessionExecutionProcess::from_deployment(
+        &deployment,
+        local_workspace,
+        clock,
+    )
+    .expect("a local fixture selects a valid process");
     let dependencies = SessionExecutorBuilder::for_local_resources(
         llm,
         model_ref,
@@ -338,7 +341,7 @@ async fn resource_host_with_selected_runtime(
 /// installs its Coordinator-selected authority before any router is built;
 /// direct in-process fixture callers may select only the local volatile case.
 fn select_scenario_runtime_authority(
-    deployment: &awaken_session_executor::DeploymentConfig,
+    deployment: &awaken_deployment_config::DeploymentConfig,
     clock: Arc<dyn awaken_time::WallClock>,
     selected: Option<&Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>>,
 ) -> Arc<dyn awaken_dispatch_erasure::RuntimeAuthority> {
@@ -348,10 +351,10 @@ fn select_scenario_runtime_authority(
             assert!(
                 !deployment.durable
                     && deployment.database_url.is_none()
-                    && deployment.store == awaken_dispatch_execution::StoreKind::Sqlite
+                    && deployment.store == awaken_deployment_config::StoreKind::Sqlite
                     && deployment.dispatch_backend
-                        == awaken_dispatch_execution::DispatchBackend::Sqlite
-                    && deployment.wake == awaken_dispatch_execution::Wake::None,
+                        == awaken_deployment_config::DispatchBackend::Sqlite
+                    && deployment.wake == awaken_deployment_config::Wake::None,
                 "durable or distributed Scenario Runtime requires an installed Coordinator authority"
             );
             awaken_session_executor_testkit::volatile_runtime_authority(clock)
@@ -367,7 +370,7 @@ fn select_scenario_runtime_authority(
 pub(crate) async fn runtime_resource_host_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-    deployment: awaken_session_executor::DeploymentConfig,
+    deployment: awaken_deployment_config::DeploymentConfig,
 ) -> ScenarioPlatform {
     let platform = resource_host_with_deployment(llm, model_ref, deployment).await;
     let deployment = platform.deployment().clone();
@@ -391,7 +394,7 @@ mod tests {
 
     use super::*;
 
-    fn from(entries: &[(&str, &str)]) -> awaken_session_executor::DeploymentConfig {
+    fn from(entries: &[(&str, &str)]) -> awaken_deployment_config::DeploymentConfig {
         let values = entries
             .iter()
             .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
@@ -407,7 +410,7 @@ mod tests {
         // no second Memory queue is constructed. Decision rule R1 C1+any C2
         // -> E1. The absent/local R2 is exercised by factory_topology's AI SDK
         // Run; absent/durable R3 is the fail-closed case below.
-        let deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+        let deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
         let selected = awaken_cli::scenario_runtime_authority(
             &deployment.coordinator_storage(),
             awaken_time::system_clock(),
@@ -438,7 +441,7 @@ mod tests {
         // package-build host networking, or remote-owner effects.
         assert_eq!(
             from(&[]),
-            awaken_session_executor::DeploymentConfig::ephemeral()
+            awaken_deployment_config::DeploymentConfig::ephemeral()
         );
     }
 
@@ -476,18 +479,18 @@ mod tests {
         );
         assert_eq!(
             deployment.dispatch_backend,
-            awaken_dispatch_execution::DispatchBackend::Postgres
+            awaken_deployment_config::DispatchBackend::Postgres
         );
         assert_eq!(
             deployment.store,
-            awaken_dispatch_execution::StoreKind::Postgres
+            awaken_deployment_config::StoreKind::Postgres
         );
         assert_eq!(
             deployment.database_url.as_deref(),
             Some("postgres://fixture")
         );
         assert_eq!(deployment.postgres_max_connections.get(), 8);
-        assert_eq!(deployment.wake, awaken_dispatch_execution::Wake::Nats);
+        assert_eq!(deployment.wake, awaken_deployment_config::Wake::Nats);
         assert_eq!(deployment.wake_channel, "wake.test");
         assert_eq!(deployment.nats_url.as_deref(), Some("nats://fixture"));
         assert_eq!(deployment.dispatch_owner, "brain-2");
@@ -498,7 +501,7 @@ mod tests {
         );
         assert_eq!(
             deployment.sandbox_tier,
-            awaken_session_executor::SandboxTier::Local
+            awaken_deployment_config::SandboxTier::Local
         );
     }
 
@@ -521,7 +524,7 @@ mod tests {
         // | R2 | yes | no | any | any | FM1/FM3: forbidden second authority |
         // | R3 | any | yes | no | any | FM2/FM4: Host identity mismatch |
         let storage = tempfile::tempdir().expect("R1 storage root");
-        let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+        let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
         deployment.storage_dir = Some(storage.path().to_path_buf());
         let platform = resource_host_with_deployment(
             Arc::new(crate::EchoModel),
@@ -568,7 +571,7 @@ mod tests {
         // ephemeral -> inject one testkit Memory authority; R3 None+durable or
         // distributed -> E1. Factory topology covers R2's real Run, while
         // scenario-main installation owns R1's production sequence.
-        let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+        let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
         deployment.durable = true;
         let _ = resource_host_with_deployment(
             Arc::new(crate::EchoModel),

@@ -46,7 +46,7 @@ async fn scenario_worker_warmup_matches_private_transport_topology_and_identity_
     // | W2   | yes         | unknown                  | E4 (reject) |
     // | W3   | yes         | foreign current          | E4 (reject) |
     // | W4   | no          | any                      | E5 (404) |
-    let mut remote = awaken_session_executor::DeploymentConfig::ephemeral();
+    let mut remote = awaken_deployment_config::DeploymentConfig::ephemeral();
     remote.disable_local_pool = true;
     let remote = build_router_with_deployment(Arc::new(EchoModel), "warmup-parity", remote).await;
     let (address, server) = serve(remote).await;
@@ -102,7 +102,7 @@ async fn scenario_worker_warmup_matches_private_transport_topology_and_identity_
     let local = build_router_with_deployment(
         Arc::new(EchoModel),
         "warmup-parity",
-        awaken_session_executor::DeploymentConfig::ephemeral(),
+        awaken_deployment_config::DeploymentConfig::ephemeral(),
     )
     .await;
     let response = local

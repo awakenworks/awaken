@@ -494,8 +494,8 @@ mod dispatch_tests {
         // main's inline mode selection still needs its own static/e2e evidence.
         // (AWAKEN_MODEL_MODE string, the router its `main()` arm builds). Kept in the
         // same order as the `match` in `main()` so drift is easy to spot.
-        let mut local_test_deployment = awaken_session_executor::DeploymentConfig::ephemeral();
-        local_test_deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
+        let mut local_test_deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
+        local_test_deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
         let dispatch: Vec<(&str, axum::Router)> = vec![
             ("probe", Box::pin(sh::build_probe_router()).await),
             (

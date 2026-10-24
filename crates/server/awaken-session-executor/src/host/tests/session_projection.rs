@@ -1898,7 +1898,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
         "L5/E3"
     );
 
-    let mut local_deployment = crate::DeploymentConfig::ephemeral();
+    let mut local_deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     local_deployment.durable = true;
     let local = (crate::SessionExecutorBuilder::ephemeral_with_deployment(
         Arc::new(OkModel),
@@ -1943,7 +1943,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
         "L6/E3 settled"
     );
 
-    let mut remote_deployment = crate::DeploymentConfig::ephemeral();
+    let mut remote_deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     remote_deployment.durable = true;
     remote_deployment.disable_local_pool = true;
     let remote = (crate::SessionExecutorBuilder::ephemeral_with_deployment(

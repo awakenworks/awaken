@@ -4,9 +4,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use awaken_deployment_config::{DeploymentConfig, SandboxTier};
 use awaken_session_environment::SandboxEnvironmentProvider;
 use awaken_session_environment_contract::HandExecutorFactory;
-use awaken_session_executor::{DeploymentConfig, SandboxTier, SessionExecutorBuilder};
+use awaken_session_executor::SessionExecutorBuilder;
 
 /// The readiness probe of a local tier's backend (ADR-0092 decision 5): the
 /// Worker runs it before registration and again on every heartbeat, so a
@@ -216,7 +217,7 @@ pub async fn select_local_session_environment(
     if explicit && !deployment.trusted_host_enabled() {
         return Ok(host);
     }
-    let base = awaken_session_executor::session_sandbox_base(deployment);
+    let base = awaken_deployment_config::session_sandbox_base(deployment);
     let tier = if explicit {
         deployment.sandbox_tier
     } else {
@@ -317,7 +318,7 @@ pub fn with_backend_owned_environment(
         return host;
     }
     let provider = SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(
-        awaken_session_executor::session_sandbox_base(deployment).join("backend-owned"),
+        awaken_deployment_config::session_sandbox_base(deployment).join("backend-owned"),
         deployment.sandbox.inherit_agent_stderr,
     );
     host.with_backend_owned_environment_provider(provider.into_session_provider())
@@ -332,7 +333,7 @@ pub fn with_workdir_fallback(
     host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
 ) -> SessionExecutorBuilder {
-    let base = awaken_session_executor::session_sandbox_base(deployment);
+    let base = awaken_deployment_config::session_sandbox_base(deployment);
     host.with_fallback_session_environment_provider(
         SandboxEnvironmentProvider::workdir(base).into_session_provider(),
     )
