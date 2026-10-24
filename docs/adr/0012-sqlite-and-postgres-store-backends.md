@@ -25,7 +25,7 @@ The commit schema moves to `awaken-store-schema`, a driver-free crate that owns
 the portable `MigrationBundle` and names only the migrator. Both backends apply
 the *same* bundle: the Postgres runner renders `{json}`→`JSONB`, the SQLite runner
 renders `{json}`→`TEXT`. The dispatch schema is shared the same way, in one module
-both dispatch stores in `awaken-dispatch` use. No SQL spec string is written
+both dispatch stores in `awaken-run-ingress` use. No SQL spec string is written
 twice.
 
 ### D2: Per-backend adapter crates behind the same neutral ports

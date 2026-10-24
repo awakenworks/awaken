@@ -9,7 +9,7 @@ context = "coordinator"
 product = "platform"
 bounded_context = "dispatch"
 layer = "infrastructure"
-authority = "run-ingress"
+authority = "dispatch"
 separation = "isolation"
 isolates = ["async-nats", "sqlx"]
 

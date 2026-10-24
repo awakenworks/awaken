@@ -380,8 +380,7 @@ pub struct ManagedRoutingExtensions {
     >,
     pub worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
     pub worker_placement_policy: Option<Arc<dyn awaken_worker_contract::PlacementPolicy>>,
-    pub worker_execution_bindings:
-        Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
+    pub worker_execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     pub worker_execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
     pub worker_create_broker_router: Option<Router>,
     pub credential_deliveries:

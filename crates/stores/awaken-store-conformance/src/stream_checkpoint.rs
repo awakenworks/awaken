@@ -1,5 +1,5 @@
 //! One mutable-register contract for interrupted Run checkpoints. Fenced
-//! dispatch admission remains owned by run-ingress-testkit and its decorators.
+//! dispatch admission remains owned by dispatch-testkit and its decorators.
 use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,

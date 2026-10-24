@@ -12,7 +12,6 @@ use awaken_agent_contract::agent::run::{Record as RunRecord, RunState};
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
-use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
     AttemptAdmission, AttemptExecutionBinding, AttemptStopStatus, ClosedAttemptExecution,
     ClosedWorkerExecution, MemoryDispatchStore, PhysicalAttempt, PostgresDispatchStore, RunClaim,
@@ -24,6 +23,7 @@ use awaken_dispatch::{
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_dispatch_testkit::worker_http::activation;
 use awaken_dispatch_testkit::{AuthoritativeWallClock, ConformanceClock};
+use awaken_lease_testkit::ManualClock;
 use awaken_worker_registry::{
     MemoryWorkerDirectory, PostgresWorkerDirectory, SqliteWorkerDirectory,
 };

@@ -42,11 +42,11 @@ use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadV
 use awaken_agent_contract::thread::read::lifecycle::{
     CheckpointRunLifecycleFeed, RunLifecycleCursor, RunLifecycleEventKind, RunLifecycleFeed,
 };
-use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
     DispatchOutcome, DispatchWorker, Inbox, MemoryDispatchStore, RunDispatch, SettleOutcome,
     SqliteDispatchStore,
 };
+use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::terminal::{

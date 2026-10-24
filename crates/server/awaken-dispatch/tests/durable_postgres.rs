@@ -1687,12 +1687,9 @@ async fn dead_letter_ttl_gc_on_postgres() {
         "P2 exact summary preserves unknown"
     );
     assert!(
-        awaken_dispatch::has_active_physical_attempt_for_owner(
-            &store,
-            "retained-original-owner"
-        )
-        .await
-        .is_err(),
+        awaken_dispatch::has_active_physical_attempt_for_owner(&store, "retained-original-owner")
+            .await
+            .is_err(),
         "P2 Coordinator domain query cannot report false from an unreadable binding"
     );
     assert_eq!(store.purge_dead_letters().await.unwrap(), 0, "P2 unlimited");

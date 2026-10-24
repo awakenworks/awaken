@@ -200,8 +200,8 @@ and [top-level transaction management](https://www.postgresql.org/docs/16/plpgsq
 ## Amendment 2026-10-09: reconciled with ADR-0087
 
 - D1 ("`awaken-store-postgres` is the only crate allowed to name `sqlx`") no longer
-  holds. The Postgres dispatch adapter lives in `awaken-dispatch`
-  ([ADR-0009](0009-durable-run-ingress-slice.md) D1, `crates/server/awaken-dispatch/Cargo.toml:38`), and
+  holds. The Postgres dispatch adapter lives in `awaken-run-ingress`
+  ([ADR-0009](0009-durable-run-ingress-slice.md) D1, `crates/server/awaken-run-ingress/Cargo.toml:38`), and
   [ADR-0087](0087-sqlite-through-sqlx.md) sends all SQLite access through sqlx
   (`crates/stores/awaken-store-sqlite/Cargo.toml:24`). What still holds: the
   runtime core never names a SQL driver; only storage adapters do.

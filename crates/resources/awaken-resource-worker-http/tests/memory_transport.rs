@@ -4,6 +4,7 @@ use awaken_dispatch_testkit::worker_http as support;
 
 use std::sync::Arc;
 
+use awaken_dispatch::{MemoryDispatchStore, RunClaim, RunDispatch};
 use awaken_memory_store::{
     MemErr, MemoryCopyConflictPreservation as _, MemoryCopyConflictQueries as _,
     MemorySnapshotSource as _, MemoryVersionQueries as _, MemoryWriter as _,
@@ -20,7 +21,6 @@ use awaken_resource_worker_http::{
 use awaken_resource_worker_http::{
     memory_materialization_reference, terminal_memory_materialization_reference,
 };
-use awaken_dispatch::{MemoryDispatchStore, RunClaim, RunDispatch};
 use awaken_session_realization_contract::{
     SessionRealizationControlFailure, SessionResourceMaterializationIntent,
 };

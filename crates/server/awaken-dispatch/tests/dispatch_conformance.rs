@@ -10,7 +10,6 @@
 // @formal evidence session_run.reservation_ttl_uses_store_clock
 use std::sync::Arc;
 
-use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{MemoryDispatchStore, PostgresDispatchStore, SqliteDispatchStore};
 use awaken_dispatch_testkit::{
     ConformanceCapabilities, assert_atomic_report_continuation_conformance,
@@ -20,6 +19,7 @@ use awaken_dispatch_testkit::{
     assert_dispatch_operational_feed_conformance_with_clock,
     assert_occupied_slot_quarantine_conformance_with_clock, record_dispatch_recovery_history,
 };
+use awaken_lease_testkit::ManualClock;
 
 mod harness;
 

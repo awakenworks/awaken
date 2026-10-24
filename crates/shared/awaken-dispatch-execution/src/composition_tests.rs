@@ -3,8 +3,8 @@
 use crate::{
     DispatchService, DispatchServiceConfig, DispatchWorker, LiveRunControlService, LocalWakeSignal,
 };
-use awaken_dispatch_erasure::{AnyCoordinatorDispatch, DispatchBinding};
 use awaken_dispatch::MemoryDispatchStore;
+use awaken_dispatch_erasure::{AnyCoordinatorDispatch, DispatchBinding};
 use awaken_store_inmem::MemoryCommitCoordinator;
 use std::sync::Arc;
 

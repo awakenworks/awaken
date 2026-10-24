@@ -17,10 +17,10 @@ use std::time::Duration;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
     DispatchServiceConfig, DispatchTestHarness, MemoryDispatchStore, PendingInput, RunDispatch,
 };
+use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_inmem::MemoryCommitCoordinator;
 

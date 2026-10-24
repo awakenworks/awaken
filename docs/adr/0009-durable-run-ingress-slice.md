@@ -21,9 +21,9 @@ durable commit backend, so — as its consequences noted — durable ingress fin
 "has something to persist to," but its queue and worker remained future work.
 
 The reference design planned this host: `key-design-decisions.md` D11 names an
-`awaken-dispatch` "durable run host" crate (and a separate
+`awaken-run-ingress` "durable run host" crate (and a separate
 `awaken-run-ingress-contract`), and the metadata-derived boundary checker reserves the
-`awaken-dispatch` layer. The risk is the opposite of missing it: a full
+`awaken-run-ingress` layer. The risk is the opposite of missing it: a full
 durable dispatch subsystem (lease renewal, scheduled wake, supersession,
 dead-letter, cross-thread outbox, dispatch query/maintenance, a per-thread worker
 state machine) is a large surface. The repo's own rule rejects speculative
@@ -33,7 +33,7 @@ breadth: build the first tested slice, name the rest as deferred.
 
 ### D1: One host crate, not yet split into contract/impl/stores
 
-`awaken-dispatch` holds the whole durable-ingress aggregate — the dispatch
+`awaken-run-ingress` holds the whole durable-ingress aggregate — the dispatch
 ports, an in-memory reference store, the Postgres adapter, the worker, and
 `DurableRunIngress` — in one crate. The planned `awaken-run-ingress-contract`
 split (ports in their own crate, backends in `awaken-stores`) is **deferred**
@@ -42,7 +42,7 @@ be a speculative crate list (`key-design-decisions.md`, "no speculative crate
 lists"). The crate sits in its declared metadata layer: it depends on
 the runtime kernel and the store adapter; nothing below depends on it (G2/G29).
 
-It lives in `awaken-dispatch`, not `awaken-store-postgres`, because the
+It lives in `awaken-run-ingress`, not `awaken-store-postgres`, because the
 layering fitness function forbids the store adapter from depending upward on the
 runtime kernel that the worker drives. Durable-ingress internals are a host
 concern, not a runtime-core seam (G6).

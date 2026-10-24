@@ -34,15 +34,15 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::{run::Id as RunId, run::RunState, thread::Id as ThreadId};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-use awaken_dispatch_contract::WakeSignal;
-use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
     CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchPool, DispatchReconciler,
     DispatchServiceConfig, DispatchSettlementError, DispatchSettlementObserver, DispatchWorker,
     Error, LocalWakeSignal, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch,
     SessionChildAdmission, WorkerResolver,
 };
+use awaken_dispatch_contract::WakeSignal;
 use awaken_dispatch_testkit::ConformanceClock as _;
+use awaken_lease_testkit::ManualClock;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::{llm::ModelInferenceBudget, resume::ResumeResult};
 use awaken_store_inmem::MemoryCommitCoordinator;
@@ -2235,10 +2235,7 @@ async fn non_quiescing_attempt_blocks_replacement_after_lease_takeover() {
     );
     assert_eq!(
         store
-            .begin_attempt(
-                &awaken_dispatch::RunClaim::from(&replacement.lease),
-                None
-            )
+            .begin_attempt(&awaken_dispatch::RunClaim::from(&replacement.lease), None)
             .await
             .unwrap(),
         awaken_dispatch::AttemptAdmission::Blocked,
@@ -2302,10 +2299,7 @@ async fn aborting_a_drive_never_fabricates_remote_quiescence() {
         .expect("RG10 B mutation claim");
     assert_eq!(
         store
-            .begin_attempt(
-                &awaken_dispatch::RunClaim::from(&replacement.lease),
-                None
-            )
+            .begin_attempt(&awaken_dispatch::RunClaim::from(&replacement.lease), None)
             .await
             .expect("RG10 B physical admission"),
         awaken_dispatch::AttemptAdmission::Blocked,

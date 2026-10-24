@@ -3,13 +3,13 @@
 mod harness;
 
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_dispatch_contract::{
-    DispatchControlReads, DispatchCursor, DispatchError, DispatchOperationalFeed,
-    SessionRunAdmissionObservation, SessionRunAdmissionReads, SessionRunReservations,
-};
 use awaken_dispatch::{
     AnyCoordinatorDispatch, DispatchOutcome, MemoryDispatchStore, PostgresDispatchStore,
     RunDispatch, SqliteDispatchStore,
+};
+use awaken_dispatch_contract::{
+    DispatchControlReads, DispatchCursor, DispatchError, DispatchOperationalFeed,
+    SessionRunAdmissionObservation, SessionRunAdmissionReads, SessionRunReservations,
 };
 
 fn id(value: &str) -> RunId {

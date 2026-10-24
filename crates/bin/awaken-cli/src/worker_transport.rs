@@ -41,9 +41,7 @@ impl WorkerTransport {
         self.authenticator.clone()
     }
 
-    pub fn binding_source(
-        &self,
-    ) -> Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>> {
+    pub fn binding_source(&self) -> Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>> {
         self.bindings.clone()
     }
 

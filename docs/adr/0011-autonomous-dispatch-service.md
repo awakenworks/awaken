@@ -74,7 +74,7 @@ and is not a competing current renewal design.
 - D2 holds per backend. On PostgreSQL, claims of every mode, due-time checks,
   lease renewal and ownership checks sample database time (`clock_timestamp()`)
   inside the transaction, as [ADR-0024](0024-daemon-lease-renewal.md) records
-  (`crates/server/awaken-dispatch/src/postgres_helpers.rs:16-25`,
+  (`crates/server/awaken-run-ingress/src/postgres_helpers.rs:16-25`,
   `postgres/claim.rs:258,381,434`, `postgres/dispatch_queue.rs:714`). Memory and
   SQLite use the injected edge clock (`sqlite/claim.rs:22,34`). The Worker still
   stores no clock.

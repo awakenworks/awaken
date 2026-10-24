@@ -64,9 +64,9 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Role;
+use awaken_dispatch::SessionRunReservations as _;
 use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
 use awaken_provider_genai::GenaiExecutor;
-use awaken_dispatch::SessionRunReservations as _;
 use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate, ToolKind};

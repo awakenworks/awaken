@@ -31,10 +31,8 @@ impl awaken_dispatch_contract::DispatchControlReads for FlakyDispatchStore {
         &self,
         claim: &awaken_dispatch::RunClaim,
         candidate: &awaken_agent_contract::credential::CandidateFingerprint,
-    ) -> Result<
-        Option<awaken_dispatch::AttemptCredentialBinding>,
-        awaken_dispatch::DispatchError,
-    > {
+    ) -> Result<Option<awaken_dispatch::AttemptCredentialBinding>, awaken_dispatch::DispatchError>
+    {
         self.inner
             .current_credential_binding(claim, candidate)
             .await
@@ -43,8 +41,7 @@ impl awaken_dispatch_contract::DispatchControlReads for FlakyDispatchStore {
     async fn load_physical_attempt(
         &self,
         run_id: &RunId,
-    ) -> Result<Option<awaken_dispatch::PhysicalAttempt>, awaken_dispatch::DispatchError>
-    {
+    ) -> Result<Option<awaken_dispatch::PhysicalAttempt>, awaken_dispatch::DispatchError> {
         self.inner.load_physical_attempt(run_id).await
     }
 
@@ -52,8 +49,7 @@ impl awaken_dispatch_contract::DispatchControlReads for FlakyDispatchStore {
         &self,
         after_sequence: u64,
         limit: usize,
-    ) -> Result<Vec<awaken_dispatch::DispatchCompletion>, awaken_dispatch::DispatchError>
-    {
+    ) -> Result<Vec<awaken_dispatch::DispatchCompletion>, awaken_dispatch::DispatchError> {
         self.inner
             .completion_events_after(after_sequence, limit)
             .await
@@ -107,8 +103,7 @@ impl awaken_dispatch_contract::DispatchControlReads for FlakyDispatchStore {
     async fn dispatch_summary(
         &self,
         run_id: &RunId,
-    ) -> Result<Option<awaken_dispatch::DispatchSummary>, awaken_dispatch::DispatchError>
-    {
+    ) -> Result<Option<awaken_dispatch::DispatchSummary>, awaken_dispatch::DispatchError> {
         let mut summary = self.inner.dispatch_summary(run_id).await?;
         // The one existing read-fault seam changes only a returned delivery
         // label. Never change original physical identity, storage, or receipts.
@@ -143,8 +138,7 @@ impl awaken_dispatch_contract::SessionRunReservations for FlakyDispatchStore {
         &self,
         request: awaken_dispatch::RunDispatch,
         reservation_ttl_ms: u64,
-    ) -> Result<awaken_dispatch::SessionRunReservationOutcome, awaken_dispatch::DispatchError>
-    {
+    ) -> Result<awaken_dispatch::SessionRunReservationOutcome, awaken_dispatch::DispatchError> {
         self.inner
             .reserve_session_run(request, reservation_ttl_ms)
             .await
@@ -155,10 +149,8 @@ impl awaken_dispatch_contract::SessionRunReservations for FlakyDispatchStore {
         run_id: &RunId,
         session_thread_id: &ThreadId,
         session_activity_epoch: u64,
-    ) -> Result<
-        awaken_dispatch::SessionRunReservationActivation,
-        awaken_dispatch::DispatchError,
-    > {
+    ) -> Result<awaken_dispatch::SessionRunReservationActivation, awaken_dispatch::DispatchError>
+    {
         self.inner
             .activate_session_run_reservation(run_id, session_thread_id, session_activity_epoch)
             .await
@@ -186,8 +178,7 @@ impl awaken_dispatch_contract::SessionReservationAuthority for FlakyDispatchStor
     async fn lock_session_run_reservation_epoch(
         &self,
         claim: &awaken_dispatch::RunClaim,
-    ) -> Result<Option<awaken_dispatch::CommitEpochGuard>, awaken_dispatch::DispatchError>
-    {
+    ) -> Result<Option<awaken_dispatch::CommitEpochGuard>, awaken_dispatch::DispatchError> {
         self.inner.lock_session_run_reservation_epoch(claim).await
     }
 }

@@ -22,7 +22,6 @@ use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitOperationId, commit_payload_hash,
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
-use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
 use awaken_dispatch::ClaimedCommitService;
 use awaken_dispatch::{
     ClaimedCommitCommand, ClaimedRunCommit, DispatchOutcome, PostgresDispatchStore,
@@ -30,6 +29,7 @@ use awaken_dispatch::{
     WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource,
     WorkerRegistration, WorkerSnapshot, WorkerState,
 };
+use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
 use awaken_dispatch_http::{
     WorkerDispatchService, dispatch_transport_router_with_service,
     registered_worker_transport_router_with_services,
@@ -505,8 +505,7 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
     // decoder posture; that is not the request this acceptance scenario tests.
     let mut dispatch = RunDispatch::new(activation(&run_id, &thread_id));
     dispatch.placement = awaken_dispatch::PlacementRequirements::remote_preferred();
-    dispatch.placement.runtime_protocol_version =
-        awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    dispatch.placement.runtime_protocol_version = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     awaken_dispatch::can_claim(
         &directory
             .current(WORKER_ID)

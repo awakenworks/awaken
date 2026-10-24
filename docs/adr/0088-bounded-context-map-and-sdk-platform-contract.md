@@ -247,8 +247,8 @@ Public paths that moved (ADR-0091 D9 requires recording them):
 |---|---|
 | `awaken_run_ingress_contract::{ClaimedSessionControlError, ClaimedSessionRealizationControl}` | `awaken_session_realization_contract::…` |
 | `awaken_run_ingress_contract::ClaimedSessionCoordinationControl` | `awaken_session_execution_contract::ClaimedSessionCoordinationControl<Claim>` (Host uses `<RunClaim>`) |
-| `awaken_dispatch[_contract]::SessionRunAdmissionObserver` | `awaken_dispatch_execution::SessionRunAdmissionObserver` |
-| `awaken_dispatch[_contract]::{ResourceOperationFence, ArtifactPublicationFence}` | `awaken_session_realization_contract::ResourceOperationFence`; the alias is deleted |
+| `awaken_run_ingress[_contract]::SessionRunAdmissionObserver` | `awaken_dispatch_execution::SessionRunAdmissionObserver` |
+| `awaken_run_ingress[_contract]::{ResourceOperationFence, ArtifactPublicationFence}` | `awaken_session_realization_contract::ResourceOperationFence`; the alias is deleted |
 | `awaken_run_ingress_contract::run_dispatch::DispatchedSessionRuntimeProjection` | `awaken_session_configuration_contract::SessionRuntimeProjection` |
 | `awaken_session_execution_contract::{SessionRunReplacement, SessionRunCommandFingerprint}` | `awaken_session_types::…`; `SessionRunCommandFingerprint::current(&cmd)` is `cmd.command_fingerprint()` |
 | `SessionResourceEnvelope::from_manifest(&m)` | `SessionResourceEnvelope::at_revision(m.workspace_id.clone(), m.revision, m.encode_resources()?)` |
@@ -532,7 +532,7 @@ inspection does not certify an external Cloud build or SDK publication.
 `awaken-session-execution-contract` remains the sole owner of `ApplicationError`,
 `ApplicationErrorKind`, `DurableRunOperations`, `DurableDispatchStatus` and
 `DurableSupersedeResult`. Native callers use that owner directly; the two
-`awaken-dispatch` forwarding layers are removed. Its pure `bad_request`
+`awaken-run-ingress` forwarding layers are removed. Its pure `bad_request`
 constructor alias is removed in favor of the existing `invalid` constructor.
 The kind, message, private HTTP status and error body remain unchanged.
 

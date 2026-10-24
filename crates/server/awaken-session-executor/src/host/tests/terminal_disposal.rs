@@ -1093,8 +1093,8 @@ async fn terminal_physical_claim_fixture(
     RunId,
     awaken_dispatch_contract::RunClaim,
 ) {
-    use awaken_dispatch_contract::RunClaim;
     use awaken_dispatch::RunDispatch;
+    use awaken_dispatch_contract::RunClaim;
 
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
