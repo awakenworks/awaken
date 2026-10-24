@@ -22,7 +22,7 @@ mod session_files;
 mod session_hand;
 
 pub use container_skills::ContainerSkillCache;
-pub use environment::SandboxEnvironment;
+pub use environment::{ContainerProviderSource, SandboxEnvironment};
 pub use provider::{SandboxEnvironmentProvider, WorkdirHandConfig};
 pub use session_hand::SessionHandExecutor;
 

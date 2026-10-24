@@ -1,3 +1,6 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: This source implements the repository-controlled remote worker product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! One realized Sandbox shared by every Run attempt in a Session.
 
 use std::sync::Arc;
@@ -32,7 +35,34 @@ pub enum SandboxEnvironment {
         capabilities: pc::SandboxCapabilities,
         /// The Host's process clock Repository credentials are stamped on.
         clock: Arc<dyn awaken_time::WallClock>,
+        /// The physical provider instance that realized this Environment.
+        source: ContainerProviderSource,
     },
+}
+
+/// Instance identity of the container provider that realized one live
+/// Environment. Two provider instances may mint byte-equal handles; only the
+/// realizing instance may rebind its execution and lifecycle capabilities.
+#[derive(Clone)]
+pub struct ContainerProviderSource(
+    Arc<dyn pc::SandboxProvider<Environment = dyn pc::SessionSandbox>>,
+);
+
+impl ContainerProviderSource {
+    pub(crate) fn of(
+        provider: &Arc<dyn pc::SandboxProvider<Environment = dyn pc::SessionSandbox>>,
+    ) -> Self {
+        Self(provider.clone())
+    }
+
+    /// Whether `provider` is this exact instance (address identity; the held
+    /// clone keeps the address from being reused while compared).
+    pub(crate) fn is(
+        &self,
+        provider: &Arc<dyn pc::SandboxProvider<Environment = dyn pc::SessionSandbox>>,
+    ) -> bool {
+        std::ptr::addr_eq(Arc::as_ptr(&self.0), Arc::as_ptr(provider))
+    }
 }
 
 impl SandboxEnvironment {
@@ -190,6 +220,7 @@ impl SandboxEnvironment {
         Self::Namespace { sandbox, hand }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn container(
         sandbox: Arc<dyn awaken_provisioning_contract::SessionSandbox>,
         hand_factory: Arc<dyn HandExecutorFactory>,
@@ -198,6 +229,7 @@ impl SandboxEnvironment {
         hand_residency: awaken_session_environment_contract::ContainerHandResidency,
         capabilities: pc::SandboxCapabilities,
         clock: Arc<dyn awaken_time::WallClock>,
+        source: ContainerProviderSource,
     ) -> Result<Self, pc::SandboxError> {
         let skills = Arc::new(ContainerSkillCache::default());
         let hand = Arc::new(SessionHandExecutor::container(
@@ -214,6 +246,7 @@ impl SandboxEnvironment {
             skills,
             capabilities,
             clock,
+            source,
         })
     }
 

@@ -435,6 +435,7 @@ impl SandboxEnvironmentProvider {
                     *hand_residency,
                     capabilities,
                     clock.clone(),
+                    super::ContainerProviderSource::of(provider),
                 )
                 .await
             }
@@ -631,6 +632,17 @@ impl SandboxEnvironmentProvider {
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         let retained_role = retained;
         let retained = own_environment(retained)?;
+        // An equal handle is only a logical identity. The execution, stop,
+        // file and restore capabilities must come from the same physical
+        // provider instance that realized the retained Environment.
+        if let (Self::Container { provider, .. }, SandboxEnvironment::Container { source, .. }) =
+            (self, retained)
+            && !source.is(provider)
+        {
+            return Err(pc::SandboxError::conflict(
+                "retained Environment belongs to another provider instance",
+            ));
+        }
         let retained_handle = retained.handle();
         if &retained_handle != handle {
             if matches!(self, Self::Container { .. })
@@ -694,6 +706,7 @@ impl SandboxEnvironmentProvider {
                 SandboxEnvironment::Container {
                     sandbox,
                     capabilities,
+                    source,
                     ..
                 },
             ) => {
@@ -705,6 +718,7 @@ impl SandboxEnvironmentProvider {
                     *hand_residency,
                     capabilities.clone(),
                     clock.clone(),
+                    source.clone(),
                 )
                 .await
             }
@@ -820,6 +834,7 @@ impl SandboxEnvironmentProvider {
                     *hand_residency,
                     capabilities,
                     clock.clone(),
+                    super::ContainerProviderSource::of(provider),
                 )
                 .await
             }
@@ -955,6 +970,7 @@ impl SandboxEnvironmentProvider {
                     *hand_residency,
                     capabilities,
                     clock.clone(),
+                    super::ContainerProviderSource::of(provider),
                 )
                 .await
                 .map(Some)
