@@ -8,6 +8,21 @@
 //! durable command publisher nudges. The Session executor hands it the claimed-
 //! Run resolver when the pool or reconciler starts; nothing it holds refers to
 //! the executor.
+//!
+//! The reconciliation loop is owned here, beside the scan state its resolver
+//! shares, never inside that state: the loop's task holds the resolver and the
+//! resolver holds the scan state, so a loop stored in the state would keep
+//! itself, the resolver and every executor component the resolver reads alive
+//! after the process dropped its dispatch.
+//!
+//! Lifetime of the terminal reconciliation loop:
+//!
+//! | Rule | Cause | Effect |
+//! |---|---|---|
+//! | T1 | started, this dispatch alive, not stopped | the loop runs and holds its resolver |
+//! | T2 | this dispatch dropped (the executor that owns it dropped) | the loop is cancelled and aborted; its resolver and the scan state are freed |
+//! | T3 | the process begins draining ([`ProcessDispatch::begin_drain`]) | the loop ends at its next await and frees its resolver; this dispatch stays usable |
+//! | T4 | start after T3 | refused: a stopped loop is never restarted |
 
 use std::sync::{Arc, OnceLock};
 
@@ -31,7 +46,10 @@ pub struct ProcessDispatch {
     completion: Arc<dyn CompletionSink>,
     hint: DispatchHint,
     pool: OnceLock<Arc<DispatchPool<AnyDispatchStore>>>,
+    /// The scan state the claimed-Run resolver shares.
     terminal_reconciliation: Arc<TerminalReconciliationState>,
+    /// The coordinator-side maintenance loop (rules T1-T4 above).
+    terminal_reconciler: OnceLock<DispatchReconciler>,
 }
 
 /// What starting the local pool does for one topology and pool state.
@@ -109,6 +127,7 @@ impl ProcessDispatch {
             hint,
             pool: OnceLock::new(),
             terminal_reconciliation: Arc::default(),
+            terminal_reconciler: OnceLock::new(),
         }
     }
 
@@ -173,7 +192,7 @@ impl ProcessDispatch {
             self.topology.ingress.is_durable(),
             self.topology.local.runs_local_pool(),
             scans_committed_terminals,
-            self.terminal_reconciliation.reconciler_started(),
+            self.terminal_reconciler.get().is_some(),
         ) {
             return false;
         }
@@ -188,7 +207,18 @@ impl ProcessDispatch {
             resolver,
             Some(self.completion.clone()),
         );
-        self.terminal_reconciliation.install_reconciler(reconciler)
+        self.terminal_reconciler.set(reconciler).is_ok()
+    }
+
+    /// Stop the coordinator-side terminal reconciliation loop, when it runs
+    /// (rule T3). The process lifecycle ends the loop, not the last reference
+    /// to this dispatch: a composed process keeps the dispatch shared until it
+    /// exits, so the loop and the resolver it holds end when the process
+    /// begins draining. A stopped loop is never restarted (T4). Idempotent.
+    fn stop_terminal_reconciliation(&self) {
+        if let Some(reconciler) = self.terminal_reconciler.get() {
+            reconciler.stop();
+        }
     }
 
     /// Bind the exact Worker directory and terminal-reconciliation source the
@@ -236,8 +266,11 @@ impl ProcessDispatch {
     }
 
     /// Begin a graceful drain (scale-in / SIGTERM): stop claiming while the
-    /// in-flight Runs finish. `None` when no pool runs. Idempotent.
+    /// in-flight Runs finish, and stop the coordinator-side terminal
+    /// reconciliation loop, which claims maintenance work too (rule T3).
+    /// `None` when no pool runs. Idempotent.
     pub async fn begin_drain(&self) -> Option<PoolDrainFence> {
+        self.stop_terminal_reconciliation();
         match self.pool.get() {
             Some(pool) => Some(pool.begin_drain().await),
             None => None,
