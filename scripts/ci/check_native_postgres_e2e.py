@@ -131,7 +131,7 @@ def worker(args: argparse.Namespace) -> int:
         log=out/(name+".log");assert not log.exists();started=time.monotonic()
         with log.open("wb") as stream:
             child=subprocess.run(command,cwd=directory,env=environment,stdin=subprocess.DEVNULL,stdout=stream,
-                stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW)
+                stderr=subprocess.STDOUT,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
             if child.returncode:code=code or child.returncode
         row=dict(stage=name,command=command,cwd=str(directory),exit_code=child.returncode,seconds=time.monotonic()-started,log_sha256=sha256(log))
         record["stages"].append(row);save()
