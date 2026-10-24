@@ -885,7 +885,7 @@
     "source_locations": [
       {
         "path": "crates/worker/awaken-sandbox-container/src/tests.rs",
-        "line": 3975,
+        "line": 3976,
         "file_sha256": "b03c7c1daad74fa19d72acdb5916b3ab080877e898f96b9ec3640ed7e9e33f69"
       }
     ],

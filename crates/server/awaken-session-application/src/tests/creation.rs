@@ -2923,6 +2923,7 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
 
 mod execution_context;
 mod model_override;
+mod prepared_participants;
 mod time_assurance;
 
 /// The Registry of an ephemeral Resources application, on the host clock: the

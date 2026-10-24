@@ -844,3 +844,6 @@ mod tests {
 
 #[cfg(all(test, feature = "test-support"))]
 mod private_content_tests;
+
+#[cfg(all(test, feature = "test-support"))]
+mod rebuild_interruption_tests;

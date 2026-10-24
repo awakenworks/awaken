@@ -21,6 +21,7 @@ mod creation_inputs;
 mod credential_ingress;
 use credential_ingress::FaultInjectingCredentialMaterialIngress;
 mod activity_settlement_owner;
+mod archive_race;
 mod budget_resume;
 mod file_authorization;
 mod first_materialization;
