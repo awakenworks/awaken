@@ -856,6 +856,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-credential-envelope"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-credential-contract",
+ "awaken-time",
+ "base64 0.22.1",
+ "chacha20poly1305",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-credential-materializer"
 version = "1.0.0"
 dependencies = [
@@ -863,6 +879,7 @@ dependencies = [
  "awaken-acp-contract",
  "awaken-agent-contract",
  "awaken-credential-contract",
+ "awaken-credential-envelope",
  "awaken-credential-vault",
  "awaken-inference-endpoint",
  "awaken-provider-genai",
@@ -871,7 +888,6 @@ dependencies = [
  "awaken-time",
  "awaken-worker-contract",
  "base64 0.22.1",
- "chacha20poly1305",
  "serde",
  "serde_json",
  "tempfile",
@@ -2051,6 +2067,7 @@ dependencies = [
  "awaken-coordinator",
  "awaken-coordinator-client",
  "awaken-credential-contract",
+ "awaken-credential-envelope",
  "awaken-credential-materializer",
  "awaken-credential-store",
  "awaken-credential-vault",
@@ -3855,6 +3872,7 @@ dependencies = [
  "awaken-container-contract",
  "awaken-coordinator-client",
  "awaken-credential-contract",
+ "awaken-credential-envelope",
  "awaken-credential-materializer",
  "awaken-deployment-config",
  "awaken-dispatch-erasure",

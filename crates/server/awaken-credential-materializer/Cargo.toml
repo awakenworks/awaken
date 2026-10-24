@@ -27,7 +27,6 @@ awaken-inference-endpoint.workspace = true
 awaken-worker-contract.workspace = true
 async-trait.workspace = true
 base64 = "0.22"
-chacha20poly1305 = "0.10"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -39,6 +38,7 @@ authority = []
 brokered = ["awaken-inference-endpoint/brokered"]
 
 [dev-dependencies]
+awaken-credential-envelope.workspace = true
 tempfile = "3"
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt", "macros", "time"] }

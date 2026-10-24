@@ -21,7 +21,6 @@ mod http_credential;
 mod inference;
 mod platform_egress;
 mod platform_relay;
-pub mod recipient_envelope;
 mod secret_broker;
 
 #[cfg(test)]

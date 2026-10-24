@@ -63,6 +63,8 @@ awaken-credential-materializer = { workspace = true, features = ["authority", "b
 # The Awaken Cloud brokered grant transport Control's Cloud catalog reads.
 awaken-inference-endpoint = { workspace = true, features = ["brokered"] }
 awaken-credential-contract.workspace = true
+# The self-hosted recipient-key Credential envelope transport.
+awaken-credential-envelope.workspace = true
 awaken-env-store.workspace = true
 awaken-environment-application.workspace = true
 awaken-environment-image-build.workspace = true

@@ -42,6 +42,7 @@ ISOLATED_DEPENDENCIES: dict[str, str] = {
     # The provider SDK (genai and its pinned HTTP client): only the crates that
     # turn a materialized endpoint into an executor link it.
     "awaken-provider-genai": "provider SDK",
+    "chacha20poly1305": "AEAD cipher",
     "sqlx": "database driver",
     "axum": "HTTP server",
     "reqwest": "HTTP client",

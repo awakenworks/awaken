@@ -45,6 +45,8 @@ awaken-deployment-config.workspace = true
 awaken-agent-contract.workspace = true
 awaken-dispatch-erasure.workspace = true
 awaken-credential-contract.workspace = true
+# The self-hosted recipient-key Credential envelope transport.
+awaken-credential-envelope.workspace = true
 awaken-tool-contract.workspace = true
 # The Hand factory port this Worker implements for its Session environments.
 awaken-session-environment-contract.workspace = true

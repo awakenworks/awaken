@@ -72,10 +72,7 @@ impl ManagedServiceAdapters {
         if self.credential_material_delivery.is_some() {
             return Err("credential envelope transport is configured twice".into());
         }
-        let adapter =
-            awaken_credential_materializer::recipient_envelope::RecipientKeyEnvelope::open(
-                path, clock,
-            )
+        let adapter = awaken_credential_envelope::RecipientKeyEnvelope::open(path, clock)
             .map_err(|error| format!("credential envelope configuration: {error}"))?;
         let adapter = Arc::new(adapter);
         self.credential_material_delivery = Some(
