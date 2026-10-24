@@ -274,6 +274,12 @@ impl DispatchReconciler {
         }
     }
 
+    /// Ask the loop and its depth sampler to end at their next await. The
+    /// loop then drops the resolver it holds. Idempotent.
+    pub fn stop(&self) {
+        self.shutdown.cancel();
+    }
+
     pub async fn shutdown(mut self) {
         self.shutdown.cancel();
         if let Some(task) = self.task.take() {

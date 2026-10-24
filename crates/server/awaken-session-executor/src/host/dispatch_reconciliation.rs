@@ -1131,6 +1131,90 @@ mod tests {
         assert_eq!(completions[0].run_id, RunId("run-terminal".to_string()));
     }
 
+    /// A durable coordinator-only executor over its own in-memory dispatch
+    /// store, as `host_reconciles_only_exact_committed_terminals_without_opening_sessions`
+    /// builds it.
+    async fn coordinator_only_executor(storage: &std::path::Path) -> Arc<ExecutorComponents> {
+        let clock = awaken_time::system_clock();
+        let store = Arc::new(
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock)
+                .await
+                .expect("dispatch store"),
+        );
+        let mut coordinator =
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
+                .await
+                .with_store_dir(storage)
+                .await
+                .with_ephemeral_dispatch(store);
+        coordinator.execution.ingress = crate::RunIngress::Durable;
+        coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
+        coordinator.build().expect("validated Host dependencies")
+    }
+
+    async fn eventually(what: &str, condition: impl Fn() -> bool) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            // awaken-allow(wait): a task's end has no committed fact; it is
+            // observed through the values it releases, bounded by the timeout.
+            while !condition() {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{what}"));
+    }
+
+    /// Lifetime of the executor's terminal reconciliation loop (the process
+    /// dispatch owns rules T1-T4; this proves them over the real resolver):
+    ///
+    /// | Rule | Cause | Effect |
+    /// |------|-------|--------|
+    /// | L1 | loop started by the Coordinator role set | the resolver shares the scan state |
+    /// | L2 | the executor and its role set dropped | the loop ends; the scan state and the process dispatch are freed |
+    /// | L3 | the Coordinator role set drains a live executor | the loop ends and releases the scan state; the executor stays |
+    #[tokio::test]
+    async fn terminal_reconciliation_ends_with_the_executor_or_its_drain() {
+        let storage = tempfile::tempdir().expect("storage");
+        let host = coordinator_only_executor(storage.path()).await;
+        let roles = crate::CoordinatorRoles::of(&host);
+        assert!(roles.start_terminal_reconciliation(), "L1 start");
+        let scan_state = Arc::downgrade(host.dispatch().terminal_reconciliation());
+        let dispatch = Arc::downgrade(host.dispatch());
+        assert_eq!(
+            scan_state.strong_count(),
+            2,
+            "L1 the process dispatch and the loop's resolver share the scan state"
+        );
+        drop(roles);
+        drop(host);
+        eventually("L2 the loop of a dropped executor ends", || {
+            scan_state.upgrade().is_none()
+        })
+        .await;
+        assert!(
+            dispatch.upgrade().is_none(),
+            "L2 the process dispatch is freed"
+        );
+
+        let storage = tempfile::tempdir().expect("storage");
+        let host = coordinator_only_executor(storage.path()).await;
+        let roles = crate::CoordinatorRoles::of(&host);
+        assert!(roles.start_terminal_reconciliation(), "L3 start");
+        let scan_state = host.dispatch().terminal_reconciliation().clone();
+        assert!(
+            roles.drain(std::time::Duration::from_secs(5)).await,
+            "L3 drain settles"
+        );
+        eventually("L3 the drained loop releases the scan state", || {
+            Arc::strong_count(&scan_state) == 2
+        })
+        .await;
+        assert!(
+            !roles.start_terminal_reconciliation(),
+            "L3 a drained loop is never restarted"
+        );
+    }
+
     #[tokio::test]
     async fn coordinator_terminal_scan_preserves_nonterminal_replacement_authority() {
         // Constraint/Invariant: the authoritative inputs and ownership boundaries

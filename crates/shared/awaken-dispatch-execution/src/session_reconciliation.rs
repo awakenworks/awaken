@@ -12,13 +12,13 @@ use crate::session_worker_resolver::SessionWorkerResolver;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use std::sync::Arc;
 
-/// The coordinator-only maintenance loop and the terminal scan it drives.
-/// Consumer: this module and the dispatch capability, which owns the value.
+/// The terminal scan state the coordinator-only maintenance loop drives.
+/// Consumers: the claimed-Run resolver, which scans with it, and the process
+/// dispatch, which owns the value. The loop itself is owned by the process
+/// dispatch, never by this state, so the resolver the loop holds forms no
+/// cycle back to its task.
 #[derive(Default)]
 pub struct TerminalReconciliationState {
-    /// The run-ingress-owned maintenance loop used by a coordinator-only Host.
-    /// Local pools already own the same canonical maintenance mechanism.
-    dispatch_reconciler: std::sync::OnceLock<crate::DispatchReconciler>,
     terminal_scan: crate::TerminalReconciliationScan,
     worker_evidence: std::sync::OnceLock<(
         Arc<dyn awaken_dispatch_contract::WorkerDirectory>,
@@ -36,12 +36,6 @@ impl TerminalReconciliationState {
         self.worker_evidence
             .set((directory, source))
             .map_err(|_| crate::AdmissionError::AlreadyBound("Worker evidence reconciliation"))
-    }
-    pub fn reconciler_started(&self) -> bool {
-        self.dispatch_reconciler.get().is_some()
-    }
-    pub fn install_reconciler(&self, reconciler: crate::DispatchReconciler) -> bool {
-        self.dispatch_reconciler.set(reconciler).is_ok()
     }
 }
 
