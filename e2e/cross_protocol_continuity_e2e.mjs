@@ -1,11 +1,11 @@
 // Cross-protocol thread continuity e2e (scenario #1/#2): ONE `awaken-server-local`
 // process, ONE thread id, driven and read back across DIFFERENT protocol front
 // doors. Every adapter projects the same `rt.history(thread_id)` over the same
-// `SharedHost`, keyed by thread id — so a turn committed through one wire must be
+// the executor, keyed by thread id — so a turn committed through one wire must be
 // visible, verbatim, through another.
 //
 // Chain per turn:
-//   POST /v1/ai-sdk/threads/T/runs  -> ProtocolHost::run_streaming -> SharedHost
+//   POST /v1/ai-sdk/threads/T/runs  -> ProtocolHost::run_streaming -> executor
 //     -> DirectAttemptDriver -> Runtime loop (echo) -> commit_run  (thread T)
 //   GET  /v1/ai-sdk/threads/T/messages -> rt.history(T)  (AI-SDK projection)
 //   GET  /v1/ag-ui/threads/T/messages  -> rt.history(T)  (AG-UI projection)   <-- same host, other wire
@@ -111,10 +111,10 @@ async function main() {
       aiHist2.items.length > aiHist1.items.length,
       `thread grew across the cross-protocol turn (${aiHist1.items.length} -> ${aiHist2.items.length})`,
     );
-    pass('turn started on AG-UI is observable through AI-SDK: one SharedHost thread, thread-keyed continuity');
+    pass('turn started on AG-UI is observable through AI-SDK: one executor thread, thread-keyed continuity');
   });
 
-  console.log('E2E PASS: cross-protocol thread continuity (AI-SDK <-> AG-UI over one SharedHost thread).');
+  console.log('E2E PASS: cross-protocol thread continuity (AI-SDK <-> AG-UI over one executor thread).');
 }
 
 main().catch((err) => {

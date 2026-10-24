@@ -137,7 +137,7 @@ where
                 )).into());
             }
         }
-        // Match ManagedHost's lifecycle -> Resource-projection lock order. A
+        // Match the executor's lifecycle -> Resource-projection lock order. A
         // claimed legacy retirement must be resolved before raw delivery cache
         // repair or any projection/Resource effect, and the same guard prevents
         // another owner transition until the replacement projection is wholly

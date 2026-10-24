@@ -24,8 +24,8 @@ awaken-tool-contract.workspace = true
 # Deterministic scenarios reuse the composition's existing local Git admission.
 awaken-execution-composition = { workspace = true, features = ["test-support"] }
 awaken-protocol-mcp.workspace = true
-# The extracted service layer: ExecutorComponents / ManagedHost / RunApplicationHost and all
-# host modules live here; this binary only selects and serves scenario modes.
+# The extracted service layer: ExecutorComponents and its caller-role components
+# live here; this binary only selects and serves scenario modes.
 awaken-session-executor = { workspace = true, features = ["test-support"] }
 awaken-session-mcp.workspace = true
 awaken-installation-workspace.workspace = true

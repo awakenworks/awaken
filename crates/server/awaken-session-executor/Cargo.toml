@@ -23,8 +23,8 @@ awaken-container-contract.workspace = true
 # The auxiliary-run sandbox ports the process composition injects.
 awaken-session-environment-contract.workspace = true
 # The neutral Agent channel the Session environment launches Agents over.
-# The neutral session substrate (ExecutorComponents) and the two port adapters
-# (ManagedHost / RunApplicationHost) live here; the assembly bin mounts them.
+# The neutral session substrate (ExecutorComponents) and its caller-role components
+# live here; the assembly bin mounts them.
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-authority-clock.workspace = true

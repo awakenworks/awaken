@@ -3,10 +3,10 @@
 // (AI-SDK → AG-UI → A2A → …). Each turn carries a unique ordered marker. The final
 // committed transcript — read back through every wire — must contain all six
 // markers IN ORDER, proving that interleaving protocols across a conversation
-// appends to one ordered `SharedHost` thread with no loss or reordering.
+// appends to one ordered the executor thread with no loss or reordering.
 //
 // Chain (per turn, rotating): {AI-SDK POST runs | AG-UI POST agents | A2A message/send}
-//   -> ProtocolHost -> SharedHost -> Runtime (echo) -> commit_run (append, thread T)
+//   -> ProtocolHost -> executor -> Runtime (echo) -> commit_run (append, thread T)
 // Final reads: GET /v1/ai-sdk/threads/T/messages, GET /v1/ag-ui/threads/T/messages,
 //              A2A tasks/get {id: task-T}.
 //

@@ -7,7 +7,7 @@
 // Chain:
 //   AI-SDK : POST /v1/ai-sdk/threads/T/runs -> ProtocolHost -> runtime commit ->
 //            finish.messageMetadata.totalUsage = rt.usage(T)   (attach_usage)
-//   Managed: sessions.events.send -> ManagedHost -> runtime commit ->
+//   Managed: sessions.events.send -> executor -> runtime commit ->
 //            sessions.retrieve().usage                         (same ThreadUsage seam)
 //
 // Real provider path (fake Anthropic upstream) so usage is populated; the fake

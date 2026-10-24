@@ -3,10 +3,10 @@
 // the AI-SDK wire and is APPROVED + resumed on the AG-UI wire. The resume is not a
 // foreground inline execution — it is admitted to the durable dispatch row and
 // the `DispatchWorker` resumes the claimed physical attempt to completion. Same thread id, same
-// durable `SharedHost`, different wire.
+// durable the executor, different wire.
 //
 // Chain:
-//   AI-SDK : POST /v1/ai-sdk/threads/T/runs -> SharedHost (durable) ->
+//   AI-SDK : POST /v1/ai-sdk/threads/T/runs -> executor (durable) ->
 //            submit_background -> DispatchPool -> Runtime (probe write) -> await (persisted)
 //   AG-UI  : POST /v1/ag-ui/agents/assistant (role:"tool" approve) ->
 //            durable resume admission -> DispatchWorker resume branch -> write executes -> done

@@ -50,7 +50,7 @@ async fn independent_coordinators_converge_after_binding_replacement_and_reject_
     // E1 both cached owners become B; E2 replay is idempotent; E3 rejection changes
     // no correlated projection fact; E4 a cold Host accepts authoritative B.
     // R1 A->B / R2 B->B / R3 B->A / R4 B->same-revision C / R5 cold->B.
-    // Each step uses ManagedHost -> complete installation -> canonical owner;
+    // Each step uses the executor -> complete installation -> canonical owner;
     // descriptors are deliberately opaque: a Coordinator must not create/adopt
     // a physical Sandbox to replace its dispatch cache. Physical-owner protection
     // is covered by the Environment lifecycle matrix, not weakened here.

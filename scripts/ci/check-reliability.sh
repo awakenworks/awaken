@@ -192,7 +192,7 @@ cargo mutants --package awaken-time \
   --timeout 60 --no-times -- --lib
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-work-observations/mutants.out"
 # R1/R3 causes: a newer or stale root revision reaches the canonical shared
-# ordering kernel; effects: the complete ManagedHost installation advances or
+# ordering kernel; effects: the complete executor installation advances or
 # rejects without rewriting its correlated receipt. The Host convergence test
 # owns the observation, while the mutation belongs to the shared type owner.
 cargo mutants --package awaken-session-types --test-package awaken-session-executor \

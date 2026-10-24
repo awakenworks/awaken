@@ -845,7 +845,7 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
 ///
 /// Invalid coordinate and mismatched remote rules are exhaustively covered at
 /// the Repository realizer boundary; this integration test proves the
-/// ManagedHost uses that sole implementation and retains the Environment until
+/// executor uses that sole implementation and retains the Environment until
 /// first execution, replay, and the ordered terminal reconciliation have
 /// produced evidence.
 #[cfg(target_os = "linux")]

@@ -1,11 +1,11 @@
 // Cross-protocol HITL hand-off e2e (scenario #1): a turn AWAITS on a tool approval
 // on ONE wire and is APPROVED + resumed to completion on ANOTHER — same thread id,
-// same `SharedHost`, same awaiting `ResumeTicket`. The approval decision (`Resume`)
+// same the executor, same awaiting `ResumeTicket`. The approval decision (`Resume`)
 // is protocol-neutral, so a client can switch doors mid-turn.
 //
 // Chain:
 //   AI-SDK  : POST /v1/ai-sdk/threads/T/runs -> ProtocolHost::run_streaming ->
-//             SharedHost -> Runtime (probe: mutating `write`) -> PermissionGate
+//             executor -> Runtime (probe: mutating `write`) -> PermissionGate
 //             -> Suspend -> commit ResumeTicket{ToolPermission}  (awaiting)
 //   AG-UI   : POST /v1/ag-ui/agents/assistant (threadId T, role:"tool" result, no
 //             user msg) -> resume_step -> rt.pending(T) -> to_resume(Confirm{allow})
