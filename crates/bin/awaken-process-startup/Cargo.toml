@@ -40,7 +40,6 @@ awaken-protocol-a2a.workspace = true
 # The Kubernetes Worker fleet: the control client that authenticates Pod
 # Workers, their Create ledger and Pod process observation and stop.
 awaken-worker-fleet-kubernetes = { workspace = true, optional = true }
-awaken-sandbox-memoryd.workspace = true
 kube = { workspace = true, features = ["client", "rustls-tls", "http-proxy"], optional = true }
 awaken-protocol-mcp.workspace = true
 awaken-service-lifecycle.workspace = true
@@ -56,8 +55,6 @@ awaken-session-executor.workspace = true
 awaken-session-mcp.workspace = true
 # The container Hand residency the runtime settings select.
 awaken-session-environment-contract.workspace = true
-# Local Resource ports for the test-support runtime process without a Deployment.
-awaken-session-executor-testkit = { workspace = true, optional = true }
 # The installation platform Workspace marker this startup reads or publishes.
 awaken-installation-workspace.workspace = true
 awaken-resource-worker-http.workspace = true
@@ -77,8 +74,6 @@ awaken-worker-transport-security.workspace = true
 awaken-worker-contract.workspace = true
 awaken-dispatch-http.workspace = true
 awaken-local-process.workspace = true
-# The Hand executor factory the co-located Session execution binds Hand channels with.
-awaken-tool-relay.workspace = true
 awaken-fs-durability.workspace = true
 uuid = { version = "1", features = ["v7"] }
 awaken-sandbox-policy-store = { workspace = true }
@@ -178,7 +173,6 @@ test-support = [
     "awaken-protocol-managed/test-support",
     "awaken-coordinator/test-support",
     "awaken-session-executor/test-support",
-    "dep:awaken-session-executor-testkit",
     "awaken-resource-persistence/test-support",
 ]
 # Container ACP tiers (AWAKEN_SANDBOX_TIER=docker/podman/k8s): enable the backend a
@@ -193,6 +187,8 @@ serde_json.workspace = true
 sha2 = "0.10"
 
 [dev-dependencies]
+# The AllInOne test builders run Sessions through the launcher's co-located execution.
+awaken-cli = { workspace = true, features = ["test-support"] }
 # The live Kubernetes Worker transport tests drive a real Worker create client.
 awaken-worker = { workspace = true, features = ["container-k8s"] }
 # Runtime codecs/planning are used by CLI fixtures; production uses its composition root.

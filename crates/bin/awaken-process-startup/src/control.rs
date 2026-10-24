@@ -366,6 +366,7 @@ async fn prepare_control_process_with_model_supply_and_installations(
             service_lifecycle: service_lifecycle.clone(),
             deployment: None,
             namespace_hand_path: None,
+            colocated_execution: None,
             content_capture_ceiling: deployment.runtime.content_capture.level,
             org_id: Some(deployment.org_id.clone()),
             enrollment_signing_key: Some(

@@ -37,7 +37,6 @@ mod identity;
 mod installation_binding;
 #[cfg(any(test, feature = "test-support"))]
 mod local_process_stores;
-mod memory;
 mod observation_reconcile;
 mod postgres_pools;
 mod process_admin;
@@ -55,7 +54,6 @@ mod worker_transport_security;
 
 pub use a2a_attempt::a2a_attempt_executor;
 pub use coordinator_execution::{CoordinatorExecutionError, coordinator_execution};
-pub use memory::with_platform_memory_data_plane;
 #[cfg(any(test, feature = "test-support"))]
 pub use scenario_runtime::scenario_runtime_authority;
 pub use worker_transport::WorkerTransport;
@@ -85,7 +83,9 @@ pub use crate::process_admin::{
     DrainController, process_admin_router, register_active_streams_gauge, with_connection_metric,
     with_process_admin,
 };
-pub use colocated_worker::{ColocatedWorker, ColocatedWorkerPreparation};
+pub use colocated_worker::{
+    ColocatedExecution, ColocatedExecutionInputs, ColocatedWorker, ColocatedWorkerPreparation,
+};
 pub use console_assets::mount as mount_console;
 pub use console_assets::mount_with_navigation as mount_console_with_navigation;
 pub use control::{
@@ -192,11 +192,13 @@ mod prepared_process;
 use prepared_process::ProcessRouters;
 pub use prepared_process::{CoordinatorAuthorityHandles, PreparedProcess};
 
-/// Build all-in-one from the standard typed deployment configuration.
-pub async fn build_all_in_one_router() -> Router {
+/// Build all-in-one from the standard typed deployment configuration, its
+/// local claim pool running Sessions through `execution`.
+pub async fn build_all_in_one_router(execution: Arc<dyn ColocatedExecution>) -> Router {
     build_all_in_one_router_with_model_supply(
         PublicationModelSupply::PublishedProviders,
         ManagedServiceAdapters::default(),
+        execution,
     )
     .await
 }
@@ -204,8 +206,11 @@ pub async fn build_all_in_one_router() -> Router {
 /// Hermetic all-in-one startup for tests and embedders that explicitly want
 /// volatile stores. It never consults the standard deployment config path.
 #[cfg(any(test, feature = "test-support"))]
-pub async fn build_ephemeral_all_in_one_router() -> Router {
-    prepare_ephemeral_all_in_one_process().await.0.public_router
+pub async fn build_ephemeral_all_in_one_router(execution: Arc<dyn ColocatedExecution>) -> Router {
+    prepare_ephemeral_all_in_one_process(execution)
+        .await
+        .0
+        .public_router
 }
 
 /// One volatile composition, retaining its lifecycle and a borrowed Session
@@ -213,7 +218,9 @@ pub async fn build_ephemeral_all_in_one_router() -> Router {
 /// selects this same assembly and discards the borrowed view. No second store
 /// or test-only public startup API is introduced.
 #[cfg(any(test, feature = "test-support"))]
-async fn prepare_ephemeral_all_in_one_process() -> (
+async fn prepare_ephemeral_all_in_one_process(
+    execution: Arc<dyn ColocatedExecution>,
+) -> (
     ProcessRouters,
     Arc<dyn awaken_session_repository_contract::SessionRepository>,
 ) {
@@ -224,7 +231,7 @@ async fn prepare_ephemeral_all_in_one_process() -> (
         .expect("AllInOne borrows its selected Session authority")
         .sessions
         .clone();
-    let options = exact_host_model::local_test_process_options(&stores);
+    let options = exact_host_model::local_test_process_options(&stores, execution);
     let process = prepare_runtime_routers(
         stores,
         None,
@@ -331,6 +338,7 @@ pub async fn build_all_in_one_router_with_scenario_model(
     model: Arc<dyn LlmExecutor>,
     model_ref: String,
     managed_services: ManagedServiceAdapters,
+    execution: Arc<dyn ColocatedExecution>,
 ) -> Router {
     build_all_in_one_router_with_model_supply(
         PublicationModelSupply::Host {
@@ -340,6 +348,7 @@ pub async fn build_all_in_one_router_with_scenario_model(
             ),
         },
         managed_services,
+        execution,
     )
     .await
 }
@@ -347,6 +356,7 @@ pub async fn build_all_in_one_router_with_scenario_model(
 async fn build_all_in_one_router_with_model_supply(
     model_supply: PublicationModelSupply,
     managed_services: ManagedServiceAdapters,
+    execution: Arc<dyn ColocatedExecution>,
 ) -> Router {
     let deployment = config::ResolvedDeployment::load(
         config::ConfigOverrides::default(),
@@ -357,12 +367,13 @@ async fn build_all_in_one_router_with_model_supply(
         .seal_key
         .load_or_create()
         .unwrap_or_else(|error| panic!("control seal key: {error}"));
-    prepare_runtime_process(
+    prepare_runtime_process_with_coordinator_services(
         &deployment,
         Some(&key),
         config::Role::AllInOne,
         model_supply,
         managed_services,
+        CoordinatorServiceAdapters::default().with_colocated_execution(execution),
     )
     .await
     .unwrap_or_else(|error| panic!("prepare all-in-one process: {error}"))
@@ -385,10 +396,11 @@ pub async fn build_all_in_one_router_with_host_customizer(
     binding: awaken_runtime_contract::resolved::ModelBinding,
     deployment: awaken_deployment_config::DeploymentConfig,
     web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
+    execution: Arc<dyn ColocatedExecution>,
     customize_host: impl FnOnce(SessionExecutorBuilder) -> SessionExecutorBuilder + Send + 'static,
 ) -> Router {
     let stores = in_memory_process_stores().await;
-    let mut options = exact_host_model::local_test_process_options(&stores);
+    let mut options = exact_host_model::local_test_process_options(&stores, execution);
     options.deployment = Some(deployment);
     options.web_search_providers = web_search_providers;
     prepare_runtime_routers(
@@ -420,12 +432,13 @@ pub async fn build_durable_all_in_one_router_with_host_customizer(
     key: &[u8; 32],
     model: Arc<dyn LlmExecutor>,
     binding: awaken_runtime_contract::resolved::ModelBinding,
+    execution: Arc<dyn ColocatedExecution>,
     customize_host: impl FnOnce(SessionExecutorBuilder) -> SessionExecutorBuilder + Send + 'static,
 ) -> Router {
     let stores = open_local_process_stores(dir, key)
         .await
         .unwrap_or_else(|error| panic!("open local deployment stores: {error}"));
-    let options = exact_host_model::local_test_process_options(&stores);
+    let options = exact_host_model::local_test_process_options(&stores, execution);
     prepare_runtime_routers(
         stores,
         None,
@@ -451,9 +464,10 @@ pub async fn build_durable_all_in_one_router_with_host_customizer(
 pub async fn build_all_in_one_router_with_model(
     model: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
+    execution: Arc<dyn ColocatedExecution>,
 ) -> Router {
     let stores = in_memory_process_stores().await;
-    let options = exact_host_model::local_test_process_options(&stores);
+    let options = exact_host_model::local_test_process_options(&stores, execution);
     prepare_runtime_routers(
         stores,
         None,
@@ -479,11 +493,15 @@ pub async fn build_all_in_one_router_with_model(
 /// simulated process lifetimes without racing on process-global env vars.
 /// No IAM guard; available only to explicit test-support deployments.
 #[cfg(any(test, feature = "test-support"))]
-pub async fn build_durable_all_in_one_router(dir: &std::path::Path, key: &[u8; 32]) -> Router {
+pub async fn build_durable_all_in_one_router(
+    dir: &std::path::Path,
+    key: &[u8; 32],
+    execution: Arc<dyn ColocatedExecution>,
+) -> Router {
     let stores = open_local_process_stores(dir, key)
         .await
         .unwrap_or_else(|error| panic!("open local deployment stores: {error}"));
-    let options = exact_host_model::local_test_process_options(&stores);
+    let options = exact_host_model::local_test_process_options(&stores, execution);
     prepare_runtime_routers(
         stores,
         None,
@@ -506,13 +524,14 @@ pub async fn build_durable_all_in_one_router(dir: &std::path::Path, key: &[u8; 3
 pub async fn build_secured_all_in_one_router(
     dir: &std::path::Path,
     key: &[u8; 32],
+    execution: Arc<dyn ColocatedExecution>,
 ) -> (Router, Arc<ManagementAuthz>) {
     let stores = open_local_process_stores(dir, key)
         .await
         .unwrap_or_else(|error| panic!("open local deployment stores: {error}"));
     // IAM judges tokens on the same wall clock the stores stamp with.
     let iam = embedded_iam(dir, stores.clock.clone());
-    let options = exact_host_model::local_test_process_options(&stores);
+    let options = exact_host_model::local_test_process_options(&stores, execution);
     let router = prepare_runtime_routers(
         stores,
         Some(iam.clone()),

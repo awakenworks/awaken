@@ -40,7 +40,7 @@ async fn the_product_plane_can_read_worker_fleet_readiness() {
     // surface had before: the Coordinator served no `/v1/workers/readiness`,
     // so Flow's hosted fleet adapter received a permanent 404 and reported the
     // work store as unavailable.
-    let app = build_all_in_one_router().await;
+    let app = build_all_in_one_router(std::sync::Arc::new(awaken_cli::LocalExecution)).await;
 
     let (status, body) = call(
         &app,

@@ -57,7 +57,12 @@ use awaken_session_mcp::ExtMcpProbe;
 // (mock) `McpToolModel` through the test-only seam. Production uses the provider-free
 // `NoModelConfiguredExecutor`; the mock never ships in the management process.
 async fn build_all_in_one_router() -> Router {
-    build_all_in_one_router_with_model(Arc::new(McpToolModel), "management").await
+    build_all_in_one_router_with_model(
+        Arc::new(McpToolModel),
+        "management",
+        std::sync::Arc::new(awaken_cli::LocalExecution),
+    )
+    .await
 }
 
 async fn exact_vault_refresher(

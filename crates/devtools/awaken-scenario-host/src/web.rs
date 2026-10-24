@@ -100,6 +100,7 @@ pub async fn build_management_web_router() -> Router {
         ModelBinding::new("default", "management-web", "default"),
         crate::scenario_deployment(),
         Some(registry),
+        std::sync::Arc::new(awaken_cli::LocalExecution),
         |host| host,
     )
     .await
