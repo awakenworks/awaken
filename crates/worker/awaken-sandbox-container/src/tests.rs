@@ -217,7 +217,7 @@ struct RecordingPackageProvisioner {
 }
 
 #[async_trait]
-impl PackageImageProvisioner for RecordingPackageProvisioner {
+impl awaken_container_contract::PackageImageProvisioner for RecordingPackageProvisioner {
     async fn probe_builder(&self) -> Result<(), RuntimeError> {
         if self.unreachable {
             return Err(RuntimeError::Backend(

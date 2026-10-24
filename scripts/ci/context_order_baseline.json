@@ -1,7 +1,6 @@
 {
   "upward-edges": {
     "awaken-credential-vault -> awaken-provisioning-contract": "credential custody receives credential-contract values; Execution translates (ADR-0088 decision 4)",
-    "awaken-environment-package-image-builder -> awaken-sandbox-container": "depend on the sandbox contract, not its implementations; the composition root wires them",
     "awaken-provisioning-contract -> awaken-resource-contract": "resource reference values move with the environment contract they describe",
     "awaken-run-executor-a2a -> awaken-protocol-a2a": "shared wire types move down into a contract; the executor stops depending on the serving adapter",
     "awaken-run-executor-acp -> awaken-protocol-acp": "shared wire types move down into a contract; the executor stops depending on the serving adapter",

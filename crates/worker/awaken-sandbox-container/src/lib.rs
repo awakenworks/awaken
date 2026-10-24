@@ -130,7 +130,7 @@ pub(crate) use runtime::{
 };
 pub use runtime::{
     ContainerRuntime, ContainerState, MemoryMount, MissingHandleTerminalEvidence,
-    PackageImageProvisioner, RuntimeRestoreTarget, SandboxControlBindingRequest,
+    RuntimeRestoreTarget, SandboxControlBindingRequest,
 };
 #[cfg(any(feature = "docker", feature = "podman"))]
 pub(crate) use runtime::{

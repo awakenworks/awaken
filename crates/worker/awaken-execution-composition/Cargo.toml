@@ -33,6 +33,8 @@ awaken-time.workspace = true
 # The container tier (podman/docker/k8s) this composition realizes; each backend
 # is enabled by the matching feature below.
 awaken-sandbox-container.workspace = true
+# The package-image build port the container provider realizes package images through.
+awaken-container-contract.workspace = true
 # The Kubernetes engine of that tier, linked only by the `k8s` feature.
 awaken-sandbox-kubernetes = { workspace = true, optional = true }
 # The Workdir sandboxes auxiliary Agent Runs use on every process root.
