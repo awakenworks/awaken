@@ -4,7 +4,8 @@
 // @formal evidence worker_drain.no_claim_after_acknowledgement
 // @formal evidence worker_drain.no_claim_attempt_after_registry_drain
 // @formal evidence worker_drain.registry_transition_follows_local_fence
-use awaken_worker::{StandardManifestConfig, WorkerNodeBuilder, WorkerShutdown};
+use awaken_worker::{StandardManifestConfig, WorkerNodeBuilder};
+use awaken_worker_contract::WorkerShutdown;
 use awaken_worker_contract::{VersionRange, WorkerManifest};
 use awaken_worker_transport_security::{
     SignedWorkerRequestAuthorizer, WorkerSigningCredential, WorkerUpstream,

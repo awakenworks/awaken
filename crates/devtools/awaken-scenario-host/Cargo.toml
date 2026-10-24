@@ -17,6 +17,7 @@ name = "awaken-scenario-host"
 path = "src/main.rs"
 
 [dependencies]
+awaken-tool-relay.workspace = true
 awaken-deployment-config.workspace = true
 awaken-dispatch-erasure.workspace = true
 awaken-plugin-composition.workspace = true
