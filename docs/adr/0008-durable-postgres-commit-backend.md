@@ -146,7 +146,7 @@ and an incremental recovery design remain separate work.
 ## PostgreSQL checkout and cancellation (2026-10-07)
 
 Runtime PostgreSQL connection lifecycle has one owner:
-`awaken-sql-storage::postgres_pool_options`. Composition roots still choose
+`awaken-store-runtime::postgres_pool_options`. Composition roots still choose
 connection capacity and clone the same pool into repositories. Standalone
 commit, dispatch, checkpoint and Worker-directory constructors use that same
 policy. A composition that injects a `PgPool` must construct it with this policy;
@@ -183,7 +183,7 @@ then a fresh canonical recovery transaction. Domain transaction rollback,
 receipt replay, dense global order, claim fencing and the Managed committed-prefix
 validation remain unchanged. An ambiguous commit still requires querying its
 existing receipt; a clean connection does not prove that an external effect ran
-exactly once. The cause/effect rules in `awaken-sql-storage`'s live PostgreSQL
+exactly once. The cause/effect rules in `awaken-store-runtime`'s live PostgreSQL
 tests own the cancellation, reuse, permission and durability coverage; the
 production-role k3d scenario owns failure and completed-turn acceptance.
 

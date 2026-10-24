@@ -20,8 +20,8 @@
     "crates/stores/awaken-store-schema/tests/apply.rs": "74b125459e8d512f6d08fc22ecf9c042309ce4f2e74b2b4c2a61d9c7968347f8",
     "crates/stores/awaken-store-schema/tests/support/postgres_admission.rs": "568c43215189a826d8077bbccdf4e468c977d6a35e7bfa39f918bab7d9f1322f",
     "scripts/ci/check_rust_test_execution.py": "4d13cc607836f2167c27035d379023619844123027d40ec8e31946fd0d2248c1",
-    "crates/stores/awaken-sql-storage/src/lib.rs": "178646bb15b521b6c49aacb35b33d36809d28111116c7b71949ff4206b8db515",
-    "crates/stores/awaken-sql-storage/src/postgres_tests.rs": "475e9b076f584984566004ca8d79c32e390173f44d8aa1454666153a387f9103"
+    "crates/stores/awaken-store-runtime/src/lib.rs": "178646bb15b521b6c49aacb35b33d36809d28111116c7b71949ff4206b8db515",
+    "crates/stores/awaken-store-runtime/src/postgres_tests.rs": "475e9b076f584984566004ca8d79c32e390173f44d8aa1454666153a387f9103"
   },
   "fixes": [
     "Configured Environment connection failure cannot become a passing branch.",
@@ -103,7 +103,7 @@
     "sha256": "d50ad7960dfba1a8fef8aa3d0a3437a7866fab1a8d0a07663a3e02a6b1dede88",
     "domains": [
       {
-        "package": "awaken-sql-storage",
+        "package": "awaken-store-runtime",
         "named_executions": 5,
         "selected_cases": [
           "postgres_tests::cancelled_begin_cannot_poison_the_next_recovery_transaction",

@@ -32,7 +32,7 @@ takes a `&rusqlite::Connection`.
 The synchronous driver leaks into port design. `WebhookStore` and
 `DreamProcessStore` are synchronous ports because their SQLite adapters were
 synchronous; their PostgreSQL adapters then need `block_on` bridges
-(`awaken-sql-storage`) to implement them.
+(`awaken-store-runtime`) to implement them.
 
 A Rust binary can link only one `libsqlite3-sys`. sqlx 0.8.6's SQLite driver
 requires `libsqlite3-sys` 0.30.x, the version rusqlite 0.32 uses. This repository's
@@ -66,7 +66,7 @@ lockfile already resolves rusqlite 0.32.1, and awaken-cloud pins
 4. **Synchronous ports become asynchronous.** `WebhookStore`, `DreamProcessStore`
    and the synchronous functions of `awaken-store-sqlite` become async. Their
    PostgreSQL adapters drop the matching `block_on` bridges from
-   `awaken-sql-storage`. The coordinator's `runtime_authority` use of
+   `awaken-store-runtime`. The coordinator's `runtime_authority` use of
    `block_on_ambient_runtime` (now a private helper of that module) is a
    deliberate cancellation-safety device and is outside this decision.
 
@@ -97,7 +97,7 @@ lockfile already resolves rusqlite 0.32.1, and awaken-cloud pins
      (`awaken-run-ingress`, `awaken-work-store`, `awaken-session-store`) come
      last, because their claim and lease semantics carry the most behavior.
    - **Then the foundation switch.** Finally, migrations move to the foundation
-     `sqlite` feature, and rusqlite and the `awaken-sql-storage` bridges are
+     `sqlite` feature, and rusqlite and the `awaken-store-runtime` bridges are
      removed.
 
 9. **A paused test clock stands still while SQLite works.** sqlx runs SQLite on

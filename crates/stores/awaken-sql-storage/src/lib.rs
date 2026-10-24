@@ -1,4 +1,5 @@
-//! Shared storage primitives and the PostgreSQL checkout policy (`postgres` feature).
+//! SQL storage primitives every SQL store shares: the exact unsigned BIGINT codec and,
+//! with the `postgres` feature, the PostgreSQL checkout policy.
 //!
 //! The exact unsigned BIGINT codec is driver-independent. Every SQL storage
 //! context uses its one implementation and retains its own error projection.
