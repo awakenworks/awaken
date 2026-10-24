@@ -615,37 +615,6 @@ impl SessionResourceCommands for crate::SessionResourceManifests {
 }
 
 #[async_trait]
-impl SessionObservation for SessionApplication {
-    async fn subscribe_session_thread_live(
-        &self,
-        session_id: &SessionId,
-        thread_id: &str,
-    ) -> Result<Option<Box<dyn SessionThreadLiveSubscription>>, RunError> {
-        let coordination_runtime = self.runtime().coordination();
-
-        coordination_runtime
-            .subscribe_session_thread_live(session_id, thread_id)
-            .await
-    }
-
-    async fn session_execution_observation(
-        &self,
-        workspace_id: &str,
-        session_id: &SessionId,
-    ) -> Result<SessionExecutionObservation, SessionProjectionRecoveryError> {
-        SessionApplication::session_execution_observation(self, workspace_id, session_id).await
-    }
-
-    async fn session_usage(
-        &self,
-        thread: &str,
-        observed_links: Option<&[CoordinatedThreadLink]>,
-    ) -> Result<SessionUsage, RunError> {
-        SessionApplication::session_usage(self, thread, observed_links).await
-    }
-}
-
-#[async_trait]
 impl DeploymentSessionEnvironment for SessionApplication {
     async fn deployment_environment(
         &self,

@@ -597,7 +597,7 @@ async fn session_observation_keeps_an_absent_runtime_observer_without_effects() 
     let preparations = runtime.preparations.load(Ordering::SeqCst);
     let dispatches = environments.dispatch_calls.load(Ordering::SeqCst);
     let observed = crate::SessionObservation::subscribe_session_thread_live(
-        &application,
+        application.observations.as_ref(),
         &created.session_id,
         created.session_id.as_str(),
     )

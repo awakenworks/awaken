@@ -241,7 +241,7 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
     let observed_session = awaken_session_types::SessionId::from(session_id.as_str());
     let root_subscription =
         awaken_session_application::SessionObservation::subscribe_session_thread_live(
-            managed.sessions.as_ref(),
+            managed.sessions.observations().as_ref(),
             &observed_session,
             observed_session.as_str(),
         )
@@ -253,7 +253,7 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
     );
     drop(root_subscription);
     let unlinked = awaken_session_application::SessionObservation::subscribe_session_thread_live(
-        managed.sessions.as_ref(),
+        managed.sessions.observations().as_ref(),
         &observed_session,
         "unlinked-observation-child",
     )

@@ -583,7 +583,11 @@ impl DreamExecutor for BuiltInDreamAgent {
         preparation: Option<&DreamPreparation>,
     ) -> Result<(), DreamFailure> {
         if let Some(preparation) = preparation {
-            let _ = self.sessions.interrupt(&preparation.session_id).await;
+            let _ = self
+                .sessions
+                .run_admissions()
+                .interrupt(&preparation.session_id)
+                .await;
         }
         self.cleanup(request, preparation).await
     }

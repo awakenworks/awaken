@@ -392,6 +392,7 @@ impl SessionAssembly {
         } = kernel;
         let Foundation {
             credentials,
+            observations,
             queries,
             inputs,
             resource_effect_authorization,
@@ -414,7 +415,6 @@ impl SessionAssembly {
             environments: self.environments.clone(),
             work_assignments,
             repository_participants,
-            resource_files: self.resource_files.clone(),
             mutations,
             lifecycle,
             queries,
@@ -432,6 +432,7 @@ impl SessionAssembly {
             resource_manifests,
             creation_commands,
             run_admissions,
+            observations,
             execution_admission,
             runtime_incarnation,
             event_batch_cutover_validation,
@@ -456,12 +457,20 @@ impl SessionAssembly {
             self.resource_references.clone(),
             self.resource_files.clone(),
         ));
+        let queries = Arc::new(crate::SessionQueries::new(
+            kernel.store.clone(),
+            &self.runtime,
+            self.profiles.clone(),
+        ));
         Foundation {
-            queries: Arc::new(crate::SessionQueries::new(
-                kernel.store.clone(),
+            observations: Arc::new(crate::SessionObservations::new(
+                kernel.mutations.clone(),
+                kernel.clock.clone(),
+                queries.clone(),
+                self.resource_files.clone(),
                 &self.runtime,
-                self.profiles.clone(),
             )),
+            queries,
             inputs: Arc::new(crate::SessionInputs::new(
                 kernel.store.clone(),
                 self.runtime.live_inbox.clone(),
@@ -555,6 +564,7 @@ impl SessionAssembly {
 /// The components every use case shares.
 struct Foundation {
     credentials: Arc<crate::SessionCredentials>,
+    observations: Arc<crate::SessionObservations>,
     queries: Arc<crate::SessionQueries>,
     inputs: Arc<crate::SessionInputs>,
     resource_effect_authorization: Arc<crate::SessionResourceEffectAuthorization>,
@@ -605,6 +615,7 @@ pub(crate) fn reassemble(
             Arc::strong_count(&application.resource_manifests),
             Arc::strong_count(&application.creation_commands),
             Arc::strong_count(&application.run_admissions),
+            Arc::strong_count(&application.observations),
         ]
     };
     let unshared = application.fixture_assembly.clone().assemble(kernel());

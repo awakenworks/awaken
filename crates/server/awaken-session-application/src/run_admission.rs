@@ -115,6 +115,7 @@ pub struct SessionRunAdmissions {
     execution_admission: Arc<crate::SessionExecutionAdmission>,
     coordination: Arc<dyn awaken_session_runtime_contract::CoordinationRuntime>,
     thread_reads: Arc<dyn awaken_session_runtime_contract::ThreadReadRuntime>,
+    streaming_runs: Arc<dyn awaken_session_runtime_contract::StreamingRunRuntime>,
 }
 
 /// The collaborators one [`SessionRunAdmissions`] is built from.
@@ -157,7 +158,13 @@ impl SessionRunAdmissions {
             execution_admission,
             coordination: runtime.coordination.clone(),
             thread_reads: runtime.thread_reads.clone(),
+            streaming_runs: runtime.streaming_runs.clone(),
         }
+    }
+
+    /// Interrupt the Run currently executing on one Session Thread.
+    pub async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
+        self.streaming_runs.interrupt(thread).await
     }
 
     /// Reserve one stable Run, then commit or recover the exact Session activity

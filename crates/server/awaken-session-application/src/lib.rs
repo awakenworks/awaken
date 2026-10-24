@@ -224,6 +224,8 @@ mod resource_references;
 pub use resource_references::SessionResourceReferences;
 mod terminal_cleanup;
 pub use terminal_cleanup::SessionTerminalCleanups;
+mod observations;
+pub use observations::SessionObservations;
 mod work_assignments;
 pub(crate) use resource_effect_authorization::require_live_root_lease;
 mod resource_manifests;

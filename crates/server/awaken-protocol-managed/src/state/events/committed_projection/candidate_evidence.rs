@@ -262,7 +262,7 @@ fn committed_session_usage(
     root: Option<&RunRecoverySnapshot>,
     children: &awaken_session_application::ProjectionThreadSnapshots,
 ) -> SessionUsage {
-    let mut usage = awaken_session_application::SessionApplication::project_session_usage(
+    let mut usage = awaken_session_application::SessionObservations::project_session_usage(
         persisted,
         root.into_iter()
             .chain(

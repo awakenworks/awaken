@@ -186,6 +186,7 @@ impl SessionApplication {
             return Ok(session);
         }
         let usage = self
+            .observations
             .session_usage_for_model_request(session.session_id.as_str(), &source_thread_id.0)
             .await?;
         self.lifecycle
@@ -711,6 +712,7 @@ impl SessionAgentCoordination for SessionApplication {
             self.lifecycle.request_reconciliation();
         }
         let usage = self
+            .observations
             .session_usage_for_model_request(session_id.as_str(), &thread_id.0)
             .await?;
         self.lifecycle

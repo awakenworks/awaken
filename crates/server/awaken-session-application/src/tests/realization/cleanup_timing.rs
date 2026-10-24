@@ -54,7 +54,11 @@ async fn live_session_usage_projects_the_same_clock_that_opened_its_root_interva
     let before = repo.get(&id).await.unwrap();
     for (now, seconds) in [(1_000_000, 0), (1_007_999, 7), (1_008_000, 8), (999_999, 0)] {
         clock.set(now);
-        let usage = app.session_usage(id.as_str(), Some(&[])).await.unwrap();
+        let usage = app
+            .observations
+            .session_usage(id.as_str(), Some(&[]))
+            .await
+            .unwrap();
         assert_eq!(usage.active_seconds, seconds, "U1/U2 {now}");
         assert_eq!(
             repo.get(&id).await.unwrap(),

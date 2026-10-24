@@ -414,7 +414,6 @@ pub struct SessionApplication {
     environments: SessionEnvironments,
     work_assignments: Arc<crate::SessionWorkAssignments>,
     repository_participants: Arc<crate::SessionRepositoryParticipants>,
-    resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
     mutations: Arc<crate::SessionMutations>,
     lifecycle: Arc<crate::SessionLifecycle>,
     queries: Arc<crate::SessionQueries>,
@@ -434,6 +433,7 @@ pub struct SessionApplication {
     resource_manifests: Arc<crate::SessionResourceManifests>,
     creation_commands: Arc<crate::SessionCreationCommands>,
     run_admissions: Arc<crate::SessionRunAdmissions>,
+    observations: Arc<crate::SessionObservations>,
     /// One complete set of immutable execution observations.
     execution_admission: Arc<SessionExecutionAdmission>,
     runtime_incarnation: String,
@@ -749,6 +749,11 @@ impl SessionApplication {
     #[must_use]
     pub fn run_admissions(&self) -> Arc<crate::SessionRunAdmissions> {
         self.run_admissions.clone()
+    }
+
+    #[must_use]
+    pub fn observations(&self) -> Arc<crate::SessionObservations> {
+        self.observations.clone()
     }
 
     #[cfg(any(test, feature = "test-support"))]
