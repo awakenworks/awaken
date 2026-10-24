@@ -1036,6 +1036,7 @@ mod tests {
     }
 
     mod effect_scope;
+    mod sent_effect_unknown;
 
     #[tokio::test]
     async fn brokered_catalog_fetch_reuses_the_authenticated_cloud_client() {

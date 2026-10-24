@@ -1664,6 +1664,7 @@ mod tests {
     }
 
     mod operation_state;
+    mod reattach_identity;
     mod send_windows;
 
     fn resume_command(activation: &RunActivation) -> ResumeCommand {
