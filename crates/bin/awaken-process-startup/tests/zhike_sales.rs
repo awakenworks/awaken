@@ -485,6 +485,7 @@ async fn sales_scenario(inner: Arc<dyn LlmExecutor>, model_name: &str, verify_gu
             ..awaken_deployment_config::DeploymentConfig::ephemeral()
         },
         None,
+        std::sync::Arc::new(awaken_cli::LocalExecution),
         |host| host,
     )
     .await;

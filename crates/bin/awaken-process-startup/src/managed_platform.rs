@@ -246,9 +246,22 @@ pub struct CoordinatorServiceAdapters {
     /// lifecycle ownership.
     pub inference_materializer:
         Option<Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>>,
+    /// The Session execution a process that runs its Sessions on its own
+    /// local claim pool installs. A Coordinator whose Sessions run on
+    /// registered Workers leaves it absent.
+    pub colocated_execution: Option<Arc<dyn crate::ColocatedExecution>>,
 }
 
 impl CoordinatorServiceAdapters {
+    #[must_use]
+    pub fn with_colocated_execution(
+        mut self,
+        execution: Arc<dyn crate::ColocatedExecution>,
+    ) -> Self {
+        self.colocated_execution = Some(execution);
+        self
+    }
+
     #[must_use]
     pub fn with_relay_destination_authenticator(
         mut self,

@@ -63,7 +63,10 @@ async fn assemble(shape: Shape, iam_root: &std::path::Path) -> ProcessRouters {
     };
     let iam = matches!(shape, Shape::SecuredAllInOne)
         .then(|| awaken_control::embedded_iam(iam_root, stores.clock.clone()));
-    let mut process = crate::exact_host_model::local_test_process_options(&stores);
+    let mut process = crate::exact_host_model::local_test_process_options(
+        &stores,
+        std::sync::Arc::new(crate::colocated_worker::WorkdirExecution),
+    );
     // Physical execution placement installs Host executors, never routes; the
     // local placement would also need the release `awaken-sandbox` companion,
     // which a library test does not build. Every shape uses Worker placement.

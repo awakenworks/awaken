@@ -488,6 +488,7 @@ pub async fn build_acp_managed_mcp_router() -> Router {
         ModelBinding::new("scenario", "acp-managed-mcp", "acp:claude"),
         deployment,
         None,
+        std::sync::Arc::new(awaken_cli::LocalExecution),
         // The full managed process has already selected its one
         // Deployment-owned SessionEnvironment. Override only the projected ACP
         // launch facts; a static executor here would bypass that environment
@@ -550,6 +551,7 @@ pub async fn build_acp_real_mcp_router() -> Router {
         binding,
         deployment,
         None,
+        std::sync::Arc::new(awaken_cli::LocalExecution),
         move |host| {
             awaken_execution_composition::with_projected_acp_argv(
                 awaken_execution_composition::with_backend_owned_environment(host, &installed),

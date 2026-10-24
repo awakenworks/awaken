@@ -548,53 +548,30 @@ async fn assemble_execution_host(
         execution.sessions.clone(),
         clock.clone(),
     );
-    // The process keeps the Deployment it resolved: the execution composition
-    // below selects the Session environment and ACP routes from it.
-    let (deployment, host_builder) = match base.process.deployment.take() {
-        Some(deployment) => {
-            let host_builder = SessionExecutorBuilder::for_coordinator(
-                cloud.model_wiring.executor.clone(),
-                cloud.model_wiring.model_ref.clone(),
-                awaken_session_executor::WorkerContentAdapters {
-                    file_content_source: resources.resource_application.file_content_source(),
-                    memory: resources.resource_authorities.memory_execution_content(),
-                },
-                execution.memory_extractions.clone(),
-                awaken_session_executor::SessionExecutionProcess::from_deployment(
-                    &deployment,
-                    base.stores.platform_workspace.clone(),
-                    clock.clone(),
-                )?,
-                runtime_authority.clone(),
-            );
-            (deployment, host_builder)
-        }
-        #[cfg(any(test, feature = "test-support"))]
-        None => {
-            let deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
-            let host_builder = SessionExecutorBuilder::for_local_resources(
-                cloud.model_wiring.executor.clone(),
-                cloud.model_wiring.model_ref.clone(),
-                awaken_session_executor_testkit::local_resource_ports(
-                    &resources.resource_authorities,
-                ),
-                execution.memory_extractions.clone(),
-                awaken_session_executor::SessionExecutionProcess::from_deployment(
-                    &deployment,
-                    base.stores.platform_workspace.clone(),
-                    resources.resource_authorities.clock(),
-                )
-                .expect("a local fixture selects a valid process"),
-                runtime_authority.clone(),
-            );
-            (deployment, host_builder)
-        }
-        #[cfg(not(any(test, feature = "test-support")))]
-        None => unreachable!("product runtime process requires a resolved deployment"),
-    };
-    let host_builder = host_builder
-        .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes())
-        .with_environment_binding_sink(session_persistence.environment_binding_sink());
+    // The process keeps the Deployment it resolved: the execution placement
+    // below installs the Session environment and ACP routes from it.
+    let deployment = base
+        .process
+        .deployment
+        .take()
+        .ok_or_else(|| "runtime process requires a resolved deployment".to_string())?;
+    let host_builder = SessionExecutorBuilder::for_coordinator(
+        cloud.model_wiring.executor.clone(),
+        cloud.model_wiring.model_ref.clone(),
+        awaken_session_executor::WorkerContentAdapters {
+            file_content_source: resources.resource_application.file_content_source(),
+            memory: resources.resource_authorities.memory_execution_content(),
+        },
+        execution.memory_extractions.clone(),
+        awaken_session_executor::SessionExecutionProcess::from_deployment(
+            &deployment,
+            base.stores.platform_workspace.clone(),
+            clock.clone(),
+        )?,
+        runtime_authority.clone(),
+    );
+    let host_builder =
+        host_builder.with_environment_binding_sink(session_persistence.environment_binding_sink());
     let local_dispatch = Some(runtime_authority.dispatch_store());
     let artifact_publisher = resources.resource_application.artifact_publisher();
     let artifact_fence = local_dispatch.map(|dispatch| {
@@ -635,23 +612,23 @@ async fn assemble_execution_host(
     }
     let host_builder = local_execution::prepare(
         host_builder,
-        &deployment,
         base.placement,
-        base.process.namespace_hand_path.take(),
-        cloud.credential_materializer.clone(),
+        base.process.colocated_execution.take(),
+        crate::ColocatedExecutionInputs {
+            deployment: deployment.clone(),
+            namespace_hand_path: base.process.namespace_hand_path.take(),
+            credentials: cloud.credential_materializer.clone(),
+            memory_source: resources.resource_authorities.memory_mount_source(),
+            memory_invalidator: resources.memory_invalidator.clone(),
+        },
     )
     .await?;
     // Last-mile backend wiring the standard process does not own, supplied
     // by the process startup (a scenario that serves external-CLI sessions).
-    let host_builder = with_platform_memory_data_plane(
-        match customize_host {
-            Some(customize) => customize(host_builder),
-            None => host_builder,
-        },
-        deployment.sandbox_tier,
-        resources.resource_authorities.memory_mount_source(),
-        resources.memory_invalidator.clone(),
-    );
+    let host_builder = match customize_host {
+        Some(customize) => customize(host_builder),
+        None => host_builder,
+    };
     let repository_bindings = Arc::new(
         awaken_resource_application::RegistryRepositoryBindingVerifier::new(
             resources.resource_registry.clone(),

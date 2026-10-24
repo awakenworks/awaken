@@ -17,6 +17,10 @@ pub(super) struct ProcessStartup {
     /// Exact Cargo-built companion for test-only process composition. Production
     /// leaves this absent and resolves the installed sibling executable.
     pub(super) namespace_hand_path: Option<PathBuf>,
+    /// The Session execution a `LocalWorker` placement installs, supplied by
+    /// the composition that co-locates execution. A Coordinator process,
+    /// whose Sessions run on registered Workers, supplies none.
+    pub(super) colocated_execution: Option<Arc<dyn crate::ColocatedExecution>>,
     pub(super) content_capture_ceiling: awaken_runtime_contract::ContentCapture,
     pub(super) org_id: Option<String>,
     /// Domain-separated from the durable Control seal key by the Data Subject

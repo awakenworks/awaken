@@ -342,7 +342,10 @@ mod startup_tests {
         // point, which now returns an error rather than panicking in a helper.
         awaken_service_lifecycle::run_composed_async_test(|| async {
             let stores = crate::local_process_stores::in_memory_process_stores().await;
-            let mut process = crate::exact_host_model::local_test_process_options(&stores);
+            let mut process = crate::exact_host_model::local_test_process_options(
+                &stores,
+                std::sync::Arc::new(crate::colocated_worker::WorkdirExecution),
+            );
             process.executable_environment_wiring = None;
             let result = crate::prepare_runtime_routers(
                 stores,

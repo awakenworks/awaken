@@ -7,13 +7,20 @@
 //! The process startup (`awaken-process-startup`) owns every service role and
 //! links no Worker. This launcher supplies the one thing only it may link: the
 //! co-located Worker an AllInOne process supervises, prepared from the same
-//! deployment and its local ACP discovery ([`LocalWorkerPreparation`]). The
-//! Control and Coordinator executables never link it.
+//! deployment and its local ACP discovery ([`LocalWorkerPreparation`]), and the
+//! Session execution of a process that runs its Sessions on its own local
+//! claim pool ([`LocalExecution`]). The Control and Coordinator executables
+//! never link either.
 #![warn(unreachable_pub)]
 
 mod acp_local_credentials;
+mod local_execution;
+mod memory_data_plane;
 
 use std::sync::Arc;
+
+pub use local_execution::LocalExecution;
+pub use memory_data_plane::with_platform_memory_data_plane;
 
 pub use acp_local_credentials::{
     PreparedLocalAcp, PreparedLocalWorker, local_acp_diagnostics, prepare_local_acp,

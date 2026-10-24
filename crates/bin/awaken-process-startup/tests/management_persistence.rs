@@ -109,7 +109,12 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
     let cred_id;
     let platform_workspace;
     {
-        let app = build_durable_all_in_one_router(dir.path(), &KEY).await;
+        let app = build_durable_all_in_one_router(
+            dir.path(),
+            &KEY,
+            std::sync::Arc::new(awaken_cli::LocalExecution),
+        )
+        .await;
 
         let audit_probe_body = serde_json::to_vec(&json!({
             "context_window": 4096
@@ -247,7 +252,12 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
     } // drop router A: "process" ends
 
     // ---- lifetime B: same dir, same key — everything is still there -------
-    let app = build_durable_all_in_one_router(dir.path(), &KEY).await;
+    let app = build_durable_all_in_one_router(
+        dir.path(),
+        &KEY,
+        std::sync::Arc::new(awaken_cli::LocalExecution),
+    )
+    .await;
 
     let (s, catalog) = call(&app, "GET", "/v1/config/catalog", None).await;
     assert_eq!(s, StatusCode::OK);
@@ -344,7 +354,12 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
 
     // ---- lifetime C: same dir, WRONG key — fails closed, rows readable ----
     drop(app);
-    let app = build_durable_all_in_one_router(dir.path(), &WRONG_KEY).await;
+    let app = build_durable_all_in_one_router(
+        dir.path(),
+        &WRONG_KEY,
+        std::sync::Arc::new(awaken_cli::LocalExecution),
+    )
+    .await;
 
     // The secret-free config rows are untouched by the key...
     let (s, catalog) = call(&app, "GET", "/v1/config/catalog", None).await;

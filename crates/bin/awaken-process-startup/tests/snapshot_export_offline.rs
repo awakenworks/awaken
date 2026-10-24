@@ -43,7 +43,12 @@ async fn call(
 /// no Server, ConfigStore, or alternate snapshot representation enters R2/R3.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn http_export_model_edit_and_offline_runtime_form_one_path() {
-    let app = build_all_in_one_router_with_model(Arc::new(EchoModel), "kimi").await;
+    let app = build_all_in_one_router_with_model(
+        Arc::new(EchoModel),
+        "kimi",
+        std::sync::Arc::new(awaken_cli::LocalExecution),
+    )
+    .await;
     let (status, body) = call(
         &app,
         "PUT",

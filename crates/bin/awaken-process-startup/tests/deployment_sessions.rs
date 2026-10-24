@@ -49,7 +49,12 @@ async fn deployment_run_creates_session_and_executes_initial_events() {
     // C4 retries only the unchanged GET. D1: C1+C2+C3+C4+C5 -> E1+E2+E3+E4+E5.
     // The deterministic router owns an explicit
     // local sandbox, independent of optional host capabilities such as bwrap.
-    let app = build_all_in_one_router_with_model(Arc::new(EchoModel), "echo").await;
+    let app = build_all_in_one_router_with_model(
+        Arc::new(EchoModel),
+        "echo",
+        std::sync::Arc::new(awaken_cli::LocalExecution),
+    )
+    .await;
     let (status, agent) = call(
         &app,
         "POST",

@@ -112,6 +112,7 @@ async fn grounding_review_uses_a_tool_free_platform_agent_and_the_existing_parse
             ..awaken_deployment_config::DeploymentConfig::ephemeral()
         },
         None,
+        std::sync::Arc::new(awaken_cli::LocalExecution),
         |host| host,
     )
     .await;
@@ -139,6 +140,7 @@ async fn live_grounding_judge_rejects_invented_details_and_accepts_bounded_claim
             ..awaken_deployment_config::DeploymentConfig::ephemeral()
         },
         None,
+        std::sync::Arc::new(awaken_cli::LocalExecution),
         |host| host,
     )
     .await;

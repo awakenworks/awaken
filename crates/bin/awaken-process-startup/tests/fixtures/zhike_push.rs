@@ -489,6 +489,7 @@ async fn scenario(
             ..awaken_deployment_config::DeploymentConfig::ephemeral()
         },
         None,
+        std::sync::Arc::new(awaken_cli::LocalExecution),
         |host| host,
     )
     .await;

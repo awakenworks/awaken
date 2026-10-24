@@ -8,10 +8,10 @@
       "remove_when": "the executor leaves the Coordinator closure"
     },
     "awaken-execution-composition": {
-      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; the startup installs the read-only Sandbox observation a Coordinator uses for Worker retirement, the Environment package image provisioner and the AllInOne co-located execution through it; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; reviewed at integration (record restated after the Coordinator binary left awaken-cli)",
+      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; after Worker-retirement observation became Worker-reported data and the co-located execution install moved to awaken-cli, the startup reaches the execution composition only for the Environment package image provisioner; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
+      "approved_by": "pending: v4-coord-closure2 for integrator review",
       "date": "2026-10-24",
-      "remove_when": "Worker-retirement observation is reported by Workers and image provisioning moves to the Environment image build context"
+      "remove_when": "Environment image provisioning moves to the Environment image build context"
     },
     "awaken-sandbox-container": {
       "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; reached through the execution composition (observation and image provisioning); see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
@@ -36,12 +36,6 @@
       "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; reviewed at integration (record restated after the Coordinator binary left awaken-cli)",
       "date": "2026-10-24",
       "remove_when": "the execution composition leaves the Coordinator closure"
-    },
-    "awaken-sandbox-memoryd": {
-      "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; the startup installs the Memory mount data plane of the AllInOne co-located execution, and the execution composition reaches it; see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; reviewed at integration (record restated after the Coordinator binary left awaken-cli)",
-      "date": "2026-10-24",
-      "remove_when": "the co-located execution install leaves the shared startup"
     },
     "awaken-session-executor": {
       "reason": "awaken-coordinator-process declares the awaken-coordinator binary over awaken-process-startup; the shared process startup composes the Coordinator execution ports from the Session executor (Run admission over RunAssembly, committed reads, commit ingest, the Session application executor roles); see docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
