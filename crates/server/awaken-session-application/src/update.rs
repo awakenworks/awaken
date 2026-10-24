@@ -828,11 +828,8 @@ impl SessionUpdateCommands {
                 changes: SessionUpdateChanges::default(),
             });
         }
-        let command = &compile_update_tool_settings(
-            self.tool_configuration_compiler.as_ref(),
-            command,
-            &session,
-        )?;
+        let compiler = self.tool_configuration_compiler.as_ref();
+        let command = &compile_update_tool_settings(compiler, command, &session)?;
         let before = session.snapshot().clone();
         let mut mcp_changed = false;
         if let Some(mcp_update) = command.mcp_update.clone() {

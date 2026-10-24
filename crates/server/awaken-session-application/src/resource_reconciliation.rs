@@ -401,6 +401,25 @@ impl SessionResourceReconciliation {
         .map(SessionAggregate::into_snapshot)
     }
 
+    /// Run the Repository retirements a detached Resource generation left
+    /// behind; a root without retirements is returned unchanged.
+    async fn retire_detached_generation(
+        &self,
+        owner_scope: &str,
+        session: SessionAggregate,
+    ) -> Result<SessionAggregate, SessionPreparationError> {
+        if !session.resources.has_repository_retirements() {
+            return Ok(session);
+        }
+        self.repository_participants
+            .reconcile_retirements(
+                owner_scope,
+                session,
+                RepositoryRetirementCause::DetachedGeneration,
+            )
+            .await
+    }
+
     /// Apply the Resource state machine only after credential migration has
     /// reached a stable Session root. Keeping these phases as separate futures
     /// also bounds synchronous poll-stack growth on the HTTP admission path.
@@ -412,16 +431,8 @@ impl SessionResourceReconciliation {
         let effects_runtime = self.realization_effects.as_ref();
 
         if !session.is_terminal() && session.requires_external_environment_owner() {
-            return if session.resources.pending.is_none()
-                && session.resources.has_repository_retirements()
-            {
-                self.repository_participants
-                    .reconcile_retirements(
-                        owner_scope,
-                        session,
-                        RepositoryRetirementCause::DetachedGeneration,
-                    )
-                    .await
+            return if session.resources.pending.is_none() {
+                self.retire_detached_generation(owner_scope, session).await
             } else {
                 Ok(session)
             };
@@ -482,17 +493,9 @@ impl SessionResourceReconciliation {
                         ResourceSettlement::Commit,
                     )
                     .await?;
-                return if committed.resources.has_repository_retirements() {
-                    self.repository_participants
-                        .reconcile_retirements(
-                            owner_scope,
-                            committed,
-                            RepositoryRetirementCause::DetachedGeneration,
-                        )
-                        .await
-                } else {
-                    Ok(committed)
-                };
+                return self
+                    .retire_detached_generation(owner_scope, committed)
+                    .await;
             }
 
             if session
@@ -508,17 +511,7 @@ impl SessionResourceReconciliation {
             if session.resources.active.inputs().is_empty()
                 && session.resources.activations.is_empty()
             {
-                return if session.resources.has_repository_retirements() {
-                    self.repository_participants
-                        .reconcile_retirements(
-                            owner_scope,
-                            session,
-                            RepositoryRetirementCause::DetachedGeneration,
-                        )
-                        .await
-                } else {
-                    Ok(session)
-                };
+                return self.retire_detached_generation(owner_scope, session).await;
             }
             let (active_revision, active_resources) = session.resources.active_generation();
             let active = crate::session_resource::SessionResourceManifest::at_revision(
@@ -541,17 +534,7 @@ impl SessionResourceReconciliation {
                     .await
                     .map_err(mutation_failure)?;
             }
-            return if session.resources.has_repository_retirements() {
-                self.repository_participants
-                    .reconcile_retirements(
-                        owner_scope,
-                        session,
-                        RepositoryRetirementCause::DetachedGeneration,
-                    )
-                    .await
-            } else {
-                Ok(session)
-            };
+            return self.retire_detached_generation(owner_scope, session).await;
         }
 
         self.reconcile_terminal_resource_candidate(owner_scope, session)
