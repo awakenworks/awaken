@@ -232,7 +232,7 @@ impl MemoryTerminalObservers {
         commit: Arc<SessionCommit>,
     ) -> Result<Option<Arc<dyn RunTerminalObserver>>, crate::SessionExecutionError> {
         let agent_id = config.agent_id.as_deref().unwrap_or(MEMORY_AGENT_ID);
-        let agent = crate::agent_catalog::resolve_auxiliary_snapshot(
+        let agent = awaken_session_run_delivery::resolve_auxiliary_snapshot(
             Some(frozen_publications),
             &memory.binding().workspace_id,
             agent_id,
