@@ -16,16 +16,31 @@
 //! outcome, these only notify and preview.
 #![warn(unreachable_pub)]
 
+mod commit_boundary;
+mod committed_reads;
 mod completion;
 mod hub;
 mod lock;
+mod outcome_projection;
 
+pub use commit_boundary::{
+    CommittedAuthority, SessionCommit, SessionCommitBoundary, WorkerRecoveryCommit,
+};
+pub use committed_reads::{
+    AdvisorModelSource, CommittedCoordinationProjection, CommittedReads, CoordinationReadPurpose,
+    SessionCommitSource, application_error, authoritative_child_ticket,
+    delegation_registry_from_snapshot, project_committed_coordination, project_delegated_runs,
+    recovery_ticket, visible_pending_tool,
+};
 pub use completion::{
     CompletionRegistry, CompletionSignalClosed, WaiterGuard, activate_and_await_session_run,
     await_completion_state,
 };
 pub use hub::{ThreadEvent, ThreadEventHub};
 pub use lock::{DeliveryLock, LOCK_POISONED_CODE};
+pub use outcome_projection::{
+    committed_outcome_projection, outcome_controller_error, outcome_report,
+};
 
 /// Poison `lock` the way production can: a holder panics while holding it.
 #[cfg(test)]

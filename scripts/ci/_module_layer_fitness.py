@@ -109,11 +109,9 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (HOST, "session state composition, authority and committed-truth ingestion are the host's", (
         "application",
         "authority",
-        "commit_ingest",
         "coordination",
         "durable_operations",
         "installed_session",
-        "store",
         "thread_reads",
     )),
     (HOST, "protocol-neutral host adapters and their composition", (

@@ -17,7 +17,7 @@ pub(super) struct ContextResources {
     pub(super) plan: ContextPlan,
     pub(super) env: Option<Arc<crate::session_environment::SessionEnvironment>>,
     pub(super) thread_id: awaken_agent_contract::agent::thread::Id,
-    pub(super) commit: Arc<crate::store::HostCommit>,
+    pub(super) commit: Arc<awaken_session_run_delivery::SessionCommit>,
     pub(super) stream_checkpoint:
         Option<Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>,
     pub(super) active_mcp: Vec<awaken_session_mcp::McpGenerationProjection>,

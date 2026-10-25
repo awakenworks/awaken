@@ -24,7 +24,7 @@ use awaken_tool_contract::tool::RawTool;
 use crate::agent_catalog::AgentCatalog;
 use crate::background::{BackgroundRuns, BackgroundWorkClass};
 use crate::judge::AuxAgentTool;
-use crate::store::HostCommit;
+use awaken_session_run_delivery::SessionCommit;
 
 /// An ordinary tool whose catalog holds the `compactor` Agent.
 /// (ADR-0047 D5). The compaction plugin builds the seed (older slice + summarize
@@ -33,7 +33,7 @@ use crate::store::HostCommit;
 pub(crate) fn compact_runner(
     llm: Arc<dyn LlmExecutor>,
     snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
-    commit: Arc<HostCommit>,
+    commit: Arc<SessionCommit>,
     clock: Arc<dyn awaken_time::WallClock>,
     sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
 ) -> Arc<dyn RawTool> {
@@ -231,7 +231,7 @@ mod tests {
             model.clone(),
             default_compact_agent("stub", DEFAULT_COMPACT_INSTRUCTIONS)
                 .expect("literal model reference"),
-            Arc::new(HostCommit::Local(Arc::new(
+            Arc::new(SessionCommit::Local(Arc::new(
                 crate::LocalCommitAdapter::projected(
                     awaken_store_inmem::MemoryCommitCoordinator::new(clock.clone()),
                 ),
@@ -270,7 +270,7 @@ mod tests {
             Arc::new(SummaryModel(AtomicU64::new(0))),
             default_compact_agent("stub", DEFAULT_COMPACT_INSTRUCTIONS)
                 .expect("literal model reference"),
-            Arc::new(HostCommit::Local(Arc::new(
+            Arc::new(SessionCommit::Local(Arc::new(
                 crate::LocalCommitAdapter::projected(
                     awaken_store_inmem::MemoryCommitCoordinator::new(clock.clone()),
                 ),
@@ -316,7 +316,7 @@ mod tests {
             model.clone(),
             default_compact_agent("stub", DEFAULT_COMPACT_INSTRUCTIONS)
                 .expect("literal model reference"),
-            Arc::new(HostCommit::Local(Arc::new(
+            Arc::new(SessionCommit::Local(Arc::new(
                 crate::LocalCommitAdapter::projected(
                     awaken_store_inmem::MemoryCommitCoordinator::new(clock.clone()),
                 ),

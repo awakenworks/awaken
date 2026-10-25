@@ -74,7 +74,7 @@
     "awaken-session-application": 2,
     "awaken-session-environment": 1,
     "awaken-session-execution-contract": 3,
-    "awaken-session-executor": 25,
+    "awaken-session-executor": 23,
     "awaken-session-realization-contract": 1,
     "awaken-session-repository-contract": 1,
     "awaken-session-state-contract": 4,
@@ -381,9 +381,9 @@
     },
     "awaken-session-executor": {
       "deps": 41,
-      "lines": 23294,
+      "lines": 22169,
       "reason": "runtime-host split (plan 10.4 slices R, E, H): lines hold host plus the realizer being extracted in place (+142 approved 2026-10-10 for the SessionRealizations view, leaves with the realization crate; +24 approved 2026-10-10 for k8s_unschedulable_wait_secs settings, leaves with the deployment configuration to the composition root; +127 2026-10-18 for typed poison refusals and their decision tables at every read role, plan v4 P6/P7); host_lines may only fall; target < 20000 lines, about 26-28 dependencies",
-      "host_lines": 23294
+      "host_lines": 22169
     }
   },
   "growth_reasons": {

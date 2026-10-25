@@ -8,7 +8,7 @@
 //! foreground submission and settlement observation, step finalization,
 //! resident Run control and the durable-ingress operation verbs. It executes
 //! over the contexts [`crate::RunAssembly`] builds and reads committed truth
-//! through [`crate::ThreadReads`]; nothing it holds refers back to it.
+//! through [`CommittedReads`](crate::CommittedReads); nothing it holds refers back to it.
 
 mod roles;
 mod run_application;
@@ -61,7 +61,7 @@ pub struct SessionRuns {
     pub(crate) execution: crate::ExecutionTopology,
     pub(crate) capabilities: Arc<crate::RunCapabilities>,
     pub(crate) run_assembly: Arc<crate::RunAssembly>,
-    pub(crate) thread_reads: Arc<crate::ThreadReads>,
+    pub(crate) thread_reads: Arc<crate::CommittedReads>,
     pub(crate) dispatch: Arc<awaken_dispatch_execution::ProcessDispatch>,
 }
 

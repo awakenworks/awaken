@@ -32,9 +32,9 @@ use awaken_time::WallClockExt;
 use awaken_tool_contract::tool::{ToolOutput, ToolTaskHandle, ToolTaskPoll, ToolTaskStart};
 
 use crate::background::{BackgroundRuns, BackgroundWorkClass};
-use crate::store::CommittedAuthority;
+use awaken_session_run_delivery::CommittedAuthority;
 #[cfg(test)]
-use crate::store::HostCommit;
+use awaken_session_run_delivery::SessionCommit;
 
 mod ownership;
 
@@ -1451,7 +1451,7 @@ mod tests {
             awaken_time::system_clock(),
         ));
         let authoritative_state = crate::authority::ScriptedStateQueries::new(Ok(Vec::new()));
-        let commit = Arc::new(HostCommit::Local(Arc::new(
+        let commit = Arc::new(SessionCommit::Local(Arc::new(
             crate::LocalCommitAdapter::with_queries(
                 process_projection.clone(),
                 authoritative_state.clone(),
@@ -1708,7 +1708,7 @@ mod tests {
         let remote = Arc::new(RemoteTaskTool::default());
         let runtime = Arc::new(Runtime::new().with_plugin(plugin).with_tool(remote.clone()));
         let memory = awaken_store_inmem::MemoryCommitCoordinator::new(awaken_time::system_clock());
-        let commit = Arc::new(HostCommit::Local(Arc::new(
+        let commit = Arc::new(SessionCommit::Local(Arc::new(
             crate::LocalCommitAdapter::projected(memory),
         )));
         let background = Arc::new(BackgroundRuns::new());

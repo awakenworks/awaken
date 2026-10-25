@@ -47,9 +47,9 @@ use awaken_tool_contract::tool::ToolOutput;
 use awaken_ext_compact::CompactConfig;
 
 use crate::background::BackgroundRuns;
-use crate::store::HostCommit;
 use crate::{ThreadEvent, ThreadEventHub};
 use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
+use awaken_session_run_delivery::SessionCommit;
 
 /// Test fixtures mint process-unique temp roots from this sequence.
 #[cfg(test)]
@@ -164,7 +164,7 @@ pub struct ExecutorComponents {
     /// The realization executor and the sandbox providers it realizes through.
     pub(crate) realization_executor: Arc<crate::realization_executor::RealizationExecutor>,
     /// Committed Thread readback over the selected authority.
-    pub(crate) thread_reads: Arc<crate::ThreadReads>,
+    pub(crate) thread_reads: Arc<crate::CommittedReads>,
     /// The live inboxes of the attempts this process owns.
     pub(crate) live_inboxes: Arc<crate::LiveInboxes>,
     /// Capability assembly for Runs.

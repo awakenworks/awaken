@@ -1,19 +1,17 @@
 // @formal surface requirement=session.multiagent.thread_authority
-// @formal reason: Static owner: the ThreadReadRuntime role served by ThreadReads. Each method reads committed
-// @formal reason: Thread truth through ThreadReads and projects its error once; it holds no state and no write
+// @formal reason: Static owner: the ThreadReadRuntime role served by CommittedReads. Each method reads committed
+// @formal reason: Thread truth through CommittedReads and projects its error once; it holds no state and no write
 // @formal reason: path. This is a product-requirement classification, not a direct proof claim.
-//! The Session application's `ThreadReadRuntime` role, served by [`ThreadReads`].
+//! The Session application's `ThreadReadRuntime` role, served by [`CommittedReads`].
 
 use awaken_session_types::RunError;
 
-use crate::session_execution_error::to_run_error;
-
-use super::ThreadReads;
+use super::CommittedReads;
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for ThreadReads {
+impl awaken_session_execution_contract::ThreadReadRuntime for CommittedReads {
     async fn owns_thread(&self, thread: &str) -> Result<bool, RunError> {
-        self.has_durable_thread(thread).await.map_err(to_run_error)
+        self.has_durable_thread(thread).await
     }
 
     /// Committed transcript from durable truth, so the adapter can rehydrate a
@@ -22,7 +20,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ThreadReads {
         &self,
         thread: &str,
     ) -> Result<Vec<awaken_agent_contract::Message>, RunError> {
-        self.committed_messages(thread).await.map_err(to_run_error)
+        self.committed_messages(thread).await
     }
 
     async fn session_thread_recovery_snapshot(
@@ -36,7 +34,6 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ThreadReads {
             &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
         )
         .await
-        .map_err(to_run_error)
     }
 
     async fn session_thread_run_recovery_snapshot(
@@ -52,8 +49,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ThreadReads {
                 &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
                 run_id,
             )
-            .await
-            .map_err(to_run_error)?;
+            .await?;
         awaken_session_execution_contract::select_recovery_snapshot_run(Some(snapshot), run_id)
     }
 
@@ -67,7 +63,6 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ThreadReads {
             &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
         )
         .await
-        .map_err(to_run_error)
     }
 
     async fn committed_outcome_projection(
@@ -78,7 +73,6 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ThreadReads {
     {
         self.committed_outcome(thread, outcome_id)
             .await
-            .map(|terminal| terminal.map(crate::outcome_report::committed_projection))
-            .map_err(to_run_error)
+            .map(|terminal| terminal.map(crate::committed_outcome_projection))
     }
 }

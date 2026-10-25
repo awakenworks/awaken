@@ -259,7 +259,7 @@ pub(crate) trait SessionAuthority: Send + Sync {
     async fn open_commit(
         &self,
         thread: &str,
-    ) -> Result<crate::store::HostCommit, crate::SessionExecutionError>;
+    ) -> Result<awaken_session_run_delivery::SessionCommit, crate::SessionExecutionError>;
 
     /// The durable interrupted-stream checkpoint store, when this process owns
     /// one. A Worker persists checkpoints through its claim-fenced dispatch
@@ -349,8 +349,8 @@ impl SessionAuthority for LocalAuthority {
     async fn open_commit(
         &self,
         thread: &str,
-    ) -> Result<crate::store::HostCommit, crate::SessionExecutionError> {
-        Ok(crate::store::HostCommit::Local(
+    ) -> Result<awaken_session_run_delivery::SessionCommit, crate::SessionExecutionError> {
+        Ok(awaken_session_run_delivery::SessionCommit::Local(
             self.runtime.open_commit(thread).await?,
         ))
     }
@@ -521,9 +521,9 @@ impl SessionAuthority for UpstreamAuthority {
     async fn open_commit(
         &self,
         _thread: &str,
-    ) -> Result<crate::store::HostCommit, crate::SessionExecutionError> {
-        Ok(crate::store::HostCommit::Remote(
-            crate::store::RemoteHostCommit::new(),
+    ) -> Result<awaken_session_run_delivery::SessionCommit, crate::SessionExecutionError> {
+        Ok(awaken_session_run_delivery::SessionCommit::Remote(
+            awaken_session_run_delivery::WorkerRecoveryCommit::new(),
         ))
     }
 
