@@ -14,7 +14,7 @@ use awaken_time::WallClockExt as _;
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
-use awaken_environment_application::execution::EnvironmentExecutionApplication;
+use awaken_environment_application::execution::SessionAccessAuthenticator;
 use awaken_executable_environment_contract::WorkSessionAccess;
 use axum::Json;
 use axum::extract::{Request, State};
@@ -28,19 +28,32 @@ use crate::types::ErrorResponse;
 use crate::types::resource::ResourceAccess;
 
 /// Dependencies for the one Work-session capability guard.
+/// Only current-lease authentication is available here; claim, metadata and
+/// registration capabilities stay in their own callers.
+///
+/// ```
+/// use std::sync::Arc;
+/// use awaken_environment_application::execution::SessionAccessAuthenticator;
+/// fn guard(
+///     authentication: SessionAccessAuthenticator,
+///     sessions: Arc<awaken_protocol_managed::ManagedState>,
+/// ) -> Arc<awaken_protocol_managed::ManagedWorkSessionAccess> {
+///     awaken_protocol_managed::ManagedWorkSessionAccess::new(authentication, sessions)
+/// }
+/// ```
 pub struct ManagedWorkSessionAccess {
-    environments: Arc<EnvironmentExecutionApplication>,
+    authentication: SessionAccessAuthenticator,
     sessions: Arc<ManagedState>,
 }
 
 impl ManagedWorkSessionAccess {
     #[must_use]
     pub fn new(
-        environments: Arc<EnvironmentExecutionApplication>,
+        authentication: SessionAccessAuthenticator,
         sessions: Arc<ManagedState>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            environments,
+            authentication,
             sessions,
         })
     }
@@ -139,9 +152,8 @@ pub async fn work_session_guard(
     }
     let token = RedactedString::from(presented.to_owned());
     let access = match state
-        .environments
+        .authentication
         // The token's expiry is judged on the Session application's clock.
-        .session_access()
         .authenticate(&token, state.sessions.roles.clock.now_ms())
         .await
     {
@@ -167,11 +179,18 @@ pub async fn work_session_guard(
         .await
     {
         Ok(scope) => scope,
-        Err(_) => {
+        Err(crate::state::StateError::NotFound) => {
             return crate::with_unscoped_managed_response_context(error(
                 StatusCode::UNAUTHORIZED,
                 "authentication_error",
                 "Work Session is unavailable",
+            ));
+        }
+        Err(_) => {
+            return crate::with_unscoped_managed_response_context(error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "api_error",
+                "Work Session authorization is unavailable",
             ));
         }
     };
@@ -251,6 +270,235 @@ mod tests {
             (Method::POST, "/v1/agents"),
         ] {
             assert!(!permits(&method, path, &access, &scope), "{method} {path}");
+        }
+    }
+
+    async fn bounded_guard_response(
+        app: axum::Router,
+        request: axum::extract::Request,
+    ) -> Response {
+        use tower::ServiceExt as _;
+        tokio::time::timeout(std::time::Duration::from_secs(5), app.oneshot(request))
+            .await
+            .expect("guard response deadline")
+            .unwrap()
+    }
+
+    /// Only the lease-authentication SPI is implemented. Constructing the guard
+    /// must not require claim, registration or owner-only mutation capabilities.
+    #[derive(Default)]
+    struct AuthenticationOnly {
+        attempts: std::sync::atomic::AtomicUsize,
+        times: std::sync::Mutex<Vec<u64>>,
+        unavailable: std::sync::atomic::AtomicBool,
+        current_lease: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_executable_environment_contract::SessionAccessAuthenticator for AuthenticationOnly {
+        async fn authenticate_session_access(
+            &self,
+            _presented: &awaken_executable_environment_contract::SessionAccessDigest,
+            now_ms: u64,
+        ) -> Result<Option<WorkSessionAccess>, awaken_executable_environment_contract::WorkQueueError>
+        {
+            use std::sync::atomic::Ordering;
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            self.times.lock().unwrap().push(now_ms);
+            if self.unavailable.load(Ordering::SeqCst) {
+                Err(
+                    awaken_executable_environment_contract::WorkQueueError::Storage(
+                        "private lease backend diagnostic".into(),
+                    ),
+                )
+            } else if self.current_lease.load(Ordering::SeqCst) {
+                let mut lease = access();
+                lease.expires_at_unix_ms = now_ms.checked_add(60_000).unwrap();
+                Ok(Some(lease))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn authentication_only_guard_preserves_management_fallthrough_and_fail_closed_errors() {
+        use http_body_util::BodyExt as _;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // R1 missing/management credentials -> management ingress, no lease read.
+        // R2 invalid Session bearer -> 401, no management fallback.
+        // R3 unavailable authority -> 503, no management fallback or error leak.
+        // The same selected authentication role handles both bearer requests.
+        let selected = Arc::new(AuthenticationOnly::default());
+        let sessions =
+            Arc::new(ManagedState::new(crate::state::test_support::RehydrateFake::default()).await);
+        let guard = ManagedWorkSessionAccess::new(
+            SessionAccessAuthenticator::new(selected.clone()),
+            sessions,
+        );
+        let management_calls = Arc::new(AtomicUsize::new(0));
+        let calls = management_calls.clone();
+        let app = axum::Router::new()
+            .route(
+                "/v1/sessions/sesn_1",
+                axum::routing::get(move || {
+                    let calls = calls.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::NO_CONTENT
+                    }
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                guard,
+                work_session_guard,
+            ));
+        for credential in [None, Some("Bearer platform-management")] {
+            let mut request = axum::http::Request::builder().uri("/v1/sessions/sesn_1");
+            if let Some(credential) = credential {
+                request = request.header(axum::http::header::AUTHORIZATION, credential);
+            }
+            let response = bounded_guard_response(
+                app.clone(),
+                request.body(axum::body::Body::empty()).unwrap(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::NO_CONTENT, "R1");
+        }
+        assert_eq!(management_calls.load(Ordering::SeqCst), 2, "R1");
+        assert_eq!(selected.attempts.load(Ordering::SeqCst), 0, "R1");
+        for (unavailable, expected, kind, attempts) in [
+            (false, StatusCode::UNAUTHORIZED, "authentication_error", 1),
+            (true, StatusCode::SERVICE_UNAVAILABLE, "api_error", 2),
+        ] {
+            selected.unavailable.store(unavailable, Ordering::SeqCst);
+            let response = bounded_guard_response(
+                app.clone(),
+                axum::http::Request::builder()
+                    .uri("/v1/sessions/sesn_1")
+                    .header(
+                        axum::http::header::AUTHORIZATION,
+                        "Bearer sk-ant-req-invalid",
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(response.status(), expected, "R2/R3");
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"]["type"], kind);
+            assert!(
+                !body
+                    .to_string()
+                    .contains("private lease backend diagnostic")
+            );
+            assert!(!body.to_string().contains("sk-ant-req-invalid"));
+            assert_eq!(selected.attempts.load(Ordering::SeqCst), attempts);
+            assert_eq!(management_calls.load(Ordering::SeqCst), 2, "no fallback");
+        }
+    }
+
+    #[tokio::test]
+    async fn session_scope_read_fault_is_unavailable_and_never_an_invalid_credential() {
+        use crate::state::test_support::{
+            ConflictInjectingRepo, ReadControl, RehydrateFake, managed_state_from_parts,
+        };
+        use http_body_util::BodyExt as _;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let reads = ReadControl::default();
+        let repository = Arc::new(ConflictInjectingRepo::new(
+            Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                    .await
+                    .unwrap(),
+            ),
+            0,
+            reads.clone(),
+        ));
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_000));
+        let sessions = Arc::new(managed_state_from_parts(
+            Arc::new(RehydrateFake::default()),
+            None,
+            repository,
+            awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
+            clock,
+            Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        ));
+        let selected = Arc::new(AuthenticationOnly::default());
+        selected.current_lease.store(true, Ordering::SeqCst);
+        let guard = ManagedWorkSessionAccess::new(
+            SessionAccessAuthenticator::new(selected.clone()),
+            sessions,
+        );
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let calls = handler_calls.clone();
+        let app = axum::Router::new()
+            .route(
+                "/v1/sessions/sesn_1",
+                axum::routing::get(move || {
+                    let calls = calls.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::NO_CONTENT
+                    }
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                guard,
+                work_session_guard,
+            ));
+        // A current lease is a known fact from the selected authentication SPI.
+        // S1 absent Session ->401. S2 its real SQLite authority cannot be read
+        // ->503, never reclassify a verified credential as invalid. S3 the fault
+        // clears ->the same lease still sees true absence401, no new authority.
+        for (unavailable, status, kind, attempts) in [
+            (false, StatusCode::UNAUTHORIZED, "authentication_error", 1),
+            (true, StatusCode::SERVICE_UNAVAILABLE, "api_error", 2),
+            (false, StatusCode::UNAUTHORIZED, "authentication_error", 3),
+        ] {
+            reads.fail("session", unavailable);
+            reads.fail("owner", unavailable);
+            let previous_reads = reads.trace().len();
+            let response = bounded_guard_response(
+                app.clone(),
+                axum::http::Request::builder()
+                    .uri("/v1/sessions/sesn_1")
+                    .header(
+                        axum::http::header::AUTHORIZATION,
+                        "Bearer sk-ant-req-current",
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(selected.attempts.load(Ordering::SeqCst), attempts);
+            assert_eq!(
+                selected.times.lock().unwrap().as_slice(),
+                vec![1_000; attempts]
+            );
+            assert_eq!(
+                handler_calls.load(Ordering::SeqCst),
+                0,
+                "all scope failures deny before dispatch"
+            );
+            if unavailable {
+                assert!(
+                    reads.trace().len() > previous_reads,
+                    "the actual Session read fault must be reached"
+                );
+            }
+            assert_eq!(
+                response.status(),
+                status,
+                "Session absence and authority unavailability are distinct"
+            );
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"]["type"], kind);
+            assert!(!body.to_string().contains("scripted"));
+            assert!(!body.to_string().contains("sk-ant-req-current"));
         }
     }
 }

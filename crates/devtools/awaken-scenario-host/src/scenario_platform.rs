@@ -207,7 +207,7 @@ pub(super) async fn mount_with_environments_and_agent_source(
     };
     let host = managed.host.clone();
     let work_session_access = awaken_protocol_managed::ManagedWorkSessionAccess::new(
-        environment_execution.clone(),
+        environment_execution.session_access(),
         managed.state.managed.clone(),
     );
     // Environment routes are composed outside the Coordinator's already-layered
@@ -216,7 +216,13 @@ pub(super) async fn mount_with_environments_and_agent_source(
     // existing Managed route.
     let environments = awaken_protocol_managed::with_managed_response_context(
         awaken_protocol_managed::environment_authoring_router(environment_authoring.clone()).merge(
-            awaken_protocol_managed::environment_work_router(environment_execution, host.clock()),
+            awaken_protocol_managed::environment_work_router(
+                environment_execution.work_queries(),
+                environment_execution.work_consumer(),
+                environment_execution.work_metadata(),
+                environment_execution.session_work_leases(),
+                host.clock(),
+            ),
         ),
     )
     .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
@@ -772,3 +778,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod environment_warmup_tests;
