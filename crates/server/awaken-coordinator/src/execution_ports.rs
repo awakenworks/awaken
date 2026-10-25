@@ -5,7 +5,7 @@
 //! before the Coordinator component exists. The Coordinator drives Runs,
 //! Worker commits and its dispatch work only through these ports, so its
 //! dependency closure holds no executor, realization or Sandbox
-//! implementation (plan v4 section 3.3, principles P4 and P5).
+//! implementation (ADR-0091 composition boundary).
 //!
 //! Where each Coordinator path that used executor types now belongs:
 //!

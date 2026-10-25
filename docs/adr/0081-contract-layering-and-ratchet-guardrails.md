@@ -9,7 +9,7 @@
 - Leaves unchanged: ADR-0008, ADR-0012 and ADR-0028 (the open-source product ships
   durable multi-node backends) and the hosted-platform placement recorded by the
   Cloud repository's ADR-0001, ADR-0040 and ADR-0041.
-- Amended by: ADR-0091 (Proposed: §7 size per module, §8 bundle traits, §9 no
+- Amended by: ADR-0091 (Accepted: §7 size per module, §8 bundle traits, §9 no
   optional run-time role discovery)
 
 ## Context

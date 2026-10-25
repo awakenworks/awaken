@@ -3,7 +3,7 @@
 - Status: Proposed
 - Date: 2026-07-16
 - Amended by: ADR-0069 (ACP capability and configuration lifecycle, especially the backend-owned trusted-host amendment)
-- Amended by: ADR-0091 (Proposed; enforcement of the "Assembly" section)
+- Amended by: ADR-0091 (Accepted; enforcement of the "Assembly" section)
 - Implemented: partially — see Amendment 2026-10-09
 - Amends: ADR-0002 `RunDelegationService` (Phase E: local and remote children are one ordinary child-Run path; recorded 2026-10-09)
 - Amended: 2026-10-09 (reconciled with ADR-0066: ACP MCP credential delivery)

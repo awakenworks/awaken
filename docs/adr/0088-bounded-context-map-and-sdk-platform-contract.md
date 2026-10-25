@@ -8,7 +8,7 @@
   awaken-cloud only through later renames (none in this ADR).
 - Amended by: ADR-0089 (Accepted: decision 2 separates Execution's realization
   effects from the independent Session driver shared by both topologies)
-- Amended by: ADR-0091 (Proposed: the 2026-10-07 amendment sentence on not merging
+- Amended by: ADR-0091 (Accepted: the 2026-10-07 amendment sentence on not merging
   the small Session contracts)
 - Amended: 2026-10-09 (reconciled with ADR-0081: public-API snapshots are an
   `api_snapshot` opt-in)

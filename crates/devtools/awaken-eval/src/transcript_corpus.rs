@@ -488,6 +488,37 @@ mod tests {
     use std::io::Write;
 
     #[test]
+    fn home_paths_are_redacted_without_changing_urls_or_path_suffixes() {
+        // Cause/effect table: H1 a rooted Unix/macOS/Windows user path at a
+        // text boundary redacts its user prefix; H2 suffixes, Unicode and
+        // surrounding punctuation survive; H3 a URL, relative path, system
+        // path or root without a username is unchanged; H4 a local file URI
+        // retains its scheme while its filesystem user prefix is redacted.
+        // Both transcript
+        // importers already call this one sanitizer; no second import path.
+        for (input, expected) in [
+            ("/home/alice/work", "<home>/work"),
+            ("/Users/bob", "<home>"),
+            (r"C:\Users\Casey\report", r"<home>\report"),
+            ("d:/users/dana/report", "<home>/report"),
+            ("`/home/用户/file`,", "`<home>/file`,"),
+            ("source=/home/alice.", "source=<home>."),
+            ("/home/alice /Users/bob", "<home> <home>"),
+            ("file:///home/alice/report", "file://<home>/report"),
+            (r"FILE:///C:\Users\Casey\report", r"FILE:///<home>\report"),
+            (
+                "https://example.test/home/alice",
+                "https://example.test/home/alice",
+            ),
+            ("relative/home/alice", "relative/home/alice"),
+            ("/workspace/input", "/workspace/input"),
+            ("/home/", "/home/"),
+        ] {
+            assert_eq!(sanitize(input), expected, "input: {input}");
+        }
+    }
+
+    #[test]
     fn imports_balanced_goal_status_without_oracle_reason_leakage() {
         let dir =
             std::env::temp_dir().join(format!("awaken-claude-goal-import-{}", std::process::id()));
