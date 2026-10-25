@@ -84,6 +84,17 @@ fn mem_err(err: impl std::fmt::Display) -> MemErr {
     MemErr::Storage(err.to_string())
 }
 
+/// Reserve the database writer before reading mutation conditions. A deferred
+/// read-to-write upgrade can fail with SQLITE_BUSY without waiting for the busy
+/// timeout; every multi-statement mutation shares this admission mechanism.
+async fn begin_write(
+    connection: &mut SqliteConnection,
+) -> Result<sqlx::Transaction<'_, sqlx::Sqlite>, MemErr> {
+    sqlx::Connection::begin_with(connection, "BEGIN IMMEDIATE")
+        .await
+        .map_err(mem_err)
+}
+
 fn domain_version(value: i64) -> Result<u64, MemErr> {
     StoredU64::try_from(value)
         .map(StoredU64::domain_value)
@@ -113,9 +124,9 @@ where
     tokio::spawn(operation(connection)).await.map_err(mem_err)?
 }
 
-/// A SQLite-backed [`MemoryWriter`] (path-addressed, CAS). Each mutation holds the
-/// store's one connection, so a read-modify-write (compare-and-swap, rename-replace) is
-/// atomic within the process; a cross-node CAS is the postgres backend's job.
+/// A SQLite-backed [`MemoryWriter`] (path-addressed, CAS). Each mutation reserves
+/// the database writer before checking conditions, so independent clients of one
+/// file observe atomic compare-and-swap and rename-replace commands.
 pub struct SqliteMemoryRepository {
     pool: EmbeddedPool,
     clock: Arc<dyn WallClock>,
@@ -340,11 +351,7 @@ impl SqliteMemoryRepository {
         let id = candidate.id();
         let encoded = serde_json::to_string(candidate).map_err(mem_err)?;
         with_conn_mem(&self.pool, move |mut conn| async move {
-            // Reserve the SQLite write transaction BEFORE observing absence or
-            // capacity, including independent connections after Worker restart.
-            let mut tx = sqlx::Connection::begin_with(&mut *conn, "BEGIN IMMEDIATE")
-                .await
-                .map_err(mem_err)?;
+            let mut tx = begin_write(&mut conn).await?;
             let existing: Option<String> = sqlx::query_scalar(&format!(
                 "SELECT candidate_json FROM {NS}_copy_conflicts WHERE store_id = ?1 AND id = ?2"
             ))
@@ -475,7 +482,7 @@ impl SqliteMemoryRepository {
         let actor = actor.cloned();
         let clock = self.clock.clone();
         with_conn_mem(&self.pool, move |mut conn| async move {
-            let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(mem_err)?;
+            let mut tx = begin_write(&mut conn).await?;
             let exists = sqlx::query_scalar::<_, i64>(&format!(
                 "SELECT 1 FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"
             ))
@@ -595,7 +602,7 @@ impl SqliteMemoryRepository {
             // transaction is rolled back on recovery). The transaction rolls back
             // if dropped before `commit` (any early return here — e.g. a mid-op
             // fault — undoes the DELETE).
-            let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(mem_err)?;
+            let mut tx = begin_write(&mut conn).await?;
             let row: Option<(String, Vec<u8>, String, i64, i64)> = sqlx::query_as(&format!(
                 "SELECT id, content, sha, version, created FROM {NS}_memories \
                  WHERE store_id = ?1 AND path = ?2"
@@ -697,7 +704,7 @@ impl SqliteMemoryRepository {
         let actor = actor.cloned();
         let clock = self.clock.clone();
         with_conn_mem(&self.pool, move |mut conn| async move {
-            let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(mem_err)?;
+            let mut tx = begin_write(&mut conn).await?;
             let memory_id: Option<String> = sqlx::query_scalar(&format!(
                 "SELECT id FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"
             ))
@@ -760,7 +767,7 @@ impl SqliteMemoryRepository {
         );
         let clock = self.clock.clone();
         with_conn_mem(&self.pool, move |mut conn| async move {
-            let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(mem_err)?;
+            let mut tx = begin_write(&mut conn).await?;
             let row: Option<(String, Vec<u8>, String, i64, i64, i64)> = sqlx::query_as(&format!(
                 "SELECT id, content, sha, version, created, updated FROM {NS}_memories \
                  WHERE store_id = ?1 AND path = ?2"
@@ -848,7 +855,7 @@ impl SqliteMemoryRepository {
         let actor = actor.cloned();
         let clock = self.clock.clone();
         with_conn_mem(&self.pool, move |mut conn| async move {
-            let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(mem_err)?;
+            let mut tx = begin_write(&mut conn).await?;
             let existing: Option<VersionRow> = sqlx::query_as(&format!(
                 "SELECT id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json \
                  FROM {NS}_versions WHERE store_id = ?1 AND id = ?2"
@@ -893,7 +900,7 @@ impl SqliteMemoryRepository {
     async fn purge_store_inner(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
         let store = store.to_string();
         with_conn_mem(&self.pool, move |mut conn| async move {
-            let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(mem_err)?;
+            let mut tx = begin_write(&mut conn).await?;
             let copy_conflicts_deleted = sqlx::query(&format!(
                 "DELETE FROM {NS}_copy_conflicts WHERE store_id = ?1"
             ))
@@ -956,7 +963,7 @@ impl SqliteMemoryRepository {
         let expected_path = expected_path.map(str::to_owned);
         let clock = self.clock.clone();
         with_conn_mem(&self.pool, move |mut conn| async move {
-            let mut tx = sqlx::Connection::begin(&mut *conn).await.map_err(mem_err)?;
+            let mut tx = begin_write(&mut conn).await?;
             let row: Option<(String, String, Vec<u8>, i64, i64, i64)> = sqlx::query_as(&format!(
                 "SELECT path, sha, content, version, created, updated FROM {NS}_memories \
                  WHERE store_id = ?1 AND id = ?2"

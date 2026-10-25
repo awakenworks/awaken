@@ -1693,6 +1693,18 @@ pub(crate) async fn snapshot_heads_follow_one_committed_cross_file_prefix<M>(fs:
 where
     M: MemoryWriter + MemorySnapshotSource + MemoryVersionQueries + Send + Sync + 'static,
 {
+    snapshot_heads_follow_one_committed_cross_file_prefix_through(fs.clone(), fs).await;
+}
+
+/// As above, with the writes and the snapshots on separately supplied handles
+/// (for a durable backend: two independently opened clients of one database).
+pub(crate) async fn snapshot_heads_follow_one_committed_cross_file_prefix_through<W, R>(
+    writer: std::sync::Arc<W>,
+    reader: std::sync::Arc<R>,
+) where
+    W: MemoryWriter + Send + Sync + 'static,
+    R: MemorySnapshotSource + MemoryVersionQueries + Send + Sync + 'static,
+{
     use awaken_resource_contract::Memory;
     use std::sync::{
         Arc,
@@ -1712,21 +1724,21 @@ where
         let end = sequence.fetch_add(1, Ordering::SeqCst);
         (start, end, heads)
     }
-    let a = MemoryWriter::create(fs.as_ref(), STORE, "/a.md", "0")
+    let a = MemoryWriter::create(writer.as_ref(), STORE, "/a.md", "0")
         .await
         .unwrap();
-    let b = MemoryWriter::create(fs.as_ref(), STORE, "/b.md", "0")
+    let b = MemoryWriter::create(writer.as_ref(), STORE, "/b.md", "0")
         .await
         .unwrap();
-    MemoryWriter::create(fs.as_ref(), FOREIGN, "/foreign.md", "sentinel")
+    MemoryWriter::create(writer.as_ref(), FOREIGN, "/foreign.md", "sentinel")
         .await
         .unwrap();
-    let foreign = MemorySnapshotSource::snapshot_heads(fs.as_ref(), FOREIGN)
+    let foreign = MemorySnapshotSource::snapshot_heads(reader.as_ref(), FOREIGN)
         .await
         .unwrap();
     let initial = vec![a.clone(), b.clone()];
     assert_eq!(
-        MemorySnapshotSource::snapshot_heads(fs.as_ref(), STORE)
+        MemorySnapshotSource::snapshot_heads(reader.as_ref(), STORE)
             .await
             .unwrap(),
         initial
@@ -1735,7 +1747,7 @@ where
     let (first_committed, first_observed) = oneshot::channel();
     let (continue_writer, continue_received) = oneshot::channel();
     let (all_committed, all_observed) = oneshot::channel();
-    let writer_fs = fs.clone();
+    let writer_fs = writer.clone();
     let writer_sequence = sequence.clone();
     let writer = tokio::spawn(async move {
         let (mut a, mut b) = (a, b);
@@ -1782,8 +1794,8 @@ where
         all_committed.send(()).expect("reader remains present");
         writes
     });
-    let reader_fs = fs.clone();
-    let reader = tokio::spawn(async move {
+    let reader_fs = reader.clone();
+    let reader_task = tokio::spawn(async move {
         first_observed.await.expect("first A write committed");
         let mut observations = vec![observe(reader_fs.as_ref(), &sequence).await];
         continue_writer.send(()).expect("writer remains present");
@@ -1796,7 +1808,7 @@ where
         observations
     });
     let writes = writer.await.unwrap();
-    let observations = reader.await.unwrap();
+    let observations = reader_task.await.unwrap();
     assert_eq!(writes.len(), ROUNDS * 2);
     assert_eq!(observations.len(), 66);
     for (index, (start, end, heads)) in observations.iter().enumerate() {
@@ -1835,20 +1847,20 @@ where
         );
     }
     assert_eq!(
-        MemoryVersionQueries::list_versions(fs.as_ref(), STORE)
+        MemoryVersionQueries::list_versions(reader.as_ref(), STORE)
             .await
             .unwrap()
             .len(),
         ROUNDS * 2 + 2
     );
     assert_eq!(
-        MemorySnapshotSource::snapshot_heads(fs.as_ref(), FOREIGN)
+        MemorySnapshotSource::snapshot_heads(reader.as_ref(), FOREIGN)
             .await
             .unwrap(),
         foreign
     );
     assert_eq!(
-        MemoryVersionQueries::list_versions(fs.as_ref(), FOREIGN)
+        MemoryVersionQueries::list_versions(reader.as_ref(), FOREIGN)
             .await
             .unwrap()
             .len(),

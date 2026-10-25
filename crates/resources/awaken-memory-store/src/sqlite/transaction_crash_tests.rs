@@ -303,10 +303,9 @@ async fn transaction_interruption_child() {
             _ => panic!("unknown production cut"),
         };
         let remaining = AtomicUsize::new(ordinal);
-        repository
-            .pool
-            .acquire()
+        tokio::time::timeout(Duration::from_secs(30), repository.pool.acquire())
             .await
+            .expect("the crash child acquires its production connection")
             .unwrap()
             .lock_handle()
             .await
