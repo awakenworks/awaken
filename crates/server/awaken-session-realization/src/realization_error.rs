@@ -13,6 +13,11 @@ use std::borrow::Cow;
 
 use awaken_provisioning_contract::{ProvisioningDeadline, SandboxError};
 use awaken_resource_contract::RepositoryBindingVerifierError;
+#[cfg(test)]
+use awaken_session_configuration_contract::resource::binding_checks::REPOSITORY_BINDING_CORRUPT_CODE;
+use awaken_session_configuration_contract::resource::binding_checks::{
+    repository_binding_code, repository_binding_run_error,
+};
 use awaken_session_realization_contract::{
     ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, ENVIRONMENT_PROVISIONING_CODE,
     SessionRealizationControlDisposition, effect_failure_disposition, environment_effect_error,
@@ -632,44 +637,6 @@ fn repository_binding_disposition(error: &RepositoryBindingVerifierError) -> Dis
 }
 
 /// Stable code of a Repository binding authority that returned corrupt data.
-const REPOSITORY_BINDING_CORRUPT_CODE: &str = "repository_binding_authority_corrupt";
-
-fn repository_binding_code(error: &RepositoryBindingVerifierError) -> &'static str {
-    match error {
-        RepositoryBindingVerifierError::InvalidRequest { .. }
-        | RepositoryBindingVerifierError::Denied { .. } => "invalid_request",
-        RepositoryBindingVerifierError::Conflict { .. } => {
-            awaken_session_types::error::CONFLICT_CODE
-        }
-        RepositoryBindingVerifierError::AuthorityUnavailable { .. }
-        | RepositoryBindingVerifierError::Indeterminate { .. } => "unavailable",
-        RepositoryBindingVerifierError::CorruptAuthority { .. } => REPOSITORY_BINDING_CORRUPT_CODE,
-    }
-}
-
-/// A Repository binding failure keeps its fault across the Run boundary: a
-/// concurrently changed authority stays a conflict.
-fn repository_binding_run_error(error: &RepositoryBindingVerifierError) -> RunError {
-    let message = error.to_string();
-    let code = repository_binding_code(error);
-    match error {
-        RepositoryBindingVerifierError::InvalidRequest { .. }
-        | RepositoryBindingVerifierError::Denied { .. } => {
-            RunError::bad_request_classified(code, message)
-        }
-        RepositoryBindingVerifierError::Conflict { .. } => {
-            RunError::conflict_classified(code, message)
-        }
-        RepositoryBindingVerifierError::AuthorityUnavailable { .. }
-        | RepositoryBindingVerifierError::Indeterminate { .. } => {
-            RunError::unavailable_classified(code, message)
-        }
-        RepositoryBindingVerifierError::CorruptAuthority { .. } => {
-            RunError::classified(code, message)
-        }
-    }
-}
-
 /// The one projection of a realization failure onto the neutral Run error.
 /// Its kind and code are chosen so that the contract's own classification of
 /// the projected error equals [`RealizationError::disposition`].

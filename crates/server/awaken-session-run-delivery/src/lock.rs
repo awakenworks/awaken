@@ -14,6 +14,8 @@ pub enum DeliveryLock {
     CompletionRegistry,
     #[error("Thread event hub lock poisoned")]
     ThreadEventHub,
+    #[error("Session dispatch projections lock poisoned")]
+    SessionProjections,
 }
 
 impl From<DeliveryLock> for awaken_session_types::RunError {

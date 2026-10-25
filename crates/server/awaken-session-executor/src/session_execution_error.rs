@@ -152,20 +152,7 @@ impl From<SessionExecutionError>
 /// failure reaches dispatch as its one Run projection.
 impl From<awaken_dispatch_execution::AdmissionError> for SessionExecutionError {
     fn from(error: awaken_dispatch_execution::AdmissionError) -> Self {
-        use awaken_dispatch_execution::AdmissionError;
-        match error {
-            AdmissionError::Rejected(message) => Self::bad_request(message),
-            AdmissionError::Run(error) => from_run_error(error),
-            AdmissionError::LiveControl(
-                error @ (awaken_dispatch_execution::LiveRunControlError::NotFound(_)
-                | awaken_dispatch_execution::LiveRunControlError::NoSubscriber(_)),
-            ) => Self::bad_request(error.to_string()),
-            error @ (AdmissionError::Dispatch(_)
-            | AdmissionError::LiveControl(_)
-            | AdmissionError::ResourceEnvelope(_)
-            | AdmissionError::RuntimeEnvelope(_)
-            | AdmissionError::AlreadyBound(_)) => Self::internal(error.to_string()),
-        }
+        from_run_error(RunError::from(error))
     }
 }
 

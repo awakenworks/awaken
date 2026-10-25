@@ -3,6 +3,7 @@
 //! Resource Registry owns reusable resources. This crate owns only the frozen
 //! Session binding and the lease that fences its Runtime realization.
 
+pub mod binding_checks;
 mod inputs;
 mod realization_lease;
 

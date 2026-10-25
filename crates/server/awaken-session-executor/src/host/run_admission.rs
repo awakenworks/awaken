@@ -26,7 +26,6 @@ impl crate::RunAssembly {
         &self,
         activation: RunActivation,
     ) -> awaken_dispatch_execution::session_dispatch::DispatchPreparation<'_> {
-        let configured = activation.effective_model_ref() != crate::UNCONFIGURED_MODEL_REF;
         awaken_dispatch_execution::session_dispatch::DispatchPreparation::new(
             activation,
             Box::new(super::dispatch_execution::InstalledSessionReads(
@@ -34,9 +33,8 @@ impl crate::RunAssembly {
             )),
             self.local_workspace(),
             self.capabilities.agent.agent_publications.as_deref(),
-            crate::agent_catalog::RUN_PUBLICATIONS,
+            awaken_session_run_delivery::RUN_PUBLICATIONS,
             self.runs_local_dispatch_pool(),
-            configured,
         )
     }
 }
@@ -81,7 +79,7 @@ mod tests {
                 let model = if configured {
                     "model"
                 } else {
-                    crate::UNCONFIGURED_MODEL_REF
+                    awaken_dispatch_execution::session_dispatch::UNCONFIGURED_MODEL_REF
                 };
                 let activation = awaken_runtime_contract::RunActivation::new(
                     awaken_agent_contract::agent::run::Id("admission-order-run".into()),

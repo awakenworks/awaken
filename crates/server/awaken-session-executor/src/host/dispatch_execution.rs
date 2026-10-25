@@ -82,7 +82,7 @@ pub(crate) fn session_worker_resolver(
             run_assembly.clone(),
         )),
         projection,
-        publication_closure: crate::agent_catalog::RUN_PUBLICATIONS,
+        publication_closure: awaken_session_run_delivery::RUN_PUBLICATIONS,
     };
     Ok(SessionWorkerResolver::worker(
         queue,

@@ -21,6 +21,7 @@ mod network_policy;
 pub mod resource;
 mod runtime_projection;
 pub mod sandbox_layout;
+pub mod skill_delivery;
 mod skill_execution;
 mod tool_configuration;
 

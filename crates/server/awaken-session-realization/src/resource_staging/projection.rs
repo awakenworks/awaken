@@ -12,8 +12,8 @@ use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_types::RunError;
 
 use crate::sandbox_layout::resource_mount_is_create_time;
-use crate::skill_delivery::skill_store_run_error;
 use crate::staged_resources::EnvironmentResourceReconciliation;
+use awaken_session_configuration_contract::skill_delivery::skill_store_run_error;
 
 mod repository_error;
 mod transition;
@@ -569,7 +569,7 @@ impl crate::resource_staging::ResourceStaging {
             if reconcile_skills {
                 environment
                     .projection()
-                    .remove_projection_path(crate::skill_delivery::DELIVERED_SKILLS_SUBDIR)
+                    .remove_projection_path(awaken_session_configuration_contract::skill_delivery::DELIVERED_SKILLS_SUBDIR)
                     .await
                     .map_err(crate::realization_error::RealizationError::from)?;
             }

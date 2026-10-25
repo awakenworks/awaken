@@ -72,9 +72,73 @@ impl AdmissionError {
     }
 }
 
+/// An admission failure as the neutral Run error its callers return: the
+/// caller's refusals are bad requests, a Run failure keeps its own class, and
+/// a store, envelope or composition failure is internal.
+impl From<AdmissionError> for RunError {
+    fn from(error: AdmissionError) -> Self {
+        match error {
+            AdmissionError::Rejected(message) => Self::bad_request(message),
+            AdmissionError::Run(error) => error,
+            AdmissionError::LiveControl(
+                error @ (crate::LiveRunControlError::NotFound(_)
+                | crate::LiveRunControlError::NoSubscriber(_)),
+            ) => Self::bad_request(error.to_string()),
+            error @ (AdmissionError::Dispatch(_)
+            | AdmissionError::LiveControl(_)
+            | AdmissionError::ResourceEnvelope(_)
+            | AdmissionError::RuntimeEnvelope(_)
+            | AdmissionError::AlreadyBound(_)) => Self::internal(error.to_string()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admission_failures_project_one_run_class() {
+        // Decision table: cause = the admission failure; effect = the neutral
+        // Run error kind and code its callers return.
+        use awaken_session_types::RunErrorKind::{BadRequest, Internal, Unavailable};
+        let rows = [
+            (
+                "R1 refused",
+                AdmissionError::rejected("refused"),
+                BadRequest,
+                "invalid_request",
+            ),
+            (
+                "R2 Run failure keeps its class",
+                AdmissionError::Run(RunError::unavailable_classified("busy", "busy")),
+                Unavailable,
+                "busy",
+            ),
+            (
+                "R3 unknown live Run",
+                AdmissionError::LiveControl(crate::LiveRunControlError::NotFound("r".into())),
+                BadRequest,
+                "invalid_request",
+            ),
+            (
+                "R4 store failure",
+                AdmissionError::Dispatch(DispatchError::Unavailable("x".into())),
+                Internal,
+                "internal",
+            ),
+            (
+                "R5 role bound twice",
+                AdmissionError::AlreadyBound("Worker evidence"),
+                Internal,
+                "internal",
+            ),
+        ];
+        for (rule, cause, kind, code) in rows {
+            let error = RunError::from(cause);
+            assert_eq!((error.kind, error.code.as_str()), (kind, code), "{rule}");
+        }
+    }
 
     #[test]
     fn admission_failures_project_one_claim_class() {

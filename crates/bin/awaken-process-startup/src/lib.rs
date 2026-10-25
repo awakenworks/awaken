@@ -637,7 +637,8 @@ fn runtime_model_wiring(
     match runtime {
         RuntimeModelServices::PublishedProviders => RuntimeModelWiring {
             executor: Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
-            model_ref: awaken_session_executor::UNCONFIGURED_MODEL_REF.to_string(),
+            model_ref: awaken_dispatch_execution::session_dispatch::UNCONFIGURED_MODEL_REF
+                .to_string(),
             materializer: Some(Arc::new({
                 let materializer =
                     awaken_credential_materializer::CredentialInferenceMaterializer::from_pinned(
@@ -652,7 +653,8 @@ fn runtime_model_wiring(
         },
         RuntimeModelServices::NoModelConfigured => RuntimeModelWiring {
             executor: Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
-            model_ref: awaken_session_executor::UNCONFIGURED_MODEL_REF.to_string(),
+            model_ref: awaken_dispatch_execution::session_dispatch::UNCONFIGURED_MODEL_REF
+                .to_string(),
             materializer: None,
         },
         #[cfg(any(test, feature = "test-support"))]

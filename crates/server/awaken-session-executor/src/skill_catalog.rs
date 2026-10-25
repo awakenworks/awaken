@@ -18,8 +18,8 @@ use awaken_resource_contract::SkillDefinition;
 use awaken_resource_contract::{SkillStoreError, SkillVersion};
 use awaken_session_configuration_contract::resource::ResolvedSkillBinding;
 
-use crate::skill_delivery::anthropic_skill;
 use awaken_session_configuration_contract::SkillCatalogApplication;
+use awaken_session_configuration_contract::skill_delivery::anthropic_skill;
 
 /// Direct compatibility Skills plus the durable versioned catalog and its
 /// synchronous read cache. See the module docs for the coherence invariant.

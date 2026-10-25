@@ -37,6 +37,34 @@ pub trait DispatchAdmissionReads: Send + Sync {
     ) -> Result<InstalledDispatchInputs, AdmissionError>;
 }
 
+/// A borrowed Session registry reads as itself.
+impl<T: DispatchAdmissionReads + ?Sized> DispatchAdmissionReads for &T {
+    fn execution_workspace(&self, thread: &str, fallback: &str) -> Result<String, AdmissionError> {
+        (**self).execution_workspace(thread, fallback)
+    }
+    fn registered_workspace(&self, thread: &str) -> Result<Option<String>, AdmissionError> {
+        (**self).registered_workspace(thread)
+    }
+    fn credential_realization(
+        &self,
+        thread: &str,
+    ) -> Result<Option<awaken_credential_contract::CredentialRealizationProfile>, AdmissionError>
+    {
+        (**self).credential_realization(thread)
+    }
+    fn installed_dispatch_inputs(
+        &self,
+        thread: &str,
+    ) -> Result<InstalledDispatchInputs, AdmissionError> {
+        (**self).installed_dispatch_inputs(thread)
+    }
+}
+
+/// Stable, non-provider identity of the model of a process with no executable
+/// model. A Run that selects it can never be materialized by a Worker, so
+/// admission refuses it with actionable guidance before it is enqueued.
+pub const UNCONFIGURED_MODEL_REF: &str = "unconfigured";
+
 /// Values read from the existing Session slot, never another registry or authority.
 pub struct DispatchPreparation<'a> {
     activation: RunActivation,
@@ -84,8 +112,8 @@ impl<'a> DispatchPreparation<'a> {
             'static,
         >,
         local_execution: bool,
-        model_configured: bool,
     ) -> Self {
+        let model_configured = activation.effective_model_ref() != UNCONFIGURED_MODEL_REF;
         Self {
             activation,
             sessions,

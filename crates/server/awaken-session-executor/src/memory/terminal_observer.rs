@@ -95,7 +95,7 @@ impl MemoryTerminalObservers {
             .execution_scope
             .as_ref()
             .map_or_else(|| self.local_workspace.as_str(), |scope| scope.0.0.as_str());
-        let frozen_publications = crate::agent_catalog::RUN_PUBLICATIONS
+        let frozen_publications = awaken_session_run_delivery::RUN_PUBLICATIONS
             .exact_source(
                 &dispatch.activation.snapshot,
                 &dispatch.agent_publications,

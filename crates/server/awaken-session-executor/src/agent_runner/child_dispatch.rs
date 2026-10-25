@@ -42,7 +42,7 @@ pub(crate) fn child_dispatch_request(
             ));
         }
     };
-    let child_publications = crate::agent_catalog::RUN_PUBLICATIONS
+    let child_publications = awaken_session_run_delivery::RUN_PUBLICATIONS
         .freeze(&activation.snapshot, publication_source, workspace)
         .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
     let inference_holder =

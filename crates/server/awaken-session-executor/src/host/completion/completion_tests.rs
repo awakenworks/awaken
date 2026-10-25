@@ -10,7 +10,8 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId;
 use std::sync::Arc;
 
-use crate::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
+use crate::NoModelConfiguredExecutor;
+use awaken_dispatch_execution::session_dispatch::UNCONFIGURED_MODEL_REF;
 
 fn host_models() -> awaken_runtime_contract::resolved::ResolvedSpec {
     awaken_runtime_contract::ExecutableAgentSnapshot::builder("test")

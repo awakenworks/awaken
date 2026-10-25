@@ -11,7 +11,7 @@ use awaken_session_types::RunError;
 
 use super::RunAssembly;
 use crate::session_execution_error::to_run_error;
-use crate::skill_delivery::skill_store_run_error;
+use awaken_session_configuration_contract::skill_delivery::skill_store_run_error;
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::RealizationRuntime for RunAssembly {

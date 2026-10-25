@@ -135,7 +135,7 @@ pub use crate::host::{
     SessionApplicationBindingError, SessionApplicationBindings, SessionExecutionDependencies,
     SessionExecutionProcess, SessionExecutorBuilder, TrustedHostPolicy, WarmPool,
 };
-pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
+pub use crate::no_model::NoModelConfiguredExecutor;
 use awaken_credential_contract::CredentialRefreshFactory;
 use awaken_credential_materializer::PinnedCredentialMaterializer;
 pub(crate) use awaken_deployment_config::{
