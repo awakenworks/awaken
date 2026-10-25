@@ -2,16 +2,27 @@
 
 use super::*;
 
-/// The tool ids that bypass the authored policy and are allowed outright.
+/// Tool ids with an unattended baseline under the canonical authored policy.
 ///
-/// Only the read-only management tools (ADR-0052) qualify: the reserved-scope
-/// assistant names them and they grant perception, not authority. MCP tool ids
+/// Read-only management tools (ADR-0052) qualify: the reserved-scope assistant
+/// names them and they grant perception. A frozen stateless Memory proposal
+/// contract also qualifies, but a same-named store or client tool does not.
+/// Authored ask/deny keeps precedence over these baseline rules. MCP tool ids
 /// are deliberately absent. An MCP tool's authorization comes from its
 /// `mcp_toolset` policy, whose default is ask — the same default the Managed
 /// Agents wire publishes — so an undeclared MCP server can never be allowed by
 /// the mere absence of an authored policy.
-pub(super) fn pre_authorized_tool_ids(admin_ids: &[String]) -> Vec<String> {
-    admin_ids.to_vec()
+pub(super) fn pre_authorized_tool_ids(
+    admin_ids: &[String],
+    snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+) -> Vec<String> {
+    let mut allowed = admin_ids.to_vec();
+    if let Some(descriptor) =
+        snapshot.and_then(awaken_session_run_delivery::MemoryWriteProposals::descriptor)
+    {
+        allowed.push(descriptor.id.clone());
+    }
+    allowed
 }
 
 pub(super) fn merge_acp_mcp_servers(
@@ -88,8 +99,8 @@ mod tests {
 
     #[test]
     fn only_read_only_management_tools_are_pre_authorized() {
-        // Cause/effect graph: C1 read-only management ids are present; C2 an MCP
-        // tool id is present. E1 management ids bypass the authored policy; E2 an
+        // With no proposal snapshot: C1 read-only management ids are present;
+        // C2 an MCP tool id is present. E1 management ids receive a baseline; E2 an
         // MCP id never does, whatever else is configured, so its authorization
         // stays with its `mcp_toolset` policy (default ask, Managed-wire parity).
         //
@@ -98,11 +109,57 @@ mod tests {
         // | R2 | F | T | empty — the MCP id is not lent authority |
         let admin = vec!["awaken_admin_get".to_string()];
         assert_eq!(
-            pre_authorized_tool_ids(&admin),
+            pre_authorized_tool_ids(&admin, None),
             vec!["awaken_admin_get"],
             "R1"
         );
-        assert!(pre_authorized_tool_ids(&[]).is_empty(), "R2");
+        assert!(pre_authorized_tool_ids(&[], None).is_empty(), "R2");
+    }
+
+    #[test]
+    fn proposal_baseline_requires_the_frozen_execution_contract() {
+        // Cause/effect partitions: P1 no declaration => no additional grant;
+        // P2 frozen SDK proposal => exactly that baseline id; P3 same-named
+        // Session store/client declaration => no grant. The proposal and store
+        // share a public id, so id equality alone cannot authorize either one.
+        use awaken_runtime_contract::resolved::ToolDescriptor;
+        let proposal = awaken_ext_memory::write_memory_descriptor();
+        for (descriptor, expected) in [
+            (None, Vec::new()),
+            (Some(proposal.clone()), vec![proposal.id.clone()]),
+            (
+                Some(ToolDescriptor::pinned(
+                    "session-memory",
+                    &proposal.id,
+                    "store",
+                    proposal.model_parameters(),
+                )),
+                Vec::new(),
+            ),
+            (
+                Some(ToolDescriptor::client_executed(
+                    &proposal.id,
+                    "client",
+                    proposal.model_parameters(),
+                )),
+                Vec::new(),
+            ),
+        ] {
+            let mut snapshot = crate::config::server_config(
+                "extractor",
+                "test",
+                &Default::default(),
+                &Default::default(),
+                &[],
+                &Default::default(),
+                &[],
+                awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+            )
+            .unwrap();
+            snapshot.resolved_spec.tool_descriptors = descriptor.into_iter().collect();
+            snapshot.recompute_fingerprint().unwrap();
+            assert_eq!(pre_authorized_tool_ids(&[], Some(&snapshot)), expected);
+        }
     }
 
     #[test]

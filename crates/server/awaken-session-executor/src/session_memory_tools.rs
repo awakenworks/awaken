@@ -1,18 +1,23 @@
 // @formal surface requirement=resource.memory.memory_consistency
 // @formal reason: Projects frozen Session Memory binding ids into semantic tools while all CAS writes and
 // @formal reason: durable heads remain owned by the canonical Memory repository.
-//! Filesystem-free projection of frozen Session MemoryStore bindings.
+//! Filesystem-free Memory tools selected from frozen contracts and Session bindings.
 //!
-//! The tools carry only Session binding ids. They never accept a Workspace id,
+//! Store tools carry only Session binding ids. They never accept a Workspace id,
 //! physical store id, or repository handle, so callers cannot widen the frozen
-//! Resource authority. All writes and deletes preserve the repository's CAS
-//! semantics.
+//! Resource authority. Store writes and deletes preserve repository CAS. An
+//! extractor instead selects the SDK's stateless proposal tool through its
+//! frozen descriptor; the two same-named write contracts never coexist.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_runtime_contract::{
+    ExecutableAgentSnapshot,
+    resolved::{ToolDescriptor, ToolKind},
+};
+use awaken_session_run_delivery::MemoryWriteProposals;
 use awaken_tool_contract::tool::{RawTool, Tool, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -265,34 +270,75 @@ pub(crate) struct SessionMemoryTools {
 impl SessionMemoryTools {
     pub(crate) fn new(
         bindings: HashMap<String, Arc<crate::memory_binding::MemoryBinding>>,
+        snapshot: Option<&ExecutableAgentSnapshot>,
     ) -> Option<Self> {
         let bindings: HashMap<String, Arc<dyn SessionMemoryBinding>> = bindings
             .into_iter()
             .map(|(id, binding)| (id, binding as Arc<dyn SessionMemoryBinding>))
             .collect();
-        Self::from_bindings(bindings)
+        Self::from_bindings(bindings, snapshot)
     }
 
-    fn from_bindings(bindings: HashMap<String, Arc<dyn SessionMemoryBinding>>) -> Option<Self> {
-        if bindings.is_empty() {
+    fn from_bindings(
+        bindings: HashMap<String, Arc<dyn SessionMemoryBinding>>,
+        snapshot: Option<&ExecutableAgentSnapshot>,
+    ) -> Option<Self> {
+        let proposal = snapshot.and_then(MemoryWriteProposals::descriptor);
+        if bindings.is_empty() && proposal.is_none() {
             return None;
         }
-        let context = MemoryToolContext {
+        let stored_write = ToolDescriptor::for_tool::<WriteMemoryTool>("session-memory");
+        let declared_write = snapshot.and_then(|snapshot| {
+            snapshot
+                .resolved_spec
+                .tool_descriptors
+                .iter()
+                .find(|descriptor| descriptor.id == stored_write.id)
+        });
+        // A binding-derived dynamic surface must not replace an explicitly
+        // declared proposal, client-owned or otherwise differently-owned tool.
+        let store_write_selected = declared_write.is_none_or(|descriptor| {
+            descriptor.content_namespace() == stored_write.content_namespace()
+                && descriptor.kind == ToolKind::Regular
+                && descriptor.provider_server_tool.is_none()
+        });
+        let context = (!bindings.is_empty()).then(|| MemoryToolContext {
             bindings: Arc::new(bindings),
-        };
-        Some(Self {
-            descriptors: vec![
+        });
+        let mut descriptors = Vec::new();
+        let mut executors = Vec::new();
+        if let Some(context) = &context {
+            descriptors.extend([
                 ToolDescriptor::for_tool::<ListMemoriesTool>("session-memory"),
                 ToolDescriptor::for_tool::<ReadMemoryTool>("session-memory"),
-                ToolDescriptor::for_tool::<WriteMemoryTool>("session-memory"),
-                ToolDescriptor::for_tool::<DeleteMemoryTool>("session-memory"),
-            ],
-            executors: vec![
+            ]);
+            executors.extend([
                 awaken_ext_builtin_tools::erase(ListMemoriesTool(context.clone())),
                 awaken_ext_builtin_tools::erase(ReadMemoryTool(context.clone())),
-                awaken_ext_builtin_tools::erase(WriteMemoryTool(context.clone())),
-                awaken_ext_builtin_tools::erase(DeleteMemoryTool(context)),
-            ],
+            ]);
+        }
+        if let Some(descriptor) = proposal {
+            descriptors.push(descriptor.clone());
+            executors.push(awaken_ext_builtin_tools::erase(
+                awaken_ext_memory::WriteMemoryTool::from_handle(Arc::new(MemoryWriteProposals)),
+            ));
+        } else if let Some(context) = &context
+            && store_write_selected
+        {
+            descriptors.push(stored_write);
+            executors.push(awaken_ext_builtin_tools::erase(WriteMemoryTool(
+                context.clone(),
+            )));
+        }
+        if let Some(context) = context {
+            descriptors.push(ToolDescriptor::for_tool::<DeleteMemoryTool>(
+                "session-memory",
+            ));
+            executors.push(awaken_ext_builtin_tools::erase(DeleteMemoryTool(context)));
+        }
+        Some(Self {
+            descriptors,
+            executors,
         })
     }
 }
@@ -367,13 +413,16 @@ mod tests {
             label: "beta",
             calls: Mutex::new(Vec::new()),
         });
-        let wiring = SessionMemoryTools::from_bindings(HashMap::from([
-            (
-                "alpha".into(),
-                alpha.clone() as Arc<dyn SessionMemoryBinding>,
-            ),
-            ("beta".into(), beta.clone() as Arc<dyn SessionMemoryBinding>),
-        ]))
+        let wiring = SessionMemoryTools::from_bindings(
+            HashMap::from([
+                (
+                    "alpha".into(),
+                    alpha.clone() as Arc<dyn SessionMemoryBinding>,
+                ),
+                ("beta".into(), beta.clone() as Arc<dyn SessionMemoryBinding>),
+            ]),
+            None,
+        )
         .unwrap();
         let read = wiring
             .executors
@@ -421,13 +470,16 @@ mod tests {
         // changes that generated descriptor; T3 no handwritten schema authority
         // exists to drift. Effect: the Session surface exactly equals the four
         // canonical `ToolDescriptor::for_tool` values in execution order.
-        let wiring = SessionMemoryTools::from_bindings(HashMap::from([(
-            "memory".into(),
-            Arc::new(FakeBinding {
-                label: "memory",
-                calls: Mutex::new(Vec::new()),
-            }) as Arc<dyn SessionMemoryBinding>,
-        )]))
+        let wiring = SessionMemoryTools::from_bindings(
+            HashMap::from([(
+                "memory".into(),
+                Arc::new(FakeBinding {
+                    label: "memory",
+                    calls: Mutex::new(Vec::new()),
+                }) as Arc<dyn SessionMemoryBinding>,
+            )]),
+            None,
+        )
         .unwrap();
         assert_eq!(
             wiring.descriptors,
@@ -451,5 +503,116 @@ mod tests {
                 DeleteMemoryTool::ID,
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn one_memory_writer_is_selected_by_frozen_contract_not_display_name() {
+        // Cause/effect matrix: C1 bindings absent/present; C2 declaration is
+        // absent, stored-write, proposal, client-owned, foreign, detached, or
+        // provider-native. O1 absent/stored + C1 => the original CAS writer;
+        // O2 proposal => one stateless writer with or without bindings;
+        // O3 other ownership => no adapter-local writer. Existing read/delete
+        // bindings remain, and a client declaration cannot become Host execution.
+        use awaken_runtime_contract::resolved::ProviderServerTool;
+        for bound in [false, true] {
+            for case in [
+                "absent", "stored", "proposal", "client", "foreign", "detached", "provider",
+            ] {
+                let proposal = awaken_ext_memory::write_memory_descriptor();
+                let descriptor = match case {
+                    "absent" => None,
+                    "stored" => Some(ToolDescriptor::for_tool::<WriteMemoryTool>(
+                        "session-memory",
+                    )),
+                    "proposal" => Some(proposal.clone()),
+                    "client" => Some(ToolDescriptor::client_executed(
+                        proposal.id.clone(),
+                        "client",
+                        proposal.model_parameters(),
+                    )),
+                    "foreign" => Some(ToolDescriptor::pinned(
+                        "foreign",
+                        proposal.id.clone(),
+                        "foreign",
+                        proposal.model_parameters(),
+                    )),
+                    "detached" => Some(proposal.clone().with_kind(ToolKind::DetachedOnly)),
+                    "provider" => Some(
+                        proposal
+                            .clone()
+                            .with_provider_server_tool(ProviderServerTool::openai_web_search()),
+                    ),
+                    _ => unreachable!(),
+                };
+                let mut snapshot = crate::config::server_config(
+                    "writer",
+                    "test",
+                    &Default::default(),
+                    &Default::default(),
+                    &[],
+                    &Default::default(),
+                    &[],
+                    awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+                )
+                .unwrap();
+                snapshot.resolved_spec.tool_descriptors = descriptor.into_iter().collect();
+                snapshot.recompute_fingerprint().unwrap();
+                let binding = Arc::new(FakeBinding {
+                    label: "store",
+                    calls: Mutex::new(Vec::new()),
+                });
+                let bindings = if bound {
+                    HashMap::from([(
+                        "memory".into(),
+                        binding.clone() as Arc<dyn SessionMemoryBinding>,
+                    )])
+                } else {
+                    HashMap::new()
+                };
+                let wiring = SessionMemoryTools::from_bindings(bindings, Some(&snapshot));
+                let writers = wiring
+                    .as_ref()
+                    .map(|wiring| {
+                        wiring
+                            .executors
+                            .iter()
+                            .filter(|tool| tool.id() == "write_memory")
+                            .count()
+                    })
+                    .unwrap_or(0);
+                let expected =
+                    usize::from(case == "proposal" || bound && matches!(case, "absent" | "stored"));
+                assert_eq!(writers, expected, "{bound}/{case}");
+                if case == "proposal" {
+                    let wiring = wiring.unwrap();
+                    let write = wiring
+                        .executors
+                        .iter()
+                        .find(|tool| tool.id() == "write_memory")
+                        .unwrap();
+                    let result = write
+                        .invoke(ToolCall {
+                            call_id: "proposal".into(),
+                            tool_id: "write_memory".into(),
+                            arguments: serde_json::json!({"name":"pref","content":"prefers tea"}),
+                        })
+                        .await
+                        .unwrap();
+                    assert!(!result.is_error);
+                    assert!(result.text().contains("saved memory /pref.md"));
+                    assert!(
+                        binding.calls.lock().unwrap().is_empty(),
+                        "proposal never reaches the bound store"
+                    );
+                    let ids = wiring
+                        .descriptors
+                        .iter()
+                        .filter(|tool| tool.id == "write_memory")
+                        .collect::<Vec<_>>();
+                    assert_eq!(ids.len(), 1);
+                    assert_eq!(ids[0].content_namespace(), proposal.content_namespace());
+                }
+            }
+        }
     }
 }

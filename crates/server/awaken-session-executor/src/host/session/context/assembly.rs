@@ -20,7 +20,6 @@ pub(super) async fn assemble(
     mut resources: ContextResources,
     requested_purpose: RuntimeContextPurpose,
 ) -> Result<PreparedContext, SessionExecutionError> {
-    let realizations = host.realization_executor.sessions();
     let env = &resources.env;
     let authorization = &resources.authorization;
     let has_published_multiagent = resources.has_published_multiagent;
@@ -93,42 +92,25 @@ pub(super) async fn assemble(
         runtime = runtime.with_run_delegation(service);
     }
     let extensions::SkillWiring {
-        mut runtime,
+        runtime,
         skill_descriptors,
         semantic_skill_tools,
         skill_registry,
         mut session_content_plugins,
         generated_skill_bindings,
     } = extensions::skills(host, thread, &mut resources, runtime).await?;
-    let installed = &resources.plan.installed;
-    let content_delivery = resources.content_delivery;
     let is_acp = resources.plan.execution_backend.is_acp();
-    let mut memory_descriptors = Vec::new();
-    let mut semantic_memory_tools = None;
-    if content_delivery == crate::sandbox_layout::ManagedContentDelivery::SemanticTools {
-        let bindings = realizations
-            .read_realization(thread, |r| r.staging().memory_bindings.clone())?
-            .unwrap_or_default();
-        if let Some(wiring) = crate::session_memory_tools::SessionMemoryTools::new(bindings) {
-            if installed.is_some() && !is_acp {
-                session_content_plugins.push(Arc::new(
-                    crate::session_tools::SessionToolPlugin::new(
-                        "awaken.session.memory",
-                        wiring.descriptors.clone(),
-                        wiring.executors.clone(),
-                    )
-                    .map_err(SessionExecutionError::internal)?,
-                ));
-            }
-            if !is_acp {
-                for tool in &wiring.executors {
-                    runtime = runtime.with_tool(tool.clone());
-                }
-            }
-            memory_descriptors = wiring.descriptors.clone();
-            semantic_memory_tools = Some(wiring);
-        }
-    }
+    let (mut runtime, semantic_memory_tools) = extensions::memory_tools(
+        host,
+        thread,
+        &resources,
+        runtime,
+        &mut session_content_plugins,
+    )?;
+    let memory_descriptors = semantic_memory_tools
+        .as_ref()
+        .map(|tools| tools.descriptors.clone())
+        .unwrap_or_default();
     // This is the sole final gate replacement point. Skill wiring may decorate
     // the ordinary base gate above; an explicit host override intentionally
     // replaces that complete default chain (the scheduled-action scenario).

@@ -253,14 +253,27 @@ async fn run_configured_agent_inner(
         AgentRunSandbox::SharedLocal(_) => Arc::new(RawToolRegistry::new(env.runtime_tools())),
         AgentRunSandbox::Fresh(_) => Arc::new(RawToolRegistry::new(env.runtime_tools())),
     };
+    let memory_tools = crate::session_memory_tools::SessionMemoryTools::new(
+        std::collections::HashMap::new(),
+        Some(&config),
+    );
+    let proposal_allowed = awaken_session_run_delivery::MemoryWriteProposals::descriptor(&config)
+        .map(|descriptor| descriptor.id.clone())
+        .into_iter()
+        .collect::<Vec<_>>();
     let authorization = effective_tool_authorization(
         &config.resolved_spec.plugin_config,
-        &[],
+        &proposal_allowed,
         &config.resolved_spec.plugin_config.agent.toolsets,
     );
     // Auxiliary Runs do not install the Session-owned BackgroundTask plugin:
     // they have no committed Session terminal observer to execute its effects.
     let mut runtime = build_runtime_with_authorization(llm, clock, env, &authorization, None);
+    if let Some(memory_tools) = memory_tools {
+        for tool in memory_tools.executors {
+            runtime = runtime.with_tool(tool);
+        }
+    }
     // Tools the caller provisions on top of the sandbox's own (e.g. a
     // persistent write_memory scoped outside the ephemeral sandbox).
     for tool in extra_tools {

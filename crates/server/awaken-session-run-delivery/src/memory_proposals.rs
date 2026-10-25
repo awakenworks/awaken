@@ -17,12 +17,36 @@ use awaken_ext_memory::{
     EXTRACT_PROMPT, MemoryExtractionIntent, MemoryExtractionOutcome, MemoryStoreHandle,
     WriteMemoryTool, accepts_memory_content, sanitize_stem,
 };
+use awaken_runtime_contract::{
+    ExecutableAgentSnapshot,
+    resolved::{ToolDescriptor, ToolKind},
+};
 use awaken_tool_contract::tool::Tool;
 
 /// A write proposal has no immediate content effect. The existing tool records its
 /// result in the Run; only the extraction controller later admits durable mutations.
 #[derive(Default)]
 pub struct MemoryWriteProposals;
+
+impl MemoryWriteProposals {
+    /// Select the frozen extraction contract, rather than a same-named Session
+    /// store write or client-owned tool. The descriptor's existing namespace
+    /// owns that distinction; the live tool still owns argument validation.
+    #[must_use]
+    pub fn descriptor(snapshot: &ExecutableAgentSnapshot) -> Option<&ToolDescriptor> {
+        let canonical = awaken_ext_memory::write_memory_descriptor();
+        snapshot
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .find(|descriptor| {
+                descriptor.id == canonical.id
+                    && descriptor.content_namespace() == canonical.content_namespace()
+                    && descriptor.kind == ToolKind::Regular
+                    && descriptor.provider_server_tool.is_none()
+            })
+    }
+}
 
 #[async_trait]
 impl MemoryStoreHandle for MemoryWriteProposals {
@@ -65,7 +89,7 @@ pub enum MemoryProposalError {
     InputMismatch,
     #[error("Memory extraction has no committed assistant output for its auxiliary Run")]
     MissingOutput,
-    #[error("Memory extraction contains a malformed or repeated write_memory call")]
+    #[error("Memory extraction contains an undeclared, malformed or repeated write_memory call")]
     InvalidWrite,
     #[error("Memory extraction write_memory call has no unique successful committed result")]
     UncommittedWrite,
@@ -134,6 +158,9 @@ pub fn committed_memory_writes(
             };
             if name != WriteMemoryTool::ID {
                 continue;
+            }
+            if MemoryWriteProposals::descriptor(&intent.extractor.agent).is_none() {
+                return Err(MemoryProposalError::InvalidWrite);
             }
             if !calls.insert((step, id.as_str())) {
                 return Err(MemoryProposalError::InvalidWrite);

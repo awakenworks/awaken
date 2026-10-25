@@ -156,7 +156,7 @@ fn effective_ruleset_deferring(
     extra_allowed: &[String],
     deferred: &[String],
 ) -> PermissionRuleset {
-    let mut rules = base_allow_rules(extra_allowed, deferred);
+    let mut rules = Vec::new();
     let default_behavior = authored
         .as_ref()
         .map_or(ToolPermissionBehavior::RequireConfirmation, |rs| {
@@ -165,6 +165,9 @@ fn effective_ruleset_deferring(
     if let Some(rs) = authored {
         rules.extend(rs.rules);
     }
+    // First wins at equal specificity in the canonical policy fold. Keep
+    // authored asks/allows before ambient defaults; deny remains absolute.
+    rules.extend(base_allow_rules(extra_allowed, deferred));
     PermissionRuleset {
         default_behavior,
         rules,
@@ -1711,5 +1714,83 @@ mod tests {
             "R1"
         );
         assert!(selected(&durable(Toolset::Delegation)).is_empty(), "R2");
+    }
+
+    #[tokio::test]
+    async fn authored_fixed_rules_win_over_the_stateless_proposal_baseline() {
+        // Cause/effect table: C1 the selected stateless proposal has an ambient
+        // allow; C2 authoring is legacy rules or typed Agent toolsets; C3 its
+        // fixed answer is allow/ask/deny. P1 silence => unattended proposal;
+        // P2 C2+C3 => the exact authored answer, including ask on equal
+        // specificity; P3 deny is absolute. No store tool is added to the baseline.
+        use awaken_agent_contract::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
+        };
+        use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
+        let id = awaken_ext_memory::write_memory_descriptor().id;
+        let call = awaken_tool_contract::tool::ToolCall {
+            call_id: "proposal".into(),
+            tool_id: id.clone(),
+            arguments: serde_json::json!({"name":"pref","content":"prefers tea"}),
+        };
+        let allowed = vec![id.clone()];
+        let silence =
+            effective_policy_with_toolsets(None, &allowed, &[], platform_auto_evaluator());
+        assert!(
+            matches!(
+                silence.evaluate(&call).await.verdict,
+                ToolPermissionVerdict::Allow
+            ),
+            "P1"
+        );
+        let ungranted = effective_policy_with_toolsets(None, &[], &[], platform_auto_evaluator());
+        assert!(
+            matches!(
+                ungranted.evaluate(&call).await.verdict,
+                ToolPermissionVerdict::RequireConfirmation { .. }
+            ),
+            "store/unselected has no proposal baseline"
+        );
+        for typed in [false, true] {
+            for (behavior, permission) in [
+                ("allow", ToolPermissionRequirement::AlwaysAllow),
+                ("ask", ToolPermissionRequirement::AlwaysAsk),
+                ("deny", ToolPermissionRequirement::AlwaysAllow),
+            ] {
+                let authored = (!typed).then(|| awaken_ext_permission::parse_ruleset(&serde_json::json!({"default_behavior":"ask","rules":[{"pattern":id,"behavior":behavior}]})).unwrap());
+                let toolsets = if typed {
+                    vec![ToolsetPolicy {
+                        source: ToolsetSource::Agent,
+                        default: Default::default(),
+                        overrides: vec![ToolPolicyOverride::new(
+                            &id,
+                            ToolExecutionPolicy {
+                                enabled: behavior != "deny",
+                                permission,
+                            },
+                        )],
+                    }]
+                } else {
+                    Vec::new()
+                };
+                let policy = effective_policy_with_toolsets(
+                    authored,
+                    &allowed,
+                    &toolsets,
+                    platform_auto_evaluator(),
+                );
+                let verdict = policy.evaluate(&call).await.verdict;
+                assert!(
+                    matches!(
+                        (behavior, verdict),
+                        ("allow", ToolPermissionVerdict::Allow)
+                            | ("ask", ToolPermissionVerdict::RequireConfirmation { .. })
+                            | ("deny", ToolPermissionVerdict::Deny { .. })
+                    ),
+                    "P2/P3 {typed}/{behavior}"
+                );
+            }
+        }
     }
 }
