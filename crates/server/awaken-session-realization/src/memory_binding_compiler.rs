@@ -46,13 +46,15 @@ impl MemoryBindingCompiler {
                 .await
                 .map_err(|error| RunError::bad_request(error.to_string()))?;
         }
-        let handle = Arc::new(crate::memory_binding::PlatformMemoryHandle::from_roles(
-            self.memory.clone(),
-            materialization_reference
-                .clone()
-                .unwrap_or_else(|| memory_store_id.to_string()),
-            writable,
-        ));
+        let handle = Arc::new(
+            awaken_session_run_delivery::PlatformMemoryHandle::from_roles(
+                self.memory.clone(),
+                materialization_reference
+                    .clone()
+                    .unwrap_or_else(|| memory_store_id.to_string()),
+                writable,
+            ),
+        );
         let resource_validator = if materialization_reference.is_some() {
             None
         } else {

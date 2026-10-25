@@ -25,6 +25,7 @@ mod completion;
 mod delivery;
 mod hub;
 mod lock;
+mod memory_content;
 mod outcome_projection;
 mod run_publications;
 mod session_activation;
@@ -64,6 +65,7 @@ pub use completion::{
 pub use delivery::{ResourceBindingVerifiers, WorkerPlacedSessions, WorkerPlacement};
 pub use hub::{ThreadEvent, ThreadEventHub};
 pub use lock::{DeliveryLock, LOCK_POISONED_CODE};
+pub use memory_content::PlatformMemoryHandle;
 pub use outcome_projection::{
     committed_outcome_projection, outcome_controller_error, outcome_report,
 };

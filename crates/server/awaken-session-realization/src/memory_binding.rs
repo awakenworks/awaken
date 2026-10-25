@@ -21,8 +21,7 @@ use awaken_agent_contract::CommitCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_ext_memory::{MemoryExtractionIntent, MemoryStoreHandle};
 
-mod platform;
-pub use platform::PlatformMemoryHandle;
+use awaken_session_run_delivery::PlatformMemoryHandle;
 
 /// The physical Session commit authority an extraction over this binding
 /// writes through and reads its committed transcript back from.
