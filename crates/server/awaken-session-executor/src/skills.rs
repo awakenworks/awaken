@@ -240,7 +240,7 @@ pub(crate) struct ForkAgentTool {
     pub(crate) model_ref: String,
     /// The parent agent's sandbox, shared with the fork.
     pub(crate) sandbox: Arc<crate::session_environment::SessionEnvironment>,
-    pub(crate) execution: Arc<crate::store::HostCommit>,
+    pub(crate) execution: Arc<awaken_session_run_delivery::SessionCommit>,
     pub(crate) clock: Arc<dyn awaken_time::WallClock>,
 }
 

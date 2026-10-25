@@ -88,12 +88,7 @@ pub fn to_run_error(error: SessionExecutionError) -> RunError {
 
 /// The Session executor's error as the neutral application error its Coordinator ports return.
 pub(crate) fn to_durable_error(error: SessionExecutionError) -> ApplicationError {
-    match error.kind {
-        SessionExecutionErrorKind::BadRequest => ApplicationError::invalid(error.message),
-        SessionExecutionErrorKind::Conflict => ApplicationError::conflict(error.message),
-        SessionExecutionErrorKind::Internal => ApplicationError::internal(error.message),
-        SessionExecutionErrorKind::Unavailable => ApplicationError::unavailable(error.message),
-    }
+    awaken_session_run_delivery::application_error(to_run_error(error))
 }
 
 /// Preserve the neutral Run classification when a durable Session port calls
@@ -112,6 +107,14 @@ pub fn from_run_error(error: RunError) -> SessionExecutionError {
             awaken_session_types::RunErrorKind::Conflict => SessionExecutionErrorKind::Conflict,
         },
         code: error.code,
+    }
+}
+
+/// A neutral Run failure from the committed reads and Run delivery this
+/// executor builds on keeps its fault and code.
+impl From<RunError> for SessionExecutionError {
+    fn from(error: RunError) -> Self {
+        from_run_error(error)
     }
 }
 

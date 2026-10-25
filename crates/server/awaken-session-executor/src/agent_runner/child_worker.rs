@@ -23,7 +23,7 @@ use awaken_runtime_contract::execution::RunAttemptExecutor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 use super::RunScheduler;
-use crate::store::HostCommit;
+use awaken_session_run_delivery::SessionCommit;
 
 /// Assembles one child Worker from the already-selected dispatch and committed
 /// authority. The three callers differ in their authority inputs and effects,
@@ -118,13 +118,13 @@ impl ChildWorkerFactory {
         )
     }
 
-    /// Cold claimed recovery starts from the existing combined HostCommit
+    /// Cold claimed recovery starts from the existing combined SessionCommit
     /// boundary Worker. Its constructor installs the local RunRecoverySource;
     /// replacing it with `from_parts` would lose committed-snapshot recovery.
     pub(crate) async fn claimed_recovery(
         host: &crate::RunAssembly,
         claimed: &Claimed,
-        commit: Arc<HostCommit>,
+        commit: Arc<SessionCommit>,
         session_thread_id: &ThreadId,
         attempt: ClaimedChildAttempt,
     ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {

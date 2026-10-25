@@ -197,8 +197,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordina
         let links = self
             .thread_reads
             .coordinated_threads(session_id.as_str(), None)
-            .await
-            .map_err(to_run_error)?;
+            .await?;
         if !links
             .iter()
             .any(|link| link.session_id == session_id && link.thread_id.0.as_str() == thread_id)
@@ -365,8 +364,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ChildRunCoo
         let commit = self
             .thread_reads
             .commit_for_read(session_id.as_str())
-            .await
-            .map_err(to_run_error)?;
+            .await?;
         commit
             .authoritative_run(run_id)
             .await
@@ -375,10 +373,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ChildRunCoo
     }
 
     async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
-        self.thread_reads
-            .delegated_runs(thread)
-            .await
-            .map_err(to_run_error)
+        self.thread_reads.delegated_runs(thread).await
     }
 
     async fn coordinated_threads(
@@ -389,7 +384,6 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ChildRunCoo
         self.thread_reads
             .coordinated_threads(session_id.as_str(), observed_root)
             .await
-            .map_err(to_run_error)
     }
 
     async fn session_thread_tool_reply_fence(

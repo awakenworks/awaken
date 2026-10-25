@@ -67,8 +67,8 @@ impl crate::RunAssembly {
                     })?
                     .unwrap_or(false))
             },
-            self.thread_reads
-                .delegated_runs_under_lifecycle(lifecycle.held()),
+            self.commit_source
+                .delegated_runs_under_lifecycle(&self.thread_reads, lifecycle.held()),
         )
         .await
         .map_err(to_run_error)?

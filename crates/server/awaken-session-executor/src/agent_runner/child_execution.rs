@@ -1268,7 +1268,7 @@ mod tests {
         // new, Awaiting, resumed, or terminal on replay. Effects: E1 every child
         // state/ticket comes from C1; E2 duplicate start reconnects without a
         // second seed; E3 exact resume ends once; E4 terminal replay is a stutter.
-        // Constraints: K1 HostCommit is the sole local committed authority; K2 a
+        // Constraints: K1 SessionCommit is the sole local committed authority; K2 a
         // parent claim projection cannot own a child Thread; K3 the queue/claim
         // remains the sole execution fence; K4 no second read model is introduced.
         // Decision table: R1=C0+C1+C2+new=>Awaiting; R2=R1+duplicate=>E2;

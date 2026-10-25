@@ -22,7 +22,7 @@
 //! Declaration-owner source rules: A1/A2 the former public durable authority
 //! names are absent here; the existing contract lives in dispatch-erasure.
 //! These only test import capability, not Worker/store authorization. Original
-//! startup, HostCommit and topology tables retain the runtime decisions.
+//! startup, SessionCommit and topology tables retain the runtime decisions.
 //! ```compile_fail,E0432
 //! use awaken_session_executor::RuntimeAuthority;
 //! ```
@@ -42,7 +42,8 @@ mod authority;
 mod auxiliary_sandbox;
 mod background;
 mod background_task;
-mod commit_ingest;
+#[cfg(test)]
+mod commit_ingest_tests;
 mod compact;
 mod config;
 mod coordination;
@@ -95,9 +96,7 @@ mod session_tools;
 mod skill_catalog;
 mod skills;
 mod step_projection;
-mod store;
 mod thread_reads;
-pub use thread_reads::ThreadReads;
 
 #[cfg(test)]
 use awaken_session_mcp::test_mcp;
@@ -125,7 +124,6 @@ pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
 pub use crate::cache_volume::{
     CacheVolumeInitializer, CacheVolumeWarmup, SandboxCacheVolumeInitializer,
 };
-pub use crate::commit_ingest::session_commit_owner;
 pub use crate::config::{advertised_tools, authorable_tools, block_text};
 pub(crate) use crate::host::ApplicationPortBinding;
 pub use crate::host::capability::WorkerContentAdapters;
@@ -145,7 +143,7 @@ pub(crate) use awaken_deployment_config::{
 use awaken_resource_contract::FileContentSource;
 #[cfg(test)]
 use awaken_resource_contract::RepositoryBindingVerifier;
-pub(crate) use awaken_session_run_delivery::{ThreadEvent, ThreadEventHub};
+pub(crate) use awaken_session_run_delivery::{CommittedReads, ThreadEvent, ThreadEventHub};
 pub(crate) use managed_input_projection::session_system_message;
 #[cfg(test)]
 pub(crate) use managed_input_projection::user_message;

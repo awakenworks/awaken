@@ -453,7 +453,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                     |id| Ok(sessions
                         .modify_session(id, |installed| installed.run.has_active_run()).expect("installed Sessions")
                         .unwrap_or(false)),
-                    host.thread_reads.delegated_runs_under_lifecycle(lifecycle.held()),
+                    host.run_assembly.commit_source.delegated_runs_under_lifecycle(&host.thread_reads, lifecycle.held()),
                 )
             )
             .await

@@ -16,7 +16,7 @@ use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 
 use crate::agent_catalog::AgentCatalog;
 use crate::run_exec::BoundRunExecutor;
-use crate::store::HostCommit;
+use awaken_session_run_delivery::SessionCommit;
 
 /// Host integration of the extension-owned Agent Grader. It resolves the fresh
 /// Grader Thread and supplies Host backend/durable context; prompt, identity,
@@ -97,7 +97,7 @@ pub(crate) struct AuxAgentTool {
     pub(crate) catalog: Arc<AgentCatalog>,
     /// Housekeeping calls use their caller-owned `call_id` as a stable auxiliary
     /// identity and commit through the Session's ordinary durable Run boundary.
-    pub(crate) execution: Arc<HostCommit>,
+    pub(crate) execution: Arc<SessionCommit>,
     /// The same caller-owned clock already used by the commit authority.
     pub(crate) clock: Arc<dyn awaken_time::WallClock>,
 }

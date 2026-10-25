@@ -70,17 +70,11 @@ impl RunApplication for SessionRuns {
     }
 
     async fn pending(&self, thread: &str) -> Result<Option<Pending>, RunApplicationError> {
-        self.thread_reads
-            .pending_tool(thread)
-            .await
-            .map_err(to_run_error)
+        self.thread_reads.pending_tool(thread).await
     }
 
     async fn history(&self, thread: &str) -> Result<Vec<Message>, RunApplicationError> {
-        self.thread_reads
-            .committed_messages(thread)
-            .await
-            .map_err(to_run_error)
+        self.thread_reads.committed_messages(thread).await
     }
 
     fn model(&self) -> String {
@@ -91,8 +85,7 @@ impl RunApplication for SessionRuns {
         let usage = self
             .thread_reads
             .session_thread_usage(thread, &ThreadId(thread.to_string()))
-            .await
-            .map_err(to_run_error)?;
+            .await?;
         Ok((usage.input_tokens, usage.output_tokens))
     }
 }

@@ -12,7 +12,7 @@ use awaken_tool_contract::tool::RawTool;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::judge::AuxAgentTool;
-use crate::store::HostCommit;
+use awaken_session_run_delivery::SessionCommit;
 
 /// A [`RecallSelector`] backed by the `memory-selector` sub-agent: a single-step,
 /// tool-free, plugin-free run driven through the same ordinary Agent-backed tool
@@ -28,7 +28,7 @@ impl AgentSelector {
     pub(crate) fn new(
         llm: Arc<dyn LlmExecutor>,
         snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
-        execution: Arc<HostCommit>,
+        execution: Arc<SessionCommit>,
         clock: Arc<dyn awaken_time::WallClock>,
         sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
     ) -> Self {

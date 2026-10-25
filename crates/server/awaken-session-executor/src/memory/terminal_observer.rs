@@ -23,7 +23,7 @@ use awaken_ext_memory::{
 };
 
 use super::BoundMemory;
-use crate::store::HostCommit;
+use awaken_session_run_delivery::SessionCommit;
 
 struct BoundMemoryTerminalExtraction {
     memory: BoundMemory,
@@ -84,7 +84,7 @@ impl MemoryTerminalObservers {
     pub(crate) async fn for_dispatch(
         &self,
         dispatch: &awaken_dispatch_contract::RunDispatch,
-        commit: Arc<crate::store::HostCommit>,
+        commit: Arc<awaken_session_run_delivery::SessionCommit>,
     ) -> Result<Option<Arc<dyn RunTerminalObserver>>, crate::SessionExecutionError> {
         let manifest =
             awaken_dispatch_execution::session_envelope::decode_dispatched_resource_manifest(
@@ -120,7 +120,7 @@ impl MemoryTerminalObservers {
         effective_model_ref: &str,
         dispatched_resources: Option<&crate::session_resource::SessionResourceManifest>,
         frozen_publications: &dyn awaken_runtime_contract::PublishedAgentSnapshotSource,
-        commit: Arc<HostCommit>,
+        commit: Arc<SessionCommit>,
     ) -> Result<Option<Arc<dyn RunTerminalObserver>>, crate::SessionExecutionError> {
         let Some((config, model)) =
             awaken_ext_memory::published_extraction_configuration(snapshot, effective_model_ref)
@@ -184,7 +184,7 @@ impl MemoryTerminalObservers {
         published: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         effective_model_ref: &str,
         frozen_publications: &dyn awaken_runtime_contract::PublishedAgentSnapshotSource,
-        commit: Arc<HostCommit>,
+        commit: Arc<SessionCommit>,
     ) -> Result<Option<Arc<dyn RunTerminalObserver>>, crate::SessionExecutionError> {
         let Some(memory) = self.for_thread(session_thread)? else {
             return Ok(None);
@@ -229,7 +229,7 @@ impl MemoryTerminalObservers {
         model: awaken_runtime_contract::resolved::ResolvedModelCandidate,
         memory: BoundMemory,
         frozen_publications: &dyn awaken_runtime_contract::PublishedAgentSnapshotSource,
-        commit: Arc<HostCommit>,
+        commit: Arc<SessionCommit>,
     ) -> Result<Option<Arc<dyn RunTerminalObserver>>, crate::SessionExecutionError> {
         let agent_id = config.agent_id.as_deref().unwrap_or(MEMORY_AGENT_ID);
         let agent = crate::agent_catalog::resolve_auxiliary_snapshot(

@@ -169,9 +169,6 @@ impl awaken_session_execution_contract::StreamingRunRuntime for SessionRuns {
     }
 
     async fn pending_tool(&self, thread: &str) -> Result<Option<Pending>, RunError> {
-        self.thread_reads
-            .pending_tool(thread)
-            .await
-            .map_err(to_run_error)
+        self.thread_reads.pending_tool(thread).await
     }
 }

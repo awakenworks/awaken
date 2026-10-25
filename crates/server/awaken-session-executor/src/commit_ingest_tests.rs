@@ -1,0 +1,1215 @@
+//! The write-plane half of the Coordinator/Worker seam through this executor's
+//! composition: a database-less Worker sends one versioned commit operation
+//! under its current claim; the Coordinator validates the claim and applies it
+//! through the Session's commit owner (`CommittedReads::commit_owner`).
+use std::sync::Arc;
+
+use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
+use awaken_session_execution_contract::ApplicationError;
+
+use crate::SessionExecutionError;
+use crate::host::ExecutorComponents;
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::commit::RunDisposition;
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitOperationId, CommitReceipt, commit_payload_hash,
+};
+use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_dispatch::ClaimedCommitService;
+use awaken_dispatch::{
+    ClaimedCommitRequest, MemoryDispatchStore, WorkerIdentity, WorkerResolver as _,
+};
+use awaken_dispatch_contract::ClaimedRunCommit;
+use awaken_dispatch_contract::DispatchClaims;
+use awaken_dispatch_contract::DispatchEnqueue;
+use awaken_dispatch_contract::DispatchSettlement;
+use awaken_ext_memory::MemoryExtractionStatus;
+
+use awaken_dispatch_contract::{RunClaim, RunDispatch};
+use awaken_runtime_contract::RunActivation;
+use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ResolvedModelCandidate};
+use awaken_session_execution_contract::ApplicationErrorKind;
+
+/// The Coordinator composition's resolver, rebuilt here over the same
+/// Host method so these tests drive the real claimed-commit service.
+struct SessionCommitOwner(Arc<ExecutorComponents>);
+
+#[async_trait::async_trait]
+impl awaken_dispatch::ClaimedOperationCoordinatorResolver for SessionCommitOwner {
+    async fn resolve(
+        &self,
+        session_thread: &ThreadId,
+    ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError> {
+        self.0.thread_reads().commit_owner(session_thread).await
+    }
+}
+
+const MEMORY_BINDING_ID: &str = "claimed-memory-binding";
+const PRIMARY_MODEL_REF: &str = "claimed-primary-model";
+const OVERRIDE_MODEL_REF: &str = "claimed-override-model";
+const WORKSPACE_ID: &str = "claimed-memory-workspace";
+
+/// Test-only direct setup seam for scenarios whose subject is terminal
+/// observation after committed truth already exists. Production claimed
+/// writes always enter through `ClaimedCommitService` below.
+async fn apply_host_operation(
+    host: &Arc<ExecutorComponents>,
+    trusted_dispatch: &RunDispatch,
+    operation: CommitOperation,
+) -> Result<CommitReceipt, SessionExecutionError> {
+    let session_thread = trusted_dispatch.session_thread_id();
+    host.thread_reads
+        .commit_for_read(&session_thread.0)
+        .await?
+        .commit_operation(operation)
+        .await
+        .map_err(|error| SessionExecutionError::internal(error.to_string()))
+}
+
+fn claimed_memory_snapshot() -> (
+    awaken_runtime_contract::ExecutableAgentSnapshot,
+    ResolvedModelCandidate,
+    awaken_runtime_contract::ExecutableAgentSnapshot,
+) {
+    let mut snapshot = crate::config::server_config(
+        "claimed-memory-agent",
+        PRIMARY_MODEL_REF,
+        &std::collections::HashSet::new(),
+        &std::collections::HashSet::new(),
+        &[awaken_ext_memory::MEMORY_PLUGIN_ID.to_string()],
+        &std::collections::BTreeMap::from([(
+            awaken_ext_memory::MEMORY_PLUGIN_ID.to_string(),
+            serde_json::json!({
+                "binding_id": MEMORY_BINDING_ID,
+                "agent_id": "claimed-memory-extractor"
+            }),
+        )]),
+        &[],
+        ContextPolicy::KeepAll,
+    )
+    .expect("literal model reference");
+    let override_candidate = ResolvedModelCandidate::host(ModelBinding::new(
+        "claimed-override-provider",
+        OVERRIDE_MODEL_REF,
+        "default",
+    ));
+    snapshot.resolved_spec.model_candidates = vec![override_candidate.clone()];
+    snapshot
+        .recompute_fingerprint()
+        .expect("recompute claimed Memory snapshot fingerprint");
+    let extractor = awaken_ext_memory::memory_agent(
+        "claimed-memory-extractor",
+        override_candidate.clone(),
+        awaken_ext_memory::DEFAULT_MEMORY_INSTRUCTIONS,
+    );
+    (snapshot, override_candidate, extractor)
+}
+
+fn claimed_memory_manifest(
+    store_id: &str,
+) -> awaken_session_configuration_contract::resource::SessionResourceManifest {
+    let config = awaken_resource_contract::MemoryStoreConfigVersion {
+        memory_store_id: store_id.to_string().into(),
+        version: awaken_resource_contract::ConfigVersion::INITIAL,
+        retention_policy: Default::default(),
+    };
+    awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
+            WORKSPACE_ID,
+            7,
+            awaken_session_configuration_contract::resource::ResolvedSessionResources::try_new(
+                vec![awaken_session_configuration_contract::resource::ResolvedInput {
+                    created_at_unix_ms: None,
+                    updated_at_unix_ms: None,
+                    binding_id: awaken_resource_contract::BindingId::new(MEMORY_BINDING_ID),
+                    source: awaken_session_configuration_contract::resource::ResolvedInputSource::MemoryStore {
+                        memory_store_id: store_id.to_string().into(),
+                        config,
+                    },
+                    mount_path: "/memory".into(),
+                    access: awaken_resource_contract::ResourceAccess::ReadWrite,
+                    instructions: None,
+                }],
+                Vec::new(),
+            )
+            .expect("valid claimed Memory manifest"),
+        )
+}
+
+fn claimed_memory_projection(
+    root: &awaken_runtime_contract::ExecutableAgentSnapshot,
+    override_candidate: &ResolvedModelCandidate,
+    manifest: &awaken_session_configuration_contract::resource::SessionResourceManifest,
+) -> awaken_session_realization_contract::FrozenSessionProjection {
+    let binding = override_candidate.binding();
+    let environment = awaken_session_configuration_contract::EnvironmentSnapshot {
+        environment_id: "claimed-memory-environment".into(),
+        revision: awaken_environment_contract::EnvironmentRevision(1),
+        self_hosted: false,
+        config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
+            "claimed-memory-environment-v1".into(),
+        ),
+        sandbox: Default::default(),
+        sandbox_provisioning: Default::default(),
+        idle_retention: Default::default(),
+        packages: Default::default(),
+        prepared_image: None,
+        network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
+        credential_realization:
+            awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
+    };
+    let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
+        awaken_session_configuration_contract::SessionBaselineInputs {
+            environment,
+            runtime_placement: awaken_session_types::SessionRuntimePlacement::Worker,
+            mcp_authoring: Default::default(),
+            agent_id: root.root_agent_id.0.clone(),
+            agent_revision: None,
+            model: binding.identity().1.to_owned(),
+            model_override: Some(
+                awaken_session_configuration_contract::SessionModelOverride {
+                    publication: Some(Box::new(
+                        awaken_session_configuration_contract::SessionModelPublication {
+                            primary: override_candidate.clone(),
+                            candidates: Vec::new(),
+                        },
+                    )),
+                    inference: Default::default(),
+                },
+            ),
+            runtime: Some(binding.identity().2.to_owned()),
+            delegate_ids: Vec::new(),
+            toolsets: Vec::new(),
+            mounts: Vec::new(),
+            env: Vec::new(),
+            prompts: Vec::new(),
+            transcript_prefix: None,
+        },
+    );
+    awaken_session_realization_contract::FrozenSessionProjection {
+        workspace_id: manifest.workspace_id.clone(),
+        revision: awaken_session_types::SessionRevision(1),
+        baseline,
+        agent_publication: Some(root.clone()),
+        environment_materialization: None,
+        environment: Default::default(),
+        resource_revision: manifest.revision,
+        resources: manifest.resources.clone(),
+        previous_resource_manifest: Some(
+            awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
+                manifest.workspace_id.clone(),
+                0,
+                awaken_session_configuration_contract::resource::ResolvedSessionResources::default(
+                ),
+            ),
+        ),
+        tools: Default::default(),
+        mcp: Vec::new(),
+        request_context: Vec::new(),
+    }
+}
+
+async fn cold_claimed_memory_host() -> (
+    Arc<ExecutorComponents>,
+    Arc<ExecutorComponents>,
+    Arc<dyn awaken_resource_contract::MemoryVersionQueries>,
+) {
+    let (dependencies, versions) = crate::host::tests::fixtures::with_test_memory_history(
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
+            .await,
+    )
+    .await;
+    let host = dependencies
+        .with_session_execution(
+            crate::SessionExecutionDependencies::default()
+                .with_resource_validator(crate::host::test_resource_validator()),
+        )
+        .build()
+        .expect("validated Host dependencies");
+    let managed = host.clone();
+    (host, managed, versions)
+}
+
+fn assert_no_resident_session_projection(host: &ExecutorComponents, thread: &str, rule: &str) {
+    assert!(
+        host.run_assembly
+            .installed_sessions
+            .read(thread, |installed| {
+                installed.run.context.is_none()
+                    && !installed
+                        .realization
+                        .environment()
+                        .owner
+                        .has_local_environment()
+                    && installed.inputs.workspace.is_none()
+                    && installed.realization.staging().manifest.is_none()
+                    && installed.realization.staging().memory_bindings.is_empty()
+                    && installed.realization.staging().memory.is_none()
+            })
+            .expect("installed Sessions")
+            .unwrap_or(true),
+        "{rule}: claimed commit must not realize a Session projection"
+    );
+}
+
+async fn assert_completed_memory(
+    memory: (
+        &ExecutorComponents,
+        &dyn awaken_resource_contract::MemoryVersionQueries,
+    ),
+    intent_id: &str,
+    session_thread: &str,
+    logical_thread: &str,
+    store_id: &str,
+    override_candidate: &ResolvedModelCandidate,
+    rule: &str,
+) {
+    let (host, versions) = memory;
+    assert!(
+        crate::CoordinatorRoles::of(host)
+            .drain(std::time::Duration::from_secs(10))
+            .await,
+        "{rule}: Memory extraction did not drain"
+    );
+    let intent = host
+        .resources
+        .memory
+        .extraction_repository()
+        .get_extraction(intent_id)
+        .await
+        .expect("query claimed Memory extraction")
+        .expect("claimed terminal commit creates a Memory extraction");
+    assert_eq!(
+        intent.status,
+        MemoryExtractionStatus::Completed,
+        "{rule}: {:?}",
+        intent.last_error
+    );
+    assert_eq!(intent.session_id, session_thread, "{rule}");
+    assert_eq!(intent.logical_thread_id(), logical_thread, "{rule}");
+    assert_eq!(intent.memory_store_id, store_id, "{rule}");
+    assert_eq!(
+        &intent.extractor.agent.resolved_spec.model_binding, override_candidate,
+        "{rule}: extraction must retain the activation's effective model"
+    );
+    assert_eq!(intent.attempts, 1, "{rule}: replay is idempotent");
+    assert!(
+        host.resources
+            .memory_stores
+            .queries()
+            .get_by_path(store_id, "/user-prefs.md")
+            .await
+            .expect("query extracted Memory")
+            .is_some(),
+        "{rule}: extraction must write the frozen MemoryStore"
+    );
+    assert_eq!(
+        versions
+            .list_versions(store_id)
+            .await
+            .expect("list extracted Memory versions")
+            .len(),
+        1,
+        "{rule}: replay must not create a second Memory version"
+    );
+}
+
+#[tokio::test]
+async fn remote_terminal_settlement_observation_is_coordinator_owned_and_idempotent() {
+    // Cause/effect graph: C1 commit is nonterminal/terminal; C2 terminal operation
+    // and authenticated settlement are fresh/replayed; C3 the target Coordinator
+    // starts with no resident Session projection; C4 the root admission dispatch
+    // carries the exact scope-matched, writable Memory binding; C5 the activation
+    // selects a published fallback via `model_ref_override`. Effects: E1 committed
+    // truth advances once; E2 commit alone never publishes Memory; E3 successful
+    // settlement creates and completes one durable extraction and one Memory
+    // version; E4 physical and logical Thread are the dispatch Thread; E5 neither
+    // boundary realizes Runtime, Environment, Resource, or selected-Memory state;
+    // E6 extraction freezes the activation's effective candidate. Constraints: a
+    // separate admission Host invokes the production root dispatch decorator;
+    // commit ingestion owns only Thread truth, while the one fallible settlement
+    // observer owns post-commit Memory publication before a queue row may disappear.
+    //
+    // | Rule | C1          | C2     | C3   | C4    | C5       | effects          |
+    // | R1   | nonterminal | fresh  | cold | exact | override | E1,E2,E4,E5      |
+    // | R2   | terminal    | fresh  | cold | exact | override | E1,E2,E4,E5      |
+    // | R3   | terminal    | settle | cold | exact | override | E1,E3,E4,E5,E6   |
+    // | R4   | terminal    | replay | cold | exact | override | E1,E3,E4,E5,E6   |
+    let thread = "remote-memory-terminal";
+    let run = RunId("remote-memory-run".into());
+    let store_id = "remote-memory-store";
+    let manifest = claimed_memory_manifest(store_id);
+    let (snapshot, override_candidate, extractor) = claimed_memory_snapshot();
+    let activation = RunActivation::new(run.clone(), ThreadId(thread.into()), snapshot, Vec::new())
+        .with_model_ref_override(Some(OVERRIDE_MODEL_REF.into()));
+    let publications =
+        awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([extractor.clone()])
+            .expect("one exact Memory extractor publication");
+    let admission =
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
+            .await
+            .with_agent_publications(Arc::new(publications)))
+        .build()
+        .expect("validated Host dependencies");
+    admission
+        .run_assembly
+        .installed_sessions
+        .install(thread)
+        .expect("installed Sessions");
+    admission
+        .realization_executor
+        .staging()
+        .register_thread_resource_manifest(thread, manifest)
+        .expect("installed Sessions");
+    let dispatch = admission
+        .run_assembly
+        .prepare_dispatch(activation)
+        .fresh()
+        .expect("production root dispatch decoration");
+    assert_eq!(
+        dispatch.activation.effective_model_ref(),
+        OVERRIDE_MODEL_REF,
+        "R1-R3/C5"
+    );
+    let (host, _managed, versions) = cold_claimed_memory_host().await;
+    assert!(
+        host.run_assembly
+            .installed_sessions
+            .read(thread, |_| ())
+            .expect("installed Sessions")
+            .is_none(),
+        "R1-R3/C3 target starts cold"
+    );
+
+    let operation = |ordinal, expected_thread_version, commit: ThreadCommit| CommitOperation {
+        operation_id: CommitOperationId::new(run.clone(), ordinal),
+        expected_thread_version,
+        payload_hash: commit_payload_hash(&commit).expect("commit hash"),
+        commit,
+    };
+    let running = operation(
+        0,
+        0,
+        ThreadCommit::assemble(
+            ThreadId(thread.into()),
+            RunDisposition::running(run.clone()),
+            true,
+            vec![Message::text(
+                MessageId("remote-user".into()),
+                Role::User,
+                "remember rust",
+            )],
+            Vec::new(),
+            Vec::new(),
+        ),
+    );
+    apply_host_operation(&host, &dispatch, running)
+        .await
+        .expect("R1 running commit");
+    assert_no_resident_session_projection(&host, thread, "R1/E5");
+    let intent_id = format!("memory-extraction:{thread}:{}", run.0);
+    assert!(
+        host.resources
+            .memory
+            .extraction_repository()
+            .get_extraction(&intent_id)
+            .await
+            .expect("R1 query")
+            .is_none(),
+        "R1/E3"
+    );
+
+    let terminal = operation(
+        1,
+        1,
+        ThreadCommit::assemble(
+            ThreadId(thread.into()),
+            RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
+            true,
+            vec![Message::text(
+                MessageId("remote-assistant".into()),
+                Role::Assistant,
+                "done",
+            )],
+            Vec::new(),
+            Vec::new(),
+        ),
+    );
+    let first = apply_host_operation(&host, &dispatch, terminal.clone())
+        .await
+        .expect("R2 terminal commit");
+    let replay = apply_host_operation(&host, &dispatch, terminal)
+        .await
+        .expect("R4 terminal replay");
+    assert!(!first.duplicate, "R2/E1");
+    assert!(replay.duplicate, "R4/E1");
+    assert!(
+        host.resources
+            .memory
+            .extraction_repository()
+            .get_extraction(&intent_id)
+            .await
+            .expect("R2 query after commit")
+            .is_none(),
+        "R2/E2 commit ingestion cannot duplicate settlement observation"
+    );
+    let claim = RunClaim {
+        run_id: run.clone(),
+        owner: "remote-memory-worker".into(),
+        epoch: 1,
+    };
+    let observer = host.worker_memory_settlement_observer();
+    for rule in ["R3", "R4"] {
+        observer
+            .before_settle(
+                &dispatch,
+                &claim,
+                &RunState::Ended(EndCause::NaturalEnd),
+                false,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{rule} settlement observation: {error}"));
+    }
+    assert_completed_memory(
+        (host.as_ref(), versions.as_ref()),
+        &intent_id,
+        thread,
+        thread,
+        store_id,
+        &override_candidate,
+        "R3/R4 E3,E6",
+    )
+    .await;
+    assert_no_resident_session_projection(&host, thread, "R2-R4 E5");
+}
+
+#[tokio::test]
+async fn cold_durable_context_defers_terminal_delivery_to_guarded_settlement() {
+    // Cause/effect graph: C1 terminal truth is committed before a Runtime is
+    // resident; C2 the exact dispatch carries a writable Memory binding; C3
+    // the cold context selects durable delivery; C4 guarded settlement is
+    // fresh/replayed; C5 the cold target installs the complete frozen
+    // Session projection with the exact root/model publication, Resource
+    // transition, and Memory-extractor publication. Effects: E1 cold context
+    // construction creates no Memory intent; E2 settlement creates and
+    // completes exactly one intent/version; E3 replay remains idempotent.
+    // Constraint K1: DispatchWorker/HTTP
+    // settlement is the sole durable terminal-delivery owner, regardless of
+    // whether the context was opened from a claim. Decision rules:
+    // D1=C1+C2+C3+C5 => E1; D2=D1+C4 => E2+E3.
+    let thread = "cold-durable-terminal";
+    let run = RunId("cold-durable-terminal-run".into());
+    let store_id = "cold-durable-terminal-memory";
+    let declared_memory = claimed_memory_manifest(store_id);
+    let (snapshot, override_candidate, extractor) = claimed_memory_snapshot();
+    let root_publication = snapshot.clone();
+    let activation = RunActivation::new(run.clone(), ThreadId(thread.into()), snapshot, Vec::new())
+        .with_model_ref_override(Some(OVERRIDE_MODEL_REF.into()));
+    let publications = Arc::new(
+        awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([
+            root_publication.clone(),
+            extractor,
+        ])
+        .expect("exact root and Memory extractor publications"),
+    );
+    let admission =
+        (crate::SessionExecutorBuilder::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
+            .await
+            .with_agent_publications(publications.clone()))
+        .build()
+        .expect("validated Host dependencies");
+    let queue = Arc::new(
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+            .await
+            .expect("durable dispatch store"),
+    );
+    let roots = crate::host::tests::ManagedSessionRootFixture::new().await;
+    let (dependencies, versions) = crate::host::tests::fixtures::with_test_memory_history(
+        roots.configure(
+            crate::SessionExecutorBuilder::ephemeral(
+                Arc::new(crate::host::MemoryHostModel),
+                "stub",
+            )
+            .await
+            .with_ephemeral_dispatch(queue.clone())
+            .with_agent_publications(publications),
+        ),
+    )
+    .await;
+    let host = ((crate::host::with_test_memory_mounter(dependencies)).with_session_execution(
+        crate::SessionExecutionDependencies::default()
+            .with_resource_validator(crate::host::test_resource_validator()),
+    ))
+    .build()
+    .expect("validated Host dependencies");
+    let managed = host.clone();
+    let application: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
+        Arc::new(crate::coordination::RecordingSessionAgentCoordination::default());
+    managed
+        .session_application_bindings()
+        .bind_agent_coordination(application.clone())
+        .expect("C5 install canonical Session application authority");
+    // Two original boundaries remain: ordinary Queue Work is produced from
+    // its Resource carrier; the receiver is Managed and must own a real
+    // Root/lease/first CAS. Prepare that new Root before any Work exists;
+    // the template's7 is not old history or a trusted receipt to rewrite.
+    let mut initial =
+        claimed_memory_projection(&root_publication, &override_candidate, &declared_memory);
+    initial.resource_revision = 0;
+    initial.previous_resource_manifest = None;
+    let committed = roots
+        .install_projection(&managed, thread, initial)
+        .await
+        .expect("C5 install complete frozen Session projection");
+    let manifest =
+        awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
+            committed.workspace_id.clone(),
+            committed.resource_revision,
+            committed.resources.clone(),
+        );
+    admission
+        .run_assembly
+        .installed_sessions
+        .install(thread)
+        .expect("installed Sessions");
+    admission
+        .realization_executor
+        .staging()
+        .register_thread_resource_manifest(thread, manifest)
+        .expect("installed Sessions");
+    let dispatch = admission
+        .run_assembly
+        .prepare_dispatch(activation)
+        .fresh()
+        .expect("production root dispatch decoration");
+    let commit = ThreadCommit::assemble(
+        ThreadId(thread.into()),
+        RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
+        true,
+        vec![Message::text(
+            MessageId("cold-durable-assistant".into()),
+            Role::Assistant,
+            "done",
+        )],
+        Vec::new(),
+        Vec::new(),
+    );
+    apply_host_operation(
+        &host,
+        &dispatch,
+        CommitOperation {
+            operation_id: CommitOperationId::new(run.clone(), 0),
+            expected_thread_version: 0,
+            payload_hash: commit_payload_hash(&commit).expect("commit hash"),
+            commit,
+        },
+    )
+    .await
+    .expect("D1 commit terminal truth");
+
+    queue.enqueue(dispatch).await.expect("enqueue D1");
+    let claimed = queue
+        .claim("cold-durable-worker", 30_000, &Default::default())
+        .await
+        .expect("claim D1")
+        .expect("D1 dispatch available");
+    crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+        .expect("Host dispatch resolver")
+        .worker_for_claimed(&claimed)
+        .await
+        .expect("D1 construct cold durable context");
+    let ctx = host
+        .run_assembly
+        .installed_sessions
+        .read_run(thread, |run| run.context.clone())
+        .expect("installed Sessions")
+        .flatten()
+        .expect("D1 durable context resident");
+    assert!(ctx.delivery.is_durable(), "D1/C3 must use durable delivery");
+    let intent_id = format!("memory-extraction:{thread}:{}", run.0);
+    assert!(
+        host.resources
+            .memory
+            .extraction_repository()
+            .get_extraction(&intent_id)
+            .await
+            .expect("D1 query")
+            .is_none(),
+        "D1/E1 cold durable context must not deliver terminal observation"
+    );
+
+    let observer = host.worker_memory_settlement_observer();
+    for rule in ["D2-fresh", "D2-replay"] {
+        observer
+            .before_settle(
+                &claimed.request,
+                &RunClaim::from(&claimed.lease),
+                &RunState::Ended(EndCause::NaturalEnd),
+                false,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{rule} settlement observation: {error}"));
+    }
+    assert_completed_memory(
+        (host.as_ref(), versions.as_ref()),
+        &intent_id,
+        thread,
+        thread,
+        store_id,
+        &override_candidate,
+        "D2/E2,E3",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn claimed_child_commit_uses_guarded_parent_partition_and_logical_child_thread() {
+    // Adapter-owner rule C5: the guarded parent partition still selects the
+    // same store before its original operation append; moving delegation
+    // must not use a fixed global resolver or bypass claim/hash validation.
+    // Cause/effect graph: C1 operation-id Run matches/mismatches the guarded
+    // dispatch; C2 committed Run matches/mismatches it; C3 committed logical
+    // Thread matches/mismatches it; C4 dispatch has/has-not a distinct parent
+    // Session affinity; C5 operation is fresh/replayed; C6 the target Coordinator
+    // starts cold and the child dispatch carries an exact writable Memory binding;
+    // C7 the activation selects a published fallback; C8 the claim is
+    // current/stale. Effects: E1 reject before
+    // any committed write; E2 append under the parent physical partition; E3
+    // retain the child logical Thread/Run identity; E4 commit alone creates no
+    // extraction; E5 authenticated settlement completes one extraction in the
+    // frozen store using the effective candidate; E6 realize no Runtime,
+    // Environment, Resource, or selected-Memory state and create no child installed Session or
+    // physical partition; E7 exact replay is duplicate and creates no second
+    // extraction attempt or Memory version. Constraints: the RunDispatch is built
+    // by the production child dispatch owner and accepted only through
+    // CommitEpochGuard. The deployment adapter receives no CommitOperation and
+    // can only return the existing OperationCoordinator selected by that trusted
+    // dispatch; ClaimedCommitService owns the only write invocation. A rejected
+    // rule leaves Thread version zero, and only the existing settlement observer
+    // consumes the same guarded dispatch afterward.
+    //
+    // | Rule | C1 | C2 | C3 | C4       | C5     | C6/C7 | effects          |
+    // | R1   | N  | Y  | Y  | any      | any    | exact | E1               |
+    // | R2   | Y  | N  | Y  | any      | any    | exact | E1               |
+    // | R3   | Y  | Y  | N  | any      | any    | exact | E1               |
+    // | R4   | Y  | Y  | Y  | distinct | fresh  | exact | E2,E3,E4,E6      |
+    // | R5   | Y  | Y  | Y  | distinct | settle | exact | E2,E3,E5,E6      |
+    // | R6   | Y  | Y  | Y  | distinct | replay | exact | E2,E3,E5,E6,E7   |
+    // | R7   | Y  | Y  | Y  | distinct | any    | stale | E1, no resolver  |
+    let parent_thread = "remote-parent-session";
+    let child_thread = "remote-child-thread";
+    let child_run = RunId("remote-child-run".into());
+    let store_id = "remote-child-memory";
+    let manifest = claimed_memory_manifest(store_id);
+    let (snapshot, override_candidate, extractor) = claimed_memory_snapshot();
+    let activation = RunActivation::new(
+        child_run.clone(),
+        ThreadId(child_thread.into()),
+        snapshot,
+        Vec::new(),
+    )
+    .with_model_ref_override(Some(OVERRIDE_MODEL_REF.into()));
+    let publication_source =
+        awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([extractor])
+            .expect("exact child auxiliary publication source");
+    let request = crate::agent_runner::child_dispatch_request(
+        activation,
+        ThreadId(parent_thread.into()),
+        Some(manifest),
+        Some(&publication_source),
+    )
+    .expect("production child dispatch decoration");
+    assert_eq!(
+        request.activation.effective_model_ref(),
+        OVERRIDE_MODEL_REF,
+        "R1-R5/C7"
+    );
+    let (host, _managed, versions) = cold_claimed_memory_host().await;
+    assert!(
+        host.run_assembly
+            .installed_sessions
+            .read(parent_thread, |_| ())
+            .expect("installed Sessions")
+            .is_none()
+            && host
+                .run_assembly
+                .installed_sessions
+                .read(child_thread, |_| ())
+                .expect("installed Sessions")
+                .is_none(),
+        "R1-R5/C6 target starts cold"
+    );
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
+    let queue = Arc::new(MemoryDispatchStore::new(clock.clone()));
+    queue
+        .enqueue(request)
+        .await
+        .expect("enqueue child dispatch");
+    clock.set(0);
+    let claimed = queue
+        .claim("remote-child-worker", 30_000, &Default::default())
+        .await
+        .expect("claim child dispatch")
+        .expect("child dispatch is claimable");
+    let service = ClaimedCommitService::with_coordinator_resolver(
+        queue.clone(),
+        Arc::new(SessionCommitOwner(host.clone())),
+    );
+    let identity = WorkerIdentity::new("remote-child-worker", "boot", 1);
+
+    let operation = |operation_run: RunId, commit_run: RunId, thread: &str| {
+        let commit = ThreadCommit::assemble(
+            ThreadId(thread.into()),
+            RunDisposition::ended(commit_run, EndCause::NaturalEnd),
+            true,
+            vec![Message::text(
+                MessageId(format!("message-{thread}")),
+                Role::Assistant,
+                "child report",
+            )],
+            Vec::new(),
+            Vec::new(),
+        );
+        CommitOperation {
+            operation_id: CommitOperationId::new(operation_run, 0),
+            expected_thread_version: 0,
+            payload_hash: commit_payload_hash(&commit).expect("commit hash"),
+            commit,
+        }
+    };
+    let apply = |operation| ClaimedCommitRequest {
+        claim: RunClaim::from(&claimed.lease),
+        operation,
+        identity: identity.clone(),
+    };
+
+    let wrong_operation_run = service
+        .apply_claimed(apply(operation(
+            RunId("other-operation-run".into()),
+            child_run.clone(),
+            child_thread,
+        )))
+        .await
+        .expect_err("R1 rejects an operation-id Run mismatch");
+    assert_eq!(
+        wrong_operation_run.kind,
+        ApplicationErrorKind::InvalidRequest
+    );
+
+    let wrong_commit_run = service
+        .apply_claimed(apply(operation(
+            RunId("other-commit-run".into()),
+            RunId("other-commit-run".into()),
+            child_thread,
+        )))
+        .await
+        .expect_err("R2 rejects a committed Run mismatch");
+    assert_eq!(wrong_commit_run.kind, ApplicationErrorKind::InvalidRequest);
+
+    let wrong_thread = service
+        .apply_claimed(apply(operation(
+            child_run.clone(),
+            child_run.clone(),
+            "other-child-thread",
+        )))
+        .await
+        .expect_err("R3 rejects a committed Thread mismatch");
+    assert_eq!(wrong_thread.kind, ApplicationErrorKind::InvalidRequest);
+
+    let parent_commit = host
+        .thread_reads
+        .commit_for_read(parent_thread)
+        .await
+        .expect("parent physical commit authority");
+    assert!(
+        parent_commit
+            .authoritative_committed_messages(&ThreadId(child_thread.into()))
+            .await
+            .expect("R1-R3 parent query")
+            .is_empty(),
+        "R1-R3/E1"
+    );
+
+    let receipt = service
+        .apply_claimed(apply(operation(
+            child_run.clone(),
+            child_run.clone(),
+            child_thread,
+        )))
+        .await
+        .expect("R4 accepts the exact guarded child commit");
+    assert!(!receipt.duplicate, "R4/E2");
+    let replay = service
+        .apply_claimed(apply(operation(
+            child_run.clone(),
+            child_run.clone(),
+            child_thread,
+        )))
+        .await
+        .expect("R6 accepts the exact guarded child replay");
+    assert!(replay.duplicate, "R6/E7");
+    let child_messages = parent_commit
+        .authoritative_committed_messages(&ThreadId(child_thread.into()))
+        .await
+        .expect("R4-R6 query child logical Thread through parent partition");
+    assert_eq!(child_messages.len(), 1, "R4-R6 E2,E3");
+    assert_eq!(child_messages[0].text_content(), "child report", "R4-R6 E3");
+    assert!(
+        parent_commit
+            .authoritative_committed_messages(&ThreadId(parent_thread.into()))
+            .await
+            .expect("R4-R6 query parent logical Thread")
+            .is_empty(),
+        "R4-R6 E3 does not rewrite the child as the parent Thread"
+    );
+
+    let child_partition_exists = host
+        .run_assembly
+        .authority
+        .durable_thread_exists(child_thread)
+        .await
+        .expect("query child physical partition");
+    assert!(
+        !child_partition_exists,
+        "R4-R6 E6 no parallel child physical partition receives the commit"
+    );
+    let intent_id = format!("memory-extraction:{child_thread}:{}", child_run.0);
+    assert!(
+        host.resources
+            .memory
+            .extraction_repository()
+            .get_extraction(&intent_id)
+            .await
+            .expect("R4 query after child commit")
+            .is_none(),
+        "R4/E4 commit ingestion cannot publish Memory"
+    );
+    let observer = host.worker_memory_settlement_observer();
+    for rule in ["R5", "R6"] {
+        observer
+            .before_settle(
+                &claimed.request,
+                &RunClaim::from(&claimed.lease),
+                &RunState::Ended(EndCause::NaturalEnd),
+                false,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{rule} child settlement observation: {error}"));
+    }
+    assert_completed_memory(
+        (host.as_ref(), versions.as_ref()),
+        &intent_id,
+        parent_thread,
+        child_thread,
+        store_id,
+        &override_candidate,
+        "R5/R6 E5,E7",
+    )
+    .await;
+    assert!(
+        host.run_assembly
+            .installed_sessions
+            .read(child_thread, |_| ())
+            .expect("installed Sessions")
+            .is_none(),
+        "R4-R6 E6 logical child has no resident installed Session"
+    );
+    assert_no_resident_session_projection(&host, parent_thread, "R4-R6 E6");
+
+    assert_eq!(
+        queue
+            .settle(
+                claimed.lease.run_id(),
+                claimed.lease.epoch(),
+                awaken_dispatch_contract::DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .expect("R7 close exact claim"),
+        awaken_dispatch_contract::SettleOutcome::Applied,
+    );
+    let stale = service
+        .apply_claimed(apply(operation(child_run.clone(), child_run, child_thread)))
+        .await
+        .expect_err("R7 stale claim never selects a commit owner");
+    assert_eq!(stale.kind, ApplicationErrorKind::InvalidRequest, "R7/E1");
+}
+
+#[tokio::test]
+async fn worker_claimed_commit_is_the_injected_port_only_for_a_worker() {
+    // Decision table: C1 the Host holds a database-less Worker's upstream
+    // authority (given by its product constructor, by the test fixture
+    // here); C2 startup injected a claimed-commit transport. A store-owning
+    // Host's local authority has no place for the transport at all.
+    // W1 !C1 -> None: a store-owning Host commits through its own
+    // authority. W2 C1+C2 -> exactly the injected port. W3 C1+!C2 -> fails
+    // closed instead of a local fallback.
+    use crate::host::SelectedOnly;
+    let injected: Arc<dyn ClaimedRunCommit> = Arc::new(SelectedOnly);
+    let dependencies = || {
+        crate::SessionExecutorBuilder::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")
+    };
+    assert!(
+        (dependencies().await)
+            .build()
+            .expect("validated Host dependencies")
+            .run_assembly
+            .authority
+            .claimed_commit()
+            .unwrap()
+            .is_none(),
+        "W1"
+    );
+    let selected = (dependencies().await.with_authority(
+        crate::UpstreamAuthority::default().with_dispatch_binding(
+            awaken_dispatch_erasure::DispatchBinding::remote(
+                Arc::new(awaken_coordinator_client::HttpDispatchQueue::new(
+                    "http://127.0.0.1:9",
+                    awaken_dispatch_contract::WorkerIdentity::new("fixture", "fixture-boot", 1),
+                )),
+                injected.clone(),
+            ),
+        ),
+    ))
+    .build()
+    .expect("validated Host dependencies")
+    .run_assembly
+    .authority
+    .claimed_commit()
+    .unwrap()
+    .expect("W2");
+    assert!(Arc::ptr_eq(&selected, &injected), "W2 exact port");
+    let error = match (dependencies()
+        .await
+        .with_authority(crate::UpstreamAuthority::default()))
+    .build()
+    .expect("validated Host dependencies")
+    .run_assembly
+    .authority
+    .claimed_commit()
+    {
+        Ok(_) => panic!("W3 must fail closed"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, crate::SessionExecutionErrorKind::Internal, "W3");
+}
+
+#[tokio::test]
+async fn retained_memory_settlement_observes_frozen_child_after_executor_release() {
+    // Original claimed commit service writes one terminal child under its
+    // parent partition before any observation. Then every executor/assembly
+    // and write resolver is dropped. R1 frozen enabled: observe + replay
+    // creates exactly one extraction/version using the effective candidate.
+    // R2 manifestless enabled: missing original resident binding is an error.
+    // R3 extraction disabled and R4 plugin absent: no extraction. R5 foreign frozen binding:
+    // reject before extraction. Every row must release the actual installed Session table.
+    for rule in ["frozen", "legacy", "disabled", "absent", "foreign-binding"] {
+        let parent = format!("released-memory-parent-{rule}");
+        let child = format!("released-memory-child-{rule}");
+        let run = RunId(format!("released-memory-run-{rule}"));
+        let store_id = format!("released-memory-store-{rule}");
+        let (mut snapshot, candidate, extractor) = claimed_memory_snapshot();
+        if rule == "absent" {
+            snapshot.resolved_spec.plugin_ids.clear();
+            snapshot
+                .recompute_fingerprint()
+                .expect("disabled published configuration");
+        }
+        if rule == "disabled" {
+            snapshot.resolved_spec.plugin_config.insert(
+                awaken_ext_memory::MEMORY_PLUGIN_ID.into(),
+                serde_json::json!({"binding_id": MEMORY_BINDING_ID, "extraction_enabled": false}),
+            );
+            snapshot
+                .recompute_fingerprint()
+                .expect("extraction disabled while plugin remains selected");
+        }
+        if rule == "foreign-binding" {
+            snapshot.resolved_spec.plugin_config.insert(
+                awaken_ext_memory::MEMORY_PLUGIN_ID.into(),
+                serde_json::json!({"binding_id":"missing-frozen-binding"}),
+            );
+            snapshot
+                .recompute_fingerprint()
+                .expect("foreign published binding");
+        }
+        let activation =
+            RunActivation::new(run.clone(), ThreadId(child.clone()), snapshot, Vec::new())
+                .with_model_ref_override(Some(OVERRIDE_MODEL_REF.into()));
+        let publications =
+            awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([extractor])
+                .expect("exact auxiliary publication");
+        let manifest = match rule {
+            "legacy" | "disabled" | "absent" => None,
+            _ => Some(claimed_memory_manifest(&store_id)),
+        };
+        let request = crate::agent_runner::child_dispatch_request(
+            activation,
+            ThreadId(parent.clone()),
+            manifest,
+            Some(&publications),
+        )
+        .expect("production child dispatch decoration");
+        let (host, managed, versions) = cold_claimed_memory_host().await;
+        let queue = Arc::new(MemoryDispatchStore::new(host.run_assembly.clock()));
+        queue
+            .enqueue(request)
+            .await
+            .expect("enqueue exact dispatch");
+        let claimed = queue
+            .claim("released-memory-worker", 30_000, &Default::default())
+            .await
+            .expect("claim exact dispatch")
+            .expect("dispatch is claimable");
+        let service = ClaimedCommitService::with_coordinator_resolver(
+            queue,
+            Arc::new(SessionCommitOwner(host.clone())),
+        );
+        let terminal_commit = ThreadCommit::assemble(
+            ThreadId(child.clone()),
+            RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
+            true,
+            vec![Message::text(
+                MessageId(format!("released-memory-message-{rule}")),
+                Role::Assistant,
+                "child report",
+            )],
+            Vec::new(),
+            Vec::new(),
+        );
+        service
+            .apply_claimed(ClaimedCommitRequest {
+                claim: RunClaim::from(&claimed.lease),
+                identity: WorkerIdentity::new("released-memory-worker", "boot", 1),
+                operation: CommitOperation {
+                    operation_id: CommitOperationId::new(run.clone(), 0),
+                    expected_thread_version: 0,
+                    payload_hash: commit_payload_hash(&terminal_commit).expect("exact commit hash"),
+                    commit: terminal_commit,
+                },
+            })
+            .await
+            .expect("original guarded service commits terminal child");
+        assert_no_resident_session_projection(&host, &parent, rule);
+        let intent_id = format!("memory-extraction:{child}:{}", run.0);
+        let runtime = host.resources.memory.clone();
+        let content = host.resources.memory_stores.clone();
+        assert!(
+            runtime
+                .extraction_repository()
+                .get_extraction(&intent_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "commit ingestion must not perform terminal observation"
+        );
+        let observer = host.worker_memory_settlement_observer();
+        let facade = Arc::downgrade(&host);
+        let installed_sessions = Arc::downgrade(&host.run_assembly.installed_sessions);
+        let assembly = Arc::downgrade(&host.run_assembly);
+        let authority = host.run_assembly.authority.clone();
+        drop(service);
+        drop(managed);
+        drop(host);
+        assert!(
+            facade.upgrade().is_none(),
+            "{rule}: selected settlement services must release the Host"
+        );
+        assert!(
+            installed_sessions.upgrade().is_none(),
+            "{rule}: selected settlement services must release the installed Session table"
+        );
+        assert!(
+            assembly.upgrade().is_none(),
+            "{rule}: no broad RunAssembly owner retained"
+        );
+        for delivery in ["fresh", "replay"] {
+            let result = observer
+                .before_settle(
+                    &claimed.request,
+                    &RunClaim::from(&claimed.lease),
+                    &RunState::Ended(EndCause::NaturalEnd),
+                    false,
+                )
+                .await;
+            match rule {
+                "legacy" => assert!(
+                    result
+                        .expect_err("legacy missing binding cannot silently skip extraction")
+                        .to_string()
+                        .contains("original resident Session binding"),
+                    "{delivery}"
+                ),
+                "foreign-binding" => assert!(
+                    result
+                        .expect_err("foreign binding must fail closed")
+                        .to_string()
+                        .contains("missing-frozen-binding"),
+                    "{delivery}"
+                ),
+                _ => result.unwrap_or_else(|error| panic!("{rule}/{delivery}: {error}")),
+            }
+        }
+        assert!(
+            runtime.drain(std::time::Duration::from_secs(10)).await,
+            "{rule}: original Memory runtime drains"
+        );
+        let intent = runtime
+            .extraction_repository()
+            .get_extraction(&intent_id)
+            .await
+            .expect("original intent authority");
+        let history = versions
+            .list_versions(&store_id)
+            .await
+            .expect("original version authority");
+        if rule == "frozen" {
+            let intent = intent.expect("frozen dispatch creates extraction after Host release");
+            assert_eq!(
+                intent.status,
+                MemoryExtractionStatus::Completed,
+                "{:?}",
+                intent.last_error
+            );
+            assert_eq!(intent.session_id, parent);
+            assert_eq!(intent.logical_thread_id(), child);
+            assert_eq!(intent.memory_store_id, store_id);
+            assert_eq!(
+                intent.extractor.agent.resolved_spec.model_binding,
+                candidate
+            );
+            assert_eq!(intent.attempts, 1, "replay retains one extraction attempt");
+            assert_eq!(history.len(), 1, "replay retains one Memory version");
+            assert!(
+                content
+                    .queries()
+                    .get_by_path(&store_id, "/user-prefs.md")
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        } else {
+            assert!(
+                intent.is_none(),
+                "{rule}: no extraction intent may be manufactured"
+            );
+            assert!(
+                history.is_empty(),
+                "{rule}: no Memory version may be written"
+            );
+        }
+        assert!(
+            authority.durable_thread_exists(&parent).await.unwrap(),
+            "{rule}: original parent physical partition remains"
+        );
+        assert!(
+            !authority.durable_thread_exists(&child).await.unwrap(),
+            "{rule}: no child physical partition"
+        );
+        assert!(
+            installed_sessions.upgrade().is_none(),
+            "{rule}: settlement cannot resurrect a installed Session"
+        );
+    }
+}

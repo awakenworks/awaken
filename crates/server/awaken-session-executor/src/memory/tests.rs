@@ -283,7 +283,7 @@ async fn bound_test_memory(
     )));
     bound
         .binding()
-        .attach_extraction_commit(Arc::new(HostCommit::Local(Arc::new(
+        .attach_extraction_commit(Arc::new(SessionCommit::Local(Arc::new(
             crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
                 awaken_time::system_clock(),
             )),
@@ -429,7 +429,7 @@ async fn agent_selector_runs_the_subagent_and_parses_its_reply() {
     // unrepresentable because `AgentSelector::new` requires the authority.
     // C3 the same clock Arc feeds that commit owner and auxiliary Runtime; it
     // is required by the selector's construction, without a second fallback.
-    let commit = Arc::new(HostCommit::Local(Arc::new(
+    let commit = Arc::new(SessionCommit::Local(Arc::new(
         crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
             clock.clone(),
         )),
@@ -1070,7 +1070,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
             ))))
         .build()
         .expect("validated Host dependencies");
-    let parent_commit = Arc::new(HostCommit::Local(Arc::new(
+    let parent_commit = Arc::new(SessionCommit::Local(Arc::new(
         crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
             awaken_time::system_clock(),
         )),

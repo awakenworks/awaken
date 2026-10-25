@@ -1,6 +1,8 @@
 //! Retained recovery is read-only and cannot become an owner of Session state.
 use super::*;
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource as _;
 
 #[tokio::test]
 async fn retained_worker_recovery_releases_original_installed_sessions_and_idle_context() {
@@ -128,10 +130,15 @@ async fn retained_recovery_preserves_poison_and_original_source_refusal() {
     .unwrap();
     let installed_sessions = host.run_assembly.installed_sessions.clone();
     installed_sessions.install("poisoned-recovery").unwrap();
-    let reader = ThreadReads::new(
-        Arc::new(crate::host::tests::fixtures::test_upstream_authority()),
-        installed_sessions.clone(),
-        host.realization_executor.clone(),
+    let reader = CommittedReads::new(
+        Arc::new(InstalledCommitSource::new(
+            Arc::new(crate::host::tests::fixtures::test_upstream_authority()),
+            &installed_sessions,
+        )),
+        Arc::new(ResolvedAdvisorModels::new(
+            &installed_sessions,
+            &host.realization_executor,
+        )),
     );
     let thread = ThreadId("poisoned-recovery".into());
     let run = RunId("unbound-original-run".into());

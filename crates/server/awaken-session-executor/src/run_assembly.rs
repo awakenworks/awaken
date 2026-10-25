@@ -36,7 +36,9 @@ pub struct RunAssembly {
     pub(crate) session_execution: Arc<crate::SessionExecutionDependencies>,
     pub(crate) execution: crate::ExecutionTopology,
     pub(crate) realization_executor: Arc<crate::realization_executor::RealizationExecutor>,
-    pub(crate) thread_reads: Arc<crate::ThreadReads>,
+    pub(crate) thread_reads: Arc<crate::CommittedReads>,
+    /// The commit source of `thread_reads`, for reads under a held lifecycle guard.
+    pub(crate) commit_source: Arc<crate::thread_reads::InstalledCommitSource>,
     pub(crate) resources: Arc<capability::ResourcePorts>,
     pub(crate) mcp: awaken_session_mcp::McpSessions,
     pub(crate) capture: Arc<capability::ContentCaptureCapability>,

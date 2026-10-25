@@ -214,11 +214,11 @@ impl crate::SessionRuns {
         let (mut snapshot, root) = self.thread_reads.delegated_runs_and_root(thread).await?;
         if let Some(root) = root {
             coordinated_thread_ids.extend(
-                crate::thread_reads::project_committed_coordination(
+                awaken_session_run_delivery::project_committed_coordination(
                     &awaken_session_types::SessionId::from(thread),
                     None,
                     &root,
-                    crate::thread_reads::CoordinationReadPurpose::TerminalScope,
+                    awaken_session_run_delivery::CoordinationReadPurpose::TerminalScope,
                 )?
                 .cleanup_thread_ids,
             );

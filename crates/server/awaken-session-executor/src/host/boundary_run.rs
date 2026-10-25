@@ -15,7 +15,7 @@ pub(crate) struct CommitBoundaryAssembly {
     clock: Arc<dyn awaken_time::WallClock>,
     capabilities: Arc<crate::RunCapabilities>,
     memory_terminal_observers: Arc<crate::memory::MemoryTerminalObservers>,
-    thread_reads: Arc<crate::ThreadReads>,
+    thread_reads: Arc<crate::CommittedReads>,
 }
 
 impl CommitBoundaryAssembly {
@@ -62,7 +62,7 @@ impl CommitBoundaryWorkers for CommitBoundaryAssembly {
 /// One opened original commit, without retaining the claimed Run assembler.
 struct OpenedThreadCommit {
     boundaries: CommitBoundaryAssembly,
-    commit: Arc<crate::store::HostCommit>,
+    commit: Arc<awaken_session_run_delivery::SessionCommit>,
 }
 
 #[async_trait::async_trait]
@@ -96,7 +96,7 @@ impl ThreadCommitBoundary for OpenedThreadCommit {
 pub(crate) async fn construct_boundary_worker(
     boundaries: &CommitBoundaryAssembly,
     claimed: &awaken_dispatch_contract::Claimed,
-    commit: Arc<crate::store::HostCommit>,
+    commit: Arc<awaken_session_run_delivery::SessionCommit>,
     mut context: Option<awaken_runtime_contract::RuntimeRunContext>,
     install_cancellation_executor: bool,
 ) -> Result<

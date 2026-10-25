@@ -31,7 +31,34 @@ REASONS: dict[str, str] = {
     "sole-in-layer": "the only crate of its bounded context at its layer, so the compiler keeps the "
     "layer direction",
     "test-support": "test-only support (layer tooling) kept out of production builds",
+    "coordinator-side": "the Coordinator half of a Worker seam: a sibling of its bounded context is a "
+    "Worker-side implementation (WORKER_SIDE), and its own normal closure links none, so the "
+    "Coordinator process composes it without that sibling",
 }
+
+# The Worker-side implementation crates a `coordinator-side` crate keeps out of
+# the Coordinator (the Session executor and the crates rule D4 of
+# _dispatch_boundary_fitness.py names; Sandbox adapters are checked by prefix).
+WORKER_SIDE: frozenset[str] = frozenset(
+    {"awaken-session-executor", "awaken-session-realization", "awaken-credential-materializer"}
+)
+
+
+def _is_worker_side(crate: "CrateSeparation") -> bool:
+    return crate.name in WORKER_SIDE or (
+        crate.name.startswith("awaken-sandbox") and crate.layer != "contract"
+    )
+
+
+def _normal_closure(name: str, crates: dict[str, "CrateSeparation"]) -> set[str]:
+    seen: set[str] = set()
+    pending = [name]
+    while pending:
+        for dependency in crates[pending.pop()].deps:
+            if dependency in crates and dependency not in seen:
+                seen.add(dependency)
+                pending.append(dependency)
+    return seen
 
 # Dependencies heavy, optional or OS-specific enough that keeping them out of
 # the rest of a bounded context justifies a crate of their own.
@@ -163,6 +190,12 @@ def _reason_errors(crate: CrateSeparation, crates: dict[str, CrateSeparation]) -
         if same_layer:
             return [f"{name} states separation = \"sole-in-layer\" but {', '.join(same_layer)} share "
                     f"{home} / {crate.layer}; state another reason or fold one into the other"]
+    elif reason == "coordinator-side":
+        if not any(_is_worker_side(other) for other in siblings):
+            return [f"{name} states separation = \"coordinator-side\" but no {home} sibling is Worker-side"]
+        linked = sorted(dep for dep in _normal_closure(name, crates) if _is_worker_side(crates[dep]))
+        if linked:
+            return [f"{name} states separation = \"coordinator-side\" but links Worker-side {', '.join(linked)}"]
     elif reason == "test-support":
         if crate.layer != "tooling":
             return [f"{name} states separation = \"test-support\" but its layer is {crate.layer!r}"]
@@ -247,6 +280,7 @@ def selftest() -> None:
     | R1   | protocol: known and unique / twice in a context / in two contexts / unknown | accept / error / accept / error |
     | L1   | sole-in-layer: alone / a sibling at the same layer             | accept / error |
     | T1   | test-support: tooling / other layer                            | accept / error |
+    | K1   | coordinator-side: Worker-side sibling, links none / links one / no such sibling | accept / error / error |
     """
 
     def crate(name: str, separation: str = "", context: str = "session", layer: str = "infrastructure",
@@ -309,4 +343,12 @@ def selftest() -> None:
 
     assert errors(crate("t", "test-support", layer="tooling")) == [], "T1"
     assert errors(crate("t", "test-support")), "T1 layer"
+
+    executor = crate("awaken-session-executor", "isolation", "execution", deps=["sqlx"], isolates=("sqlx",))
+    store = crate("store", "isolation", "execution")
+    assert errors(executor, crate("delivery", "coordinator-side", "execution")) == [], "K1"
+    assert "links Worker-side awaken-session-executor" in errors(
+        executor, crate("delivery", "coordinator-side", "execution", deps=["mid"]),
+        crate("mid", "sole-in-layer", "execution", layer="application", deps=["awaken-session-executor"]))[0], "K1 links"
+    assert "no execution sibling" in errors(store, crate("delivery", "coordinator-side", "execution"))[0], "K1 sibling"
     print("_crate_separation_fitness selftest: the decision table holds")

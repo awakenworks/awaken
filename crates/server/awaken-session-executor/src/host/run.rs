@@ -10,7 +10,7 @@ mod projection;
 mod quiescence;
 mod step_verification;
 
-use crate::thread_reads::{
+use awaken_session_run_delivery::{
     delegation_registry_from_snapshot, project_delegated_runs, recovery_ticket,
     visible_pending_tool,
 };
@@ -76,8 +76,10 @@ impl crate::SessionRuns {
     /// running. Never blocks on the run's own execution lock — it only touches the
     /// separate cancel slot — so it works from a concurrent request.
     pub async fn interrupt(&self, thread: &str) -> Result<(), SessionExecutionError> {
-        self.interrupt_with_commit_read(thread, self.thread_reads.commit_for_read(thread))
-            .await
+        self.interrupt_with_commit_read(thread, async {
+            Ok(self.thread_reads.commit_for_read(thread).await?)
+        })
+        .await
     }
 
     /// Use the lock-aware authoritative reader when the caller owns the
@@ -86,7 +88,9 @@ impl crate::SessionRuns {
     pub(crate) async fn interrupt_with_commit_read(
         &self,
         thread: &str,
-        commit_read: impl std::future::Future<Output = Result<Arc<HostCommit>, SessionExecutionError>>,
+        commit_read: impl std::future::Future<
+            Output = Result<Arc<SessionCommit>, SessionExecutionError>,
+        >,
     ) -> Result<(), SessionExecutionError> {
         // Snapshot original controls under the canonical installed Session lock before
         // durable I/O. Physical revocation consumes this same selection kernel.
@@ -661,7 +665,7 @@ impl crate::SessionRuns {
         &self,
         session_id: &str,
         logical_thread_id: &ThreadId,
-        commit: &HostCommit,
+        commit: &SessionCommit,
     ) -> Result<Vec<RunId>, SessionExecutionError> {
         let store = self.coordinator_dispatch()?;
         let parent = ThreadId(session_id.to_string());
@@ -753,7 +757,7 @@ impl crate::SessionRuns {
         // child's own Run service. The user never resumes the child directly.
         if ticket.reason() == AwaitReason::Delegation {
             let registry = delegation_registry_from_snapshot(&awaiting_snapshot, &run_id)?;
-            let child = crate::thread_reads::authoritative_child_ticket(
+            let child = awaken_session_run_delivery::authoritative_child_ticket(
                 ctx.commit.as_ref(),
                 registry.as_ref(),
                 ticket.call_id(),
