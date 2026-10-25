@@ -748,6 +748,9 @@ impl EnvironmentRegistrationOutbox for SqliteEnvRegistry {
 mod fixture_admission_tests;
 
 #[cfg(test)]
+mod migration_upgrade_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use awaken_environment_contract::{EnvironmentStoreError, InvalidEnvironmentConfig};
@@ -1162,140 +1165,9 @@ mod tests {
             + EnvironmentDefinitionStore
             + EnvironmentRegistrationOutbox,
     {
-        let definitions: &dyn EnvironmentDefinitionStore = registry;
-        let queries: &dyn EnvironmentDefinitionQueries = registry;
-        let outbox: &dyn EnvironmentRegistrationOutbox = registry;
-
-        let created = definitions
-            .create("outbox".into(), String::new(), BTreeMap::new(), config())
-            .await
-            .expect("O1 create");
-        let v1 = outbox
-            .registration_intent(&created.id, EnvironmentRevision(1))
-            .await
-            .unwrap()
-            .expect("O1 exact intent");
-        assert_eq!(
-            v1.operation,
-            EnvironmentRegistrationOperation::Register,
-            "O1"
-        );
-        assert!(!v1.delivered, "O1");
-
-        let updated = definitions
-            .update(
-                &created.id,
-                created.revision,
-                EnvUpdate {
-                    name: Some("outbox-v2".into()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .expect("O2 update store operation")
-            .expect("O2 update");
-        let v2 = outbox
-            .registration_intent(&updated.id, updated.revision)
-            .await
-            .unwrap()
-            .expect("O2 exact intent");
-        assert!(
-            outbox
-                .mark_registration_intent_delivered(&v2)
-                .await
-                .unwrap(),
-            "O2"
-        );
-        assert!(
-            outbox
-                .mark_registration_intent_delivered(&v2)
-                .await
-                .unwrap(),
-            "O2 acknowledgement replay"
-        );
-        let replayed = definitions
-            .update(
-                &created.id,
-                updated.revision,
-                EnvUpdate {
-                    name: Some("outbox-v2".into()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .expect("O2b update store operation")
-            .expect("O2b no-op update");
-        assert_eq!(replayed.revision, EnvironmentRevision(2), "O2b");
-        assert_eq!(
-            outbox
-                .registration_intents(EnvironmentRegistrationIntentFilter::All)
-                .await
-                .unwrap()
-                .len(),
-            2,
-            "O2b"
-        );
-
-        let archived = definitions
-            .archive(&created.id)
-            .await
-            .expect("O3 archive store operation")
-            .expect("O3 archive");
-        let archived_replay = definitions
-            .archive(&created.id)
-            .await
-            .expect("O3 replay store operation")
-            .expect("O3 replay");
-        assert_eq!(archived_replay.revision, archived.revision, "O3 replay");
-        let pending = outbox
-            .registration_intents(EnvironmentRegistrationIntentFilter::Pending)
-            .await
-            .unwrap();
-        assert_eq!(pending.len(), 2, "O3");
-        assert_eq!(pending[0].revision, EnvironmentRevision(1), "O3");
-        assert_eq!(pending[1].revision, archived.revision, "O3");
-        assert_eq!(
-            pending[1].operation,
-            EnvironmentRegistrationOperation::Withdraw,
-            "O3"
-        );
-
-        let all = outbox
-            .registration_intents(EnvironmentRegistrationIntentFilter::All)
-            .await
-            .unwrap();
-        assert_eq!(
-            all.iter()
-                .map(|intent| intent.revision.0)
-                .collect::<Vec<_>>(),
-            [1, 2, 3],
-            "O4"
-        );
-        assert!(all[1].delivered, "O4 acknowledgement is retained");
-
-        // R1 all role views see the same committed generation; R2 acknowledging
-        // delivery changes only the outbox, never immutable authored history.
-        assert_eq!(
-            queries.get(&created.id).await.unwrap().unwrap().revision,
-            archived.revision
-        );
-        let original = queries
-            .get_revision(&created.id, created.revision)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(original.name, "outbox");
-        assert!(original.archived_at.is_none());
-        assert_eq!(
-            queries
-                .get_revision(&updated.id, updated.revision)
-                .await
-                .unwrap()
-                .unwrap()
-                .name,
-            "outbox-v2"
-        );
-        assert!(queries.list_active().await.unwrap().is_empty());
+        // The decision table is owned by the shared conformance suite (T20-C01)
+        // so the backend rows and the negative-control wrappers run one table.
+        awaken_store_conformance::env_registry::registration_outbox_decision_table(registry).await;
     }
 
     #[tokio::test]
@@ -1363,43 +1235,46 @@ mod tests {
     #[tokio::test]
     async fn postgres_parity_over_a_live_db() {
         use sqlx::Executor;
-        use sqlx::postgres::{PgPool, PgPoolOptions};
 
         let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
             return;
         };
-        let admin = PgPool::connect(&url)
+        let admin = awaken_sql_storage::postgres_pool_options()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(3))
+            .connect(&url)
             .await
             .expect("configured PostgreSQL parity fixture must connect");
-        for schema in ["t_env_registry", "t_env_registry_instants"] {
-            let _ = admin
-                .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
-                .await;
+        // Harness rule PG-H: each run owns fresh nonce schemas and drops only
+        // those, so parallel or repeated runs never delete another's schema.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let owner = std::process::id();
+        let parity_schema = format!("t_env_registry_{owner}_{nonce:x}");
+        let instants_schema = format!("t_env_registry_instants_{owner}_{nonce:x}");
+        for schema in [&parity_schema, &instants_schema] {
             admin
                 .execute(format!("CREATE SCHEMA {schema}").as_str())
                 .await
                 .expect("schema");
         }
-        admin.close().await;
-        let instants_pool = PgPoolOptions::new()
-            .after_connect(|conn, _| {
-                Box::pin(async move {
-                    conn.execute("SET search_path = t_env_registry_instants")
-                        .await?;
-                    Ok(())
-                })
-            })
-            .connect(&url)
+        let scoped = |schema: &str| {
+            url.parse::<sqlx::postgres::PgConnectOptions>()
+                .expect("parse the configured parity fixture")
+                .options([("search_path", schema)])
+        };
+        let instants_pool = awaken_sql_storage::postgres_pool_options()
+            .max_connections(2)
+            .acquire_timeout(std::time::Duration::from_secs(3))
+            .connect_with(scoped(&instants_schema))
             .await
             .expect("instants schema pool");
-        let pool = PgPoolOptions::new()
-            .after_connect(|conn, _| {
-                Box::pin(async move {
-                    conn.execute("SET search_path = t_env_registry").await?;
-                    Ok(())
-                })
-            })
-            .connect(&url)
+        let pool = awaken_sql_storage::postgres_pool_options()
+            .max_connections(2)
+            .acquire_timeout(std::time::Duration::from_secs(3))
+            .connect_with(scoped(&parity_schema))
             .await
             .expect("schema pool");
         // Observation parity first, on its own schema and its own hand-driven
@@ -1608,5 +1483,13 @@ mod tests {
         r.pool.close().await;
         assert!(r.list_active().await.is_err());
         assert!(r.get(&e.id).await.is_err());
+        instants_pool.close().await;
+        for schema in [&parity_schema, &instants_schema] {
+            admin
+                .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+                .await
+                .expect("drop only this run's schema");
+        }
+        admin.close().await;
     }
 }

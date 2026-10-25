@@ -40,6 +40,8 @@ use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream
 const WORKSPACE: &str = "workspace-file";
 const FILE: &str = "file-gated";
 const BYTES: &[u8] = b"gated-file-bytes";
+/// Bound on every barrier wait, so a stalled producer fails naming its barrier.
+const BARRIER_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Barrier shared by both wrappers.
 struct Gate {
@@ -306,7 +308,9 @@ async fn t06_c02_settlement_during_physical_read_linearizes_after_the_read() {
     // only be awaited after the read has returned.
     #[allow(clippy::async_yields_async)]
     let (outcome, pending_settle) = tokio::join!(read(&fixture), async {
-        fixture.source.gate.entered.notified().await;
+        tokio::time::timeout(BARRIER_WAIT, fixture.source.gate.entered.notified())
+            .await
+            .expect("the physical File read never reached its source barrier");
         let settle_task = tokio::spawn({
             let dispatch = fixture.dispatch.clone();
             let claim = fixture.claim.clone();
@@ -324,7 +328,10 @@ async fn t06_c02_settlement_during_physical_read_linearizes_after_the_read() {
         .expect("P1 read linearized before revocation")
         .expect("P1 File");
     assert_eq!(content.bytes, BYTES, "P1 exact bytes");
-    pending_settle.await.unwrap();
+    tokio::time::timeout(BARRIER_WAIT, pending_settle)
+        .await
+        .expect("P1 settle never completed after the read released its commit-epoch guard")
+        .unwrap();
 
     let entries = fixture.source.gate.entries();
     let released = fixture.source.bytes_released.load(Ordering::SeqCst);
@@ -353,7 +360,9 @@ async fn t06_c02_settlement_during_lock_wait_is_rechecked_and_premature_check_is
         .armed
         .store(true, Ordering::SeqCst);
     let (outcome, ()) = tokio::join!(read(&fixture), async {
-        fixture.gated_dispatch.gate.entered.notified().await;
+        tokio::time::timeout(BARRIER_WAIT, fixture.gated_dispatch.gate.entered.notified())
+            .await
+            .expect("the File read never reached the commit-epoch lock barrier");
         settle(&fixture.dispatch, &fixture.claim).await;
         fixture.gated_dispatch.gate.release.add_permits(1);
     });
@@ -393,7 +402,9 @@ async fn t06_c02_settlement_during_lock_wait_is_rechecked_and_premature_check_is
             .map_err(|error| error.to_string())
     };
     let (mutant, ()) = tokio::join!(premature, async {
-        fixture.source.gate.entered.notified().await;
+        tokio::time::timeout(BARRIER_WAIT, fixture.source.gate.entered.notified())
+            .await
+            .expect("the physical File read never reached its source barrier");
         settle(&fixture.dispatch, &fixture.claim).await;
         fixture.source.gate.release.add_permits(1);
     });
@@ -416,7 +427,9 @@ async fn t06_c02_lease_expiry_during_lock_wait_is_rechecked() {
         .armed
         .store(true, Ordering::SeqCst);
     let (outcome, ()) = tokio::join!(read(&fixture), async {
-        fixture.gated_dispatch.gate.entered.notified().await;
+        tokio::time::timeout(BARRIER_WAIT, fixture.gated_dispatch.gate.entered.notified())
+            .await
+            .expect("the File read never reached the commit-epoch lock barrier");
         fixture.clock.set(fixture.clock_start + 60_000);
         fixture.gated_dispatch.gate.release.add_permits(1);
     });
@@ -431,7 +444,9 @@ async fn t06_c02_lease_expiry_during_physical_read_releases_no_bytes() {
     let fixture = build_fixture().await;
     fixture.source.gate.armed.store(true, Ordering::SeqCst);
     let (outcome, ()) = tokio::join!(read(&fixture), async {
-        fixture.source.gate.entered.notified().await;
+        tokio::time::timeout(BARRIER_WAIT, fixture.source.gate.entered.notified())
+            .await
+            .expect("the physical File read never reached its source barrier");
         fixture.clock.set(fixture.clock_start + 60_000);
         fixture.source.gate.release.add_permits(1);
     });

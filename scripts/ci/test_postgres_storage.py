@@ -73,6 +73,27 @@ pg_required_test() {
                      "sqlite_read_only_rolls_back_the_complete_domain_commit","uncommitted_transaction_is_rolled_back_after_process_kill"):
             self.assertIn("--require-case="+case,sqlite)
 
+    def test_environment_storage_rollback_corruption_upgrade_and_countermodel_floors(self):
+        code,rows=self.selection(0);self.assertEqual(code,0)
+        environment=next(row for row in rows if row[row.index("-p")+1]=="awaken-env-store")
+        self.assertIn("--lib",environment);self.assertIn("--tests",environment)
+        selected={value.removeprefix("--require-case=") for value in environment if value.startswith("--require-case=")}
+        required={
+            'a_split_commit_adapter_is_rejected_by_the_rollback_verdict',
+            'current_row_shortcuts_fail_the_outbox_table_on_volatile_and_file_sqlite',
+            'fixture_admission_tests::postgres_v8_upgrade_seeds_history_once_across_independent_pools_fixture_admission',
+            'migration_upgrade_tests::postgres_v8_upgrade_seeds_history_once_across_independent_pools',
+            'postgres_corrupt_rows_fail_closed_on_independent_pools_without_repair',
+            'postgres_corrupt_rows_fail_closed_on_independent_pools_without_repair_fixture_admission',
+            'postgres_failed_intent_insert_rolls_back_for_independent_pools',
+            'postgres_failed_intent_insert_rolls_back_for_independent_pools_fixture_admission',
+            'postgres_outbox_pairs_survive_independent_pools',
+            'postgres_outbox_pairs_survive_independent_pools_fixture_admission',
+            'unrelated_failure_is_not_backend_divergence_evidence',
+            'unrelated_failures_cannot_qualify_an_outbox_countermodel',
+        }
+        self.assertTrue(required<=selected,required-selected)
+
     def test_ordinary_failure_and_timeout_preserve_status_while_collecting_remaining_domains(self):
         for status in (23,124):
             with self.subTest(status=status):

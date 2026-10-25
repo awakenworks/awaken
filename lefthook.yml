@@ -166,6 +166,14 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/test_session_acceptance.py
 
+    # Run the live graph as well as the checker fixtures; fixtures alone
+    # cannot reject a newly introduced wait in a production test suite.
+    test-orchestration:
+      # >>> generated glob from check_test_orchestration.py INPUT_GLOBS — do not edit
+      glob: "{.config/**,.github/workflows/*.yml,crates/**,e2e/**,lefthook.yml,pnpm-lock.yaml,scripts/ci/**}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_test_orchestration.py --self-test && python3 scripts/ci/check_test_orchestration.py
+
     affected-rust-plan:
       # >>> generated glob from benchmark_rust_build.py, check_rust_test_execution.py, rust_test_plan.py INPUT_GLOBS — do not edit
       glob: "{.cargo/**,.config/**,.config/rust-tests.toml,Cargo.lock,Cargo.toml,apps/**,crates/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/ci/benchmark_rust_build.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_sources.py,scripts/ci/nextest_execution.py,scripts/ci/test.sh,scripts/e2e/sandbox_capability_suite.sh,tests/**,xtask/**}"

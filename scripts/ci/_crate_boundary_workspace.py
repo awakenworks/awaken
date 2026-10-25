@@ -14,7 +14,11 @@ import _crate_dependency_fitness
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CRATES = REPO_ROOT / "crates"
-_RUST_PROJECTION_CACHE_SIZE = 2048
+# Keep both raw and production projections of the current ~2700-file
+# workspace hot. Entries remain bounded and keyed by immutable source text;
+# filesystem reads are never memoized. Native measurements are ~4 minutes
+# with this capacity, versus repeated eviction with the smaller working set.
+_RUST_PROJECTION_CACHE_SIZE = 8192
 
 
 def repository_path(path: PurePath, repo_root: PurePath) -> str:

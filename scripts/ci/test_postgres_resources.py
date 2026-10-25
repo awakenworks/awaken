@@ -19,7 +19,7 @@ INPUT_GLOBS = ("scripts/ci/**", ".github/workflows/windows-native-services.yml")
 
 PACKAGES=('awaken-admin-config-api','awaken-resource-store','awaken-resource-persistence',
     'awaken-session-application','awaken-protocol-managed','awaken-sandbox-policy-store',
-    'awaken-executable-agent-catalog','awaken-executable-environment-catalog','awaken-environment-image-build')
+    'awaken-executable-agent-catalog','awaken-executable-environment-catalog','awaken-environment-application', 'awaken-environment-image-build')
 
 class ResourceSelectionTests(unittest.TestCase):
     def selection(self,status):
@@ -36,7 +36,7 @@ class ResourceSelectionTests(unittest.TestCase):
                 env=dict(os.environ,CALLS=calls.as_posix(),RUNNER_STATUS=str(status)),capture_output=True,timeout=30)
             return child.returncode,[row.decode().split('\0')[:-1] for row in calls.read_bytes().split(b'\n') if row]
 
-    def test_all_nine_domains_keep_features_named_floor_and_new_admission_laws(self):
+    def test_all_ten_domains_keep_features_named_floor_and_new_admission_laws(self):
         code,rows=self.selection(0);self.assertEqual(code,0)
         self.assertEqual([row[row.index('-p')+1] for row in rows],list(PACKAGES))
         for row in rows:
@@ -45,15 +45,37 @@ class ResourceSelectionTests(unittest.TestCase):
         self.assertEqual(rows[0][rows[0].index('--features')+1],'postgres')
         self.assertIn('--all-features',rows[1]);self.assertIn('--exact',rows[-1])
         counts=[sum(x.endswith('_fixture_admission') for x in row if x.startswith('--require-case=')) for row in rows]
-        self.assertEqual(counts,[0,4,3,3,1,0,0,1,0])
+        self.assertEqual(counts,[0,4,3,3,1,0,0,1,5,0])
         # The two filtered groups must include the original domain and its new
         # admission case. An exact original-only filter would erase the latter.
         self.assertNotIn('--exact',rows[3]);self.assertNotIn('--exact',rows[4])
 
+    def test_environment_replay_and_countermodel_floors_are_required(self):
+        code,rows=self.selection(0);self.assertEqual(code,0)
+        replay=next(row for row in rows if row[row.index('-p')+1]=='awaken-environment-application')
+        self.assertEqual(replay[replay.index('--test')+1],'registration_replay')
+        selected={value.removeprefix('--require-case=') for value in replay if value.startswith('--require-case=')}
+        required={
+            'durable_pending::a_catalog_high_watermark_projection_is_rejected_by_the_convergence_verdict',
+            'durable_pending::postgres_history_cannot_consume_unapplied_higher_registration_fixture_admission',
+            'durable_pending::postgres_pending_history_does_not_swallow_new_registration_effect_fixture_admission',
+            'durable_pending::postgres_pending_history_survives_a_rebuild_through_independent_pools',
+            'durable_pending::postgres_pending_history_survives_a_rebuild_through_independent_pools_fixture_admission',
+            'history_visibility::a_non_durable_reconnect_cannot_pass_the_delayed_registration_check',
+            'history_visibility::postgres_delayed_registration_after_reconnect_cannot_restore_withdrawn_work_fixture_admission',
+            'history_visibility::postgres_withdrawn_history_stays_readable_on_independent_pools',
+            'history_visibility::postgres_withdrawn_history_stays_readable_on_independent_pools_fixture_admission',
+            'history_visibility::unrelated_faults_never_qualify_lost_withdrawal_detection',
+            'postgres_delayed_registration_after_reconnect_cannot_restore_withdrawn_work',
+            'postgres_history_cannot_consume_unapplied_higher_registration',
+            'postgres_pending_history_does_not_swallow_new_registration_effect',
+        }
+        self.assertTrue(required<=selected,required-selected)
+
     def test_execution_failure_and_timeout_preserve_first_status_and_other_domains(self):
         for status in (23,124):
             with self.subTest(status=status):
-                code,rows=self.selection(status);self.assertEqual(code,status);self.assertEqual(len(rows),9)
+                code,rows=self.selection(status);self.assertEqual(code,status);self.assertEqual(len(rows),10)
 
     def test_resource_refusal_does_not_start_the_next_domain(self):
         code,rows=self.selection(75);self.assertEqual(code,75);self.assertEqual(len(rows),1)
@@ -87,7 +109,7 @@ class ResourceSelectionTests(unittest.TestCase):
                 paths.append(path)
             def log(paths):return ''.join('execution evidence: '+str(path)+'\n' for path in paths)
             with mock.patch.dict(os.environ,{'CARGO_TARGET_DIR':str(base)}):
-                self.assertEqual(len(gate.reconcile_postgres(log(paths),'source','resources')),9)
+                self.assertEqual(len(gate.reconcile_postgres(log(paths),'source','resources')),10)
                 for rows in (paths[:-1],[*paths[:-1],paths[-2]]):
                     with self.assertRaises(ValueError):gate.reconcile_postgres(log(rows),'source','resources')
                 with self.assertRaises(ValueError):gate.reconcile_postgres(log(paths),'wrong-source','resources')

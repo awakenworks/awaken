@@ -1,6 +1,6 @@
 {
   "baseline": {
-    "scanners_without_input_globs": 17,
+    "scanners_without_input_globs": 16,
     "scope_lists": 31
   },
   "comment": [
@@ -55,10 +55,6 @@
     },
     "check_product_release.py": {
       "reason": "runs only in the docs group of the full gate; it has no pre-commit command, so there is no trigger for a declaration to render",
-      "runner": "scripts/ci/check-all.sh"
-    },
-    "check_test_orchestration.py": {
-      "reason": "has a pre-commit command whose glob is still hand-written, and the module is being changed in another lane, so its declaration is deferred rather than raced",
       "runner": "scripts/ci/check-all.sh"
     },
     "export_homogeneous_lcov.py": {
