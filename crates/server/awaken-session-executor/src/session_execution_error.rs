@@ -174,8 +174,6 @@ pub enum ExecutorLock {
     ToolAdmission,
     #[error("Skill catalog cache lock poisoned")]
     SkillCatalogCache,
-    #[error("captured Memory writes lock poisoned")]
-    CapturedMemoryWrites,
 }
 
 /// Poison `lock` the way production can: a holder panics while holding it.
@@ -243,11 +241,7 @@ mod tests {
         // Cause: any executor-owned lock is poisoned. Effect: one Unavailable
         // refusal with one stable code, identical in the Host and Run
         // vocabularies, so no caller re-classifies it from text.
-        for lock in [
-            ExecutorLock::ToolAdmission,
-            ExecutorLock::SkillCatalogCache,
-            ExecutorLock::CapturedMemoryWrites,
-        ] {
+        for lock in [ExecutorLock::ToolAdmission, ExecutorLock::SkillCatalogCache] {
             let host = SessionExecutionError::from(lock);
             assert_eq!(host.kind, SessionExecutionErrorKind::Unavailable, "{lock}");
             assert_eq!(host.code, EXECUTOR_LOCK_POISONED_CODE, "{lock}");
