@@ -13,6 +13,8 @@
 //! slash commands expand from, each against its digest; it stages, mounts and
 //! realizes nothing.
 
+mod roles;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -20,7 +22,6 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 
 use awaken_dispatch_erasure::AnyCoordinatorDispatch;
 use awaken_dispatch_execution::ProcessDispatch;
-use awaken_dispatch_execution::session_dispatch::DispatchPreparation;
 use awaken_resource_contract::{LiveResourceBindingVerifier, RepositoryBindingVerifier};
 use awaken_session_application_contract::StepOutcome;
 use awaken_session_configuration_contract::SkillBundleSource;
@@ -40,11 +41,12 @@ use crate::session_run_reservation::{
     SessionRunInputs, reserve_session_run, validate_session_run_command,
 };
 use crate::{
-    CommittedReads, CompletionRegistry, DeliveryLock, DispatchProjection, RUN_PUBLICATIONS,
-    SessionProjections, StepCommitExpectation, ThreadEventHub, activate_and_await_session_run,
-    authoritative_step_snapshot, managed_skill_registry, message_prefix_before_exact_inputs,
-    project_committed_step, session_activation_snapshot, settled_step,
+    CommittedReads, CompletionRegistry, DeliveryLock, SessionProjections, StepCommitExpectation,
+    ThreadEventHub, activate_and_await_session_run, authoritative_step_snapshot,
+    managed_skill_registry, message_prefix_before_exact_inputs, project_committed_step,
+    session_activation_snapshot, settled_step,
 };
+use crate::{CoordinatedThreads, CoordinationAuthorities, SessionLowering};
 
 /// The live authorities a Session's frozen Resource bindings are verified
 /// against before a Run is admitted.
@@ -71,12 +73,16 @@ pub struct WorkerPlacement {
     /// The content-addressed store of pinned Skill bundles.
     pub skill_bundles: Option<Arc<dyn SkillBundleSource<ResourceOperationFence>>>,
     pub resource_bindings: ResourceBindingVerifiers,
+    /// The cross-node dispatch wake, a latency hint only.
+    pub wake: Option<Arc<dyn awaken_dispatch_contract::WakeSignal>>,
+    pub clock: Arc<dyn awaken_time::WallClock>,
 }
 
 /// The Coordinator's Session execution for Worker-placed Sessions. Consumers:
 /// the Session application, through its Worker-placement roles.
 pub struct WorkerPlacedSessions {
     ports: WorkerPlacement,
+    threads: CoordinatedThreads,
     /// One step projection at a time per Session, so concurrent observers
     /// publish each committed suffix once and in order.
     step_projections: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -85,8 +91,18 @@ pub struct WorkerPlacedSessions {
 impl WorkerPlacedSessions {
     #[must_use]
     pub fn new(ports: WorkerPlacement) -> Self {
+        let threads = CoordinatedThreads::new(CoordinationAuthorities {
+            owner: Some(ports.owner.clone()),
+            dispatch: ports.dispatch.clone(),
+            reads: ports.reads.clone(),
+            lowering: ports.projections.clone(),
+            publications: ports.projections.publication_source(),
+            wake: ports.wake.clone(),
+            clock: ports.clock.clone(),
+        });
         Self {
             ports,
+            threads,
             step_projections: Mutex::default(),
         }
     }
@@ -97,30 +113,10 @@ impl WorkerPlacedSessions {
         &self.ports.projections
     }
 
-    /// The installed projection of `session`; a Run of a Session whose
-    /// projection is not installed yet is refused as retryable.
-    fn installed(&self, session: &str) -> Result<Arc<DispatchProjection>, RunError> {
-        self.ports.projections.projection(session)?.ok_or_else(|| {
-            RunError::unavailable_classified(
-                "session_projection_not_installed",
-                format!("Session {session} has no installed frozen projection on this Coordinator"),
-            )
-        })
-    }
-
-    fn preparation(
-        &self,
-        activation: awaken_runtime_contract::RunActivation,
-    ) -> DispatchPreparation<'_> {
-        let projections = self.ports.projections.as_ref();
-        DispatchPreparation::new(
-            activation,
-            Box::new(projections),
-            projections.local_workspace(),
-            projections.publications(),
-            RUN_PUBLICATIONS,
-            false,
-        )
+    /// The Agent coordination of the Sessions' Threads.
+    #[must_use]
+    pub fn threads(&self) -> &CoordinatedThreads {
+        &self.threads
     }
 
     fn step_projection(&self, session: &str) -> Result<Arc<tokio::sync::Mutex<()>>, RunError> {
@@ -150,7 +146,10 @@ impl WorkerPlacedSessions {
         command: AdmitSessionRun,
     ) -> Result<SessionRunReservation, RunError> {
         validate_session_run_command(&command)?;
-        let projection = self.installed(command.session_id.as_str())?;
+        let projection = self
+            .ports
+            .projections
+            .installed(command.session_id.as_str())?;
         verify_manifest_bindings(
             projection.manifest(),
             self.ports.resource_bindings.memory.as_deref(),
@@ -178,7 +177,7 @@ impl WorkerPlacedSessions {
                 skills: skills.as_deref(),
                 model_ref_override: Some(projection.baseline().execution_model_ref.clone()),
             },
-            |activation| self.preparation(activation),
+            |activation| SessionLowering::prepare(self.ports.projections.as_ref(), activation),
             self.ports.owner.as_ref(),
         )
         .await
@@ -420,6 +419,8 @@ mod tests {
                 memory: Some(Arc::new(Memory)),
                 repositories: None,
             },
+            wake: None,
+            clock: awaken_time::system_clock(),
         })
     }
 

@@ -15,9 +15,11 @@
 
 mod agent_message_source;
 mod session_reply_receipt;
+mod terminal_quiescence;
 
 use session_reply_receipt::SessionReplyReceipt;
 pub use session_reply_receipt::validate_awaiting_tool_authority;
+pub use terminal_quiescence::ResidentAttempt;
 
 use std::sync::Arc;
 

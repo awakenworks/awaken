@@ -87,8 +87,8 @@ pub use session_skills::{
 };
 pub use settled_step::settled_step;
 pub use thread_coordination::{
-    ChildRunInputs, CoordinatedThreads, CoordinationAuthorities, SessionLowering, check_pending,
-    dispatch_admission_error, validate_awaiting_tool_authority,
+    ChildRunInputs, CoordinatedThreads, CoordinationAuthorities, ResidentAttempt, SessionLowering,
+    check_pending, dispatch_admission_error, validate_awaiting_tool_authority,
 };
 
 /// Poison `lock` the way production can: a holder panics while holding it.
