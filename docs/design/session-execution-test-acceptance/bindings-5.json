@@ -53,22 +53,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 415,
-        "file_sha256": "235739383aff81d57fcfb0548b115341621260be1beb55b42077bac165e6e1b8"
+        "line": 451,
+        "file_sha256": "996cad1e9fda568cb5ce960fd20636704ebc16479c891a5c523ef77c52965981"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 418
+        "line": 454
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 420
+        "line": 456
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 424
+        "line": 460
       }
     ],
     "execution_witnesses": [
@@ -82,6 +82,17 @@
         "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
         "historical": false,
         "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      },
+      {
+        "evidence": "E41",
+        "case": "awaken-session-application tests::authority::ownership_rejection::foreign_owner_is_rejected_before_reads_or_effects_and_matches_missing",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "8ea4bbe38307404b1d335da108ccaccdc0faf580",
+        "historical": false,
+        "log_sha256": "bb64f7fc27263056b51e17e3596a29a66ce2c6ca7cda16bf28603c73d10fed21"
       }
     ],
     "relation": "covers_case_clauses",
@@ -103,18 +114,18 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 435,
-        "file_sha256": "235739383aff81d57fcfb0548b115341621260be1beb55b42077bac165e6e1b8"
+        "line": 471,
+        "file_sha256": "996cad1e9fda568cb5ce960fd20636704ebc16479c891a5c523ef77c52965981"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 445
+        "line": 481
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 449
+        "line": 485
       }
     ],
     "execution_witnesses": [
@@ -128,6 +139,17 @@
         "source_head": "7913413bca3c9960309aa46144b8eeb5092980ef",
         "historical": false,
         "log_sha256": "7f1c1547a12023c258c2505febb18924557b3a611f5632ae77f6a2f9eb4cca8b"
+      },
+      {
+        "evidence": "E41",
+        "case": "awaken-session-application tests::authority::ownership_rejection::http_only_owner_validation_is_detected_by_the_matrix",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "8ea4bbe38307404b1d335da108ccaccdc0faf580",
+        "historical": false,
+        "log_sha256": "bb64f7fc27263056b51e17e3596a29a66ce2c6ca7cda16bf28603c73d10fed21"
       }
     ],
     "relation": "covers_case_clauses",
@@ -145,46 +167,98 @@
     "id": "B118"
   },
   {
-    "name": "owner_less_event_append_refuses_without_owner_proof",
+    "name": "owner_scoped_event_append_refuses_a_foreign_owner_like_missing",
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 488,
-        "file_sha256": "235739383aff81d57fcfb0548b115341621260be1beb55b42077bac165e6e1b8"
+        "line": 526,
+        "file_sha256": "996cad1e9fda568cb5ce960fd20636704ebc16479c891a5c523ef77c52965981"
       }
     ],
-    "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "execution_witnesses": [
+      {
+        "evidence": "E41",
+        "case": "awaken-session-application tests::authority::ownership_rejection::owner_scoped_event_append_refuses_a_foreign_owner_like_missing",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "8ea4bbe38307404b1d335da108ccaccdc0faf580",
+        "historical": false,
+        "log_sha256": "bb64f7fc27263056b51e17e3596a29a66ce2c6ca7cda16bf28603c73d10fed21"
+      }
+    ],
+    "relation": "covers_case_clauses",
     "covers": {
       "T06-C01": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: append_session_event_batch_idempotent takes no owner",
-    "limitation": "Not execution evidence. Follow-up: session-application event-batch API owner parameter (M)",
-    "id": "B119"
+    "review": "Mints SessionAccess for an intruder against a foreign and a missing Session, asserts one byte-equal NotFound with an unchanged root, then appends through the owner's own access.",
+    "limitation": null,
+    "id": "B119",
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "line": 534
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "line": 535
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "line": 536
+      }
+    ]
   },
   {
     "name": "foreign_run_admission_is_indistinguishable_from_missing",
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 457,
-        "file_sha256": "235739383aff81d57fcfb0548b115341621260be1beb55b42077bac165e6e1b8"
+        "line": 492,
+        "file_sha256": "996cad1e9fda568cb5ce960fd20636704ebc16479c891a5c523ef77c52965981"
       }
     ],
-    "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "execution_witnesses": [
+      {
+        "evidence": "E41",
+        "case": "awaken-session-application tests::authority::ownership_rejection::foreign_run_admission_is_indistinguishable_from_missing",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "8ea4bbe38307404b1d335da108ccaccdc0faf580",
+        "historical": false,
+        "log_sha256": "bb64f7fc27263056b51e17e3596a29a66ce2c6ca7cda16bf28603c73d10fed21"
+      }
+    ],
+    "relation": "covers_case_clauses",
     "covers": {
       "T06-C01": {
-        "oracles": [],
+        "oracles": [
+          1
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: run admission creates a Session for a missing id but answers not-found for a foreign id",
-    "limitation": "Not execution evidence. Follow-up: run admission existence-neutral refusal (M)",
-    "id": "B120"
+    "review": "Runs owner-scoped Run admission for a foreign and an unused id through the access verdict and asserts byte-equal answers with zero creation-path resolutions.",
+    "limitation": null,
+    "id": "B120",
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "line": 510
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "line": 514
+      }
+    ]
   },
   {
     "name": "paused_or_failed_activity_cas_executes_nothing_and_leaves_a_repairable_reservation",
@@ -286,25 +360,53 @@
     "id": "B122"
   },
   {
-    "name": "failed_activity_cas_releases_its_reservation_before_reporting_failure",
+    "name": "failed_activity_cas_reports_a_pending_admission_that_repair_settles_once",
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
-        "line": 340,
-        "file_sha256": "834630cbaf76b2e4da0bf5594ee6751a8976dad70b9515533129c95dc6be5bd2"
+        "line": 343,
+        "file_sha256": "3ff59663708cff77dd3b597a8916d474fa8ac1028db77b69525b207ef6b9f79b"
       }
     ],
-    "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "execution_witnesses": [
+      {
+        "evidence": "E41",
+        "case": "awaken-session-application tests::run_admission::pre_activation::failed_activity_cas_reports_a_pending_admission_that_repair_settles_once",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "8ea4bbe38307404b1d335da108ccaccdc0faf580",
+        "historical": false,
+        "log_sha256": "bb64f7fc27263056b51e17e3596a29a66ce2c6ca7cda16bf28603c73d10fed21"
+      }
+    ],
+    "relation": "covers_case_clauses",
     "covers": {
       "T07-C01": {
-        "oracles": [],
+        "oracles": [
+          1
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: a failed activity CAS keeps its reservation and repair later admits the Run the caller saw fail",
-    "limitation": "Not execution evidence. Follow-up: run admission reservation release on CAS failure (M)",
-    "id": "B123"
+    "review": "Fails the activity CAS after the durable reservation and asserts the stable pending class, zero execution, and that reservation repair admits the exact Run exactly once.",
+    "limitation": null,
+    "id": "B123",
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "line": 362
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "line": 370
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "line": 382
+      }
+    ]
   },
   {
     "name": "forged_reply_coordinates_are_rejected_with_zero_facts_and_zero_drive",
@@ -460,29 +562,54 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 425,
-        "file_sha256": "90e4940a216718d5c35df258b5ccfd1c339bd08f08eaf8d9be43b0975ef5a043"
+        "line": 430,
+        "file_sha256": "64ba0dc3c3a81f0742a4aace839958e4c85b33bb564364e0daf320a5ad1a84b9"
       }
     ],
-    "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "execution_witnesses": [
+      {
+        "evidence": "E41",
+        "case": "awaken-protocol-managed state::events::tests::reply_coordinates::application_append_rejects_forged_reply_coordinates",
+        "package": "awaken-protocol-managed",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "8ea4bbe38307404b1d335da108ccaccdc0faf580",
+        "historical": false,
+        "log_sha256": "bb64f7fc27263056b51e17e3596a29a66ce2c6ca7cda16bf28603c73d10fed21"
+      }
+    ],
+    "relation": "covers_case_clauses",
     "covers": {
       "T11-C02": {
-        "oracles": [],
+        "oracles": [
+          0,
+          1
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: the application append retains a ToolReply with forged Run/target coordinates",
-    "limitation": "Not execution evidence. Follow-up: session-application ticket check on append (M)",
-    "id": "B127"
+    "review": "Forges the Run and Thread coordinates of an admissible reply at the application boundary and asserts the append is refused with zero facts and zero drive.",
+    "limitation": null,
+    "id": "B127",
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 437
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "line": 438
+      }
+    ]
   },
   {
     "name": "application_append_rejects_version_less_new_reply",
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 441,
-        "file_sha256": "479424ef96fc6177b3472c9a878a09b236629b0b46b402c598cb8003286a1783"
+        "line": 446,
+        "file_sha256": "64ba0dc3c3a81f0742a4aace839958e4c85b33bb564364e0daf320a5ad1a84b9"
       }
     ],
     "execution_witnesses": [
@@ -496,6 +623,17 @@
         "source_head": "ee1dbae1e65f7ddff997ad0f4b9ceb52d0eb8cce",
         "historical": false,
         "log_sha256": "614dd007ed3753951cabf770d532f57641bdbc29ef35bc8efd5135f1349a1545"
+      },
+      {
+        "evidence": "E41",
+        "case": "awaken-protocol-managed state::events::tests::reply_coordinates::application_append_rejects_version_less_new_reply",
+        "package": "awaken-protocol-managed",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "8ea4bbe38307404b1d335da108ccaccdc0faf580",
+        "historical": false,
+        "log_sha256": "bb64f7fc27263056b51e17e3596a29a66ce2c6ca7cda16bf28603c73d10fed21"
       }
     ],
     "relation": "covers_case_clauses",
@@ -513,11 +651,11 @@
     "assertion_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 448
+        "line": 453
       },
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 452
+        "line": 457
       }
     ]
   },
