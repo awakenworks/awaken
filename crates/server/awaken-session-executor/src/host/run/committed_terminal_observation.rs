@@ -104,7 +104,7 @@ impl crate::RunAssembly {
                 let frozen = installed
                     .as_ref()
                     .map(|root| {
-                        crate::agent_catalog::RUN_PUBLICATIONS.freeze(
+                        awaken_session_run_delivery::RUN_PUBLICATIONS.freeze(
                             root,
                             self.capabilities.agent.agent_publications.as_deref(),
                             &workspace,

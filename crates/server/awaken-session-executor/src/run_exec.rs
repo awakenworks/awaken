@@ -1008,7 +1008,7 @@ pub(crate) mod tests {
         host.capabilities
             .register_thread_workspace(thread, "workspace-a")
             .expect("installed Sessions");
-        let spec = crate::sandbox_projection::agent_run_sandbox_spec(thread);
+        let spec = crate::sandbox_layout::agent_run_sandbox_spec(thread);
         assert_eq!(
             spec.outputs_path, "/mnt/session/outputs",
             "Managed Agents writes deliverables at its documented path"

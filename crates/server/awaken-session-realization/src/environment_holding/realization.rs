@@ -211,7 +211,7 @@ impl crate::environment_holding::EnvironmentHolding {
                                     session_resource::ResolvedInputSource::Repository { .. }
                                 )
                             })
-                            .map(crate::managed_input_layout::resolved_input_effect_path)
+                            .map(crate::managed_layout::resolved_input_effect_path)
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_else(|| {
@@ -553,7 +553,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 .await?,
         );
         for input in transition.desired().resources.inputs() {
-            let path = crate::managed_input_layout::resolved_input_effect_path(input);
+            let path = crate::managed_layout::resolved_input_effect_path(input);
             if let Err(error) = environment.projection().reserve_owned_path(&path) {
                 let _ = environment.lifecycle().dispose().await;
                 return Err(RealizationError::from(error));

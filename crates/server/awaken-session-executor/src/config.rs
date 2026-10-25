@@ -364,84 +364,6 @@ pub(crate) fn client_tool_descriptor(id: &str) -> ToolDescriptor {
     )
 }
 
-/// Preserve the exact Session-owned client tool contract while lowering it to
-/// the Runtime's canonical execution-ownership descriptor.
-pub(crate) fn session_client_tool_descriptor(
-    tool: &awaken_agent_contract::ClientToolDescriptor,
-) -> ToolDescriptor {
-    ToolDescriptor::client_executed(
-        tool.name.clone(),
-        tool.description.clone(),
-        tool.input_schema.clone(),
-    )
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SessionToolsetProjection {
-    PreservePublished,
-    ProjectIntoSnapshot,
-}
-
-/// Apply the Session's exact client-tool overlay in one place. Toolset policy
-/// remains outside an immutable primary publication but is embedded in a
-/// generated config or inherited child dispatch snapshot, whose executor has
-/// no separate Session policy input.
-pub(crate) fn project_session_tool_override(
-    snapshot: &mut ExecutableAgentSnapshot,
-    tools: &awaken_session_configuration_contract::SessionToolConfiguration,
-    toolsets: SessionToolsetProjection,
-) -> bool {
-    let mut changed = false;
-    if toolsets == SessionToolsetProjection::ProjectIntoSnapshot
-        && snapshot.resolved_spec.plugin_config.agent.toolsets != tools.toolsets
-    {
-        snapshot.resolved_spec.plugin_config.agent.toolsets = tools.toolsets.clone();
-        changed = true;
-    }
-    let projected = tools
-        .client_tools
-        .iter()
-        .map(session_client_tool_descriptor)
-        .collect::<Vec<_>>();
-    let current = snapshot
-        .resolved_spec
-        .tool_descriptors
-        .iter()
-        .filter(|descriptor| {
-            descriptor.kind == awaken_runtime_contract::resolved::ToolKind::ClientExecuted
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    if current != projected {
-        snapshot
-            .resolved_spec
-            .tool_descriptors
-            .retain(|descriptor| {
-                descriptor.kind != awaken_runtime_contract::resolved::ToolKind::ClientExecuted
-            });
-        snapshot.resolved_spec.tool_descriptors.extend(projected);
-        changed = true;
-    }
-    changed
-}
-
-/// Apply the complete Session-owned tool replacement to one attempt-local
-/// snapshot. The retained Agent publication stays immutable; direct, durable,
-/// and recovered attempts all consume this same projection.
-pub(crate) fn project_session_tools(
-    snapshot: &mut ExecutableAgentSnapshot,
-    tools: &awaken_session_configuration_contract::SessionToolConfiguration,
-) -> Result<(), serde_json::Error> {
-    if project_session_tool_override(
-        snapshot,
-        tools,
-        SessionToolsetProjection::ProjectIntoSnapshot,
-    ) {
-        snapshot.recompute_fingerprint()?;
-    }
-    Ok(())
-}
-
 /// The `agent_run` delegation descriptor (advertised only when a roster is set).
 pub(crate) fn delegation_descriptor() -> ToolDescriptor {
     builtin_tools()
@@ -1752,7 +1674,7 @@ mod tests {
         // A3: a malformed section fails closed at publish-time validation.
         let tmp = tempfile::tempdir().unwrap();
         let sandbox = awaken_sandbox_local::LocalProvider::new(tmp.path())
-            .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec("t"))
+            .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec("t"))
             .await
             .unwrap();
         let runtime = build_runtime(

@@ -11,9 +11,9 @@ use awaken_session_configuration_contract::resource as session_resource;
 
 use awaken_session_types::RunError;
 
-use crate::sandbox_projection::resource_mount_is_create_time;
-use crate::skill_delivery::skill_store_run_error;
+use crate::sandbox_layout::resource_mount_is_create_time;
 use crate::staged_resources::EnvironmentResourceReconciliation;
+use awaken_session_configuration_contract::skill_delivery::skill_store_run_error;
 
 mod repository_error;
 mod transition;
@@ -424,7 +424,7 @@ impl crate::resource_staging::ResourceStaging {
             })
             .chain(old_memory.iter())
             .filter_map(|input| {
-                crate::managed_input_layout::resolved_input_validation_mount(
+                crate::managed_layout::resolved_input_validation_mount(
                     input,
                     environment_projection.as_ref(),
                 )
@@ -435,7 +435,7 @@ impl crate::resource_staging::ResourceStaging {
             .inputs()
             .iter()
             .filter_map(|input| {
-                crate::managed_input_layout::resolved_input_validation_mount(
+                crate::managed_layout::resolved_input_validation_mount(
                     input,
                     environment_projection.as_ref(),
                 )
@@ -473,7 +473,7 @@ impl crate::resource_staging::ResourceStaging {
                             .iter()
                             .any(|candidate| candidate == *input)
                     })
-                    .map(crate::managed_input_layout::resolved_input_effect_path)
+                    .map(crate::managed_layout::resolved_input_effect_path)
                     .collect::<Vec<_>>()
             } else {
                 Vec::new()
@@ -569,7 +569,7 @@ impl crate::resource_staging::ResourceStaging {
             if reconcile_skills {
                 environment
                     .projection()
-                    .remove_projection_path(crate::skill_delivery::DELIVERED_SKILLS_SUBDIR)
+                    .remove_projection_path(awaken_session_configuration_contract::skill_delivery::DELIVERED_SKILLS_SUBDIR)
                     .await
                     .map_err(crate::realization_error::RealizationError::from)?;
             }
@@ -581,7 +581,7 @@ impl crate::resource_staging::ResourceStaging {
                         .iter()
                         .any(|candidate| candidate == input)
                     {
-                        let path = crate::managed_input_layout::resolved_input_effect_path(input);
+                        let path = crate::managed_layout::resolved_input_effect_path(input);
                         environment
                             .projection()
                             .remove_projection_path(&path)
@@ -636,7 +636,7 @@ impl crate::resource_staging::ResourceStaging {
                         // Adoption separately reconciles provider participants.
                         continue;
                     }
-                    let path = crate::managed_input_layout::resolved_input_effect_path(input);
+                    let path = crate::managed_layout::resolved_input_effect_path(input);
                     match &input.source {
                         session_resource::ResolvedInputSource::File { .. }
                         | session_resource::ResolvedInputSource::MemoryStore { .. } => {

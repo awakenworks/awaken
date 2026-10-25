@@ -8,10 +8,7 @@
 use super::{PreparedContext, execution, extensions, resources::ContextResources};
 use crate::SessionExecutionError;
 use crate::config::{build_runtime_with_authorization, server_config};
-use crate::host::session::{
-    ManagedCoordinationRole, SessionToolsetProjection, project_managed_coordination_surface,
-    project_session_tool_override,
-};
+use crate::host::session::{SessionToolsetProjection, project_session_tool_override};
 use crate::host::session_ctx::RuntimeContextPurpose;
 use crate::host::{RuntimePublicationIdentity, SessionCtx};
 use std::collections::HashSet;
@@ -108,7 +105,7 @@ pub(super) async fn assemble(
     let is_acp = resources.plan.execution_backend.is_acp();
     let mut memory_descriptors = Vec::new();
     let mut semantic_memory_tools = None;
-    if content_delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools {
+    if content_delivery == crate::sandbox_layout::ManagedContentDelivery::SemanticTools {
         let bindings = realizations
             .read_realization(thread, |r| r.staging().memory_bindings.clone())?
             .unwrap_or_default();
@@ -175,16 +172,24 @@ pub(super) async fn assemble(
                 .collect()
         })
         .unwrap_or_default();
-    let generated_config = installed.is_none();
-    let mut config = match installed.clone() {
-        Some(installed) => installed,
+    // The durable Session configuration is a complete execution overlay,
+    // applied to this per-Session clone, never to the retained immutable Agent
+    // publication. A publication takes the one activation projection the
+    // Coordinator also admits Runs with; a generated snapshot embeds the
+    // Session toolsets and its generated Skill bindings.
+    let config = match installed.clone() {
+        Some(installed) => awaken_session_run_delivery::session_activation_snapshot(
+            installed,
+            session_tools.as_ref(),
+            resources.plan.session_dispatch,
+        )?,
         None => {
             let model_ref = host
                 .capabilities
                 .agent
                 .inference_routing
                 .model_ref(thread, &host.capabilities.agent.model_ref)?;
-            server_config(
+            let mut config = server_config(
                 selected_agent,
                 &model_ref,
                 &host.capabilities.tools.client_tools,
@@ -199,40 +204,29 @@ pub(super) async fn assemble(
                     "host default model reference `{model_ref}` for Agent \
                      `{selected_agent}` is not an executable binding: {error}"
                 ))
-            })?
+            })?;
+            let mut config_changed = false;
+            if let Some(skills) = generated_skill_bindings {
+                config.resolved_spec.plugin_config.agent.skills = skills;
+                config_changed = true;
+            }
+            if let Some(session_tools) = &session_tools {
+                config_changed |= project_session_tool_override(
+                    &mut config,
+                    session_tools,
+                    SessionToolsetProjection::ProjectIntoSnapshot,
+                );
+            }
+            if config_changed {
+                config.recompute_fingerprint().map_err(|error| {
+                    SessionExecutionError::internal(format!(
+                        "fingerprint Session tool projection: {error}"
+                    ))
+                })?;
+            }
+            config
         }
     };
-    // The durable Session configuration is a complete execution overlay. It
-    // is applied to this per-Session clone, never to the retained immutable
-    // Agent publication. Replacing all ClientExecuted descriptors prevents a
-    // removed published custom tool from leaking beside an official
-    // `agent_with_overrides` surface, while preserving built-in, Skill, MCP,
-    // and delegation ownership.
-    let mut config_changed = false;
-    if let Some(skills) = generated_skill_bindings {
-        config.resolved_spec.plugin_config.agent.skills = skills;
-        config_changed = true;
-    }
-    if let Some(session_tools) = &session_tools {
-        config_changed |= project_session_tool_override(
-            &mut config,
-            session_tools,
-            if generated_config {
-                SessionToolsetProjection::ProjectIntoSnapshot
-            } else {
-                SessionToolsetProjection::PreservePublished
-            },
-        );
-    }
-    if managed_coordination {
-        config_changed |=
-            project_managed_coordination_surface(&mut config, ManagedCoordinationRole::Primary);
-    }
-    if config_changed {
-        config.recompute_fingerprint().map_err(|error| {
-            SessionExecutionError::internal(format!("fingerprint Session tool projection: {error}"))
-        })?;
-    }
     debug_assert_eq!(
         background_tasks_enabled,
         config
@@ -377,7 +371,7 @@ pub(super) async fn assemble(
     };
     let tool_executor = if a2a_only {
         None
-    } else if content_delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools {
+    } else if content_delivery == crate::sandbox_layout::ManagedContentDelivery::SemanticTools {
         let mut tools = Vec::new();
         if let Some((_, skill_tools)) = semantic_skill_tools.as_ref() {
             tools.extend(skill_tools.iter().cloned());

@@ -318,7 +318,7 @@ mod tests {
         .expect("a local fixture selects a valid process");
         let dependencies = SessionExecutorBuilder::for_local_resources(
             Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
-            awaken_session_executor::UNCONFIGURED_MODEL_REF,
+            awaken_dispatch_execution::session_dispatch::UNCONFIGURED_MODEL_REF,
             ports,
             memory_extraction_repository(None).await,
             process,

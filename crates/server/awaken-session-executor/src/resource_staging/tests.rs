@@ -26,7 +26,7 @@ fn mount(id: &str, memory: bool) -> pc::MountRequirement {
 #[tokio::test]
 async fn mount_projection_reads_current_resource_and_frozen_inputs_without_retaining_removed_installed_sessions()
  {
-    use crate::frozen_inputs::ManagedContentDelivery;
+    use crate::sandbox_layout::ManagedContentDelivery;
     use awaken_session_configuration_contract::{SessionBaseline, SessionBaselineInputs};
     // M1 unknown reads neither create an installed Session nor inherit another Session.
     // M2 the same original installed Session supplies Resource + baseline mounts and delivery.

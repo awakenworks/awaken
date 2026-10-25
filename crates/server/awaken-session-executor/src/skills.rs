@@ -12,10 +12,7 @@
 use crate::skill_delivery::{FilesystemSkillPrompt, filesystem_skill_prompt};
 use std::sync::Arc;
 
-use crate::skill_delivery::{
-    DELIVERED_SKILLS_SUBDIR, delivered_skill_content, delivered_skill_directory,
-    materialize_delivered_skill,
-};
+use crate::skill_delivery::materialize_delivered_skill;
 use awaken_ext_builtin_tools::{AUXILIARY_AGENT, AuxiliaryAgentInput};
 use awaken_ext_skills::{
     ActiveSkillTools, CompositeSkillRegistry, FixedSkillRegistry, ListSkillsTool, PathActivations,
@@ -28,6 +25,10 @@ use awaken_runtime_contract::permission::ToolGateHook;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 #[cfg(test)]
 use awaken_sandbox_local::LocalProvider;
+use awaken_session_configuration_contract::skill_delivery::{
+    DELIVERED_SKILLS_SUBDIR, delivered_skill_directory,
+};
+use awaken_session_run_delivery::{SkillSnapshot, delivered_skill_file, requires_filesystem};
 use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 
 /// The default workspace subdir the agent authors skills under, scanned live so a
@@ -159,18 +160,6 @@ impl SkillSource for EnvSkillSource {
     }
 }
 
-/// Bridges a snapshot of the durable delivered catalog to the [`SkillSource`] port,
-/// returning each `SKILL.md` as neutral file data. The host owns this bridge so
-/// `awaken-ext-skills` stays store-unaware — it sees only `SkillFile`s, never the
-/// store. The snapshot is loaded (async) from the [`SkillStore`] at session setup —
-/// the run-loop scan is synchronous, so a network-DB (async) catalog cannot be hit
-/// per query; it is read once into this snapshot instead.
-///
-/// [`SkillStore`]: awaken_resource_contract::SkillStore
-struct SnapshotSkillSource {
-    files: Vec<SkillFile>,
-}
-
 fn snapshot_repository_skill_files(
     env: &crate::session_environment::SessionEnvironment,
     roots: &[String],
@@ -201,15 +190,6 @@ fn snapshot_repository_skill_files(
     Ok(snapshot)
 }
 
-pub(crate) fn requires_filesystem(version: &SkillVersion, content: &str) -> bool {
-    let declared = awaken_ext_skills::parse_skill_md(version.skill_id.to_string(), content);
-    declared.environment == SkillEnvironment::Filesystem
-        || version
-            .files
-            .iter()
-            .any(|file| file.path != "SKILL.md" && !file.path.ends_with("/SKILL.md"))
-}
-
 pub(crate) fn version_requires_environment(version: &SkillVersion) -> bool {
     let Some(content) = version
         .files
@@ -222,12 +202,6 @@ pub(crate) fn version_requires_environment(version: &SkillVersion) -> bool {
     let spec = awaken_ext_skills::parse_skill_md(version.skill_id.to_string(), &content);
     requires_filesystem(version, &content)
         || spec.context != awaken_ext_skills::SkillContext::Inline
-}
-
-impl SkillSource for SnapshotSkillSource {
-    fn scan(&self) -> Result<Vec<SkillFile>, String> {
-        Ok(self.files.clone())
-    }
 }
 
 /// Runs a `context: fork` skill as an Agent with the capabilities declared by its
@@ -414,10 +388,8 @@ pub(crate) async fn build_skill_registry(
     if let Some(delivered) = delivered {
         let mut files = Vec::with_capacity(delivered.len());
         for version in delivered {
-            let content = delivered_skill_content(&version)?.to_string();
-            let directory = (filesystem_delivery || requires_filesystem(&version, &content))
-                .then(|| delivered_skill_directory(version.skill_id.as_str()));
-            if directory.is_some() && !managed_session {
+            let file = delivered_skill_file(&version, filesystem_delivery)?;
+            if file.dir.is_some() && !managed_session {
                 if let Some(env) = env.as_ref() {
                     materialize_delivered_skill(env, &version).await?;
                 } else if !filesystem_delivery {
@@ -427,23 +399,17 @@ pub(crate) async fn build_skill_registry(
                     ));
                 }
             }
-            files.push(SkillFile {
-                id: version.skill_id.to_string(),
-                content,
-                dir: directory,
-            });
+            files.push(file);
         }
         registries.push(Arc::new(SourceSkillRegistry::new(
-            Arc::new(SnapshotSkillSource { files }),
+            Arc::new(SkillSnapshot::new(files)),
             SkillProvenance::Delivered,
         )));
     }
     registries.extend(external_registries);
     if !repository_files.is_empty() {
         registries.push(Arc::new(SourceSkillRegistry::new(
-            Arc::new(SnapshotSkillSource {
-                files: repository_files,
-            }),
+            Arc::new(SkillSnapshot::new(repository_files)),
             SkillProvenance::Repository,
         )));
     }
@@ -563,43 +529,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn instruction_only_and_filesystem_bundles_select_the_minimum_substrate() {
-        use awaken_skill_store::SkillBundleFile;
-        let pure_body = "---\ndescription: think\n---\nThink carefully.";
-        let pure = version_with(vec![SkillBundleFile {
-            path: "SKILL.md".into(),
-            content: pure_body.as_bytes().to_vec(),
-            executable: false,
-        }]);
-        assert!(!requires_filesystem(&pure, pure_body));
-
-        let declared_body = "---\nenvironment: filesystem\n---\nRead the workspace.";
-        let declared = version_with(vec![SkillBundleFile {
-            path: "SKILL.md".into(),
-            content: declared_body.as_bytes().to_vec(),
-            executable: false,
-        }]);
-        assert!(requires_filesystem(&declared, declared_body));
-
-        let bundled = version_with(vec![
-            SkillBundleFile {
-                path: "SKILL.md".into(),
-                content: pure_body.as_bytes().to_vec(),
-                executable: false,
-            },
-            SkillBundleFile {
-                path: "references/guide.md".into(),
-                content: b"guide".to_vec(),
-                executable: false,
-            },
-        ]);
-        assert!(
-            requires_filesystem(&bundled, pure_body),
-            "supporting files override instruction-only metadata"
-        );
-    }
-
     #[tokio::test]
     async fn durable_store_snapshot_scans_the_catalog_as_delivered_skill_files() {
         // The host loads a snapshot of the durable catalog (async) and the bridge
@@ -649,7 +578,7 @@ mod tests {
             content: String::from_utf8(version.skill_md().unwrap().to_vec()).unwrap(),
             dir: None,
         }];
-        let source = SnapshotSkillSource { files };
+        let source = SkillSnapshot::new(files);
         let files = source.scan().unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].id, "greet");
@@ -681,7 +610,7 @@ mod tests {
         let env = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 provider
-                    .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec("t"))
+                    .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec("t"))
                     .await
                     .unwrap(),
             )
@@ -746,7 +675,7 @@ mod tests {
         let env = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(&base)
-                    .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec("t"))
+                    .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec("t"))
                     .await
                     .unwrap(),
             )
@@ -821,9 +750,7 @@ mod tests {
         let env = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(base.path())
-                    .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec(
-                        "skill-path",
-                    ))
+                    .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec("skill-path"))
                     .await
                     .unwrap(),
             )
@@ -981,7 +908,7 @@ mod tests {
         let env = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(&base)
-                    .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec("t"))
+                    .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec("t"))
                     .await
                     .unwrap(),
             )
@@ -1043,7 +970,7 @@ mod tests {
         let env = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(&base)
-                    .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec("t"))
+                    .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec("t"))
                     .await
                     .unwrap(),
             )
@@ -1177,7 +1104,7 @@ mod tests {
         let env = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(base.path())
-                    .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec("t"))
+                    .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec("t"))
                     .await
                     .unwrap(),
             )
@@ -1237,7 +1164,7 @@ mod tests {
         let env = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 LocalProvider::new(&base)
-                    .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec("t"))
+                    .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec("t"))
                     .await
                     .unwrap(),
             )

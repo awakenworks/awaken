@@ -600,8 +600,8 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     // | M6 | yes | bound | yes | deferred binding | E1 metadata-only reservation |
     // | M7 | yes | other | any | deferred binding | E3 mismatched pin rejected |
     // | M8 | yes | no | no | Memory path variable | E3 physical path rejected |
-    use crate::frozen_inputs::ManagedContentDelivery;
     use crate::host::session::SkillDeliveryEvidence;
+    use crate::sandbox_layout::ManagedContentDelivery;
     use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy, ToolsetSource,
     };
@@ -890,7 +890,7 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
     // Constraint K1 Agent tool capability still gates what that Agent may call;
     // reusing delivery neither widens tools nor creates a child-owned mount
     // authority. Rules CD1=C1=>E1; CD2=C2=>E2; CD3=C3=>E2.
-    use crate::frozen_inputs::ManagedContentDelivery;
+    use crate::sandbox_layout::ManagedContentDelivery;
     use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
@@ -970,291 +970,6 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
             .expect("CD3 reuses physical Session delivery"),
         ManagedContentDelivery::SemanticTools,
         "CD3/E2"
-    );
-}
-
-#[test]
-fn managed_tool_projection_has_one_role_and_session_override_decision_table() {
-    // Constraint/Invariant: the authoritative inputs and ownership boundaries
-    // documented here remain the only decision source; no parallel path is admitted.
-    // Decision rule: execute every reachable cause partition documented here and
-    // require its stated effects, including each fail-closed outcome.
-    use crate::host::session::{
-        ManagedCoordinationRole, SessionToolsetProjection, project_managed_coordination_surface,
-        project_session_tool_override,
-    };
-    use awaken_agent_contract::{
-        ClientToolDescriptor, ToolExecutionPolicy, ToolsetPolicy, ToolsetSource,
-    };
-    use awaken_runtime_contract::agent_bindings::{AgentAdvisorBinding, AgentDelegateBinding};
-    use awaken_runtime_contract::resolved::{
-        ADVISOR_TOOL_ID, ModelBinding, ResolvedModelCandidate, ToolDescriptor, ToolKind,
-    };
-
-    // Cause/effect graph: C1 native vs Managed root/child role selects exactly
-    // one coordination surface; C2 generated/inherited vs immutable publication
-    // selects whether Session toolsets enter the executable clone; C3 an explicit
-    // Session client descriptor replaces published client ownership. Effects:
-    // E1 Managed primary replaces native `agent_run` with fixed list/send;
-    // E2 every Managed child loses nested delegation/advisor and receives no
-    // coordination command; E3 generated/self-child embeds Session toolsets;
-    // E4 published/non-self retains its publication toolsets; E5 explicit client
-    // tools exact-replace. No obsolete Task descriptor participates in projection.
-    //
-    // | Rule | role | snapshot owner | Session overlay | Effects |
-    // | M0 | native | published | preserve | agent_run only; no Managed/Task commands |
-    // | M1 | primary | generated | project | E1,E3,E5 |
-    // | M2 | primary | published | preserve | E1,E4,E5 |
-    // | M3 | child | self/inherited | project | E2,E3,E5 |
-    // | M4 | child | other Agent | absent | E2,E4 |
-    let published_policy = ToolsetPolicy {
-        source: ToolsetSource::Agent,
-        default: ToolExecutionPolicy::default(),
-        overrides: Vec::new(),
-    };
-    let session_policy = ToolsetPolicy {
-        source: ToolsetSource::Mcp {
-            server_name: "session-policy".into(),
-        },
-        default: ToolExecutionPolicy::default(),
-        overrides: Vec::new(),
-    };
-    let published_client = ClientToolDescriptor {
-        name: "published_client".into(),
-        description: "published".into(),
-        input_schema: serde_json::json!({"type": "object"}),
-    };
-    let session_client = ClientToolDescriptor {
-        name: "session_client".into(),
-        description: "session".into(),
-        input_schema: serde_json::json!({"type": "object", "properties": {"q": {"type": "string"}}}),
-    };
-    let tools = awaken_session_configuration_contract::SessionToolConfiguration {
-        toolsets: vec![session_policy.clone()],
-        client_tools: vec![session_client.clone()],
-    };
-    let builtin = |id: &str| {
-        awaken_ext_builtin_tools::builtin_tools()
-            .into_iter()
-            .find(|tool| tool.descriptor().id == id)
-            .expect("canonical builtin descriptor")
-            .into_descriptor()
-    };
-    let native_ids = crate::config::advertised_tools(
-        &HashSet::new(),
-        &HashSet::from(["worker".to_string()]),
-        &[],
-    )
-    .into_iter()
-    .map(|descriptor| descriptor.id)
-    .collect::<std::collections::BTreeSet<_>>();
-    assert!(
-        native_ids.contains(awaken_ext_builtin_tools::AGENT_RUN),
-        "M0 native delegation"
-    );
-    for forbidden in [
-        awaken_ext_builtin_tools::LIST_AGENTS,
-        awaken_ext_builtin_tools::SEND_MESSAGE,
-        "cancel_task",
-        "recover_failed_messages",
-    ] {
-        assert!(
-            !native_ids.contains(forbidden),
-            "M0 forbids parallel command {forbidden}"
-        );
-    }
-    let mut base = awaken_runtime_contract::ExecutableAgentSnapshot::builder("coordinator")
-        .model(test_model_binding())
-        .build();
-    base.resolved_spec.tool_descriptors = vec![
-        ToolDescriptor::pinned(
-            "test",
-            "ordinary",
-            "ordinary",
-            serde_json::json!({"type": "object"}),
-        ),
-        crate::config::session_client_tool_descriptor(&published_client),
-        builtin(awaken_ext_builtin_tools::AGENT_RUN),
-        builtin(awaken_ext_builtin_tools::LIST_AGENTS),
-        builtin(awaken_ext_builtin_tools::SEND_MESSAGE),
-        ToolDescriptor::pinned(
-            "test",
-            ADVISOR_TOOL_ID,
-            "advisor",
-            serde_json::json!({"type": "object"}),
-        )
-        .with_kind(ToolKind::Advisor),
-    ];
-    base.resolved_spec.plugin_config.agent.delegates = vec![AgentDelegateBinding {
-        agent_id: awaken_runtime_contract::snapshot::AgentId("worker".into()),
-        source_revision: Some(1),
-        recursive_self: false,
-    }];
-    base.resolved_spec.plugin_config.agent.advisor = Some(AgentAdvisorBinding {
-        model: "advisor-model".into(),
-        candidate: ResolvedModelCandidate::host(ModelBinding::new(
-            "provider",
-            "advisor-model",
-            "backend",
-        )),
-    });
-    base.resolved_spec.plugin_config.agent.toolsets = vec![published_policy.clone()];
-
-    let descriptor_ids = |snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot| {
-        snapshot
-            .resolved_spec
-            .tool_descriptors
-            .iter()
-            .map(|descriptor| descriptor.id.clone())
-            .collect::<std::collections::BTreeSet<_>>()
-    };
-    let assert_primary = |snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
-                          rule: &str| {
-        let ids = descriptor_ids(snapshot);
-        assert!(
-            ids.contains(awaken_ext_builtin_tools::LIST_AGENTS),
-            "{rule}/E1"
-        );
-        assert!(
-            ids.contains(awaken_ext_builtin_tools::SEND_MESSAGE),
-            "{rule}/E1"
-        );
-        assert_eq!(
-            snapshot
-                .resolved_spec
-                .tool_descriptors
-                .iter()
-                .filter(|descriptor| descriptor.id == awaken_ext_builtin_tools::SEND_MESSAGE)
-                .count(),
-            1,
-            "{rule}/E1 one Agent-message implementation"
-        );
-        assert!(
-            !ids.contains(awaken_ext_builtin_tools::AGENT_RUN),
-            "{rule}/E1"
-        );
-        assert!(
-            ids.contains(ADVISOR_TOOL_ID),
-            "{rule}/E1 advisor remains internal"
-        );
-    };
-    let assert_child = |snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot, rule: &str| {
-        let ids = descriptor_ids(snapshot);
-        for forbidden in [
-            awaken_ext_builtin_tools::AGENT_RUN,
-            awaken_ext_builtin_tools::LIST_AGENTS,
-            awaken_ext_builtin_tools::SEND_MESSAGE,
-            ADVISOR_TOOL_ID,
-        ] {
-            assert!(!ids.contains(forbidden), "{rule}/E2 forbids {forbidden}");
-        }
-        assert!(
-            snapshot
-                .resolved_spec
-                .plugin_config
-                .agent
-                .delegates
-                .is_empty(),
-            "{rule}/E2"
-        );
-        assert!(
-            snapshot.resolved_spec.plugin_config.agent.advisor.is_none(),
-            "{rule}/E2"
-        );
-    };
-
-    let mut generated_primary = base.clone();
-    project_session_tool_override(
-        &mut generated_primary,
-        &tools,
-        SessionToolsetProjection::ProjectIntoSnapshot,
-    );
-    project_managed_coordination_surface(&mut generated_primary, ManagedCoordinationRole::Primary);
-    assert_primary(&generated_primary, "M1");
-    assert_eq!(
-        generated_primary
-            .resolved_spec
-            .plugin_config
-            .agent
-            .toolsets
-            .as_slice(),
-        std::slice::from_ref(&session_policy),
-        "M1/E3"
-    );
-
-    let mut published_primary = base.clone();
-    project_session_tool_override(
-        &mut published_primary,
-        &tools,
-        SessionToolsetProjection::PreservePublished,
-    );
-    project_managed_coordination_surface(&mut published_primary, ManagedCoordinationRole::Primary);
-    assert_primary(&published_primary, "M2");
-    assert_eq!(
-        published_primary
-            .resolved_spec
-            .plugin_config
-            .agent
-            .toolsets
-            .as_slice(),
-        std::slice::from_ref(&published_policy),
-        "M2/E4"
-    );
-
-    for (rule, snapshot) in [("M1", &generated_primary), ("M2", &published_primary)] {
-        let clients = snapshot
-            .resolved_spec
-            .tool_descriptors
-            .iter()
-            .filter(|descriptor| descriptor.kind == ToolKind::ClientExecuted)
-            .collect::<Vec<_>>();
-        assert_eq!(clients.len(), 1, "{rule}/E5");
-        assert_eq!(clients[0].id, session_client.name, "{rule}/E5");
-    }
-
-    let mut inherited_child = base.clone();
-    project_session_tool_override(
-        &mut inherited_child,
-        &tools,
-        SessionToolsetProjection::ProjectIntoSnapshot,
-    );
-    project_managed_coordination_surface(&mut inherited_child, ManagedCoordinationRole::Child);
-    assert_child(&inherited_child, "M3");
-    assert_eq!(
-        inherited_child.resolved_spec.plugin_config.agent.toolsets,
-        [session_policy],
-        "M3/E3"
-    );
-    assert_eq!(
-        inherited_child
-            .resolved_spec
-            .tool_descriptors
-            .iter()
-            .filter(|descriptor| descriptor.kind == ToolKind::ClientExecuted)
-            .map(|descriptor| descriptor.id.as_str())
-            .collect::<Vec<_>>(),
-        [session_client.name.as_str()],
-        "M3/E5"
-    );
-
-    let mut other_child = base;
-    project_managed_coordination_surface(&mut other_child, ManagedCoordinationRole::Child);
-    assert_child(&other_child, "M4");
-    assert_eq!(
-        other_child.resolved_spec.plugin_config.agent.toolsets,
-        [published_policy],
-        "M4/E4"
-    );
-    assert_eq!(
-        other_child
-            .resolved_spec
-            .tool_descriptors
-            .iter()
-            .filter(|descriptor| descriptor.kind == ToolKind::ClientExecuted)
-            .map(|descriptor| descriptor.id.as_str())
-            .collect::<Vec<_>>(),
-        [published_client.name.as_str()],
-        "M4/E4"
     );
 }
 
@@ -2003,7 +1718,7 @@ async fn session_creation_and_explicit_cache_warmup_share_one_preparation_path()
         .with_cache_volume_initializer(initializer.clone()))
     .build()
     .expect("validated Host dependencies");
-    let mut spec = crate::sandbox_projection::agent_run_sandbox_spec("cache-wiring");
+    let mut spec = crate::sandbox_layout::agent_run_sandbox_spec("cache-wiring");
     spec.mounts
         .push(awaken_provisioning_contract::MountRequirement {
             mount_id: "build-cache".into(),
@@ -2314,4 +2029,36 @@ async fn executor_components_supply_every_session_role() {
     ));
     let bindings = awaken_session_execution_contract::SessionExecutor::from(roles);
     assert_eq!(bindings.core().model(), host.capabilities.model());
+}
+
+#[test]
+fn native_delegation_surface_keeps_agent_run_without_managed_commands() {
+    // Row M0 of the Managed tool projection table (owned by
+    // `awaken_session_run_delivery::session_activation`): the executor's
+    // ordinary advertised surface keeps native `agent_run` and offers none of
+    // the Managed coordination commands.
+    use std::collections::HashSet;
+    let native_ids = crate::config::advertised_tools(
+        &HashSet::new(),
+        &HashSet::from(["worker".to_string()]),
+        &[],
+    )
+    .into_iter()
+    .map(|descriptor| descriptor.id)
+    .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        native_ids.contains(awaken_ext_builtin_tools::AGENT_RUN),
+        "M0 native delegation"
+    );
+    for forbidden in [
+        awaken_ext_builtin_tools::LIST_AGENTS,
+        awaken_ext_builtin_tools::SEND_MESSAGE,
+        "cancel_task",
+        "recover_failed_messages",
+    ] {
+        assert!(
+            !native_ids.contains(forbidden),
+            "M0 forbids parallel command {forbidden}"
+        );
+    }
 }

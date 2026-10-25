@@ -190,7 +190,7 @@ impl AcpProbe {
             Result<NegotiatedAcpCapabilities, pc::SandboxError>,
         >,
     ) -> Result<NegotiatedAcpCapabilities, pc::SandboxError> {
-        let spec = crate::sandbox_projection::agent_run_sandbox_spec(scope);
+        let spec = crate::sandbox_layout::agent_run_sandbox_spec(scope);
         let environment = self.provider.create(&spec).await.map_err(|error| {
             // A derived scope means a failure here is usually the *previous*
             // probe's strand occupying it. Say so: "the root is not absent"

@@ -7,12 +7,6 @@
 
 use super::*;
 
-#[derive(Clone, Copy)]
-pub(super) struct StepCommitExpectation<'a> {
-    pub(super) messages_before: usize,
-    pub(super) input_ids: &'a [String],
-}
-
 pub(super) fn client_result_for_ticket(
     ticket: &ResumeTicket,
     tool_use_id: &str,

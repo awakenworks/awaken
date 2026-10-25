@@ -9,11 +9,11 @@ use crate::realization_error::RealizationError;
 use awaken_session_configuration_contract::environment_projection;
 use awaken_session_configuration_contract::resource as session_resource;
 
-use crate::managed_input_layout::{
-    ManagedLayoutProjection, ManagedLayoutValidationScope, binding_layout_projection,
-    resolved_input_layout_projection,
+use crate::managed_input_layout::ManagedLayoutValidationScope;
+use crate::managed_layout::{
+    ManagedLayoutProjection, binding_layout_projection, resolved_input_layout_projection,
 };
-use crate::sandbox_projection::ProjectedSandboxLayout;
+use crate::sandbox_layout::ProjectedSandboxLayout;
 
 impl ResourceStaging {
     fn validate_managed_layout_inputs(

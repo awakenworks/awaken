@@ -496,7 +496,9 @@ async fn projected_sandbox_layout_preserves_one_complete_input_snapshot() {
                 has_repositories: true,
                 baseline_mounts: Some(&baseline_mounts),
                 baseline_env: Some(&baseline_env),
-                content_delivery: Some(crate::frozen_inputs::ManagedContentDelivery::SemanticTools),
+                content_delivery: Some(
+                    crate::sandbox_layout::ManagedContentDelivery::SemanticTools,
+                ),
                 environment: Some(&environment),
                 network_isolation: false,
             },

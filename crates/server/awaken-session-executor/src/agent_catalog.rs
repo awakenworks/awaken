@@ -17,15 +17,7 @@
 
 use std::collections::HashMap;
 
-use awaken_runtime_contract::auxiliary_agents::{AuxiliaryAgentDeclaration, RunPublicationClosure};
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-
-/// The publication closure of every Run this executor runs: the auxiliary
-/// Agents of the plugins it composes, declared by those plugins.
-pub(crate) const RUN_PUBLICATIONS: RunPublicationClosure<'static> = RunPublicationClosure::new(&[
-    &awaken_ext_memory::MemoryAuxiliaryAgents as &dyn AuxiliaryAgentDeclaration,
-    &awaken_ext_compact::CompactAuxiliaryAgents,
-]);
 
 /// Resolve one auxiliary Agent through the same Coordinator publication source
 /// as a foreground Session. The built-in snapshot is only the absent-publication
@@ -105,6 +97,7 @@ impl AgentCatalog {
 mod tests {
     use super::*;
     use awaken_runtime_contract::resolved::ModelBinding;
+    use awaken_session_run_delivery::RUN_PUBLICATIONS;
 
     fn config(id: &str, instructions: &str) -> ExecutableAgentSnapshot {
         ExecutableAgentSnapshot::builder(id)
