@@ -678,5 +678,53 @@
     "log_sha256": "614dd007ed3753951cabf770d532f57641bdbc29ef35bc8efd5135f1349a1545",
     "historical": false,
     "entry_sha256": "fb15b3bfbaa7ae347887052309dc361c3f7caec89bca55f5a75c4b41a37036c4"
+  },
+  {
+    "id": "E41",
+    "receipt": "target/session-acceptance-evidence/E41/receipt.json",
+    "receipt_sha256": "497b159486e2eea0e21f11f6927ba1fbca9e605baade988535edc3804a8573e3",
+    "source": {
+      "head": "8ea4bbe38307404b1d335da108ccaccdc0faf580",
+      "dirty_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "Component L1 Session access and Run admission fixes (ADR-0094) re-executed on native Windows (nextest, package-scoped) on origin/main 1051acb50d",
+    "argv": [
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--no-fail-fast",
+      "-p",
+      "awaken-session-application",
+      "-p",
+      "awaken-protocol-managed",
+      "-p",
+      "awaken-worker",
+      "-p",
+      "awaken-credential-materializer",
+      "-p",
+      "awaken-control",
+      "-p",
+      "awaken-session-environment",
+      "-E",
+      "(package(=awaken-session-application) & test(/pre_activation|budget_resume|ownership_rejection|admission_boundaries/)) | (package(=awaken-protocol-managed) & test(/reply_coordinates|admission_boundaries/)) | (package(=awaken-worker) & test(/restore_capability/)) | (package(=awaken-credential-materializer) & test(/binding_matrix/)) | (package(=awaken-control) & test(/diagnostics_tests/)) | (package(=awaken-session-environment) & test(/foreign_instance/))"
+    ],
+    "environment_names": [
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "CARGO_TARGET_DIR",
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 535.5,
+    "executed_count": 33,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "bb64f7fc27263056b51e17e3596a29a66ce2c6ca7cda16bf28603c73d10fed21",
+    "historical": false,
+    "entry_sha256": "776820fbcc402be51c2f043e7696e214a55a8a16cd64bd769b6918dfaac607c4"
   }
 ]

@@ -223,7 +223,7 @@
 - 必须断言：在未获准的数据读取/物理效果前拒绝；错误响应不泄露另一个租户的存在性。
 - 反向控制：只在 HTTP 层校验而内部入口可绕过必须失败。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：`foreign_owner_is_rejected_before_reads_or_effects_and_matches_missing`、`http_only_owner_validation_is_detected_by_the_matrix`（E13 本机 Windows 执行通过，覆盖已成立的 oracle 与反向控制）；产品缺口复现 `owner_less_event_append_refuses_without_owner_proof`、`foreign_run_admission_is_indistinguishable_from_missing`（忽略，不计证据）：部分内部入口（event batch 追加等）不带所有者参数，可绕过 HTTP 校验；run admission 对未知 id 创建、对外来 id 报未找到，泄露存在性。待设计决定：内部 append 的所有者证明会改变跨 crate 接口且现有内部调用方以无所有者方式调用；外来与缺失 id 不可区分与“首个 Run 创建默认 Session”冲突，ADR 未裁定。完整场景：待验收。
+- 绑定及状态：`foreign_owner_is_rejected_before_reads_or_effects_and_matches_missing`、`http_only_owner_validation_is_detected_by_the_matrix`（E13 本机 Windows 执行通过，矩阵现含 E6 owned 追加、E1 不再豁免缺失比较）、`owner_scoped_event_append_refuses_a_foreign_owner_like_missing`、`foreign_run_admission_is_indistinguishable_from_missing`（E41 本机 Windows 执行通过）。按 [ADR-0094](../adr/0094-session-access-and-run-admission-outcomes.md)：对外 owner 命令只接收 `SessionAccess`，它只由 `authorize` 从持久 owner 签发，外来与缺失为同一 NotFound；owner 路径不再隐式创建 Session。当前提交 oracle 与反向控制均已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ### T06-C02 等待后撤权
 
@@ -255,7 +255,7 @@
 - 必须断言：未激活不调用模型/工具；未接纳 reserve 有明确释放责任。
 - 反向控制：用成功返回码代替模型/工具计数不能签收。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：`paused_or_failed_activity_cas_executes_nothing_and_leaves_a_repairable_reservation`、`return_code_alone_cannot_sign_off_zero_execution`（E13 本机 Windows 执行通过，覆盖已成立的 oracle 与反向控制）；产品缺口复现 `failed_activity_cas_releases_its_reservation_before_reporting_failure`（忽略，不计证据）：activity CAS 失败后返回错误但不释放 reserve，修复路径 RecoverOrAdmit 之后会接纳调用方已见失败的 Run。待设计决定：失败的 Session store 无法写释放标记，释放需新增 CoordinationRuntime/dispatch 的 reserve 释放端口；而 Unavailable 当前可重试，Z3 证明重试复用该 reserve。完整场景：待验收。
+- 绑定及状态：`paused_or_failed_activity_cas_executes_nothing_and_leaves_a_repairable_reservation`、`return_code_alone_cannot_sign_off_zero_execution`（E13 本机 Windows 执行通过）、`failed_activity_cas_reports_a_pending_admission_that_repair_settles_once`（E41 本机 Windows 执行通过）。按 [ADR-0094](../adr/0094-session-access-and-run-admission-outcomes.md)：CAS 失败是“结果未定”，调用方得到稳定的 `session_run_admission_pending`，释放责任归 reserve 修复（RecoverOnly 删除、RecoverOrAdmit 恰好接纳一次）。当前提交 oracle 与反向控制均已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ### T07-C02 丢响应重放
 
@@ -391,7 +391,7 @@
 - 必须断言：只接受确切原坐标且不扩张权限；拒绝时零驱动和零事实追加。
 - 反向控制：只校验公开 ID 的前缀不能通过。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：`forged_reply_coordinates_are_rejected_with_zero_facts_and_zero_drive`、`reply_id_of_one_session_is_rejected_by_another_session`、`ambiguous_legacy_reply_id_is_rejected_with_zero_facts_and_zero_drive`（E13 本机 Windows 执行通过）、`application_append_rejects_version_less_new_reply`（E40 本机 Windows 执行通过：缺版本或 Awaiting 提交的新回复在编译阶段被拒绝，零事实零驱动）；产品缺口复现 `application_append_rejects_forged_reply_coordinates`（忽略，不计证据）：application 追加入口仍不按已提交 ticket 校验 Run/Thread 坐标。完整场景：待验收。
+- 绑定及状态：`forged_reply_coordinates_are_rejected_with_zero_facts_and_zero_drive`、`reply_id_of_one_session_is_rejected_by_another_session`、`ambiguous_legacy_reply_id_is_rejected_with_zero_facts_and_zero_drive`（E13 本机 Windows 执行通过）、`application_append_rejects_version_less_new_reply`（E40）、`application_append_rejects_forged_reply_coordinates`（E41 本机 Windows 执行通过：aggregate 接纳按目标 Thread 的已提交可回答 ticket 校验 Run、correlation 与 call，零事实零驱动）。当前提交 oracle 与反向控制均已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ### T11-C03 并发消费
 
@@ -463,4 +463,4 @@
 - 必须断言：只恢复允许的原 Run；无重复已结算步骤；边界值和消息身份稳定。
 - 反向控制：通过新建 Run 绕过预算等待必须失败。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：`raised_budget_resumes_only_the_original_run_once_with_stable_identity`、`new_run_cannot_bypass_the_budget_wait`（E13 本机 Windows 执行通过）、`raised_budget_resumes_only_budget_reached_tickets`（E40 本机 Windows 执行通过：提额只恢复 BudgetReached ticket）；产品缺口复现 `budget_rejected_bypass_run_is_not_admitted_by_repair_after_raise`（忽略，不计证据）：被预算拒绝的绕过 Run 保留 reserve，提额后修复路径会接纳它，与 T07-C01 同需 reserve 释放端口的设计决定。完整场景：待验收。
+- 绑定及状态：`raised_budget_resumes_only_the_original_run_once_with_stable_identity`、`new_run_cannot_bypass_the_budget_wait`（E13 本机 Windows 执行通过）、`raised_budget_resumes_only_budget_reached_tickets`（E40）、`budget_rejected_bypass_run_is_not_admitted_by_repair_after_raise`（E41 本机 Windows 执行通过）。按 [ADR-0094](../adr/0094-session-access-and-run-admission-outcomes.md)：预算拒绝写入拒绝回执，调用方重试、修复与取消都重放 `budget_reached`。当前提交 oracle 与反向控制均已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
