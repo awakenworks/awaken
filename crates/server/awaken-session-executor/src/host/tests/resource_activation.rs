@@ -372,7 +372,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         .read_realization("semantic-memory", |r| r.staging().memory_bindings.clone())
         .expect("installed Sessions")
         .unwrap();
-    let tools = crate::session_memory_tools::SessionMemoryTools::new(bindings).unwrap();
+    let tools = crate::session_memory_tools::SessionMemoryTools::new(bindings, None).unwrap();
     let invoke = |tool_id: &str, arguments: serde_json::Value| {
         let tool = tools
             .executors

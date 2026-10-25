@@ -19,12 +19,11 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::transcript::TranscriptSnapshot;
-use awaken_ext_builtin_tools::erase;
 use awaken_ext_memory::{
     MemoryExtractionDriver, MemoryExtractionError, MemoryExtractionIntent,
     MemoryExtractionMutation, MemoryExtractionOutcome, MemoryExtractionRepository,
     MemoryExtractorSnapshot, MemoryMutationReceipt, MemoryStoreHandle,
-    MemoryTerminalExtractionRequest, WriteMemoryTool,
+    MemoryTerminalExtractionRequest,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -325,9 +324,6 @@ impl BoundMemory {
             Ok(materialized) => materialized,
             Err(reason) => return MemoryExtractionOutcome::Retryable { reason },
         };
-        let tool = erase(WriteMemoryTool::from_handle(Arc::new(
-            awaken_session_run_delivery::MemoryWriteProposals,
-        )));
         let commit = match self.binding.extraction_commit() {
             Ok(Some(commit)) => commit,
             Err(error) => {
@@ -356,7 +352,7 @@ impl BoundMemory {
             &auxiliary_thread_id,
             RunId(intent.auxiliary_run_id()),
             seed,
-            vec![tool],
+            Vec::new(),
             context,
         )
         .await

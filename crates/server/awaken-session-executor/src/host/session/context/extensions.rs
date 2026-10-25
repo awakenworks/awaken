@@ -204,6 +204,51 @@ pub(super) async fn skills(
     })
 }
 
+pub(super) fn memory_tools(
+    host: &crate::RunAssembly,
+    thread: &str,
+    resources: &ContextResources,
+    mut runtime: Runtime,
+    session_content_plugins: &mut Vec<Arc<dyn awaken_runtime_contract::plugin::Plugin>>,
+) -> Result<
+    (
+        Runtime,
+        Option<crate::session_memory_tools::SessionMemoryTools>,
+    ),
+    SessionExecutionError,
+> {
+    let bindings = if resources.content_delivery
+        == crate::sandbox_layout::ManagedContentDelivery::SemanticTools
+    {
+        host.realization_executor
+            .sessions()
+            .read_realization(thread, |r| r.staging().memory_bindings.clone())?
+            .unwrap_or_default()
+    } else {
+        std::collections::HashMap::new()
+    };
+    let installed = &resources.plan.installed;
+    let tools = crate::session_memory_tools::SessionMemoryTools::new(bindings, installed.as_ref());
+    if let Some(tools) = &tools
+        && !resources.plan.execution_backend.is_acp()
+    {
+        if installed.is_some() {
+            session_content_plugins.push(Arc::new(
+                crate::session_tools::SessionToolPlugin::new(
+                    "awaken.session.memory",
+                    tools.descriptors.clone(),
+                    tools.executors.clone(),
+                )
+                .map_err(SessionExecutionError::internal)?,
+            ));
+        }
+        for tool in &tools.executors {
+            runtime = runtime.with_tool(tool.clone());
+        }
+    }
+    Ok((runtime, tools))
+}
+
 pub(super) struct MemoryWiring {
     pub(super) runtime: Runtime,
     pub(super) plugin_ids: Vec<String>,
