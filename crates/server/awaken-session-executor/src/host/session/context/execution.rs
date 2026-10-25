@@ -129,7 +129,7 @@ pub(super) async fn prepare(
         // Session environment supplies rooted executors; the immutable
         // snapshot supplies model-visible descriptors. Neither side may
         // independently add a tool.
-        let hand_ids = crate::config::hand_tool_descriptors()
+        let hand_ids = awaken_session_run_delivery::hand_tool_descriptors()
             .into_iter()
             .map(|descriptor| descriptor.id)
             .collect::<std::collections::HashSet<_>>();

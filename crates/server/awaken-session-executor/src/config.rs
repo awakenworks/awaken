@@ -26,6 +26,9 @@ use awaken_runtime_contract::resolved::{
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 #[cfg(test)]
 use awaken_sandbox_local::LocalSandbox;
+#[cfg(test)]
+use awaken_session_run_delivery::builtin_hand_tools;
+use awaken_session_run_delivery::hand_tool_descriptors;
 use awaken_tool_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
 
 const SYSTEM_PROMPT: &str = "You are a helpful assistant working in a local repository.";
@@ -321,37 +324,6 @@ pub(crate) fn effective_tool_authorization(
         policy,
         explicit,
     }
-}
-
-pub(crate) fn hand_tool_descriptors() -> Vec<ToolDescriptor> {
-    let registered: HashSet<String> = all_hand_tools()
-        .iter()
-        .map(|t| t.id().to_string())
-        .collect();
-    builtin_tools()
-        .into_iter()
-        .filter(|tool| {
-            tool.toolset() == Toolset::Hand && registered.contains(&tool.descriptor().id)
-        })
-        .map(|tool| tool.into_descriptor())
-        .collect()
-}
-
-/// The registered built-in Hand tools advertised on a managed Session. The ask
-/// bit projects the same controlled-modification predicate as authorization;
-/// exact typed overrides are applied separately from the Session configuration.
-pub(crate) fn builtin_hand_tools() -> Vec<(String, bool)> {
-    hand_tool_descriptors()
-        .into_iter()
-        .map(|descriptor| {
-            let ask =
-                !awaken_session_configuration_contract::is_agent_toolset_member(&descriptor.id)
-                    || awaken_session_configuration_contract::is_controlled_modification_member(
-                        &descriptor.id,
-                    );
-            (descriptor.id, ask)
-        })
-        .collect()
 }
 
 /// A client-executed tool descriptor: model-visible, but no `RawTool` is

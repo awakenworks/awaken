@@ -47,7 +47,7 @@ use crate::{
     managed_skill_registry, message_prefix_before_exact_inputs, project_committed_step,
     session_activation_snapshot, settled_step,
 };
-use crate::{CoordinatedThreads, CoordinationAuthorities, SessionLowering};
+use crate::{CoordinatedThreads, CoordinationAuthorities, SessionBudgets, SessionLowering};
 
 /// The live authorities a Session's frozen Resource bindings are verified
 /// against before a Run is admitted.
@@ -80,13 +80,16 @@ pub struct WorkerPlacement {
     /// The cross-node dispatch wake, a latency hint only.
     pub wake: Option<Arc<dyn awaken_dispatch_contract::WakeSignal>>,
     pub clock: Arc<dyn awaken_time::WallClock>,
+    /// The model a Thread selecting none runs on.
+    pub default_model: String,
 }
 
 /// The Coordinator's Session execution for Worker-placed Sessions. Consumers:
 /// the Session application, through its Worker-placement roles.
 pub struct WorkerPlacedSessions {
     ports: WorkerPlacement,
-    threads: CoordinatedThreads,
+    threads: Arc<CoordinatedThreads>,
+    budgets: SessionBudgets,
     /// One step projection at a time per Session, so concurrent observers
     /// publish each committed suffix once and in order.
     step_projections: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -95,7 +98,7 @@ pub struct WorkerPlacedSessions {
 impl WorkerPlacedSessions {
     #[must_use]
     pub fn new(ports: WorkerPlacement) -> Self {
-        let threads = CoordinatedThreads::new(CoordinationAuthorities {
+        let threads = Arc::new(CoordinatedThreads::new(CoordinationAuthorities {
             owner: Some(ports.owner.clone()),
             dispatch: ports.dispatch.clone(),
             reads: ports.reads.clone(),
@@ -103,10 +106,13 @@ impl WorkerPlacedSessions {
             publications: ports.projections.publication_source(),
             wake: ports.wake.clone(),
             clock: ports.clock.clone(),
-        });
+        }));
+        let budgets =
+            SessionBudgets::new(threads.clone(), ports.dispatch.clone(), ports.reads.clone());
         Self {
             ports,
             threads,
+            budgets,
             step_projections: Mutex::default(),
         }
     }
@@ -426,6 +432,7 @@ mod tests {
             skill_catalog: None,
             wake: None,
             clock: awaken_time::system_clock(),
+            default_model: "provider/default".into(),
         })
     }
 
@@ -761,5 +768,45 @@ mod tests {
                 .tools(),
             &tools
         );
+    }
+
+    #[tokio::test]
+    async fn coordinator_capabilities_and_live_inbox_follow_their_decision_tables() {
+        use awaken_session_execution_contract::{CapabilityRuntime as _, LiveInboxRuntime as _};
+        let delivery = delivery(None);
+        // C2: a Thread with no projection advertises the Workspace default
+        // roster (no publication: none) and the built-in Hand tools.
+        let flat = delivery.capabilities_for("flat").expect("C2");
+        assert!(flat.delegates.is_empty(), "C2");
+        assert_eq!(
+            flat.builtin_tools.len(),
+            crate::builtin_hand_tools().len(),
+            "C2 Hand tools"
+        );
+        // C1: an installed Session advertises its own frozen roster.
+        install(&delivery, "session", Vec::new(), Vec::new());
+        let session = delivery.capabilities_for("session").expect("C1");
+        assert_eq!(
+            session.delegates,
+            delivery
+                .projections()
+                .installed("session")
+                .expect("held")
+                .baseline()
+                .delegate_ids,
+            "C1"
+        );
+        // The Coordinator owns no attempt: every live inbox is inactive.
+        assert!(
+            !delivery
+                .live_inbox_snapshot("session")
+                .await
+                .expect("snapshot")
+                .active
+        );
+        assert!(matches!(
+            delivery.live_inbox_queue("session", Vec::new()).await,
+            Err(awaken_session_execution_contract::LiveInboxError::Inactive)
+        ));
     }
 }

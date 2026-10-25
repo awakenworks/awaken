@@ -1633,7 +1633,7 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
             ),
         )
         .tool(
-            crate::config::hand_tool_descriptors()
+            awaken_session_run_delivery::hand_tool_descriptors()
                 .into_iter()
                 .find(|descriptor| descriptor.id == "read")
                 .expect("canonical read descriptor"),

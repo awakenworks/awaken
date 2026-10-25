@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_session_application_contract::{DelegatedRun, DelegatedRunSnapshot, StepOutcome};
+use awaken_session_execution_contract::LiveInboxError;
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, CoordinatedAdmissionRef, CoordinatedRunCommand,
     CoordinatedThreadLink, CoordinationRuntime, SessionAgentMessageCommand,
@@ -220,7 +221,7 @@ impl SessionCoordinationReads for WorkerPlacedSessions {
     }
 
     async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
-        SessionCoordinationReads::delegated_runs(&self.threads, thread).await
+        SessionCoordinationReads::delegated_runs(self.threads.as_ref(), thread).await
     }
 
     async fn coordinated_threads(
@@ -228,22 +229,158 @@ impl SessionCoordinationReads for WorkerPlacedSessions {
         session_id: &SessionId,
         observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<CoordinatedThreadLink>, RunError> {
-        SessionCoordinationReads::coordinated_threads(&self.threads, session_id, observed_root)
-            .await
+        SessionCoordinationReads::coordinated_threads(
+            self.threads.as_ref(),
+            session_id,
+            observed_root,
+        )
+        .await
     }
 
     async fn session_thread_tool_reply_fence(
         &self,
         command: &SessionThreadToolReplyCommand,
     ) -> Result<SessionThreadToolReplyFence, RunError> {
-        SessionCoordinationReads::session_thread_tool_reply_fence(&self.threads, command).await
+        SessionCoordinationReads::session_thread_tool_reply_fence(self.threads.as_ref(), command)
+            .await
     }
 
     async fn validate_session_agent_message_source(
         &self,
         command: &SessionAgentMessageCommand,
     ) -> Result<SessionAgentMessageCommand, RunError> {
-        SessionCoordinationReads::validate_session_agent_message_source(&self.threads, command)
+        SessionCoordinationReads::validate_session_agent_message_source(
+            self.threads.as_ref(),
+            command,
+        )
+        .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::BudgetRuntime for WorkerPlacedSessions {
+    async fn resume_budget_reached(
+        &self,
+        delivery: awaken_session_application_contract::SessionBudgetResumeDelivery,
+    ) -> Result<awaken_session_application_contract::SessionBudgetResumeDisposition, RunError> {
+        self.budgets.resume_budget_reached(delivery).await
+    }
+
+    async fn session_budget_resume_tickets(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<awaken_session_application_contract::SessionBudgetResumeTicket>, RunError> {
+        self.budgets
+            .session_budget_resume_tickets(session_id.as_str())
             .await
+    }
+
+    async fn session_usage(
+        &self,
+        thread: &str,
+    ) -> Result<awaken_session_budget_contract::SessionUsage, RunError> {
+        awaken_session_execution_contract::BudgetRuntime::session_usage(&self.budgets, thread).await
+    }
+
+    async fn session_thread_usage(
+        &self,
+        session_id: &SessionId,
+        thread_id: &str,
+    ) -> Result<awaken_session_budget_contract::SessionUsage, RunError> {
+        awaken_session_execution_contract::BudgetRuntime::session_thread_usage(
+            &self.budgets,
+            session_id,
+            thread_id,
+        )
+        .await
+    }
+}
+
+/// The Coordinator owns no Run attempt, so no live inbox is ever active here:
+/// a message for a running Run is delivered as an ordinary Session event.
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::LiveInboxRuntime for WorkerPlacedSessions {
+    async fn live_inbox_snapshot(
+        &self,
+        _thread: &str,
+    ) -> Result<awaken_session_execution_contract::LiveInboxSnapshot, LiveInboxError> {
+        Ok(awaken_session_execution_contract::LiveInboxSnapshot::inactive())
+    }
+
+    async fn live_inbox_queue(
+        &self,
+        _thread: &str,
+        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+    ) -> Result<u64, LiveInboxError> {
+        Err(LiveInboxError::Inactive)
+    }
+
+    async fn live_inbox_remove(&self, _thread: &str, _id: u64) -> Result<(), LiveInboxError> {
+        Err(LiveInboxError::Inactive)
+    }
+
+    async fn live_inbox_replace(
+        &self,
+        _thread: &str,
+        _id: u64,
+        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+    ) -> Result<(), LiveInboxError> {
+        Err(LiveInboxError::Inactive)
+    }
+
+    async fn live_inbox_reorder(
+        &self,
+        _thread: &str,
+        _order: Vec<u64>,
+    ) -> Result<(), LiveInboxError> {
+        Err(LiveInboxError::Inactive)
+    }
+}
+
+impl WorkerPlacedSessions {
+    fn capabilities_in(
+        &self,
+        workspace: &str,
+    ) -> awaken_session_configuration_contract::AgentCapabilities {
+        awaken_session_configuration_contract::AgentCapabilities {
+            builtin_tools: crate::builtin_hand_tools()
+                .into_iter()
+                .map(|(name, ask)| awaken_session_configuration_contract::BuiltinTool { name, ask })
+                .collect(),
+            // No client-executed tool is configured on a Coordinator, and its
+            // Skills are listed by the Skill catalog, not advertised here.
+            custom_tools: Vec::new(),
+            skills: Vec::new(),
+            delegates: self.ports.projections.default_delegates(workspace),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::CapabilityRuntime for WorkerPlacedSessions {
+    fn capabilities(
+        &self,
+    ) -> Result<awaken_session_configuration_contract::AgentCapabilities, RunError> {
+        Ok(self.capabilities_in(self.ports.projections.local_workspace()))
+    }
+
+    /// | Rule | projection | advertised delegates |
+    /// |---|---|---|
+    /// | C1 | installed | the Session's own roster |
+    /// | C2 | none | the Workspace default Agent's roster |
+    fn capabilities_for(
+        &self,
+        thread: &str,
+    ) -> Result<awaken_session_configuration_contract::AgentCapabilities, RunError> {
+        let projection = self.ports.projections.projection(thread)?;
+        let workspace = projection.as_ref().map_or_else(
+            || self.ports.projections.local_workspace().to_owned(),
+            |projection| projection.workspace().to_owned(),
+        );
+        let mut capabilities = self.capabilities_in(&workspace);
+        if let Some(projection) = projection {
+            capabilities.delegates = projection.baseline().delegate_ids.clone();
+        }
+        Ok(capabilities)
     }
 }

@@ -390,6 +390,30 @@ impl SessionProjections {
         self.publications.as_deref()
     }
 
+    /// The delegation roster of the Workspace default Agent.
+    #[must_use]
+    pub fn default_delegates(&self, workspace: &str) -> Vec<String> {
+        self.publications
+            .as_ref()
+            .and_then(|source| {
+                source.current(
+                    workspace,
+                    &awaken_runtime_contract::snapshot::AgentId("assistant".into()),
+                )
+            })
+            .map(|snapshot| {
+                snapshot
+                    .resolved_spec
+                    .plugin_config
+                    .agent
+                    .delegates
+                    .into_iter()
+                    .map(|binding| binding.agent_id.0)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// The shared Agent publication source, for admission that freezes it.
     #[must_use]
     pub fn publication_source(&self) -> Option<Arc<dyn PublishedAgentSnapshotSource>> {

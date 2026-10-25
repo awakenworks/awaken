@@ -239,7 +239,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         run_assembly,
         coordination: Arc::new(crate::ChildRunCoordination::new(session_runs.clone())),
         outcomes: Arc::new(crate::Outcomes::new(session_runs.clone())),
-        budget: Arc::new(crate::BudgetAccounting::new(session_runs.clone())),
+        budget: Arc::new(session_budgets(&session_runs)),
         session_runs,
         resources,
         dispatch,
@@ -583,7 +583,7 @@ impl ExecutorComponents {
 
     /// Session usage and budget accounting of this process.
     #[must_use]
-    pub fn budget(&self) -> &Arc<crate::BudgetAccounting> {
+    pub fn budget(&self) -> &Arc<awaken_session_run_delivery::SessionBudgets> {
         &self.budget
     }
 
@@ -815,4 +815,13 @@ mod startup_tests {
             "R3 Worker authority cannot become local",
         );
     }
+}
+
+/// The budget accounting of the Sessions `runs` delivers.
+fn session_budgets(runs: &crate::SessionRuns) -> awaken_session_run_delivery::SessionBudgets {
+    awaken_session_run_delivery::SessionBudgets::new(
+        runs.threads.clone(),
+        runs.dispatch.clone(),
+        runs.thread_reads.clone(),
+    )
 }

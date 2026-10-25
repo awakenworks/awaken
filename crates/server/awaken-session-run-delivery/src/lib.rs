@@ -28,6 +28,8 @@ mod lock;
 mod outcome_projection;
 mod run_publications;
 mod session_activation;
+mod session_budgets;
+mod session_capabilities;
 mod session_inputs;
 mod session_projections;
 mod session_run_activation;
@@ -69,6 +71,10 @@ pub use session_activation::{
     ManagedCoordinationRole, SessionToolsetProjection, project_managed_coordination_surface,
     project_session_tool_override, project_session_tools, session_activation_snapshot,
     session_client_tool_descriptor,
+};
+pub use session_budgets::SessionBudgets;
+pub use session_capabilities::{
+    builtin_hand_tools, hand_tool_descriptors, supports_mid_conversation_system,
 };
 pub use session_inputs::{
     client_result_for_ticket, resume_activation, session_system_message,

@@ -187,7 +187,7 @@ pub struct ExecutorComponents {
     /// Session Outcome orchestration.
     pub(crate) outcomes: Arc<crate::Outcomes>,
     /// Session usage and budget-paused Runs.
-    pub(crate) budget: Arc<crate::BudgetAccounting>,
+    pub(crate) budget: Arc<awaken_session_run_delivery::SessionBudgets>,
     /// Resources-context ports: Memory, Files, Artifacts.
     pub(crate) resources: Arc<capability::ResourcePorts>,
     /// Content capture (ADR-0050): sink, deployment ceiling, consent source.
