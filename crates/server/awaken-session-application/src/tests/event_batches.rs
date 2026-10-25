@@ -927,11 +927,15 @@ impl awaken_session_execution_contract::ThreadReadRuntime for EventBatchRuntime 
         Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
         awaken_session_types::RunError,
     > {
-        awaken_session_execution_contract::select_recovery_snapshot_run(
-            self.session_thread_recovery_snapshot(session_id, thread_id)
-                .await?,
+        Ok(awaiting_ticket::with_awaited_ticket(
+            awaken_session_execution_contract::select_recovery_snapshot_run(
+                self.session_thread_recovery_snapshot(session_id, thread_id)
+                    .await?,
+                run_id,
+            )?,
+            thread_id,
             run_id,
-        )
+        ))
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -1263,29 +1267,6 @@ async fn finalize_applied_user_dispatch(
         )
         .await
         .expect("simulated applied Dispatch finalizes the User Event");
-}
-
-fn tool_reply_input(tool_use_id: &str) -> SessionEventInput {
-    tool_reply_input_for_target(tool_use_id, SessionThreadTarget::Primary)
-}
-
-fn tool_reply_input_for_target(
-    tool_use_id: &str,
-    target: SessionThreadTarget,
-) -> SessionEventInput {
-    SessionEventInput::ToolReply(SessionEventToolReply {
-        tool_request_event_id: format!("evt_{tool_use_id}"),
-        target,
-        expected_run_id: RunId("awaiting-run".into()),
-        expected_correlation_id: "awaiting-correlation".into(),
-        expected_thread_version: Some(1),
-        answered_pending_commit_cursor: Some(777),
-        runtime_tool_use_id: tool_use_id.into(),
-        reply: SessionEventToolReplyKind::ToolResult {
-            content: Some(vec![ContentBlock::text("tool result")]),
-            is_error: false,
-        },
-    })
 }
 
 fn tool_reply_activity_operation_id(
@@ -5845,6 +5826,8 @@ mod outcome_reconciliation;
 mod resumed_dispatch;
 
 mod admission_boundaries;
+mod awaiting_ticket;
+use awaiting_ticket::{tool_reply_input, tool_reply_input_for_target};
 mod concurrent_consumption;
 mod frozen_projection;
 mod pause_transaction;

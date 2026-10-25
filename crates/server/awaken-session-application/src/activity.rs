@@ -542,24 +542,112 @@ impl SessionActivities {
         .await
     }
 
-    /// Open a fresh activity only while the Session root still matches the
+    /// Open a fresh Run activity only while the Session root still matches the
     /// complete execution projection recovered before Runtime reservation.
-    pub(crate) async fn begin_activity_for_operation_at_revision(
+    ///
+    /// | Refusal | Durable effect | Caller answer |
+    /// |---|---|---|
+    /// | budget reached | rejection receipt | `budget_reached`, replayed by every later recovery |
+    /// | store outage or CAS conflict | none; the reservation stays repairable | `session_run_admission_pending` |
+    /// | other | none | its own class |
+    pub(crate) async fn begin_run_activity_at_revision(
         &self,
         session_id: &awaken_session_types::SessionId,
         operation_id: &str,
         projected_revision: SessionRevision,
         source: (&ThreadId, &RunId),
-    ) -> Result<(PersistedSession, u64), SessionActivityError> {
-        self.begin_activity_for_operation_with_policy(
+    ) -> Result<u64, RunError> {
+        let begun = self
+            .begin_activity_for_operation_with_policy(
+                session_id,
+                operation_id,
+                false,
+                None,
+                Some(projected_revision),
+                Some(source),
+            )
+            .await;
+        match begun {
+            Ok((_, epoch)) => Ok(epoch),
+            Err(SessionActivityError::BudgetReached) => {
+                // Best effort: if the receipt cannot commit, the refusal stays
+                // the ambiguous class below and repair may still settle it.
+                if let Err(error) = self.record_budget_rejection(session_id, operation_id).await {
+                    return Err(Self::admission_pending(error));
+                }
+                Err(SessionActivityError::BudgetReached.run_error())
+            }
+            Err(
+                error @ (SessionActivityError::Unavailable(_) | SessionActivityError::Conflict),
+            ) => Err(Self::admission_pending(error)),
+            Err(error) => Err(error.run_error()),
+        }
+    }
+
+    /// The reservation is durable but its activity is not: the outcome is not
+    /// yet decided, and the same operation is the only safe retry.
+    fn admission_pending(error: SessionActivityError) -> RunError {
+        RunError::unavailable_classified(
+            "session_run_admission_pending",
+            format!(
+                "Session Run admission is pending; retry the same operation: {}",
+                error.run_error().message
+            ),
+        )
+    }
+
+    fn budget_rejection_record(session_id: &str, operation_id: &str) -> IdempotencyRecord {
+        let identity = awaken_agent_contract::stable_fingerprint(&(
+            "managed-session-run-budget-rejection-v1",
             session_id,
             operation_id,
-            false,
-            None,
-            Some(projected_revision),
-            Some(source),
-        )
-        .await
+        ));
+        IdempotencyRecord {
+            key: format!("managed:session-run-rejection:{session_id}:{identity}"),
+            payload_hash: identity,
+        }
+    }
+
+    /// Durably record that this Run activity admission was refused at the
+    /// budget boundary, so no later repair or raise can admit it.
+    async fn record_budget_rejection(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        operation_id: &str,
+    ) -> Result<(), SessionActivityError> {
+        let owner = self
+            .mutations
+            .owner(session_id)
+            .await
+            .map_err(SessionActivityError::mutation)?;
+        let session = self
+            .mutations
+            .session_aggregate(session_id)
+            .await
+            .map_err(repository_failure)
+            .map_err(SessionActivityError::mutation)?;
+        let record = Self::budget_rejection_record(session_id.as_str(), operation_id);
+        self.mutations
+            .commit_session_snapshot_with_record(&owner, session, record, Vec::new())
+            .await
+            .map(|_committed| ())
+            .map_err(SessionActivityError::mutation)
+    }
+
+    async fn budget_rejected(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        operation_id: &str,
+    ) -> Result<bool, SessionActivityError> {
+        let record = Self::budget_rejection_record(session_id.as_str(), operation_id);
+        let receipt = self
+            .mutations
+            .repository()
+            .idempotency_receipt(session_id, &record.key)
+            .await
+            .map_err(repository_failure)
+            .map_err(SessionActivityError::mutation)?;
+        Ok(receipt.is_some_and(|receipt| receipt.payload_hash == record.payload_hash))
     }
 
     /// Read only the exact committed activity receipt for crash recovery. This
@@ -578,8 +666,18 @@ impl SessionActivities {
             ));
         }
         let record = Self::activity_operation_record(session_id.as_str(), operation_id);
-        self.replayed_activity_operation(session_id, &record, operation_id, source)
-            .await
+        let replayed = self
+            .replayed_activity_operation(session_id, &record, operation_id, source)
+            .await?;
+        // A Run activity refused at the budget boundary keeps that answer for
+        // its caller's retry, ordinary repair and cancellation alike.
+        if replayed.is_none()
+            && operation_id.starts_with("session-run-activity:")
+            && self.budget_rejected(session_id, operation_id).await?
+        {
+            return Err(SessionActivityError::BudgetReached);
+        }
+        Ok(replayed)
     }
 
     /// Atomically replace an already-coordinated dispatch activity with the

@@ -174,19 +174,34 @@ impl SessionRunAdmissions {
         &self,
         command: AdmitSessionRun,
     ) -> Result<AdmittedSessionRun, RunError> {
-        self.admit_session_run_with_owner(command, None).await
+        self.admit_session_run_with_owner(command, None, false)
+            .await
     }
 
-    /// Admit a protocol request under its already-authenticated owner scope.
-    /// This is the same durable admission as [`Self::admit_session_run`]; the
-    /// extra coordinate is used only to create or authorize the Session before
-    /// the shared reservation/activity/activation protocol starts.
+    /// Admit one Run on a Session its caller owns. Ownership was decided when
+    /// `access` was minted, so this never creates a Session: a Session deleted
+    /// since then answers like any missing one.
     pub async fn admit_session_run_for_owner(
+        &self,
+        access: &crate::SessionAccess,
+        command: AdmitSessionRun,
+    ) -> Result<AdmittedSessionRun, RunError> {
+        if command.session_id != *access.session_id() {
+            return Err(crate::SessionAccessError::NotFound.into());
+        }
+        self.admit_session_run_with_owner(command, Some(access.owner_scope()), false)
+            .await
+    }
+
+    /// The single-tenant first-Run path: create the default profiled Session
+    /// when it is missing. Only this crate's own Run application uses it, with
+    /// the Workspace it derives itself.
+    pub(crate) async fn admit_or_create_session_run(
         &self,
         owner_scope: &str,
         command: AdmitSessionRun,
     ) -> Result<AdmittedSessionRun, RunError> {
-        self.admit_session_run_with_owner(command, Some(owner_scope))
+        self.admit_session_run_with_owner(command, Some(owner_scope), true)
             .await
     }
 
@@ -202,12 +217,12 @@ impl SessionRunAdmissions {
     /// | P4 | otherwise | the shared owner-fenced durable admission |
     pub async fn admit_profiled_session_run(
         &self,
-        owner_scope: &str,
+        access: &crate::SessionAccess,
         command: AdmitSessionRun,
     ) -> Result<AdmittedSessionRun, crate::SessionProjectionRecoveryError> {
         let projection = self
             .queries
-            .read_session_projection(command.session_id.as_str(), Some(owner_scope))
+            .read_session_projection(command.session_id.as_str(), Some(access.owner_scope()))
             .await?
             .ok_or(crate::SessionProjectionRecoveryError::NotFound)?;
         let baseline = projection
@@ -224,7 +239,7 @@ impl SessionRunAdmissions {
                 ),
             ));
         }
-        self.admit_session_run_for_owner(owner_scope, command)
+        self.admit_session_run_for_owner(access, command)
             .await
             .map_err(crate::SessionProjectionRecoveryError::Rejected)
     }
@@ -233,6 +248,7 @@ impl SessionRunAdmissions {
         &'a self,
         command: AdmitSessionRun,
         expected_owner: Option<&'a str>,
+        create_missing: bool,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<AdmittedSessionRun, RunError>> + Send + 'a>,
     > {
@@ -262,7 +278,7 @@ impl SessionRunAdmissions {
                     }
                     Some(actual_owner)
                 }
-                Err(SessionMutationError::NotFound) if expected_owner.is_some() => None,
+                Err(SessionMutationError::NotFound) if create_missing => None,
                 Err(error) => return Err(mutation_error(error)),
             };
             let existing_activity_epoch = match durable_owner.as_ref() {
@@ -298,15 +314,13 @@ impl SessionRunAdmissions {
                 } => {
                     let session_activity_epoch = self
                         .activities
-                        .begin_activity_for_operation_at_revision(
+                        .begin_run_activity_at_revision(
                             &session_id,
                             &operation,
                             projected_revision,
                             (&thread_id, &run_id),
                         )
-                        .await
-                        .map_err(crate::SessionActivityError::run_error)?
-                        .1;
+                        .await?;
                     Ok(if reservation_replayed {
                         AdmittedSessionRun::AlreadyReserved(delivery(session_activity_epoch))
                     } else {
@@ -359,20 +373,18 @@ impl SessionRunAdmissions {
         .await
     }
 
-    /// Owner-authenticated form of [`Self::run_admitted_session`] used by
-    /// public protocol adapters. Both forms converge on the same durable Run
-    /// reservation and foreground observation port.
+    /// Owned form of [`Self::run_admitted_session`] used by public protocol
+    /// adapters and product coordinators. Both forms converge on the same
+    /// durable Run reservation and foreground observation port.
     pub async fn run_admitted_session_for_owner(
         &self,
-        owner_scope: &str,
+        access: &crate::SessionAccess,
         command: AdmitSessionRun,
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError> {
-        let coordination_runtime = self.coordination.as_ref();
-
         let input_message_ids = command.input_message_ids();
-        let admitted = Box::pin(self.admit_session_run_for_owner(owner_scope, command)).await?;
-        Box::pin(coordination_runtime.activate_and_observe_session_run(
+        let admitted = Box::pin(self.admit_session_run_for_owner(access, command)).await?;
+        Box::pin(self.coordination.activate_and_observe_session_run(
             admitted,
             input_message_ids,
             sink,
@@ -630,13 +642,11 @@ impl crate::ProfiledSessionCommands for SessionRunAdmissions {
 
     async fn admit_profiled_session_run(
         &self,
-        owner_scope: &str,
+        access: &crate::SessionAccess,
         command: AdmitSessionRun,
     ) -> Result<AdmittedSessionRun, SessionProjectionRecoveryError> {
         Box::pin(SessionRunAdmissions::admit_profiled_session_run(
-            self,
-            owner_scope,
-            command,
+            self, access, command,
         ))
         .await
     }
@@ -679,12 +689,14 @@ impl crate::ProfiledSessionCommands for SessionRunAdmissions {
 type WorkspaceResolver = dyn Fn(&str) -> Result<String, RunError> + Send + Sync;
 type ProjectedAgentResolver = dyn Fn(&str) -> Result<Option<String>, RunError> + Send + Sync;
 
+#[derive(Clone)]
 pub struct SessionRunApplication {
     runtime: Arc<dyn RunApplication>,
     admissions: Arc<SessionRunAdmissions>,
     coordination: Arc<crate::SessionCoordination>,
     workspace: Arc<WorkspaceResolver>,
     projected_agent: Arc<ProjectedAgentResolver>,
+    first_run_creates: bool,
 }
 
 impl SessionRunApplication {
@@ -702,7 +714,17 @@ impl SessionRunApplication {
             coordination,
             workspace: Arc::new(workspace),
             projected_agent: Arc::new(projected_agent),
+            first_run_creates: false,
         }
+    }
+
+    /// Let an owner-scoped first Run create its default Session. Production
+    /// never enables this: an application grant binds only existing Sessions.
+    /// An unguarded test mount enables it to stand in for that grant.
+    #[must_use]
+    pub fn with_first_run_creation(mut self) -> Self {
+        self.first_run_creates = true;
+        self
     }
 
     fn agent_for(&self, thread: &str, requested_agent: Option<&str>) -> Result<String, RunError> {
@@ -747,17 +769,51 @@ impl SessionRunApplication {
         })
     }
 
+    /// Run one Session Run. `create` is the single-tenant first-Run path,
+    /// which creates the default Session under the Workspace this crate
+    /// derived itself; every other path decides ownership once, here, and an
+    /// unknown or foreign thread is the same `NotFound`.
     async fn run_admitted(
         &self,
         owner_scope: &str,
         command: AdmitSessionRun,
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+        create: bool,
     ) -> Result<StepOutcome, RunApplicationError> {
+        if !(create || self.first_run_creates) {
+            let access = self
+                .authorize(owner_scope, command.session_id.as_str())
+                .await?;
+            return Box::pin(
+                self.admissions
+                    .run_admitted_session_for_owner(&access, command, sink),
+            )
+            .await;
+        }
+        let input_message_ids = command.input_message_ids();
+        let admitted = Box::pin(
+            self.admissions
+                .admit_or_create_session_run(owner_scope, command),
+        )
+        .await?;
         Box::pin(
             self.admissions
-                .run_admitted_session_for_owner(owner_scope, command, sink),
+                .coordination
+                .activate_and_observe_session_run(admitted, input_message_ids, sink),
         )
         .await
+    }
+
+    async fn authorize(
+        &self,
+        owner_scope: &str,
+        thread: &str,
+    ) -> Result<crate::SessionAccess, RunError> {
+        Ok(self
+            .admissions
+            .queries
+            .authorize(owner_scope, &awaken_session_types::SessionId::from(thread))
+            .await?)
     }
 }
 
@@ -778,7 +834,7 @@ impl RunApplication for SessionRunApplication {
             None,
             awaken_session_types::SessionRunReplacement::PreservePrior,
         )?;
-        self.run_admitted(&(self.workspace)(thread)?, command, None)
+        self.run_admitted(&(self.workspace)(thread)?, command, None, true)
             .await
     }
 
@@ -877,7 +933,8 @@ impl OwnerScopedRunApplication for SessionRunApplication {
             None,
             awaken_session_types::SessionRunReplacement::PreservePrior,
         )?;
-        self.run_admitted(owner_scope, command, Some(sink)).await
+        self.run_admitted(owner_scope, command, Some(sink), false)
+            .await
     }
 
     async fn resume_for_owner(
@@ -888,14 +945,9 @@ impl OwnerScopedRunApplication for SessionRunApplication {
         tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunApplicationError> {
+        let access = self.authorize(owner_scope, thread).await?;
         self.coordination
-            .resume_session_run_for_owner(
-                owner_scope,
-                operation_id,
-                &awaken_session_types::SessionId::from(thread),
-                tool_use_id,
-                resume,
-            )
+            .resume_owned_session_run(&access, operation_id, tool_use_id, resume)
             .await
     }
     async fn resume_streaming_for_owner(
@@ -907,15 +959,9 @@ impl OwnerScopedRunApplication for SessionRunApplication {
         resume: RunResume,
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunApplicationError> {
+        let access = self.authorize(owner_scope, thread).await?;
         self.coordination
-            .resume_session_run_streaming_for_owner(
-                owner_scope,
-                operation_id,
-                &awaken_session_types::SessionId::from(thread),
-                tool_use_id,
-                resume,
-                sink,
-            )
+            .resume_owned_session_run_streaming(&access, operation_id, tool_use_id, resume, sink)
             .await
     }
 }
@@ -939,7 +985,7 @@ impl awaken_session_application_contract::SessionRunReplacementApplication
             None,
             awaken_session_types::SessionRunReplacement::SupersedePrior,
         )?;
-        self.run_admitted(&(self.workspace)(thread)?, command, None)
+        self.run_admitted(&(self.workspace)(thread)?, command, None, true)
             .await
     }
 }
@@ -968,7 +1014,7 @@ impl awaken_session_application_contract::SessionRunBackgroundApplication
         let owner_scope = (self.workspace)(thread)?;
         let admitted = Box::pin(
             self.admissions
-                .admit_session_run_for_owner(&owner_scope, command),
+                .admit_or_create_session_run(&owner_scope, command),
         )
         .await?;
         self.admissions

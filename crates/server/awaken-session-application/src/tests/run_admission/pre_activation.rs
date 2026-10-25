@@ -12,7 +12,7 @@
 //! | Row | Cut | Caller result | Root activity | Repair RecoverOnly | Repair RecoverOrAdmit |
 //! |---|---|---|---|---|---|
 //! | Z1 | activity CAS paused | pending | none | n/a | n/a |
-//! | Z2 | activity CAS fails | Err(unavailable) | none | Rejected (delete) | see reproducer |
+//! | Z2 | activity CAS fails | Err(session_run_admission_pending) | none | Rejected (delete) | Admitted once (pending settled) |
 //! | Z3 | retry same operation | AlreadyReserved(e) | exactly one record e | Admitted(e) | Admitted(e) |
 //! | Z4 | admitted, activate never called | Reserved(e) | one record e | Admitted(e) | Admitted(e) |
 use super::*;
@@ -335,44 +335,64 @@ async fn return_code_alone_cannot_sign_off_zero_execution() {
     assert!(detected.contains("model_calls: 1"), "NC {detected}");
 }
 
+/// The activity CAS failed after the reservation became durable: the outcome
+/// is undecided, not refused. The caller gets the stable pending class, and
+/// the reservation repair owns settlement: it admits the exact Run once and
+/// never a second Run or epoch.
 #[tokio::test]
-#[ignore = "product gap: activity CAS failure returns an error but never releases its reservation; repair RecoverOrAdmit later admits a Run the caller saw fail"]
-async fn failed_activity_cas_releases_its_reservation_before_reporting_failure() {
-    let session = "t07-unreleased-reservation";
+async fn failed_activity_cas_reports_a_pending_admission_that_repair_settles_once() {
+    let session = "t07-pending-reservation";
     let id = SessionId::from(session);
     let Fixture {
         durable,
         faulting,
+        runtime,
         app,
-        ..
     } = fixture(session).await;
-    let command = admit_command(session, "t07-gap-operation");
+    let command = admit_command(session, "t07-pending-operation");
     let run_id = command.run_id.clone();
+    let operation =
+        awaken_session_execution_contract::session_run_activity_operation_id(&id, &run_id);
     faulting.fail_once(ACTIVITY_CAS);
-    app.run_admissions
+    let error = app
+        .run_admissions
         .admit_session_run(command)
         .await
         .expect_err("activity CAS failure is reported to the caller");
-    // The caller was told the Run failed and does not retry. Correct
-    // behaviour: the reservation was released (or durably marked for
-    // release), so ordinary repair must not admit it afterwards.
-    let repair = app
-        .coordination
-        .admit_session_run_activity(
-            &id,
-            "agent",
-            &run_id,
-            SessionRunActivityAdmissionMode::RecoverOrAdmit,
-        )
-        .await
-        .expect("repair decision");
     assert_eq!(
-        repair,
-        SessionRunActivityAdmission::Rejected,
-        "a reservation whose admission failed must not be admitted later by repair"
+        (error.kind, error.code.as_str()),
+        (
+            awaken_session_types::RunErrorKind::Unavailable,
+            "session_run_admission_pending"
+        ),
+        "the caller learns the admission is pending, never that it failed: {error:?}"
     );
-    assert!(
-        activity_records(&durable.get(&id).await.unwrap()).is_empty(),
-        "no activity for a failed admission"
+    check_zero_execution(&runtime.counts()).expect("a pending admission executes nothing");
+    let mut epochs = Vec::new();
+    for _ in 0..2 {
+        let repair = app
+            .coordination
+            .admit_session_run_activity(
+                &id,
+                "agent",
+                &run_id,
+                SessionRunActivityAdmissionMode::RecoverOrAdmit,
+            )
+            .await
+            .expect("repair decision");
+        let SessionRunActivityAdmission::Admitted {
+            session_activity_epoch,
+        } = repair
+        else {
+            panic!("repair settles the pending reservation: {repair:?}")
+        };
+        epochs.push(session_activity_epoch);
+    }
+    assert_eq!(epochs[0], epochs[1], "repair admits exactly once");
+    assert_eq!(
+        activity_records(&durable.get(&id).await.unwrap()),
+        vec![(operation, epochs[0], run_id.0.clone())],
+        "one activity record for the original Run"
     );
+    check_zero_execution(&runtime.counts()).expect("repair activates nothing");
 }

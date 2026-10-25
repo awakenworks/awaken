@@ -292,15 +292,25 @@ pub fn validate_interrupt_children(
     Ok(())
 }
 
-/// Read the coordinated links and child snapshots one Event batch's
-/// Interrupts name, then apply [`validate_interrupt_children`]. A batch
-/// without a child target reads nothing.
-pub async fn admit_interrupt_topology(
+/// Admit one Event batch's Thread-addressed inputs against committed Runtime
+/// truth: every Interrupt passes [`validate_interrupt_children`] and every new
+/// tool reply passes [`validate_tool_reply_coordinates`]. A batch with neither
+/// reads nothing.
+pub async fn admit_event_batch_topology(
     coordination: &dyn crate::SessionCoordinationReads,
     threads: &dyn crate::ThreadReadRuntime,
     session_id: &SessionId,
     inputs: &[awaken_session_event_contract::SessionEventInput],
 ) -> Result<(), crate::RunError> {
+    for input in inputs {
+        if let awaken_session_event_contract::SessionEventInput::ToolReply(reply) = input {
+            let thread = reply.target.thread_id(session_id);
+            let snapshot = threads
+                .session_thread_run_recovery_snapshot(session_id, &thread.0, &reply.expected_run_id)
+                .await?;
+            validate_tool_reply_coordinates(reply, snapshot.as_ref())?;
+        }
+    }
     let children = interrupt_child_targets(inputs);
     if children.is_empty() {
         return Ok(());
@@ -316,6 +326,42 @@ pub async fn admit_interrupt_topology(
         }
     }
     validate_interrupt_children(session_id, &children, &links, &snapshots)
+}
+
+/// A new Event-batch tool reply must name the exact committed answerable
+/// ticket of its target Thread: the current Awaiting Run, its correlation and
+/// its call. The protocol entry resolves these from the same truth; this rule
+/// keeps an internal caller from retaining forged coordinates. The Thread
+/// version stays with the delivery fence.
+pub fn validate_tool_reply_coordinates(
+    reply: &awaken_session_event_contract::SessionEventToolReply,
+    snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+) -> Result<(), crate::RunError> {
+    let refused = || {
+        crate::RunError::bad_request_classified(
+            "tool_reply_coordinate_mismatch",
+            "tool reply does not name the committed awaiting ticket",
+        )
+    };
+    let snapshot = snapshot.ok_or_else(refused)?;
+    let current = snapshot
+        .current_run()
+        .map_err(|error| crate::RunError::internal(error.to_string()))?;
+    if !current.is_some_and(|run| {
+        run.id == reply.expected_run_id && matches!(run.state, RunState::Awaiting)
+    }) {
+        return Err(refused());
+    }
+    let ticket = snapshot
+        .answerable_ticket(&reply.expected_run_id)
+        .map_err(|error| crate::RunError::internal(error.to_string()))?
+        .ok_or_else(refused)?;
+    if ticket.correlation_id != reply.expected_correlation_id
+        || ticket.call_id() != Some(reply.runtime_tool_use_id.as_str())
+    {
+        return Err(refused());
+    }
+    Ok(())
 }
 
 /// Logical position of the claimed Run inside Agent-message settlement.

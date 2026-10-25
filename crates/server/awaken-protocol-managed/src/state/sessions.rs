@@ -861,3 +861,19 @@ pub(crate) fn session_agent_from_configuration(
         multiagent,
     })
 }
+
+/// The one ownership verdict an Event command carries, with its Workspace:
+/// the owner index names the Workspace and the durable root decides.
+pub(crate) async fn owned_session_access(
+    state: &ManagedState,
+    session_id: &str,
+) -> Result<(awaken_session_application::SessionAccess, String), StateError> {
+    let owner = state.owner_scope(session_id).ok_or(StateError::NotFound)?;
+    let access = state
+        .roles
+        .roots
+        .authorize(&owner, &awaken_session_types::SessionId::from(session_id))
+        .await
+        .map_err(|error| StateError::Run(error.into()))?;
+    Ok((access, owner))
+}

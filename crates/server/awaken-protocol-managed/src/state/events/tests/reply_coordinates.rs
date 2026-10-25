@@ -408,8 +408,14 @@ async fn forged_application_reply(
     let outcome = state
         .application
         .event_batches()
-        .append_session_event_batch_idempotent(
-            &SessionId::from(&session_id),
+        .append_owned_session_event_batch(
+            &awaken_session_application::SessionRootReads::authorize(
+                &*state.application.queries(),
+                &state.resolve_owner(&session_id).await.unwrap().unwrap(),
+                &SessionId::from(&session_id),
+            )
+            .await
+            .unwrap(),
             validated.inputs,
             None,
             None,
@@ -421,7 +427,6 @@ async fn forged_application_reply(
 }
 
 #[tokio::test]
-#[ignore = "product gap: SessionEventBatchCommands::append_session_event_batch_idempotent retains a ToolReply with forged Run/Thread coordinates without validating them against a committed ticket"]
 async fn application_append_rejects_forged_reply_coordinates() {
     let (runtime, state, session_id, before, outcome) =
         Box::pin(forged_application_reply(|reply| {

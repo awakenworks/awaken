@@ -6,6 +6,7 @@
 //! Atomic Managed inbound-event validation, lowering, retention, and receipt projection.
 
 use super::*;
+use crate::state::sessions::owned_session_access;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_managed_session_events::{OrderEvidence, OrderIndex};
 use awaken_session_execution_contract::ProjectionThreadSnapshots;
@@ -529,7 +530,7 @@ impl ManagedState {
                 // above, so a cached session always has one. Treat a missing
                 // owner as an unknown session rather than admitting the event
                 // against a compiled-in tenant's Agent availability.
-                let owner_scope = self.owner_scope(session_id).ok_or(StateError::NotFound)?;
+                let (access, owner_scope) = owned_session_access(self, session_id).await?;
                 if self.roles.events.agent_unavailable(&owner_scope, &agent_id) {
                     return Err(StateError::Run(RunError::bad_request(format!(
                         "agent_unavailable: agent `{agent_id}` cannot admit a new event"
@@ -564,7 +565,7 @@ impl ManagedState {
                     self.roles
                         .events
                         .append_and_drive_session_event_batch_idempotent(
-                            &awaken_session_types::SessionId::from(session_id),
+                            &access,
                             validated.inputs,
                             data_subject_id,
                             traceparent,
@@ -575,7 +576,7 @@ impl ManagedState {
                     self.roles
                         .events
                         .append_session_event_batch_idempotent(
-                            &awaken_session_types::SessionId::from(session_id),
+                            &access,
                             validated.inputs,
                             data_subject_id,
                             traceparent,

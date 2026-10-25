@@ -402,7 +402,6 @@ async fn raised_budget_resumes_only_budget_reached_tickets() {
 }
 
 #[tokio::test]
-#[ignore = "product gap: a budget-rejected bypass Run keeps its reservation; after the raise, repair RecoverOrAdmit admits it as a new Run"]
 async fn budget_rejected_bypass_run_is_not_admitted_by_repair_after_raise() {
     let id = "t13-budget-bypass-repair";
     let session_id = SessionId::from(id);

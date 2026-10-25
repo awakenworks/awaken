@@ -518,32 +518,23 @@ impl SessionCoordination {
         tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunError> {
-        self.resume_session_run_with_owner(
-            None,
-            operation_id,
-            session_id,
-            tool_use_id,
-            resume,
-            None,
-        )
-        .await
+        self.resume_session_run_observed(operation_id, session_id, tool_use_id, resume, None)
+            .await
     }
 
-    /// Resume a public-protocol Session Run only when the authenticated owner
-    /// still owns the durable Session root. Exact operation replay does not
-    /// bypass this authorization boundary.
-    pub async fn resume_session_run_for_owner(
+    /// Resume a public-protocol Session Run on a Session its caller owns.
+    /// Ownership was decided when `access` was minted; exact operation replay
+    /// therefore cannot bypass it.
+    pub async fn resume_owned_session_run(
         &self,
-        owner_scope: &str,
+        access: &crate::SessionAccess,
         operation_id: &str,
-        session_id: &awaken_session_types::SessionId,
         tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunError> {
-        self.resume_session_run_with_owner(
-            Some(owner_scope),
+        self.resume_session_run_observed(
             operation_id,
-            session_id,
+            access.session_id(),
             tool_use_id,
             resume,
             None,
@@ -552,19 +543,17 @@ impl SessionCoordination {
     }
 
     /// Reuse the exact authorized reply state machine, changing observation only.
-    pub async fn resume_session_run_streaming_for_owner(
+    pub async fn resume_owned_session_run_streaming(
         &self,
-        owner_scope: &str,
+        access: &crate::SessionAccess,
         operation_id: &str,
-        session_id: &awaken_session_types::SessionId,
         tool_use_id: &str,
         resume: RunResume,
         sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunError> {
-        self.resume_session_run_with_owner(
-            Some(owner_scope),
+        self.resume_session_run_observed(
             operation_id,
-            session_id,
+            access.session_id(),
             tool_use_id,
             resume,
             Some(sink),
@@ -572,9 +561,8 @@ impl SessionCoordination {
         .await
     }
 
-    async fn resume_session_run_with_owner(
+    async fn resume_session_run_observed(
         &self,
-        expected_owner: Option<&str>,
         operation_id: &str,
         session_id: &awaken_session_types::SessionId,
         tool_use_id: &str,
@@ -588,21 +576,6 @@ impl SessionCoordination {
             return Err(RunError::bad_request(
                 "Session Run resume requires a stable operation identity",
             ));
-        }
-        if let Some(expected_owner) = expected_owner {
-            let actual_owner =
-                self.mutations
-                    .owner(session_id)
-                    .await
-                    .map_err(|error| match error {
-                        crate::SessionMutationError::NotFound => {
-                            RunError::bad_request("Session was not found")
-                        }
-                        other => RunError::unavailable(other.to_string()),
-                    })?;
-            if actual_owner != expected_owner {
-                return Err(RunError::bad_request("Session was not found"));
-            }
         }
         let snapshot = thread_reads
             .session_thread_recovery_snapshot(session_id, session_id.as_str())

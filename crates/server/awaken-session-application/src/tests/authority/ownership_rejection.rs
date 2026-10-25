@@ -14,11 +14,12 @@
 //!
 //! | Row | Entrypoint | Foreign result | Missing result |
 //! |---|---|---|---|
-//! | E1 | `admit_session_run_for_owner` | `Session was not found` | create-on-missing (see reproducer) |
-//! | E2 | `resume_session_run_for_owner` | `Session was not found` | identical |
+//! | E1 | `authorize` + `admit_session_run_for_owner` | `session_not_found` | identical, nothing created |
+//! | E2 | `authorize` + `resume_owned_session_run` | `session_not_found` | identical |
 //! | E3 | `archive_with_repository_publication` | `NotFound` | identical |
 //! | E4 | `close_session_event_admission` | `session_not_found` | identical |
 //! | E5 | `session_file_is_frozen_for_worker` | `false` | identical |
+//! | E6 | `authorize` + `append_owned_session_event_batch` | `session_not_found` | identical |
 use super::*;
 use crate::tests::effect_counting_runtime::EffectCountingRuntime;
 use crate::{SessionArchiveWithRepositoryPublicationCommand, SessionRepositoryPublicationSelector};
@@ -292,6 +293,14 @@ fn archive_command(session: &str) -> SessionArchiveWithRepositoryPublicationComm
     )
 }
 
+/// The intruder's only way into an owned command: the one ownership verdict.
+async fn authorize(
+    app: &SessionApplication,
+    session_id: &SessionId,
+) -> Result<crate::SessionAccess, awaken_session_types::RunError> {
+    Ok(crate::SessionRootReads::authorize(&*app.queries(), INTRUDER, session_id).await?)
+}
+
 /// Execute one owner-scoped entrypoint as the intruder and render its full
 /// observable answer (variant, message, kind and code) as bytes.
 async fn invoke(row: &str, app: &SessionApplication, session: &str) -> String {
@@ -299,27 +308,59 @@ async fn invoke(row: &str, app: &SessionApplication, session: &str) -> String {
     match row {
         "E1" => format!(
             "{:?}",
-            app.run_admissions
-                .admit_session_run_for_owner(INTRUDER, admit_command(session))
-                .await
-                .map(|_| ())
+            async {
+                let access = authorize(app, &session_id).await?;
+                app.run_admissions
+                    .admit_session_run_for_owner(&access, admit_command(session))
+                    .await
+                    .map(|_| ())
+            }
+            .await
         ),
         "E2" => format!(
             "{:?}",
-            app.coordination
-                .resume_session_run_for_owner(
-                    INTRUDER,
-                    "t06-resume",
-                    &session_id,
-                    "t06-tool-use",
-                    awaken_session_application_contract::RunResume::Permission(
-                        awaken_agent_contract::agent::awaiting::PermissionDecision::Allow {
-                            note: None
-                        },
-                    ),
-                )
-                .await
-                .map(|_| ())
+            async {
+                let access = authorize(app, &session_id).await?;
+                app.coordination
+                    .resume_owned_session_run(
+                        &access,
+                        "t06-resume",
+                        "t06-tool-use",
+                        awaken_session_application_contract::RunResume::Permission(
+                            awaken_agent_contract::agent::awaiting::PermissionDecision::Allow {
+                                note: None,
+                            },
+                        ),
+                    )
+                    .await
+                    .map(|_| ())
+            }
+            .await
+        ),
+        "E6" => format!(
+            "{:?}",
+            async {
+                let access = authorize(app, &session_id).await?;
+                app.event_batches
+                    .append_owned_session_event_batch(
+                        &access,
+                        vec![
+                            awaken_session_event_contract::SessionEventInput::UserMessage {
+                                content: vec![
+                                    awaken_agent_contract::agent::content::ContentBlock::text(
+                                        "written by a foreign tenant",
+                                    ),
+                                ],
+                            },
+                        ],
+                        None,
+                        None,
+                        Some(("t06-append".into(), "t06-append-fingerprint".into())),
+                    )
+                    .await
+                    .map(|_| ())
+            }
+            .await
         ),
         "E3" => format!(
             "{:?}",
@@ -362,7 +403,7 @@ async fn check_ownership_matrix(
 ) -> Vec<(&'static str, Result<(), String>)> {
     let owned = SessionId::from(OWNED);
     let mut results = Vec::new();
-    for row in ["E1", "E2", "E3", "E4", "E5"] {
+    for row in ["E1", "E2", "E3", "E4", "E5", "E6"] {
         let root_before = fixture.durable.get(&owned).await.unwrap();
         let outbox_before =
             serde_json::to_value(fixture.durable.pending_lifecycle().await.unwrap()).unwrap();
@@ -388,16 +429,11 @@ async fn check_ownership_matrix(
         {
             violations.push("O0 foreign request changed the outbox".into());
         }
-        // E1 create-on-missing is the separately reproduced existence gap.
-        if row != "E1" {
-            let missing = invoke(row, &fixture.app, MISSING).await;
-            if foreign != missing {
-                violations.push(format!(
-                    "O1 foreign answer {foreign} differs from missing answer {missing}"
-                ));
-            }
-        } else if !foreign.contains("Session was not found") {
-            violations.push(format!("O1 E1 foreign answer leaks: {foreign}"));
+        let missing = invoke(row, &fixture.app, MISSING).await;
+        if foreign != missing {
+            violations.push(format!(
+                "O1 foreign answer {foreign} differs from missing answer {missing}"
+            ));
         }
         results.push((
             row,
@@ -415,19 +451,19 @@ async fn check_ownership_matrix(
 async fn foreign_owner_is_rejected_before_reads_or_effects_and_matches_missing() {
     let fixture = ownership_fixture(false).await;
     let results = check_ownership_matrix(&fixture).await;
-    assert_eq!(results.len(), 5, "every owner-scoped row executed");
+    assert_eq!(results.len(), 6, "every owner-scoped row executed");
     for (row, result) in &results {
         assert!(result.is_ok(), "{row}: {result:?}");
     }
-    // The missing-Session rows E2-E5 are the comparison baseline; they must
-    // not create a Session for the intruder.
+    // The missing-Session rows are the comparison baseline; none may create
+    // a Session for the intruder.
     assert!(
         fixture
             .durable
             .get(&SessionId::from(MISSING))
             .await
             .is_err(),
-        "no missing Session was created by E2-E5"
+        "no missing Session was created by any row"
     );
 }
 
@@ -453,7 +489,6 @@ async fn http_only_owner_validation_is_detected_by_the_matrix() {
 }
 
 #[tokio::test]
-#[ignore = "product gap: admit_session_run_for_owner creates a Session when the id is missing but rejects a foreign one, leaking existence (run_admission.rs create-on-missing)"]
 async fn foreign_run_admission_is_indistinguishable_from_missing() {
     // The projection resolves creation-time Environments so create-on-missing
     // completes; worker assignment/leases stay the shared recording fakes.
@@ -483,35 +518,56 @@ async fn foreign_run_admission_is_indistinguishable_from_missing() {
     );
 }
 
+/// Every Event append reachable outside this crate takes a `SessionAccess`,
+/// and only the one ownership verdict mints it: an intruder cannot obtain one
+/// for a foreign Session (the same answer as a missing Session), while the
+/// owner's own access appends.
 #[tokio::test]
-#[ignore = "product gap: append_session_event_batch_idempotent has no owner parameter, so an internal caller without owner proof mutates a foreign Session"]
-async fn owner_less_event_append_refuses_without_owner_proof() {
+async fn owner_scoped_event_append_refuses_a_foreign_owner_like_missing() {
     let fixture = ownership_fixture(false).await;
     let owned = SessionId::from(OWNED);
+    let queries = fixture.app.queries();
     let before = fixture.durable.get(&owned).await.unwrap();
-    // Nothing identifies the caller; correct behaviour is a refusal without
-    // a root mutation (an owner-scoped internal entrypoint).
-    let result = fixture
+    let foreign = crate::SessionRootReads::authorize(&*queries, INTRUDER, &owned).await;
+    let missing =
+        crate::SessionRootReads::authorize(&*queries, INTRUDER, &SessionId::from(MISSING)).await;
+    assert_eq!(foreign, Err(crate::SessionAccessError::NotFound), "foreign");
+    assert_eq!(foreign, missing, "foreign and missing are one answer");
+    assert_eq!(
+        fixture.durable.get(&owned).await.unwrap(),
+        before,
+        "the refusal reads no root and appends nothing"
+    );
+    let access = crate::SessionRootReads::authorize(&*queries, "workspace", &owned)
+        .await
+        .expect("the owner is authorized");
+    fixture
         .app
         .event_batches
-        .append_session_event_batch_idempotent(
-            &owned,
+        .append_owned_session_event_batch(
+            &access,
             vec![
                 awaken_session_event_contract::SessionEventInput::UserMessage {
                     content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
-                        "written by a foreign tenant",
+                        "written by the owner",
                     )],
                 },
             ],
             None,
             None,
-            Some(("t06-foreign-key".into(), "t06-foreign-fingerprint".into())),
+            Some(("t06-owner-key".into(), "t06-owner-fingerprint".into())),
         )
-        .await;
-    assert!(result.is_err(), "owner-less append must refuse: {result:?}");
+        .await
+        .expect("the owner's access appends");
     assert_eq!(
-        fixture.durable.get(&owned).await.unwrap(),
-        before,
-        "no foreign Event batch reaches the root"
+        fixture
+            .durable
+            .get(&owned)
+            .await
+            .unwrap()
+            .event_batches
+            .len(),
+        before.event_batches.len() + 1,
+        "exactly the owner's batch is retained"
     );
 }

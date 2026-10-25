@@ -517,11 +517,18 @@ impl DreamExecutor for BuiltInDreamAgent {
             Role::User,
             trigger,
         );
+        let access = awaken_session_application::SessionRootReads::authorize(
+            &*self.sessions.queries(),
+            &request.workspace_id,
+            &awaken_session_types::SessionId::from(&preparation.session_id),
+        )
+        .await
+        .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         let run = self
             .sessions
             .run_admissions()
             .run_admitted_session_for_owner(
-                &request.workspace_id,
+                &access,
                 AdmitSessionRun {
                     session_id: awaken_session_types::SessionId::from(&preparation.session_id),
                     agent_id: request.agent_id.clone(),
