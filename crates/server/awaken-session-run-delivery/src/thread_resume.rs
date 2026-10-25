@@ -8,8 +8,10 @@
 
 use awaken_agent_contract::agent::awaiting::{AwaitReason, AwaitTarget, ResumeTicket};
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_dispatch_contract::PendingInput;
+use awaken_dispatch_execution::AdmissionError;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_session_application_contract::RunResume;
 use awaken_session_types::RunError;
@@ -137,5 +139,98 @@ pub fn durable_resume_input(command: ResumeCommand) -> PendingInput {
         available_at_ms: None,
         context_messages: Vec::new(),
         result: command.result,
+    }
+}
+
+/// The resume input that delivers an approval decision to the awaiting Run.
+pub fn decision_input(
+    thread: ThreadId,
+    awaiting: Option<(RunId, ResumeTicket)>,
+    allow: bool,
+) -> Result<PendingInput, AdmissionError> {
+    let (run_id, ticket) = awaiting
+        .ok_or_else(|| AdmissionError::rejected("no awaiting run on this thread to deliver to"))?;
+    Ok(PendingInput {
+        message_id: awaken_agent_contract::fresh_process_id("xthread"),
+        run_id,
+        thread_id: thread,
+        correlation_id: ticket.correlation_id,
+        available_at_ms: None,
+        context_messages: Vec::new(),
+        result: if allow {
+            ResumeResult::allow()
+        } else {
+            ResumeResult::deny(None)
+        },
+    })
+}
+
+/// The resume input that continues a manually paused Run with text.
+pub fn manual_resume_input(
+    thread: ThreadId,
+    awaiting: Option<(RunId, ResumeTicket)>,
+    text: String,
+) -> Result<PendingInput, AdmissionError> {
+    let (run_id, ticket) = awaiting
+        .ok_or_else(|| AdmissionError::rejected("no awaiting run on this thread to resume"))?;
+    if ticket.reason() != AwaitReason::ManualPause {
+        return Err(AdmissionError::rejected(
+            "durable text resume requires a manual-pause ticket",
+        ));
+    }
+    Ok(PendingInput {
+        message_id: awaken_agent_contract::fresh_process_id("manual-resume"),
+        run_id,
+        thread_id: thread,
+        correlation_id: ticket.correlation_id,
+        available_at_ms: None,
+        context_messages: Vec::new(),
+        result: ResumeResult::Input(text),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ticket(pause: awaken_agent_contract::agent::awaiting::PauseReason) -> ResumeTicket {
+        ResumeTicket::new(
+            "correlation",
+            RunId("run".into()),
+            ThreadId("thread".into()),
+            "snapshot",
+            "fingerprint",
+            AwaitTarget::Pause(pause),
+        )
+    }
+
+    #[test]
+    fn resume_inputs_answer_only_their_awaiting_ticket() {
+        let thread = ThreadId("thread".into());
+        // Nothing awaits: both refuse.
+        assert!(decision_input(thread.clone(), None, true).is_err());
+        assert!(manual_resume_input(thread.clone(), None, "go".into()).is_err());
+        // A decision answers any awaiting ticket.
+        let paused = ticket(awaken_agent_contract::agent::awaiting::PauseReason::Manual);
+        let decision = decision_input(
+            thread.clone(),
+            Some((RunId("run".into()), paused.clone())),
+            true,
+        )
+        .expect("decision");
+        assert_eq!(decision.correlation_id, paused.correlation_id);
+        assert!(matches!(decision.result, ResumeResult::Permission(_)));
+        // A text resume answers only a manual pause.
+        let input = manual_resume_input(
+            thread.clone(),
+            Some((RunId("run".into()), paused)),
+            "go".into(),
+        )
+        .expect("manual");
+        assert!(matches!(input.result, ResumeResult::Input(ref text) if text == "go"));
+        let budget = ticket(awaken_agent_contract::agent::awaiting::PauseReason::BudgetReached);
+        assert!(
+            manual_resume_input(thread, Some((RunId("run".into()), budget)), "go".into()).is_err()
+        );
     }
 }

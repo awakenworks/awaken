@@ -13,6 +13,7 @@
 //! slash commands expand from, each against its digest; it stages, mounts and
 //! realizes nothing.
 
+mod durable_operations;
 mod inputs;
 mod outcomes;
 mod roles;
@@ -977,5 +978,53 @@ mod tests {
         let roles = delivery.session_execution_roles();
         assert!(roles.placement.colocated().is_none());
         assert!(roles.placement.require_colocated().is_err());
+    }
+
+    #[tokio::test]
+    async fn coordinator_durable_operations_follow_their_decision_table() {
+        use awaken_session_execution_contract::DurableRunOperations as _;
+        let delivery = delivery(Some(skill()));
+        install(&delivery, "session", Vec::new(), Vec::new());
+        delivery
+            .reserve_session_run(command("session", "hello"))
+            .await
+            .expect("reserve");
+        // O1: a live row's cancellation is its durable intent.
+        delivery.cancel("session", "session-run").await.expect("O1");
+        // O2: an unknown Run reaches no owner.
+        assert!(delivery.cancel("session", "unknown").await.is_err(), "O2");
+        // O3: the Coordinator owns no attempt.
+        assert!(delivery.pause("session", None).await.is_err(), "O3 pause");
+        assert!(
+            delivery.wake("session", "session-run").await.is_err(),
+            "O3 wake"
+        );
+        // O5: nothing awaits on the Thread.
+        assert!(
+            delivery.deliver("session", true).await.is_err(),
+            "O5 deliver"
+        );
+        assert!(
+            delivery.resume("session", "go on".into()).await.is_err(),
+            "O5 resume"
+        );
+        // O6: reconciliation is the Coordinator loop's.
+        assert!(delivery.reconcile("session").await.is_err(), "O6");
+        // Operational reads list the Thread's rows.
+        let rows = delivery.dispatches("session").await.expect("rows");
+        assert_eq!(rows.len(), 1, "one reserved row");
+        assert!(
+            delivery
+                .dead_letters("session")
+                .await
+                .expect("dead letters")
+                .is_empty()
+        );
+        assert!(
+            !delivery
+                .requeue_dead_letter("session", "session-run")
+                .await
+                .expect("requeue")
+        );
     }
 }

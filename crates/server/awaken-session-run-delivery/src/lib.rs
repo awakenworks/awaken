@@ -97,7 +97,9 @@ pub use thread_coordination::{
     ChildRunInputs, CoordinatedThreads, CoordinationAuthorities, ResidentAttempt, SessionLowering,
     check_pending, dispatch_admission_error, validate_awaiting_tool_authority,
 };
-pub use thread_resume::{durable_resume_input, resume_result, resume_wants_client};
+pub use thread_resume::{
+    decision_input, durable_resume_input, manual_resume_input, resume_result, resume_wants_client,
+};
 
 /// Poison `lock` the way production can: a holder panics while holding it.
 #[cfg(test)]

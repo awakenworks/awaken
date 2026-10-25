@@ -5,17 +5,11 @@
 //! select the controls that interrupt it, and author the resume inputs that
 //! durable delivery stages through the canonical dispatch control owner.
 use super::{SessionCtx, SessionExecutionError};
-use awaken_agent_contract::agent::{
-    awaiting::{AwaitReason, ResumeTicket},
-    run::Id as RunId,
-    thread::Id as ThreadId,
-};
-use awaken_dispatch_contract::PendingInput;
+use awaken_agent_contract::agent::{run::Id as RunId, thread::Id as ThreadId};
 use awaken_dispatch_execution::durable_control::DurableRunControl;
 use awaken_dispatch_execution::{AdmissionError, LiveRunControlError};
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::control::LiveCommand;
-use awaken_runtime_contract::resume::ResumeResult;
 use std::sync::Arc;
 
 /// Cancels one durable Run of this process's dispatch owner and signals the
@@ -178,53 +172,6 @@ impl SelectedAttemptInterruption {
     }
 }
 
-/// The resume input that delivers an approval decision to the awaiting Run.
-fn decision_input(
-    thread: ThreadId,
-    awaiting: Option<(RunId, ResumeTicket)>,
-    allow: bool,
-) -> Result<PendingInput, AdmissionError> {
-    let (run_id, ticket) = awaiting
-        .ok_or_else(|| AdmissionError::rejected("no awaiting run on this thread to deliver to"))?;
-    Ok(PendingInput {
-        message_id: awaken_runtime::fresh_process_id("xthread"),
-        run_id,
-        thread_id: thread,
-        correlation_id: ticket.correlation_id,
-        available_at_ms: None,
-        context_messages: Vec::new(),
-        result: if allow {
-            ResumeResult::allow()
-        } else {
-            ResumeResult::deny(None)
-        },
-    })
-}
-
-/// The resume input that continues a manually paused Run with text.
-fn manual_resume_input(
-    thread: ThreadId,
-    awaiting: Option<(RunId, ResumeTicket)>,
-    text: String,
-) -> Result<PendingInput, AdmissionError> {
-    let (run_id, ticket) = awaiting
-        .ok_or_else(|| AdmissionError::rejected("no awaiting run on this thread to resume"))?;
-    if ticket.reason() != AwaitReason::ManualPause {
-        return Err(AdmissionError::rejected(
-            "durable text resume requires a manual-pause ticket",
-        ));
-    }
-    Ok(PendingInput {
-        message_id: awaken_runtime::fresh_process_id("manual-resume"),
-        run_id,
-        thread_id: thread,
-        correlation_id: ticket.correlation_id,
-        available_at_ms: None,
-        context_messages: Vec::new(),
-        result: ResumeResult::Input(text),
-    })
-}
-
 impl crate::SessionRuns {
     /// Cancel every run currently backed by a process-local Session projection.
     ///
@@ -338,7 +285,7 @@ impl crate::SessionRuns {
             .open_wait_for_thread(&thread)
             .await
             .map_err(SessionExecutionError::internal)?;
-        let input = decision_input(thread, awaiting, allow)?;
+        let input = awaken_session_run_delivery::decision_input(thread, awaiting, allow)?;
         self.durable_run_control()?
             .stage_input(input)
             .await
@@ -358,7 +305,7 @@ impl crate::SessionRuns {
             .open_wait_for_thread(&thread)
             .await
             .map_err(SessionExecutionError::internal)?;
-        let input = manual_resume_input(thread, awaiting, text)?;
+        let input = awaken_session_run_delivery::manual_resume_input(thread, awaiting, text)?;
         self.durable_run_control()?
             .stage_input(input)
             .await
