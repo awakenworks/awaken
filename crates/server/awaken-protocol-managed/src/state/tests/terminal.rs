@@ -205,7 +205,6 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
     .expect("valid fixture Session application");
     let state = ManagedState::from_application(
         Arc::new(application),
-        environments,
         awaken_data_governance_contract::CapturePolicy::default(),
     );
     let created = state

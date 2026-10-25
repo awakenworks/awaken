@@ -453,7 +453,6 @@ mod tests {
         .expect("valid fixture Session application");
         let restarted = ManagedState::from_application(
             Arc::new(application),
-            environments,
             awaken_data_governance_contract::CapturePolicy::default(),
         );
 

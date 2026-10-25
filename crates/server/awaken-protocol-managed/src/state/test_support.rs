@@ -32,7 +32,6 @@ pub(crate) fn managed_state_from_parts(
             clock,
             compiler,
         ),
-        environments,
         awaken_data_governance_contract::CapturePolicy::default(),
     )
 }

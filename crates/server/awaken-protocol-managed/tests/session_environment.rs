@@ -497,12 +497,15 @@ async fn archived_environment_keeps_existing_session_bearer_http_scope() {
         Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     ));
     let guard = awaken_protocol_managed::ManagedWorkSessionAccess::new(
-        fixture.execution.clone(),
+        fixture.execution.session_access(),
         state.clone(),
     );
     let routes = awaken_protocol_managed::router(state)
         .merge(awaken_protocol_managed::environment_work_router(
-            fixture.execution.clone(),
+            fixture.execution.work_queries(),
+            fixture.execution.work_consumer(),
+            fixture.execution.work_metadata(),
+            fixture.execution.session_work_leases(),
             clock,
         ))
         .layer(axum::middleware::from_fn_with_state(

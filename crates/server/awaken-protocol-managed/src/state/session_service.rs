@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
+#[cfg(any(test, feature = "test-support"))]
 use awaken_environment_application::execution::EnvironmentExecutionApplication;
 use awaken_session_application::SessionApplication;
 #[cfg(any(test, feature = "test-support"))]
@@ -68,19 +69,18 @@ impl ManagedState {
     /// is the Host's (`ExecutorComponents::content_capture_policy`), so the Session
     /// `content_capture` projection decides exactly as its Runs do.
     ///
-    /// Fixture construction table: C1 a complete App and selected Environment
-    /// arrive -> the original constructor accepts them; C2 a later Repository
-    /// selector -> the old mutable entrypoint is absent, even with test-support.
+    /// Fixture construction table: C1 a complete App arrives -> the constructor
+    /// accepts it; C2 a later Repository selector -> the old mutable entrypoint
+    /// is absent, even with test-support.
     ///
     /// ```
     /// use std::sync::Arc;
     /// use awaken_protocol_managed::ManagedState;
     /// fn project(
     ///     app: Arc<awaken_session_application::SessionApplication>,
-    ///     env: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     ///     capture: awaken_data_governance_contract::CapturePolicy,
     /// ) -> ManagedState {
-    ///     ManagedState::from_application(app, env, capture)
+    ///     ManagedState::from_application(app, capture)
     /// }
     /// ```
     ///
@@ -91,16 +91,23 @@ impl ManagedState {
     ///     let _ = state.with_session_repo(store);
     /// }
     /// ```
+    ///
+    /// The protocol projection cannot serve as an application service locator.
+    /// Composition supplies Worker warmup reads directly to the Coordinator.
+    /// ```compile_fail,E0599
+    /// use awaken_protocol_managed::ManagedState;
+    /// fn cannot_locate_environment(state: &ManagedState) {
+    ///     let _ = state.environment_execution();
+    /// }
+    /// ```
     pub fn from_application(
         application: Arc<SessionApplication>,
-        environments: Arc<EnvironmentExecutionApplication>,
         capture_policy: awaken_data_governance_contract::CapturePolicy,
     ) -> Self {
         Self {
             roles: super::SessionApplicationRoles::of(&application),
             #[cfg(any(test, feature = "test-support"))]
             application,
-            environments,
             sessions: Mutex::new(HashMap::new()),
             owners: Mutex::new(HashMap::new()),
             session_seq: AtomicU64::new(0),
@@ -142,14 +149,6 @@ impl ManagedState {
         self.application.clone()
     }
 
-    /// Exact executable Environment application used by Session admission.
-    /// Coordinator composition reuses this Arc for the Worker warmup adapter so
-    /// test-support and production cannot observe different desired capacity.
-    #[must_use]
-    pub fn environment_execution(&self) -> Arc<EnvironmentExecutionApplication> {
-        self.environments.clone()
-    }
-
     /// Finish configuring the fixture application before it is shared. The
     /// roles are clones of the same `Arc`, so they are released first and
     /// narrowed again from the configured application.
@@ -158,7 +157,6 @@ impl ManagedState {
         let Self {
             roles,
             mut application,
-            environments,
             sessions,
             owners,
             session_seq,
@@ -176,7 +174,6 @@ impl ManagedState {
         Self {
             roles: super::SessionApplicationRoles::of(&application),
             application,
-            environments,
             sessions,
             owners,
             session_seq,
@@ -219,13 +216,9 @@ impl ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_environments(self, environments: Arc<EnvironmentExecutionApplication>) -> Self {
-        let this = self.configure_application(|application| {
-            application.replace_environment_source(environments.clone());
-        });
-        Self {
-            environments,
-            ..this
-        }
+        self.configure_application(|application| {
+            application.replace_environment_source(environments);
+        })
     }
 
     /// Inject the sole versioned Managed reference-price authority. Budgeted
