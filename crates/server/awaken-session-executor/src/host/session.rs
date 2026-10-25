@@ -20,8 +20,7 @@ mod run_ingress;
 use super::*;
 use crate::host::session_ctx::{RuntimeContextPurpose, runtime_context_cache_reuse_admitted};
 pub(super) use awaken_session_run_delivery::{
-    ManagedCoordinationRole, SessionToolsetProjection, project_managed_coordination_surface,
-    project_session_tool_override,
+    SessionToolsetProjection, project_session_tool_override,
 };
 pub(crate) use content_delivery::SkillDeliveryEvidence;
 

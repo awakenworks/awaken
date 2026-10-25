@@ -239,7 +239,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         run_assembly,
         coordination: Arc::new(crate::ChildRunCoordination::new(session_runs.clone())),
         outcomes: Arc::new(crate::Outcomes::new(session_runs.clone())),
-        budget: Arc::new(crate::BudgetAccounting::new(session_runs.clone())),
+        budget: Arc::new(session_budgets(&session_runs)),
         session_runs,
         resources,
         dispatch,
@@ -562,15 +562,19 @@ impl ExecutorComponents {
     ) -> awaken_session_execution_contract::SessionExecutionRoles {
         awaken_session_execution_contract::SessionExecutionRoles {
             core: self.session_runs.clone(),
-            realization: self.run_assembly.clone(),
-            realization_effects: self.realization_executor.clone(),
+            placement: awaken_session_execution_contract::SessionPlacementRoles::Colocated(
+                awaken_session_execution_contract::ColocatedRealizationRoles {
+                    realization: self.run_assembly.clone(),
+                    realization_effects: self.realization_executor.clone(),
+                    environment: self.run_assembly.clone(),
+                    terminal_cleanup: self.run_assembly.clone(),
+                },
+            ),
             coordination: self.coordination.clone(),
             coordination_reads: self.coordination.clone(),
             budget: self.budget.clone(),
             streaming_runs: self.session_runs.clone(),
-            environment: self.run_assembly.clone(),
             thread_reads: self.thread_reads.clone(),
-            terminal_cleanup: self.run_assembly.clone(),
             outcomes: self.outcomes.clone(),
             live_inbox: self.live_inboxes.clone(),
             capability: self.capabilities.clone(),
@@ -579,7 +583,7 @@ impl ExecutorComponents {
 
     /// Session usage and budget accounting of this process.
     #[must_use]
-    pub fn budget(&self) -> &Arc<crate::BudgetAccounting> {
+    pub fn budget(&self) -> &Arc<awaken_session_run_delivery::SessionBudgets> {
         &self.budget
     }
 
@@ -811,4 +815,13 @@ mod startup_tests {
             "R3 Worker authority cannot become local",
         );
     }
+}
+
+/// The budget accounting of the Sessions `runs` delivers.
+fn session_budgets(runs: &crate::SessionRuns) -> awaken_session_run_delivery::SessionBudgets {
+    awaken_session_run_delivery::SessionBudgets::new(
+        runs.threads.clone(),
+        runs.dispatch.clone(),
+        runs.thread_reads.clone(),
+    )
 }

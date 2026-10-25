@@ -335,19 +335,11 @@ impl SessionCtx {
         &self,
         ticket: &awaken_agent_contract::agent::awaiting::ResumeTicket,
     ) -> RunActivation {
-        let mut activation = RunActivation::new(
-            ticket.run_id.clone(),
+        awaken_session_run_delivery::resume_activation(
             self.thread_id.clone(),
             self.config.clone(),
-            Vec::new(),
-        );
-        activation.delegation_origin = ticket.delegation_origin.clone();
-        activation.data_subject_id = ticket
-            .data_subject_id
-            .clone()
-            .map(awaken_runtime_contract::DataSubjectId);
-        activation = activation.with_inherited_toolsets(ticket.inherited_toolsets.clone());
-        activation
+            ticket,
+        )
     }
 
     /// A run context for one attempt of `run`, carrying a fresh cancellation

@@ -136,7 +136,7 @@ pub struct SessionResourceReconciliation {
     resource_references: Arc<crate::SessionResourceReferences>,
     repository_participants: Arc<crate::SessionRepositoryParticipants>,
     terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
-    realization_effects: Arc<dyn awaken_session_execution_contract::RealizationEffects>,
+    placement: awaken_session_execution_contract::SessionPlacementRoles,
 }
 
 impl SessionResourceReconciliation {
@@ -156,7 +156,7 @@ impl SessionResourceReconciliation {
             resource_references,
             repository_participants,
             terminal_cleanups,
-            realization_effects: runtime.realization_effects.clone(),
+            placement: runtime.placement.clone(),
         }
     }
 
@@ -428,8 +428,6 @@ impl SessionResourceReconciliation {
         owner_scope: &str,
         mut session: SessionAggregate,
     ) -> Result<SessionAggregate, SessionPreparationError> {
-        let effects_runtime = self.realization_effects.as_ref();
-
         if !session.is_terminal() && session.requires_external_environment_owner() {
             return if session.resources.pending.is_none() {
                 self.retire_detached_generation(owner_scope, session).await
@@ -437,6 +435,10 @@ impl SessionResourceReconciliation {
                 Ok(session)
             };
         }
+        let effects_runtime = self
+            .placement
+            .realization_effects()
+            .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?;
         let session_id = session.session_id.clone();
         if ordinary_resource_reconciliation_allowed(
             session.is_terminal(),

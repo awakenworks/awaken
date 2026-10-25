@@ -9,6 +9,10 @@ mod executor;
 pub use executor::{SessionExecutionRoles, SessionExecutor};
 
 mod neutral;
+mod placement;
+pub use placement::{
+    ColocatedRealizationRoles, NO_COLOCATED_WORKER, SessionInputAdmission, SessionPlacementRoles,
+};
 mod projection_evidence;
 mod projection_source;
 mod roles;

@@ -590,8 +590,7 @@ pub struct SessionCreationCommands {
     execution_placement: crate::SessionExecutionPlacement,
     core: Arc<dyn awaken_session_execution_contract::SessionRuntime>,
     thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
-    environment: Arc<dyn awaken_session_execution_contract::EnvironmentRuntime>,
-    realization_effects: Arc<dyn awaken_session_execution_contract::RealizationEffects>,
+    placement: awaken_session_execution_contract::SessionPlacementRoles,
 }
 
 /// The collaborators one [`SessionCreationCommands`] is built from.
@@ -661,8 +660,7 @@ impl SessionCreationCommands {
             execution_placement,
             core: runtime.core.clone(),
             thread_reads: runtime.thread_reads.clone(),
-            environment: runtime.environment.clone(),
-            realization_effects: runtime.realization_effects.clone(),
+            placement: runtime.placement.clone(),
         }
     }
 

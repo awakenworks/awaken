@@ -427,7 +427,7 @@ impl SessionAssembly {
                 repository_participants: foundation.repository_participants.clone(),
                 resource_reconciliation: resource_reconciliation.clone(),
                 resource_registry: self.resource_registry.clone(),
-                realization_effects: self.runtime.realization_effects.clone(),
+                placement: self.runtime.placement.clone(),
             },
         ));
         let creation_commands = Arc::new(crate::SessionCreationCommands::new(
@@ -602,7 +602,7 @@ impl SessionAssembly {
                 credentials: foundation.credentials.clone(),
                 lifecycle: kernel.lifecycle.clone(),
                 resource_references: foundation.resource_references.clone(),
-                realization: self.runtime.realization.clone(),
+                placement: self.runtime.placement.clone(),
                 mcp: self.mcp.clone(),
                 executable_projections: foundation.executable_projections.clone(),
                 execution_admission: kernel.execution_admission.clone(),

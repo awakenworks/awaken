@@ -20,8 +20,6 @@ use awaken_session_types::RunError;
 
 use std::sync::Arc;
 
-use awaken_session_execution_contract::RealizationEffects;
-
 use super::{SessionMutationError, SessionRecoveryCandidates};
 
 fn expected_mcp_generations(
@@ -104,8 +102,7 @@ impl From<SessionEnvironmentTransitionError> for SessionContinuationError {
 /// component that reprojects a Resident Environment locally.
 pub struct SessionContinuations {
     mutations: Arc<crate::SessionMutations>,
-    environment: Arc<dyn EnvironmentRuntime>,
-    realization_effects: Arc<dyn RealizationEffects>,
+    placement: awaken_session_execution_contract::SessionPlacementRoles,
     realizations: Arc<crate::SessionRealizations>,
 }
 
@@ -117,8 +114,7 @@ impl SessionContinuations {
     ) -> Self {
         Self {
             mutations,
-            environment: runtime.environment.clone(),
-            realization_effects: runtime.realization_effects.clone(),
+            placement: runtime.placement.clone(),
             realizations,
         }
     }
@@ -181,12 +177,12 @@ impl SessionContinuations {
                 advanced: false,
             });
         };
-        let environment = self.environment.as_ref();
         let reason = match instruction {
             _ if decision.next() == session.environment.step() => {
+                let colocated = self.placement.require_colocated()?;
                 carry_out_effect(
-                    environment,
-                    self.realization_effects.as_ref(),
+                    colocated.environment.as_ref(),
+                    colocated.realization_effects.as_ref(),
                     &owner_scope,
                     &mut session,
                     instruction,

@@ -30,9 +30,9 @@ use super::child_attempt::{
     ChildExecutionAdapters, bind_direct_child_credentials, child_attempt_executor,
     configure_child_native_runtime,
 };
-use super::child_dispatch::child_dispatch_request;
 use super::{AgentRunBoundary, AgentRunError, AgentRunSandbox, settled_agent_boundary};
 use crate::config::{build_runtime_with_authorization, effective_tool_authorization};
+use awaken_session_run_delivery::child_dispatch_request;
 
 /// A child task must not outlive the parent future that owns its delegation
 /// boundary. Tokio's bare `JoinHandle` detaches on drop; this guard makes parent
@@ -346,7 +346,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
             activation.run_id = child_run_id.clone();
             activation.delegation_origin = Some(origin);
             activation = activation.with_inherited_toolsets(context.inherited_toolsets.clone());
-            Ok((Some(activation), None))
+            Ok::<_, AgentRunError>((Some(activation), None))
         }
         (None, Some(result)) => {
             let ticket = reader.resume_ticket(&child_run_id).ok_or_else(|| {

@@ -57,6 +57,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     let report_id = MessageId::agent_thread_report(&child_run);
     ephemeral
         .coordination
+        .threads()
         .continue_session_agent_report(
             awaken_session_execution_contract::SessionAgentReportContinuation {
                 session_id: session_id.into(),

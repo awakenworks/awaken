@@ -128,6 +128,42 @@ pub async fn load_pinned_skills<C: Sync>(
     Ok(versions)
 }
 
+/// Resolve an Agent's Skill selections to the exact versions a Session pins:
+/// a built-in Skill at its one version, a custom Skill through the Workspace's
+/// catalog.
+pub async fn resolve_skill_selections(
+    catalog: Option<&dyn crate::SkillCatalogApplication>,
+    workspace: &str,
+    selections: &[awaken_agent_contract::AgentSkillBinding],
+) -> Result<Vec<ResolvedSkillBinding>, SkillStoreError> {
+    awaken_agent_contract::validate_agent_skills(selections)
+        .map_err(|error| SkillStoreError::InvalidSelection { detail: error })?;
+    let mut bindings = Vec::with_capacity(selections.len());
+    for selection in selections {
+        bindings.push(match selection.kind {
+            AgentSkillKind::Anthropic => {
+                let version = anthropic_skill(&selection.skill_id)
+                    .ok_or_else(|| SkillStoreError::NotFound(selection.skill_id.clone()))?;
+                ResolvedSkillBinding {
+                    kind: selection.kind,
+                    skill_id: selection.skill_id.clone(),
+                    version: version.version,
+                    bundle_sha256: version.bundle_sha256,
+                }
+            }
+            AgentSkillKind::Custom => {
+                catalog
+                    .ok_or_else(|| SkillStoreError::AuthorityUnavailable {
+                        detail: "no Skill catalog application".into(),
+                    })?
+                    .resolve_custom(workspace, &selection.skill_id, &selection.version)
+                    .await?
+            }
+        });
+    }
+    Ok(bindings)
+}
+
 /// The shared closed classification of Skill repository failures.
 pub fn skill_store_run_error(error: SkillStoreError) -> RunError {
     let message = error.to_string();

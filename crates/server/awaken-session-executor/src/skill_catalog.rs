@@ -11,7 +11,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use awaken_agent_contract::{AgentSkillBinding, AgentSkillKind};
+use awaken_agent_contract::AgentSkillBinding;
 use awaken_ext_skills::SkillSpec;
 #[cfg(test)]
 use awaken_resource_contract::SkillDefinition;
@@ -19,7 +19,6 @@ use awaken_resource_contract::{SkillStoreError, SkillVersion};
 use awaken_session_configuration_contract::resource::ResolvedSkillBinding;
 
 use awaken_session_configuration_contract::SkillCatalogApplication;
-use awaken_session_configuration_contract::skill_delivery::anthropic_skill;
 
 /// Direct compatibility Skills plus the durable versioned catalog and its
 /// synchronous read cache. See the module docs for the coherence invariant.
@@ -169,34 +168,12 @@ impl SkillCatalog {
         workspace: &str,
         selections: &[AgentSkillBinding],
     ) -> Result<Vec<ResolvedSkillBinding>, SkillStoreError> {
-        awaken_agent_contract::validate_agent_skills(selections)
-            .map_err(|error| SkillStoreError::InvalidSelection { detail: error })?;
-        let mut bindings = Vec::with_capacity(selections.len());
-        for selection in selections {
-            let version = match selection.kind {
-                AgentSkillKind::Anthropic => anthropic_skill(&selection.skill_id)
-                    .ok_or_else(|| SkillStoreError::NotFound(selection.skill_id.clone()))?,
-                AgentSkillKind::Custom => {
-                    let binding = self
-                        .application
-                        .as_ref()
-                        .ok_or_else(|| SkillStoreError::AuthorityUnavailable {
-                            detail: "no Skill catalog application".into(),
-                        })?
-                        .resolve_custom(workspace, &selection.skill_id, &selection.version)
-                        .await?;
-                    bindings.push(binding);
-                    continue;
-                }
-            };
-            bindings.push(ResolvedSkillBinding {
-                kind: selection.kind,
-                skill_id: selection.skill_id.clone(),
-                version: version.version,
-                bundle_sha256: version.bundle_sha256,
-            });
-        }
-        Ok(bindings)
+        awaken_session_configuration_contract::skill_delivery::resolve_skill_selections(
+            self.application.as_deref(),
+            workspace,
+            selections,
+        )
+        .await
     }
 
     /// Refresh the in-memory delivered-catalog snapshot from the async store. Called

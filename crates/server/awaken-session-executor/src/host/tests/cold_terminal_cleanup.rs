@@ -1208,10 +1208,12 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         .await
         .expect("A1 idle child truth");
     host.coordination
+        .threads()
         .archive_session_thread(&parent.0, &idle)
         .await
         .expect("A1 archive");
     host.coordination
+        .threads()
         .archive_session_thread(&parent.0, &idle)
         .await
         .expect("A1 exact retry");
@@ -1239,12 +1241,13 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         .expect("A2 pending admission");
     let rejected = host
         .coordination
+        .threads()
         .archive_session_thread(&parent.0, &pending)
         .await
         .expect_err("A2 running work cannot archive");
     assert_eq!(
         rejected.kind,
-        SessionExecutionErrorKind::BadRequest,
+        awaken_session_types::RunErrorKind::BadRequest,
         "A2/E2"
     );
     assert_eq!(
@@ -1342,6 +1345,7 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         let awaiting = awaiting.clone();
         tokio::spawn(async move {
             host.coordination
+                .threads()
                 .archive_session_thread(&parent.0, &awaiting)
                 .await
         })
@@ -1418,6 +1422,7 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         let idle = idle.clone();
         tokio::spawn(async move {
             host.coordination
+                .threads()
                 .archive_session_thread(&parent.0, &idle)
                 .await
         })

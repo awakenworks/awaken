@@ -3,7 +3,7 @@
 // @formal reason: each admitted command over the installed frozen projection into durable dispatch rows and
 // @formal reason: never executes, stages or realizes anything itself. Classification, not a formal-proof
 // @formal reason: claim.
-//! [`SessionRunDelivery`]: the Coordinator's Session execution for the
+//! [`WorkerPlacedSessions`]: the Coordinator's Session execution for the
 //! Sessions its registered Workers execute.
 //!
 //! The Session application admits each command; this lowers it over the
@@ -13,27 +13,41 @@
 //! slash commands expand from, each against its digest; it stages, mounts and
 //! realizes nothing.
 
-use std::sync::Arc;
+mod inputs;
+mod roles;
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use awaken_agent_contract::agent::thread::Id as ThreadId;
 
 use awaken_dispatch_erasure::AnyCoordinatorDispatch;
-use awaken_dispatch_execution::session_dispatch::DispatchPreparation;
+use awaken_dispatch_execution::ProcessDispatch;
 use awaken_resource_contract::{LiveResourceBindingVerifier, RepositoryBindingVerifier};
+use awaken_session_application_contract::StepOutcome;
 use awaken_session_configuration_contract::SkillBundleSource;
 use awaken_session_configuration_contract::resource::binding_checks::verify_manifest_bindings;
 use awaken_session_configuration_contract::skill_delivery::{
     load_pinned_skills, skill_store_run_error,
 };
-use awaken_session_execution_contract::{AdmitSessionRun, SessionRunReservation};
+use awaken_session_execution_contract::{
+    AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunDelivery,
+    SessionRunReservation,
+};
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_types::RunError;
 
+use crate::session_run_activation::{activate_session_run_reservation, read_settled_phase};
 use crate::session_run_reservation::{
     SessionRunInputs, reserve_session_run, validate_session_run_command,
 };
 use crate::{
-    DispatchProjection, RUN_PUBLICATIONS, SessionProjections, managed_skill_registry,
-    session_activation_snapshot,
+    CommittedReads, CompletionRegistry, DeliveryLock, SessionProjections, StepCommitExpectation,
+    ThreadEventHub, activate_and_await_session_run, authoritative_step_snapshot,
+    managed_skill_registry, message_prefix_before_exact_inputs, project_committed_step,
+    session_activation_snapshot, settled_step,
 };
+use crate::{CoordinatedThreads, CoordinationAuthorities, SessionBudgets, SessionLowering};
 
 /// The live authorities a Session's frozen Resource bindings are verified
 /// against before a Run is admitted.
@@ -43,62 +57,86 @@ pub struct ResourceBindingVerifiers {
     pub repositories: Option<Arc<dyn RepositoryBindingVerifier<ResourceOperationFence>>>,
 }
 
-/// The Coordinator's Session execution over registered Workers. Consumers:
-/// the Session application, through its Worker-placement roles.
-pub struct SessionRunDelivery {
-    projections: Arc<SessionProjections>,
-    dispatch: Arc<AnyCoordinatorDispatch>,
-    skill_bundles: Option<Arc<dyn SkillBundleSource<ResourceOperationFence>>>,
-    resource_bindings: ResourceBindingVerifiers,
+/// Where [`WorkerPlacedSessions`] admits Runs, delivers them and observes them settle.
+pub struct WorkerPlacement {
+    /// The installed frozen projection of each Session.
+    pub projections: Arc<SessionProjections>,
+    /// The process's dispatch, publishing activated rows to claiming Workers.
+    pub dispatch: Arc<ProcessDispatch>,
+    /// The durable dispatch owner rows are reserved and activated in.
+    pub owner: Arc<AnyCoordinatorDispatch>,
+    /// The Sessions' committed truth.
+    pub reads: Arc<CommittedReads>,
+    /// The live observation point of every Thread.
+    pub hub: Arc<ThreadEventHub>,
+    /// The foreground completion relay Workers settle through.
+    pub completion: Arc<CompletionRegistry>,
+    /// The content-addressed store of pinned Skill bundles.
+    pub skill_bundles: Option<Arc<dyn SkillBundleSource<ResourceOperationFence>>>,
+    pub resource_bindings: ResourceBindingVerifiers,
+    /// The Workspaces' Skill catalog a Session's Skill selections pin from.
+    pub skill_catalog:
+        Option<Arc<dyn awaken_session_configuration_contract::SkillCatalogApplication>>,
+    /// The cross-node dispatch wake, a latency hint only.
+    pub wake: Option<Arc<dyn awaken_dispatch_contract::WakeSignal>>,
+    pub clock: Arc<dyn awaken_time::WallClock>,
+    /// The model a Thread selecting none runs on.
+    pub default_model: String,
 }
 
-impl SessionRunDelivery {
-    /// Delivery of the Sessions `projections` holds into `dispatch`, reading
-    /// pinned Skill bundles from `skill_bundles`.
+/// The Coordinator's Session execution for Worker-placed Sessions. Consumers:
+/// the Session application, through its Worker-placement roles.
+pub struct WorkerPlacedSessions {
+    ports: WorkerPlacement,
+    threads: Arc<CoordinatedThreads>,
+    budgets: SessionBudgets,
+    /// One step projection at a time per Session, so concurrent observers
+    /// publish each committed suffix once and in order.
+    step_projections: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl WorkerPlacedSessions {
     #[must_use]
-    pub fn new(
-        projections: Arc<SessionProjections>,
-        dispatch: Arc<AnyCoordinatorDispatch>,
-        skill_bundles: Option<Arc<dyn SkillBundleSource<ResourceOperationFence>>>,
-        resource_bindings: ResourceBindingVerifiers,
-    ) -> Self {
+    pub fn new(ports: WorkerPlacement) -> Self {
+        let threads = Arc::new(CoordinatedThreads::new(CoordinationAuthorities {
+            owner: Some(ports.owner.clone()),
+            dispatch: ports.dispatch.clone(),
+            reads: ports.reads.clone(),
+            lowering: ports.projections.clone(),
+            publications: ports.projections.publication_source(),
+            wake: ports.wake.clone(),
+            clock: ports.clock.clone(),
+        }));
+        let budgets =
+            SessionBudgets::new(threads.clone(), ports.dispatch.clone(), ports.reads.clone());
         Self {
-            projections,
-            dispatch,
-            skill_bundles,
-            resource_bindings,
+            ports,
+            threads,
+            budgets,
+            step_projections: Mutex::default(),
         }
     }
 
     /// The frozen projections Runs are admitted over.
     #[must_use]
     pub fn projections(&self) -> &Arc<SessionProjections> {
-        &self.projections
+        &self.ports.projections
     }
 
-    /// The installed projection of `session`; a Run of a Session whose
-    /// projection is not installed yet is refused as retryable.
-    fn installed(&self, session: &str) -> Result<Arc<DispatchProjection>, RunError> {
-        self.projections.projection(session)?.ok_or_else(|| {
-            RunError::unavailable_classified(
-                "session_projection_not_installed",
-                format!("Session {session} has no installed frozen projection on this Coordinator"),
-            )
-        })
+    /// The Agent coordination of the Sessions' Threads.
+    #[must_use]
+    pub fn threads(&self) -> &CoordinatedThreads {
+        &self.threads
     }
 
-    fn preparation(
-        &self,
-        activation: awaken_runtime_contract::RunActivation,
-    ) -> DispatchPreparation<'_> {
-        DispatchPreparation::new(
-            activation,
-            Box::new(self.projections.as_ref()),
-            self.projections.local_workspace(),
-            self.projections.publications(),
-            RUN_PUBLICATIONS,
-            false,
-        )
+    fn step_projection(&self, session: &str) -> Result<Arc<tokio::sync::Mutex<()>>, RunError> {
+        Ok(self
+            .step_projections
+            .lock()
+            .map_err(|_| DeliveryLock::StepProjections)?
+            .entry(session.to_owned())
+            .or_default()
+            .clone())
     }
 
     /// Reserve the Session application's admitted Run over the Session's
@@ -118,18 +156,21 @@ impl SessionRunDelivery {
         command: AdmitSessionRun,
     ) -> Result<SessionRunReservation, RunError> {
         validate_session_run_command(&command)?;
-        let projection = self.installed(command.session_id.as_str())?;
+        let projection = self
+            .ports
+            .projections
+            .installed(command.session_id.as_str())?;
         verify_manifest_bindings(
             projection.manifest(),
-            self.resource_bindings.memory.as_deref(),
-            self.resource_bindings.repositories.as_deref(),
+            self.ports.resource_bindings.memory.as_deref(),
+            self.ports.resource_bindings.repositories.as_deref(),
         )
         .await?;
         let publication = projection.publication().cloned().ok_or_else(|| {
             RunError::bad_request("a Worker-placed Session requires a pinned Agent publication")
         })?;
         let versions = load_pinned_skills(
-            self.skill_bundles.as_deref(),
+            self.ports.skill_bundles.as_deref(),
             projection.workspace(),
             projection.manifest().resources.skills(),
             |_| Ok(None),
@@ -146,13 +187,87 @@ impl SessionRunDelivery {
                 skills: skills.as_deref(),
                 model_ref_override: Some(projection.baseline().execution_model_ref.clone()),
             },
-            |activation| self.preparation(activation),
-            self.dispatch.as_ref(),
+            |activation| SessionLowering::prepare(self.ports.projections.as_ref(), activation),
+            self.ports.owner.as_ref(),
         )
         .await
     }
+
+    /// Publish the reservation the Session committed the activity of.
+    pub async fn activate_session_run(
+        &self,
+        delivery: SessionRunDelivery,
+    ) -> Result<SessionRunActivation, RunError> {
+        activate_session_run_reservation(&self.ports.owner, &self.ports.dispatch, delivery).await
+    }
+
+    /// Activate an admitted Run and observe it settle: the observer registers
+    /// before activation, so the Worker cannot settle the Run unobserved, and
+    /// the settled step is the committed suffix after the Run's exact inputs.
+    ///
+    /// Decision table (causes → effect):
+    /// | Rule | admission | committed truth | effect |
+    /// |---|---|---|---|
+    /// | O1 | reserved / replayed / activated | the Run settles | activated, then the committed step |
+    /// | O2 | recovery claimed | the Run settles | nothing activated; the committed step |
+    /// | O3 | completed | the Run already settled | nothing activated; the committed step, read at once |
+    /// | O4 | any | the step does not follow the inputs | refused; nothing is published |
+    pub async fn activate_and_observe_session_run(
+        &self,
+        admission: AdmittedSessionRun,
+        input_message_ids: Vec<String>,
+        sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+    ) -> Result<StepOutcome, RunError> {
+        let session = admission.session_id().to_string();
+        let run_id = admission.run_id().clone();
+        let thread = ThreadId(session.clone());
+        let commit = self.ports.reads.commit_for_read(&session).await?;
+        let state = activate_and_await_session_run(
+            &self.ports.completion,
+            &run_id,
+            sink,
+            SETTLED_RECONCILIATION_INTERVAL,
+            || async move {
+                match admission {
+                    AdmittedSessionRun::Reserved(delivery)
+                    | AdmittedSessionRun::AlreadyReserved(delivery)
+                    | AdmittedSessionRun::AlreadyActivated(delivery) => {
+                        self.activate_session_run(delivery).await
+                    }
+                    AdmittedSessionRun::RecoveryClaimed { .. } => {
+                        Ok(SessionRunActivation::RecoveryClaimed)
+                    }
+                    AdmittedSessionRun::Completed { .. } => Ok(SessionRunActivation::Completed),
+                }
+            },
+            || read_settled_phase(&commit, &thread, &run_id, None),
+        )
+        .await?;
+        let committed = authoritative_step_snapshot(&commit, &thread, &run_id).await?;
+        let messages_before = message_prefix_before_exact_inputs(&committed, &input_message_ids)?;
+        let step = self.step_projection(&session)?;
+        let _projection = step.lock().await;
+        settled_step(
+            project_committed_step(
+                &commit,
+                &self.ports.hub,
+                &thread,
+                run_id,
+                state,
+                StepCommitExpectation {
+                    messages_before,
+                    input_ids: &input_message_ids,
+                },
+                &session,
+            )
+            .await?,
+        )
+    }
 }
 
+/// How often an observer rereads committed truth when no Worker settlement
+/// reached this Coordinator (a peer Coordinator relayed it).
+const SETTLED_RECONCILIATION_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,21 +376,64 @@ mod tests {
         }
     }
 
-    fn delivery(stored: Option<SkillVersion>) -> SessionRunDelivery {
-        SessionRunDelivery::new(
-            Arc::new(SessionProjections::new("local", None)),
-            Arc::new(AnyCoordinatorDispatch::from_durable_store(
-                awaken_dispatch::MemoryDispatchStore::new(awaken_time::system_clock()),
+    /// Committed truth the reservation and activation rules never read.
+    struct NoCommits;
+
+    #[async_trait::async_trait]
+    impl crate::SessionCommitSource for NoCommits {
+        async fn open_for_read(
+            &self,
+            _session: &str,
+        ) -> Result<Arc<crate::SessionCommit>, RunError> {
+            Err(RunError::unavailable("no committed truth under test"))
+        }
+
+        async fn durable_thread_exists(&self, _thread: &str) -> Result<bool, RunError> {
+            Ok(false)
+        }
+    }
+
+    fn delivery(stored: Option<SkillVersion>) -> WorkerPlacedSessions {
+        let clock = awaken_time::system_clock();
+        let projections = Arc::new(SessionProjections::new("local", None));
+        let hub = Arc::new(ThreadEventHub::new());
+        let completion = Arc::new(CompletionRegistry::new(hub.clone()));
+        WorkerPlacedSessions::new(WorkerPlacement {
+            projections: projections.clone(),
+            dispatch: Arc::new(ProcessDispatch::new(
+                awaken_deployment_config::ExecutionTopology {
+                    ingress: awaken_deployment_config::RunIngress::Durable,
+                    local: awaken_deployment_config::LocalExecution::RemoteWorkersOnly,
+                    lease_owner: awaken_deployment_config::LeaseOwnerId::new("coordinator")
+                        .expect("lease owner"),
+                    lost_wake_recovery_bound: std::time::Duration::from_millis(5),
+                    queue_depth: awaken_deployment_config::QueueDepthSource::External,
+                },
+                clock.clone(),
+                completion.clone(),
+                awaken_dispatch_execution::wake::DispatchHint::new(Arc::new(
+                    awaken_dispatch_execution::LocalWakeSignal::new(),
+                )),
+            )),
+            owner: Arc::new(AnyCoordinatorDispatch::from_durable_store(
+                awaken_dispatch::MemoryDispatchStore::new(clock),
                 None,
             )),
-            stored.map(|version| {
+            reads: Arc::new(CommittedReads::new(Arc::new(NoCommits), projections)),
+            hub,
+            completion,
+            skill_bundles: stored.map(|version| {
                 Arc::new(Store(version)) as Arc<dyn SkillBundleSource<ResourceOperationFence>>
             }),
-            ResourceBindingVerifiers {
+            resource_bindings: ResourceBindingVerifiers {
                 memory: Some(Arc::new(Memory)),
                 repositories: None,
             },
-        )
+            skill_catalog: None,
+            wake: None,
+            clock: awaken_time::system_clock(),
+            default_model: "provider/default".into(),
+        })
     }
 
     fn command(session: &str, text: &str) -> AdmitSessionRun {
@@ -319,7 +477,7 @@ mod tests {
     }
 
     fn install(
-        delivery: &SessionRunDelivery,
+        delivery: &WorkerPlacedSessions,
         session: &str,
         inputs: Vec<ResolvedInput>,
         skills: Vec<ResolvedSkillBinding>,
@@ -333,11 +491,12 @@ mod tests {
     }
 
     async fn reserved(
-        delivery: &SessionRunDelivery,
+        delivery: &WorkerPlacedSessions,
         session: &str,
     ) -> Option<Box<awaken_dispatch_contract::RunDispatch>> {
         match delivery
-            .dispatch
+            .ports
+            .owner
             .observe_session_run_admission(&RunId(format!("{session}-run")))
             .await
             .expect("observe the reservation")
@@ -439,7 +598,215 @@ mod tests {
         );
     }
 
-    fn delivery_without_store() -> SessionRunDelivery {
+    fn delivery_without_store() -> WorkerPlacedSessions {
         delivery(None)
+    }
+
+    #[tokio::test]
+    async fn coordinator_activation_publishes_only_a_committed_reservation() {
+        // A1: a zero activity epoch is refused before the store is touched.
+        let delivery = delivery(Some(skill()));
+        install(&delivery, "session", Vec::new(), Vec::new());
+        assert_eq!(
+            delivery
+                .reserve_session_run(command("session", "hello"))
+                .await
+                .expect("reserve"),
+            SessionRunReservation::Reserved
+        );
+        let run_id = RunId("session-run".into());
+        let zero = delivery
+            .activate_session_run(SessionRunDelivery {
+                session_id: "session".into(),
+                run_id: run_id.clone(),
+                session_activity_epoch: 0,
+            })
+            .await
+            .expect_err("A1");
+        assert_eq!(zero.code, "invalid_request", "A1");
+
+        // A2: the committed activity activates the row once; a replay is the
+        // same activation.
+        let activate = || SessionRunDelivery {
+            session_id: "session".into(),
+            run_id: run_id.clone(),
+            session_activity_epoch: 3,
+        };
+        assert_eq!(
+            delivery.activate_session_run(activate()).await.expect("A2"),
+            SessionRunActivation::Activated,
+            "A2"
+        );
+        assert_eq!(
+            delivery
+                .activate_session_run(activate())
+                .await
+                .expect("A2 replay"),
+            SessionRunActivation::AlreadyActivated {
+                session_activity_epoch: 3
+            },
+            "A2 replay"
+        );
+
+        // A4: an unknown reservation is refused.
+        let unknown = delivery
+            .activate_session_run(SessionRunDelivery {
+                session_id: "session".into(),
+                run_id: RunId("unknown".into()),
+                session_activity_epoch: 3,
+            })
+            .await
+            .expect_err("A4");
+        assert_eq!(unknown.code, "invalid_request", "A4");
+    }
+
+    fn layout(
+        placement: awaken_session_types::SessionRuntimePlacement,
+        resources: Vec<awaken_resource_contract::InputBinding>,
+    ) -> awaken_session_configuration_contract::SessionSandboxLayout {
+        awaken_session_configuration_contract::SessionSandboxLayout {
+            workspace_id: "workspace".into(),
+            agent_id: "agent".into(),
+            agent_revision: None,
+            runtime_placement: placement,
+            model_override: None,
+            runtime: None,
+            mounts: Vec::new(),
+            env: Vec::new(),
+            environment: crate::test_support::environment(),
+            resources,
+        }
+    }
+
+    fn repository(mount_path: &str) -> awaken_resource_contract::InputBinding {
+        awaken_resource_contract::InputBinding {
+            binding_id: awaken_resource_contract::BindingId::from(mount_path),
+            target: awaken_resource_contract::InputResourceId::Repository(
+                awaken_resource_contract::RepositoryId::from("repo"),
+            ),
+            mount_path: mount_path.into(),
+            access: awaken_resource_contract::ResourceAccess::ReadOnly,
+            instructions: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn coordinator_input_admission_follows_its_decision_table() {
+        use awaken_session_execution_contract::SessionInputAdmission as _;
+        use awaken_session_types::SessionRuntimePlacement::{Local, Worker};
+        let delivery = delivery(None);
+
+        // V2: a local placement needs a co-located Worker.
+        let local = delivery
+            .validate_session_sandbox_layout("session", &layout(Local, Vec::new()))
+            .expect_err("V2");
+        assert_eq!(
+            local.message,
+            awaken_session_execution_contract::NO_COLOCATED_WORKER,
+            "V2"
+        );
+        // V3: a Repository nested in another Repository breaks a structural rule.
+        assert!(
+            delivery
+                .validate_session_sandbox_layout(
+                    "session",
+                    &layout(
+                        Worker,
+                        vec![
+                            repository("/workspace/repo"),
+                            repository("/workspace/repo/child")
+                        ],
+                    ),
+                )
+                .is_err(),
+            "V3"
+        );
+        // V4: a structurally valid Worker placement is admitted.
+        delivery
+            .validate_session_sandbox_layout(
+                "session",
+                &layout(Worker, vec![repository("/workspace/repo")]),
+            )
+            .expect("V4");
+
+        // Skills: an empty selection pins nothing; a custom one needs a catalog.
+        assert!(
+            delivery
+                .resolve_session_skills("workspace", &[])
+                .await
+                .expect("no Skill")
+                .is_empty()
+        );
+        assert!(
+            delivery
+                .resolve_session_skills(
+                    "workspace",
+                    &[awaken_agent_contract::AgentSkillBinding::custom("review")]
+                )
+                .await
+                .is_err(),
+            "no catalog"
+        );
+
+        // Tools: a replacement reaches the held projection.
+        install(&delivery, "session", Vec::new(), Vec::new());
+        let mut tools = awaken_session_configuration_contract::SessionToolConfiguration::default();
+        tools.toolsets.push(awaken_agent_contract::ToolsetPolicy {
+            source: awaken_agent_contract::ToolsetSource::Agent,
+            default: awaken_agent_contract::ToolExecutionPolicy::default(),
+            overrides: Vec::new(),
+        });
+        delivery
+            .replace_session_tools("session", tools.clone())
+            .await
+            .expect("replace tools");
+        assert_eq!(
+            delivery
+                .projections()
+                .installed("session")
+                .expect("held")
+                .tools(),
+            &tools
+        );
+    }
+
+    #[tokio::test]
+    async fn coordinator_capabilities_and_live_inbox_follow_their_decision_tables() {
+        use awaken_session_execution_contract::{CapabilityRuntime as _, LiveInboxRuntime as _};
+        let delivery = delivery(None);
+        // C2: a Thread with no projection advertises the Workspace default
+        // roster (no publication: none) and the built-in Hand tools.
+        let flat = delivery.capabilities_for("flat").expect("C2");
+        assert!(flat.delegates.is_empty(), "C2");
+        assert_eq!(
+            flat.builtin_tools.len(),
+            crate::builtin_hand_tools().len(),
+            "C2 Hand tools"
+        );
+        // C1: an installed Session advertises its own frozen roster.
+        install(&delivery, "session", Vec::new(), Vec::new());
+        let session = delivery.capabilities_for("session").expect("C1");
+        assert_eq!(
+            session.delegates,
+            delivery
+                .projections()
+                .installed("session")
+                .expect("held")
+                .baseline()
+                .delegate_ids,
+            "C1"
+        );
+        // The Coordinator owns no attempt: every live inbox is inactive.
+        assert!(
+            !delivery
+                .live_inbox_snapshot("session")
+                .await
+                .expect("snapshot")
+                .active
+        );
+        assert!(matches!(
+            delivery.live_inbox_queue("session", Vec::new()).await,
+            Err(awaken_session_execution_contract::LiveInboxError::Inactive)
+        ));
     }
 }

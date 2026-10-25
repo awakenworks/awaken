@@ -29,6 +29,10 @@ awaken-session-configuration-contract.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-runtime-contract.workspace = true
+awaken-observability.workspace = true
+awaken-tenancy.workspace = true
+awaken-time.workspace = true
+awaken-session-state-contract.workspace = true
 awaken-ext-goal.workspace = true
 awaken-ext-builtin-tools.workspace = true
 awaken-ext-compact.workspace = true
@@ -44,10 +48,10 @@ tokio = { workspace = true, features = ["sync", "time", "macros"] }
 tracing = "0.1"
 
 [dev-dependencies]
+awaken-deployment-config.workspace = true
 awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-environment-contract.workspace = true
 awaken-store-inmem.workspace = true
-awaken-time.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
 
 [lints]

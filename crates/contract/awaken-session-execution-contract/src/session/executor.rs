@@ -10,10 +10,10 @@
 //! own one role; the binding owns no execution state or durable truth.
 
 use crate::{
-    BudgetRuntime, CapabilityRuntime, CommittedSessionProjection, CompleteSessionRuntime,
-    CoordinationRuntime, EnvironmentRuntime, LiveInboxRuntime, OutcomeRuntime, RealizationEffects,
-    RealizationRuntime, SessionCoordinationReads, SessionProjectionSource, SessionRuntime,
-    StreamingRunRuntime, TerminalCleanupRuntime, ThreadReadRuntime,
+    BudgetRuntime, CapabilityRuntime, ColocatedRealizationRoles, CommittedSessionProjection,
+    CompleteSessionRuntime, CoordinationRuntime, LiveInboxRuntime, OutcomeRuntime,
+    SessionCoordinationReads, SessionPlacementRoles, SessionProjectionSource, SessionRuntime,
+    StreamingRunRuntime, ThreadReadRuntime,
 };
 use std::sync::Arc;
 
@@ -37,9 +37,9 @@ use std::sync::Arc;
 ///
 /// ```compile_fail,E0594
 /// use std::sync::Arc;
-/// use awaken_session_execution_contract::{EnvironmentRuntime, SessionExecutor};
-/// fn cannot_replace(executor: &mut SessionExecutor, other: Arc<dyn EnvironmentRuntime>) {
-///     executor.environment = other;
+/// use awaken_session_execution_contract::{BudgetRuntime, SessionExecutor};
+/// fn cannot_replace(executor: &mut SessionExecutor, other: Arc<dyn BudgetRuntime>) {
+///     executor.budget = other;
 /// }
 /// ```
 #[derive(Clone)]
@@ -53,15 +53,14 @@ pub struct SessionExecutor {
 #[derive(Clone)]
 pub struct SessionExecutionRoles {
     pub core: Arc<dyn SessionRuntime>,
-    pub realization: Arc<dyn RealizationRuntime>,
-    pub realization_effects: Arc<dyn RealizationEffects>,
+    /// Where the Sessions are realized: a co-located Worker's realization
+    /// roles, or the frozen-input admission of Worker-placed Sessions.
+    pub placement: SessionPlacementRoles,
     pub coordination: Arc<dyn CoordinationRuntime>,
     pub coordination_reads: Arc<dyn SessionCoordinationReads>,
     pub budget: Arc<dyn BudgetRuntime>,
     pub streaming_runs: Arc<dyn StreamingRunRuntime>,
-    pub environment: Arc<dyn EnvironmentRuntime>,
     pub thread_reads: Arc<dyn ThreadReadRuntime>,
-    pub terminal_cleanup: Arc<dyn TerminalCleanupRuntime>,
     pub outcomes: Arc<dyn OutcomeRuntime>,
     pub live_inbox: Arc<dyn LiveInboxRuntime>,
     pub capability: Arc<dyn CapabilityRuntime>,
@@ -90,14 +89,9 @@ impl SessionExecutor {
         self.core.as_ref()
     }
 
-    /// The required `RealizationRuntime` selected at construction.
-    pub fn realization(&self) -> &dyn RealizationRuntime {
-        self.realization.as_ref()
-    }
-
-    /// The required `RealizationEffects` selected at construction.
-    pub fn realization_effects(&self) -> &dyn RealizationEffects {
-        self.realization_effects.as_ref()
+    /// Where this process's Sessions are realized.
+    pub fn placement(&self) -> &SessionPlacementRoles {
+        &self.placement
     }
 
     /// The required `CoordinationRuntime` selected at construction.
@@ -120,19 +114,9 @@ impl SessionExecutor {
         self.streaming_runs.as_ref()
     }
 
-    /// The required `EnvironmentRuntime` selected at construction.
-    pub fn environment(&self) -> &dyn EnvironmentRuntime {
-        self.environment.as_ref()
-    }
-
     /// The required `ThreadReadRuntime` selected at construction.
     pub fn thread_reads(&self) -> &dyn ThreadReadRuntime {
         self.thread_reads.as_ref()
-    }
-
-    /// The required `TerminalCleanupRuntime` selected at construction.
-    pub fn terminal_cleanup(&self) -> &dyn TerminalCleanupRuntime {
-        self.terminal_cleanup.as_ref()
     }
 
     /// The required `OutcomeRuntime` selected at construction.
@@ -175,15 +159,17 @@ impl From<Arc<dyn CompleteSessionRuntime>> for SessionExecutor {
     fn from(runtime: Arc<dyn CompleteSessionRuntime>) -> Self {
         Self::from(SessionExecutionRoles {
             core: runtime.clone(),
-            realization: runtime.clone(),
-            realization_effects: runtime.clone(),
+            placement: SessionPlacementRoles::Colocated(ColocatedRealizationRoles {
+                realization: runtime.clone(),
+                realization_effects: runtime.clone(),
+                environment: runtime.clone(),
+                terminal_cleanup: runtime.clone(),
+            }),
             coordination: runtime.clone(),
             coordination_reads: runtime.clone(),
             budget: runtime.clone(),
             streaming_runs: runtime.clone(),
-            environment: runtime.clone(),
             thread_reads: runtime.clone(),
-            terminal_cleanup: runtime.clone(),
             outcomes: runtime.clone(),
             live_inbox: runtime.clone(),
             capability: runtime.clone(),
@@ -204,16 +190,21 @@ mod tests {
         let owner = Arc::as_ptr(&runtime).cast::<()>();
         let selected = SessionExecutor::from(runtime);
         for executor in [&selected, &selected.clone()] {
+            let colocated = executor
+                .placement
+                .colocated()
+                .expect("a complete runtime realizes its Sessions");
             for role in [
                 Arc::as_ptr(&executor.core).cast::<()>(),
-                Arc::as_ptr(&executor.realization).cast::<()>(),
+                Arc::as_ptr(&colocated.realization).cast::<()>(),
+                Arc::as_ptr(&colocated.realization_effects).cast::<()>(),
                 Arc::as_ptr(&executor.coordination).cast::<()>(),
                 Arc::as_ptr(&executor.coordination_reads).cast::<()>(),
                 Arc::as_ptr(&executor.budget).cast::<()>(),
                 Arc::as_ptr(&executor.streaming_runs).cast::<()>(),
-                Arc::as_ptr(&executor.environment).cast::<()>(),
+                Arc::as_ptr(&colocated.environment).cast::<()>(),
                 Arc::as_ptr(&executor.thread_reads).cast::<()>(),
-                Arc::as_ptr(&executor.terminal_cleanup).cast::<()>(),
+                Arc::as_ptr(&colocated.terminal_cleanup).cast::<()>(),
                 Arc::as_ptr(&executor.outcomes).cast::<()>(),
                 Arc::as_ptr(&executor.live_inbox).cast::<()>(),
                 Arc::as_ptr(&executor.capability).cast::<()>(),
@@ -294,15 +285,17 @@ mod tests {
         let neutral = Arc::new(crate::NeutralRuntime);
         let selected = SessionExecutor::from(SessionExecutionRoles {
             core: neutral.clone(),
-            realization: neutral.clone(),
-            realization_effects: neutral.clone(),
+            placement: SessionPlacementRoles::Colocated(ColocatedRealizationRoles {
+                realization: neutral.clone(),
+                realization_effects: neutral.clone(),
+                environment: neutral.clone(),
+                terminal_cleanup: neutral.clone(),
+            }),
             coordination: neutral.clone(),
             coordination_reads: neutral.clone(),
             budget: neutral.clone(),
             streaming_runs: neutral.clone(),
-            environment: neutral.clone(),
             thread_reads: Arc::new(NamedThreadReads),
-            terminal_cleanup: neutral.clone(),
             outcomes: neutral.clone(),
             live_inbox: neutral.clone(),
             capability: neutral,

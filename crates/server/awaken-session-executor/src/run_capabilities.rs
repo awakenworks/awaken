@@ -191,7 +191,7 @@ impl RunCapabilities {
     /// each hand-tool id and whether its calls require confirmation. Folded into the
     /// public `agent_toolset` by the adapter. Deterministic from host config.
     pub fn builtin_tools(&self) -> Vec<(String, bool)> {
-        crate::config::builtin_hand_tools()
+        awaken_session_run_delivery::builtin_hand_tools()
     }
 
     /// The client-executed (custom) tools advertised on a managed session: their

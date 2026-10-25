@@ -354,7 +354,7 @@ pub struct SessionUpdateCommands {
     activities: Arc<crate::SessionActivities>,
     executable_projections: crate::ExecutableProjections,
     tool_configuration_compiler: Arc<dyn awaken_tool_contract::ToolConfigurationCompiler>,
-    environment: Arc<dyn awaken_session_execution_contract::EnvironmentRuntime>,
+    placement: awaken_session_execution_contract::SessionPlacementRoles,
     budget: Arc<dyn awaken_session_execution_contract::BudgetRuntime>,
     projection: Arc<dyn awaken_session_execution_contract::SessionProjectionSource>,
 }
@@ -395,7 +395,7 @@ impl SessionUpdateCommands {
             activities,
             executable_projections,
             tool_configuration_compiler,
-            environment: runtime.environment.clone(),
+            placement: runtime.placement.clone(),
             budget: runtime.budget.clone(),
             projection: runtime.projection_handle(),
         }
@@ -628,8 +628,6 @@ impl SessionUpdateCommands {
         mcp_in_request: bool,
         budget_in_request: bool,
     ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
-        let environment_runtime = self.environment.as_ref();
-
         if mcp_in_request
             && mcp_projection_requires_realization(
                 &outcome.session,
@@ -653,7 +651,8 @@ impl SessionUpdateCommands {
         }
         if tools_in_request
             && (outcome.changes.tools() || !outcome.command_applied)
-            && let Err(source) = environment_runtime
+            && let Err(source) = self
+                .placement
                 .replace_session_tools(
                     outcome.session.session_id.as_str(),
                     outcome.session.tools.clone(),
