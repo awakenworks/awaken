@@ -39,6 +39,7 @@ mod settled_step;
 #[cfg(test)]
 mod test_support;
 mod thread_coordination;
+mod thread_resume;
 
 pub use authority_commits::{AuthorityCommits, runtime_authority_error};
 pub use child_dispatch::{ChildDispatchRefusal, child_dispatch_request};
@@ -96,6 +97,7 @@ pub use thread_coordination::{
     ChildRunInputs, CoordinatedThreads, CoordinationAuthorities, ResidentAttempt, SessionLowering,
     check_pending, dispatch_admission_error, validate_awaiting_tool_authority,
 };
+pub use thread_resume::{durable_resume_input, resume_result, resume_wants_client};
 
 /// Poison `lock` the way production can: a holder panics while holding it.
 #[cfg(test)]

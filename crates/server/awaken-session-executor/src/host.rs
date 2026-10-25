@@ -14,7 +14,9 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::AtomicU64;
 
-use awaken_agent_contract::agent::awaiting::{AwaitReason, AwaitTarget, PermissionDecision};
+#[cfg(test)]
+use awaken_agent_contract::agent::awaiting::AwaitTarget;
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 #[cfg(test)]
 use awaken_agent_contract::agent::awaiting::{ResumeTicket, ToolCallAuthority};
 #[cfg(test)]
@@ -35,9 +37,9 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 #[cfg(test)]
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_dispatch_contract::CompletionSink;
+use awaken_dispatch_contract::Inbox;
 #[cfg(test)]
 use awaken_dispatch_contract::RunDispatch;
-use awaken_dispatch_contract::{Inbox, PendingInput};
 use awaken_dispatch_erasure::AnyDispatchStore;
 #[cfg(test)]
 use awaken_dispatch_execution::WorkerResolver;
@@ -47,12 +49,13 @@ use awaken_resource_contract::{FileCatalog, FileStore};
 use awaken_runtime::{DirectAttemptDriver, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
+use awaken_runtime_contract::resume::ResumeCommand;
+#[cfg(test)]
+use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 #[cfg(test)]
 use awaken_session_application_contract::Pending;
-use awaken_tool_contract::tool::ToolOutput;
 
 use awaken_ext_compact::CompactConfig;
 

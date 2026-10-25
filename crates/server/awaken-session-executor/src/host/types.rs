@@ -24,9 +24,15 @@ pub enum HostResume {
     },
 }
 
-impl HostResume {
-    pub(crate) fn wants_client(&self) -> bool {
-        matches!(self, HostResume::ClientResult { .. })
+/// A Host resume is the protocol-neutral Run resume it names.
+impl From<HostResume> for awaken_session_application_contract::RunResume {
+    fn from(resume: HostResume) -> Self {
+        match resume {
+            HostResume::Permission(decision) => Self::Permission(decision),
+            HostResume::ClientResult { content, is_error } => {
+                Self::ClientResult { content, is_error }
+            }
+        }
     }
 }
 

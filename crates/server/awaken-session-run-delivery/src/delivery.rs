@@ -15,6 +15,7 @@
 
 mod inputs;
 mod roles;
+mod thread_runs;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -376,20 +377,36 @@ mod tests {
         }
     }
 
-    /// Committed truth the reservation and activation rules never read.
-    struct NoCommits;
+    /// Every Thread's committed truth, in memory.
+    #[derive(Default)]
+    struct MemoryCommits(
+        std::sync::Mutex<HashMap<String, Arc<dyn awaken_dispatch_erasure::LocalCommit>>>,
+    );
 
     #[async_trait::async_trait]
-    impl crate::SessionCommitSource for NoCommits {
+    impl crate::SessionCommitSource for MemoryCommits {
         async fn open_for_read(
             &self,
-            _session: &str,
+            session: &str,
         ) -> Result<Arc<crate::SessionCommit>, RunError> {
-            Err(RunError::unavailable("no committed truth under test"))
+            let commit = self
+                .0
+                .lock()
+                .expect("commit map")
+                .entry(session.to_owned())
+                .or_insert_with(|| {
+                    Arc::new(awaken_dispatch_erasure::LocalCommitAdapter::projected(
+                        awaken_store_inmem::MemoryCommitCoordinator::new(
+                            awaken_time::system_clock(),
+                        ),
+                    ))
+                })
+                .clone();
+            Ok(Arc::new(crate::SessionCommit::Local(commit)))
         }
 
-        async fn durable_thread_exists(&self, _thread: &str) -> Result<bool, RunError> {
-            Ok(false)
+        async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RunError> {
+            Ok(self.0.lock().expect("commit map").contains_key(thread))
         }
     }
 
@@ -419,7 +436,10 @@ mod tests {
                 awaken_dispatch::MemoryDispatchStore::new(clock),
                 None,
             )),
-            reads: Arc::new(CommittedReads::new(Arc::new(NoCommits), projections)),
+            reads: Arc::new(CommittedReads::new(
+                Arc::new(MemoryCommits::default()),
+                projections,
+            )),
             hub,
             completion,
             skill_bundles: stored.map(|version| {
@@ -808,5 +828,62 @@ mod tests {
             delivery.live_inbox_queue("session", Vec::new()).await,
             Err(awaken_session_execution_contract::LiveInboxError::Inactive)
         ));
+    }
+
+    #[tokio::test]
+    async fn coordinator_thread_runs_follow_their_decision_table() {
+        let delivery = delivery(None);
+        // T1: a Managed Session root admits its own Runs.
+        install(&delivery, "session", Vec::new(), Vec::new());
+        let root = delivery
+            .run_thread(super::thread_runs::ThreadRun {
+                agent: None,
+                thread: "session",
+                input: Vec::new(),
+                sink: None,
+                data_subject_id: None,
+            })
+            .await
+            .expect_err("T1");
+        assert_eq!(
+            root.message, "Managed Session roots must use Session-owned Run ingress",
+            "T1"
+        );
+        // T3: an Agent with no publication does not run on a Coordinator.
+        let unpublished = delivery
+            .run_thread(super::thread_runs::ThreadRun {
+                agent: Some("ghost"),
+                thread: "flat",
+                input: Vec::new(),
+                sink: None,
+                data_subject_id: None,
+            })
+            .await
+            .expect_err("T3");
+        assert!(
+            unpublished.message.contains("has no publication"),
+            "T3: {}",
+            unpublished.message
+        );
+        // A Thread with nothing awaiting has nothing to resume, and an idle
+        // Thread has nothing to interrupt.
+        let resume = delivery
+            .resume_thread(
+                "flat",
+                "call",
+                awaken_session_application_contract::RunResume::Permission(
+                    awaken_agent_contract::agent::awaiting::PermissionDecision::Allow {
+                        note: None,
+                    },
+                ),
+                None,
+            )
+            .await
+            .expect_err("no awaiting Run");
+        assert_eq!(resume.message, "no awaiting run to resume");
+        delivery
+            .interrupt_thread("flat")
+            .await
+            .expect("idle interrupt");
     }
 }

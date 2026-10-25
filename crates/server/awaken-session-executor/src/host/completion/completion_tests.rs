@@ -1,6 +1,5 @@
 use super::{
-    HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, RunId, durable_resume_input,
-    remote_worker_placement,
+    HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, RunId, remote_worker_placement,
 };
 use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -8,6 +7,7 @@ use awaken_dispatch_contract::CompletionSink;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedModelCandidate};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId;
+use awaken_session_run_delivery::durable_resume_input;
 use std::sync::Arc;
 
 use crate::NoModelConfiguredExecutor;
