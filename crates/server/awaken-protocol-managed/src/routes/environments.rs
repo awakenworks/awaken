@@ -49,17 +49,39 @@ pub fn environment_authoring_router(state: Arc<EnvironmentApplication>) -> Route
         .with_state(state)
 }
 
-/// Mount Coordinator-owned work coordination routes.
-/// `clock` is the Coordinator's wall clock.
+/// Mount Coordinator-owned work coordination routes over their required roles.
+/// `clock` is the Coordinator's wall clock. Composition selects every role from
+/// the same Work authority; the protocol neither selects nor retains an App.
+///
+/// ```
+/// use std::sync::Arc;
+/// use awaken_environment_application::execution::{
+///     WorkQueries, WorkConsumer, WorkMetadataPatch, SessionWorkLeaseControl,
+/// };
+/// fn mount(
+///     queries: WorkQueries,
+///     consumer: WorkConsumer,
+///     metadata: WorkMetadataPatch,
+///     session_leases: SessionWorkLeaseControl,
+///     clock: Arc<dyn awaken_time::WallClock>,
+/// ) -> axum::Router {
+///     awaken_protocol_managed::environment_work_router(
+///         queries, consumer, metadata, session_leases, clock,
+///     )
+/// }
+/// ```
 pub fn environment_work_router(
-    environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
+    queries: awaken_environment_application::execution::WorkQueries,
+    consumer: awaken_environment_application::execution::WorkConsumer,
+    metadata: awaken_environment_application::execution::WorkMetadataPatch,
+    session_leases: awaken_environment_application::execution::SessionWorkLeaseControl,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Router {
     let state = Arc::new(work_routes::WorkRoutes {
-        queries: environments.work_queries(),
-        consumer: environments.work_consumer(),
-        metadata: environments.work_metadata(),
-        session_leases: environments.session_work_leases(),
+        queries,
+        consumer,
+        metadata,
+        session_leases,
         clock,
     });
     Router::new()

@@ -29,11 +29,14 @@ async fn scenario_worker_warmup_matches_private_transport_topology_and_identity_
     // selects only its stated effect and preserves the authority constraint.
     // Static cause/effect graph: C1 the Host has no local dispatch pool, C2 the
     // common Coordinator mount owns dispatch/resource/commit/warmup, C3 the
-    // Environment projection is the exact Arc retained by ManagedState. Effects:
+    // Environment source is passed directly from Scenario composition. Effects:
     // E1 Scenario exposes the one production Worker transport, E2 no second
     // warmup handler/catalog/queue is assembled. Production's component consumes
     // that returned transport once; a second merge of the same Axum route would
     // fail component construction and is covered by the split-role topology test.
+    // This case checks default empty demand and HTTP identity isolation. Exact
+    // Arc selection and source/refresh failure propagation are separately tested
+    // in executable_projection_refresh_tests.
     //
     // Dynamic causes: C4 exact registered Worker identity, C5 unknown identity,
     // C6 a foreign authenticated Worker presents another Worker's identity, C7

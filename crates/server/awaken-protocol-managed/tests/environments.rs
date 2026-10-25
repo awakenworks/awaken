@@ -19,7 +19,10 @@ fn app() -> Router {
         ..
     } = awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock());
     environment_authoring_router(authoring).merge(environment_work_router(
-        execution,
+        execution.work_queries(),
+        execution.work_consumer(),
+        execution.work_metadata(),
+        execution.session_work_leases(),
         awaken_time::system_clock(),
     ))
 }
@@ -856,7 +859,10 @@ async fn snapshot_normalizes_the_networking_policy() {
         ..
     } = awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock());
     let app = environment_authoring_router(authoring).merge(environment_work_router(
-        execution.clone(),
+        execution.work_queries(),
+        execution.work_consumer(),
+        execution.work_metadata(),
+        execution.session_work_leases(),
         awaken_time::system_clock(),
     ));
     async fn make(app: &Router, cfg: Value) -> String {
@@ -943,7 +949,10 @@ async fn environment_application_replay_converges_one_environment_and_healthchec
         ..
     } = awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock());
     let app = environment_authoring_router(authoring.clone()).merge(environment_work_router(
-        execution,
+        execution.work_queries(),
+        execution.work_consumer(),
+        execution.work_metadata(),
+        execution.session_work_leases(),
         awaken_time::system_clock(),
     ));
     let mut http_id = None;

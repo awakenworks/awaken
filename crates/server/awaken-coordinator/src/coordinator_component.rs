@@ -371,6 +371,7 @@ pub async fn build_coordinator_component(
                 #[cfg(feature = "test-support")]
                 dream_executor_decorator: None,
                 session_application: session_application.clone(),
+                environment_warmups: environments.clone(),
                 resource_registry,
                 model_inventory: Some(model_inventory),
                 dream_process_store,
@@ -411,8 +412,10 @@ pub async fn build_coordinator_component(
         Some(observation) => private_router.merge(observation),
         None => private_router,
     };
-    let work_session_access =
-        awaken_protocol_managed::ManagedWorkSessionAccess::new(environments.clone(), managed_state);
+    let work_session_access = awaken_protocol_managed::ManagedWorkSessionAccess::new(
+        environments.session_access(),
+        managed_state,
+    );
     let management_router = management_router(
         &deployment_application,
         environments,
@@ -459,7 +462,13 @@ fn management_router(
 ) -> Router {
     let managed = awaken_protocol_managed::with_managed_response_context(
         awaken_protocol_managed::deployments_router(deployments.clone()).merge(
-            awaken_protocol_managed::environment_work_router(environments, clock.clone()),
+            awaken_protocol_managed::environment_work_router(
+                environments.work_queries(),
+                environments.work_consumer(),
+                environments.work_metadata(),
+                environments.session_work_leases(),
+                clock.clone(),
+            ),
         ),
     );
     crate::with_local_workspace_scope(

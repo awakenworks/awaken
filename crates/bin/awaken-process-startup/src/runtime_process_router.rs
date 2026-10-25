@@ -748,7 +748,6 @@ fn assemble_session_plane(
     // ceiling and the very policy sources its Run boundary reads.
     let mut managed_state = ManagedState::from_application(
         session_application.clone(),
-        execution.environment_execution.clone(),
         host.host.content_capture_policy(),
     );
     if let Some(policy) = base.process.managed_services.inference_geo_policy.clone() {

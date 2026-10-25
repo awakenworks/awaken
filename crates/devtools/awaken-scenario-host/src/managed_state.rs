@@ -278,7 +278,6 @@ async fn local_managed_state_over(
         .expect("scenario Session application binds into its executor once");
     let managed = awaken_protocol_managed::ManagedState::from_application(
         application.clone(),
-        environments,
         host.content_capture_policy(),
     );
     LocalManagedState {
@@ -286,6 +285,7 @@ async fn local_managed_state_over(
             execution,
             managed: Arc::new(managed),
             sessions: application,
+            environment_warmups: environments,
             local_workspace: host.local_workspace().to_owned(),
             clock: host.clock(),
         },
