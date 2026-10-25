@@ -176,7 +176,7 @@ def invoked_scripts(block: str, *, expand_rust_gate: bool = True) -> set[str]:
         modes = re.findall(r"scripts/ci/check-rust\.sh (--[a-z-]+)(?:\s|$)", block)
         if len(modes) != 1:
             raise SystemExit("generate_hooks: Rust hook needs one literal mode")
-        scripts.update(INVOCATION.findall(gate_mode_source((ROOT / "scripts/ci/check-rust.sh").read_text(), modes[0])))
+        scripts.update(INVOCATION.findall(gate_mode_source((ROOT / "scripts/ci/check-rust.sh").read_text(encoding="utf-8"), modes[0])))
     return scripts
 
 
@@ -559,7 +559,7 @@ def selftest() -> None:
     # T6 docs plus manifest/hook/toolchain/fuzz input -> Rust trigger and the
     # affected planner's whole fallback. This is the actual shell control shape,
     # not a second declared checker registry or a shell execution wrapper.
-    gate = (ROOT / "scripts/ci/check-rust.sh").read_text()
+    gate = (ROOT / "scripts/ci/check-rust.sh").read_text(encoding="utf-8")
     quick = gate_mode_source(gate, "--quick")
     assert "rust_test_plan.py" in quick and "check_dependency_sources.py" in quick
     assert "check_formal_coverage.py" not in quick and "check_formal_surface.py" not in quick

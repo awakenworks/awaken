@@ -11,7 +11,7 @@ POSTGRES_PACKAGES = {
         "awaken-sql-storage", "awaken-session-store", "awaken-config-store", "awaken-store-postgres",
         "awaken-env-store", "awaken-file-store", "awaken-store-schema", "awaken-store-sqlite"),
     "storage-observations": ("awaken-sql-storage", "awaken-store-postgres"),
-    "resources": ('awaken-admin-config-api', 'awaken-resource-store', 'awaken-resource-persistence', 'awaken-session-application', 'awaken-protocol-managed', 'awaken-sandbox-policy-store', 'awaken-executable-agent-catalog', 'awaken-executable-environment-catalog', 'awaken-environment-image-build'),
+    "resources": ('awaken-admin-config-api', 'awaken-resource-store', 'awaken-resource-persistence', 'awaken-session-application', 'awaken-protocol-managed', 'awaken-sandbox-policy-store', 'awaken-executable-agent-catalog', 'awaken-executable-environment-catalog', 'awaken-environment-application', 'awaken-environment-image-build'),
 }
 
 

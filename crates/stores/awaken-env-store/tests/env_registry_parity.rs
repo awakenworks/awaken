@@ -25,13 +25,25 @@ use awaken_environment_contract::{
 };
 use awaken_store_conformance::env_registry::{reopen_preserves_authority, run_suite};
 
-/// Run a (possibly non-Send) suite future and report whether it panicked.
-async fn suite_fails(suite: impl std::future::Future<Output = ()> + 'static) -> bool {
+/// A countermodel qualifies only at its expected assertion. Setup failures,
+/// cancellation and unrelated panics cannot stand in for the oracle.
+async fn suite_rejects_at(
+    table: impl std::future::Future<Output = ()> + 'static,
+    expected_assertion: &'static str,
+) -> bool {
     let local = tokio::task::LocalSet::new();
-    local
-        .run_until(local.spawn_local(suite))
-        .await
-        .is_err_and(|error| error.is_panic())
+    let Err(error) = local.run_until(local.spawn_local(table)).await else {
+        return false;
+    };
+    if !error.is_panic() {
+        return false;
+    }
+    let payload = error.into_panic();
+    let message = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied());
+    message.is_some_and(|message| message.starts_with(expected_assertion))
 }
 
 #[tokio::test]
@@ -72,17 +84,20 @@ async fn file_sqlite_reopen_preserves_authority_and_in_memory_reopen_is_detected
 
     // NC3: an in-memory "file" factory cannot pass the reopen row.
     assert!(
-        suite_fails(async {
-            let first = SqliteEnvRegistry::open_in_memory(awaken_time::system_clock())
-                .await
-                .unwrap();
-            reopen_preserves_authority(first, || async {
-                SqliteEnvRegistry::open_in_memory(awaken_time::system_clock())
+        suite_rejects_at(
+            async {
+                let first = SqliteEnvRegistry::open_in_memory(awaken_time::system_clock())
                     .await
-                    .unwrap()
-            })
-            .await;
-        })
+                    .unwrap();
+                reopen_preserves_authority(first, || async {
+                    SqliteEnvRegistry::open_in_memory(awaken_time::system_clock())
+                        .await
+                        .unwrap()
+                })
+                .await;
+            },
+            "assertion `left == right` failed: reopen image"
+        )
         .await,
         "NC3 in-memory reopen must fail the reopen row"
     );
@@ -194,13 +209,20 @@ async fn divergent_backends_fail_the_shared_behaviour_table() {
         ("NC2 rebuilds receipt", Divergence::RebuildsReceipt),
     ] {
         assert!(
-            suite_fails(run_suite(awaken_time::system_clock(), move |clock| {
-                std::future::ready(Divergent {
-                    inner: InMemoryEnvRegistry::new(clock),
-                    mode,
-                    minted: Default::default(),
-                })
-            }))
+            suite_rejects_at(
+                run_suite(awaken_time::system_clock(), move |clock| {
+                    std::future::ready(Divergent {
+                        inner: InMemoryEnvRegistry::new(clock),
+                        mode,
+                        minted: Default::default(),
+                    })
+                }),
+                match mode {
+                    Divergence::DropsCas => "assertion `left == right` failed: V3",
+                    Divergence::RebuildsReceipt =>
+                        "assertion `left == right` failed: R2 read-only replay",
+                }
+            )
             .await,
             "{name} must fail the shared suite"
         );
@@ -215,6 +237,7 @@ async fn postgres_reopen_preserves_authority_through_an_independent_pool() {
     };
     let admin = awaken_sql_storage::postgres_pool_options()
         .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(3))
         .connect(&url)
         .await
         .expect("configured Environment PostgreSQL fixture must connect");
@@ -227,7 +250,6 @@ async fn postgres_reopen_preserves_authority_through_an_independent_pool() {
         .execute(format!("CREATE SCHEMA {schema}").as_str())
         .await
         .unwrap();
-    admin.close().await;
     let connect = {
         let (url, schema) = (url.clone(), schema.clone());
         move || {
@@ -239,6 +261,7 @@ async fn postgres_reopen_preserves_authority_through_an_independent_pool() {
                     .options([("search_path", schema.as_str())]);
                 awaken_sql_storage::postgres_pool_options()
                     .max_connections(2)
+                    .acquire_timeout(std::time::Duration::from_secs(3))
                     .connect_with(options)
                     .await
                     .unwrap()
@@ -263,11 +286,27 @@ async fn postgres_reopen_preserves_authority_through_an_independent_pool() {
         }
     })
     .await;
+    admin
+        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        .await
+        .expect("drop only this fixture's schema");
+    admin.close().await;
 }
 
 #[test]
 fn postgres_reopen_preserves_authority_fixture_admission() {
     awaken_reliability_testkit::assert_postgres_fixture_child_contract(
         "postgres_reopen_preserves_authority_through_an_independent_pool",
+    );
+}
+
+#[tokio::test]
+async fn unrelated_failure_is_not_backend_divergence_evidence() {
+    assert!(
+        !suite_rejects_at(
+            async { panic!("database setup failed") },
+            "assertion `left == right` failed: reopen image"
+        )
+        .await
     );
 }

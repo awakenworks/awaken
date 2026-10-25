@@ -271,6 +271,21 @@ resources_evidence() {
     --require-case=postgres::tests::postgres_migration_persists_high_water_and_rehydrates_environment \
     --require-case=postgres::tests::postgres_history_command_reopens_without_admission_and_fences_cross_mode_conflicts_fixture_admission \
     -- --test-threads=1 || record_failure "$?"
+  pg_required_test --locked -p awaken-environment-application --test registration_replay \
+    --require-case=postgres_delayed_registration_after_reconnect_cannot_restore_withdrawn_work \
+    --require-case=postgres_history_cannot_consume_unapplied_higher_registration \
+    --require-case=postgres_pending_history_does_not_swallow_new_registration_effect \
+    --require-case=durable_pending::postgres_pending_history_survives_a_rebuild_through_independent_pools \
+    --require-case=history_visibility::postgres_withdrawn_history_stays_readable_on_independent_pools \
+    --require-case=durable_pending::postgres_pending_history_survives_a_rebuild_through_independent_pools_fixture_admission \
+    --require-case=durable_pending::postgres_history_cannot_consume_unapplied_higher_registration_fixture_admission \
+    --require-case=durable_pending::postgres_pending_history_does_not_swallow_new_registration_effect_fixture_admission \
+    --require-case=history_visibility::postgres_withdrawn_history_stays_readable_on_independent_pools_fixture_admission \
+    --require-case=history_visibility::postgres_delayed_registration_after_reconnect_cannot_restore_withdrawn_work_fixture_admission \
+    --require-case=history_visibility::a_non_durable_reconnect_cannot_pass_the_delayed_registration_check \
+    --require-case=history_visibility::unrelated_faults_never_qualify_lost_withdrawal_detection \
+    --require-case=durable_pending::a_catalog_high_watermark_projection_is_rejected_by_the_convergence_verdict \
+    -- --test-threads=1 || record_failure "$?"
   pg_required_test --locked -p awaken-environment-image-build postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority \
     --require-case=postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority \
     -- --exact --test-threads=1 || record_failure "$?"
@@ -328,7 +343,19 @@ storage_evidence() {
       --skip million_historical_facts_do_not_gate_startup_or_unrelated_thread_open \
       --skip multi_fact_commit_throughput_observation \
       --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-env-store --features test-support --tests \
+  pg_required_test --locked -p awaken-env-store --features test-support --lib --tests \
+    --require-case=migration_upgrade_tests::postgres_v8_upgrade_seeds_history_once_across_independent_pools \
+    --require-case=fixture_admission_tests::postgres_v8_upgrade_seeds_history_once_across_independent_pools_fixture_admission \
+    --require-case=postgres_failed_intent_insert_rolls_back_for_independent_pools \
+    --require-case=postgres_failed_intent_insert_rolls_back_for_independent_pools_fixture_admission \
+    --require-case=postgres_corrupt_rows_fail_closed_on_independent_pools_without_repair \
+    --require-case=postgres_corrupt_rows_fail_closed_on_independent_pools_without_repair_fixture_admission \
+    --require-case=postgres_outbox_pairs_survive_independent_pools \
+    --require-case=postgres_outbox_pairs_survive_independent_pools_fixture_admission \
+    --require-case=a_split_commit_adapter_is_rejected_by_the_rollback_verdict \
+    --require-case=current_row_shortcuts_fail_the_outbox_table_on_volatile_and_file_sqlite \
+    --require-case=unrelated_failures_cannot_qualify_an_outbox_countermodel \
+    --require-case=unrelated_failure_is_not_backend_divergence_evidence \
     --require-case=tests::file_open_and_pg_connect_entry_points \
     --require-case=fixture_admission_tests::file_and_postgres_entry_points_fixture_admission \
     --require-case=fixture_admission_tests::postgres_parity_fixture_admission \
