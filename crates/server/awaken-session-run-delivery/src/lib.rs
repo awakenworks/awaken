@@ -16,6 +16,7 @@
 //! outcome, these only notify and preview.
 #![warn(unreachable_pub)]
 
+mod authority_commits;
 mod commit_boundary;
 mod committed_reads;
 mod committed_step;
@@ -27,12 +28,14 @@ mod outcome_projection;
 mod run_publications;
 mod session_activation;
 mod session_projections;
+mod session_run_activation;
 mod session_run_reservation;
 mod session_skills;
 mod settled_step;
 #[cfg(test)]
 mod test_support;
 
+pub use authority_commits::{AuthorityCommits, runtime_authority_error};
 pub use commit_boundary::{
     CommittedAuthority, SessionCommit, SessionCommitBoundary, WorkerRecoveryCommit,
 };
@@ -51,7 +54,7 @@ pub use completion::{
     CompletionRegistry, CompletionSignalClosed, WaiterGuard, activate_and_await_session_run,
     await_completion_state,
 };
-pub use delivery::{ResourceBindingVerifiers, SessionRunDelivery};
+pub use delivery::{ResourceBindingVerifiers, WorkerPlacedSessions, WorkerPlacement};
 pub use hub::{ThreadEvent, ThreadEventHub};
 pub use lock::{DeliveryLock, LOCK_POISONED_CODE};
 pub use outcome_projection::{
@@ -64,6 +67,7 @@ pub use session_activation::{
     session_client_tool_descriptor,
 };
 pub use session_projections::{DispatchProjection, SessionProjections};
+pub use session_run_activation::{activate_session_run_reservation, read_settled_phase};
 pub use session_run_reservation::{
     SESSION_RUN_RESERVATION_TTL_MS, SessionRunInputs, reserve_session_run,
     validate_session_run_command,

@@ -3527,6 +3527,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-credential-contract",
+ "awaken-deployment-config",
  "awaken-dispatch",
  "awaken-dispatch-contract",
  "awaken-dispatch-erasure",

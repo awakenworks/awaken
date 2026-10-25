@@ -289,6 +289,26 @@ impl DispatchAdmissionReads for SessionProjections {
     }
 }
 
+/// An advisor link is labelled with the advisor model the Session's effective
+/// publication pins.
+impl crate::AdvisorModelSource for SessionProjections {
+    fn advisor_model(&self, session: &str) -> Result<Option<String>, RunError> {
+        Ok(self.projection(session)?.and_then(|projection| {
+            projection
+                .publication()
+                .and_then(|publication| {
+                    publication
+                        .resolved_spec
+                        .plugin_config
+                        .agent
+                        .advisor
+                        .as_ref()
+                })
+                .map(|advisor| advisor.model.clone())
+        }))
+    }
+}
+
 impl SessionProjections {
     /// The Workspace a flat-protocol Thread runs in.
     #[must_use]

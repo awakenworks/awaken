@@ -16,6 +16,8 @@ pub enum DeliveryLock {
     ThreadEventHub,
     #[error("Session dispatch projections lock poisoned")]
     SessionProjections,
+    #[error("Session step projection lock poisoned")]
+    StepProjections,
 }
 
 impl From<DeliveryLock> for awaken_session_types::RunError {
@@ -36,11 +38,13 @@ mod tests {
 
     #[test]
     fn a_poisoned_delivery_lock_is_one_retryable_class() {
-        // Cause: either delivery lock is poisoned. Effect: one Unavailable Run
+        // Cause: any delivery lock is poisoned. Effect: one Unavailable Run
         // refusal with the one stable code the executor's locks share.
         for lock in [
             DeliveryLock::CompletionRegistry,
             DeliveryLock::ThreadEventHub,
+            DeliveryLock::SessionProjections,
+            DeliveryLock::StepProjections,
         ] {
             let run = awaken_session_types::RunError::from(lock);
             assert_eq!(
