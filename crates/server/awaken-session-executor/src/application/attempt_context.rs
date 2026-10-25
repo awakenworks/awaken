@@ -51,7 +51,10 @@ impl SessionContextAttemptExecutor {
         if let Some(result) = installed_sessions
             .read(&self.session_id, |installed| {
                 installed.inputs.tools.as_ref().map(|tools| {
-                    crate::config::project_session_tools(&mut activation.snapshot, tools)
+                    awaken_session_run_delivery::project_session_tools(
+                        &mut activation.snapshot,
+                        tools,
+                    )
                 })
             })
             .map_err(|error| {

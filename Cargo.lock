@@ -3532,6 +3532,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-session-application-contract",
  "awaken-session-budget-contract",
+ "awaken-session-configuration-contract",
  "awaken-session-event-contract",
  "awaken-session-execution-contract",
  "awaken-session-types",

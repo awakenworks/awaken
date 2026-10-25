@@ -993,7 +993,7 @@ mod tests {
 
         let mut effective = snapshot.clone();
         effective.resolved_spec.tool_descriptors.push(
-            crate::config::session_client_tool_descriptor(
+            awaken_session_run_delivery::session_client_tool_descriptor(
                 &awaken_agent_contract::ClientToolDescriptor {
                     name: "resource_request".into(),
                     description: "Request a frozen WorkUnit resource".into(),

@@ -25,6 +25,7 @@ awaken-session-application-contract.workspace = true
 awaken-session-budget-contract.workspace = true
 awaken-session-event-contract.workspace = true
 awaken-session-execution-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-ext-goal.workspace = true
 awaken-ext-builtin-tools.workspace = true

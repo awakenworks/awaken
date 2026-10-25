@@ -18,10 +18,12 @@ mod quiescence;
 mod run_ingress;
 
 use super::*;
-pub(super) use crate::config::{SessionToolsetProjection, project_session_tool_override};
 use crate::host::session_ctx::{RuntimeContextPurpose, runtime_context_cache_reuse_admitted};
+pub(super) use awaken_session_run_delivery::{
+    ManagedCoordinationRole, SessionToolsetProjection, project_managed_coordination_surface,
+    project_session_tool_override,
+};
 pub(crate) use content_delivery::SkillDeliveryEvidence;
-pub(super) use input_projection::{ManagedCoordinationRole, project_managed_coordination_surface};
 
 /// One named value for the optional authority inputs that distinguish
 /// reservation, fresh-snapshot, claimed, and legacy-recovery Session opens.

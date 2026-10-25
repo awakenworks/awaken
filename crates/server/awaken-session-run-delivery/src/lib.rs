@@ -22,6 +22,7 @@ mod completion;
 mod hub;
 mod lock;
 mod outcome_projection;
+mod session_activation;
 
 pub use commit_boundary::{
     CommittedAuthority, SessionCommit, SessionCommitBoundary, WorkerRecoveryCommit,
@@ -40,6 +41,11 @@ pub use hub::{ThreadEvent, ThreadEventHub};
 pub use lock::{DeliveryLock, LOCK_POISONED_CODE};
 pub use outcome_projection::{
     committed_outcome_projection, outcome_controller_error, outcome_report,
+};
+pub use session_activation::{
+    ManagedCoordinationRole, SessionToolsetProjection, project_managed_coordination_surface,
+    project_session_tool_override, project_session_tools, session_activation_snapshot,
+    session_client_tool_descriptor,
 };
 
 /// Poison `lock` the way production can: a holder panics while holding it.
