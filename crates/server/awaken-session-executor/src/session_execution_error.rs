@@ -170,8 +170,6 @@ impl From<SessionExecutionError> for awaken_dispatch_execution::AdmissionError {
 /// ([`awaken_session_realization::realization_error::RealizationLock`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ExecutorLock {
-    #[error("shared tool admission lock poisoned")]
-    ToolAdmission,
     #[error("Skill catalog cache lock poisoned")]
     SkillCatalogCache,
 }
@@ -241,18 +239,17 @@ mod tests {
         // Cause: any executor-owned lock is poisoned. Effect: one Unavailable
         // refusal with one stable code, identical in the Host and Run
         // vocabularies, so no caller re-classifies it from text.
-        for lock in [ExecutorLock::ToolAdmission, ExecutorLock::SkillCatalogCache] {
-            let host = SessionExecutionError::from(lock);
-            assert_eq!(host.kind, SessionExecutionErrorKind::Unavailable, "{lock}");
-            assert_eq!(host.code, EXECUTOR_LOCK_POISONED_CODE, "{lock}");
-            let run = RunError::from(lock);
-            assert_eq!(
-                run.kind,
-                awaken_session_types::RunErrorKind::Unavailable,
-                "{lock}"
-            );
-            assert_eq!(run.code, EXECUTOR_LOCK_POISONED_CODE, "{lock}");
-        }
+        let lock = ExecutorLock::SkillCatalogCache;
+        let host = SessionExecutionError::from(lock);
+        assert_eq!(host.kind, SessionExecutionErrorKind::Unavailable, "{lock}");
+        assert_eq!(host.code, EXECUTOR_LOCK_POISONED_CODE, "{lock}");
+        let run = RunError::from(lock);
+        assert_eq!(
+            run.kind,
+            awaken_session_types::RunErrorKind::Unavailable,
+            "{lock}"
+        );
+        assert_eq!(run.code, EXECUTOR_LOCK_POISONED_CODE, "{lock}");
     }
 
     #[test]

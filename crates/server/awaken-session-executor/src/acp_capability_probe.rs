@@ -109,7 +109,7 @@ impl StrandedProbeEnvironments {
 #[derive(Clone)]
 pub struct SessionAcpCapabilityNegotiator {
     probe: AcpProbe,
-    background: Arc<crate::background::BackgroundRuns>,
+    background: Arc<awaken_session_run_delivery::BackgroundRuns>,
     scope_owner: String,
 }
 
@@ -313,7 +313,7 @@ impl AcpCapabilityNegotiator for SessionAcpCapabilityNegotiator {
         // but cannot drop a create response or the exact-handle cleanup tail.
         self.background
             .spawn(
-                crate::background::BackgroundWorkClass::UnattachedEnvironment,
+                awaken_session_run_delivery::BackgroundWorkClass::UnattachedEnvironment,
                 async move {
                     let outcome = pc::ClaimedEffect::new(
                         claim,

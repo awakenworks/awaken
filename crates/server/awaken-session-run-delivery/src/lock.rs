@@ -10,6 +10,8 @@ pub const LOCK_POISONED_CODE: &str = "session_executor_lock_poisoned";
 /// `Unavailable` with [`LOCK_POISONED_CODE`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DeliveryLock {
+    #[error("shared tool admission lock poisoned")]
+    ToolAdmission,
     #[error("foreground completion registry lock poisoned")]
     CompletionRegistry,
     #[error("Thread event hub lock poisoned")]
@@ -43,6 +45,7 @@ mod tests {
         // Cause: any delivery lock is poisoned. Effect: one Unavailable Run
         // refusal with the one stable code the executor's locks share.
         for lock in [
+            DeliveryLock::ToolAdmission,
             DeliveryLock::CompletionRegistry,
             DeliveryLock::ThreadEventHub,
             DeliveryLock::SessionProjections,

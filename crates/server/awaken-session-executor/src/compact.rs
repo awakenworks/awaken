@@ -22,9 +22,9 @@ use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_tool_contract::tool::RawTool;
 
 use crate::agent_catalog::AgentCatalog;
-use crate::background::{BackgroundRuns, BackgroundWorkClass};
 use crate::judge::AuxAgentTool;
 use awaken_session_run_delivery::SessionCommit;
+use awaken_session_run_delivery::{BackgroundRuns, BackgroundWorkClass};
 
 /// An ordinary tool whose catalog holds the `compactor` Agent.
 /// (ADR-0047 D5). The compaction plugin builds the seed (older slice + summarize

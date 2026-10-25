@@ -57,7 +57,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     let background = host.resources.memory.background();
     background
         .spawn(
-            crate::background::BackgroundWorkClass::SharedEnvironment {
+            awaken_session_run_delivery::BackgroundWorkClass::SharedEnvironment {
                 session_id: thread.into(),
                 generation_id: activity_generation.clone(),
             },
@@ -304,7 +304,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         let background = host.resources.memory.background();
         background
             .spawn(
-                crate::background::BackgroundWorkClass::SharedEnvironment {
+                awaken_session_run_delivery::BackgroundWorkClass::SharedEnvironment {
                     session_id: thread.into(),
                     generation_id: activity_generation_id.clone(),
                 },
