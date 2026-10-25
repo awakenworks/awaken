@@ -13,7 +13,6 @@ use awaken_credential_contract::{
     CredentialRealizationReceipt, CredentialRealizationRecordError, CredentialRealizationRecorder,
 };
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -22,9 +21,9 @@ use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadV
 use awaken_agent_contract::thread::read::transcript::TranscriptSnapshot;
 use awaken_ext_builtin_tools::erase;
 use awaken_ext_memory::{
-    MemoryExtractionController, MemoryExtractionDriver, MemoryExtractionError,
-    MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionOutcome,
-    MemoryExtractionRepository, MemoryExtractorSnapshot, MemoryMutationReceipt, MemoryStoreHandle,
+    MemoryExtractionDriver, MemoryExtractionError, MemoryExtractionIntent,
+    MemoryExtractionMutation, MemoryExtractionOutcome, MemoryExtractionRepository,
+    MemoryExtractorSnapshot, MemoryMutationReceipt, MemoryStoreHandle,
     MemoryTerminalExtractionRequest, WriteMemoryTool,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
@@ -34,16 +33,13 @@ use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::agent_runner::{AgentRunError, run_configured_agent_with_id};
-use awaken_session_run_delivery::SessionCommit;
-use awaken_session_run_delivery::{BackgroundRuns, BackgroundWorkClass};
+use awaken_session_run_delivery::{BackgroundRuns, MemoryExtractions, SessionCommit};
 
 mod selector;
 mod terminal_observer;
 pub(crate) use crate::memory_binding::MemoryBinding;
 pub(crate) use selector::AgentSelector;
 pub(crate) use terminal_observer::MemoryTerminalObservers;
-
-static EXTRACTION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Host-level extraction/selection capability. It owns the auxiliary-agent
 /// machinery but deliberately owns no MemoryStore identity or content handle.
@@ -58,9 +54,7 @@ pub struct MemoryRuntime {
     /// Fresh sandboxes for extraction/selection Runs, from the process
     /// composition's `SessionExecutorBuilder::with_auxiliary_sandboxes`.
     provider: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
-    background: Arc<BackgroundRuns>,
-    claim_owner: String,
-    extractions: Arc<dyn MemoryExtractionRepository>,
+    extractions: MemoryExtractions,
     /// The Host's process clock extraction claims and receipts are stamped on.
     clock: Arc<dyn awaken_time::WallClock>,
 }
@@ -182,17 +176,11 @@ impl MemoryRuntime {
         >,
     ) -> Self {
         Self {
-            clock,
+            clock: clock.clone(),
             llm,
             inference_materializer,
             provider,
-            background,
-            claim_owner: format!(
-                "memory-extractor:{}:{}",
-                std::process::id(),
-                EXTRACTION_OWNER_SEQ.fetch_add(1, Ordering::Relaxed)
-            ),
-            extractions,
+            extractions: MemoryExtractions::new(extractions, background, clock),
         }
     }
 
@@ -205,11 +193,11 @@ impl MemoryRuntime {
 
     /// Await every in-flight extraction started by any bound Session.
     pub async fn drain(&self, timeout: Duration) -> bool {
-        self.background.drain(timeout).await
+        self.extractions.background().drain(timeout).await
     }
 
     pub(crate) fn background(&self) -> Arc<BackgroundRuns> {
-        self.background.clone()
+        self.extractions.background()
     }
 
     fn materialize_extractor(
@@ -266,15 +254,7 @@ impl MemoryRuntime {
     }
 
     pub(crate) fn extraction_repository(&self) -> Arc<dyn MemoryExtractionRepository> {
-        self.extractions.clone()
-    }
-
-    fn extraction_controller(&self) -> MemoryExtractionController {
-        MemoryExtractionController::new(
-            self.extraction_repository(),
-            self.claim_owner.clone(),
-            self.clock.clone(),
-        )
+        self.extractions.repository()
     }
 }
 
@@ -303,7 +283,8 @@ impl BoundMemory {
         extractor: MemoryExtractorSnapshot,
     ) -> Result<(), MemoryExtractionError> {
         self.runtime
-            .extraction_controller()
+            .extractions
+            .controller()
             .enqueue_terminal(MemoryTerminalExtractionRequest {
                 workspace_id: self.binding.workspace_id.clone(),
                 session_id: self.binding.session_thread_id.clone(),
@@ -331,33 +312,10 @@ impl BoundMemory {
         {
             return Ok(false);
         }
-        let controller = self.runtime.extraction_controller();
-        if !controller.has_recoverable(self).await? {
-            return Ok(false);
-        }
-        let bound = self.clone();
         self.runtime
-            .background
-            .spawn(
-                BackgroundWorkClass::ExternalDurable {
-                    durable_intent_id: format!(
-                        "memory-extraction:{}",
-                        self.binding.session_thread_id
-                    ),
-                },
-                async move {
-                    bound.drive_recoverable().await;
-                },
-            )
-            .await;
-        Ok(true)
-    }
-
-    async fn drive_recoverable(&self) {
-        self.runtime
-            .extraction_controller()
-            .drive_recoverable(self)
-            .await;
+            .extractions
+            .recover(&self.binding.session_thread_id, Arc::new(self.clone()))
+            .await
     }
 
     async fn extract_mutations(&self, intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome {

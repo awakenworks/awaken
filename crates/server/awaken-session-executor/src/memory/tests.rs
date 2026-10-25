@@ -11,6 +11,7 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_session_run_delivery::PlatformMemoryHandle;
 use awaken_tool_contract::tool::ToolCall;
+use std::sync::atomic::Ordering;
 
 #[test]
 fn extractor_run_error_classification_never_replays_unknown_execution() {
@@ -399,6 +400,11 @@ async fn agent_selector_runs_the_subagent_and_parses_its_reply() {
 
 #[tokio::test]
 async fn extraction_writes_a_memory_then_recall_reads_it_back() {
+    // Recovery-wrapper relocation table: C1 no durable intent => no spawned
+    // work; C2 one ready frozen binding + terminal enqueue => the same selected
+    // repository/controller drives the original extractor and commits content.
+    // The committed store/recall assertions below, rather than drain alone,
+    // prove that the shared recovery entry retains the original behavior.
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
