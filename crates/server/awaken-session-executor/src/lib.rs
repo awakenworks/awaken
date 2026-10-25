@@ -41,7 +41,6 @@ pub use application::SessionRealizationRevocation;
 
 mod authority;
 mod auxiliary_sandbox;
-mod background;
 mod background_task;
 #[cfg(test)]
 mod commit_ingest_tests;

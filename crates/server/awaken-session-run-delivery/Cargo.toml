@@ -44,7 +44,7 @@ serde_json.workspace = true
 awaken-session-types.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "time", "macros"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 tracing = "0.1"
 
 [dev-dependencies]
@@ -53,7 +53,7 @@ awaken-deployment-config.workspace = true
 awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-environment-contract.workspace = true
 awaken-store-inmem.workspace = true
-tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
 
 [lints]
 workspace = true

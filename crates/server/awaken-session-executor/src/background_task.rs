@@ -31,10 +31,10 @@ use awaken_session_types::RunErrorKind;
 use awaken_time::WallClockExt;
 use awaken_tool_contract::tool::{ToolOutput, ToolTaskHandle, ToolTaskPoll, ToolTaskStart};
 
-use crate::background::{BackgroundRuns, BackgroundWorkClass};
 use awaken_session_run_delivery::CommittedAuthority;
 #[cfg(test)]
 use awaken_session_run_delivery::SessionCommit;
+use awaken_session_run_delivery::{BackgroundRuns, BackgroundWorkClass};
 
 mod ownership;
 

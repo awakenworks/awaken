@@ -60,8 +60,8 @@ use awaken_session_application_contract::Pending;
 use awaken_ext_compact::CompactConfig;
 
 use crate::ThreadEventHub;
-use crate::background::BackgroundRuns;
 use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
+use awaken_session_run_delivery::BackgroundRuns;
 use awaken_session_run_delivery::SessionCommit;
 
 /// Test fixtures mint process-unique temp roots from this sequence.

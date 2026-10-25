@@ -12,11 +12,16 @@
 //! it without the Worker-side executor; the executor builds on it for the
 //! Runs a co-located pool executes.
 //!
-//! Neither component is durable truth: committed Run truth decides every
-//! outcome, these only notify and preview.
+//! The same process-local [`BackgroundRuns`] registry tracks auxiliary work
+//! through drain and exact Environment-generation quiescence. Durable intent and
+//! claim state remain with their original controllers and repositories.
+//!
+//! These components are not durable truth: committed Run truth decides execution
+//! outcomes; process-local state tracks lifetimes, notifications and previews.
 #![warn(unreachable_pub)]
 
 mod authority_commits;
+mod background;
 mod child_dispatch;
 mod commit_boundary;
 mod committed_reads;
@@ -44,6 +49,7 @@ mod thread_coordination;
 mod thread_resume;
 
 pub use authority_commits::{AuthorityCommits, runtime_authority_error};
+pub use background::{BackgroundRuns, BackgroundWorkClass};
 pub use child_dispatch::{ChildDispatchRefusal, child_dispatch_request};
 pub use commit_boundary::{
     CommittedAuthority, SessionCommit, SessionCommitBoundary, WorkerRecoveryCommit,
