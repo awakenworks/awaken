@@ -69,12 +69,6 @@ pub struct ManagedState {
     /// directly and builders can finish configuring it before it is shared.
     #[cfg(any(test, feature = "test-support"))]
     pub(super) application: Arc<SessionApplication>,
-    /// Exact Coordinator Environment application shared by Session compilation
-    /// and the authenticated Worker warmup projection. Keeping the concrete
-    /// application Arc here lets process composition expose the existing owner;
-    /// it does not introduce a second catalog, queue, or warmup state.
-    pub(super) environments:
-        Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     /// Disposable record→wire projection; durable truth lives in the application repository.
     pub(super) sessions: Mutex<HashMap<String, SessionRecord>>,
     /// Edge-owned Session-to-Workspace wire projection.

@@ -12,7 +12,7 @@
     },
     "awaken-protocol-managed::ManagedState": {
       "files": 28,
-      "methods": 146,
+      "methods": 145,
       "reason": "W13 step 2 and W20: event projection and orchestration leave; the adapter keeps its wire cache"
     },
     "awaken-runtime::Runtime": {
@@ -256,7 +256,7 @@
     "awaken-control::component.rs::build_control_component": 256,
     "awaken-control::credential_refresh.rs::run_exchange": 162,
     "awaken-control::webhook_authoring.rs::put_subscription": 157,
-    "awaken-coordinator::lib.rs::mount_with_managed_over_and_models": 349,
+    "awaken-coordinator::lib.rs::mount_with_managed_over_and_models": 346,
     "awaken-credential-store::postgres.rs::commit_managed_mutation": 275,
     "awaken-credential-store::sqlite/managed.rs::commit_managed_mutation": 244,
     "awaken-dispatch-execution::worker.rs::drive_claimed_inner": 581,

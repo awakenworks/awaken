@@ -371,6 +371,7 @@ pub async fn build_coordinator_component(
                 #[cfg(feature = "test-support")]
                 dream_executor_decorator: None,
                 session_application: session_application.clone(),
+                environment_warmups: environments.clone(),
                 resource_registry,
                 model_inventory: Some(model_inventory),
                 dream_process_store,

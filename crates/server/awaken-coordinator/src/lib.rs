@@ -113,6 +113,9 @@ pub struct ScenarioManagedState {
     pub execution: ExecutionPorts,
     pub managed: Arc<ManagedState>,
     pub sessions: Arc<awaken_session_application::SessionApplication>,
+    /// Original Environment source selected by the same scenario composition.
+    pub environment_warmups:
+        Arc<dyn awaken_session_configuration_contract::EnvironmentWarmupSource>,
     /// The platform-managed Workspace scope-less requests resolve to.
     pub local_workspace: String,
     /// The executor's clock: the Worker transport and Dreams judge time on it.
@@ -330,6 +333,7 @@ pub async fn mount_with_managed_and_application_access_and_models(
         ApplicationAccessMount::Guarded(application_access),
         ManagedApplicationServices {
             session_application,
+            environment_warmups: managed_state.environment_warmups,
             resource_registry,
             model_inventory: Some(model_inventory),
             dream_process_store,
@@ -402,6 +406,9 @@ pub struct ManagedRoutingExtensions {
 /// composition. Keeping this dependency cluster explicit prevents production
 /// and deterministic hosts from growing parallel assembly signatures.
 pub struct ManagedApplicationServices {
+    /// Required executable Environment reads selected during composition.
+    pub environment_warmups:
+        Arc<dyn awaken_session_configuration_contract::EnvironmentWarmupSource>,
     pub session_application: Arc<awaken_session_application::SessionApplication>,
     pub resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     pub model_inventory:
@@ -530,6 +537,62 @@ mod executable_projection_refresh_tests {
     }
 
     #[tokio::test]
+    async fn warmup_reads_keep_the_selected_allocation_without_a_protocol_adapter() {
+        // W1 no refresh -> use the exact injected Arc, including its effects.
+        // This port is sufficient; no ManagedState or concrete Environment App
+        // is constructed or retained to answer a Worker warmup read.
+        let selected = Arc::new(Warmups::default());
+        let source: Arc<dyn awaken_session_configuration_contract::EnvironmentWarmupSource> =
+            selected.clone();
+        let reads = environment_warmup_reads(source.clone(), None);
+        assert!(Arc::ptr_eq(&reads, &source));
+        assert!(
+            reads
+                .current_environment_warmups()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(selected.0.load(Ordering::SeqCst), 1);
+    }
+
+    struct UnavailableWarmups(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl awaken_session_configuration_contract::EnvironmentWarmupSource for UnavailableWarmups {
+        async fn current_environment_warmups(
+            &self,
+        ) -> Result<Vec<awaken_session_configuration_contract::EnvironmentSnapshot>, String>
+        {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err("selected Environment source unavailable".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn refreshed_warmup_reads_preserve_selected_source_errors_without_fallback() {
+        // W2 refresh succeeds, selected catalog fails -> preserve its failure.
+        // Repeated reads enter the same source; no empty-demand fallback/cache.
+        let selected = Arc::new(UnavailableWarmups(AtomicUsize::new(0)));
+        let refresh = Arc::new(ToggleRefresh::default());
+        let pair = Arc::new(
+            awaken_session_application_contract::ExecutableProjectionRefresh::new(
+                refresh.clone(),
+                refresh.clone(),
+            ),
+        );
+        let reads = environment_warmup_reads(selected.clone(), Some(pair));
+        for expected in 1..=2 {
+            assert_eq!(
+                reads.current_environment_warmups().await.unwrap_err(),
+                "selected Environment source unavailable"
+            );
+            assert_eq!(selected.0.load(Ordering::SeqCst), expected);
+            assert_eq!(refresh.calls.load(Ordering::SeqCst), expected * 2);
+        }
+    }
+
+    #[tokio::test]
     async fn failed_refresh_never_enters_shared_inventory_or_warmup_handlers() {
         // Causes: C1 executable refresh succeeds/fails; C2 Agent inventory is
         // consumed by Models/Dream; C3 Environment warmups are consumed by the
@@ -549,30 +612,22 @@ mod executable_projection_refresh_tests {
         );
         let inventory = Arc::new(Inventory::default());
         let warmups = Arc::new(Warmups::default());
-        let refreshing_inventory = RefreshingExecutableAgentInventory {
-            source: inventory.clone(),
-            refresh: pair.clone(),
-        };
-        let refreshing_warmups = RefreshingEnvironmentWarmups {
-            source: warmups.clone(),
-            refresh: pair,
-        };
+        let refreshing_inventory =
+            executable_agent_inventory_reads(Some(inventory.clone()), Some(pair.clone())).unwrap();
+        let refreshing_warmups = environment_warmup_reads(warmups.clone(), Some(pair));
         refresh.fail.store(true, Ordering::SeqCst);
         assert!(
-            awaken_executable_agent_contract::ExecutableAgentInventorySource::current_registrations(
-                &refreshing_inventory,
-                "workspace",
-            )
-            .await
-            .is_err(),
+            refreshing_inventory
+                .current_registrations("workspace")
+                .await
+                .is_err(),
             "D1/E1"
         );
         assert!(
-            awaken_session_configuration_contract::EnvironmentWarmupSource::current_environment_warmups(
-                &refreshing_warmups,
-            )
-            .await
-            .is_err(),
+            refreshing_warmups
+                .current_environment_warmups()
+                .await
+                .is_err(),
             "D2/E1"
         );
         assert_eq!(inventory.0.load(Ordering::SeqCst), 0, "D1/E1");
@@ -580,17 +635,14 @@ mod executable_projection_refresh_tests {
         assert_eq!(refresh.calls.load(Ordering::SeqCst), 2, "D1+D2 gate calls");
 
         refresh.fail.store(false, Ordering::SeqCst);
-        awaken_executable_agent_contract::ExecutableAgentInventorySource::current_registrations(
-            &refreshing_inventory,
-            "workspace",
-        )
-        .await
-        .unwrap();
-        awaken_session_configuration_contract::EnvironmentWarmupSource::current_environment_warmups(
-            &refreshing_warmups,
-        )
-        .await
-        .unwrap();
+        refreshing_inventory
+            .current_registrations("workspace")
+            .await
+            .unwrap();
+        refreshing_warmups
+            .current_environment_warmups()
+            .await
+            .unwrap();
         assert_eq!(inventory.0.load(Ordering::SeqCst), 1, "D3/E2");
         assert_eq!(warmups.0.load(Ordering::SeqCst), 1, "D3/E2");
         assert_eq!(refresh.calls.load(Ordering::SeqCst), 6, "D3 gate calls");
@@ -763,6 +815,7 @@ async fn mount_with_managed_over(
             application_access,
             ManagedApplicationServices {
                 session_application,
+                environment_warmups: managed_state.environment_warmups,
                 resource_registry,
                 model_inventory: None,
                 dream_process_store,
@@ -804,6 +857,27 @@ async fn mount_with_managed_over(
     )
 }
 
+fn executable_agent_inventory_reads(
+    inventory: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>>,
+    refresh: Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
+) -> Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>> {
+    inventory.map(|source| match refresh {
+        Some(refresh) => Arc::new(RefreshingExecutableAgentInventory { source, refresh })
+            as Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
+        None => source,
+    })
+}
+
+fn environment_warmup_reads(
+    source: Arc<dyn awaken_session_configuration_contract::EnvironmentWarmupSource>,
+    refresh: Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
+) -> Arc<dyn awaken_session_configuration_contract::EnvironmentWarmupSource> {
+    match refresh {
+        Some(refresh) => Arc::new(RefreshingEnvironmentWarmups { source, refresh }),
+        None => source,
+    }
+}
+
 /// The Coordinator-derived reads a registered Worker pulls over its private
 /// transport: current Environment warm demand, and the original Session
 /// sources a draining Worker must report retained.
@@ -813,21 +887,14 @@ async fn mount_with_managed_over(
 /// Worker occupancy read that decides retirement. Neither adapter owns a
 /// second catalog, WorkQueue, cache, report or receipt state.
 fn worker_pulled_reads(
-    managed_state: &Arc<ManagedState>,
+    environment_warmups: Arc<dyn awaken_session_configuration_contract::EnvironmentWarmupSource>,
     refresh: Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
     session_application: &Arc<awaken_session_application::SessionApplication>,
     directory: &Arc<dyn awaken_worker_registry::WorkerDirectory>,
     authenticator: &Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
     clock: &Arc<dyn awaken_time::WallClock>,
 ) -> (Router, Router) {
-    let warmup_source: Arc<dyn awaken_session_configuration_contract::EnvironmentWarmupSource> =
-        match refresh {
-            Some(refresh) => Arc::new(RefreshingEnvironmentWarmups {
-                source: managed_state.environment_execution(),
-                refresh,
-            }),
-            None => managed_state.environment_execution(),
-        };
+    let warmup_source = environment_warmup_reads(environment_warmups, refresh);
     (
         awaken_dispatch_http::worker_environment_warmup_router(
             warmup_source,
@@ -892,6 +959,7 @@ async fn mount_with_managed_over_and_models(
     WorkerTransportBuildError,
 > {
     let ManagedApplicationServices {
+        environment_warmups,
         session_application,
         resource_registry,
         model_inventory,
@@ -932,7 +1000,7 @@ async fn mount_with_managed_over_and_models(
         .verify_worker_admission(&worker_observations, &preparation)
         .map_err(|error| WorkerTransportBuildError::Dispatch(error.into()))?;
     let (environment_warmups, source_retention) = worker_pulled_reads(
-        &managed_state,
+        environment_warmups,
         executable_projection_refresh.clone(),
         &session_application,
         &worker_directory,
@@ -940,11 +1008,7 @@ async fn mount_with_managed_over_and_models(
         &worker_clock,
     );
     let model_inventory =
-        model_inventory.map(|source| match executable_projection_refresh.clone() {
-            Some(refresh) => Arc::new(RefreshingExecutableAgentInventory { source, refresh })
-                as Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
-            None => source,
-        });
+        executable_agent_inventory_reads(model_inventory, executable_projection_refresh);
     let dream_worker: Arc<dyn awaken_dream_application::DreamExecutor> =
         Arc::new(dream::BuiltInDreamAgent::new(
             session_application.clone(),
